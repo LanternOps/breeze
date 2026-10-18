@@ -42,8 +42,8 @@ export interface RenderPartnerEmailArgs {
   /** A notice variant (e.g. payment_failed 'confirm'): picks that variant's default
    * subject, heading, button and body. A partner's saved override still wins. */
   variant?: string;
-  /** Ticket number / subject used only to build default subject lines. */
-  internalNumber?: string | null;
+  /** Customer-facing ticket number (tickets.ticket_number, never internal_number) / subject used only to build default subject lines. */
+  ticketNumber?: string | null;
   ticketSubject?: string;
   /**
    * When `id === 'ticket_autoresponse'` and `custom` is null/empty,
@@ -197,7 +197,7 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): RenderedPartne
   } else if (inboundSubject) {
     subject = substitute(inboundSubject, vars).replace(/[\r\n]+/g, ' ').trim();
   } else {
-    subject = defaultSubject(args.id, { internalNumber: args.internalNumber, ticketSubject, vars, variant: args.variant });
+    subject = defaultSubject(args.id, { ticketNumber: args.ticketNumber, ticketSubject, vars, variant: args.variant });
   }
 
   const heading = customHeading

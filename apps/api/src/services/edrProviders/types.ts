@@ -140,6 +140,12 @@ export type EdrReconcileVerdict = 'applied' | 'not_applied' | 'unknown';
 
 export interface EdrCredentialField { name: string; label: string; secret: boolean; required: boolean }
 
+/** An inbound vendor push as the webhook route saw it: raw body text, header values. */
+export interface RawWebhookRequest { headers: Record<string, string | undefined>; body: string }
+/** A push is a HINT: which tenant (and optionally which detection) has news. Opaque vendor ids only. */
+export interface EdrWebhookHint { vendorTenantId?: string; vendorDetectionId?: string }
+export type EdrWebhookVerdict = { ok: true; hints: EdrWebhookHint[] } | { ok: false; error: string };
+
 export interface EdrProviderAdapter {
   readonly key: EdrProviderKey;
   readonly label: string;
@@ -179,8 +185,30 @@ export interface EdrProviderAdapter {
   ): Promise<EdrActionResult | { status: 'submitted' }>;
   /** W03. Crash/ambiguity reconciliation. Read-only vendor calls ONLY — never re-sends. */
   reconcileAction?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, req: EdrActionRequest): Promise<EdrReconcileVerdict>;
+  /**
+   * W03 PR-B. PURE secret check + hint extraction for an inbound vendor push.
+   * Returns ONLY opaque vendor ids (never vendor content); a push can only
+   * schedule a read sync. Called only by `routes/webhooks/edr.ts`.
+   */
+  verifyWebhook?(req: RawWebhookRequest, secret: string): EdrWebhookVerdict;
+  /**
+   * W03 PR-B. Register Breeze's webhook URL + shared secret with the vendor
+   * console. A console has ONE push destination: when it already points
+   * somewhere else (a SIEM, say) this throws `code: 'push_conflict'` unless
+   * `replaceExisting` is set.
+   */
+  registerPush?(
+    ctx: EdrAdapterContext,
+    o: { url: string; secret: string; vendorTenantIds: string[]; replaceExisting?: boolean },
+  ): Promise<void>;
+  /**
+   * W03 PR-B. Turn vendor push off, but only while it still points at `url`
+   * (Breeze's webhook): never disables a destination someone else configured.
+   */
+  unregisterPush?(ctx: EdrAdapterContext, o: { url: string | null }): Promise<{ changed: boolean }>;
+  /** W03 PR-B. Ask the vendor to send one test event to the registered URL. */
+  sendTestPush?(ctx: EdrAdapterContext): Promise<void>;
   // Declared now, implemented later (types only — no framework code calls them):
   getDetections?(...a: unknown[]): Promise<VendorEdrDetection[]>;
-  verifyWebhook?(...a: unknown[]): unknown;
   getInstaller?(...a: unknown[]): Promise<unknown>;
 }

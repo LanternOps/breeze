@@ -23,7 +23,7 @@ import { captureException } from '../services/sentry';
 import { decryptSecret } from '../services/secretCrypto';
 import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from '../services/huntressConstants';
 import { attachWorkerObservability } from './workerObservability';
-import { isFinalSyncAttempt } from './syncAttempt';
+import { isFinalSyncAttempt, reportTerminalSyncFailure } from './syncAttempt';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -953,6 +953,8 @@ export async function syncIntegrationById(
         console.error(`[HuntressSync] Failed to record sync error for integration ${integrationId}:`, dbErr);
         captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
       }
+      // Connection health (W4): observe this kind soon instead of at its next poll.
+      reportTerminalSyncFailure('huntress');
     }
     if (isAuthError) {
       // Skip BullMQ's retries — a bad credential fails identically every time.

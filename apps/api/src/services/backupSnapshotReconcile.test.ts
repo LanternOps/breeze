@@ -40,12 +40,19 @@ function chainMock(resolvedValue: unknown = []) {
 
 const selectMock = vi.fn(() => chainMock([]));
 
-const snapshotIdClaims = vi.hoisted(() => ({ foreign: new Set<string>(), live: new Set<string>(), currentJobs: new Map<string, string>() }));
+const snapshotIdClaims = vi.hoisted(() => ({
+  foreign: new Set<string>(),
+  live: new Set<string>(),
+  currentJobs: new Map<string, string>(),
+  // #7081: the key root recorded on each id's reservation.
+  roots: new Map<string, { keyLayout: string; keyPrefix: string | null }>(),
+}));
 vi.mock('./backupSnapshotIdReservations', () => ({
   loadSnapshotIdClaims: vi.fn(async () => ({
     foreign: new Set(snapshotIdClaims.foreign),
     live: new Set(snapshotIdClaims.live),
     currentJobs: new Map(snapshotIdClaims.currentJobs),
+    roots: new Map(snapshotIdClaims.roots),
   })),
 }));
 
@@ -80,6 +87,8 @@ vi.mock('../db/schema', () => ({
     orgId: 'backup_snapshots.org_id',
     snapshotId: 'backup_snapshots.snapshot_id',
     storageIdentity: 'backup_snapshots.storage_identity',
+    keyLayout: 'backup_snapshots.key_layout',
+    keyPrefix: 'backup_snapshots.key_prefix',
   },
   backupSnapshotRetirements: {
     id: 'backup_snapshot_retirements.id',
@@ -1252,6 +1261,173 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       const candidate = result.candidates.find((c) => c.snapshotId === 'FENCED-JOB-SNAP');
       expect(candidate?.skipReason).toBe('late-result-fenced');
       expect(candidate?.adopted).toBe(false);
+    });
+  });
+
+  describe('per key root (#7081)', () => {
+    const PREFIXED_CONFIG_ROW = { ...CONFIG_ROW, providerConfig: { ...CONFIG_ROW.providerConfig, prefix: 'orgB' } };
+    const P_ROOT = { keyLayout: 'prefixed_flat', keyPrefix: 'orgB' };
+    const LEGACY_ROOT = { keyLayout: 'legacy_flat', keyPrefix: null };
+
+    /** Every listing sees exactly the keys under its own `<prefix>/`; each listed prefix is recorded. */
+    const listed: string[] = [];
+    function bucket(keys: string[], writtenAt = '2026-08-01T10:20:00Z') {
+      listed.length = 0;
+      iterateBackupObjectsUnderPrefixMock.mockImplementation((input: { prefix: string }) => (async function* () {
+        listed.push(input.prefix);
+        const page = keys
+          .filter((key) => key.startsWith(`${input.prefix}/`))
+          .map((key) => ({ key, lastModified: new Date(writtenAt) }));
+        if (page.length > 0) yield page;
+      })());
+    }
+    const listedPrefixes = () => [...listed];
+    function prefixedSelects(claimJobs: unknown[]) {
+      return [
+        [PREFIXED_CONFIG_ROW],
+        [],
+        claimJobs,
+        [{ orgId: ORG_ID, provider: 's3', providerConfig: PREFIXED_CONFIG_ROW.providerConfig }],
+        [],
+      ];
+    }
+
+    afterEach(() => {
+      snapshotIdClaims.roots.clear();
+    });
+
+    it('lists the prefixed root and the legacy root for a destination with a prefix', async () => {
+      bucket([]);
+      queueSelects([[PREFIXED_CONFIG_ROW]]);
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(listedPrefixes().sort()).toEqual(['orgB/snapshots', 'snapshots']);
+      expect(result.snapshotsInStorage).toBe(0);
+    });
+
+    it('lists only the legacy root for a destination without a prefix', async () => {
+      bucket([]);
+      queueSelects([[CONFIG_ROW]]);
+
+      await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(listedPrefixes()).toEqual(['snapshots']);
+    });
+
+    it('lists only the legacy root, and warns, when the stored prefix is invalid', async () => {
+      bucket([]);
+      queueSelects([[{ ...CONFIG_ROW, providerConfig: { ...CONFIG_ROW.providerConfig, prefix: 'a//b' } }]]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+        expect(listedPrefixes()).toEqual(['snapshots']);
+        expect(warn.mock.calls.some(([msg]) => String(msg).includes('invalid key prefix'))).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('adopts an orphan found under the prefixed root whose reservation records that root, reading it there', async () => {
+      bucket(['orgB/snapshots/snap-1/manifest.json']);
+      snapshotIdClaims.roots.set('snap-1', P_ROOT);
+      fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+      queueSelects(prefixedSelects([claimingJob()]));
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(result.adopted).toBe(1);
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'orgB/snapshots/snap-1/manifest.json' }));
+      const call = applyBackupCommandResultToJobMock.mock.calls[0]![0];
+      // The row's columns carry the root; helper-style storagePrefix metadata is not set.
+      expect(call.result.metadata.storagePrefix).toBeUndefined();
+      expect(call.result.metadata.reconciledFromStorage).toBe(true);
+    });
+
+    it.each([
+      ['no reservation', null],
+      ['a reservation under the legacy root', LEGACY_ROOT],
+      ['a reservation under another prefix', { keyLayout: 'prefixed_flat', keyPrefix: 'other' }],
+    ])('refuses an orphan found under the prefixed root with %s', async (_name, root) => {
+      bucket(['orgB/snapshots/snap-1/manifest.json']);
+      if (root) snapshotIdClaims.roots.set('snap-1', root);
+      fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+      queueSelects(prefixedSelects([claimingJob()]));
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(result.adopted).toBe(0);
+      expect(result.candidates[0]).toMatchObject({ snapshotId: 'snap-1', skipReason: 'key-root-mismatch' });
+      expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses an orphan found under the legacy root whose reservation records a prefixed root', async () => {
+      bucket(['snapshots/snap-1/manifest.json']);
+      snapshotIdClaims.roots.set('snap-1', P_ROOT);
+      fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+      queueSelects(prefixedSelects([claimingJob()]));
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(result.candidates[0]).toMatchObject({ snapshotId: 'snap-1', skipReason: 'key-root-mismatch' });
+      expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+    });
+
+    it('still adopts an orphan found under the legacy root of a prefixed destination as legacy', async () => {
+      bucket(['snapshots/snap-1/manifest.json']);
+      snapshotIdClaims.roots.set('snap-1', LEGACY_ROOT);
+      fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+      queueSelects(prefixedSelects([claimingJob()]));
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(result.adopted).toBe(1);
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/snap-1/manifest.json' }));
+      const call = applyBackupCommandResultToJobMock.mock.calls[0]![0];
+      expect(call.result.metadata.storagePrefix).toBe('snapshots/snap-1');
+    });
+
+    it('refuses an orphan whose declared base is recorded under another root', async () => {
+      bucket(['orgB/snapshots/snap-1/manifest.json']);
+      snapshotIdClaims.roots.set('snap-1', P_ROOT);
+      fetchBackupObjectTextMock.mockResolvedValue(JSON.stringify({ id: 'snap-1', baseSnapshotId: 'base-0', files: [] }));
+      queueSelects([...prefixedSelects([claimingJob()]), [{ id: 'base-row', ...LEGACY_ROOT }]]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+        expect(result.candidates[0]).toMatchObject({ snapshotId: 'snap-1', skipReason: 'base-key-root-mismatch' });
+        expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+        expect(warn.mock.calls.some(([msg]) => String(msg).includes('base_key_root_mismatch'))).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('adopts an orphan whose declared base is recorded under the same root', async () => {
+      bucket(['orgB/snapshots/snap-1/manifest.json']);
+      snapshotIdClaims.roots.set('snap-1', P_ROOT);
+      fetchBackupObjectTextMock.mockResolvedValue(JSON.stringify({ id: 'snap-1', baseSnapshotId: 'base-0', files: [] }));
+      queueSelects([...prefixedSelects([claimingJob()]), [{ id: 'base-row', ...P_ROOT }]]);
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(result.adopted).toBe(1);
+    });
+
+    it('refuses a legacy orphan whose declared base row records an unreadable root', async () => {
+      oneManifest('snap-1');
+      fetchBackupObjectTextMock.mockResolvedValue(JSON.stringify({ id: 'snap-1', baseSnapshotId: 'base-0', files: [] }));
+      queueSelects([...baseSelects([claimingJob()]), [{ id: 'base-row', keyLayout: 'prefixed_flat', keyPrefix: null }]]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+        expect(result.candidates[0]).toMatchObject({ skipReason: 'base-key-root-mismatch' });
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 });

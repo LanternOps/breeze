@@ -87,10 +87,10 @@ const EXPECT: Record<string, { tier: 2 | 3; scope?: 'supervised' | 'four_eyes' }
 };
 
 describe('edr_endpoint_action — registration', () => {
-  it('has no per-tool AI rate-limit row (dispatchEdrAction enforces per-actor + per-connection limits)', async () => {
+  it('PR-B carry-forward: has a per-tool AI rate-limit row matching dispatch\'s per-actor budget (10 / 10 min)', async () => {
     const { TOOL_RATE_LIMITS } = await import('./aiToolRateLimits');
     expect(Object.keys(TOOL_RATE_LIMITS).length).toBeGreaterThan(10);
-    expect(TOOL_RATE_LIMITS.edr_endpoint_action).toBeUndefined();
+    expect(TOOL_RATE_LIMITS.edr_endpoint_action).toEqual({ limit: 10, windowSeconds: 600 });
   });
 
   it('is registered at base tier 3, self-managed DB context, deviceId-gated, devices.execute', () => {

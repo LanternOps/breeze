@@ -12,13 +12,13 @@
 // across the ownership axis would expose one org's credential to every org
 // under the partner (or strand a partner-wide source's tools).
 
-import type { ToolSourceDto, ToolSourceToolDto, ToolTier } from '@breeze/shared';
+import type { ToolSourceDto, ToolSourceKind, ToolSourceToolDto, ToolTier } from '@breeze/shared';
 import { unwrapData, type Fetcher } from '../../lib/api/serviceDeliverables';
 import { extractApiError } from '../../lib/apiError';
 import { ActionError } from '../../lib/runAction';
 
 export type { Fetcher };
-export type { ToolSourceDto, ToolSourceToolDto, ToolTier };
+export type { ToolSourceDto, ToolSourceKind, ToolSourceToolDto, ToolTier };
 
 /** The create body, mirroring `createToolSourceSchema` (@breeze/shared). */
 export type CreateToolSourceBody = {
@@ -26,8 +26,10 @@ export type CreateToolSourceBody = {
   orgId?: string;
   name: string;
   slug: string;
-  kind: 'mcp';
+  kind: ToolSourceKind;
   endpointUrl: string;
+  /** Required for `openapi`, forbidden for `mcp`. */
+  specUrl?: string;
   rateLimitPerMinute: number;
 } & (
   | { authKind: 'none' }
@@ -43,7 +45,7 @@ export type CreateToolSourceBody = {
 /** The update body: create-only fields (slug/kind/ownerScope/orgId) are absent
  *  by construction, and auth may be replaced wholesale or left untouched. */
 export type UpdateToolSourceBody = Partial<
-  Pick<CreateToolSourceBody, 'name' | 'endpointUrl' | 'rateLimitPerMinute'>
+  Pick<CreateToolSourceBody, 'name' | 'endpointUrl' | 'specUrl' | 'rateLimitPerMinute'>
 > &
   Partial<Extract<CreateToolSourceBody, { authKind: string }>>;
 

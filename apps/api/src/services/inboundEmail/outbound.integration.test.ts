@@ -184,7 +184,7 @@ async function seedEmailTicket(opts: {
   orgId: string;
   submitterEmail: string;
   subject?: string;
-}): Promise<{ id: string; internalNumber: string | null; subject: string; emailThreadKey: string | null }> {
+}): Promise<{ id: string; internalNumber: string | null; ticketNumber: string; subject: string; emailThreadKey: string | null }> {
   const db = admin();
   const suffix = uniqueSuffix();
   const [row] = await db
@@ -202,6 +202,7 @@ async function seedEmailTicket(opts: {
     .returning({
       id: tickets.id,
       internalNumber: tickets.internalNumber,
+      ticketNumber: tickets.ticketNumber,
       subject: tickets.subject,
       emailThreadKey: tickets.emailThreadKey
     });
@@ -218,7 +219,7 @@ async function ticketById(id: string) {
 // ---------------------------------------------------------------------------
 
 describe('outbound threading + autoresponder + Reply-To + leak (real DB, captured email mock)', () => {
-  it('autoresponse: sends Auto-Submitted + [T-…] subject + Reply-To = slug@domain + Message-ID = anchor', async () => {
+  it('autoresponse: sends Auto-Submitted + [ticket_number] subject + Reply-To = slug@domain + Message-ID = anchor', async () => {
     const ticket = await seedEmailTicket({
       partnerId: fx.partner.id,
       orgId: fx.org.id,
@@ -253,9 +254,10 @@ describe('outbound threading + autoresponder + Reply-To + leak (real DB, capture
     // Recipient is the submitter.
     expect(arg.to).toBe(fx.janeEmail);
 
-    // Subject carries the [T-…] token.
-    expect(arg.subject).toMatch(/^\[T-/);
-    expect(arg.subject).toContain(ticket.internalNumber ?? '');
+    // Customer-facing subject carries the ticket_number token, never the staff internal number (#8965).
+    expect(arg.subject).toMatch(/^\[EMAIL-/);
+    expect(arg.subject).toContain(ticket.ticketNumber);
+    expect(arg.subject).not.toContain(ticket.internalNumber ?? 'unreachable');
 
     // Reply-To = derived slug address (no override configured).
     expect(arg.replyTo).toBe(`${fx.partner.slug}@${INBOUND_DOMAIN}`);
@@ -343,8 +345,9 @@ describe('outbound threading + autoresponder + Reply-To + leak (real DB, capture
     // Sent to the requester.
     expect(arg.to).toBe(fx.janeEmail);
 
-    // Subject includes the ticket's internal number token.
-    expect(arg.subject).toContain(ticket.internalNumber ?? '');
+    // Subject includes the customer-facing ticket_number token (#8965), not the internal number.
+    expect(arg.subject).toContain(ticket.ticketNumber);
+    expect(arg.subject).not.toContain(ticket.internalNumber ?? 'unreachable');
 
     // Reply-To = derived slug address.
     expect(arg.replyTo).toBe(`${fx.partner.slug}@${INBOUND_DOMAIN}`);

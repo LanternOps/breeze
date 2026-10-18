@@ -30,6 +30,7 @@
 
 import { isAgentConfigPath } from '../routes/systemTools/sensitiveTargets';
 import { candidateForms, isShortNameComponent, normalizePath, UNRESOLVED_FORM } from './devicePathForms';
+import type { AiDeviceFileReadLevel } from '../db/schema/aiDataPolicies';
 
 export { normalizePath };
 
@@ -62,11 +63,41 @@ function matchesBlockedPrefix(form: string): boolean {
 export const PATH_BLOCKED_MESSAGE = 'Access to this path is blocked';
 
 /**
+ * User-profile roots (AI data policy, spec 2026-10-15): refused unless the
+ * tenant's device file read level is `any_with_approval`. `candidateForms`
+ * already maps `D:\Users`, drive-less `\Users`, the `Documents and Settings`
+ * junction, macOS `/Users/*` and image-based Linux `/var/home` onto these
+ * forms, so no separate prefix is needed for any of them. `C:\Users\Public`
+ * sits under `c:/users` and is covered on purpose: it is a shared drop folder
+ * for every profile on the machine.
+ */
+const USER_PROFILE_PATH_PREFIXES = ['c:/users', '/home', '/root'];
+
+/**
+ * Whether a NORMALIZED candidate form lies in a user-profile root
+ * (component-anchored). `UNRESOLVED_FORM` counts as inside, like every other
+ * deny rule (devicePathForms.ts).
+ */
+export function isUserProfilePath(normalizedForm: string): boolean {
+  if (normalizedForm === UNRESOLVED_FORM) return true;
+  return USER_PROFILE_PATH_PREFIXES.some((p) => normalizedForm === p || normalizedForm.startsWith(p + '/'));
+}
+
+export const USER_PROFILE_BLOCKED_MESSAGE = 'Access to user profile folders is blocked by the AI data policy';
+
+/**
  * Why an AI-supplied device path is refused, or null when it may be used.
  * `undefined`/non-strings are refused as missing, so a caller can pass an
  * optional field straight through when the path is required.
+ *
+ * `opts.level` is the tenant's resolved device file read level. Without it
+ * only the always-on floor applies — that is what `safePath` (schema time,
+ * before the device's org is known) relies on. With `off` or
+ * `no_user_profiles`, a path in a user-profile root is refused with
+ * {@link USER_PROFILE_BLOCKED_MESSAGE}. The floor is checked first, so a
+ * floor path keeps {@link PATH_BLOCKED_MESSAGE} at every level.
  */
-export function aiPathRefusal(path: unknown): string | null {
+export function aiPathRefusal(path: unknown, opts?: { level?: AiDeviceFileReadLevel }): string | null {
   if (typeof path !== 'string' || path.trim().length === 0) {
     return 'Path is required';
   }
@@ -101,6 +132,9 @@ export function aiPathRefusal(path: unknown): string | null {
   const forms = candidateForms(normalized);
   if (forms.some((form) => matchesBlockedPrefix(form) || isAgentConfigPath(form))) {
     return PATH_BLOCKED_MESSAGE;
+  }
+  if (opts?.level && opts.level !== 'any_with_approval' && forms.some(isUserProfilePath)) {
+    return USER_PROFILE_BLOCKED_MESSAGE;
   }
   return null;
 }

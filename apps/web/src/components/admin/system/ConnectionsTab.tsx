@@ -15,6 +15,7 @@ import {
   type ConnectionsReport,
 } from './connectionsTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
+import ConnectionHealthJobsCard from './ConnectionHealthJobsCard';
 
 /**
  * System → Connections (spec 2026-09-23-system-connections-page-design.md §4).
@@ -281,6 +282,8 @@ export default function ConnectionsTab() {
           )}
         </>
       ) : null}
+
+      <ConnectionHealthJobsCard />
 
       <p data-testid="connections-footnote" className="text-xs text-muted-foreground">
         {t('admin.systemPage.connections.footnote')}

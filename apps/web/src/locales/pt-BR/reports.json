@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Voltar para Relatórios",
+      "backupPreview": {
+        "description": "Gera o instantâneo de backup atual com as opções acima. Só é executado quando você solicitar.",
+        "error": "Não foi possível gerar a pré-visualização.",
+        "run": "Gerar pré-visualização",
+        "title": "Pré-visualização"
+      },
       "description": "Atualize a configuração de \"{{name}}\".",
       "errors": {
         "fetchReport": "Falha ao buscar relatório",
@@ -1067,6 +1073,13 @@
         "business": "Negócio",
         "general": "Geral",
         "businessDescription": "Números internos do MSP — cumprimento de SLA, faturabilidade dos técnicos e contas a receber — apenas para a equipe."
+      },
+      "delivery": {
+        "contactsLoading": "Carregando os contatos da organização…",
+        "contactsFailed": "Não foi possível carregar os contatos desta organização. Você ainda pode adicionar endereços de e-mail.",
+        "noContacts": "Esta organização não tem contatos com endereço de e-mail.",
+        "removeEmail": "Remover {{email}}",
+        "recipientsFailed": "O relatório \"{{name}}\" foi criado, mas não foi possível adicionar todos os destinatários. Adicione-os pelo relatório."
       }
     },
     "threatDetectionOptions": {

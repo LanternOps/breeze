@@ -133,7 +133,7 @@ tabCountsRoutes.get(
     const seen = new Set<string>();
     let monitoringCount = 0;
     // #8287: results for watches removed from the policy are not "needs attention".
-    const activeMonitoringRows = filterToActiveWatches(monitoringRows, await loadActiveWatchKeys(deviceId));
+    const activeMonitoringRows = filterToActiveWatches(monitoringRows, await loadActiveWatchKeys(deviceId, device.orgId));
     for (const r of activeMonitoringRows) {
       const key = watchKey(r.watchType, r.name);
       if (seen.has(key)) continue;

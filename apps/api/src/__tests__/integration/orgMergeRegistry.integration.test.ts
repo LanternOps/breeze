@@ -294,6 +294,7 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // sees zero rows: mergeTrustPages deletes the loser's page first and its
   // snapshots go with it (ON DELETE CASCADE).
   'trust_page_snapshots.trust_page_snapshots_immutable_trg': 'freezes every column except is_current and org_id; an org_id-only repoint passes',
+  'trust_page_declarations.trust_page_declarations_immutable_trg': 'freezes attribution and dates; allows SET NULL on FKs, one-way supersede/withdraw/reminder stamps, and org_id repoint',
   // PAM ownership epochs W1 (#8203, 2026-12-17-130000). The advance trigger
   // fires on the devices repoint and only APPENDS lineage (closes the loser
   // epoch, opens survivor epoch +1, writes retirement markers); it never

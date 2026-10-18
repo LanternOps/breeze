@@ -3,6 +3,17 @@ import { pgErrorCode } from '@breeze/shared/pgErrors';
 export { isPgForeignKeyViolation, isPgUniqueViolation, pgErrorCode, pgErrorNode, pgErrorConstraint } from '@breeze/shared/pgErrors';
 
 /**
+ * SQLSTATE class 22 (data exception: 22P05 untranslatable character, 22P02
+ * invalid JSON text, 22001 string too long, ...) is a property of one row's
+ * VALUES, so an ingest route can retry a failed multi-row insert row by row and
+ * keep every other row. Anything else (connection loss, lock or statement
+ * timeout) would fail the same way per row, so callers do not retry it.
+ */
+export function isPgDataException(err: unknown): boolean {
+  return pgErrorCode(err)?.startsWith('22') ?? false;
+}
+
+/**
  * 40P01 = deadlock_detected, 40001 = serialization_failure, 55P03 =
  * lock_not_available. All three mean "you lost a lock race, the work was not
  * applied, try again" — never "the request was invalid". Postgres picks a

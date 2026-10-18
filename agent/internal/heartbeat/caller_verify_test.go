@@ -129,6 +129,59 @@ func TestRunCallerVerifyRefusals(t *testing.T) {
 	}
 }
 
+// #8668: a late-delivered command clamps the IPC wait to the absolute
+// deadline and forwards it to the helper; one already past is never shown.
+func TestRunCallerVerifyHonoursAbsoluteDeadline(t *testing.T) {
+	helper := sessionbroker.NewSession(nil, 501, "501", "x", "", "s", nil)
+	resolve := func(string) (*sessionbroker.Session, sessionbroker.DetectedSession, string) {
+		return helper, sessionbroker.DetectedSession{Username: "alex", UID: 501}, ""
+	}
+
+	t.Run("late delivery clamps the wait and forwards the deadline", func(t *testing.T) {
+		req := callerRequest()
+		req.DeadlineAt = time.Now().Add(10 * time.Second).UTC().Format(time.RFC3339Nano)
+		var waited time.Duration
+		var forwarded ipc.CallerVerifyRequest
+		got := runCallerVerify(req, resolve,
+			func(_ *sessionbroker.Session, _, _ string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
+				waited = timeout
+				forwarded = payload.(ipc.CallerVerifyRequest)
+				raw, _ := json.Marshal(ipc.CallerVerifyResponse{Choice: "42"})
+				return &ipc.Envelope{Payload: raw}, nil
+			}, uidPrincipal)
+		if got.Choice != "42" {
+			t.Fatalf("got %+v", got)
+		}
+		// 10 s left + 5 s skew allowance + IPC grace, never the full 30 s.
+		max := 10*time.Second + ipc.CallerVerifyDeadlineSkew + callerVerifyIPCGrace
+		// Generous slack for a loaded host; still far from 32 s (no clamp) and
+		// 7 s (skew sign flipped).
+		if waited > max || waited < max-5*time.Second {
+			t.Fatalf("IPC wait = %s, want ~%s", waited, max)
+		}
+		if forwarded.DeadlineAt != req.DeadlineAt || forwarded.TimeoutMs != req.TimeoutMs {
+			t.Fatalf("helper must get the original timeoutMs and deadlineAt: %+v", forwarded)
+		}
+	})
+
+	t.Run("deadline already past is refused as a timeout without rendering", func(t *testing.T) {
+		req := callerRequest()
+		req.DeadlineAt = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+		sent := false
+		got := runCallerVerify(req, resolve,
+			func(*sessionbroker.Session, string, string, any, time.Duration) (*ipc.Envelope, error) {
+				sent = true
+				return nil, nil
+			}, uidPrincipal)
+		if sent {
+			t.Fatal("an expired verification must not reach the helper")
+		}
+		if !got.Delivered || got.Choice != ipc.CallerVerifyChoiceTimeout || got.Principal != nil || got.Error != "" {
+			t.Fatalf("got %+v", got)
+		}
+	})
+}
+
 func TestRunCallerVerifyUnresolvablePrincipal(t *testing.T) {
 	helper := sessionbroker.NewSession(nil, 501, "501", "x", "", "s", nil)
 	run := func(choice string) callerVerifyResult {
@@ -172,6 +225,7 @@ func TestHandleCallerVerifyRejectsInvalidPayload(t *testing.T) {
 		"two choices":   func(m map[string]any) { m["choices"] = []any{"42", "17"} },
 		"short timeout": func(m map[string]any) { m["timeoutMs"] = 1000 },
 		"bad code":      func(m map[string]any) { m["reverseCode"] = "1" },
+		"bad deadline":  func(m map[string]any) { m["deadlineAt"] = "soon" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			payload := callerPayload(t, callerRequest())

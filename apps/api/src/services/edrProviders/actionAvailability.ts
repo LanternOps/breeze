@@ -2,8 +2,8 @@ import { and, inArray } from 'drizzle-orm';
 import type { EdrEndpointActionAvailability, EdrIsolationState, EdrOsPlatform } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { edrConnections, edrTenants } from '../../db/schema';
-import type { AuthContext } from '../../middleware/auth';
-import type { UserPermissions } from '../permissions';
+import { hasSatisfiedMfa, type AuthContext } from '../../middleware/auth';
+import { hasPermission, PERMISSIONS, type UserPermissions } from '../permissions';
 import { describeEndpointActions } from './actions';
 import { resolveEdrReadScope } from './read';
 
@@ -60,6 +60,11 @@ export async function describeEndpointActionsForRows(
   }, 'edrActions.availability'));
 
   const now = new Date();
+  // Unresolved permissions fail closed.
+  const caller = {
+    canExecute: !!perms && hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+    mfaSatisfied: hasSatisfiedMfa(auth),
+  };
   for (const row of rows) {
     const connection = facts.connections.get(row.connectionId);
     const tenant = facts.tenants.get(row.tenantId);
@@ -68,6 +73,7 @@ export async function describeEndpointActionsForRows(
       continue;
     }
     out.set(row.id, describeEndpointActions(row, tenant, connection, {
+      caller,
       restriction: { allowedDeviceIds: restriction.allowedDeviceIds, allowedSiteIds: restriction.allowedSiteIds },
       now,
     }));

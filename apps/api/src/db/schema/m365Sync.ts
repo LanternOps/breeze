@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   boolean,
   char,
@@ -83,6 +84,10 @@ export const m365SyncState = pgTable(
   (table) => ({
     orgDomainUniq: uniqueIndex('m365_sync_state_org_domain_uniq').on(table.orgId, table.domain),
     connectionIdx: index('m365_sync_state_connection_idx').on(table.connectionId),
+    // Connection health broken set (migration 2026-12-29-190000).
+    unhealthyIdx: index('m365_sync_state_unhealthy_idx')
+      .on(table.connectionId)
+      .where(sql`${table.lastStatus} IN ('needs_consent', 'error')`),
   }),
 );
 

@@ -2,6 +2,7 @@ import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
 import { assertSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
+import { syncManagedSoftwarePolicy } from './securityAgents/managedPolicyGenerator';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -1942,6 +1943,17 @@ export async function addFeatureLink(
       );
     }
 
+    // #6960: generate the software policy this link enforces, in the same
+    // transaction, so an enable returns with its rule in place and a missing
+    // catalog package refuses the whole write.
+    if (featureType === 'security_agents') {
+      await syncManagedSoftwarePolicy(
+        tx,
+        { id: link.id, configPolicyId, inlineSettings: effectiveInlineSettings ?? null },
+        { actorUserId: consentActor?.userId ?? null, onMissingCatalog: 'refuse' },
+      );
+    }
+
     return featureType === 'monitors' ? reloadMonitorsInterval(link, tx) : link;
   });
   // A policy that gains compliance can take precedence over the policy whose
@@ -1992,9 +2004,11 @@ async function assertNewPatchLinkAppRulesOnRing(
  *  - The request re-sends a non-empty `apps` list. Only a client loaded before
  *    the cutover does that (it sends the list it loaded alongside the ring it
  *    loaded), so it would relink a migrated policy to its old ring, or to none.
- *  - The link has legacy inline rules that no ring carries yet: its current
- *    reference does not resolve to a valid ring (the backfill skips those), so
- *    the target ring has to enforce exactly those rules.
+ *  - The link has legacy inline rules that no ring enforces: its current
+ *    reference does not resolve to a valid ring (missing, not a ring, or
+ *    another partner's — the backfill skips those — or a deleted ring, which
+ *    enforces nothing any more, #8678), so the target ring has to enforce
+ *    exactly those rules (RING_LACKS_POLICY_APP_RULES).
  * Moving from a valid ring to another needs nothing: the ring owns the rules.
  */
 async function assertPatchRingChangeKeepsAppRules(
@@ -2013,7 +2027,8 @@ async function assertPatchRingChangeKeepsAppRules(
   if (current.valid && current.ringId) return;
   const target = await resolvePatchPolicyReference(partnerId, targetRef);
   if (!target.valid || !target.ringId || !sameAppRuleSet(enforcedAppRuleSet(target.appRules), legacy)) {
-    throw new PolicyApprovalFieldMovedError();
+    // The repair flow, not a stale client: say what the chosen ring is missing (#8678).
+    throw new PolicyApprovalFieldMovedError('RING_LACKS_POLICY_APP_RULES');
   }
 }
 
@@ -2223,6 +2238,14 @@ export async function updateFeatureLink(
     }
 
     if (!updated) return null;
+    // #6960: re-derive the generated software policy from the new settings.
+    if (existing.featureType === 'security_agents' && updates.inlineSettings !== undefined) {
+      await syncManagedSoftwarePolicy(
+        tx,
+        { id: updated.id, configPolicyId: updated.configPolicyId, inlineSettings: updated.inlineSettings },
+        { actorUserId: consentActor?.userId ?? null, onMissingCatalog: 'refuse' },
+      );
+    }
     if (existing.featureType === 'compliance') updatedComplianceOf = existing.configPolicyId;
     return existing.featureType === 'monitors' ? reloadMonitorsInterval(updated, tx) : updated;
   });
@@ -3229,7 +3252,7 @@ export async function validateFeaturePolicyExists(
     // owner above, so escaping RLS here cannot reach another partner's rings.
     const [ring] = await readWithPartnerAxisVisibility(() =>
       db
-        .select({ id: patchPolicies.id })
+        .select({ id: patchPolicies.id, enabled: patchPolicies.enabled })
         .from(patchPolicies)
         .where(
           and(
@@ -3243,6 +3266,12 @@ export async function validateFeaturePolicyExists(
 
     if (!ring) {
       return { valid: false, error: `Update ring "${featurePolicyId}" not found for this partner` };
+    }
+    // #8678: DELETE /update-rings/:id is a soft delete. The resolver treats a
+    // disabled ring as an invalid reference (patching held), so linking one
+    // would create a policy that is broken on arrival.
+    if (ring.enabled !== true) {
+      return { valid: false, error: `Update ring "${featurePolicyId}" has been deleted or disabled` };
     }
 
     return { valid: true };
@@ -3353,10 +3382,14 @@ export async function validateFeaturePolicyExists(
       return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found — no owning organization or partner` };
     }
 
+    // #6960: a software policy GENERATED from a security_agents link belongs to
+    // that link and resolves through its own dimension; linking it as an
+    // ordinary software_policy would let a customer link arm or shadow it.
+    const managedExclusion = featureType === 'software_policy' ? [isNull(softwarePolicies.managedByLinkId)] : [];
     const [row] = await db
       .select({ id: dualAxis.table.id })
       .from(dualAxis.table)
-      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions)))
+      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions), ...managedExclusion))
       .limit(1);
 
     if (!row) {

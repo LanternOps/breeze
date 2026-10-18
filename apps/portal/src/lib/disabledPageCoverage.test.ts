@@ -199,6 +199,12 @@ const UNAUTHENTICATED_PAGES = new Set([
   'trust/[partnerSlug]/index.astro',
   'trust/[partnerSlug]/[orgSlug].astro',
   'trust/preview/[token].astro',
+  // Gated-document access links: the URL-fragment token is the capability (W02d).
+  'trust/access/verify.astro',
+  'trust/access/download.astro',
+  // Trust Center W03a: embed card is public by design; framing is limited to the page's allowlist.
+  'trust/embed/[partnerSlug]/index.astro',
+  'trust/embed/[partnerSlug]/[orgSlug].astro',
 ]);
 
 /** src/pages-relative file → the route the middleware sees (base stripped). */

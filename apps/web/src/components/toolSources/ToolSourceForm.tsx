@@ -14,6 +14,7 @@ import {
   type CreateToolSourceBody,
   type SavedToolSource,
   type ToolSourceDto,
+  type ToolSourceKind,
   type UpdateToolSourceBody,
 } from './api';
 
@@ -67,7 +68,12 @@ export function ToolSourceForm({
   const [name, setName] = useState(source?.name ?? '');
   const [slug, setSlug] = useState(source?.slug ?? '');
   const [slugTouched, setSlugTouched] = useState(isEdit);
+  // Kind is create-only; on edit it is fixed by the stored source.
+  const [createKind, setCreateKind] = useState<ToolSourceKind>('mcp');
+  const kind: ToolSourceKind = source?.kind ?? createKind;
+  const isOpenapi = kind === 'openapi';
   const [endpointUrl, setEndpointUrl] = useState(source?.endpointUrl ?? '');
+  const [specUrl, setSpecUrl] = useState(source?.specUrl ?? '');
   const [rateLimit, setRateLimit] = useState(String(source?.rateLimitPerMinute ?? 120));
   const [authKind, setAuthKind] = useState<AuthKind>(source?.authKind ?? 'none');
   const [auth, setAuth] = useState<Record<string, string>>({});
@@ -144,6 +150,10 @@ export function ToolSourceForm({
         const body: UpdateToolSourceBody = {
           name: trimmedName,
           endpointUrl: endpointUrl.trim(),
+          // Only an openapi source has a spec URL, and only a changed one is sent.
+          ...(source.kind === 'openapi' && specUrl.trim() !== (source.specUrl ?? '')
+            ? { specUrl: specUrl.trim() }
+            : {}),
           rateLimitPerMinute,
           ...(authPayload() ?? {}),
         } as UpdateToolSourceBody;
@@ -162,8 +172,9 @@ export function ToolSourceForm({
           ...(orgId ? { orgId } : {}),
           name: trimmedName,
           slug: slugTouched ? slug.trim() : slugFromName(trimmedName),
-          kind: 'mcp',
+          kind,
           endpointUrl: endpointUrl.trim(),
+          ...(isOpenapi ? { specUrl: specUrl.trim() } : {}),
           rateLimitPerMinute,
           ...(authPayload() ?? { authKind: 'none' }),
         } as CreateToolSourceBody;
@@ -241,20 +252,33 @@ export function ToolSourceForm({
         </div>
       )}
 
-      {!isEdit && (
+      {isEdit ? (
+        <div>
+          <span className={labelClass}>{t('form.kind')}</span>
+          <p data-testid="tool-source-kind-static" className="text-sm">
+            {isOpenapi ? t('form.kindOpenapi') : t('form.kindMcp')}
+          </p>
+        </div>
+      ) : (
         <div>
           <label className={labelClass} htmlFor={`${uid}-kind`}>{t('form.kind')}</label>
-          <select id={`${uid}-kind`} data-testid="tool-source-kind" className={inputClass} value="mcp" onChange={() => {}}>
+          <select
+            id={`${uid}-kind`}
+            data-testid="tool-source-kind"
+            className={inputClass}
+            value={createKind}
+            onChange={(e) => setCreateKind(e.target.value as ToolSourceKind)}
+          >
             <option value="mcp">{t('form.kindMcp')}</option>
-            {/* Shown-but-disabled, not hidden: W2 ships it, and a missing
-                option reads as "never supported". */}
-            <option value="openapi" disabled>{t('form.kindOpenapiSoon')}</option>
+            <option value="openapi">{t('form.kindOpenapi')}</option>
           </select>
         </div>
       )}
 
       <div>
-        <label className={labelClass} htmlFor={`${uid}-endpoint`}>{t('form.endpoint')}</label>
+        <label className={labelClass} htmlFor={`${uid}-endpoint`}>
+          {isOpenapi ? t('form.endpointOpenapi') : t('form.endpointMcp')}
+        </label>
         <input
           id={`${uid}-endpoint`}
           data-testid="tool-source-endpoint"
@@ -264,8 +288,26 @@ export function ToolSourceForm({
           onChange={(e) => setEndpointUrl(e.target.value)}
           required
         />
-        <p className="mt-1 text-xs text-muted-foreground">{t('form.endpointHelp')}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {isOpenapi ? t('form.endpointHelpOpenapi') : t('form.endpointHelp')}
+        </p>
       </div>
+
+      {isOpenapi && (
+        <div>
+          <label className={labelClass} htmlFor={`${uid}-spec-url`}>{t('form.specUrl')}</label>
+          <input
+            id={`${uid}-spec-url`}
+            data-testid="tool-source-spec-url"
+            className={inputClass}
+            type="url"
+            value={specUrl}
+            onChange={(e) => setSpecUrl(e.target.value)}
+            required
+          />
+          <p className="mt-1 text-xs text-muted-foreground">{t('form.specUrlHelp')}</p>
+        </div>
+      )}
 
       <div>
         <label className={labelClass} htmlFor={`${uid}-auth-kind`}>{t('form.authKind')}</label>

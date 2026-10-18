@@ -17,9 +17,7 @@
  *   keyless, its offerings disabled — never deleted, because a delete cascades
  *   to offerings an in-flight reserved turn still has to settle on;
  * - a soft-disconnected connection is invisible to every lock here, so no
- *   write ever edits or revives one;
- * - a rotation or a disconnect revokes a key, so the frozen legacy copy of it
- *   goes in the same transaction (#7700 review finding 4).
+ *   write ever edits or revives one.
  * Changed in W08:
  * - every operation names its connection (no singular "compat connection");
  * - no partner "pinned default model" (the per-connection legacy default): per-feature
@@ -278,20 +276,6 @@ async function connectionName(kind: AnthropicApiConnectionKind, catalogEntryId: 
   return entry?.name ?? 'Catalog endpoint';
 }
 
-/**
- * #7700 review finding 4: the legacy partner_llm_configs row is frozen at the
- * partner's cutover, but it still holds that partner's key ciphertext. A
- * rotation or a disconnect revokes the key, so the row goes in the same
- * transaction: a revoked key must not persist anywhere. Rollback-safe across
- * W08b, which drops the table: the delete runs only while the table exists.
- * W08b removes this helper together with the table.
- */
-async function purgeRetiredLegacyKeyCopy(partnerId: string): Promise<void> {
-  const [table] = await rows<{ present: boolean }>(sql`SELECT to_regclass('public.partner_llm_configs') IS NOT NULL AS present`);
-  if (!table?.present) return;
-  await db.execute(sql`DELETE FROM partner_llm_configs WHERE partner_id = ${partnerId}::uuid`);
-}
-
 export interface ConnectAnthropicInput {
   kind: AnthropicApiConnectionKind;
   apiKey: string;
@@ -354,11 +338,10 @@ export async function disconnectAnthropicConnection(partnerId: string, connectio
     WHERE id = ${conn.id}::uuid AND partner_id = ${partnerId}::uuid`);
   await db.execute(sql`UPDATE partner_ai_models SET enabled = false, updated_at = now()
     WHERE partner_id = ${partnerId}::uuid AND connection_id = ${conn.id}::uuid AND enabled`);
-  await purgeRetiredLegacyKeyCopy(partnerId);
   return true;
 }
 
-/** Same-kind key rotation: the connection is updated in place, no remap; the revoked key's legacy copy is purged. */
+/** Same-kind key rotation: the connection is updated in place, no remap. */
 export async function rotateAnthropicConnectionKey(
   partnerId: string,
   connectionId: string,
@@ -378,7 +361,6 @@ export async function rotateAnthropicConnectionKey(
       connected_by = ${input.connectedBy}::uuid,
       config_version = config_version + 1, updated_at = now()
     WHERE id = ${conn.id}::uuid AND partner_id = ${partnerId}::uuid RETURNING config_version`);
-  await purgeRetiredLegacyKeyCopy(partnerId);
   return { configVersion: Number(updated!.config_version) };
 }
 
@@ -416,8 +398,8 @@ export async function bumpConnectionConfigVersion(partnerId: string, connectionI
  * reconnected under a new id). The connection keeps its id, key ciphertext
  * (the AAD is bound to the row id) and every reference to its offerings, so
  * nothing routed anywhere else moves — correct with one connection or several,
- * and in every release combination (no second row ever coexists, so
- * partner_ai_connections_compat_uq never matters). The offerings on it are
+ * and in every release combination (no second row is ever created). The
+ * offerings on it are
  * converted to the new kind's shape (partner_ai_models_catalog_shape_chk:
  * catalog rows carry no platform link, capabilities or price); discovery
  * state is reset because the other kind's sync history does not apply.

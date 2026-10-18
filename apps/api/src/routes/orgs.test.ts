@@ -2505,6 +2505,67 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — security scalar clear (#8976)', () => {
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('removes a stored sessionTimeout when the save carries an explicit null, keeping sibling fields', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ security: { sessionTimeout: 720, maxSessions: 3, ipAllowlist: ['10.0.0.0/8'] } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { security: { sessionTimeout: null, maxSessions: 3 } } });
+
+      expect(res.status).toBe(200);
+      const security = getCaptured().settings.security;
+      expect('sessionTimeout' in security).toBe(false);
+      expect(security.maxSessions).toBe(3);
+      expect(security.ipAllowlist).toEqual(['10.0.0.0/8']);
+    });
+
+    it('still preserves a stored sessionTimeout when the key is omitted', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ security: { sessionTimeout: 720 } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { security: { maxSessions: 2 } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.security.sessionTimeout).toBe(720);
+    });
+  });
+
   describe('PATCH /orgs/partners/me — emailSignature', () => {
     // Local copies of the :id-block helpers (plain functions, safe to
     // duplicate — same pattern as the ticketing.inbound describe above).
@@ -3972,6 +4033,40 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.invoiceTermsDays).toBeNull();
       expect(body.partnerDefaultInvoiceTermsDays).toBe(45);
+    });
+
+    // #7510: org currency is NOT inherited (organizations.currency_code is
+    // NOT NULL, stamped at creation), so the org Billing tab names the partner
+    // default only to say it applies to organizations created later.
+    it('includes the partner default currency alongside the org currency', async () => {
+      const orgId = '33333333-3333-3333-3333-333333333333';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123', currencyCode: 'CAD' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: null, invoiceTermsDays: 30, currencyCode: 'EUR' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/orgs/organizations/${orgId}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.currencyCode).toBe('CAD');
+      expect(body.partnerDefaultCurrencyCode).toBe('EUR');
     });
 
     it('should return 404 when organization not found', async () => {

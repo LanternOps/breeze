@@ -43,10 +43,23 @@ type messageStore struct {
 	mu   sync.Mutex
 	path string
 	msgs map[string]storedMessage
+	// tombs records ids retracted before their notify_user arrived (commands run
+	// concurrently). In memory only: a restart in that window is vanishingly
+	// rare and the message's own expiry bounds the exposure.
+	tombs map[string]time.Time
 }
 
+// maxTombstones bounds the retract-before-notify set; the oldest is evicted.
+const maxTombstones = 1024
+
+// tombstoneTTL is the longest an endpoint message can live (168 h).
+const tombstoneTTL = 168 * time.Hour
+
+// errMessageRetracted is returned by Put for an id retracted before it arrived.
+var errMessageRetracted = errors.New("message was retracted before delivery")
+
 func newMessageStore(path string) *messageStore {
-	s := &messageStore{path: path, msgs: map[string]storedMessage{}}
+	s := &messageStore{path: path, msgs: map[string]storedMessage{}, tombs: map[string]time.Time{}}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -93,6 +106,9 @@ func (s *messageStore) Put(m ipc.MessageShow, now time.Time) error {
 	m.Replay = false
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.isTombstonedLocked(m.MessageID, now) {
+		return errMessageRetracted
+	}
 	s.pruneLocked(now)
 	s.msgs[m.MessageID] = storedMessage{Show: m, ExpiresAt: expires}
 	s.enforceCapLocked()
@@ -214,4 +230,64 @@ func (s *messageStore) saveLocked() error {
 		return err
 	}
 	return os.Rename(tmpName, s.path)
+}
+
+// Tombstone records that id was retracted so a later notify_user for it is refused.
+func (s *messageStore) Tombstone(id string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tombstoneLocked(id, now)
+}
+
+// Retract removes a live message, or tombstones the id when none exists, in one
+// critical section so a concurrent Put cannot slip between the two. It reports
+// whether a live message was removed.
+func (s *messageStore) Retract(id string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.msgs[id]; !ok {
+		s.tombstoneLocked(id, now)
+		return false
+	}
+	delete(s.msgs, id)
+	if err := s.saveLocked(); err != nil {
+		log.Warn("endpoint message store save failed", "error", err.Error())
+	}
+	return true
+}
+
+func (s *messageStore) tombstoneLocked(id string, now time.Time) {
+	for k, exp := range s.tombs {
+		if !exp.After(now) {
+			delete(s.tombs, k)
+		}
+	}
+	s.tombs[id] = now.Add(tombstoneTTL)
+	for len(s.tombs) > maxTombstones {
+		oldest, oldestExp := "", time.Time{}
+		for k, exp := range s.tombs {
+			if oldest == "" || exp.Before(oldestExp) {
+				oldest, oldestExp = k, exp
+			}
+		}
+		delete(s.tombs, oldest)
+	}
+}
+
+// IsTombstoned reports whether id was retracted before its notify arrived.
+func (s *messageStore) IsTombstoned(id string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.isTombstonedLocked(id, now)
+}
+
+func (s *messageStore) isTombstonedLocked(id string, now time.Time) bool {
+	exp, ok := s.tombs[id]
+	return ok && exp.After(now)
+}
+
+func (s *messageStore) tombstoneCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.tombs)
 }

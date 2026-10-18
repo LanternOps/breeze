@@ -114,7 +114,8 @@
     "ticketsIncidents": "Incidentes",
     "ticketsServiceRequests": "Solicitudes de servicio",
     "ticketsProblems": "Problemas",
-    "ticketsChanges": "Cambios"
+    "ticketsChanges": "Cambios",
+    "endpointMessages": "Mensajes"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -315,6 +316,17 @@
       "target": "Objetivo",
       "time": "Tiempo"
     },
+    "recentlyViewed": {
+      "title": "Continúa donde lo dejaste",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organización",
+        "ticket": "Ticket",
+        "alert": "Alerta",
+        "site": "Sitio",
+        "page": "Página"
+      }
+    },
     "alerts": {
       "title": "Alertas recientes",
       "viewAll": "Ver todo",
@@ -482,7 +494,10 @@
       "createFirst": "Cree su primer filtro",
       "created": "Creado {{date}}",
       "deleteConfirm": "¿Eliminar este filtro?",
-      "duplicate": "Duplicado"
+      "duplicate": "Duplicado",
+      "saveFailed": "No se pudo guardar el filtro",
+      "deleteFailed": "No se pudo eliminar el filtro",
+      "ownerOrgHint": "Los filtros guardados pertenecen a una organización. Elige a cuál pertenece este filtro."
     },
     "targets": {
       "modes": {
@@ -688,7 +703,23 @@
       "noSelection": "Seleccionar organización",
       "searchOrganizations": "Buscar organizaciones…",
       "noMatches": "Ninguna organización coincide",
-      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado."
+      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado.",
+      "recent": "Recientes",
+      "pane": {
+        "destinations": {
+          "overview": "Resumen",
+          "devices": "Dispositivos",
+          "tickets": "Tickets",
+          "alerts": "Alertas",
+          "sites": "Sitios",
+          "billing": "Facturación"
+        },
+        "offlineCount": "{{count}} sin conexión",
+        "openCount": "{{count}} abiertos",
+        "criticalCount": "{{count}} críticas",
+        "noCritical": "ninguna",
+        "hint": "Haz clic en un nombre para cambiar · haz clic en una página para cambiar e ir"
+      }
     },
     "header": {
       "menu": "Menú",
@@ -805,9 +836,9 @@
       "expand": "Expandir barra lateral",
       "collapseSections": "Contraer todas las secciones",
       "closeMenu": "Cerrar menú",
-      "recentDevices": "Dispositivos recientes",
-      "hideRecentDevices": "Ocultar dispositivos recientes",
-      "showRecentDevices": "Mostrar dispositivos recientes"
+      "recent": "Recientes",
+      "hideRecent": "Ocultar recientes",
+      "showRecent": "Mostrar recientes"
     },
     "orgRequired": {
       "title": "Selecciona una organización",
@@ -1335,6 +1366,14 @@
           "migrationWindowClosed": {
             "description": "Se activa una vez por organización cuando se cierra una ventana de migración de tickets, con los conteos importados.",
             "label": "Ventana de migración cerrada"
+          },
+          "integrationHealthOpened": {
+            "description": "Se activa cuando se abre un incidente de estado en la conexión de una organización.",
+            "label": "Incidente de estado de conexión abierto"
+          },
+          "integrationHealthResolved": {
+            "description": "Se activa cuando se resuelve un incidente de estado de una conexión.",
+            "label": "Incidente de estado de conexión resuelto"
           }
         },
         "fields": {
@@ -2628,7 +2667,8 @@
     "dismiss": "Descartar el recordatorio de autenticación de dos factores"
   },
   "mfaPolicyOffBanner": {
-    "message": "La autenticación multifactor no es obligatoria para su equipo. Las sesiones solo con contraseña pueden ejecutar scripts, mover dispositivos y cambiar políticas.",
+    "label": "Recordatorio de MFA",
+    "message": "MFA no es obligatoria para su equipo: con solo contraseña se pueden ejecutar scripts.",
     "cta": "Exigir MFA",
     "dismiss": "Descartar el recordatorio de la política de MFA por hoy"
   },

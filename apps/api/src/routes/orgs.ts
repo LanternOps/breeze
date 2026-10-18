@@ -784,9 +784,12 @@ const partnerSettingsSchema = z.object({
     country: z.string().length(2).optional().or(z.literal('')),
   }).optional(),
   security: z.object({
-    minLength: z.number().int().min(6).max(128).optional(),
-    complexity: z.enum(['standard', 'strict', 'passphrase']).optional(),
-    expirationDays: z.number().int().min(0).optional(),
+    // The scalar limits below accept an explicit `null` meaning "clear back to
+    // the inherited default" (#8976). The handler deep-merges `security`, so an
+    // omitted key keeps the stored value; `null` is the only way to unset one.
+    minLength: z.number().int().min(6).max(128).nullable().optional(),
+    complexity: z.enum(['standard', 'strict', 'passphrase']).nullable().optional(),
+    expirationDays: z.number().int().min(0).nullable().optional(),
     requireMfa: z.boolean().optional(),
     // #5306 — how long a user whose ROLE forces MFA (roles.force_mfa) may keep
     // working before enrolment is enforced. Optional on purpose: a PATCH that
@@ -806,8 +809,8 @@ const partnerSettingsSchema = z.object({
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
     // persisted as a second source of truth.
     allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
-    sessionTimeout: sessionTimeoutMinutesSchema.optional(),
-    maxSessions: z.number().int().min(1).optional(),
+    sessionTimeout: sessionTimeoutMinutesSchema.nullable().optional(),
+    maxSessions: z.number().int().min(1).nullable().optional(),
     ipAllowlist: z
       .array(z.string())
       .optional()
@@ -1009,6 +1012,15 @@ const partnerSettingsSchema = z.object({
   networkProxy: z.object({ dedicatedTunnelOrigin: z.boolean().optional() }).strict().optional(),
 });
 
+// Scalar security limits a partner can clear back to "inherit" by sending null.
+const PARTNER_SECURITY_CLEARABLE_KEYS = [
+  'minLength',
+  'complexity',
+  'expirationDays',
+  'sessionTimeout',
+  'maxSessions',
+] as const;
+
 const updatePartnerSettingsSchema = z.object({
   settings: partnerSettingsSchema.optional(),
   name: z.string().min(1).optional(),
@@ -1152,10 +1164,16 @@ orgRoutes.patch(
   // explicit `ipAllowlist: []` still clears the list deliberately.
   if (body.settings?.security) {
     foldAllowedMfaMethodsAlias(body.settings); // canonicalize before deep-merge
-    newSettings.security = {
+    const mergedSecurity: Record<string, unknown> = {
       ...((currentSettings.security as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.security,
     };
+    // An explicit null unsets the key (#8976) so it falls back to the inherited
+    // default instead of persisting a literal null that readers must special-case.
+    for (const key of PARTNER_SECURITY_CLEARABLE_KEYS) {
+      if (mergedSecurity[key] === null) delete mergedSecurity[key];
+    }
+    newSettings.security = mergedSecurity;
   }
 
   // Deep-merge the `ticketing` sub-object one level for the same reason: today it
@@ -2331,19 +2349,23 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   // partner row, so `readWithPartnerAxisVisibility` would buy nothing here.
   // #6229 adds the partner's payment terms the same way, for the org's
   // payment-terms InheritedField (org `invoiceTermsDays` NULL = inherit this).
+  // #7510 adds the partner currency — NOT an inherited value (org
+  // `currency_code` is NOT NULL, stamped at creation); the org Billing tab
+  // names it only to say the partner default applies to new organizations.
   const [partnerRow] = await db
-    .select({ defaultTaxRate: partners.defaultTaxRate, invoiceTermsDays: partners.invoiceTermsDays })
+    .select({ defaultTaxRate: partners.defaultTaxRate, invoiceTermsDays: partners.invoiceTermsDays, currencyCode: partners.currencyCode })
     .from(partners)
     .where(eq(partners.id, organization.partnerId))
     .limit(1);
   const partnerDefaultTaxRate = partnerRow?.defaultTaxRate ?? null;
   const partnerDefaultInvoiceTermsDays = partnerRow?.invoiceTermsDays ?? null;
+  const partnerDefaultCurrencyCode = partnerRow?.currencyCode ?? null;
 
   if (isArchiveLifecycleRow(organization)) {
-    return c.json({ ...withMaskedSettings(organization), archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
+    return c.json({ ...withMaskedSettings(organization), archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays, partnerDefaultCurrencyCode });
   }
 
-  return c.json({ ...withMaskedSettings(organization), partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
+  return c.json({ ...withMaskedSettings(organization), partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays, partnerDefaultCurrencyCode });
 });
 
 orgRoutes.get('/organizations/:id/effective-settings',

@@ -1,4 +1,4 @@
-export { default as ConnectorStatusPanel } from "./ConnectorStatusPanel";
+export { default as ConnectionHealthPanel } from "./ConnectionHealthPanel";
 export { default as IntegrationsPage } from "./IntegrationsPage";
 export { default as MonitoringIntegration } from "./MonitoringIntegration";
 export { default as WebhookEditor } from "./WebhookEditor";

@@ -1,0 +1,9 @@
+{
+  "identifier": "endpoint-chat",
+  "description": "Endpoint live chat windows (#8743). They render technician-authored text, so they get no window, webview, tray, menu, shell or emit permission and not core:default: the window calls only its own label-checked app commands (get_chat_view, chat_send_reply, chat_mark_read), and every privileged app command refuses a chat-* caller (deny_message_window). The one thing it needs beyond that is to listen for its own chat-updated event (core:event:allow-listen / allow-unlisten); Rust emits that event to this window's label only.",
+  "windows": ["chat-*"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

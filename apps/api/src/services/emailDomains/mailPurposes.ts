@@ -63,6 +63,7 @@ export const MAIL_PURPOSES = {
   'staff.ai_budget_alert': { lane: 'platform' },
   'staff.autopay': { lane: 'platform' },
   'staff.contract_renewal': { lane: 'platform' },
+  'staff.trust_declaration_reminder': { lane: 'platform' },
   'staff.quote_outcome': { lane: 'platform' },
   // W03. The notice that a partner's own sending domain is verified / at risk
   // / failed / suspended / auto-removed. PLATFORM on purpose: a mail saying
@@ -74,6 +75,12 @@ export const MAIL_PURPOSES = {
   'staff.report_failure': { lane: 'platform' },
   // Settings → Access Reviews: "Email reviewers" to the assigned reviewer (MSP staff).
   'staff.access_review_notice': { lane: 'platform' },
+  // Trust Center gated documents (#8770 W02d): a requester confirmed a request; MSP staff review it.
+  // Send site: services/trustPage/access/emails.ts.
+  'staff.trust_access_request': { lane: 'platform' },
+  // Connection health daily digest to MSP staff and grant owners (spec 2026-10-15 §4).
+  // Send site: services/connectionHealth/digest.ts.
+  'staff.connection_health_digest': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 
@@ -93,6 +100,16 @@ export const MAIL_PURPOSES = {
   'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
   'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
+  // Connection health digest to CUSTOMER org users, sent only when the MSP turns
+  // on customerAdminsNotified for their org (spec 2026-10-15 §6, W5). Same mail
+  // as staff.connection_health_digest, but customer-facing, so it rides the
+  // partner's stream. Send site: services/connectionHealth/digest.ts.
+  'customer.connection_health_digest': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
+  // Trust Center gated documents (#8770 W02d): the outside requester's confirm link, grant and decline.
+  // Customer-facing for the MSP, so the partner's support stream. Send site: services/trustPage/access/emails.ts.
+  'trust.access_verification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'trust.access_granted': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'trust.access_denied': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
 } as const satisfies Record<string, MailPurposePolicy>;
 
 export type MailPurpose = keyof typeof MAIL_PURPOSES;

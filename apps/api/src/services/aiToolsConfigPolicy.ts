@@ -187,10 +187,12 @@ function warrantyConsentRefusal(err: unknown): string | null {
   // #8186: approval / app rules now live on the Update Ring. Say where, so
   // the model can redo the change there instead of seeing a generic failure.
   if (err instanceof PolicyApprovalFieldMovedError) {
-    return JSON.stringify({
-      error: `${err.message} Edit them with manage_update_rings, and link the ring with featurePolicyId.`,
-      code: err.code,
-    });
+    // #8678: the repair refusal needs the rules ADDED to the chosen ring, not
+    // the "edit them on the ring" redirect.
+    const next = err.code === 'RING_LACKS_POLICY_APP_RULES'
+      ? 'Add exactly these rules to the target ring with manage_update_rings, then link it with featurePolicyId.'
+      : 'Edit them with manage_update_rings, and link the ring with featurePolicyId.';
+    return JSON.stringify({ error: `${err.message} ${next}`, code: err.code });
   }
   // #6960: the service backstop's refusal is a fixed, coded message; left to
   // safeHandler it would reach the model as the generic tool error.

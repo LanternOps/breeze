@@ -9,6 +9,7 @@ const SIGNED_WEBHOOK_PATHS: ReadonlySet<string> = new Set([
   '/api/v1/webhooks/xero',
   '/api/v1/webhooks/quickbooks',
 ]);
+const EDR_PUSH_WEBHOOK_PATH = /^\/api\/v1\/webhooks\/edr\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Paths the global partner-status guard skips (mounted in index.ts). They must
@@ -31,8 +32,15 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   // `partners` or activate a partner on these paths BEFORE the route has
   // checked its HMAC. Exact match only; no partner is ever acted for here.
   if (SIGNED_WEBHOOK_PATHS.has(path)) return true;
+  // EDR vendor push (W03 PR-B): authenticated only by the per-connection secret,
+  // which the vendor sends in `Authorization`. Today an invalid bearer already
+  // passes through partnerGuard; the exemption is defense in depth so a future
+  // guard change can never parse that secret as a JWT or act for a partner before
+  // the route's own secret check. Exact `/webhooks/edr/<uuid>` only.
+  if (EDR_PUSH_WEBHOOK_PATH.test(path)) return true;
   // Public trust pages: GETs must never trigger staff account activation (spec trust-center §13)
   if (path.startsWith('/api/v1/trust/card/') || path.startsWith('/api/v1/trust/public/')) return true;
+  if (path.startsWith('/api/v1/trust/attestation/')) return true;   // signed attestation + JWKS (Trust Center W3b)
   // Public token GETs must never trigger staff account activation.
   if (/^\/api\/v1\/autopay\/public\/[^/]+(?:\/(?:setup-session|stop))?$/.test(path)) return true;
   return false;

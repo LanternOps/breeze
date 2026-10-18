@@ -16,6 +16,7 @@ import { useJwtClaims } from '@/lib/authScope';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import TrustExportMenu from './TrustExportMenu';
 import TrustPublishDialog from './TrustPublishDialog';
 import { publicationPillRole } from './trustCenterPill';
 
@@ -273,12 +274,21 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
         </button>
       </div>
 
+      <TrustExportMenu
+        publishedAt={page.publishedAt}
+        partnerSlug={slugs.partnerSlug}
+        orgSlug={slugs.orgSlug}
+        isPartnerHome={page.isPartnerHome}
+        pageUrl={url}
+      />
+
       <TrustPublishDialog
         open={publishOpen}
         onClose={() => setPublishOpen(false)}
         orgId={orgId}
         orgFetch={orgFetch}
         page={page}
+        searchIndexable={state.effective.values.searchIndexable}
         onPublished={onPageChange}
         onStale={onReload}
       />

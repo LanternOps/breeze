@@ -1,8 +1,17 @@
 import { useEffect, useState } from 'react';
-import { portalApi, trustDocumentPath, type TrustCard, type TrustPageResponse } from '@/lib/api';
-import { FRAMEWORK_META, type TrustPagePublicControl } from '@breeze/shared';
+import { portalApi, type TrustCard, type TrustPageResponse } from '@/lib/api';
+import { FRAMEWORK_META, normalizeTrustPagePayload, type SupportedLocale, type TrustPagePublicControl } from '@breeze/shared';
+import { pageCopy } from './copy/pageCopy';
 import { TrustStatusPill } from './TrustStatusPill';
-import { coverageNote, controlCopy, frameworkChip, groupControlsByCategory, notAssessedReasonCopy, relativeTime } from './trustPageFormat';
+import { coverageNote, controlCopy, formatTrustDateTime, frameworkChip, groupControlsByCategory, notAssessedReasonCopy, relativeTime } from './trustPageFormat';
+import { TrustLocaleContext, pickTrustCopy, type TrustSectionViewProps } from './trustCopy';
+import TrustDeclaredControls from './TrustDeclaredControls';
+import TrustDocumentsList from './TrustDocumentsList';
+import TrustFaq from './TrustFaq';
+import TrustFrameworkView from './TrustFrameworkView';
+import HardeningSafeguards from './HardeningSafeguards';
+import TrustHistory from './TrustHistory';
+import TrustSubprocessors from './TrustSubprocessors';
 
 interface Props { partnerSlug: string | null; orgSlug: string | null; card: TrustCard | null; previewToken?: string; initial?: TrustPageResponse | null }
 
@@ -24,26 +33,33 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [partnerSlug, orgSlug, previewToken]);
 
-  if (loading) return <div data-testid="trust-page-loading" className="mx-auto max-w-lg p-8 text-center text-sm text-muted-foreground">Loading security posture…</div>;
+  // Before the payload arrives the SSR card (when present) already knows the page's frozen locale.
+  const early = pickTrustCopy(pageCopy, card?.locale);
+  if (loading) return <div data-testid="trust-page-loading" className="mx-auto max-w-lg p-8 text-center text-sm text-muted-foreground">{early.loading}</div>;
   if (error != null || !data) {
-    return <div data-testid="trust-page-error" className="mx-auto max-w-lg p-8 text-center"><p className="text-sm text-muted-foreground">This page isn’t available. The organization may not have published a trust page, or the link may have changed.</p></div>;
+    return <div data-testid="trust-page-error" className="mx-auto max-w-lg p-8 text-center"><p className="text-sm text-muted-foreground">{early.unavailable}</p></div>;
   }
-  const { payload, stale, lastEvaluatedAt } = data;
-  const groups = groupControlsByCategory(payload.controls);
-  // Published pages link documents (org page or partner-home page); a preview never does.
-  const docHref = (id: string) => (!previewToken && partnerSlug ? trustDocumentPath(partnerSlug, orgSlug, id) : undefined);
+  const { stale, lastEvaluatedAt } = data;
+  // A stored W1 (schemaVersion 1) snapshot stays renderable: English, public documents, no W2 block.
+  const payload = normalizeTrustPagePayload(data.payload);
+  const locale = payload.locale;
+  const t = pickTrustCopy(pageCopy, locale);
+  const groups = groupControlsByCategory(payload.controls, locale);
+  // The W2 sections (W02b/d/e/f fill them) all take the same props.
+  const section: TrustSectionViewProps = { payload, lastEvaluatedAt, preview: Boolean(previewToken || data.preview), partnerSlug, orgSlug };
 
   return (
+    <TrustLocaleContext.Provider value={payload.locale}>
     <article className="space-y-8" data-testid="trust-page">
-      {data.preview && <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">Preview of the unpublished draft. Expires in 15 minutes.</div>}
+      {data.preview && <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">{t.previewBanner}</div>}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-4">
-          {payload.org.logoUrl && <img src={payload.org.logoUrl} alt={`${payload.org.name} logo`} className="h-12 w-auto max-w-[200px] object-contain" />}
+          {payload.org.logoUrl && <img src={payload.org.logoUrl} alt={t.logoAlt(payload.org.name)} className="h-12 w-auto max-w-[200px] object-contain" />}
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{payload.org.name} <span className="text-muted-foreground">· Security posture</span></h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{payload.org.name} <span className="text-muted-foreground">· {t.headerSuffix}</span></h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Showing {payload.summary.controlsShown} of {payload.summary.catalogTotal} Breeze-verifiable controls (publisher-selected) · {payload.summary.controlsMet} met · last verified {relativeTime(lastEvaluatedAt)}
-              {payload.summary.deviceCount != null && <> · {payload.summary.deviceCount} devices</>}
+              {t.summary(payload.summary.controlsShown, payload.summary.catalogTotal, payload.summary.controlsMet, relativeTime(lastEvaluatedAt, new Date(), locale))}
+              {payload.summary.deviceCount != null && <> · {t.deviceCount(payload.summary.deviceCount)}</>}
             </p>
           </div>
         </div>
@@ -53,7 +69,7 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
         </div>
       </header>
 
-      {stale && <div role="status" className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">Verification paused since {lastEvaluatedAt ? new Date(lastEvaluatedAt).toLocaleString('en-US') : 'an unknown time'}. Statuses below are the last known values.</div>}
+      {stale && <div role="status" className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">{t.stale((lastEvaluatedAt && formatTrustDateTime(lastEvaluatedAt, locale)) || t.unknownTime)}</div>}
 
       {payload.introHtml && <section className="quote-rich-text prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: payload.introHtml }} />}
 
@@ -62,64 +78,61 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
           <div key={g.category}>
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">{g.label}</h2>
             <ul className="divide-y rounded-lg border bg-card">
-              {g.controls.map((c) => <ControlRow key={c.id} control={c} coverageFloorPct={payload.methodology.coverageFloorPct} />)}
+              {g.controls.map((c) => <ControlRow key={c.id} control={c} coverageFloorPct={payload.methodology.coverageFloorPct} locale={locale} />)}
             </ul>
           </div>
         ))}
       </section>
 
+      <TrustDeclaredControls {...section} />
+      <TrustFrameworkView {...section} />
+
       <details className="rounded-lg border bg-card p-4 text-sm">
-        <summary className="cursor-pointer font-medium">How this page is verified</summary>
+        <summary className="cursor-pointer font-medium">{t.howVerified}</summary>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
-          <li>Control catalog version {payload.methodology.catalogVersion}; evaluated from Breeze RMM telemetry. This is an evidence summary, <strong>not a certification</strong>.</li>
+          <li>{t.methodCatalog(payload.methodology.catalogVersion)}</li>
           <li>{payload.methodology.eligibilityNote}</li>
-          <li>Evidence older than {payload.methodology.evidenceMaxAgeDays} days is not counted; anti-malware definitions older than {payload.methodology.definitionsMaxAgeDays} days count as stale.</li>
-          <li>A control is evaluated only when at least {payload.methodology.coverageFloorPct}% of eligible units were assessed; otherwise it reads “Not assessed”.</li>
-          <li>Met at ≥ {payload.methodology.thresholds.met}%, needs attention at ≥ {payload.methodology.thresholds.attention}%, otherwise not met.</li>
-          <li>Framework references are indicative mappings to safeguard identifiers, never a statement of compliance.</li>
+          <li>{t.methodEvidence(payload.methodology.evidenceMaxAgeDays, payload.methodology.definitionsMaxAgeDays)}</li>
+          <li>{t.methodFloor(payload.methodology.coverageFloorPct)}</li>
+          <li>{t.methodThresholds(payload.methodology.thresholds.met, payload.methodology.thresholds.attention)}</li>
+          <li>{t.methodFrameworks}</li>
         </ul>
       </details>
 
-      {payload.documents.length > 0 && (
-        <section data-testid="trust-documents">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Documents</h2>
-          <ul className="divide-y rounded-lg border bg-card">
-            {payload.documents.map((d) => (
-              <li key={d.id} className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-                <div>{docHref(d.id) ? <a className="font-medium hover:underline" href={docHref(d.id)}>{d.title}</a> : <span className="font-medium">{d.title}</span>}<p className="text-xs text-muted-foreground">{d.category} · {(d.byteSize / 1024).toFixed(0)} KB · {new Date(d.updatedAt).toLocaleDateString('en-US')}</p></div>
-                {docHref(d.id) && <a className="text-xs doc-accent-text hover:underline" href={docHref(d.id)}>Download</a>}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <TrustDocumentsList {...section} />
+      <TrustSubprocessors {...section} />
+      <TrustFaq {...section} />
+      <TrustHistory {...section} />
 
       {payload.managedBy && (
         <section className="flex items-center gap-3 rounded-lg border bg-card p-4 text-sm">
-          {payload.managedBy.logoUrl && <img src={payload.managedBy.logoUrl} alt={`${payload.managedBy.name} logo`} className="h-8 w-auto max-w-[140px] object-contain" />}
-          <p>Managed by <strong>{payload.managedBy.name}</strong>{payload.managedBy.websiteUrl && <> · <a className="hover:underline" href={payload.managedBy.websiteUrl} rel="noopener noreferrer">{payload.managedBy.websiteUrl.replace(/^https:\/\//, '')}</a></>}</p>
+          {payload.managedBy.logoUrl && <img src={payload.managedBy.logoUrl} alt={t.logoAlt(payload.managedBy.name)} className="h-8 w-auto max-w-[140px] object-contain" />}
+          <p>{t.managedBy} <strong>{payload.managedBy.name}</strong>{payload.managedBy.websiteUrl && <> · <a className="hover:underline" href={payload.managedBy.websiteUrl} rel="noopener noreferrer">{payload.managedBy.websiteUrl.replace(/^https:\/\//, '')}</a></>}</p>
         </section>
       )}
 
       <footer className="space-y-2 text-xs text-muted-foreground">
-        {payload.footer.poweredByBreeze && <p>Powered by Breeze RMM · continuously verified telemetry.</p>}
-        <p>Not a SOC 2, ISO or CIS attestation.</p>
+        {payload.footer.poweredByBreeze && <p>{t.poweredBy}</p>}
+        <p>{t.notAttestation}</p>
         {payload.footer.frameworkAttributions.map((fw) => <p key={fw}>{FRAMEWORK_META[fw].attribution}</p>)}
       </footer>
     </article>
+    </TrustLocaleContext.Provider>
   );
 }
 
-function ControlRow({ control, coverageFloorPct }: { control: TrustPagePublicControl; coverageFloorPct: number }) {
-  const copy = controlCopy(control.id);
-  const note = coverageNote(control);
+function ControlRow({ control, coverageFloorPct, locale }: { control: TrustPagePublicControl; coverageFloorPct: number; locale: SupportedLocale }) {
+  const t = pickTrustCopy(pageCopy, locale);
+  const copy = controlCopy(control.id, locale);
+  const note = coverageNote(control, locale);
   return (
     <li data-testid={`trust-control-${control.id}`} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
-        <p className="font-medium">{copy.title} <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">Continuously verified</span></p>
+        <p className="font-medium">{copy.title} <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">{t.continuouslyVerified}</span></p>
         <p className="text-sm text-muted-foreground">{copy.description}</p>
-        {control.status === 'not_assessed' && control.reason && <p className="mt-1 text-xs text-muted-foreground">{notAssessedReasonCopy(control.reason, { coverageFloorPct, unit: control.unit })}</p>}
-        <p className="mt-1 flex flex-wrap gap-1">{control.frameworkRefs.map((r) => <span key={`${r.framework}:${r.ref}`} className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">{frameworkChip(r)}</span>)}</p>
+        {control.status === 'not_assessed' && control.reason && <p className="mt-1 text-xs text-muted-foreground">{notAssessedReasonCopy(control.reason, { coverageFloorPct, unit: control.unit }, locale)}</p>}
+        <p className="mt-1 flex flex-wrap gap-1">{control.frameworkRefs.map((r) => <span key={`${r.framework}:${r.ref}`} className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">{frameworkChip(r, locale)}</span>)}</p>
+        {control.id === 'hardening_baseline' && <HardeningSafeguards control={control} />}
       </div>
       <div className="text-right">
         <TrustStatusPill status={control.status} />

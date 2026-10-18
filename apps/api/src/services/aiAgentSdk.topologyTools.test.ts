@@ -90,7 +90,8 @@ vi.mock('./aiCostTracker', () => ({
 
 const mockSanitizeUserMessage = vi.fn();
 const mockSanitizePageContext = vi.fn();
-vi.mock('./aiInputSanitizer', () => ({
+vi.mock('./aiInputSanitizer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiInputSanitizer')>()),
   sanitizeUserMessage: (...args: unknown[]) => mockSanitizeUserMessage(...args),
   sanitizePageContext: (...args: unknown[]) => mockSanitizePageContext(...args),
 }));

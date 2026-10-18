@@ -125,6 +125,16 @@ const (
 // asserts this. A package-level var (not const) so tests can shrink it.
 var uploadLeaseInterval = 15 * time.Minute
 
+// newUploadLeaseTicker starts the clock that drives upload.lease refreshes
+// and returns its tick channel and stop func. It is a package var solely so
+// tests can deliver a tick at a chosen point in an upload instead of racing a
+// wall-clock interval against a loaded scheduler (#8828); production code
+// never reassigns it.
+var newUploadLeaseTicker = func(d time.Duration) (<-chan time.Time, func()) {
+	ticker := time.NewTicker(d)
+	return ticker.C, ticker.Stop
+}
+
 // leaseGate wraps a BackupProvider so publishing a snapshot manifest past
 // its server-granted publish lease (or, for a resumed run, past the
 // checkpoint journal's max age) fails closed instead of publishing a
@@ -998,13 +1008,13 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 	go func() {
 		defer close(leaseDone)
-		ticker := time.NewTicker(uploadLeaseInterval)
-		defer ticker.Stop()
+		ticks, stopTicker := newUploadLeaseTicker(uploadLeaseInterval)
+		defer stopTicker()
 		for {
 			select {
 			case <-leaseCtx.Done():
 				return
-			case <-ticker.C:
+			case <-ticks:
 				// Each refresh is bounded to 60s AND tied to leaseCtx, so
 				// stopLeaseRefresh's leaseCancel() unblocks it immediately
 				// instead of this goroutine sitting in a stalled PUT for up

@@ -10,6 +10,7 @@ import { CallerVerifyWindow, type Branding, type CallerRequest } from './windows
 import { loadCallerBranding } from './windows/callerVerifyBranding';
 import { SessionBanner } from './windows/SessionBanner';
 import { MessageCardWindow } from './components/MessageCard';
+import { EndpointChatWindow } from './components/EndpointChat';
 import { initTheme } from './lib/theme';
 
 // Initialize theme before rendering
@@ -74,6 +75,9 @@ if (hash.startsWith('#caller-verify/')) {
 } else if (hash.startsWith('#message/')) {
   // Endpoint message card (#8293): its own small window, never the main one.
   root = <MessageCardWindow messageId={hash.slice('#message/'.length)} />;
+} else if (hash.startsWith('#chat/')) {
+  // Endpoint live chat (#8743): its own window, not the AI chat and never the main one.
+  root = <EndpointChatWindow conversationId={hash.slice('#chat/'.length)} />;
 } else if (hash === '#consent') {
   root = <ConsentWindow />;
 } else if (hash === '#banner') {

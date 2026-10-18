@@ -5,8 +5,9 @@ import { and, eq } from 'drizzle-orm';
 import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partners, trustPages } from '../../db/schema';
 import { getRedis } from '../redis';
+import { captureException } from '../sentry';
 import { livePublicationPredicate } from './predicate';
-import type { TrustPagePublicPayload } from '@breeze/shared';
+import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 
 export const TRUST_SERVING_SET_KEY = 'trust:serving';
 /** Present once the set has been built/seeded. Absent => Redis lost data (or never built): the set cannot be trusted to say "not published". */
@@ -38,9 +39,52 @@ export async function isServing(member: string): Promise<boolean | null> {
       redis.sismember(TRUST_SERVING_SET_KEY, TRUST_SERVING_SENTINEL),
       redis.sismember(TRUST_SERVING_SET_KEY, member),
     ]);
-    if (built !== 1 || intact !== 1) return null;
+    if (built !== 1 || intact !== 1) {
+      // Redis answered but the set is unbuilt or evicted: heal it now rather than at the next hourly rebuild.
+      scheduleServingSetRebuild(built !== 1 ? 'marker_missing' : 'sentinel_missing');
+      return null;
+    }
     return present === 1;
   } catch (err) { console.warn('[trustPage] serving-set read failed', err); return null; }
+}
+
+/** Cluster-wide: at most one self-heal rebuild query per minute across every API instance. */
+export const TRUST_SERVING_REBUILD_LOCK_KEY = 'trust:serving:rebuild-lock';
+const REBUILD_LOCK_TTL_SECONDS = 60;
+let rebuildInFlight: Promise<void> | null = null;
+
+/**
+ * Self-heal for a lost/evicted serving set (W1 follow-up): fire-and-forget after the current request, outside any
+ * DB context. Single-flight in process; across the cluster only the holder of a 60 s NX lock runs the one rebuild
+ * query, so the public card route stays DB-free per request. The lock is never released early: it is the rate
+ * limit. Failures are logged and never reach the request; the next null (after the lock expires) retries.
+ */
+export function scheduleServingSetRebuild(reason: string): void {
+  if (rebuildInFlight) return;
+  rebuildInFlight = new Promise<void>((resolve) => {
+    setImmediate(() => {
+      void runOutsideDbContext(async () => {
+        try {
+          const redis = getRedis();
+          if (!redis) return;
+          const acquired = await redis.set(TRUST_SERVING_REBUILD_LOCK_KEY, '1', 'EX', REBUILD_LOCK_TTL_SECONDS, 'NX');
+          if (acquired !== 'OK') return;
+          const members = await rebuildServingSetFromDb();
+          console.info('[trustPage] serving set self-healed', { reason, members });
+        } catch (err) {
+          // To Sentry, not only a log: the hourly rebuild runs the same query, so a persistent failure here means
+          // public trust pages keep falling through to the live resolve (or 404) with nothing else alerting.
+          console.warn('[trustPage] serving-set self-heal failed; the hourly rebuild will retry', { reason }, err);
+          captureException(err, undefined, { component: 'trustPage.servingSetSelfHeal' });
+        }
+      }).finally(() => { rebuildInFlight = null; resolve(); });
+    });
+  });
+}
+
+/** Resolves once any scheduled self-heal has finished (tests and graceful shutdown). */
+export function servingSetRebuildSettled(): Promise<void> {
+  return rebuildInFlight ?? Promise.resolve();
 }
 // Never writes the built marker: only a full rebuild may claim the set is complete (after data loss a partial add must not turn other partners' pages into 404s).
 export async function addServing(members: string[]): Promise<void> {
@@ -140,13 +184,13 @@ export async function replaceServingSet(members: string[]): Promise<void> {
   } catch (err) { console.warn('[trustPage] serving-set rebuild failed', err); }
 }
 
-export async function cacheSnapshotPayload(snapshotId: string, payload: TrustPagePublicPayload): Promise<void> {
+export async function cacheSnapshotPayload(snapshotId: string, payload: TrustPagePublicPayloadAny): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   try { await redis.setex(snapshotKey(snapshotId), SNAPSHOT_TTL_SECONDS, JSON.stringify(payload)); } catch { /* cache only */ }
 }
-export async function readCachedSnapshotPayload(snapshotId: string): Promise<TrustPagePublicPayload | null> {
+export async function readCachedSnapshotPayload(snapshotId: string): Promise<TrustPagePublicPayloadAny | null> {
   const redis = getRedis();
   if (!redis) return null;
-  try { const raw = await redis.get(snapshotKey(snapshotId)); return raw ? (JSON.parse(raw) as TrustPagePublicPayload) : null; } catch { return null; }
+  try { const raw = await redis.get(snapshotKey(snapshotId)); return raw ? (JSON.parse(raw) as TrustPagePublicPayloadAny) : null; } catch { return null; }
 }

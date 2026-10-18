@@ -218,4 +218,28 @@ describe('MfaPolicyOffBanner', () => {
     await waitFor(() => expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument());
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
   });
+
+  // #9031: the banner sits above the h1 on every page; a live region re-announces
+  // on every load, and a stacked CTA made it 80-140px tall.
+  it('is not a live region (no role=status/alert)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(partnerResponse(false));
+    render(<MfaPolicyOffBanner />);
+    const banner = await screen.findByTestId(TEST_ID);
+    expect(banner).not.toHaveAttribute('role', 'status');
+    expect(banner).not.toHaveAttribute('role', 'alert');
+    expect(banner.getAttribute('aria-live')).toBeNull();
+    expect(banner.tagName).toBe('ASIDE');
+    expect(banner).toHaveAttribute('aria-label', 'mfaPolicyOffBanner.label');
+  });
+
+  it('renders the CTA inline with the message on one row', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(partnerResponse(false));
+    render(<MfaPolicyOffBanner />);
+    const banner = await screen.findByTestId(TEST_ID);
+    const message = screen.getByText('mfaPolicyOffBanner.message');
+    const cta = screen.getByRole('link', { name: 'mfaPolicyOffBanner.cta' });
+    // Message and CTA are siblings in one wrapping row, not a stacked block.
+    expect(cta.parentElement).toBe(message.parentElement);
+    expect(message.parentElement?.className).toMatch(/\bflex-wrap\b/);
+  });
 });

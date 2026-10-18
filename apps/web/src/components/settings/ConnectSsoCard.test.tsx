@@ -145,6 +145,18 @@ describe('ConnectSsoCard (#2183)', () => {
     expect(await screen.findByText(/did not confirm/i)).toBeInTheDocument();
   });
 
+  // #8862: the IdP's id_token failed verification during linking.
+  it('shows an error banner for ?ssoLinkError=idp_verify_failed', async () => {
+    setLocation('?ssoLinkError=idp_verify_failed');
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    render(<ConnectSsoCard />);
+
+    expect(
+      await screen.findByText(/could not verify the sign-in your identity provider returned/i)
+    ).toBeInTheDocument();
+  });
+
   it('renders an inline error line (not null) when the options fetch returns a server error', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, false, 500));
 

@@ -617,6 +617,37 @@
           "security-abuse": "Seguridad y abuso",
           "integrations": "Integraciones"
         }
+      },
+      "connectionHealthJobs": {
+        "title": "Tareas en segundo plano del estado de conexiones",
+        "description": "Muestra si las tareas que vigilan el estado de las conexiones están en ejecución. Se verifica con latidos en Redis.",
+        "jobs": {
+          "reconcile": {
+            "label": "Conciliador de incidentes",
+            "description": "Abre y resuelve incidentes de estado de conexión cada 15 minutos."
+          },
+          "digest": {
+            "label": "Correo de resumen diario",
+            "description": "Envía el resumen del estado de conexiones; se ejecuta cada hora."
+          }
+        },
+        "state": {
+          "ok": "Correcto",
+          "stale": "Desactualizado",
+          "missing": "Sin latido",
+          "failing": "Con fallas"
+        },
+        "lastRun": "Última ejecución {{relative}}",
+        "neverRun": "No se registró ningún latido",
+        "kindsHeading": "Fuentes monitoreadas",
+        "lastOk": "Último OK {{relative}}",
+        "neverOk": "Nunca tuvo éxito",
+        "failureStreak": "Fallas consecutivas: {{count}}",
+        "redisUnavailable": "No se puede leer el estado de las tareas porque Redis no está disponible. Esto no significa que las tareas se hayan detenido.",
+        "errors": {
+          "load": "No se pudo cargar el estado de las tareas."
+        },
+        "retry": "Reintentar"
       }
     },
     "aiModels": {

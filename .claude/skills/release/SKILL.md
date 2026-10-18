@@ -177,6 +177,31 @@ git -C ~/breeze log --format="%B" -1 <SHA>   # expand a squash-merge body
 
 Skip from user-facing notes: `chore(deps):`, `chore:`, `ci:`/`fix(ci):`, internal `refactor:`, internal `docs:`/`test:`. Keep anything a self-hoster or operator would notice.
 
+### Feature-coverage check (do this before writing a single bullet)
+
+Big features are the ones most likely to fall out of the headline bullets, because
+they land as five or ten wave PRs with titles like `feat(x): W02 — …` and no single
+commit says "feature X shipped". v0.123.0 shipped Trust Center (three wave PRs) and
+the body listed it under Added only; the Summary, the marketing notes and the Discord
+post all missed it until the owner noticed. So enumerate features first, commits second:
+
+```bash
+# Every wave PR in the range, grouped by its feature parent (the issue in parentheses)
+git -C ~/breeze log --format='%s' $PREV..$NEW | grep -E '^feat' | grep -E ' W[0-9]+[ A-Za-z0-9-]* — | wave ' \
+  | sed -E 's/.*\(#([0-9]+)\) \(#([0-9]+)\)$/\1 \2 &/' | sort -n
+# Feature parents whose waves closed in the range (GitHub is the source of truth, not the plan doc)
+gh issue list -R lanternops/breeze --label feature --state all --search "closed:>=<PREV release date>" --json number,title,state
+```
+
+For every feature parent with at least one wave merged in the range, decide
+explicitly: **Summary bullet** (a buyer or technician would notice it, even if only
+the first wave shipped: say "first release" and what is still to come), **Added /
+Improved only** (plumbing a technician sees but would not buy), or **omit** (internal).
+Write the decision down in the release scratchpad; the same list drives the What's New
+entry (Step 0.4), the marketing notes (Step 3) and the Discord post (Step 5), so a
+feature cannot appear in one and vanish from the others. A feature that is in the
+Summary is in all four.
+
 ## Step 2 — Write the GitHub Release body
 
 The GitHub Release is the **operator/self-hoster source of truth**. Model the body on the most recent release for structure and tone:
@@ -220,7 +245,7 @@ Self-hosters run their own droplets and read this section to decide whether an u
    Link the [Upgrade Guide](https://docs.breezermm.com/deploy/upgrades/#docker-compose-upgrade). **Never write "set `BREEZE_VERSION`, then pull" as the only upgrade line.** On a digest-pinned install that re-pulls the images already running, so nothing upgrades. Until v0.118.2, `/health` also reported the edited version because Compose copied `BREEZE_VERSION` into `APP_VERSION` (#7024), so operators believed they had upgraded. Only the web footer showed the real version. Every release note from v0.112.0 to v0.118.2 gave that line, and self-hosters were stranded on 0.115→0.116 and 0.117→0.118.2. Keep `portal` in the tag-form pull list: it is a separate container and was left behind for 11 days (stuck on 0.94.0 while api/web ran 0.98.1) when the line pulled only `api web`.
 
 2. **Database / migrations.** State the count and that they're idempotent and auto-apply on boot via `autoMigrate` (unless `AUTO_MIGRATE=false`). **Explicitly flag any large-table rewrite or backfill** — that's the difference between a 2-second upgrade and a stalled boot. If nothing: "**Database — nothing required.**"
-3. **New required environment variables.** Anything the config validator now refuses to boot without (e.g. past examples: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, `IS_HOSTED`). A new required env var must *also* be mapped in the `api`/`web` `environment:` block of their compose, not just `.env` — say so. If none: "**No new required environment variables.**"
+3. **New required environment variables.** Anything the config validator now refuses to boot without (e.g. past examples: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, `IS_HOSTED`). A new required env var must *also* be mapped in the `api`/`web` `environment:` block of their compose, not just `.env` — say so. If none: "**No new required environment variables.**" Then list notable *optional* ones in one line each with what they unlock (e.g. v0.123.0: `PUBLIC_ABUSE_CONTACT` / `PUBLIC_SECURITY_CONTACT` / `PUBLIC_SECURITY_POLICY_URL` → login-page abuse/security footer + `/.well-known/security.txt`, #8872) — self-hosters only learn about opt-in surfaces from here.
 4. **Behavior changes & feature flags.** Anything whose default changed (call out grandfathering of existing orgs), and any feature gated behind a flag (e.g. `PUBLIC_ENABLE_EDR_INTEGRATIONS`) — name the flag and its default.
 
 End with the compare link: `**Full Changelog:** https://github.com/LanternOps/breeze/compare/$PREV...$NEW`
@@ -366,6 +391,13 @@ ssh root@<droplet> "docker logs breeze-api 2>&1 | grep -aE 'auto-migrate' | tail
 **Two droplet-local overrides the line above handles** (both added 2026-10-07):
 - **Worker split.** A droplet running the optional `worker` container (`COMPOSE_PROFILES=worker-split` in `.env`, see `apps/docs/src/content/docs/deploy/worker-split.mdx`) must roll it with the API, or it keeps running the old image's job code against the new schema. `W` adds it to the pull/up only where the profile is on.
 - **API hotfix pin.** `BREEZE_API_IMAGE_TAG` in `.env` pins the API (and worker) image to a hotfix tag independently of `BREEZE_VERSION`. A full release must drop it, or the API stays on the hotfix image while `/health` reports the new version (compose sets `APP_VERSION` from `BREEZE_VERSION`); only the parity check below shows it, as SKEW. The `sed` deletes it.
+
+**New compose env passthroughs the droplets don't carry — diff before you deploy.** The droplets run a *hand-copied* `docker-compose.yml` that has drifted from the repo's `deploy/docker-compose.prod.yml` (381 vs 1049 lines as of 2026-10-13). A release that adds a variable to a service's `environment:` block in the repo does **nothing** on the droplet until the same line is added to `/opt/breeze/docker-compose.yml` by hand — setting it in `.env` alone is a silent no-op (the `envComposeParity` contract test guards the repo, not the droplets). Before deploying, list what the range added:
+```bash
+git diff v$PREV..v$NEW -- deploy/docker-compose.prod.yml | grep -E '^\+\s+[A-Z_]+:' 
+```
+and port each line into the droplet's compose for the right service, then set the value in `.env`. Per-release ledger of the ones that need an operator decision (append as releases add them):
+- **v0.123.0 — operator abuse/security contacts (#8872, `web` service):** `PUBLIC_ABUSE_CONTACT`, `PUBLIC_SECURITY_CONTACT`, `PUBLIC_SECURITY_POLICY_URL` render the login-page "Report abuse / Security" footer and `/.well-known/security.txt`; unset = nothing published (self-hoster default). Hosted values: `security@breezermm.com` (exists), `abuse@breezermm.com` (**reserved alias in Google Workspace** — it can't be created as a user/alias; Google accepts the mail and it is read only if an admin *subscribes* to it: Admin console → Apps → Google Workspace → Gmail → "abuse and postmaster" subscription. Do that before publishing the address, or reports vanish), policy URL = the trust center page once live, else leave unset (Security then falls back to the mailto). Verify after `up -d web`: `curl -s https://<region>.2breeze.app/.well-known/security.txt` returns the Contact lines, and `/login` shows the footer. Reason this exists: the hosted domain was listed as Malicious by reputation feeds and hijacked by ISP gateway filters on 2026-10-15; a visible abuse channel is one of the signals reviewers check (#8868).
 
 **Then assert version parity across EVERY first-party container — `/health` does NOT cover this.**
 

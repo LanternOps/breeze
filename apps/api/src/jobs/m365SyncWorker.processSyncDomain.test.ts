@@ -44,6 +44,7 @@ vi.mock('../services/m365Sync/metrics', () => ({
 import { UnrecoverableError } from 'bullmq';
 import { makeRealJob } from './__helpers__/realBullJob';
 import { M365SyncRetryableError, processSyncDomain } from './m365SyncWorker';
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 
 const VALID_DATA: M365SyncJobData = {
   orgId: '11111111-1111-4111-8111-111111111111',
@@ -102,5 +103,19 @@ describe('processSyncDomain', () => {
   it('a non-throttled outcome never throws, even on a non-final attempt', async () => {
     mocks.run.mockResolvedValue('error');
     await expect(processSyncDomain(makeJob(VALID_DATA, 1, 3))).resolves.toBe('error');
+  });
+
+  it.each(['error', 'needs_consent'])('nudges connection health when the domain run records %s terminally (W4)', async (outcome) => {
+    mocks.run.mockResolvedValue(outcome);
+    await processSyncDomain(makeJob(VALID_DATA, 1, 3));
+    expect(nudgeConnectionHealth).toHaveBeenCalledTimes(1);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('m365_sync');
+  });
+
+  it.each(['success', 'throttled'])('does NOT nudge connection health on %s (W4)', async (outcome) => {
+    mocks.run.mockResolvedValue(outcome);
+    await processSyncDomain(makeJob(VALID_DATA, 2, 3));
+    await processSyncDomain(makeJob(VALID_DATA, 0, 3)).then(() => null, () => null);
+    expect(nudgeConnectionHealth).not.toHaveBeenCalled();
   });
 });

@@ -99,11 +99,29 @@ describe('DeviceDetails tab layout', () => {
     expect(visibleTabNames()).toEqual([
       'Overview', 'Details', 'Performance', 'Alerts', 'Event Log', 'Hardware', 'Software', 'Patches', 'Scripts',
     ]);
-    fireEvent.click(screen.getByRole('button', { name: /more/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     const items = screen.getAllByRole('menuitem').map((m) => m.textContent);
     expect(items).toEqual(expect.arrayContaining(['Anomalies', 'Tickets', 'Operator Tasks', 'Monitoring', 'Compliance']));
     const headers = Array.from(screen.getByRole('menu').querySelectorAll('[data-overflow-group]')).map((h) => h.textContent);
     expect(headers).toEqual(['Monitoring', 'Inventory', 'Management', 'History & Network']);
+  });
+
+  it('files Topology under the Monitoring header in "More" instead of orphaning it above (#9030)', async () => {
+    render(<DeviceDetails device={device} />);
+    fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
+    const menu = screen.getByRole('menu');
+    const first = menu.querySelector('[data-overflow-group], [role="menuitem"]');
+    expect(first).toHaveAttribute('data-overflow-group', 'Monitoring');
+    const nodes = Array.from(menu.querySelectorAll('[data-overflow-group], [role="menuitem"]'));
+    const topologyIndex = nodes.findIndex((n) => n.textContent === 'Topology');
+    const inventoryIndex = nodes.findIndex((n) => n.getAttribute('data-overflow-group') === 'Inventory');
+    expect(topologyIndex).toBeGreaterThan(0);
+    expect(topologyIndex).toBeLessThan(inventoryIndex);
+  });
+
+  it('collapses the Activity rail without animating width (#9030)', () => {
+    const { container } = render(<DeviceDetails device={device} />);
+    expect(container.querySelector('[class*="transition-[width]"]')).toBeNull();
   });
 
   it('promotes Tickets into the primary row with a badge when the device has open tickets', async () => {
@@ -124,7 +142,7 @@ describe('DeviceDetails tab layout', () => {
 
     await waitFor(() => expect(screen.getByTestId('overflow-tabs-hidden-dot')).toBeInTheDocument());
     expect(screen.queryByRole('tab', { name: /compliance/i })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /more/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     expect(screen.getByRole('menuitem', { name: /compliance/i })).toHaveTextContent('Compliance3');
     expect(screen.getByRole('menuitem', { name: /monitoring/i })).toHaveTextContent('Monitoring1');
   });
@@ -150,7 +168,7 @@ describe('DeviceDetails tab layout', () => {
     // Not promoted into the primary row (an enabled org would show it there,
     // badged "2" — see the sibling Tickets-promotion test above).
     expect(screen.queryByRole('tab', { name: /anomalies/i })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /more/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     expect(screen.getByRole('menuitem', { name: /anomalies/i })).toHaveTextContent('Anomalies');
     expect(screen.getByRole('menuitem', { name: /anomalies/i })).not.toHaveTextContent('Anomalies2');
   });

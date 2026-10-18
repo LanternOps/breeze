@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '../../lib/i18n';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,9 +10,15 @@ const {
   fetchOrganizationsMock,
   waitForPendingRefreshMock,
   navigateToMock,
+  recordRecentOrgMock,
+  summaryLookupMock,
+  showToastMock,
   mockStoreRef,
 } = vi.hoisted(() => ({
   navigateToMock: vi.fn().mockResolvedValue('soft'),
+  recordRecentOrgMock: vi.fn(),
+  summaryLookupMock: vi.fn(),
+  showToastMock: vi.fn(),
   selectOrganizationMock: vi.fn(),
   selectAllOrgsMock: vi.fn(),
   fetchOrganizationsMock: vi.fn(),
@@ -29,7 +35,12 @@ vi.mock('@/stores/auth', () => ({
 
 // The switch is a soft (view-transition) navigation now, never a reload.
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
-vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
+vi.mock('@/components/shared/Toast', () => ({ showToast: showToastMock }));
+vi.mock('@/lib/permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/permissions')>()),
+  usePermissions: () => ({ permissions: [{ resource: '*', action: '*' }], can: () => true }),
+}));
+vi.mock('./useOrgSummaryCache', () => ({ useOrgSummaryCache: summaryLookupMock }));
 
 let mockStoreState: {
   currentOrgId: string | null;
@@ -37,6 +48,8 @@ let mockStoreState: {
   lastOrgId?: string | null;
   organizations: Array<{ id: string; partnerId: string; name: string; status: string; createdAt: string }>;
   isLoading: boolean;
+  recentOrgIds: string[];
+  serviceManagementMode: string;
 };
 
 vi.mock('@/stores/orgStore', () => {
@@ -45,6 +58,7 @@ vi.mock('@/stores/orgStore', () => {
     selectOrganization: selectOrganizationMock,
     selectAllOrgs: selectAllOrgsMock,
     fetchOrganizations: fetchOrganizationsMock,
+    recordRecentOrg: recordRecentOrgMock,
   });
   const useOrgStore = vi.fn((selector?: (state: ReturnType<typeof buildStoreSnapshot>) => unknown) => {
     const snap = buildStoreSnapshot();
@@ -62,6 +76,15 @@ function makeOrgs(count: number) {
     status: 'active',
     createdAt: '2024-01-01',
   }));
+}
+
+const originalMatchMedia = window.matchMedia;
+function stubMatchMedia(matches: boolean) {
+  window.matchMedia = vi.fn().mockReturnValue({
+    matches,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
 }
 
 describe('getOrgSwitchRedirect', () => {
@@ -102,8 +125,14 @@ describe('OrgSwitcher (unified control)', () => {
       currentOrgId: 'org-a',
       allOrgs: false,
       organizations: makeOrgs(2),
-      isLoading: false
+      isLoading: false,
+      recentOrgIds: [],
+      serviceManagementMode: 'native'
     };
+    recordRecentOrgMock.mockReset();
+    summaryLookupMock.mockReset().mockReturnValue({ summary: undefined, status: 'idle' });
+    showToastMock.mockReset();
+    stubMatchMedia(true);
     mockStoreRef.current = mockStoreState;
   });
 
@@ -129,6 +158,7 @@ describe('OrgSwitcher (unified control)', () => {
   }
 
   afterEach(() => {
+    window.matchMedia = originalMatchMedia;
     Object.defineProperty(window, 'location', {
       configurable: true,
       writable: true,
@@ -153,20 +183,27 @@ describe('OrgSwitcher (unified control)', () => {
     fireEvent.click(orgButtons[0]);
   }
 
-  it('redirects to /devices when switching orgs from a device-detail page', async () => {
-    const { reloadMock, hrefSetter } = stubLocation('/devices/abc123');
+  // #9027: a name click from a record page switches the working org and keeps
+  // the user on the record instead of bouncing them to the (possibly empty)
+  // list. Sub-item destinations keep their explicit targets.
+  it.each(['/devices/abc123', '/organizations/org-z', '/tickets/t-1'])(
+    'stays on the record when switching orgs by name from %s',
+    async (path) => {
+      const { reloadMock, hrefSetter } = stubLocation(path);
 
-    render(<OrgSwitcher />);
+      render(<OrgSwitcher />);
 
-    openDropdownAndClickOrg('Org B');
+      openDropdownAndClickOrg('Org B');
 
-    expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
-    // Navigation is gated behind await waitForPendingRefresh() (#950 race guard).
-    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/devices', { replace: true }));
-    expect(reloadMock).not.toHaveBeenCalled();
-    expect(hrefSetter).not.toHaveBeenCalled();
-    expect(waitForPendingRefreshMock).toHaveBeenCalled();
-  });
+      expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
+      // Navigation is gated behind await waitForPendingRefresh() (#950 race guard).
+      await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith(path, { replace: false }));
+      expect(navigateToMock).not.toHaveBeenCalledWith('/devices', expect.anything());
+      expect(reloadMock).not.toHaveBeenCalled();
+      expect(hrefSetter).not.toHaveBeenCalled();
+      expect(waitForPendingRefreshMock).toHaveBeenCalled();
+    },
+  );
 
   it('soft-navigates in place (no reload) when switching orgs from a non-detail page', async () => {
     const { reloadMock, hrefSetter } = stubLocation('/devices');
@@ -207,6 +244,8 @@ describe('OrgSwitcher (unified control)', () => {
     expect(selectAllOrgsMock).not.toHaveBeenCalled();
     expect(reloadMock).not.toHaveBeenCalled();
     expect(hrefSetter).not.toHaveBeenCalled();
+    // #9027: no stay-on-record navigation either — nothing changed.
+    expect(navigateToMock).not.toHaveBeenCalled();
   });
 
   it('renders a pinned "All organizations" fleet row with >1 org', () => {
@@ -288,6 +327,14 @@ describe('OrgSwitcher (unified control)', () => {
     expect(screen.getByTestId('org-switcher-trigger').getAttribute('data-scope')).toBe('org');
   });
 
+  it('keeps the org name in the mobile top bar, truncated rather than hidden (#9028)', () => {
+    stubLocation('/devices');
+    render(<OrgSwitcher />);
+    const label = screen.getByTestId('org-switcher-label');
+    expect(label.className).not.toMatch(/(^|\s)hidden(\s|$)/);
+    expect(label.className).toContain('truncate');
+  });
+
   it('label shows the selection placeholder on a transient null (not fleet view)', () => {
     stubLocation('/devices');
     mockStoreState.currentOrgId = null;
@@ -319,7 +366,8 @@ describe('OrgSwitcher (unified control)', () => {
     const search = screen.getByTestId('org-switcher-search');
     fireEvent.change(search, { target: { value: 'Org H' } });
 
-    expect(screen.getByText('Org H')).toBeInTheDocument();
+    // Scoped to the row: the pane now repeats the highlighted org's name.
+    expect(within(screen.getByTestId('org-option-org-h')).getByText('Org H')).toBeInTheDocument();
     expect(screen.queryByText('Org B')).not.toBeInTheDocument();
     // The fleet row stays pinned regardless of the filter.
     expect(screen.getByTestId('org-option-all')).toBeInTheDocument();
@@ -388,6 +436,188 @@ describe('OrgSwitcher (unified control)', () => {
 
     await waitFor(() => {
       expect(screen.queryByTestId('org-switcher-panel')).toBeNull();
+    });
+  });
+  it('rows carry a status dot, not the badge', () => {
+    stubLocation('/devices');
+    mockStoreState.organizations[1].status = 'trial';
+    render(<OrgSwitcher />);
+    openDropdown();
+    const row = screen.getByTestId('org-option-org-b');
+    expect(within(row).getByTestId('org-status-dot').getAttribute('data-status')).toBe('trial');
+    expect(within(row).queryByText('Trial')).toBeNull();
+    expect(within(screen.getByTestId('org-option-org-a')).queryByTestId('org-status-dot')).toBeNull();
+  });
+  describe('Customer › Page columns (UI flow W02)', () => {
+    it('opens with the current org highlighted and the pane showing it', () => {
+      stubLocation('/devices');
+      render(<OrgSwitcher />);
+      openDropdown();
+      expect(screen.getByTestId('org-option-org-a').getAttribute('data-highlighted')).toBe('true');
+      expect(within(screen.getByTestId('org-switcher-pane')).getByText('Org A')).toBeTruthy();
+      expect(screen.getByTestId('org-switcher-hint')).toBeTruthy();
+      expect(summaryLookupMock).toHaveBeenLastCalledWith('org-a', true);
+    });
+
+    it('hovering a row moves the highlight and the pane follows', () => {
+      stubLocation('/devices');
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.mouseEnter(screen.getByTestId('org-option-org-b'));
+      expect(within(screen.getByTestId('org-switcher-pane')).getByText('Org B')).toBeTruthy();
+      expect(summaryLookupMock).toHaveBeenLastCalledWith('org-b', true);
+    });
+
+    it('Billing destination switches to the highlighted org and lands on its billing tab (no redirect bounce)', async () => {
+      stubLocation('/devices/abc123');
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.mouseEnter(screen.getByTestId('org-option-org-b'));
+      fireEvent.click(screen.getByTestId('org-switcher-dest-billing'));
+
+      expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
+      expect(recordRecentOrgMock).toHaveBeenCalledWith('org-b');
+      await waitFor(() =>
+        expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-b#billing', { replace: false }),
+      );
+      expect(screen.queryByTestId('org-switcher-panel')).toBeNull();
+    });
+
+    it("Devices destination calls applyOrgSwitch with '/devices'", async () => {
+      stubLocation('/organizations/org-a');
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.mouseEnter(screen.getByTestId('org-option-org-b'));
+      fireEvent.click(screen.getByTestId('org-switcher-dest-devices'));
+      expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
+      await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/devices', { replace: false }));
+    });
+
+    it('a destination for the current org is a plain navigation (no switch, no toast)', async () => {
+      stubLocation('/devices');
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.click(screen.getByTestId('org-switcher-dest-sites'));
+      await waitFor(() => expect(navigateToMock).toHaveBeenCalled());
+      expect(navigateToMock.mock.calls[0][0]).toBe('/organizations/org-a#sites');
+      expect(selectOrganizationMock).not.toHaveBeenCalled();
+      expect(recordRecentOrgMock).not.toHaveBeenCalled();
+      expect(showToastMock).not.toHaveBeenCalled();
+    });
+
+    it("a hash-only destination on the org's own record page sets the hash (the router does not fire hashchange)", async () => {
+      stubLocation('/organizations/org-a');
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.click(screen.getByTestId('org-switcher-dest-sites'));
+      // The stubbed location is a plain object, so the raw assigned value shows.
+      await waitFor(() => expect(window.location.hash).toBe('sites'));
+      expect(navigateToMock).not.toHaveBeenCalled();
+      expect(selectOrganizationMock).not.toHaveBeenCalled();
+      expect(showToastMock).not.toHaveBeenCalled();
+    });
+
+    it('keyboard: ArrowDown moves the highlight, ArrowRight enters the pane, ArrowLeft returns, activation navigates', async () => {
+      stubLocation('/devices');
+      render(<OrgSwitcher />);
+      openDropdown();
+      screen.getByTestId('org-option-org-a').focus();
+
+      fireEvent.keyDown(document, { key: 'ArrowDown' });
+      expect(document.activeElement).toBe(screen.getByTestId('org-option-org-b'));
+      expect(within(screen.getByTestId('org-switcher-pane')).getByText('Org B')).toBeTruthy();
+
+      fireEvent.keyDown(document, { key: 'ArrowRight' });
+      expect(document.activeElement).toBe(screen.getByTestId('org-switcher-dest-overview'));
+      fireEvent.keyDown(document, { key: 'ArrowDown' });
+      expect(document.activeElement).toBe(screen.getByTestId('org-switcher-dest-devices'));
+      fireEvent.keyDown(document, { key: 'ArrowLeft' });
+      expect(document.activeElement).toBe(screen.getByTestId('org-option-org-b'));
+
+      fireEvent.keyDown(document, { key: 'ArrowRight' });
+      fireEvent.click(document.activeElement!);
+      await waitFor(() =>
+        expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-b', { replace: false }),
+      );
+    });
+
+    it('the list is one tab stop: only the highlighted row has tabIndex 0', () => {
+      stubLocation('/devices');
+      render(<OrgSwitcher />);
+      openDropdown();
+      expect(screen.getByTestId('org-option-org-a').tabIndex).toBe(0);
+      expect(screen.getByTestId('org-option-org-b').tabIndex).toBe(-1);
+      fireEvent.mouseEnter(screen.getByTestId('org-option-org-b'));
+      expect(screen.getByTestId('org-option-org-a').tabIndex).toBe(-1);
+      expect(screen.getByTestId('org-option-org-b').tabIndex).toBe(0);
+    });
+
+    it('Recent lists the last switched-to orgs newest first, without the current org', () => {
+      stubLocation('/devices');
+      mockStoreState.organizations = makeOrgs(5);
+      mockStoreState.recentOrgIds = ['org-a', 'org-c', 'org-b'];
+      render(<OrgSwitcher />);
+      openDropdown();
+      const recent = within(screen.getByTestId('org-switcher-recent'));
+      expect(recent.getAllByRole('button').map((b) => b.textContent)).toEqual(['Org C', 'Org B']);
+      expect(screen.queryByTestId('org-recent-org-a')).toBeNull();
+    });
+
+    it('an org listed in Recent and in the main list is highlighted once (main row only)', () => {
+      stubLocation('/devices');
+      mockStoreState.recentOrgIds = ['org-b'];
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.mouseEnter(screen.getByTestId('org-recent-org-b'));
+      expect(document.querySelectorAll('[data-highlighted="true"]')).toHaveLength(1);
+      expect(screen.getByTestId('org-option-org-b').getAttribute('data-highlighted')).toBe('true');
+      expect(screen.getByTestId('org-recent-org-b').getAttribute('data-highlighted')).toBeNull();
+    });
+
+    it('Recent skips ids no longer in the list and hides while searching or empty', () => {
+      stubLocation('/devices');
+      mockStoreState.recentOrgIds = ['org-zzz', 'org-b'];
+      const { unmount } = render(<OrgSwitcher />);
+      openDropdown();
+      const recent = within(screen.getByTestId('org-switcher-recent'));
+      expect(recent.getAllByRole('button')).toHaveLength(1);
+      expect(screen.getByTestId('org-recent-org-b')).toBeTruthy();
+      unmount();
+
+      mockStoreState.organizations = makeOrgs(8);
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.change(screen.getByTestId('org-switcher-search'), { target: { value: 'Org H' } });
+      expect(screen.queryByTestId('org-switcher-recent')).toBeNull();
+    });
+
+    it('Recent is absent when there is nothing recent', () => {
+      stubLocation('/devices');
+      render(<OrgSwitcher />);
+      openDropdown();
+      expect(screen.queryByTestId('org-switcher-recent')).toBeNull();
+    });
+
+    it('a search that hides the highlighted org moves the highlight to the first match', () => {
+      stubLocation('/devices');
+      mockStoreState.organizations = makeOrgs(8);
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.change(screen.getByTestId('org-switcher-search'), { target: { value: 'Org H' } });
+      expect(screen.getByTestId('org-option-org-h').getAttribute('data-highlighted')).toBe('true');
+      expect(within(screen.getByTestId('org-switcher-pane')).getByText('Org H')).toBeTruthy();
+    });
+
+    it('narrow viewport renders a single column: no pane, no hint, rows still switch', async () => {
+      stubLocation('/devices');
+      stubMatchMedia(false);
+      render(<OrgSwitcher />);
+      openDropdownAndClickOrg('Org B');
+      expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
+      await waitFor(() => expect(navigateToMock).toHaveBeenCalled());
+      expect(screen.queryByTestId('org-switcher-pane')).toBeNull();
+      expect(screen.queryByTestId('org-switcher-hint')).toBeNull();
+      expect(summaryLookupMock).toHaveBeenCalledWith(null, true);
     });
   });
 });

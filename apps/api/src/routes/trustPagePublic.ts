@@ -19,10 +19,10 @@ import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getBlobStream, BlobStorageError } from '../services/blobStorage';
 import { contentDispositionFor } from '../services/attachmentFilename';
 import { isServing, readCachedSnapshotPayload, cacheSnapshotPayload, trustServingMember } from '../services/trustPage/servingSet';
-import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage } from '../services/trustPage/resolve';
+import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage, type ResolvedTrustPageWithEmbed } from '../services/trustPage/resolve';
 import { verifyTrustPreviewToken } from '../services/trustPage/previewToken';
 import { buildSnapshotForPage } from '../services/trustPage/publication';
-import type { TrustPagePublicPayload } from '@breeze/shared';
+import { normalizeTrustPagePayload, type TrustPagePublicPayload } from '@breeze/shared';
 
 export const trustPagePublicRoutes = new Hono();
 const STALE_AFTER_MS = 24 * 3600_000;
@@ -46,7 +46,7 @@ function publicHeaders(c: Context, r: { searchIndexable: boolean }, cache: strin
  * `requireServingSet` = true for the unlimited card path: an unknown serving-set state (Redis down, or the set
  * never built) is a 503, never a fall-through to SQL. The rate-limited paths fall through to the live resolve.
  */
-async function admit(c: Context, partnerSlug: string, orgSlug: string | undefined, requireServingSet: boolean): Promise<ResolvedTrustPage | Response> {
+async function admit(c: Context, partnerSlug: string, orgSlug: string | undefined, requireServingSet: boolean): Promise<ResolvedTrustPageWithEmbed | Response> {
   const slugs = parseTrustSlugs(partnerSlug, orgSlug);
   if (!slugs) return notFound(c);
   const serving = await isServing(trustServingMember(slugs.partnerSlug, slugs.orgSlug ?? undefined));
@@ -58,11 +58,12 @@ async function admit(c: Context, partnerSlug: string, orgSlug: string | undefine
   const resolved = await sys(() => resolvePublishedTrustPage(slugs.partnerSlug, slugs.orgSlug));
   return resolved ?? notFound(c);
 }
+/** The current snapshot's payload, normalized to v2 (a W1 snapshot stays renderable until its next refresh). */
 async function payloadFor(r: ResolvedTrustPage): Promise<TrustPagePublicPayload | null> {
   if (!r.snapshotId) return null;
   const cached = await readCachedSnapshotPayload(r.snapshotId);
-  if (cached) return cached;
-  if (r.payload) { await cacheSnapshotPayload(r.snapshotId, r.payload); return r.payload; }
+  if (cached) return normalizeTrustPagePayload(cached);
+  if (r.payload) { await cacheSnapshotPayload(r.snapshotId, r.payload); return normalizeTrustPagePayload(r.payload); }
   return null;
 }
 
@@ -72,7 +73,9 @@ async function card(c: Context, partnerSlug: string, orgSlug?: string) {
   if (r instanceof Response) return r;
   const payload = await payloadFor(r);
   if (!payload) return notFound(c);
-  publicHeaders(c, r, PUBLIC_CACHE);
+  // W03a (quorum A3): no-store. The card carries the LIVE frame-ancestors allowlist and its only consumer is portal
+  // SSR, so caching it buys nothing and would keep a removed origin framing the embed until the cache expired.
+  publicHeaders(c, r, 'no-store');
   const s = payload.summary;
   return c.json({ data: {
     title: `${payload.org.name} · Security posture`,
@@ -81,6 +84,10 @@ async function card(c: Context, partnerSlug: string, orgSlug?: string) {
     summaryLine: `Showing ${s.controlsShown} of ${s.catalogTotal} Breeze-verifiable controls · ${s.controlsMet} met`,
     publishedAt: r.publishedAt.toISOString(), lastEvaluatedAt: r.lastEvaluatedAt?.toISOString() ?? null,
     stale: isStale(r.lastEvaluatedAt), searchIndexable: r.searchIndexable,
+    // W02h: the portal localizes <title>/description/<html lang> from these; title/summaryLine stay English.
+    locale: payload.locale, controlsShown: s.controlsShown, catalogTotal: s.catalogTotal, controlsMet: s.controlsMet,
+    // W03a: origins allowed to frame /portal/trust/embed/*. From the live row, never the payload.
+    frameAncestors: r.embedAllowedOrigins,
   } });
 }
 trustPagePublicRoutes.get('/card/:partnerSlug', (c) => card(c, c.req.param('partnerSlug')));
@@ -144,7 +151,9 @@ async function documentRoute(c: Context, partnerSlug: string, orgSlug: string | 
   const r = await admit(c, partnerSlug, orgSlug, false);
   if (r instanceof Response) return r;
   const payload = await payloadFor(r);
-  if (!payload || !payload.documents.some((d) => d.id === documentId)) return notFound(c);
+  // Anonymous download needs frozen-public ∩ live-public (amendment 35): the snapshot entry must be public AND
+  // the live link (SQL below) must still be public. A gated entry is reachable only through the access flow.
+  if (!payload || !payload.documents.some((d) => d.id === documentId && d.visibility === 'public')) return notFound(c);
   const successor = alias(orgDocuments, 'successor');
   const row = await sys(async () => (await db.select({
       storageBackend: orgDocuments.storageBackend, storageKey: orgDocuments.storageKey, data: orgDocuments.data,

@@ -41,6 +41,17 @@ const TARGET_GLOBS = [
   'src/components/trustCenter/TrustControlsSection.tsx',
   'src/components/trustCenter/TrustContentSection.tsx',
   'src/components/trustCenter/TrustDocumentsSection.tsx',
+  // Trust Center W2 (#8770): W02a pre-lists every W2 section that will mutate (stubs until W02b/d/e/f/g fill
+  // them) and the W02i OrganizationForm slug-rename warning, so no sub-wave edits this shared list.
+  'src/components/trustCenter/TrustDeclarationsSection.tsx',
+  'src/components/trustCenter/TrustFrameworksSection.tsx',
+  'src/components/trustCenter/TrustSubprocessorsSection.tsx',
+  'src/components/trustCenter/TrustFaqSection.tsx',
+  'src/components/trustCenter/TrustHistorySection.tsx',
+  'src/components/trustCenter/TrustAccessSection.tsx',
+  'src/components/trustCenter/TrustTemplateSettings.tsx',
+  'src/components/trustCenter/TrustEmbedSection.tsx',
+  'src/components/settings/OrganizationForm.tsx',
   // Caller verification W04 (#6354): technician client + the three components that mutate through it.
   'src/lib/api/callerVerification.ts',
   'src/components/callerVerification/VerifyCallerModal.tsx',
@@ -50,6 +61,8 @@ const TARGET_GLOBS = [
   'src/components/backup/VaultDashboard.tsx',
   'src/components/backup/VaultConfigDialog.tsx',
   'src/components/settings/TicketPushoverSettings.tsx',
+  // #8330: saved-filter create/edit/delete surface the API's error text.
+  'src/components/filters/SavedFilterList.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
   'src/lib/endpointMessages.ts',
   'src/components/endpointMessages/SendMessageDialog.tsx',
@@ -936,7 +949,10 @@ describe('no silent mutations in targeted set', () => {
     // Endpoint messaging W1 (#8741) adds lib/endpointMessages.ts and endpointMessages/SendMessageDialog.tsx: 229 → 231.
     // Trust Center W1 (#8768) adds TrustCenterTab, TrustStatusCard, TrustPublishDialog: 231 → 234.
     // Trust Center sections (Task 16) add Controls/Content/Documents sections: 234 → 237.
-    expect(absoluteFiles.length).toBe(237);
+    // Trust Center W2 (#8770 W02a) pre-lists six W2 sections, TrustTemplateSettings and OrganizationForm: 237 → 245.
+    // #8330 adds filters/SavedFilterList.tsx: 245 → 246.
+    // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
+    expect(absoluteFiles.length).toBe(247);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

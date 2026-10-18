@@ -12,7 +12,7 @@ import { ProviderRequestError } from '../services/backupProviders/types';
 import { persistVendorSnapshot } from '../services/backupProviders/persist';
 import { evaluateProviderAlerts } from '../services/backupProviders/alerts';
 import { attachWorkerObservability } from './workerObservability';
-import { isFinalSyncAttempt } from './syncAttempt';
+import { isFinalSyncAttempt, reportTerminalSyncFailure } from './syncAttempt';
 
 /**
  * External backup provider sync (#6008).
@@ -339,6 +339,8 @@ export async function syncConnectionById(
     // BullMQ backs off. A rejected credential is terminal at any attempt.
     if (isFinalAttempt || reauth) {
       await recordSyncFailure(connectionId, message, reauth);
+      // Connection health (W4): observe this kind soon instead of at its next poll.
+      reportTerminalSyncFailure('backup_provider');
     }
     if (reauth) {
       throw error instanceof UnrecoverableError ? error : new UnrecoverableError(

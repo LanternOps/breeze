@@ -119,6 +119,13 @@ describe('backup status report PDF', () => {
     expect(text).toContain('BACKUP STATUS');
   });
 
+  it("formats the 'Figures as of' footer note in the viewer time zone, not raw ISO", () => {
+    const text = pdfText(buildReportPdf([], { ...opts, timezone: 'Pacific/Auckland', summary: data }));
+    expect(text).not.toContain('2026-09-15T12:00:00.000Z');
+    // 12:00Z is already Sep 16 in Auckland (UTC+12), so the zone is honoured.
+    expect(text).toMatch(/Figures as of Sep 16, 2026/);
+  });
+
   it('renders an empty snapshot without throwing', () => {
     const empty: BackupStatusReportData = {
       ...data,

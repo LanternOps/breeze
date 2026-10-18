@@ -91,6 +91,21 @@ describe('CallerVerifyWindow', () => {
     expect(send).toHaveBeenCalledWith('timeout');
   });
 
+  it('counts down from the Rust-clamped deadline, not timeoutMs, for a late request (#8668)', async () => {
+    vi.useFakeTimers();
+    const send = vi.fn().mockResolvedValue(undefined);
+    const late = { ...req, timeoutMs: 120000, deadlineAt: new Date(Date.now() + 5000).toISOString() };
+    render(
+      <CallerVerifyWindow req={late} deadlineMs={Date.now() + 10000} branding={null} locale="en" onDecision={send} />,
+    );
+    expect(screen.getByText(/^10 /)).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(10001);
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith('timeout');
+  });
+
   it('does not restart the deadline when it re-renders', async () => {
     vi.useFakeTimers();
     const send = vi.fn().mockResolvedValue(undefined);

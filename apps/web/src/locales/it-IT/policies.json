@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Messaggi agli endpoint",
+        "endpointMessagingHelp": "Consente ai tecnici di inviare messaggi alla persona che usa il dispositivo.",
+        "allowUserReply": "Consenti le risposte dell'utente",
+        "allowUserReplyHelp": "Consente alla persona al dispositivo di rispondere in una chat avviata da un tecnico. Se disattivata, le chat sono unidirezionali."
       },
       "inlineEntityPicker": {
         "search": "Cerca...",
@@ -885,7 +889,8 @@
         "ringInvalidTitle": "L'anello di aggiornamento collegato non è più disponibile.",
         "ringInvalidBody": "Le patch di questo criterio restano in attesa finché non scegli un anello e salvi.",
         "ringInvalidLegacyRules": "Questo criterio contiene ancora regole delle applicazioni precedenti al loro spostamento negli anelli ({{rules}}). L'anello scelto deve già avere esattamente queste regole: aggiungile prima lì.",
-        "approvalRulesMovedToRing": "L'approvazione automatica e le regole delle applicazioni ora si impostano nell'anello di aggiornamento. Modificale nell'anello collegato. Se questa pagina era aperta prima dell'aggiornamento, ricaricala e salva di nuovo."
+        "approvalRulesMovedToRing": "L'approvazione automatica e le regole delle applicazioni ora si impostano nell'anello di aggiornamento. Modificale nell'anello collegato. Se questa pagina era aperta prima dell'aggiornamento, ricaricala e salva di nuovo.",
+        "ringLacksPolicyAppRules": "L'anello di aggiornamento scelto non ha le regole delle applicazioni di questo criterio. Aggiungi prima esattamente queste regole a quell'anello oppure scegli un anello che le abbia già."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Collega criterio periferiche",
@@ -1121,6 +1126,22 @@
         "aboutTitle": "Informazioni su Ripristino configurazione di sistema",
         "aboutBody": "Si applica solo ai dispositivi Windows. Ripristino configurazione di sistema copre file di sistema, registro, programmi installati e impostazioni. Non è un backup e non copre i file personali. Per impostazione predefinita Windows limita la creazione dei punti di ripristino a uno ogni 24 ore, e un punto creato può essere rimosso in seguito da Windows o diventare inutilizzabile."
       },
+      "securityAgentsTab": {
+        "title": "Agenti di sicurezza",
+        "description": "Distribuisci e mantieni installati agenti di sicurezza gestiti sui dispositivi",
+        "deployVendor": "Distribuisci {{vendor}}",
+        "comingSoon": "Prossimamente",
+        "platformWindows": "Windows: installato automaticamente.",
+        "platformMacos": "macOS: richiede l’approvazione MDM, quindi Breeze non lo installa automaticamente. Questi dispositivi risultano non applicabili.",
+        "platformLinux": "Linux: non supportato.",
+        "keysNotice": "Le installazioni usano le chiavi per cliente dell’integrazione Huntress. Le organizzazioni non associate in tale integrazione vengono saltate e risultano non applicabili, senza distribuzioni non riuscite. Disattivare un fornitore interrompe l’applicazione ma non disinstalla mai l’agente.",
+        "closerWarning": "Una policy di configurazione assegnata più vicino al dispositivo (sito, gruppo o dispositivo, oppure una policy figlia che eredita) con impostazioni proprie per gli agenti di sicurezza sostituisce interamente queste impostazioni per quei dispositivi. Un fornitore omesso lì non viene applicato.",
+        "partnerWideBadge": "Si applica a tutte le organizzazioni",
+        "noneEnabledNote": "Nessun fornitore è abilitato: i dispositivi raggiunti da questa policy sono esclusi da tutti gli agenti di sicurezza.",
+        "catalogMissing": "Huntress non è ancora configurato per questo partner. Collega prima l’integrazione Huntress, quindi salva di nuovo.",
+        "catalogMissingLink": "Collega Huntress",
+        "executeRequired": "Per attivare le installazioni serve l’autorizzazione a eseguire comandi sui dispositivi, con MFA. Chiedi a un amministratore con tale autorizzazione di salvare questa impostazione."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Gli avvisi di garanzia sono opt-in: i dispositivi senza un criterio di garanzia assegnato non generano mai avvisi. Le soglie sotto si applicano solo alle coperture a termine fisso: gli abbonamenti AppleCare attivi si rinnovano invece di scadere, quindi i relativi avvisi di scadenza vengono sempre soppressi.",
         "enableWarrantyExpiryAlerts": "Abilita avvisi di scadenza garanzia",
@@ -1339,7 +1360,9 @@
       "installSkippedNoCatalog": "Una regola obbligatoria non ha un elemento del catalogo collegato, quindi non c'è nulla da installare. Aggiungi un collegamento al catalogo nell'editor dei criteri per risolvere il problema.",
       "installSkippedCapOrPlatform": "Non è un errore: è stato raggiunto il limite di installazioni per passaggio oppure la piattaforma di questo dispositivo non ha un metodo di installazione per il software. Potrebbe essere ritentato al passaggio successivo.",
       "installAttempts": "{{count}} tentativo/i",
-      "installLastAttempt": "Ultimo tentativo di installazione: "
+      "installLastAttempt": "Ultimo tentativo di installazione: ",
+      "managedByConfigPolicy": "Gestita da una policy di configurazione",
+      "managedByConfigPolicyHint": "Questa policy è generata da una policy di configurazione ed è di sola lettura qui. Modificala in Policy di configurazione."
     },
     "deploymentList": {
       "running": "In esecuzione",

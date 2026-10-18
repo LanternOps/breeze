@@ -357,6 +357,18 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_workload_runtimes', 'device_workloads',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
+  // Endpoint live chat (#8743 W03): chat history follows the device (the
+  // breeze_cascade_device_org_id() trigger restamps both tables; their
+  // composite FKs are DEFERRABLE INITIALLY DEFERRED for exactly that).
+  // moveDeviceOrgInTransaction.ts first ends a live conversation in the
+  // source org (close_reason 'device_moved').
+  'endpoint_conversation_messages', 'endpoint_conversations',
+  // Endpoint messaging (#8742 W02): delivery/receipt history follows the
+  // device. moveDeviceOrgInTransaction.ts first detaches
+  // endpoint_message_id (the message stays with the source org); the
+  // breeze_cascade_device_org_id() trigger then restamps both tables, so this
+  // loop's UPDATE normally matches nothing.
+  'endpoint_message_deliveries', 'endpoint_message_receipts',
   'fleet_finding_devices',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
@@ -441,7 +453,11 @@ export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
 }
 
-const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
+// Delete-on-move disposition. A device-scoped table gets exactly one org-move disposition (restamp,
+// DEVICE_ORG_FK_CASCADE_TABLES, this list, or a reviewed exemption); moveOrg.coverage.test.ts
+// ('device org-move disposition (#8634)') enforces it from the schema, and requires each entry here to
+// carry a composite (x, org_id) FK to a source-org row.
+export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // Site location W2 (#7886): (matched_site_id, org_id) and assigned_site_id name SOURCE-org sites, so a
   // restamp is unrepresentable; the evaluator rebuilds the row in the target org.
   'topology_device_presence',
@@ -741,6 +757,12 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // devices by FK; it is deleted by device_id.
   'pam_actuation_results', 'pam_actuations', 'elevation_requests',
   'device_ownership_epoch_closures', 'device_ownership_epochs', 'pam_ledger_retirements',
+  // Endpoint messaging (#8742 W02): receipts before deliveries (receipts ->
+  // deliveries FK, ON DELETE CASCADE either way).
+  'endpoint_message_receipts', 'endpoint_message_deliveries',
+  // Endpoint live chat (#8743 W03): messages before conversations (messages ->
+  // conversations FK, ON DELETE CASCADE either way).
+  'endpoint_conversation_messages', 'endpoint_conversations',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',

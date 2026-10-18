@@ -15,6 +15,9 @@ import {
   checkPartnerDeliveryLimit,
   claimCriticalSlot,
   releaseCriticalSlot,
+  checkChatMessageLimit,
+  checkChatOpenLimit,
+  checkChatReplyLimit,
 } from './rateLimits';
 import { claimMessageIdempotency, completeMessageIdempotency, releaseMessageIdempotency } from './idempotency';
 
@@ -126,5 +129,30 @@ describe('message idempotency', () => {
   it('is unavailable (fail closed) without Redis', async () => {
     h.redis = null;
     expect(await claimMessageIdempotency('u1', 'm1', 'fp')).toEqual({ state: 'unavailable' });
+  });
+});
+
+describe('endpoint chat rate limits (#8743)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.rateLimiter.mockResolvedValue({ allowed: true, remaining: 5, resetAt: new Date(Date.now() + 60_000) });
+  });
+
+  it('keys opens per actor and messages/replies per conversation, hourly, refunding rejections', async () => {
+    await checkChatOpenLimit('user-1', 30);
+    await checkChatMessageLimit('conv-1', 60);
+    await checkChatReplyLimit('conv-1', 120);
+    expect(h.rateLimiter.mock.calls.map((c) => c.slice(1))).toEqual([
+      ['endpoint-chat:open:user-1', 30, 3600, 1, { refundOnReject: true }],
+      ['endpoint-chat:msg:conv-1', 60, 3600, 1, { refundOnReject: true }],
+      ['endpoint-chat:reply:conv-1', 120, 3600, 1, { refundOnReject: true }],
+    ]);
+  });
+
+  it('passes a refusal through with a retry hint (the limiter itself fails closed without Redis)', async () => {
+    h.rateLimiter.mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 30_000) });
+    const d = await checkChatMessageLimit('conv-1', 60);
+    expect(d.allowed).toBe(false);
+    expect(d.retryAfterSeconds).toBeGreaterThan(0);
   });
 });

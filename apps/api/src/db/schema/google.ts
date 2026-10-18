@@ -5,7 +5,10 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  index,
+  check,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 
 /**
@@ -38,9 +41,26 @@ export const googleWorkspaceConnections = pgTable(
     lastVerifiedAt: timestamp('last_verified_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
+    // Connection health W4 verification probe (services/connectionHealth/googleProbe.ts).
+    lastProbeAt: timestamp('last_probe_at'),
+    lastProbeStatus: varchar('last_probe_status', { length: 16 }).$type<'ok' | 'failed' | 'unavailable'>(),
+    /** Sanitized (sanitizeHealthDetail), never key material. Export policy: excludedOpen. */
+    lastProbeError: text('last_probe_error'),
   },
   (t) => ({
     orgUniq: uniqueIndex('google_workspace_connections_org_uniq').on(t.orgId),
+    probeFailedIdx: index('google_workspace_connections_probe_failed_idx')
+      .on(t.id)
+      .where(sql`${t.lastProbeStatus} = 'failed'`),
+    probeDueIdx: index('google_workspace_connections_probe_due_idx').on(t.lastProbeAt.asc().nullsFirst()),
+    probeStatusChk: check(
+      'google_workspace_connections_probe_status_chk',
+      sql`${t.lastProbeStatus} IS NULL OR ${t.lastProbeStatus} IN ('ok', 'failed', 'unavailable')`,
+    ),
+    probeErrorLenChk: check(
+      'google_workspace_connections_probe_error_len_chk',
+      sql`${t.lastProbeError} IS NULL OR char_length(${t.lastProbeError}) <= 300`,
+    ),
   })
 );
 

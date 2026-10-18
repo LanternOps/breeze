@@ -24,9 +24,9 @@ export function watchKey(watchType: string, name: string): string {
  * — failing open shows possibly-stale rows, failing closed would hide real
  * alerts on a transient resolver error.
  */
-export async function loadActiveWatchKeys(deviceId: string): Promise<Set<string> | null> {
+export async function loadActiveWatchKeys(deviceId: string, orgId: string): Promise<Set<string> | null> {
   try {
-    const config = await resolveMonitoringConfigForDisplay(deviceId);
+    const config = await resolveMonitoringConfigForDisplay(deviceId, orgId);
     if (!config) {
       console.warn('[monitoring] active watches unresolved; showing unfiltered results', { deviceId });
       return null;

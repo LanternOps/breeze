@@ -138,6 +138,12 @@ Old refresh tokens are revoked on each rotation to prevent replay.
 
 `POST /auth/logout` revokes all active tokens for the user and clears the refresh cookie.
 
+### Session Timeout
+
+**Session Timeout (minutes)** signs a user out of the web app after that long without activity. It is set on the **Security** tab of partner settings (applies to every organization and locks the organization field) or of organization settings. The Users page links to it.
+
+The maximum is 720 minutes (12 hours), from v0.123.0. A write above 720 is rejected with `400`, and a value stored above 720 by an earlier release is enforced as 720.
+
 ### Registration
 
 When enabled (`ENABLE_REGISTRATION=true`), self-service MSP signup is a **two-step, email-verified** flow, not a single call:
@@ -560,7 +566,14 @@ Custom roles are created with `POST /roles` and must include a name. Permissions
 
 Set `forceMfa: true` (the **Require MFA for this role** toggle in Settings → Roles) to require every member assigned this role to enrol in MFA. It defaults to `false`, can be changed later with `PATCH /roles/:id`, and is not inherited through `parentRoleId` — each role sets it for its own members. Roles that require MFA show an **MFA required** badge in the roles list. The built-in Partner Admin role requires MFA and, like every system role, cannot be edited.
 
-Custom roles are automatically scoped to the current user's context (partner or organisation). System roles cannot be modified or deleted.
+A role's owner axis is fixed at creation. Partner-scope callers choose it with `ownerScope`:
+
+| `ownerScope` | Result |
+|---|---|
+| `"partner"` | A partner role, assignable to your own staff on the Users page. `orgId` must be omitted. |
+| `"organization"` | An organisation role for the organisation named in `orgId` (required, and it must be one you can access). Assignable to that organisation's users and usable as its SSO default role. |
+
+In **Settings → Roles** the Create Role dialog shows this as a **Scope** choice that defaults to **Partner**; the header organisation no longer decides it. Organisation-scope callers can only create roles in their own organisation, and a request with `ownerScope: "partner"` from one is refused with `403`. If `ownerScope` is omitted, the older rule still applies: an `orgId` makes an organisation role, otherwise the role takes the caller's own scope. `ownerScope` cannot be changed later with `PATCH /roles/:id`. System roles cannot be modified or deleted.
 
 ### Cloning Roles
 

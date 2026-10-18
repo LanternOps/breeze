@@ -68,6 +68,7 @@ const SAMPLE_ACTIONS: Record<M365InteractiveReadActionId, M365InteractiveReadAct
   'm365.group.list': { type: 'm365.group.list' },
   'm365.group.get': { type: 'm365.group.get', groupId: GROUP_ID },
   'm365.group.members.list': { type: 'm365.group.members.list', groupId: GROUP_ID },
+  'm365.group.member.get': { type: 'm365.group.member.get', groupId: GROUP_ID, userId: DEVICE_ID },
   'm365.org.get': { type: 'm365.org.get' },
   'm365.org.skus.list': { type: 'm365.org.skus.list' },
   'm365.sites.list': { type: 'm365.sites.list', search: 'intranet' },
@@ -84,6 +85,7 @@ const EXPECTED_PATH: Record<M365InteractiveReadActionId, string> = {
   'm365.group.list': '/groups',
   'm365.group.get': `/groups/${encodeURIComponent(GROUP_ID)}`,
   'm365.group.members.list': `/groups/${encodeURIComponent(GROUP_ID)}/members`,
+  'm365.group.member.get': `/groups/${encodeURIComponent(GROUP_ID)}/members`,
   'm365.org.get': '/organization',
   'm365.org.skus.list': '/subscribedSkus',
   'm365.sites.list': '/sites',
@@ -109,6 +111,48 @@ describe('executeGraphReadAction — dispatch table', () => {
     expect(await executeGraphReadAction({ type: 'm365.user.mailboxes', userId: DEVICE_ID }, { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW }))
       .toEqual({ success: true, kind: 'resource', resource: { id: DEVICE_ID, userPrincipalName: 'alex@example.com', mail: null, proxyAddresses: [] } });
     expect(readResourceCalls[0]!.select).toEqual(['id', 'userPrincipalName', 'mail', 'proxyAddresses']);
+  });
+
+  it('m365.group.member.get issues a one-row advanced-query $filter on the member id', async () => {
+    const { client, readCollectionCalls } = createStubGraphClient({ collection: { items: [], truncated: false } });
+    const result = await executeGraphReadAction(
+      { type: 'm365.group.member.get', groupId: GROUP_ID, userId: DEVICE_ID },
+      { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW },
+    );
+    expect(result).toEqual({ success: true, kind: 'collection', items: [], truncated: false });
+    const call = readCollectionCalls[0]!;
+    expect(call.path).toBe(`/groups/${GROUP_ID}/members`);
+    expect(call.query['$select']).toBe('id,displayName,userPrincipalName,mail');
+    expect(call.query['$filter']).toBe(`id eq '${DEVICE_ID}'`);
+    expect(call.query['$count']).toBe('true');
+    expect(call.consistencyLevelEventual).toBe(true);
+    expect(call.maxItems).toBe(1);
+    expect(call.maxPages).toBe(1);
+  });
+
+  it('m365.group.member.get returns one projected item when the member is present', async () => {
+    const { client } = createStubGraphClient({ collection: { items: [{ id: DEVICE_ID, displayName: 'Ada', secret: 'x' }], truncated: false } });
+    const result = await executeGraphReadAction(
+      { type: 'm365.group.member.get', groupId: GROUP_ID, userId: DEVICE_ID },
+      { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW },
+    );
+    expect(result).toEqual({ success: true, kind: 'collection', items: [{ id: DEVICE_ID, displayName: 'Ada' }], truncated: false });
+  });
+
+  it('m365.user.get selects signInSessionsValidFromDateTime and passes assignedLicenses {skuId, disabledPlans} through unreduced', async () => {
+    const licenses = [{ skuId: GROUP_ID, disabledPlans: [DEVICE_ID] }];
+    const { client, readResourceCalls } = createStubGraphClient({ resource: {
+      id: 'u1', assignedLicenses: licenses, signInSessionsValidFromDateTime: '2026-10-16T00:00:00Z',
+    } });
+    const result = await executeGraphReadAction(
+      { type: 'm365.user.get', userIdOrUpn: 'ada@contoso.com' },
+      { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW },
+    );
+    expect(readResourceCalls[0]!.select).toContain('signInSessionsValidFromDateTime');
+    expect(readResourceCalls[0]!.select).toContain('assignedLicenses');
+    expect(result).toEqual({ success: true, kind: 'resource', resource: {
+      id: 'u1', assignedLicenses: licenses, signInSessionsValidFromDateTime: '2026-10-16T00:00:00Z',
+    } });
   });
 
   it.each(M365_INTERACTIVE_READ_ACTION_IDS)('%s calls the fixed path with the full field allowlist as $select', async (actionId) => {

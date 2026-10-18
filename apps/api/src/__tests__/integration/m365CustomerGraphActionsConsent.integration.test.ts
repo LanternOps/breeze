@@ -182,7 +182,9 @@ function completeConsentResult(input: {
     manifestVersion: PROFILE_MANIFEST.version,
     verifiedAt: new Date().toISOString(),
     grantReconciliation: 'complete',
-    observedGrants: input.observedGrants,
+    // The executor reconcile returns grants in canonical order (the column
+    // CHECK breeze_m365_observed_grants_are_canonical requires it).
+    observedGrants: [...input.observedGrants].sort((a, b) => canonicalGrantKey(a).localeCompare(canonicalGrantKey(b))),
     missingGrants: REQUIRED_GRANTS.filter((grant) => !observedKeys.has(canonicalGrantKey(grant))),
     unexpectedGrants: input.observedGrants.filter((grant) => !requiredKeys.has(canonicalGrantKey(grant))),
     grantsVerifiedAt: new Date().toISOString(),
@@ -270,13 +272,13 @@ async function completeConsentPhase(
 // --- tests --------------------------------------------------------------
 
 describe('customer Graph-actions consent lifecycle integration', () => {
-  runDb('happy path: exact 2 grants observed → connection active, missing/unexpected empty', async () => {
+  runDb('happy path: every required grant observed → connection active, missing/unexpected empty', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
     const tenantId = randomUUID();
     const app = buildApp(tenantId, async () => completeConsentResult({
       tenantId,
-      observedGrants: [GRANT_USER_RW, GRANT_PASSWORD_RW],
+      observedGrants: [...REQUIRED_GRANTS],
     }));
 
     const { consentState, consentCookie } = await driveToConsentPhase(
@@ -300,13 +302,13 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     expect(health.unexpectedGrants).toEqual([]);
   });
 
-  runDb('missing grant: only 1 of 2 observed → not active, missing = the other', async () => {
+  runDb('missing grant: one required grant absent → not active, missing = that grant', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
     const tenantId = randomUUID();
     const app = buildApp(tenantId, async () => completeConsentResult({
       tenantId,
-      observedGrants: [GRANT_USER_RW],
+      observedGrants: REQUIRED_GRANTS.filter((grant) => grant !== GRANT_PASSWORD_RW),
     }));
 
     const { consentState, consentCookie } = await driveToConsentPhase(
@@ -338,7 +340,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const tenantId = randomUUID();
     const app = buildApp(tenantId, async () => completeConsentResult({
       tenantId,
-      observedGrants: [GRANT_USER_RW, GRANT_PASSWORD_RW, EXTRA_GRANT],
+      observedGrants: [...REQUIRED_GRANTS, EXTRA_GRANT],
     }));
 
     const { consentState, consentCookie } = await driveToConsentPhase(

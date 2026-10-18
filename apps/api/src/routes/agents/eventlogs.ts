@@ -166,7 +166,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
 
     let settings: EventLogSettings | null;
     try {
-      settings = await getDeviceEventLogSettings(device.id);
+      settings = await getDeviceEventLogSettings(device.id, { orgId: device.orgId });
     } catch (err) {
       console.error(`[EventLogs] Failed to resolve settings for device ${device.id}, using conservative defaults:`, err);
       settings = EVENT_LOG_DEFAULTS;

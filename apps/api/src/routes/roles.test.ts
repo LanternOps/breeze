@@ -616,6 +616,174 @@ describe('role routes', () => {
     });
   });
 
+  // #8370: the web dialog now states the owner axis explicitly (`ownerScope`)
+  // instead of the server inferring it from whichever org happened to be
+  // focused in the header. Create-only; omitting it keeps the legacy inference.
+  describe('POST /roles — explicit ownerScope (#8370)', () => {
+    const ORG_A = '55555555-5555-4555-8555-555555555555';
+    const ORG_FOREIGN = '66666666-6666-4666-8666-666666666666';
+
+    function setPartnerAuth() {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'all',
+          orgId: null,
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === ORG_A
+        });
+        return next();
+      });
+    }
+
+    function setOrgAuth() {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: ORG_A,
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === ORG_A
+        });
+        return next();
+      });
+    }
+
+    // Wires a successful insert with no permissions; returns the role-insert spy.
+    function mockSuccessfulInsert(scope: 'partner' | 'organization') {
+      const roleInsertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          { id: 'role-new', name: 'Tech', description: null, scope, isSystem: false, forceMfa: false, parentRoleId: null, createdAt: new Date(), updatedAt: new Date() }
+        ])
+      });
+      const txInsert = vi.fn().mockReturnValueOnce({ values: roleInsertValues });
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn({ insert: txInsert } as any));
+      return roleInsertValues;
+    }
+
+    function post(body: Record<string, unknown>) {
+      return app.request('/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Tech', permissions: [], ...body })
+      });
+    }
+
+    it('partner caller with ownerScope=partner creates a PARTNER role', async () => {
+      setPartnerAuth();
+      const roleInsertValues = mockSuccessfulInsert('partner');
+
+      const res = await post({ ownerScope: 'partner' });
+
+      expect(res.status).toBe(201);
+      const inserted = roleInsertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted).toMatchObject({ scope: 'partner', partnerId: 'partner-123' });
+      expect(inserted.orgId).toBeUndefined();
+    });
+
+    it('rejects ownerScope=partner combined with an orgId (400, no txn)', async () => {
+      setPartnerAuth();
+
+      const res = await post({ ownerScope: 'partner', orgId: ORG_A });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('refuses an ORG-scope caller asking for a partner role (403, no txn)', async () => {
+      setOrgAuth();
+
+      const res = await post({ ownerScope: 'partner' });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('requires a partner caller to name the org for ownerScope=organization (400, no txn)', async () => {
+      setPartnerAuth();
+
+      const res = await post({ ownerScope: 'organization' });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('orgId');
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('refuses a partner caller creating an org role for an org outside its access (403, no txn)', async () => {
+      setPartnerAuth();
+
+      const res = await post({ ownerScope: 'organization', orgId: ORG_FOREIGN });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('partner caller with ownerScope=organization and an accessible org creates an ORG role', async () => {
+      setPartnerAuth();
+      mockOrgTypeLookup('customer');
+      const roleInsertValues = mockSuccessfulInsert('organization');
+
+      const res = await post({ ownerScope: 'organization', orgId: ORG_A });
+
+      expect(res.status).toBe(201);
+      const inserted = roleInsertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted).toMatchObject({ scope: 'organization', orgId: ORG_A });
+      expect(inserted.partnerId).toBeUndefined();
+    });
+
+    it('ORG-scope caller with ownerScope=organization creates a role in its own org', async () => {
+      setOrgAuth();
+      const roleInsertValues = mockSuccessfulInsert('organization');
+
+      const res = await post({ ownerScope: 'organization' });
+
+      expect(res.status).toBe(201);
+      const inserted = roleInsertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted).toMatchObject({ scope: 'organization', orgId: ORG_A });
+    });
+
+    it('ORG-scope caller naming a different org is refused (403, no txn)', async () => {
+      setOrgAuth();
+
+      const res = await post({ ownerScope: 'organization', orgId: ORG_FOREIGN });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('an explicit ownerScope=organization cannot bypass the hidden quick_support exclusion (403)', async () => {
+      setPartnerAuth();
+      mockOrgTypeLookup('quick_support');
+
+      const res = await post({ ownerScope: 'organization', orgId: ORG_A });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('ORG-scope caller may name its own org alongside ownerScope=organization', async () => {
+      setOrgAuth();
+      const roleInsertValues = mockSuccessfulInsert('organization');
+
+      const res = await post({ ownerScope: 'organization', orgId: ORG_A });
+
+      expect(res.status).toBe(201);
+      const inserted = roleInsertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted).toMatchObject({ scope: 'organization', orgId: ORG_A });
+    });
+
+    it('rejects an unknown ownerScope value (400)', async () => {
+      setPartnerAuth();
+
+      const res = await post({ ownerScope: 'system' });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+  });
+
   describe('GET /roles/:id', () => {
     it('should return a role with permissions and user count', async () => {
       vi.mocked(db.select)

@@ -1,4 +1,5 @@
-import { trustStatusLabel, trustStatusPillRole, type TrustControlStatus, type TrustPillRole } from '@breeze/shared';
+import { trustCopyFor, trustStatusPillRole, type TrustControlStatus, type TrustPillRole } from '@breeze/shared';
+import { useTrustLocale } from './trustCopy';
 
 const ROLE_CLASSES: Record<TrustPillRole, string> = {
   success: 'border-success/30 bg-success/10 text-success',
@@ -8,9 +9,10 @@ const ROLE_CLASSES: Record<TrustPillRole, string> = {
 };
 
 export function TrustStatusPill({ status }: { status: TrustControlStatus }) {
+  const locale = useTrustLocale();
   return (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${ROLE_CLASSES[trustStatusPillRole(status)]}`}>
-      {trustStatusLabel(status)}
+      {trustCopyFor(locale).statuses[status]}
     </span>
   );
 }

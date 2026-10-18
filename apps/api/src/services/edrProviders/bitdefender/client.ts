@@ -23,7 +23,20 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_INLINE_RETRY_AFTER_MS = 65_000;
 const DEFAULT_RETRY_AFTER_MS = 60_000;
 
-export type GzOperationClass = 'default' | 'inventory' | 'companies' | 'incidents' | 'actions';
+export type GzOperationClass = 'default' | 'inventory' | 'companies' | 'incidents' | 'actions' | 'push';
+
+/**
+ * [U] Push event types subscribed for "detections changed" hints (lab gate). An unknown
+ * type name would surface as a vendor `invalid_params` error at registration.
+ */
+export const GZ_PUSH_EVENT_TYPES: Readonly<Record<string, true>> = { 'new-incident': true, av: true, aph: true };
+
+/** What `getPushEventSettings` reports, minus the stored `authorization` value (never surfaced). */
+export interface GzPushSettingsView { enabled: boolean; url: string | null; subscribedCompanyIds: string[] }
+
+export type GzPushSettingsInput =
+  | { enabled: true; url: string; authorization: string; companyIds: string[] }
+  | { enabled: false };
 type GzVersion = '1.0' | '1.1' | '1.2';
 
 export interface GzInventoryItem {
@@ -227,7 +240,10 @@ export class GravityZoneClient {
         rateLimitRetried = true;
         continue;
       }
-      if (status >= 500) {
+      // 408 is a proxy/gateway timeout like 502/504: the request may already have
+      // reached the vendor, so on a write it is `outcome_unknown` (the row keeps its
+      // in-flight slot for the reconciler), never a terminal failure; reads retry.
+      if (status >= 500 || status === 408) {
         transient(`HTTP ${status}`, 'upstream_error');
         await this.sleep(BACKOFF_BASE_MS * 2 ** (attempt - 1));
         continue;
@@ -439,6 +455,49 @@ export class GravityZoneClient {
 
   createScanTask(endpointId: string, requestId: string): Promise<GzTaskResult> {
     return this.writeTask('network', 'createScanTask', { targetIds: [endpointId], type: 1 }, requestId);
+  }
+
+  // ---- push settings (W03 PR-B; operation class `push`, vendor limit 5/min) ----
+  // Param and result shapes are [U] until the lab run (synthetic fixtures only).
+  // setPushEventSettings REPLACES the console's push configuration, so a retry
+  // repeats the same state and is safe; it keeps the default retrying transport.
+
+  private expectTrue(label: string, r: unknown): void {
+    if (r !== true) {
+      throw this.fail(`${label}: unexpected result`, { code: 'malformed_response', scope: 'operation' });
+    }
+  }
+
+  async setPushEventSettings(o: GzPushSettingsInput): Promise<void> {
+    const params: Record<string, unknown> = o.enabled
+      ? {
+          status: 1,
+          serviceType: 'jsonRPC',
+          serviceSettings: { url: o.url, authorization: o.authorization, requireValidSslCertificate: true },
+          subscribeToEventTypes: { ...GZ_PUSH_EVENT_TYPES },
+          ...(o.companyIds.length > 0 ? { subscribeToCompanies: [...o.companyIds] } : {}),
+        }
+      : { status: 0 };
+    const r = await this.call<unknown>('push', '1.0', 'setPushEventSettings', params, { operationClass: 'push', scope: 'connection' });
+    this.expectTrue('GravityZone push.setPushEventSettings', r);
+  }
+
+  async getPushEventSettings(): Promise<GzPushSettingsView> {
+    const r = await this.call<{
+      status?: unknown; serviceSettings?: { url?: unknown } | null; subscribeToCompanies?: unknown;
+    } | null>('push', '1.0', 'getPushEventSettings', {}, { operationClass: 'push', scope: 'connection' });
+    const url = r?.serviceSettings?.url;
+    const companies = Array.isArray(r?.subscribeToCompanies) ? r!.subscribeToCompanies : [];
+    return {
+      enabled: r?.status === 1,
+      url: typeof url === 'string' ? url : null,
+      subscribedCompanyIds: companies.filter((c): c is string => typeof c === 'string'),
+    };
+  }
+
+  async sendTestPushEvent(): Promise<void> {
+    const r = await this.call<unknown>('push', '1.0', 'sendTestPushEvent', { eventType: 'av' }, { operationClass: 'push', scope: 'connection' });
+    this.expectTrue('GravityZone push.sendTestPushEvent', r);
   }
 
   /** A normal retrying read. Status codes are [U]; anything unrecognised maps to `unknown`. */

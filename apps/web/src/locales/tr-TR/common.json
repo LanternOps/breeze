@@ -114,7 +114,8 @@
     "ticketsIncidents": "Olaylar",
     "ticketsServiceRequests": "Hizmet talepleri",
     "ticketsProblems": "Sorunlar",
-    "ticketsChanges": "Değişiklikler"
+    "ticketsChanges": "Değişiklikler",
+    "endpointMessages": "Mesajlar"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -315,6 +316,17 @@
       "target": "Hedef",
       "time": "Zaman"
     },
+    "recentlyViewed": {
+      "title": "Kaldığınız yerden devam edin",
+      "kind": {
+        "device": "Cihaz",
+        "org": "Kuruluş",
+        "ticket": "Bilet",
+        "alert": "Uyarı",
+        "site": "Site",
+        "page": "Sayfa"
+      }
+    },
     "alerts": {
       "title": "Son Uyarılar",
       "viewAll": "Tümünü görüntüle",
@@ -482,7 +494,10 @@
       "createFirst": "İlk filtrenizi oluşturun",
       "created": "Oluşturuldu {{date}}",
       "deleteConfirm": "Bu filtre silinsin mi?",
-      "duplicate": "Çoğalt"
+      "duplicate": "Çoğalt",
+      "saveFailed": "Filtre kaydedilemedi",
+      "deleteFailed": "Filtre silinemedi",
+      "ownerOrgHint": "Kayıtlı filtreler tek bir kuruluşa aittir. Bu filtrenin hangi kuruluşa ait olacağını seçin."
     },
     "targets": {
       "modes": {
@@ -688,7 +703,23 @@
       "noSelection": "Kuruluşu seçin",
       "searchOrganizations": "Arama kuruluşları…",
       "noMatches": "Hiçbir kuruluş eşleşmiyor",
-      "legacyFilterNotice": "Organizasyon filtreleme artık başlık seçiciyi takip ediyor."
+      "legacyFilterNotice": "Organizasyon filtreleme artık başlık seçiciyi takip ediyor.",
+      "recent": "Son kullanılanlar",
+      "pane": {
+        "destinations": {
+          "overview": "Genel bakış",
+          "devices": "Cihazlar",
+          "tickets": "Biletler",
+          "alerts": "Uyarılar",
+          "sites": "Siteler",
+          "billing": "Faturalama"
+        },
+        "offlineCount": "{{count}} çevrimdışı",
+        "openCount": "{{count}} açık",
+        "criticalCount": "{{count}} kritik",
+        "noCritical": "yok",
+        "hint": "Geçiş yapmak için bir ada tıklayın · geçiş yapıp gitmek için bir sayfaya tıklayın"
+      }
     },
     "header": {
       "menu": "Menü",
@@ -805,9 +836,9 @@
       "expand": "Kenar çubuğunu genişlet",
       "collapseSections": "Tüm bölümleri daralt",
       "closeMenu": "Menüyü kapat",
-      "recentDevices": "Son açılan cihazlar",
-      "hideRecentDevices": "Son açılan cihazları gizle",
-      "showRecentDevices": "Son açılan cihazları göster"
+      "recent": "Son açılanlar",
+      "hideRecent": "Son açılanları gizle",
+      "showRecent": "Son açılanları göster"
     },
     "orgRequired": {
       "title": "Bir kuruluş seçin",
@@ -1335,6 +1366,14 @@
           "migrationWindowClosed": {
             "description": "Bir bilet taşıma penceresi kapandığında, içe aktarılan sayılarla birlikte kuruluş başına bir kez tetiklenir.",
             "label": "Taşıma penceresi kapandı"
+          },
+          "integrationHealthOpened": {
+            "description": "Bir kuruluşun bağlantısı için sağlık olayı açıldığında tetiklenir.",
+            "label": "Bağlantı sağlık olayı açıldı"
+          },
+          "integrationHealthResolved": {
+            "description": "Bir bağlantının sağlık olayı çözüldüğünde tetiklenir.",
+            "label": "Bağlantı sağlık olayı çözüldü"
           }
         },
         "fields": {
@@ -2628,7 +2667,8 @@
     "dismiss": "İki faktörlü kimlik doğrulama hatırlatıcısını kapat"
   },
   "mfaPolicyOffBanner": {
-    "message": "Ekibiniz için çok faktörlü kimlik doğrulama zorunlu değil. Yalnızca parola ile açılan oturumlar betik çalıştırabilir, cihazları taşıyabilir ve ilkeleri değiştirebilir.",
+    "label": "MFA hatırlatması",
+    "message": "Ekibiniz için MFA zorunlu değil. Yalnızca parolalı oturumlar betik çalıştırabilir.",
     "cta": "MFA'yı zorunlu kıl",
     "dismiss": "MFA ilkesi hatırlatmasını bugünlük kapat"
   },

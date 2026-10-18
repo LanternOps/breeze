@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { getTableColumns } from 'drizzle-orm';
 import type { PgTable } from 'drizzle-orm/pg-core';
-import { trustPages, trustPageSnapshots, trustPageDocuments } from '../db/schema/trustPages';
+import {
+  trustPages, trustPageSnapshots, trustPageDocuments, trustPageDeclarations, trustPageAccessRequests,
+  trustPageAccessTokens, trustPageFaqItems, trustPageSubprocessors,
+} from '../db/schema/trustPages';
 import { getTenantExportPolicyRegistry } from './tenantExportPolicyRegistry';
 
 /**
@@ -16,6 +19,12 @@ const TABLES: ReadonlyArray<[string, PgTable]> = [
   ['trust_pages', trustPages],
   ['trust_page_snapshots', trustPageSnapshots],
   ['trust_page_documents', trustPageDocuments],
+  // Trust Center W2 (#8770 W02a)
+  ['trust_page_declarations', trustPageDeclarations],
+  ['trust_page_access_requests', trustPageAccessRequests],
+  ['trust_page_access_tokens', trustPageAccessTokens],
+  ['trust_page_faq_items', trustPageFaqItems],
+  ['trust_page_subprocessors', trustPageSubprocessors],
 ];
 
 function dbColumnNames(table: PgTable): string[] {
@@ -44,9 +53,38 @@ describe('trust center export policy', () => {
     expect(cfg?.openContainerReviewed).toBe(true);
   });
 
+  it('W3a: includes the embed allowlist (text[] of public website origins, not an open container)', () => {
+    const col = getTenantExportPolicyRegistry()['trust_pages']?.columns['embed_allowed_origins'];
+    expect(col?.decision).toBe('include');
+    expect(col?.openContainerReviewed).toBeFalsy();
+  });
+
   it('includes payload_sha256 as a reviewed integrity digest', () => {
     const digest = getTenantExportPolicyRegistry()['trust_page_snapshots']?.columns['payload_sha256'];
     expect(digest?.decision).toBe('include');
     expect(digest?.reviewedSensitiveName).toBe(true);
+  });
+
+  it('excludes the access-token hash as sensitive verifier material', () => {
+    const hash = getTenantExportPolicyRegistry()['trust_page_access_tokens']?.columns['token_hash'];
+    expect(hash?.decision).toBe('exclude');
+    // excludedSensitive (verifier), not excludedOpen (container): both exclude, only the rationale differs.
+    expect(hash?.rationale).toMatch(/verifier/);
+  });
+
+  it.each([
+    ['trust_page_access_requests', 'nda_text_sha256'],
+    ['trust_page_declarations', 'evidence_document_sha256'],
+  ])('%s.%s is a reviewed, included content digest', (table, column) => {
+    const digest = getTenantExportPolicyRegistry()[table]?.columns[column];
+    expect(digest?.decision).toBe('include');
+    expect(digest?.reviewedSensitiveName).toBe(true);
+  });
+
+  it('includes the W2 trust_pages settings columns', () => {
+    const cols = getTenantExportPolicyRegistry()['trust_pages']!.columns;
+    for (const c of ['framework_view', 'show_history', 'nda_text', 'access_request_creates_ticket']) {
+      expect(cols[c]?.decision, c).toBe('include');
+    }
   });
 });

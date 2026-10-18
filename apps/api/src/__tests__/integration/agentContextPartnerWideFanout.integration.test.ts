@@ -51,6 +51,7 @@ import {
 } from '../../db/schema';
 import { buildEventLogConfigUpdate, EVENT_LOG_DEFAULTS } from '../../routes/agents/helpers';
 import { getRedis } from '../../services/redis';
+import { devicePolicyCacheKey } from '../../services/devicePolicyCache';
 import { createPartner, createOrganization, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -191,7 +192,7 @@ async function captureCause(
 async function purgeEventLogCache(deviceId: string) {
   const redis = getRedis();
   if (!redis) return;
-  await redis.del(`eventlog:settings:device:${deviceId}`);
+  await redis.del(devicePolicyCacheKey('eventlog', deviceId));
 }
 
 /** A plain, UN-escalated read of the policy head row under whatever context is active. */

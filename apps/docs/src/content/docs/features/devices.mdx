@@ -307,11 +307,13 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
 
+The device's **Overview** tab also has a **Responsible contacts** card: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
+
 A device's physical placement (room, rack, rack unit and height) can be recorded through the API only, with `GET`/`PUT`/`DELETE /devices/:id/placement`; discovered network assets use `/discovery/assets/:id/placement`. The Info tab does not show it yet.
 
 ### System Restore tab
 
-Separately from the Info tab, Windows devices have a **System Restore** tab (`#system-restore`) that lists each time Breeze asked for a System Restore checkpoint: when it was requested, what triggered it (patch install, script run or software install) and the outcome. Until a device runs a future agent release that reports outcomes, entries read **Awaiting the device**. The list records requests and what the device reported; it does not mean a restore point exists. See [System Protection](/features/configuration-policies/#system-protection).
+Separately from the Info tab, Windows devices have a **System Restore** tab (`#system-restore`) that lists each time Breeze asked for a System Restore checkpoint: when it was requested, what triggered it (patch install, script run or software install) and the outcome. Until a device runs a future agent release that reports outcomes, entries read **Awaiting the device**. The list records requests and what the device reported; it does not mean a restore point exists. See [System Protection](/features/configuration-policies/#system-protection). Entries are kept for 90 days from the request (set `RESTORE_POINT_ATTEMPT_RETENTION_DAYS`, up to 365). An entry still awaiting the device is removed only once it is past that window and its command can no longer report back.
 
 ### Device function
 

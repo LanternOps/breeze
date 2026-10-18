@@ -43,12 +43,19 @@ export default function BillingDefaultsTab({
             id="pb-currency" value={currencyCode}
             onChange={(e) => setCurrencyCode(e.target.value)}
             data-testid="partner-billing-currency"
+            aria-describedby="pb-currency-help"
             className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
           >
             {currencyOptions(currencyCode).map((code) => (
               <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
             ))}
           </select>
+          {/* #7510: organizations.currency_code is NOT NULL and stamped at
+              creation — this is a default for NEW organizations, never an
+              inherited value existing organizations follow. */}
+          <p id="pb-currency-help" data-testid="partner-billing-currency-help" className="mt-1 text-xs text-muted-foreground">
+            {t('partnerBillingSettings.defaults.currencyHelp')}
+          </p>
         </div>
         <div>
           <label className="text-sm font-medium" htmlFor="pb-tax">{t('partnerBillingSettings.defaults.defaultTaxRate')}</label>

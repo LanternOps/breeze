@@ -416,6 +416,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // own grant wins and the loser's is dropped, exactly like ai_budgets. Partner
   // CEILING rows have org_id NULL and are not merge participants at all.
   ai_script_policies: { kind: 'keep-survivor' }, // verified: ai_script_policies_org_uq (org_id) WHERE org_id IS NOT NULL
+  // AI device file read policy (#8852): org override row is singleton org config
+  // (ai_data_policies_org_uq, total UNIQUE on org_id); survivor's wins. Partner
+  // default rows have org_id NULL and are not merge participants.
+  ai_data_policies: { kind: 'keep-survivor' }, // verified: ai_data_policies_org_uq (org_id)
   // llm_egress_events (#3922 phase 2, landed on main 2026-08-27): per-request
   // egress telemetry — which org attempted which outbound LLM dial, allowed or
   // blocked. Repointing would attribute the loser org's egress history to the
@@ -779,6 +783,9 @@ const REPOINT_TABLES: readonly string[] = [
   // (org_id) grant for it — so usage history follows the merged client
   // (spec §5.5; chargeback W10).
   "ai_invocations",
+  // AI model registry W08b (#7606): legacy AI model config archive (history,
+  // partner axis); org-level rows follow the merged client.
+  "ai_model_registry_legacy_archive",
   "ai_screenshots",
   "ai_sessions",
   // AI chargeback (#7608): billed history and unbilled charges follow the
@@ -980,6 +987,21 @@ const REPOINT_TABLES: readonly string[] = [
   "edr_tenants",
   "elevation_audit",
   "elevation_requests",
+  // Endpoint live chat (#8743 W03): plain repoints under SET CONSTRAINTS ALL
+  // DEFERRED; the (conversation_id, org_id) and (device_id, org_id) composite
+  // FKs re-resolve at commit. The only unique keys are (conversation_id,
+  // client_nonce) and the one-live-chat-per-device partial index, neither of
+  // which carries org_id, so a repoint cannot collide.
+  "endpoint_conversation_messages",
+  "endpoint_conversations",
+  // Endpoint messaging (#8742 W02): plain repoints under SET CONSTRAINTS ALL
+  // DEFERRED, so the (x, org_id) composite FKs between them re-resolve at
+  // commit. No org-scoped unique key: endpoint_messages is deliberately not
+  // unique on (org_id, batch_id), because a cross-org send's two rows would
+  // collide in the survivor.
+  "endpoint_message_deliveries",
+  "endpoint_message_receipts",
+  "endpoint_messages",
   "escalation_policies",
   // event_delivery_receipts (durable dispatch bookkeeping, #4117, landed on
   // main 2026-08-27 — the same PR dropped event_bus_events, which used to be
@@ -1243,6 +1265,13 @@ const REPOINT_TABLES: readonly string[] = [
   // Children of trust_pages: ON DELETE CASCADE removes them with the loser's page in the custom executor; a plain repoint here only ever sees zero rows and keeps the registry total.
   "trust_page_documents",
   "trust_page_snapshots",
+  // Trust Center W2 (#8770 W02a): same reasoning — each cascades with the loser's page
+  // (access_tokens via access_requests).
+  "trust_page_access_requests",
+  "trust_page_access_tokens",
+  "trust_page_declarations",
+  "trust_page_faq_items",
+  "trust_page_subprocessors",
   "tunnel_sessions",
   "unifi_clients",
   "unifi_collectors",

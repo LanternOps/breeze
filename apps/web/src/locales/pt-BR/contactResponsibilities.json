@@ -18,5 +18,7 @@
     "organization": "Organização inteira",
     "site": "Este site",
     "device_group": "Grupo de dispositivos"
-  }
+  },
+  "emptyCompact": "Nenhum contato responsável",
+  "assign": "Atribuir"
 }

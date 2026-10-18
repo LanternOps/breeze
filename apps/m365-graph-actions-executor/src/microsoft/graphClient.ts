@@ -60,6 +60,17 @@ export interface MicrosoftGraphClient {
     path: string;
     body: Record<string, unknown>;
   }): Promise<void>;
+  /** Returns the parsed JSON body (e.g. 201 Created from POST /users) or null on an empty body (204). */
+  post(input: {
+    accessToken: OpaqueAccessToken;
+    path: string;
+    body: Record<string, unknown>;
+  }): Promise<Record<string, unknown> | null>;
+  /** 404 is a thrown graph_not_found; the caller decides whether that is a no-op. */
+  del(input: {
+    accessToken: OpaqueAccessToken;
+    path: string;
+  }): Promise<void>;
 }
 
 interface GraphClientConfig {
@@ -234,6 +245,48 @@ export function createMicrosoftGraphClient(
     && positiveInteger(maxRequestCount)
     && positiveInteger(maxItemCount)
     && positiveInteger(maxResponseBytes);
+
+  /**
+   * Shared mutation transport for patch/post/del. Returns the bounded response
+   * text; non-2xx is translated through readFailure.
+   */
+  async function mutate(
+    method: 'PATCH' | 'POST' | 'DELETE',
+    input: { accessToken: OpaqueAccessToken; path: string; body?: Record<string, unknown> },
+  ): Promise<string> {
+    if (!configValid
+      || typeof input.accessToken !== 'string'
+      || !input.accessToken
+      || !input.path.startsWith('/')) {
+      throw failure('graph_request_invalid');
+    }
+    const budget: RequestBudget = { bytes: 0, requests: 0, items: 0 };
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    try {
+      const headers: Record<string, string> = { authorization: `Bearer ${input.accessToken}` };
+      if (input.body !== undefined) headers['content-type'] = 'application/json';
+      const response = await fetchImpl(graphUrl(input.path), {
+        method,
+        redirect: 'error',
+        headers,
+        ...(input.body !== undefined ? { body: JSON.stringify(input.body) } : {}),
+        signal: controller.signal,
+      });
+      // Graph mutation success is 200/201/204. Consume/bound the body either
+      // way; only translate non-2xx into a typed failure.
+      const responseBody = await readBoundedBody(response, budget, maxResponseBytes);
+      if (!response.ok) throw readFailure(response, responseBody);
+      return responseBody;
+    } catch (error) {
+      if (error instanceof GraphClientError) throw error;
+      if (timedOut) throw failure('graph_request_timeout');
+      throw failure('graph_transport_failed');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   async function request(url: string, accessToken: OpaqueAccessToken, budget: RequestBudget): Promise<unknown> {
     if (budget.requests >= maxRequestCount) throw failure('graph_response_too_large');
@@ -524,35 +577,19 @@ export function createMicrosoftGraphClient(
     },
 
     async patch(input) {
-      if (!configValid
-        || typeof input.accessToken !== 'string'
-        || !input.accessToken
-        || !input.path.startsWith('/')) {
-        throw failure('graph_request_invalid');
-      }
-      const budget: RequestBudget = { bytes: 0, requests: 0, items: 0 };
-      const controller = new AbortController();
-      let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
-      try {
-        const response = await fetchImpl(graphUrl(input.path), {
-          method: 'PATCH',
-          redirect: 'error',
-          headers: { authorization: `Bearer ${input.accessToken}`, 'content-type': 'application/json' },
-          body: JSON.stringify(input.body),
-          signal: controller.signal,
-        });
-        // Graph mutation success is 204 No Content (or 200). Consume/bound the
-        // body either way; only translate non-2xx into a typed failure.
-        const responseBody = await readBoundedBody(response, budget, maxResponseBytes);
-        if (!response.ok) throw readFailure(response, responseBody);
-      } catch (error) {
-        if (error instanceof GraphClientError) throw error;
-        if (timedOut) throw failure('graph_request_timeout');
-        throw failure('graph_transport_failed');
-      } finally {
-        clearTimeout(timer);
-      }
+      await mutate('PATCH', input);
+    },
+
+    async post(input) {
+      const text = await mutate('POST', input);
+      if (text.trim() === '') return null;
+      const parsed = parseJson(text);
+      if (!isRecord(parsed)) throw failure('graph_response_invalid');
+      return parsed;
+    },
+
+    async del(input) {
+      await mutate('DELETE', input);
     },
   };
 }

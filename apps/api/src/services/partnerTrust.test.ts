@@ -292,6 +292,17 @@ describe('evaluateCapability', () => {
       .toEqual({ allow: true });
   });
 
+  it('gates chat_open/chat_message for a probation partner but lets lifecycle chat_close through (#8743)', async () => {
+    state.trustState = 'probation';
+    for (const commandType of ['chat_open', 'chat_message']) {
+      expect(await evaluateCapability('device_execute', { partnerId: 'p1', commandType }))
+        .toMatchObject({ allow: false, code: 'TRUST_PROBATION', capability: 'device_execute' });
+    }
+    expect(isLifecycleCommand('chat_close')).toBe(true);
+    expect(await evaluateCapability('device_execute', { partnerId: 'p1', commandType: 'chat_close' }))
+      .toEqual({ allow: true });
+  });
+
   it('denies PAM reconciliation reset for a restricted partner', async () => {
     state.trustState = 'restricted';
     expect(isLifecycleCommand('pam_reconcile_v2')).toBe(false);

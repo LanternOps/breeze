@@ -361,3 +361,63 @@ func TestCollectorCommandInheritedPipeCleanup(t *testing.T) {
 		})
 	}
 }
+
+// TestTruncateCollectorStringStripsControlCharacters covers #8904: a Windows
+// CIM read returned a service account as four NULs followed by "lSystem", and
+// the agent shipped the control characters unchanged.
+func TestTruncateCollectorStringStripsControlCharacters(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "issue 8904 bytes", in: "\x00\x00\x00\x00lSystem", want: "lSystem"},
+		{name: "embedded NUL", in: "Local\x00System", want: "LocalSystem"},
+		{name: "only NULs", in: "\x00\x00\x00\x00", want: ""},
+		{name: "NUL hides surrounding space", in: " \x00 LocalSystem \x00", want: "LocalSystem"},
+		{name: "other C0 controls", in: "a\x01b\x07c\x1bd\x1fe", want: "abcde"},
+		{name: "DEL", in: "a\x7fb", want: "ab"},
+		{name: "tab and newlines kept", in: "line1\tx\r\nline2", want: "line1\tx\r\nline2"},
+		{name: "unicode untouched", in: "Zażółć gęślą", want: "Zażółć gęślą"},
+		{name: "clean value untouched", in: "NT AUTHORITY\\LocalService", want: "NT AUTHORITY\\LocalService"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := truncateCollectorString(tc.in); got != tc.want {
+				t.Fatalf("truncateCollectorString(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTruncateCollectorStringStripsBeforeMeasuring(t *testing.T) {
+	t.Parallel()
+
+	// Control characters must not count towards the length limit, or a value
+	// padded with NULs would be truncated even though its visible text fits.
+	in := strings.Repeat("\x00", collectorStringLimit) + "LocalSystem"
+	if got := truncateCollectorString(in); got != "LocalSystem" {
+		t.Fatalf("truncateCollectorString(NUL-padded) = %q, want %q", got, "LocalSystem")
+	}
+}
+
+func TestHasCollectorControlChars(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]bool{
+		"\x00\x00\x00\x00lSystem": true,
+		"Local\x1bSystem":         true,
+		"LocalSystem":             false,
+		"a\tb\r\nc":               false,
+		"":                        false,
+	}
+	for in, want := range cases {
+		if got := hasCollectorControlChars(in); got != want {
+			t.Errorf("hasCollectorControlChars(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

@@ -1,0 +1,9 @@
+---
+// Emailed "your documents" landing. The token is in the URL fragment (never sent to the server), so there is
+// NO SSR data fetching here; the island reads and clears the fragment, then exchanges it for the grant.
+import TrustPageLayout from '../../../layouts/TrustPageLayout.astro';
+import AccessGrantView from '../../../components/trust/access/AccessGrantView';
+---
+<TrustPageLayout title="Your documents" description="Download the documents you requested." canonicalPath="/trust/access/download" indexable={false}>
+  <AccessGrantView client:load />
+</TrustPageLayout>

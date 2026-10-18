@@ -223,6 +223,13 @@ describe('globalRateLimit — isolated bmr recovery download bucket', () => {
 });
 
 describe('ISOLATED_BUCKETS pins', () => {
+  it('meters EDR vendor push deliveries in their own per-IP bucket (W03 PR-B)', async () => {
+    const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
+    expect(ISOLATED_BUCKETS).toContainEqual({ prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 });
+    // The org webhook CRUD router keeps the shared budget.
+    expect(ISOLATED_BUCKETS.some((b) => '/api/v1/webhooks/abc'.startsWith(b.prefix))).toBe(false);
+  });
+
   it('meters bare-metal recovery object downloads separately from the shared 300/min budget (D13)', async () => {
     const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
     const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/backup/bmr/recover/download');
@@ -296,5 +303,19 @@ describe('globalRateLimit — public trust pages (spec trust-center §8, §10)',
     app.get('/api/v1/trust/public/:p/:o', (c) => c.json({ ok: true }));
     await app.request('/api/v1/trust/public/nw/acme');
     expect(mocks.rateLimiter).toHaveBeenCalledWith(fakeRedis, `global:trustpublic:${TEST_IP}`, 120, 60);
+  });
+
+  it('meters /api/v1/trust/attestation/ in its own trustattest bucket at 60/min', async () => {
+    const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/trust/attestation/');
+    expect(bucket).toEqual({ prefix: '/api/v1/trust/attestation/', name: 'trustattest', limit: 60 });
+
+    const fakeRedis = { marker: 'redis' };
+    mocks.getRedis.mockReturnValue(fakeRedis);
+    mocks.rateLimiter.mockResolvedValue({ allowed: true, remaining: 59, resetAt: new Date(Date.now() + 60_000) });
+    const app = new Hono();
+    app.use('*', globalRateLimit({ limit: 300, windowSeconds: 60 }));
+    app.get('/api/v1/trust/attestation/:p/:o', (c) => c.json({ ok: true }));
+    await app.request('/api/v1/trust/attestation/nw/acme');
+    expect(mocks.rateLimiter).toHaveBeenCalledWith(fakeRedis, `global:trustattest:${TEST_IP}`, 60, 60);
   });
 });
