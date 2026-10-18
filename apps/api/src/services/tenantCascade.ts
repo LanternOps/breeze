@@ -886,6 +886,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'script_proposals',
   'script_tags',
   'scripts',
+  // #6960 W03: per-(device, vendor) security-agent coverage. Composite
+  // (device_id, org_id) FK -> devices ON DELETE CASCADE; policy_id -> software_policies
+  // ON DELETE SET NULL. Topological order handles the FKs at runtime.
+  'security_agent_device_status',
   'security_policies',
   'security_posture_org_snapshots',
   'security_posture_snapshots',

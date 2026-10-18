@@ -100,6 +100,7 @@ export * from './dnsSecurity';
 export * from './cisHardening';
 export * from './sentinelOne';
 export * from './huntress';
+export * from './securityAgents';
 export * from './sensitiveData';
 export * from './peripheralControl';
 export * from './browserSecurity';

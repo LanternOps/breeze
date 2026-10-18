@@ -1166,6 +1166,10 @@ const REPOINT_TABLES: readonly string[] = [
   // see its note there.
   "script_tags",
   "scripts",
+  // #6960 W03: plain repoint. Uniques are (device_id, vendor) and
+  // (org_id, vendor, vendor_endpoint_id) for vendor_only rows; vendor_endpoint_id is
+  // a Breeze row id (huntress_agents.id), unique across orgs, so no collision.
+  "security_agent_device_status",
   "security_policies",
   "security_posture_org_snapshots",
   "security_posture_snapshots",

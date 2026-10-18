@@ -347,6 +347,17 @@ describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
     });
   });
 
+  it('classifies every security_agent_device_status column as included (#6960 W03): typed columns, no open container', () => {
+    const policy = CORE_TENANT_EXPORT_POLICY.security_agent_device_status;
+    expect(policy).toBeDefined();
+    for (const column of [
+      'id', 'org_id', 'device_id', 'vendor_endpoint_id', 'vendor', 'state', 'reason_code', 'detail',
+      'policy_id', 'last_evaluated_at', 'state_changed_at', 'created_at',
+    ]) {
+      expect(policy!.columns[column], column).toMatchObject({ decision: 'include' });
+    }
+  });
+
   it('exports deployment dependency fingerprints as reviewed integrity provenance', () => {
     expect(
       CORE_TENANT_EXPORT_POLICY.software_deployments!.columns.dependency_fingerprint,

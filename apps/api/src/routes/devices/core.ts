@@ -387,6 +387,9 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'recovery_readiness', 'recovery_tokens', 'remediation_suggestions', 'remote_sessions', 'restore_jobs',
   's1_actions', 's1_agents', 's1_threats',
   'script_executions',
+  // #6960 W03 — composite (device_id, org_id) FK ON UPDATE CASCADE restamps it
+  // (also in DEVICE_ORG_FK_CASCADE_TABLES below).
+  'security_agent_device_status',
   'security_posture_snapshots', 'security_scans', 'security_status',
   'security_threats',
   'sensitive_data_findings', 'sensitive_data_scans',
@@ -447,6 +450,8 @@ export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   // #4755 — composite (device_id, org_id) FK ON UPDATE CASCADE, same
   // mechanism as agent_health_observations above.
   'device_restore_point_attempts',
+  // #6960 W03 — composite (device_id, org_id) FK ON UPDATE CASCADE.
+  'security_agent_device_status',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
@@ -738,6 +743,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'sensitive_data_scans', 'sensitive_data_findings',
   'dns_security_events', 'dns_event_aggregations',
   'security_status', 'security_threats', 'security_scans', 'security_posture_snapshots',
+  // #6960 W03 — security-agent coverage; FK (device_id, org_id) ON DELETE CASCADE.
+  'security_agent_device_status',
   'cis_baseline_results', 'cis_remediation_actions',
   'browser_extensions', 'browser_policy_violations',
   'audit_baseline_results', 'audit_policy_states',

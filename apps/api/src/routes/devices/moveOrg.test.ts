@@ -720,6 +720,7 @@ describe('POST /devices/:id/move-org', () => {
         'agent_rollback_events',
         'peripheral_policy_delivery_events',
         'device_restore_point_attempts',
+        'security_agent_device_status',
       ]);
       // ...and the loop must actually skip it: no app-role UPDATE (its
       // composite FK's ON UPDATE CASCADE restamps it). Positive control: an
