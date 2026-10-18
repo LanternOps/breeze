@@ -273,6 +273,24 @@ describe('MfaPolicyOffBanner', () => {
       expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
     });
 
+    it('layout instance picks up a dismissal made on the page copy after soft navigation away', async () => {
+      setPath('/devices');
+      fetchWithAuthMock.mockResolvedValue(partnerResponse(undefined));
+      render(<MfaPolicyOffBanner />);
+      expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
+      act(() => {
+        setPath('/settings/partner');
+        document.dispatchEvent(new Event('astro:page-load'));
+      });
+      // Page copy dismissed (it writes the shared per-day key).
+      window.localStorage.setItem(DISMISS_KEY, todayKey());
+      act(() => {
+        setPath('/devices');
+        document.dispatchEvent(new Event('astro:page-load'));
+      });
+      expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+    });
+
     it('page placement renders on /settings/partner without the layout margin and shares the dismissal', async () => {
       setPath('/settings/partner');
       fetchWithAuthMock.mockResolvedValue(partnerResponse(undefined));

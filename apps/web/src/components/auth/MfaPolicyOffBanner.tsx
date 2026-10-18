@@ -74,7 +74,12 @@ export default function MfaPolicyOffBanner({ placement = 'layout' }: MfaPolicyOf
   const [onPartnerSettings, setOnPartnerSettings] = useState(onPartnerSettingsRoute);
   useEffect(() => {
     if (placement !== 'layout') return;
-    const sync = () => setOnPartnerSettings(onPartnerSettingsRoute());
+    const sync = () => {
+      setOnPartnerSettings(onPartnerSettingsRoute());
+      // The page copy may have been dismissed while this persisted instance
+      // stood down; re-read the shared per-day key.
+      setDismissedToday(readDismissedOn() === localDateKey(new Date()));
+    };
     sync();
     document.addEventListener('astro:page-load', sync);
     window.addEventListener('popstate', sync);
