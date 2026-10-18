@@ -54,3 +54,21 @@ func TestRecoveryVerifiedAcceptsServerUnavailableMarker(t *testing.T) {
 		t.Fatal("pre-restart overload marker verified the restart")
 	}
 }
+
+// A malformed marker is journaled and ignored: it must not grant liveness.
+func TestHandleIPCMessage_BadServerUnavailableTimestampGrantsNothing(t *testing.T) {
+	journal, err := watchdog.NewJournal(t.TempDir(), 10, 3)
+	if err != nil {
+		t.Fatalf("new journal: %v", err)
+	}
+	defer func() { _ = journal.Close() }()
+
+	health := watchdog.NewHealthChecker(nil, stubIPCProber{}, 3*time.Minute)
+	payload, _ := json.Marshal(ipc.StateSync{ServerUnavailableAt: "not-a-time"})
+	env := &ipc.Envelope{ID: "s", Type: ipc.TypeStateSync, Payload: payload}
+	handleIPCMessage(env, watchdog.NewWatchdog(watchdog.Config{}), journal, &config.Config{AgentID: "a"}, &tokenHolder{}, health)
+
+	if health.AgentServerUnavailableAlive(nil) || health.AgentAlive(nil) {
+		t.Fatal("a malformed serverUnavailableAt granted liveness")
+	}
+}

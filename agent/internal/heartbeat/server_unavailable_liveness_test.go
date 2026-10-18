@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/state"
 )
 
@@ -94,5 +97,42 @@ func TestDoHeartbeatPost_TransportFailureWritesNoServerUnavailableMarker(t *test
 	s, _, _ := postAgainst(t, url)
 	if !s.ServerUnavailableAt.IsZero() {
 		t.Fatalf("ServerUnavailableAt = %v after a refused connection", s.ServerUnavailableAt)
+	}
+}
+
+// On AV/EDR hosts agent.state is unwritable (#2763) and the IPC state_sync is
+// the only liveness channel left, so the marker must actually reach the
+// watchdog session — and must never look like a successful heartbeat.
+func TestNoteServerUnavailableLivenessSendsStateSync(t *testing.T) {
+	watchdogServerConn, watchdogClientConn := createTestSocketPair(t)
+	watchdogSession := sessionbroker.NewSession(ipc.NewConn(watchdogServerConn), 0, "watchdog-1", "tester", "", "watchdog-1", []string{"watchdog"})
+	go watchdogSession.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+	broker := newTestBrokerWithSessions(t, watchdogSession)
+
+	h := &Heartbeat{sessionBroker: broker, agentVersion: "1.2.3"}
+	before := time.Now().Add(-time.Second)
+	h.noteServerUnavailableLiveness(http.StatusServiceUnavailable)
+
+	_ = watchdogClientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	env, err := ipc.NewConn(watchdogClientConn).Recv()
+	if err != nil {
+		t.Fatalf("watchdog did not receive a state_sync frame: %v", err)
+	}
+	if env.Type != ipc.TypeStateSync {
+		t.Fatalf("frame type = %s, want %s", env.Type, ipc.TypeStateSync)
+	}
+	var sync ipc.StateSync
+	if err := json.Unmarshal(env.Payload, &sync); err != nil {
+		t.Fatalf("unmarshal state_sync: %v", err)
+	}
+	at, err := time.Parse(time.RFC3339, sync.ServerUnavailableAt)
+	if err != nil || at.Before(before.Truncate(time.Second)) {
+		t.Fatalf("ServerUnavailableAt = %q (%v), want a fresh RFC3339 timestamp", sync.ServerUnavailableAt, err)
+	}
+	if sync.LastHeartbeat != "" || sync.Connected {
+		t.Fatalf("state_sync reads as a successful heartbeat: LastHeartbeat=%q Connected=%v", sync.LastHeartbeat, sync.Connected)
+	}
+	if sync.AuthRejectedAt != "" {
+		t.Fatalf("AuthRejectedAt = %q on an overload sync", sync.AuthRejectedAt)
 	}
 }

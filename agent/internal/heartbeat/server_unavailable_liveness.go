@@ -28,11 +28,15 @@ func isServerOverloadStatus(code int) bool {
 }
 
 // serverOverloadAnswer extracts the overload status the server answered with
-// from an httputil.Do error, if it answered at all. A transport failure with
-// no HTTP answer (refused, reset, DNS, TLS, timeout before any response)
-// returns false: from inside the agent that cannot be told apart from a
-// broken transport on this side, which a restart or the watchdog's FAILOVER
-// channel exists to work around.
+// from an httputil.Do error, if it answered at all during that call. A call
+// in which no attempt got an HTTP answer (refused, reset, DNS, TLS, timeout
+// before any response) returns false: from inside the agent that cannot be
+// told apart from a broken transport on this side, which a restart or the
+// watchdog's FAILOVER channel exists to work around. One overload answer
+// followed by a transport failure within the same call does count — the
+// transport demonstrably reached the server moments earlier, and an
+// overloaded server resetting or stalling connections is the expected
+// pattern, not evidence of a broken agent.
 func serverOverloadAnswer(err error) (int, bool) {
 	var rse *httputil.RetryableStatusError
 	if !errors.As(err, &rse) || !isServerOverloadStatus(rse.StatusCode) {
@@ -51,7 +55,7 @@ func serverOverloadAnswer(err error) (int, bool) {
 // not reliable on AV/EDR-locked hosts).
 func (h *Heartbeat) noteServerUnavailableLiveness(status int) {
 	now := time.Now()
-	log.Warn("heartbeat answered with server overload status; reporting liveness to watchdog",
+	log.Warn("heartbeat answered with server overload status; recording liveness marker",
 		"status", status)
 	if h.statePath != "" {
 		if err := state.UpdateServerUnavailable(h.statePath, now); err != nil {
@@ -63,6 +67,7 @@ func (h *Heartbeat) noteServerUnavailableLiveness(status int) {
 	}
 	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
 	if sess == nil {
+		log.Debug("no watchdog session; server-unavailable marker written to agent.state only")
 		return
 	}
 	// LastHeartbeat stays empty: this must never read as a successful

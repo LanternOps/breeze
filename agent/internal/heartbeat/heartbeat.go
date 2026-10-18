@@ -5320,11 +5320,6 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("heartbeat returned non-OK status", "server", baseURL, "status", resp.StatusCode)
-		// Do absorbs overload statuses into its error today; this keeps the
-		// marker if that ever changes (#8934).
-		if isServerOverloadStatus(resp.StatusCode) {
-			h.noteServerUnavailableLiveness(resp.StatusCode)
-		}
 		h.healthMon.Update("heartbeat", health.Degraded, fmt.Sprintf("status %d", resp.StatusCode))
 		return nil, false
 	}

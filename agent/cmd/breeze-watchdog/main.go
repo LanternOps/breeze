@@ -1185,8 +1185,10 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			}
 		}
 		// Feed the staleness check AND the D3 in-flight-backup IPC veto: the
-		// agent sends a state_sync only after a successful server heartbeat,
-		// so this is authoritative liveness evidence even when agent.state on
+		// agent sends a heartbeat-bearing state_sync only after a successful
+		// server heartbeat (the auth-rejected and server-unavailable syncs
+		// above leave LastHeartbeat empty), so this is authoritative liveness
+		// evidence even when agent.state on
 		// disk is unwritable (AV/EDR sharing violations). Without the
 		// heartbeat half, the file alone drove restart decisions and a
 		// blocked writer read as a dead agent (#2763). Without the backup-run

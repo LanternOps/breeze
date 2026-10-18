@@ -217,7 +217,9 @@ func (h *HealthChecker) LastIPCCheckVetoed() bool {
 
 // NoteStateSync records the agent-reported LastHeartbeat and in-flight
 // backup-run count delivered over IPC (state_sync). The agent only sends a
-// state_sync after a successful HTTP-200 heartbeat, so this is authoritative
+// heartbeat-bearing state_sync after a successful HTTP-200 heartbeat (the
+// auth-rejected and server-unavailable syncs pass a zero heartbeat, which
+// never regresses the stored one), so this is authoritative
 // liveness evidence even when the on-disk agent.state cannot be written.
 // Out-of-order or unparsable heartbeat values never regress the stored
 // timestamp. activeBackupRuns and the receipt time always overwrite —
