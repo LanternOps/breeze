@@ -421,6 +421,18 @@ const postFromFrame = (
   });
 };
 
+// The component registers its window `message` listener in a passive effect that
+// can commit after the iframe is already in the DOM (slow under load, #9159), so a
+// single post can be lost. Re-post until `check` passes; the assertion stays strict.
+const postUntil = (frame: HTMLElement, data: unknown, check: () => void) =>
+  waitFor(
+    () => {
+      postFromFrame(frame, data);
+      check();
+    },
+    { timeout: 5000 },
+  );
+
 describe('ProxyTunnelPage host mode', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -493,8 +505,10 @@ describe('ProxyTunnelPage host mode', () => {
       hostModeFetch();
       render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
       const frame = await screen.findByTestId('network-proxy-frame');
-      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'cookie' });
-      const notice = await screen.findByTestId('proxy-cookie-blocked-notice');
+      await postUntil(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'cookie' }, () =>
+        expect(screen.getByTestId('proxy-cookie-blocked-notice')).toBeInTheDocument(),
+      );
+      const notice = screen.getByTestId('proxy-cookie-blocked-notice');
       expect(notice).toHaveAttribute('data-reason', 'cookie');
       expect(notice).toHaveTextContent('This browser blocked the embedded proxy session');
       expect(notice).toHaveTextContent('Open the device in a new tab to continue.');
@@ -504,8 +518,10 @@ describe('ProxyTunnelPage host mode', () => {
       hostModeFetch();
       render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
       const frame = await screen.findByTestId('network-proxy-frame');
-      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' });
-      const notice = await screen.findByTestId('proxy-cookie-blocked-notice');
+      await postUntil(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' }, () =>
+        expect(screen.getByTestId('proxy-cookie-blocked-notice')).toBeInTheDocument(),
+      );
+      const notice = screen.getByTestId('proxy-cookie-blocked-notice');
       expect(notice).toHaveAttribute('data-reason', 'storage');
       expect(notice).toHaveTextContent('blocks site storage');
       expect(notice).not.toHaveTextContent('Open the device in a new tab to continue.');
@@ -515,15 +531,8 @@ describe('ProxyTunnelPage host mode', () => {
       hostModeFetch();
       render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
       const frame = await screen.findByTestId('network-proxy-frame');
-      // The message listener is registered in a passive effect that can commit
-      // after the iframe is already in the DOM (slow under load, #9159): re-post
-      // until the listener is live so the single assertion below stays strict.
-      await waitFor(
-        () => {
-          postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID.toUpperCase(), reason: 'weird' });
-          expect(screen.getByTestId('proxy-cookie-blocked-notice')).toHaveAttribute('data-reason', 'cookie');
-        },
-        { timeout: 5000 },
+      await postUntil(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID.toUpperCase(), reason: 'weird' }, () =>
+        expect(screen.getByTestId('proxy-cookie-blocked-notice')).toHaveAttribute('data-reason', 'cookie'),
       );
     });
 
@@ -533,8 +542,10 @@ describe('ProxyTunnelPage host mode', () => {
       vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
       render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
       const frame = await screen.findByTestId('network-proxy-frame');
-      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' });
-      fireEvent.click(await screen.findByTestId('proxy-cookie-blocked-open-new-tab', {}, { timeout: 5000 }));
+      await postUntil(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' }, () =>
+        expect(screen.getByTestId('proxy-cookie-blocked-open-new-tab')).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByTestId('proxy-cookie-blocked-open-new-tab'));
       await waitFor(() => expect(popup.location.replace).toHaveBeenCalledWith(HOST_TAB_URL));
     });
 
@@ -653,8 +664,9 @@ describe('ProxyTunnelPage host mode — review follow-ups', () => {
     const frame = await screen.findByTestId('network-proxy-frame');
     fireEvent.load(frame);
     expect(await screen.findByTestId('proxy-status')).toHaveTextContent('Connected');
-    postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'cookie' });
-    await screen.findByTestId('proxy-cookie-blocked-notice');
+    await postUntil(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'cookie' }, () =>
+      expect(screen.getByTestId('proxy-cookie-blocked-notice')).toBeInTheDocument(),
+    );
     expect(screen.queryByTestId('proxy-status')).toBeNull();
   });
 
@@ -673,9 +685,11 @@ describe('ProxyTunnelPage host mode — review follow-ups', () => {
     });
     render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
     const frame = await screen.findByTestId('network-proxy-frame');
-    postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' });
     // The idle overlay covers the notice; Reconnect re-mints in place.
-    fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }));
+    await postUntil(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' }, () =>
+      expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^reconnect$/i }));
     await waitFor(() =>
       expect(screen.getByTestId('network-proxy-frame').getAttribute('src')).toBe(`${HOST_ORIGIN}/__bz/enter?t=TKT2`),
     );
