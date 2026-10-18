@@ -100,7 +100,7 @@ describe('runAiToolOutputRetention', () => {
     m.execute.mockImplementation(async (q: { queryChunks?: unknown[] }) => {
       const params = JSON.stringify(q);
       if (params.includes(ORG_BAD)) throw new Error('boom');
-      if (params.includes('ai_run_artifacts')) return rows([], 0);
+      if (params.includes('ai_run_artifacts') || params.includes('action_intents')) return rows([], 0);
       if (params.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
       return rows([{ scrubbed: 2, cleared: ['sdk-1'] }]);
     });
@@ -112,6 +112,25 @@ describe('runAiToolOutputRetention', () => {
     expect(summary.totals).toMatchObject({ messages: 2, sessions: 1 });
     expect(deleteTranscript).toHaveBeenCalledWith('sdk-1');
     expect(m.recordRetentionRun).toHaveBeenCalledWith('ai_tool_output_retention', { rowsDeleted: 2, incomplete: true });
+  });
+
+  it('nulls action_intents.result in the same run and counts it (#9050)', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
+    const statements: string[] = [];
+    m.execute.mockImplementation(async (q: unknown) => {
+      const s = JSON.stringify(q);
+      if (s.includes('action_intents')) { statements.push(s); return rows([], 3); }
+      if (s.includes('ai_run_artifacts')) return rows([], 0);
+      return rows([{ scrubbed: 0, cleared: [] }]);
+    });
+
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn() });
+
+    expect(summary.totals.intents).toBe(3);
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('ai_tool_output_retention', { rowsDeleted: 3, incomplete: false });
+    // Terminal statuses only, and only rows that still carry a result.
+    expect(statements[0]).toContain('result IS NOT NULL');
+    expect(statements[0]).not.toContain('pending_approval');
   });
 
   it('a missing summary row is an error, never "0 scrubbed"', async () => {
@@ -128,7 +147,7 @@ describe('runAiToolOutputRetention', () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
     m.execute.mockImplementation(async (q: unknown) => {
       const s = JSON.stringify(q);
-      if (s.includes('ai_run_artifacts')) return rows([], 0);
+      if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
       if (s.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
       return rows([{ scrubbed: 1, cleared: [] }]);
     });
@@ -146,7 +165,7 @@ describe('runAiToolOutputRetention: retain-on-doubt branches', () => {
   const quietOrg = () => {
     m.execute.mockImplementation(async (q: unknown) => {
       const s = JSON.stringify(q);
-      if (s.includes('ai_run_artifacts')) return rows([], 0);
+      if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
       if (s.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
       return rows([{ scrubbed: 1, cleared: ['sdk-x'] }]);
     });

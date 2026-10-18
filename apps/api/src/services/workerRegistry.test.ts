@@ -41,7 +41,7 @@ const EXPECTED_WORKER_NAMES = [
   // Site location W2 — presence read-model evaluation.
   'topologyPresenceWorker',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'aiArtifactSweeper', 'helperScreenshotRetentionWorker', 'endpointMessageRetention', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'aiArtifactSweeper', 'helperScreenshotRetentionWorker', 'endpointMessageRetention', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention', 'aiTranscriptSweeper',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
@@ -130,6 +130,13 @@ describe('workerRegistry: losslessness', () => {
 
   it('has exactly the expected number of entries', () => {
     expect(WORKER_REGISTRY.length).toBe(EXPECTED_WORKER_NAMES.length);
+  });
+
+  it('runs the SDK transcript sweeper on api and all roles only (#9050: transcripts live on API disks, not workers)', () => {
+    const has = (role: 'all' | 'api' | 'worker') => selectWorkers(role).some((w) => w.name === 'aiTranscriptSweeper');
+    expect(has('api')).toBe(true);
+    expect(has('all')).toBe(true);
+    expect(has('worker')).toBe(false);
   });
 
   it('registers the m365 sync retention worker as global placement', async () => {

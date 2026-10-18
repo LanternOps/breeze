@@ -387,6 +387,11 @@ export const SENTRY_EVENT_CODES = [
    * (`[AiToolOutputRetention]`).
    */
   'ai_tool_output_retention_incomplete',
+  /**
+   * #9050: the nightly SDK transcript sweep found orphaned transcripts it could
+   * not delete on this container's disk (`[AiTranscriptSweeper]` log has ids).
+   */
+  'ai_transcript_sweep_incomplete',
 
   // --- server-side i18n (#3860) -----------------------------------------
   /** `tApi` was asked for a key no bundle defines — the raw key string is
