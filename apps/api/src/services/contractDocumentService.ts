@@ -21,6 +21,9 @@
 //     on the bare `db`; a throw rolls the caller back. The HTML-form variable
 //     map fills rendered_html and the acceptance hash; the `pdf: true` map fills
 //     the pdfkit text. createExecutedDocuments is the quote-accept loop over it.
+//     W1b: it also takes a `request` source and an externally signed copy
+//     (`externalBytes`, stored verbatim), and writes the signer-evidence
+//     snapshot (SignedAgreementEvidence) onto every row it inserts.
 
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
@@ -214,12 +217,38 @@ export interface SignedAgreementRender {
   versionSha256: string;
 }
 
+/** Signer-evidence snapshot persisted on the signed agreement itself (#8865
+ *  W1b, spec §4.2) so it survives deletion of the quote / request.
+ *  Quote family: mirrors the quote_acceptances row (contentSha256 =
+ *  quote_sha256, contentHashVersion = its hash_version — 2 today). Request
+ *  family: computeAgreementSha256, version 1. */
+export interface SignedAgreementEvidence {
+  signerName: string;
+  signerEmail: string | null;
+  signedAt: Date;
+  signerIp: string | null;
+  signerUserAgent: string | null;
+  acceptanceOrigin: 'customer' | 'on_behalf';
+  acceptanceMethod: string;
+  acceptanceReference: string | null;
+  recordedByUserId: string | null;
+  contentSha256: string;
+  contentHashVersion: number;
+  acceptanceRenderLocale: string;
+}
+
+/** Where the signature came from. The diagnostics-only members (`blockId` on a
+ *  quote, `label` on a request) feed log/Sentry/error text and are NEVER
+ *  persisted. */
+export type SignedAgreementSource =
+  | { kind: 'quote'; quoteId: string; quoteAcceptanceId: string; blockId: string }
+  | { kind: 'request'; agreementRequestId: string; label?: string | null };
+
+/** MIME types an externally signed copy may be stored as (spec §3.4). */
+export type SignedAgreementExternalMime = 'application/pdf' | 'image/png' | 'image/jpeg';
+
 export interface FreezeSignedAgreementInput {
-  /** Where the signature came from. W1a: quote acceptance only. W1b adds
-   *  `{ kind: 'request'; agreementRequestId: string }`. `blockId` is the quote
-   *  block being frozen — diagnostics only (log/Sentry/error text), never
-   *  persisted. */
-  source: { kind: 'quote'; quoteId: string; quoteAcceptanceId: string; blockId: string };
+  source: SignedAgreementSource;
   orgId: string;
   contractId: string | null;
   templateId: string;
@@ -227,11 +256,23 @@ export interface FreezeSignedAgreementInput {
   render: SignedAgreementRender;
   ctx: AgreementRenderContext;
   manualValues: Record<string, string>;
+  evidence: SignedAgreementEvidence;
+  /** An externally signed copy (record-signed upload). When present the
+   *  template is NOT rendered: the bytes are stored verbatim under the caller's
+   *  sniffed `mime` and rendered_html is NULL. */
+  externalBytes?: { data: Buffer; mime: SignedAgreementExternalMime };
   /** Quote path only: a raw {{token}} left after substitution is logged and
    *  blanked (the send gate should make it unreachable, and an accept must not
    *  fail on it after the customer signed). Request paths pass false and the
-   *  freeze throws 422 AGREEMENT_VARIABLES_UNRESOLVED instead (W1b). */
+   *  freeze throws 422 AGREEMENT_VARIABLES_UNRESOLVED instead. */
   allowUnresolvedFallback: boolean;
+}
+
+/** Diagnostics text for a source — log/Sentry/error messages only. */
+function describeSource(source: SignedAgreementSource): string {
+  return source.kind === 'quote'
+    ? `blockId=${source.blockId} quoteId=${source.quoteId}`
+    : `agreementRequestId=${source.agreementRequestId}${source.label ? ` label=${JSON.stringify(source.label)}` : ''}`;
 }
 
 /** Freeze ONE signed agreement into a `contract_documents` row — the single
@@ -247,13 +288,29 @@ export async function freezeSignedAgreement(input: FreezeSignedAgreementInput): 
   const { render, ctx, source } = input;
   let pdf: Buffer;
   let renderedHtml: string | null;
+  let mime: string = 'application/pdf';
 
-  if (render.sourceType === 'uploaded') {
+  if (input.externalBytes) {
+    // Externally signed copy: the uploaded bytes ARE the signed agreement, so
+    // the template is not rendered (and its variables cannot be unresolved).
+    if (input.externalBytes.data.length === 0) {
+      throw new QuoteServiceError(
+        `Externally signed copy for ${describeSource(source)} is empty`,
+        500,
+        'CONTRACT_RENDER_DATA_MISSING',
+      );
+    }
+    pdf = input.externalBytes.data;
+    mime = input.externalBytes.mime;
+    renderedHtml = null;
+  } else if (render.sourceType === 'uploaded') {
     if (!render.fileData) {
       // A published uploaded version with no stored bytes can't be snapshotted —
       // fail rather than persist an empty legal record.
       throw new QuoteServiceError(
-        `Uploaded contract block ${source.blockId} has no stored file to snapshot`,
+        source.kind === 'quote'
+          ? `Uploaded contract block ${source.blockId} has no stored file to snapshot`
+          : `Uploaded agreement template for ${describeSource(source)} has no stored file to snapshot`,
         500,
         'CONTRACT_RENDER_DATA_MISSING',
       );
@@ -281,12 +338,13 @@ export async function freezeSignedAgreement(input: FreezeSignedAgreementInput): 
       // The send gate (findUnresolvedVariables, Task 12) should make this
       // unreachable, but a raw {{token}} must never reach an executed legal PDF.
       console.error('[contractDocumentService] unresolved variable(s) at accept-time snapshot', {
-        blockId: source.blockId,
-        quoteId: source.quoteId,
+        ...(source.kind === 'quote'
+          ? { blockId: source.blockId, quoteId: source.quoteId }
+          : { agreementRequestId: source.agreementRequestId }),
         missing: first.missing,
       });
       captureException(new Error(
-        `[contractDocumentService] unresolved variable(s) at accept-time snapshot: blockId=${source.blockId} quoteId=${source.quoteId} missing=${first.missing.join(',')}`
+        `[contractDocumentService] unresolved variable(s) at accept-time snapshot: ${describeSource(source)} missing=${first.missing.join(',')}`
       ));
       const blanks = Object.fromEntries(first.missing.map((n) => [n, '']));
       html = substituteVariables(html, blanks).html;
@@ -305,18 +363,38 @@ export async function freezeSignedAgreement(input: FreezeSignedAgreementInput): 
   }
 
   const sha256 = createHash('sha256').update(pdf).digest('hex');
+  const { evidence } = input;
   const [row] = await db
     .insert(contractDocuments)
     .values({
       orgId: input.orgId,
-      ...(source.kind === 'quote' ? { quoteId: source.quoteId, quoteAcceptanceId: source.quoteAcceptanceId } : {}),
+      // source_kind is the durable discriminator; the matching FK is always set
+      // here (contract_documents_one_source_chk). Diagnostics-only members
+      // (blockId / label) are deliberately not spread into the row.
+      sourceKind: source.kind,
+      ...(source.kind === 'quote'
+        ? { quoteId: source.quoteId, quoteAcceptanceId: source.quoteAcceptanceId }
+        : { agreementRequestId: source.agreementRequestId }),
       contractId: input.contractId,
       templateId: input.templateId,
       templateVersionId: input.templateVersionId,
       renderedHtml,
       pdfData: pdf,
+      mime,
       byteSize: pdf.length,
       sha256,
+      signerName: evidence.signerName,
+      signerEmail: evidence.signerEmail,
+      signedAt: evidence.signedAt,
+      signerIp: evidence.signerIp,
+      signerUserAgent: evidence.signerUserAgent,
+      acceptanceOrigin: evidence.acceptanceOrigin,
+      acceptanceMethod: evidence.acceptanceMethod,
+      acceptanceReference: evidence.acceptanceReference,
+      recordedByUserId: evidence.recordedByUserId,
+      contentSha256: evidence.contentSha256,
+      contentHashVersion: evidence.contentHashVersion,
+      acceptanceRenderLocale: evidence.acceptanceRenderLocale,
     })
     .returning({ id: contractDocuments.id });
   return { id: row!.id, sha256 };
@@ -337,6 +415,9 @@ export async function createExecutedDocuments(
   effectiveDate: string,
   /** Same locale folded into the acceptance hash (quote_acceptances.render_locale). */
   renderLocale: string,
+  /** The acceptance's evidence snapshot (#8865 W1b), written onto every frozen
+   *  block so it outlives the quote. Never folded into any hash. */
+  evidence: SignedAgreementEvidence,
 ): Promise<string[]> {
   if (renderData.length === 0) return [];
 
@@ -366,6 +447,7 @@ export async function createExecutedDocuments(
       },
       ctx,
       manualValues: manualValuesOf(contentByBlockId.get(data.blockId)),
+      evidence,
       allowUnresolvedFallback: true,
     });
     insertedIds.push(id);

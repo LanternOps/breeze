@@ -29,6 +29,7 @@ import {
   assertContractRenderDataComplete,
   buildContractHashParts,
   createExecutedDocuments,
+  type SignedAgreementEvidence,
 } from './contractDocumentService';
 // One-way import: quoteLifecycle does NOT import this module, so there is no
 // cycle (verify with `grep -n quoteAcceptService services/quoteLifecycle.ts`).
@@ -421,29 +422,49 @@ export async function acceptQuote(
   }
 
   // 1. Record the acceptance.
+  const acceptanceValues = {
+    quoteId: quote.id,
+    orgId: quote.orgId,
+    signerName: captured.signerName,
+    signerEmail: captured.signerEmail,
+    // Defense-in-depth: routes already resolve a single validated client IP,
+    // but ip_address is varchar(64) — clamp so a stray long value can never
+    // overflow and roll back the whole accept (C1). On the on-behalf path
+    // this is the TECH's IP and user agent, not the customer's.
+    ipAddress: params.ipAddress ? params.ipAddress.slice(0, 64) : null,
+    userAgent: params.userAgent ?? null,
+    quoteSha256,
+    hashVersion: 2,
+    acceptanceTokenJti: params.acceptanceTokenJti ?? null,
+    renderLocale,
+    origin,
+    method: captured.method,
+    reference: origin === 'on_behalf' ? (params.reference ?? null) : null,
+    recordedByUserId: origin === 'on_behalf' ? (params.actorUserId ?? null) : null,
+  };
   const [acceptance] = await db
     .insert(quoteAcceptances)
-    .values({
-      quoteId: quote.id,
-      orgId: quote.orgId,
-      signerName: captured.signerName,
-      signerEmail: captured.signerEmail,
-      // Defense-in-depth: routes already resolve a single validated client IP,
-      // but ip_address is varchar(64) — clamp so a stray long value can never
-      // overflow and roll back the whole accept (C1). On the on-behalf path
-      // this is the TECH's IP and user agent, not the customer's.
-      ipAddress: params.ipAddress ? params.ipAddress.slice(0, 64) : null,
-      userAgent: params.userAgent ?? null,
-      quoteSha256,
-      hashVersion: 2,
-      acceptanceTokenJti: params.acceptanceTokenJti ?? null,
-      renderLocale,
-      origin,
-      method: captured.method,
-      reference: origin === 'on_behalf' ? (params.reference ?? null) : null,
-      recordedByUserId: origin === 'on_behalf' ? (params.actorUserId ?? null) : null,
-    })
-    .returning({ id: quoteAcceptances.id });
+    .values(acceptanceValues)
+    .returning({ id: quoteAcceptances.id, signedAt: quoteAcceptances.signedAt });
+
+  // #8865 W1b: the signer-evidence snapshot every executed contract document
+  // carries, so it outlives the quote. Built from the SAME values just
+  // inserted, with signed_at taken from the DB default as returned — exactly
+  // what the 2026-12-31-210000 back-fill copied onto legacy rows.
+  const signedAgreementEvidence: SignedAgreementEvidence = {
+    signerName: acceptanceValues.signerName,
+    signerEmail: acceptanceValues.signerEmail,
+    signedAt: acceptance!.signedAt,
+    signerIp: acceptanceValues.ipAddress,
+    signerUserAgent: acceptanceValues.userAgent,
+    acceptanceOrigin: origin,
+    acceptanceMethod: acceptanceValues.method,
+    acceptanceReference: acceptanceValues.reference,
+    recordedByUserId: acceptanceValues.recordedByUserId,
+    contentSha256: acceptanceValues.quoteSha256,
+    contentHashVersion: acceptanceValues.hashVersion,
+    acceptanceRenderLocale: acceptanceValues.renderLocale,
+  };
 
   // 2. Convert ONE-TIME lines to a draft invoice (Phase 2: recurring lines deferred to the Phase 4 Contract).
   //    document_locale is NOT copied onto the draft here: it is an issue-time
@@ -686,6 +707,7 @@ export async function acceptQuote(
     blocks,
     effectiveDate,
     renderLocale,
+    signedAgreementEvidence,
   );
 
   // Phase 5: stage any Pax8-backed fulfillment in this exact transaction,

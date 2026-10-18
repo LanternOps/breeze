@@ -561,13 +561,15 @@ const renderData: ContractBlockRenderData[] = [{
   bodyHtml: '<p>Effective {{dates.effective}}.</p>', fileData: null,
   versionSha256: 'a'.repeat(64), declaredVariables: [], templateName: 'MSA', versionNumber: 1,
 }];
+// The quote_acceptances insert's DB-default signed_at, as `.returning()` yields it.
+const ACC_SIGNED_AT = new Date('2026-07-16T12:34:56Z');
 
 function queueContractAcceptPath(partnerSettings: Record<string, unknown> = {}) {
   queueResult([contractQuote]);              // 1 select quote FOR UPDATE
   queueResult([contractBlock]);              // 2 blocks
   queueResult([monthlyLine]);                // 3 lines
   queueResult([{ prefix: 'INV', termsDays: 30, settings: partnerSettings }]); // 4 partners select
-  queueResult([{ id: 'acc1' }]);             // 5 quote_acceptances insert
+  queueResult([{ id: 'acc1', signedAt: ACC_SIGNED_AT }]); // 5 quote_acceptances insert (DB-returned signed_at)
   queueResult([{ id: 'inv1' }]);             // 6 invoices insert
   queueResult([]);                           // 7 invoices update (issueFields)
   queueResult([]);                           // 8 quotes update -> converted
@@ -618,6 +620,22 @@ describe('acceptQuote contract document snapshot', () => {
     // an unstamped quote falls back to the partner language, 'en' here.
     expect((acceptanceValues as { renderLocale?: string }).renderLocale).toBe('en');
     expect(snapshotArgs[6]).toBe('en'); // createExecutedDocuments renders under the same locale
+    // #8865 W1b: the evidence snapshot (arg index 7) mirrors the acceptance row,
+    // signed_at taken from the DB-returned value, hash = the acceptance hash.
+    expect(snapshotArgs[7]).toMatchObject({
+      signerName: baseParams.signerName,
+      signerEmail: baseParams.signerEmail,
+      signerIp: baseParams.ipAddress,
+      signerUserAgent: baseParams.userAgent,
+      signedAt: ACC_SIGNED_AT,
+      acceptanceOrigin: 'customer',
+      acceptanceMethod: 'typed-signature',
+      acceptanceReference: null,
+      recordedByUserId: null,
+      contentHashVersion: 2,
+      acceptanceRenderLocale: 'en',
+    });
+    expect(snapshotArgs[7].contentSha256).toBe(acceptanceValues.quoteSha256);
     // And that hash genuinely differs from the no-contract hash (proves folding).
     const withoutContracts = computeQuoteSha256(contractQuote as any, [contractBlock] as any, [monthlyLine] as any, []);
     expect(acceptanceValues.quoteSha256).not.toBe(withoutContracts);
