@@ -35,7 +35,7 @@ export const MCP_WHOAMI_TOOL_LIST_ENTRY = {
   _meta: { 'app.breeze/domain': 'core' },
   name: MCP_WHOAMI_TOOL_DEFINITION.name,
   description: MCP_WHOAMI_TOOL_DEFINITION.description,
-  inputSchema: MCP_WHOAMI_TOOL_DEFINITION.input_schema as Record<string, unknown>,
+  inputSchema: MCP_WHOAMI_TOOL_DEFINITION.input_schema,
 };
 
 export type WhoamiInput = {
