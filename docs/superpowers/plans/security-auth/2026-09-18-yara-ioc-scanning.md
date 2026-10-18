@@ -15,7 +15,7 @@ never this index.
 | W01 (#6264) | [Live security policy: scheduler, settings delivery, Security tab cleanup, Scans page, neutralized quarantine](2026-09-18-yara-ioc-scanning-w01-live-policy.md) | — |
 | W02 (#6265) | [YARA-X engine in the agent: on-device compile (`breeze-yarac`), source-bundle contract §C1–C5, fetch client + compiled cache, worker-pool walk, `provider = 'breeze'`, lab benchmark](2026-10-13-yara-ioc-scanning-w02-agent-engine.md) | W01 (merged) |
 | W03 (#6266) | [Rule sets, pre-check, CRUD, agent fetch route, payload `ruleSets` (Part A) + built-in YARA Forge pack pipeline (Part B)](2026-10-13-yara-ioc-scanning-w03-rule-sets.md) | W02 (bundle format) |
-| W04 (#6267) | Detection rules UI and IOC import (rule-set editor, compile errors, test upload, IOC paste importer, Security tab rule-set picker, ThreatDetail rule panel) — plan not written | W03 |
+| W04 (#6267) | [Detection rules UI, IOC paste importer, sandboxed test upload, Security tab rule-set picker, ThreatDetail rule panel (PR A API + shared + `breeze-yarac match`, PR B web)](2026-10-18-yara-ioc-scanning-w04-rules-ui.md) | W03 (merged) |
 | W05 (#6268) | Fleet sweep, AI tool and audit (`sweep` route + batch tracking, AI `security_scan` actions + parity files, audit events, docs + release-notes copy per spec §11) — plan not written | W03 |
 
 W01 shipped (PR #6573); W02 builds on its scanner code. W03 depends on W02's source-bundle format
