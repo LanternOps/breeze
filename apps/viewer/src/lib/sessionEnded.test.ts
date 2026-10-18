@@ -126,6 +126,10 @@ class FakeRTCPeerConnection {
   close() {}
 }
 
+// An answer whose candidates are complete, so the post-answer trickle poll
+// (#9182) never starts and these tests count answer polls only.
+const COMPLETE_ANSWER = 'v=0 answer-sdp\r\na=end-of-candidates\r\n';
+
 const baseParams: AuthenticatedConnectionParams = {
   sessionId: 'sess-123',
   apiUrl: 'https://api.example.com',
@@ -370,7 +374,7 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
       const polls = stubSessionPolls((n) =>
         n <= 2
           ? jsonResponse({ error: 'bad gateway' }, 503)
-          : jsonResponse({ webrtcAnswer: 'v=0 answer-sdp' }),
+          : jsonResponse({ webrtcAnswer: COMPLETE_ANSWER }),
       );
 
       const pending = createWebRTCSession(baseParams, videoEl);
@@ -385,7 +389,7 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
       const polls = stubSessionPolls((n) =>
         n === 1
           ? jsonResponse({ error: 'Too many requests' }, 429, { 'Retry-After': '1' })
-          : jsonResponse({ webrtcAnswer: 'v=0 answer-sdp' }),
+          : jsonResponse({ webrtcAnswer: COMPLETE_ANSWER }),
       );
 
       const pending = createWebRTCSession(baseParams, videoEl);
@@ -406,7 +410,7 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
       const polls = stubSessionPolls((n) =>
         n < 60
           ? jsonResponse({ status: 'connecting', promptMode: 'consent', answerTimeoutMs: 77_000, webrtcAnswer: null })
-          : jsonResponse({ status: 'connecting', promptMode: 'consent', answerTimeoutMs: 77_000, webrtcAnswer: 'v=0 answer-sdp' }),
+          : jsonResponse({ status: 'connecting', promptMode: 'consent', answerTimeoutMs: 77_000, webrtcAnswer: COMPLETE_ANSWER }),
       );
 
       const pending = createWebRTCSession(baseParams, videoEl, undefined, undefined, { onAwaitingUserApproval: awaiting });
