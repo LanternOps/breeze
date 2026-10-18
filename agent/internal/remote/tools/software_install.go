@@ -103,15 +103,24 @@ func InstallSoftware(payload map[string]any) CommandResult {
 // internally). A payload refused before either stage reports nothing.
 func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReporter) (result CommandResult) {
 	startTime := time.Now()
+	// #4609 W07: the command's one System Restore checkpoint, taken
+	// immediately before the first mutation (executeInstaller below, or the
+	// package manager's install). Declared above every early-return gate so
+	// the defer reports it on all of them: a stamped request that never
+	// reaches the boundary (already installed, a validation, network-policy,
+	// download or checksum refusal) is reported as skipped_no_mutation.
+	cp := newSoftwareCheckpoint(payload)
 	// Stamp StartedAt on every return path so the server can record the
 	// real start instead of reconstructing it from durationMs.
 	defer func() {
 		result.StartedAt = startTime.UTC().Format(time.RFC3339Nano)
+		result.RestorePoint = cp.Report()
 	}()
 
 	if _, ok := payload["installMethod"].(map[string]any); ok {
 		progress.report(ProgressStageInstalling)
-		return installViaManager(payload, defaultManagerDeps())
+		// Same checkpoint, so the manager path cannot take a second one.
+		return installViaManagerWithCheckpoint(payload, defaultManagerDeps(), cp)
 	}
 
 	downloadUrl, errResult := RequirePayloadString(payload, "downloadUrl")
@@ -220,6 +229,11 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 			)
 		}
 	}
+
+	// #4609: after download AND checksum, immediately before the first
+	// mutation. The pre-install detection gate above returns earlier, so an
+	// already-installed package never consumes the day's one restore point.
+	takeSoftwareCheckpoint(cp)
 
 	// Execute installer
 	progress.report(ProgressStageInstalling)
