@@ -31,7 +31,7 @@ status: draft
   - Cap: **4096** entries.
   - Untrusted-load fence: **24 h**.
   - Apply wait on an `awaiting` entry: **100 s** (`pamDialogTimeout` + `pamDismissTimeout`).
-- Migrations: `apps/api/migrations/2026-12-31-190000-pam-elevation-withdrawn-enum.sql` then `apps/api/migrations/2026-12-31-190100-pam-elevation-withdrawn-columns.sql`. Re-verify both sort after the newest committed migration on fresh `origin/main` at implementation time (`ls apps/api/migrations/*.sql | sort | tail -1`; newest at plan time: `2026-12-31-110000-restore-point-skipped-no-mutation.sql`). If bumped, keep the pair adjacent and in this order.
+- Migrations: `apps/api/migrations/2026-12-31-190000-pam-elevation-withdrawn-enum.sql` then `apps/api/migrations/2026-12-31-190100-pam-elevation-withdrawn-columns.sql`. Re-verify both sort after the newest committed migration on fresh `origin/main` at implementation time (use the `localeCompare` node one-liner in `apps/api/migrations/README.md:238-240`, not shell `sort`; newest at plan time: `2026-12-31-110000-restore-point-skipped-no-mutation.sql`). If bumped, keep the pair adjacent and in this order.
 - Wave 1 adds **no** server→agent command, **no** capability column, **no** `MIN_AGENT_VERSION_*` constant, **no** mobile app change, **no** new locale keys unless a task below names one (then all 8 locale files: `en`, `de-DE`, `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR`, `tr-TR` under `apps/web/src/locales/`, guarded by `apps/web/src/lib/i18n/localeParity.test.ts`).
 - Public repo: no customer names, hostnames or IPs in code, tests, PR text.
 
@@ -79,7 +79,7 @@ Also covered: a new agent talking to an old self-hosted server. The route return
 ### D2 — Agent-side safety: durable decline record (the part that closes the race)
 
 - **Home:** new package `agent/internal/pamdecline` (store only, no heartbeat imports), file `pam-declined-requests.json` next to `pam-lifetime-ledger.json` (`filepath.Dir(statePath)`, wired in `Heartbeat.SetStatePath`, `heartbeat.go:1624-1632`). Not the lifetime ledger: the ledger is keyed by actuation ID and its contract (`job_contract_test.go`, `store_test.go`) is about grants that exist; a decline is about one that must never exist. Write pattern from `agent/internal/desktopfence/store.go:171-230` (temp file, `Chmod 0600`, `Sync`, replace, dir sync, corrupt file moved to `<path>.corrupt`), using `agent/internal/atomicrename.Replace` for the replace step.
-- **Entry states:** `awaiting` → `declined` | removed (on Approve). `RunPamFlow` persists `awaiting` right **before** the dialog is shown, for `pending` and `auto_approved`. On the dialog's answer:
+- **Entry states:** `awaiting` → `declined` | removed (on Approve). `RunPamFlow` marks the entry `awaiting` as its **first action** for `pending` and `auto_approved`. That is before the helper-session lookup. The entry goes into memory first and is then persisted, so the gap after the ingest response is microseconds (plan review finding 1). `BeginAwaiting` on an entry that is already `declined` is a no-op that reports `alreadyDeclined`. `RunPamFlow` then skips the dialog and only calls `denyConsent`, so a re-fired ETW event for a declined ID can never resurrect it (review finding 2). A `defer` in `RunPamFlow` converts any entry still `awaiting` at exit to `declined/dialog_error`, which covers a recovered panic or a cancelled ctx (review finding 4). The no-helper-session early return calls `Release` instead: that removes the entry and keeps today's behaviour for a prompt that was never shown. On the dialog's answer:
   - Approve: the entry is removed. Approve is the only outcome that permits an apply.
   - Deny, timeout or error: the entry is flipped to `declined` **before** `denyConsent`, then delivery is kicked. Recording before the dismissal (up to 10 s) closes the window where an approval arrives mid-dismiss.
 - **Approval while the dialog is open (Codex):** an apply that finds an `awaiting` entry blocks on an in-process wait until that entry resolves. The wait is bounded by `pamDialogTimeout + pamDismissTimeout` (100 s) and is outside the manager's operation lock.
@@ -88,7 +88,7 @@ Also covered: a new agent talking to an old self-hosted server. The route return
   - Wait expires: the apply is refused with `user_decision_pending`.
   - Persistence: an `awaiting` entry found at **load** time belongs to a dialog that died with the previous process. It is converted to `declined/user_timeout` and queued for delivery if it was `pending`.
 - **Scope:** `pending` and `auto_approved` are recorded, because both can receive a remote apply. The submit route creates a `pam_apply_v2` actuation for `auto_approved` (`apps/api/src/routes/agents/elevationRequests.ts:655-667`). The withdraw is **delivered** only for `pending`. For `auto_approved`, the server row is not withdrawable, and the local refusal is the whole fix. `policy_denied` and `unexpected_status` show no dialog and write nothing.
-- **Residual:** a request with no dialog at all writes no entry and behaves exactly as today. That covers no helper session (`pam_flow.go:101-106`) and an offline-replayed event (`agent/internal/etwlua/etwlua.go:339-345`). Requiring affirmative consent for those would change what a technician approval means, so it is out of scope.
+- **Residual:** a request with no dialog at all leaves no entry and behaves exactly as today. That covers no helper session (`pam_flow.go:101-106`, entry released) and an offline-replayed event (`agent/internal/etwlua/etwlua.go:339-345`, never enters `RunPamFlow`). Requiring affirmative consent for those would change what a technician approval means, so it is out of scope. One accepted timing residual remains. For `auto_approved`, the server dispatches `pam_apply_v2` right after the ingest commit, so an apply could in theory be handled in the microseconds between the HTTP response and `RunPamFlow`'s first line. `pending` needs a human approval and cannot hit that window. If the lab (B5 case 7) shows the window is reachable, close it by marking `awaiting` inside `SendElevationRequest` for live (non-drained) posts only.
 - **Reason mapping** (no helper change needed): `err` from the dialog round trip and `errors.Is(err, sessionbroker.ErrCommandTimeout)` → `user_timeout`; any other `err` → `dialog_error`; helper result `Approved=false, DismissedByUser=false` (the helper's countdown expiry, `userhelper/pam_dialog_window_windows.go:517-520`) → `user_timeout`; otherwise → `user_denied`.
 - **Refusal points:** `lifecycleManager.apply` (`pamlifetime/manager.go:158`) right after `currentBootID` and **before** admission, `PinTarget`, `PrepareApply` and the `received` handoff — so a declined request leaves no ledger entry and no received observation, only a `failed` result (the server already accepts a `failed` result with a non-empty `failureCode` without a prior `received`: `services/pamActuationResult.ts:145`; `pam_disabled` is the precedent). Both handlers (`handlePamApplyV2` `:67`, legacy `handleActuateElevation` `:304`) first run the bounded `Await` on the request ID (outside any lock), then the manager re-checks non-blockingly inside its operation. The legacy handler refuses right after `parseActuatePayload`, before admission, and returns a success-shaped `actuateResult{Success:false, Reason:"user_declined"}` plus `writePAMActuationRefused`.
 - **Failure handling:**
@@ -222,7 +222,7 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
   - `pending → withdrawn`: status, `withdrawn_at` set, `withdrawn_reason='user_denied'`, one audit row `withdrawn/end_user` with `details.cause='user_denied'`.
   - `replay is idempotent`: second call → `{kind:'withdrawn', replay:true}`, still one audit row.
   - `approve-then-withdraw returns not_pending approved` (respond's CAS first) and `withdraw-then-approve`: respond's CAS updates 0 rows.
-  - `concurrent approve and withdraw: exactly one wins` (two connections, `Promise.all`, assert final status ∈ {approved, withdrawn} and the loser saw 0 rows / not_pending).
+  - `concurrent approve and withdraw: exactly one wins`. This is a hard requirement: two **separate pooled connections**, not one, or the test proves nothing (`Promise.all`, assert final status ∈ {approved, withdrawn} and the loser saw 0 rows / not_pending).
   - `linked pending mobile approvals become expired` after the route (exercise via the route handler so `runAfterDbContextExit` runs; reuse fixtures from `pam-mobile-bridge-sibling-expiry.integration.test.ts`).
   - `other device's request → not_found`; `other org → not_found`; `flow_type tech_jit_admin → not_found`; `expired row → not_pending expired`.
   - `device moved (pamDeviceMoveGuard expiry) then withdraw → not_pending expired`.
@@ -297,8 +297,9 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
   }
   func NewStore(path string, now func() time.Time) *Store // path "" = memory-only
   func (s *Store) Load() error // nil | ErrCorrupt (moved to <path>.corrupt, fence armed); converts awaiting → declined/user_timeout
-  func (s *Store) BeginAwaiting(requestID, serverStatus string) error
-  func (s *Store) Consent(requestID string) error                // removes the entry, wakes waiters
+  func (s *Store) BeginAwaiting(requestID, serverStatus string) (alreadyDeclined bool, err error) // no-op on a declined entry; memory first, then persist
+  func (s *Store) Release(requestID string) error // removes an awaiting entry without declining (no dialog was shown); no-op on declined
+  func (s *Store) Consent(requestID string) error                // removes an awaiting entry, wakes waiters; no-op on declined (Decline is first-wins and final)
   func (s *Store) Decline(requestID string, reason Reason) error // awaiting|absent → declined (first DeclinedAt wins), wakes waiters
   // code is one of the Code* constants when refuse is true. Store satisfies pamlifetime.DeclineChecker.
   func (s *Store) Check(requestID string) (refuse bool, code string) // non-blocking: awaiting → (true, CodeUserDecisionPending)
@@ -324,6 +325,7 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
   - `TestMaxEntriesEvictsAckedFirst`
   - `TestDueOnlyPendingDeclinedUnacked`, which also checks `auto_approved` is excluded.
   - `TestRejectsNonCanonicalUUID`
+  - `TestBeginAwaitingDoesNotResurrectDeclined`: Decline → BeginAwaiting → `alreadyDeclined == true`, still declined, `DeclinedAt` unchanged; `Consent`/`Release` on a declined entry are no-ops.
   - File mode is `0600` on POSIX.
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/pamdecline/...` → FAIL (package missing).
 - [ ] **Step 3: Implement** using the `desktopfence/store.go` write path (temp file, `0600`, fsync, dir sync) with `atomicrename.Replace` for the replace step, `schemaVersion`, a mutex-guarded map, and one `chan struct{}` per awaiting entry, closed on resolve.
@@ -358,11 +360,15 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
   - `auto_approved + Deny` → `declined`, but `Due()` is empty.
   - `auto_approved + Approve` → removed.
   - `policy denied` → no entry, and the dialog fake is never called.
+  - `no helper session` → the entry is released, and `Check` allows.
+  - `already declined ID re-enters RunPamFlow` → the dialog fake is never called and `denyConsent` runs.
+  - `the dialog fake panics` → after the recover, the entry is `declined/dialog_error`.
+  - `awaiting before session lookup`: assert the entry exists when the `pamFindSession` fake is invoked.
   - `TestPamWithdrawReasonTable` covers the mapping function.
   - A persist failure (inject a store on a read-only path) must not block `denyConsent`.
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/heartbeat/ -run 'TestRunPamFlow|TestPamWithdrawReason'` → FAIL.
 - [ ] **Step 3: Implement**:
-  - Call `BeginAwaiting(outcome.RequestID, string(outcome.Status))` immediately before `ask(...)`.
+  - Call `BeginAwaiting(outcome.RequestID, string(outcome.Status))` as the first statement after the status switch, for `pending`/`auto_approved` only. If it returns `alreadyDeclined`, find the session and `denyConsent` without a dialog. Register the `defer` that declines a still-`awaiting` entry. Call `Release` on the no-session early return.
   - Keep the original `err` from `ask(...)` in its own variable. Today line `:121` overwrites the dialog with a synthetic result and drops the error.
   - `PamActionDeny` branch: `Decline(...)`, then `denyConsent` (unchanged), then `kickPamWithdrawDrain()`.
   - `PamActionAwaitRemote` and `PamActionActuate` branches: `Consent(...)`.
@@ -378,7 +384,7 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
 - Modify: `manager_windows.go` and `manager_stub.go`: add `SetDeclineChecker(DeclineChecker)` (nil = no-op).
 - Modify: `agent/internal/heartbeat/handlers_actuate.go`:
   - `handlePamApplyV2` `:67-104`: after identity validation, `h.pamDeclines.Await(waitCtx, payload.RequestID)` with a 100 s `waitCtx` derived from `context.Background()`. Create the 2-minute operation ctx **after** the wait.
-  - `handleActuateElevation` `:304-312`: the same wait, then `actuateResult{Success:false, Reason:<code>}` + `writePAMActuationRefused` on refusal.
+  - `handleActuateElevation` `:304-312`: the same wait, placed **before** the existing `ctx, cancel := context.WithTimeout(..., 2*timeout)` (`:~318`) so the wait does not eat the actuation budget (review finding 3). On refusal it returns `actuateResult{Success:false, Reason:<code>}` + `writePAMActuationRefused`.
 - Modify: `heartbeat.go` `SetStatePath`: call `SetDeclineChecker(h.pamDeclines)` through a type assertion on `h.pamLifetimeManager`.
 - Test: a new `agent/internal/pamlifetime/manager_decline_test.go` (cross-platform, using the existing fake Windows deps from `manager_stub_test.go` / `manager_failure_code_test.go`), and `agent/internal/heartbeat/handlers_actuate_decline_test.go` (new).
 
@@ -467,7 +473,7 @@ Run on the Windows lab VM against a stack with PR A, recording results in the PR
 
 - [ ] **Step 1: Failing tests:** `StatusBadge` renders "Withdrawn" for `withdrawn`; row renders the reason line from `withdrawnReason`; an approved row with `enforcementReason:'user_declined'` renders "Declined on the device", and so does an `auto_approved` row; `user_decision_pending` and `user_decline_record_untrusted` render their own strings; filter list offers `withdrawn`; respond modal on 409 `currentStatus:'withdrawn'` shows the withdrew copy and keeps submit disabled.
 - [ ] **Step 2: Run** `pnpm --filter @breeze/web exec vitest run src/components/pam` → FAIL.
-- [ ] **Step 3: Implement**; add the five keys to `en` and the other 7 locales (translated, not English copies, per existing locale practice).
+- [ ] **Step 3: Implement**; add the seven keys to `en` and the other 7 locales (translated, not English copies, per existing locale practice).
 - [ ] **Step 4: Run** → PASS; `src/lib/i18n/localeParity.test.ts`, `src/lib/__tests__/no-silent-mutations.test.ts` (no new mutation added — confirm it still passes), web typecheck with 12 GB heap, exit code read.
 - [ ] **Step 5: Commit** `feat(web): show withdrawn PAM requests and user declines (#8971)`.
 
