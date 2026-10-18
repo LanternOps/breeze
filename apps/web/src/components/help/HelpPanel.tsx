@@ -83,7 +83,7 @@ export default function HelpPanel() {
           isOpen ? 'translate-x-0 shadow-2xl' : 'translate-x-full pointer-events-none'
         }`}
       >
-        <div className="flex items-center justify-between border-b bg-card px-4 py-3">
+        <div className="flex items-center justify-between border-b px-4 py-3">
           <div className="flex items-center gap-2">
             <BookOpen className="h-4 w-4 text-primary" />
             <span className="text-sm font-semibold text-foreground">{localizedLabel}</span>
