@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const fetchWithAuth = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, status: 200 }) as unknown as Response);
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: [string, RequestInit?]) => fetchWithAuth(...a) }));
 
-import { listContractDocuments, contractDocumentPdfPath } from './contractDocuments';
+import { listContractDocuments, contractDocumentPdfPath, signedAgreementFilename } from './contractDocuments';
 
 describe('listContractDocuments query building', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -36,5 +36,17 @@ describe('listContractDocuments query building', () => {
   // (quote-contract-proposal.spec.ts:332) — renaming it silently reddens e2e only.
   it('builds the PDF path under the unchanged contracts mount', () => {
     expect(contractDocumentPdfPath('doc-1')).toBe('/contracts/contract-documents/doc-1/pdf');
+  });
+});
+
+describe('signedAgreementFilename (#8865 W1c)', () => {
+  it('names the download by the stored MIME, matching the API Content-Disposition', () => {
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'application/pdf' })).toBe('signed-agreement-doc-1.pdf');
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'image/png' })).toBe('signed-agreement-doc-1.png');
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'image/jpeg' })).toBe('signed-agreement-doc-1.jpg');
+  });
+
+  it('falls back to .pdf for an unknown MIME', () => {
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'application/octet-stream' })).toBe('signed-agreement-doc-1.pdf');
   });
 });

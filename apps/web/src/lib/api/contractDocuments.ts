@@ -70,9 +70,22 @@ export function listContractDocuments(query: ListContractDocumentsQuery = {}): P
   return fetchWithAuth(`${BASE}${buildQuery(query)}`);
 }
 
-/** Path for usePdfDownload — the route streams `application/pdf` bytes. */
+/** Path for usePdfDownload — the route streams the stored bytes under their
+ *  stored MIME (a PDF, or an externally signed PNG/JPEG scan). */
 export function contractDocumentPdfPath(id: string): string {
   return `${BASE}/${id}/pdf`;
+}
+
+const SIGNED_AGREEMENT_EXT: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+};
+
+/** Saved filename for a signed agreement — follows the stored MIME, same name
+ *  the API puts in Content-Disposition (routes/contracts/documents.ts). */
+export function signedAgreementFilename(doc: Pick<ContractDocument, 'id' | 'mime'>): string {
+  return `signed-agreement-${doc.id}.${SIGNED_AGREEMENT_EXT[doc.mime] ?? 'pdf'}`;
 }
 
 /** Link-later: attach a previously-unattached document to a contract (the

@@ -7,7 +7,7 @@ import { useHashState } from '@/lib/useHashState';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { listContractDocuments, contractDocumentPdfPath, linkContractDocument, type ContractDocument } from '../../lib/api/contractDocuments';
+import { listContractDocuments, contractDocumentPdfPath, linkContractDocument, signedAgreementFilename, type ContractDocument } from '../../lib/api/contractDocuments';
 import { listContracts, type ContractSummary } from '../../lib/api/contracts';
 import { usePdfDownload } from '../billing/shared/usePdfDownload';
 import { formatDate } from '../billing/invoiceTypes';
@@ -26,7 +26,7 @@ function DocumentDownloadButton({ doc }: { doc: ContractDocument }) {
   const { t } = useTranslation('billing');
   const { download, downloading } = usePdfDownload({
     path: contractDocumentPdfPath(doc.id),
-    filename: `contract-document-${doc.id}.pdf`,
+    filename: signedAgreementFilename(doc),
     errorMessage: t('contracts.contractDetail.documents.downloadError'),
   });
   return (

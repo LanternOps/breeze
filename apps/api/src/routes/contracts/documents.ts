@@ -11,6 +11,7 @@ import {
   ContractDocumentServiceError,
 } from '../../services/contractDocumentService';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
+import { contentDispositionFor } from '../../services/attachmentFilename';
 
 // Executed contract-document surfaces (Task 18): list per-contract or
 // unattached, stream the raw PDF, and link a document to a contract after
@@ -51,6 +52,18 @@ function handleDocumentError(c: { json: (b: unknown, s: number) => Response }, e
  *  JSON — same reasoning as templates.ts's serializeVersion. Only the PATCH
  *  (link) response returns a full row; GET / already selects a JSON-safe
  *  projection and GET /:id/pdf streams the bytes directly. */
+/** File extension for a signed agreement's STORED MIME (spec §3.4): an
+ *  externally signed scan is a PNG/JPEG, not a PDF, and must download as one. */
+const SIGNED_AGREEMENT_EXT: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+};
+
+function signedAgreementFilename(id: string, mime: string): string {
+  return `signed-agreement-${id}.${SIGNED_AGREEMENT_EXT[mime] ?? 'pdf'}`;
+}
+
 function serializeDocument(doc: { pdfData: Buffer; [k: string]: unknown }) {
   const { pdfData: _pdfData, ...rest } = doc;
   return rest;
@@ -66,7 +79,9 @@ contractDocumentRoutes.get('/', scopes, readPerm, zValidator('query', listQuery)
   }
 });
 
-// GET /:id/pdf — streams the executed document's raw PDF bytes.
+// GET /:id/pdf — streams the signed agreement's stored bytes (a PDF, or an
+// externally signed PNG/JPEG scan) under its stored MIME. Always a download,
+// never rendered inline in the app origin (acceptanceEvidence.ts precedent).
 contractDocumentRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
   try {
     const { id } = c.req.valid('param');
@@ -76,7 +91,9 @@ contractDocumentRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idP
       headers: {
         'Content-Type': doc.mime,
         'Content-Length': String(doc.byteSize),
-        'Content-Disposition': `attachment; filename="contract-document-${id}.pdf"`,
+        'Content-Disposition': contentDispositionFor(doc.mime, signedAgreementFilename(id, doc.mime))
+          .replace(/^inline;/, 'attachment;'),
+        'X-Content-Type-Options': 'nosniff',
         'Cache-Control': 'private, max-age=300',
       },
     });
