@@ -516,6 +516,7 @@ export async function duplicateChecklistTemplate(
       if (!collided || attempt === 10) throw err;
     }
   }
+  // Unreachable: attempt 10 either returns or rethrows above.
   throw new ChecklistTemplateServiceError('Could not pick a copy name', 409, 'DUPLICATE_CHECKLIST_TEMPLATE_NAME');
 }
 

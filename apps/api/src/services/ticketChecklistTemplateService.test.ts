@@ -665,6 +665,15 @@ describe('createChecklistTemplateFromTicket (#9180)', () => {
       createChecklistTemplateFromTicket(TICKET, { name: 'N', ownerScope: 'partner' }, PARTNER_TECH),
     ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
     expect(db.values).not.toHaveBeenCalled();
+    // Owner is resolved BEFORE the ticket's steps are read.
+    expect(spy('select')).not.toHaveBeenCalled();
+  });
+
+  it('exactly 100 distinct steps is accepted (cap counts KEPT steps, after dedupe)', async () => {
+    const raw = [...Array.from({ length: 100 }, (_, i) => item(`S${i}`)), item('S0'), item('S1')];
+    queue(raw, 100);
+    const out = await createChecklistTemplateFromTicket(TICKET, { name: 'N', ownerScope: 'organization' }, PARTNER_ADMIN);
+    expect(out.skipped.duplicates).toBe(2);
   });
 
   it('a partner admin may save partner-wide (positive control)', async () => {
@@ -759,5 +768,42 @@ describe('duplicateChecklistTemplate (#9180)', () => {
     dbMocks.rows.push([{ ...SRC_ORG, orgId: 'o-9' }]);
     await expect(duplicateChecklistTemplate('t-1', {}, ORG_USER)).rejects.toMatchObject({ status: 404 });
     expect(db.values).not.toHaveBeenCalled();
+  });
+
+  it('creates the copy ACTIVE even when the source is inactive', async () => {
+    queue(SRC_ORG);
+    await duplicateChecklistTemplate('t-1', {}, PARTNER_ADMIN);
+    const tpl = db.values.mock.calls.map((c) => c[0] as Record<string, unknown>).find((v) => 'name' in v)!;
+    // isActive is omitted from the insert, so the column default (true) applies.
+    expect(tpl.isActive === undefined || tpl.isActive === true).toBe(true);
+  });
+
+  describe('name collision handling', () => {
+    const nameClash = () => {
+      const e: any = new Error('dup');
+      e.code = '23505';
+      e.constraint_name = 'ticket_checklist_templates_org_name_uq';
+      return e;
+    };
+
+    it('an explicit name that collides is a 409 with NO retry', async () => {
+      dbMocks.rows.push([SRC_ORG], srcItems);
+      db.transaction.mockImplementationOnce(async () => { throw nameClash(); });
+      await expect(duplicateChecklistTemplate('t-1', { name: 'Taken' }, PARTNER_ADMIN)).rejects.toMatchObject({
+        status: 409, code: 'DUPLICATE_CHECKLIST_TEMPLATE_NAME',
+      });
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('a default name that collides is retried with a numeric suffix that still fits 200 chars', async () => {
+      dbMocks.rows.push([{ ...SRC_ORG, name: 'x'.repeat(200) }], srcItems);
+      db.transaction.mockImplementationOnce(async () => { throw nameClash(); });
+      dbMocks.rows.push([{ ...SRC_ORG, id: 't-new' }], [{ id: 'n0', templateId: 't-new', label: 'A', detail: null, sortOrder: 0 }], [{ id: 'n1', templateId: 't-new', label: 'B', detail: null, sortOrder: 1 }]);
+      await duplicateChecklistTemplate('t-1', {}, PARTNER_ADMIN);
+      expect(db.transaction).toHaveBeenCalledTimes(2);
+      const names = db.values.mock.calls.map((c) => c[0] as Record<string, unknown>).filter((v) => 'name' in v).map((v) => v.name as string);
+      expect(names.at(-1)!.endsWith(' (2)')).toBe(true);
+      expect(names.at(-1)!.length).toBeLessThanOrEqual(200);
+    });
   });
 });

@@ -63,6 +63,7 @@ export default function TicketChecklistTemplatesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [itemEditor, setItemEditor] = useState<{ templateId: string } | null>(null);
   const [itemLabel, setItemLabel] = useState('');
   const [itemSubmitting, setItemSubmitting] = useState(false);
@@ -202,6 +203,8 @@ export default function TicketChecklistTemplatesPage() {
   // #9180: the copy keeps the source's owner (the server enforces it), so no
   // scope is asked for. The list is name-sorted, so the copy is slotted in place.
   const handleDuplicate = async (tpl: ChecklistTemplate) => {
+    if (duplicatingId) return; // a double-click must not mint "Copy of X (2)"
+    setDuplicatingId(tpl.id);
     try {
       const copy = await runClientAction(() => duplicateChecklistTemplate(fetchWithAuth, tpl.id), {
         errorFallback: t('templates.errors.duplicateFailed'),
@@ -212,6 +215,8 @@ export default function TicketChecklistTemplatesPage() {
       );
     } catch (err) {
       handleActionError(err, t('templates.errors.duplicateFailed'));
+    } finally {
+      setDuplicatingId(null);
     }
   };
 
@@ -347,6 +352,7 @@ export default function TicketChecklistTemplatesPage() {
                       type="button"
                       data-testid={`checklist-template-duplicate-${tpl.id}`}
                       onClick={() => void handleDuplicate(tpl)}
+                      disabled={duplicatingId !== null}
                       className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
                       title={t('templates.duplicate')}
                       aria-label={t('templates.duplicate')}
