@@ -39,6 +39,7 @@ export * from './contracts';
 export * from './workTypes';
 export * from './mlFeedback';
 export * from './quotes';
+export * from './agreementRequests';
 export * from './contractTemplates';
 export * from './scriptProposals';
 export * from './maintenanceWindow';
