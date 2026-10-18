@@ -327,7 +327,7 @@ func TestReconnectLoop_WaitsAfterServerClose4001(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		if attempt == 1 {
 			_ = conn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(4001, "credential check failed"), time.Now().Add(time.Second))
@@ -360,7 +360,7 @@ func TestReconnectLoop_HonoursRetryAfterOnRefusedUpgrade(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		// Hold the connection until the client goes away.
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
