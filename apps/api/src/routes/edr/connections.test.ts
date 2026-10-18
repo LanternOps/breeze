@@ -14,6 +14,8 @@ const { authState, gates, adapterState, dbState, ctxState } = vi.hoisted(() => (
       ok: true, rootId: '1000', rootName: 'OliveTech', rootType: 'partner', tenantCount: 3,
       capabilityNotes: ['quarantine: API not enabled on key'],
     } as Record<string, unknown>,
+    /** Runs during the vendor round-trip: simulates a concurrent writer. */
+    onTest: null as null | (() => void),
   },
   dbState: {
     connections: [] as Array<Record<string, unknown>>,
@@ -22,6 +24,10 @@ const { authState, gates, adapterState, dbState, ctxState } = vi.hoisted(() => (
     deleted: 0,
     counts: [0, 0, 0] as number[],
     selectCalls: 0,
+    /** Count of `SELECT ... FOR UPDATE` row locks taken. */
+    locks: 0,
+    /** When set, the `FOR UPDATE` re-read throws (lock timeout, lost connection). */
+    lockError: null as Error | null,
   },
   ctxState: {
     inDbContext: 0,
@@ -54,7 +60,26 @@ vi.mock('../../db', () => {
     if (columns && 'n' in columns) return [projectRow(columns, {})];
     return dbState.connections.map((row) => (columns ? projectRow(columns, row) : row));
   };
+  /** select chain supporting `.limit()` and `.for('update')` in either order. */
+  const selectChain = (columns?: Record<string, unknown>) => ({
+    from: vi.fn(() => ({
+      where: vi.fn(() => {
+        const rows = () => selectRows(columns);
+        const build = (): unknown => Object.assign(Promise.resolve(rows()), {
+          limit: vi.fn(() => build()),
+          orderBy: vi.fn(async () => rows()),
+          for: vi.fn((_strength: string) => {
+            if (dbState.lockError) return Object.assign(Promise.reject(dbState.lockError), { limit: vi.fn() });
+            dbState.locks += 1;
+            return build();
+          }),
+        });
+        return build();
+      }),
+    })),
+  });
   const tx = {
+    select: vi.fn((columns?: Record<string, unknown>) => selectChain(columns)),
     update: vi.fn(() => ({
       set: vi.fn((v: Record<string, unknown>) => {
         dbState.updated.push(v);
@@ -68,17 +93,7 @@ vi.mock('../../db', () => {
   };
   return {
     db: {
-      select: vi.fn((columns?: Record<string, unknown>) => ({
-        from: vi.fn(() => ({
-          where: vi.fn(() => {
-            const rows = selectRows(columns);
-            return Object.assign(Promise.resolve(rows), {
-              limit: vi.fn(async () => rows),
-              orderBy: vi.fn(async () => rows),
-            });
-          }),
-        })),
-      })),
+      select: vi.fn((columns?: Record<string, unknown>) => selectChain(columns)),
       insert: vi.fn(() => ({
         values: vi.fn((v: Record<string, unknown>) => {
           const dupe = dbState.connections.some((r) =>
@@ -128,6 +143,7 @@ vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 const testConnection = vi.fn(async (ctx: unknown) => {
   ctxState.testCalledInContext = ctxState.inDbContext > 0;
   ctxState.testCalls.push(ctx);
+  adapterState.onTest?.();
   return adapterState.test;
 });
 const adapter = {
@@ -212,6 +228,9 @@ describe('EDR connection routes', () => {
     dbState.deleted = 0;
     dbState.counts = [0, 0, 0];
     dbState.selectCalls = 0;
+    dbState.locks = 0;
+    dbState.lockError = null;
+    adapterState.onTest = null;
     ctxState.inDbContext = 0;
     ctxState.testCalledInContext = null;
     ctxState.enqueueInContext = [];
@@ -435,6 +454,57 @@ describe('EDR connection routes', () => {
       expect(dbState.updated).toHaveLength(0);
     });
 
+    // #8942 (same class as #8656): refusals are audited, and the authoritative
+    // compare runs under a row lock inside the write transaction.
+    it('a refused credential change writes a denied audit row with both ids and no credential', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '2000', rootName: 'Other Console', rootType: 'partner', tenantCount: 1, capabilityNotes: [],
+      };
+      expect((await patch({ credentials: { apiKey: 'other-console-key' } })).status).toBe(409);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'edr.connection.update.rejected',
+        resourceId: CONNECTION_ID,
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'vendor_root_mismatch', storedVendorRootId: '1000', newVendorRootId: '2000',
+        }),
+      }));
+      expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain('other-console-key');
+    });
+
+    it('credentials resolving to the SAME root rotate, re-checking the root under a row lock', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      expect((await patch({ credentials: { apiKey: 'k2' } })).status).toBe(200);
+      expect(dbState.locks).toBeGreaterThan(0);
+    });
+
+    it('a concurrent PATCH that set a different root during the vendor call -> 409 under the row lock, nothing written', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: null })];
+      adapterState.onTest = () => { dbState.connections = [connectionRow({ vendorRootId: '2000' })]; };
+      const res = await patch({ credentials: { apiKey: 'k2' } });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        code: 'VENDOR_ROOT_MISMATCH', storedVendorRootId: '2000', newVendorRootId: '1000',
+      });
+      expect(dbState.updated).toHaveLength(0);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'edr.connection.update.rejected',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'vendor_root_mismatch', storedVendorRootId: '2000', newVendorRootId: '1000',
+        }),
+      }));
+    });
+
+    it('does not take the row lock for a PATCH that does not re-test', async () => {
+      dbState.connections = [connectionRow()];
+      expect((await patch({ name: 'Renamed' })).status).toBe(200);
+      expect(dbState.locks).toBe(0);
+    });
+
     it('credentials resolving to the SAME vendorRootId still rotate', async () => {
       dbState.connections = [connectionRow({ vendorRootId: '1000' })];
       adapterState.test = {
@@ -555,6 +625,47 @@ describe('EDR connection routes', () => {
       const res = await post(app, `/edr/connections/${CONNECTION_ID}/test`, {});
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ code: 'VENDOR_ROOT_MISMATCH' });
+      expect(dbState.updated).toHaveLength(0);
+    });
+
+    it('a refused test writes a denied audit row with both ids', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '2000', rootName: 'Other Console', rootType: 'partner', tenantCount: 1, capabilityNotes: [],
+      };
+      expect((await post(app, `/edr/connections/${CONNECTION_ID}/test`, {})).status).toBe(409);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'edr.connection.test.rejected',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'vendor_root_mismatch', storedVendorRootId: '1000', newVendorRootId: '2000',
+        }),
+      }));
+    });
+
+    it('a concurrent root change during the vendor call -> 409 under the row lock, nothing written', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: null })];
+      adapterState.onTest = () => { dbState.connections = [connectionRow({ vendorRootId: '2000' })]; };
+      const res = await post(app, `/edr/connections/${CONNECTION_ID}/test`, {});
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'VENDOR_ROOT_MISMATCH', storedVendorRootId: '2000' });
+      expect(dbState.updated).toHaveLength(0);
+      const audits = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1]);
+      expect(audits).toEqual([expect.objectContaining({
+        action: 'edr.connection.test.rejected',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'vendor_root_mismatch', storedVendorRootId: '2000', newVendorRootId: '1000',
+        }),
+      })]);
+    });
+
+    it('a failed locked re-read keeps the best-effort contract: test result returned, nothing written', async () => {
+      dbState.connections = [connectionRow()];
+      dbState.lockError = new Error('lock timeout');
+      const res = await post(app, `/edr/connections/${CONNECTION_ID}/test`, {});
+      expect(res.status).toBe(200);
       expect(dbState.updated).toHaveLength(0);
     });
 

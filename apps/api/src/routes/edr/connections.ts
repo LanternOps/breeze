@@ -271,6 +271,53 @@ function vendorRootMismatch(stored: string | null, resolved: string) {
     code: 'VENDOR_ROOT_MISMATCH',
     storedVendorRootId: stored,
     newVendorRootId: resolved,
+  } as const;
+}
+
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * The authoritative mismatch check, run inside the write transaction. The
+ * vendor round-trip happens outside any transaction (#1105), so a concurrent
+ * PATCH can commit a different root after this request's pre-check; the
+ * `FOR UPDATE` lock serialises the re-read with this request's write until
+ * commit. A missing row returns null and the caller's scoped write then
+ * matches nothing. (#8942, mirrors backup providers #8656.)
+ */
+async function lockedVendorRootMismatch(
+  executor: DbExecutor,
+  id: string,
+  partnerId: string,
+  resolved: string,
+) {
+  const [row] = await executor
+    .select({ vendorRootId: edrConnections.vendorRootId })
+    .from(edrConnections)
+    .where(and(eq(edrConnections.id, id), eq(edrConnections.partnerId, partnerId)))
+    .limit(1)
+    .for('update');
+  return row ? vendorRootMismatch(row.vendorRootId, resolved) : null;
+}
+
+/** The audit row for a refused root change; ids only, never the credential. */
+function vendorRootMismatchAudit(
+  action: 'edr.connection.update.rejected' | 'edr.connection.test.rejected',
+  id: string,
+  partnerId: string,
+  mismatch: NonNullable<ReturnType<typeof vendorRootMismatch>>,
+) {
+  return {
+    orgId: null,
+    action,
+    resourceType: 'edr_connection',
+    resourceId: id,
+    result: 'denied' as const,
+    details: {
+      partnerId,
+      reason: 'vendor_root_mismatch',
+      storedVendorRootId: mismatch.storedVendorRootId,
+      newVendorRootId: mismatch.newVendorRootId,
+    },
   };
 }
 
@@ -301,6 +348,8 @@ edrConnectionRoutes.patch(
     // adapter's capability check and the vendor stays authoritative.
     if (body.actionsEnabled !== undefined) updates.actionsEnabled = body.actionsEnabled;
 
+    /** Set only on a re-test: the root it resolved to, re-checked under the row lock. */
+    let resolvedRootId: string | null = null;
     const retest = body.credentials !== undefined || body.baseUrl !== undefined;
     if (retest) {
       let adapter: EdrProviderAdapter;
@@ -337,7 +386,11 @@ edrConnectionRoutes.patch(
       }
 
       const mismatch = vendorRootMismatch(existing.vendorRootId, test.rootId);
-      if (mismatch) return c.json(mismatch, 409);
+      if (mismatch) {
+        writeRouteAudit(c, vendorRootMismatchAudit('edr.connection.update.rejected', id, gate.partnerId, mismatch));
+        return c.json(mismatch, 409);
+      }
+      resolvedRootId = test.rootId;
 
       if (body.credentials !== undefined) {
         // Re-sealed under the EXISTING row id: the AAD is bound to it.
@@ -358,13 +411,18 @@ edrConnectionRoutes.patch(
     try {
       // Nested transaction = SAVEPOINT inside the short auth context.
       updated = await withAuthDbAccessContext(auth, () => db.transaction(async (tx) => {
+        if (resolvedRootId !== null) {
+          const mismatch = await lockedVendorRootMismatch(tx, id, gate.partnerId, resolvedRootId);
+          if (mismatch) return { kind: 'mismatch' as const, mismatch };
+        }
         const [row] = await tx
           .update(edrConnections)
           .set(updates)
           .where(and(eq(edrConnections.id, id), eq(edrConnections.partnerId, gate.partnerId)))
           .returning({ id: edrConnections.id });
         if (!row) return null;
-        return loadConnection(id, gate.partnerId);
+        const connection = await loadConnection(id, gate.partnerId);
+        return connection ? { kind: 'updated' as const, connection } : null;
       }));
     } catch (error) {
       if (pgErrorCode(error) === '23505') {
@@ -376,6 +434,10 @@ edrConnectionRoutes.patch(
       throw error;
     }
     if (!updated) return c.json({ error: 'EDR connection not found' }, 404);
+    if (updated.kind === 'mismatch') {
+      writeRouteAudit(c, vendorRootMismatchAudit('edr.connection.update.rejected', id, gate.partnerId, updated.mismatch));
+      return c.json(updated.mismatch, 409);
+    }
 
     writeRouteAudit(c, {
       orgId: null,
@@ -399,7 +461,7 @@ edrConnectionRoutes.patch(
       });
     }
 
-    return c.json({ data: updated });
+    return c.json({ data: updated.connection });
   },
 );
 
@@ -441,12 +503,21 @@ edrConnectionRoutes.post(
 
     if (result.ok) {
       const mismatch = vendorRootMismatch(existing.vendorRootId, result.rootId);
-      if (mismatch) return c.json(mismatch, 409);
+      if (mismatch) {
+        writeRouteAudit(c, vendorRootMismatchAudit('edr.connection.test.rejected', id, gate.partnerId, mismatch));
+        return c.json(mismatch, 409);
+      }
     }
 
     // Only a REAUTH failure changes `status`; a transient failure persists nothing.
     if (result.ok || result.reauth) {
-      await withAuthDbAccessContext(auth, async () => {
+      const lateMismatch = await withAuthDbAccessContext(auth, async () => {
+        if (result.ok) {
+          // A concurrent credential PATCH may have committed a different root
+          // during the vendor call; re-read it under the row lock.
+          const mismatch = await lockedVendorRootMismatch(db, id, gate.partnerId, result.rootId);
+          if (mismatch) return mismatch;
+        }
         await db
           .update(edrConnections)
           .set(result.ok
@@ -460,9 +531,17 @@ edrConnectionRoutes.post(
             }
             : { status: 'reauth_required', updatedAt: new Date() })
           .where(and(eq(edrConnections.id, id), eq(edrConnections.partnerId, gate.partnerId)));
+        return null;
       }).catch((error) => {
-        console.error('[edrProvider] failed to persist a connection test outcome:', error);
+        // Best-effort, as before: the ambient transaction rolled back, so
+        // neither the status nor the root was written.
+        console.error(`[edrProvider] failed to persist a connection test outcome for ${id}:`, error);
+        return null;
       });
+      if (lateMismatch) {
+        writeRouteAudit(c, vendorRootMismatchAudit('edr.connection.test.rejected', id, gate.partnerId, lateMismatch));
+        return c.json(lateMismatch, 409);
+      }
     }
 
     writeRouteAudit(c, {
