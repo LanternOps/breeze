@@ -78,23 +78,49 @@ describe('decideRebootCommand', () => {
     });
   });
 
-  it('carries the policy-resolved grace onto the Linux reboot payload', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'linux', delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF, promptText: {} })).toEqual({
-      type: 'reboot',
-      payload: { delay: POLICY_DELAY },
+  // #9181: Linux rides the same warn-then-reboot manager as Windows. The old
+  // `reboot` + bare `delay` path (an OS-scheduled `shutdown -r +N`) could not
+  // carry the deferral budget or the #8030 prompt text, so a Linux user was
+  // never offered Postpone and never saw the operator's custom copy.
+  it('sends Linux the same schedule_reboot payload Windows gets (#9181)', () => {
+    const params = { rebootIfPending: true, windowActive: true, delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF, promptText: {} };
+    const linux = decideRebootCommand({ ...params, osType: 'linux' });
+    expect(linux).toEqual({
+      type: 'schedule_reboot',
+      payload: {
+        delayMinutes: POLICY_DELAY,
+        reason: 'Pending reboot — maintenance window',
+        source: 'maintenance_window',
+        deadline: expect.any(String),
+        allowDeferral: false,
+        maxDeferrals: 0,
+        deferralMinutes: 0,
+      },
     });
+    const windows = decideRebootCommand({ ...params, osType: 'windows' });
+    expect(Object.keys(linux!.payload).sort()).toEqual(Object.keys(windows!.payload).sort());
   });
 
-  // #3207: the Linux path is a different command with a different contract
-  // (`shutdown -r +N` via the `delay` wire key). It has no deferral surface
-  // until W4 ships a Linux prompt, and must not grow one by accident.
-  it('leaves the Linux reboot payload a bare delay even when deferral is enabled', () => {
-    expect(decideRebootCommand({
+  it('never sends Linux the legacy reboot command or its bare delay key (#9181)', () => {
+    const decision = decideRebootCommand({
+      rebootIfPending: true, windowActive: true, osType: 'linux',
+      delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF, promptText: {},
+    });
+    expect(decision?.type).not.toBe('reboot');
+    expect(decision!.payload).not.toHaveProperty('delay');
+  });
+
+  it('carries the deferral budget onto the Linux payload when enabled (#9181)', () => {
+    const decision = decideRebootCommand({
       rebootIfPending: true, windowActive: true, osType: 'linux',
       delayMinutes: POLICY_DELAY,
       deferral: { allowDeferral: true, maxDeferrals: 3, deferralMinutes: 60 },
       promptText: {},
-    })).toEqual({ type: 'reboot', payload: { delay: POLICY_DELAY } });
+    });
+    expect(decision?.type).toBe('schedule_reboot');
+    expect(decision!.payload).toMatchObject({
+      allowDeferral: true, maxDeferrals: 3, deferralMinutes: 60,
+    });
   });
 
   it('carries the deferral budget onto the Windows payload when enabled', () => {
@@ -120,12 +146,30 @@ describe('decideRebootCommand', () => {
     );
   });
 
-  it('never puts prompt text on the Linux bare-delay payload (#8030)', () => {
-    expect(decideRebootCommand({
+  it('carries the #8030 prompt text onto the Linux payload (#9181)', () => {
+    const decision = decideRebootCommand({
       rebootIfPending: true, windowActive: true, osType: 'linux',
       delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF,
-      promptText: { title: 'Neustart', body: 'x', button: 'y' },
-    })).toEqual({ type: 'reboot', payload: { delay: POLICY_DELAY } });
+      promptText: { title: 'Neustart', body: 'Bitte speichern', button: 'Jetzt' },
+    });
+    expect(decision?.type).toBe('schedule_reboot');
+    expect(decision!.payload).toMatchObject({
+      promptTitle: 'Neustart', promptBody: 'Bitte speichern', promptButton: 'Jetzt',
+    });
+  });
+
+  it('clamps the Linux maintenance-window deadline to the end of the window (#9181)', () => {
+    const decision = decideRebootCommand({
+      rebootIfPending: true, windowActive: true, osType: 'linux',
+      delayMinutes: 15,
+      deferral: { allowDeferral: true, maxDeferrals: 4, deferralMinutes: 60 },
+      promptText: {},
+      windowEndsAt: new Date(Date.now() + 45 * 60_000),
+    });
+    const deadline = (decision!.payload as { deadline: string }).deadline;
+    const minutesOut = (Date.parse(deadline) - Date.now()) / 60000;
+    expect(minutesOut).toBeGreaterThan(44);
+    expect(minutesOut).toBeLessThanOrEqual(45);
   });
 
   it('clamps the maintenance-window deadline to the end of the window', () => {
@@ -224,14 +268,34 @@ describe('processRebootCandidate', () => {
     );
   });
 
-  it('issues reboot with grace delay on Linux', async () => {
+  it('issues schedule_reboot with the policy grace on Linux (#9181)', async () => {
     const deps = makeDeps();
     const res = await processRebootCandidate(linuxDevice, deps);
     expect(res.issued).toBe(true);
     expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
       'dev-2',
-      'reboot',
-      expect.objectContaining({ delay: POLICY_DELAY }),
+      'schedule_reboot',
+      expect.objectContaining({ delayMinutes: POLICY_DELAY, source: 'maintenance_window' }),
+      { expectedOrgId: 'org-1' },
+    );
+  });
+
+  it('carries the policy prompt text and deferral budget to a Linux device (#9181)', async () => {
+    const deps = makeDeps({
+      resolveRebootPlan: vi.fn().mockResolvedValue({
+        delayMinutes: POLICY_DELAY,
+        deferral: { allowDeferral: true, maxDeferrals: 2, deferralMinutes: 30 },
+        promptText: { title: 'Restart soon', body: 'Save your work', button: 'OK' },
+      }),
+    } as never);
+    await processRebootCandidate(linuxDevice, deps);
+    expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
+      'dev-2',
+      'schedule_reboot',
+      expect.objectContaining({
+        allowDeferral: true, maxDeferrals: 2, deferralMinutes: 30,
+        promptTitle: 'Restart soon', promptBody: 'Save your work', promptButton: 'OK',
+      }),
       { expectedOrgId: 'org-1' },
     );
   });
@@ -413,7 +477,7 @@ describe('processRebootCandidate', () => {
       1, 'dev-1', 'schedule_reboot', expect.objectContaining({ delayMinutes: 30 }), { expectedOrgId: 'org-1' },
     );
     expect(deps.queueCommandForExecution).toHaveBeenNthCalledWith(
-      2, 'dev-2', 'reboot', expect.objectContaining({ delay: 5 }), { expectedOrgId: 'org-1' },
+      2, 'dev-2', 'schedule_reboot', expect.objectContaining({ delayMinutes: 5 }), { expectedOrgId: 'org-1' },
     );
   });
 

@@ -559,7 +559,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
   it('a power-state command IS pushed when nothing is in flight', async () => {
     // #5128 review round 2 (J): a blanket skip regressed the callers that have
     // always pushed a reboot immediately — maintenanceRebootWorker (Linux
-    // maintenance windows) and the fleet-findings dispatch map — delaying a
+    // maintenance windows, before #9181) and the fleet-findings dispatch map — delaying a
     // scheduled reboot by a whole heartbeat interval. The barrier's real
     // condition is "nothing else in flight", so apply that instead.
     for (const type of ['reboot', 'shutdown', 'reboot_safe_mode']) {

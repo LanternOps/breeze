@@ -17,15 +17,31 @@ import (
 // be a memory hazard if a child decides to shout.
 const stderrCaptureLimit = 4096
 
+// linuxDesktop wires the real Linux seams into the untagged desktopDelivery,
+// where every decision below — and the wall fallback (#9181) — lives and is
+// tested on any platform.
+var linuxDesktop = desktopDelivery{
+	listSessions: linuxsession.List,
+	zenityAvailable: func() bool {
+		_, err := linuxsession.ResolveSystemBinary(zenityBinary)
+		return err == nil
+	},
+	prompt: runZenityPrompt,
+	notify: runNotifySend,
+	wall: func(ctx context.Context, message string) error {
+		return runWall(ctx, wallBinary, message)
+	},
+}
+
 // DesktopPrompt is the Linux PromptFunc: it puts the reboot dialog in front of
 // every signed-in graphical user, as that user, and reports what came back.
 //
 // The three answers it can give, and why each is what it is:
 //
 //   - ("", false) — no graphical session, or nothing could be shown. The manager
-//     falls back to its ordinary notification and the reboot proceeds on
-//     schedule. This is the ORDINARY answer on a headless server and is not an
-//     error.
+//     falls back to its ordinary notification (DesktopNotify, which walls on a
+//     headless box) and the reboot proceeds on schedule. This is the ORDINARY
+//     answer on a headless server and is not an error.
 //   - ("", true) — a dialog was on screen and nobody decided. The reboot
 //     proceeds unchanged, and the manager emits nothing further, because the
 //     dialog already was the warning.
@@ -35,65 +51,15 @@ const stderrCaptureLimit = 4096
 // the user cannot postpone, but they are still told, which is the whole point
 // of the #3197 ladder. That is reported as ("", true) so the manager does not
 // emit a second, identical notification on top of it.
-//
-// The decision itself lives in promptOrNotifyDesktop, untagged, so every branch
-// below is covered by tests that run on any platform; this function is just the
-// seams.
 func DesktopPrompt(title, body, urgency string, actions []string, timeout time.Duration) (string, bool) {
-	// Two graces: one for the dialog itself and one for the enumeration and
-	// process teardown around it. The manager is not holding its lock here, but
-	// the rung goroutine is, in effect, the ladder — it must not hang.
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+2*desktopDialogGrace)
-	defer cancel()
-
-	sessions, err := linuxsession.List(ctx)
-	if err != nil {
-		log.Warn("could not enumerate graphical sessions for the reboot prompt", "error", err.Error())
-	} else if len(sessions) == 0 {
-		log.Debug("no graphical session to show the reboot prompt in")
-	}
-
-	_, zenityErr := linuxsession.ResolveSystemBinary(zenityBinary)
-	if zenityErr != nil && err == nil && len(sessions) > 0 {
-		log.Info("zenity is not installed; warning the desktop without a postponement offer",
-			"sessions", len(sessions))
-	}
-
-	return promptOrNotifyDesktop(ctx, sessions, err, zenityErr == nil,
-		func(ctx context.Context, s linuxsession.GraphicalSession) (string, bool) {
-			return runZenityPrompt(ctx, s, title, body, actions, timeout)
-		},
-		func(ctx context.Context, s linuxsession.GraphicalSession) bool {
-			return runNotifySend(ctx, s, title, body, urgency, timeout)
-		})
+	return linuxDesktop.Prompt(title, body, urgency, actions, timeout)
 }
 
 // DesktopNotify is the Linux NotifyFunc: a plain warning with no buttons,
-// delivered to every graphical session. Best-effort, but not silent — by the
-// time this runs it is the LAST delivery path there is, so a failure here means
-// the user was never warned at all and the log line is the only trace that will
-// ever exist of it.
+// delivered to every graphical session, or broadcast with wall(1) to terminal
+// sessions when no desktop took it (#9181). See desktopDelivery.Notify.
 func DesktopNotify(title, body, urgency string) {
-	ctx, cancel := context.WithTimeout(context.Background(), desktopNotifyTimeout)
-	defer cancel()
-
-	sessions, err := linuxsession.List(ctx)
-	if err != nil {
-		log.Warn("could not enumerate graphical sessions for a reboot notification; "+
-			"the user may not have been warned", "error", err.Error())
-		return
-	}
-	if len(sessions) == 0 {
-		return
-	}
-	if !notifyDesktopSessions(ctx, sessions, func(ctx context.Context, s linuxsession.GraphicalSession) bool {
-		// No expiry: a restart warning that disappears on its own is worse than
-		// one the user has to dismiss.
-		return runNotifySend(ctx, s, title, body, urgency, 0)
-	}) {
-		log.Warn("the reboot warning reached no graphical session",
-			"sessions", len(sessions), "title", title)
-	}
+	linuxDesktop.Notify(title, body, urgency)
 }
 
 // runZenityPrompt shows one dialog in one session, as that session's user.
