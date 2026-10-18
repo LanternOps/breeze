@@ -2641,6 +2641,33 @@
         "sending": "Sending…",
         "send": "Send"
       }
+    },
+    "mcpDomains": {
+      "legend": "Tool access",
+      "allLabel": "All tools (including areas added later)",
+      "selectedLabel": "Only these areas",
+      "coreLabel": "Core (always included)",
+      "error": "Select at least one area, or choose All tools.",
+      "reconnectNote": "Applies to this connection. To narrow an existing connection, revoke it under Connected apps, then reconnect.",
+      "apiKeyHint": "Choose which tool areas this key can use through the AI/MCP interface.",
+      "allTools": "All tools",
+      "areaCount_one": "{{count}} area",
+      "areaCount_other": "{{count}} areas",
+      "labels": {
+        "devices": "Devices",
+        "scripts": "Scripts & automation",
+        "patching": "Patching & software",
+        "monitoring": "Monitoring & alerts",
+        "network": "Network",
+        "security": "Security & compliance",
+        "backup": "Backup & recovery",
+        "tickets": "Tickets & time",
+        "billing": "Billing",
+        "accounts": "Accounts",
+        "integrations": "Integrations",
+        "admin": "Administration",
+        "ai": "AI agents"
+      }
     }
   },
   "whatsNew": {

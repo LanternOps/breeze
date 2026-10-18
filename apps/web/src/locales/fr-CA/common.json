@@ -2641,6 +2641,33 @@
         "sending": "Envoi…",
         "send": "Envoyer"
       }
+    },
+    "mcpDomains": {
+      "legend": "Accès aux outils",
+      "allLabel": "Tous les outils (y compris les domaines ajoutés plus tard)",
+      "selectedLabel": "Seulement ces domaines",
+      "coreLabel": "Noyau (toujours inclus)",
+      "error": "Sélectionnez au moins un domaine ou choisissez Tous les outils.",
+      "reconnectNote": "S’applique à cette connexion. Pour restreindre une connexion existante, révoquez-la sous Applications connectées, puis reconnectez-vous.",
+      "apiKeyHint": "Choisissez les domaines d’outils que cette clé peut utiliser par l’interface IA/MCP.",
+      "allTools": "Tous les outils",
+      "areaCount_one": "{{count}} domaine",
+      "areaCount_other": "{{count}} domaines",
+      "labels": {
+        "devices": "Appareils",
+        "scripts": "Scripts et automatisation",
+        "patching": "Correctifs et logiciels",
+        "monitoring": "Surveillance et alertes",
+        "network": "Réseau",
+        "security": "Sécurité et conformité",
+        "backup": "Sauvegarde et récupération",
+        "tickets": "Billets et temps",
+        "billing": "Facturation",
+        "accounts": "Comptes",
+        "integrations": "Intégrations",
+        "admin": "Administration",
+        "ai": "Agents IA"
+      }
     }
   },
   "whatsNew": {

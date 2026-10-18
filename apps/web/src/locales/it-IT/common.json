@@ -2641,6 +2641,33 @@
         "sending": "Invio…",
         "send": "Invia"
       }
+    },
+    "mcpDomains": {
+      "legend": "Accesso agli strumenti",
+      "allLabel": "Tutti gli strumenti (incluse le aree aggiunte in seguito)",
+      "selectedLabel": "Solo queste aree",
+      "coreLabel": "Core (sempre incluso)",
+      "error": "Seleziona almeno un’area oppure scegli Tutti gli strumenti.",
+      "reconnectNote": "Si applica a questa connessione. Per restringere una connessione esistente, revocala in App connesse e poi riconnettiti.",
+      "apiKeyHint": "Scegli quali aree di strumenti questa chiave può usare tramite l’interfaccia IA/MCP.",
+      "allTools": "Tutti gli strumenti",
+      "areaCount_one": "{{count}} area",
+      "areaCount_other": "{{count}} aree",
+      "labels": {
+        "devices": "Dispositivi",
+        "scripts": "Script e automazione",
+        "patching": "Patch e software",
+        "monitoring": "Monitoraggio e avvisi",
+        "network": "Rete",
+        "security": "Sicurezza e conformità",
+        "backup": "Backup e ripristino",
+        "tickets": "Ticket e tempo",
+        "billing": "Fatturazione",
+        "accounts": "Account",
+        "integrations": "Integrazioni",
+        "admin": "Amministrazione",
+        "ai": "Agenti IA"
+      }
     }
   },
   "whatsNew": {

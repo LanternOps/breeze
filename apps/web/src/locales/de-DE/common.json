@@ -2641,6 +2641,33 @@
         "sending": "Senden…",
         "send": "Senden"
       }
+    },
+    "mcpDomains": {
+      "legend": "Werkzeugzugriff",
+      "allLabel": "Alle Werkzeuge (einschließlich später hinzugefügter Bereiche)",
+      "selectedLabel": "Nur diese Bereiche",
+      "coreLabel": "Kern (immer enthalten)",
+      "error": "Wählen Sie mindestens einen Bereich oder „Alle Werkzeuge“.",
+      "reconnectNote": "Gilt für diese Verbindung. Um eine bestehende Verbindung einzuschränken, widerrufen Sie sie unter „Verbundene Apps“ und verbinden Sie sich erneut.",
+      "apiKeyHint": "Legen Sie fest, welche Werkzeugbereiche dieser Schlüssel über die KI-/MCP-Schnittstelle nutzen darf.",
+      "allTools": "Alle Werkzeuge",
+      "areaCount_one": "{{count}} Bereich",
+      "areaCount_other": "{{count}} Bereiche",
+      "labels": {
+        "devices": "Geräte",
+        "scripts": "Skripte & Automatisierung",
+        "patching": "Patching & Software",
+        "monitoring": "Überwachung & Warnungen",
+        "network": "Netzwerk",
+        "security": "Sicherheit & Compliance",
+        "backup": "Backup & Wiederherstellung",
+        "tickets": "Tickets & Zeiterfassung",
+        "billing": "Abrechnung",
+        "accounts": "Konten",
+        "integrations": "Integrationen",
+        "admin": "Verwaltung",
+        "ai": "KI-Agenten"
+      }
     }
   },
   "whatsNew": {

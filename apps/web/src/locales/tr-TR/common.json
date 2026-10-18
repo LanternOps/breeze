@@ -2641,6 +2641,33 @@
         "sending": "Gönderiliyor…",
         "send": "Gönder"
       }
+    },
+    "mcpDomains": {
+      "legend": "Araç erişimi",
+      "allLabel": "Tüm araçlar (sonradan eklenen alanlar dahil)",
+      "selectedLabel": "Yalnızca bu alanlar",
+      "coreLabel": "Çekirdek (her zaman dahil)",
+      "error": "En az bir alan seçin veya Tüm araçlar seçeneğini işaretleyin.",
+      "reconnectNote": "Bu bağlantı için geçerlidir. Mevcut bir bağlantıyı daraltmak için Bağlı uygulamalar bölümünden iptal edin, ardından yeniden bağlanın.",
+      "apiKeyHint": "Bu anahtarın yapay zekâ/MCP arayüzü üzerinden kullanabileceği araç alanlarını seçin.",
+      "allTools": "Tüm araçlar",
+      "areaCount_one": "{{count}} alan",
+      "areaCount_other": "{{count}} alan",
+      "labels": {
+        "devices": "Cihazlar",
+        "scripts": "Komut dosyaları ve otomasyon",
+        "patching": "Yama ve yazılım",
+        "monitoring": "İzleme ve uyarılar",
+        "network": "Ağ",
+        "security": "Güvenlik ve uyumluluk",
+        "backup": "Yedekleme ve kurtarma",
+        "tickets": "Destek kayıtları ve süre",
+        "billing": "Faturalama",
+        "accounts": "Hesaplar",
+        "integrations": "Entegrasyonlar",
+        "admin": "Yönetim",
+        "ai": "Yapay zekâ ajanları"
+      }
     }
   },
   "whatsNew": {
