@@ -38,10 +38,27 @@ export const REGISTRY_HOST_ALLOWLIST: ReadonlySet<string> = new Set([
   'public.ecr.aws',
 ]);
 
+/**
+ * Redirect targets `registry.k8s.io` resolves manifests to (#8549). Exact hosts
+ * only — no wildcard, so an arbitrary `*.pkg.dev` project/region is still refused.
+ * Redirect-only: these are NOT valid image registries on their own
+ * (`registryRequestHost` consults REGISTRY_HOST_ALLOWLIST).
+ *
+ * Enumerated 2026-10-17 with `curl -sI` on manifests for pause:3.9,
+ * kube-proxy:v1.31.0, coredns/coredns:v1.11.3, metrics-server/metrics-server:v0.7.2
+ * and ingress-nginx/controller:v1.11.2, observed from a US egress. Every one 307'd to
+ * `us-central1-docker.pkg.dev` (anonymous GET there returns the manifest, 200).
+ * registry.k8s.io routes by client region, so other regions may be sent to other
+ * regional hosts; add those as exact entries when observed. Blob redirects
+ * (`cdn.registry.k8s.io`) are not needed: currency reads manifests only.
+ */
+const K8S_REDIRECT_HOSTS = ['us-central1-docker.pkg.dev'] as const;
+
 /** Hosts a token realm, or any redirect hop, may point at. */
 export const REGISTRY_OUTBOUND_ALLOWLIST: ReadonlySet<string> = new Set([
   ...REGISTRY_HOST_ALLOWLIST,
   'auth.docker.io',
+  ...K8S_REDIRECT_HOSTS,
 ]);
 
 /**

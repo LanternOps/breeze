@@ -95,6 +95,8 @@ describe('helpers', () => {
     expect(registryRequestHost('ghcr.io')).toBe('ghcr.io');
     expect(registryRequestHost('registry.example.com')).toBeNull();
     expect(registryRequestHost('localhost:5000')).toBeNull();
+    // Redirect-only host: not itself a requestable registry.
+    expect(registryRequestHost('us-central1-docker.pkg.dev')).toBeNull();
   });
   it('splits the normalized repository', () => {
     expect(splitImageRepository('docker.io/library/nginx')).toEqual({ registry: 'docker.io', path: 'library/nginx' });
@@ -130,6 +132,30 @@ describe('lookup — SSRF guard', () => {
     // Served from a host off the allowlist (e.g. a redirector registry): unsupported, not a retryable error.
     expect(result).toEqual({ kind: 'unsupported_registry' });
     expect(harness.dialed).toEqual(['ghcr.io']);
+  });
+
+  it('registry.k8s.io follows its redirect to an allowlisted Artifact Registry host (#8549)', async () => {
+    harness = await fakeRegistry((_req, res, host) => {
+      if (host === 'registry.k8s.io') {
+        res.writeHead(307, { location: 'https://us-central1-docker.pkg.dev/v2/k8s-artifacts-prod/images/pause/manifests/3.9?rid=x' });
+        return res.end();
+      }
+      res.writeHead(200, { 'content-type': MEDIA_TYPE_DOCKER_MANIFEST, 'docker-content-digest': D('a') });
+      res.end();
+    });
+    const result = await client().lookup({ registry: 'registry.k8s.io', path: 'pause', tag: '3.9', localDigests: [D('a')] });
+    expect(result).toMatchObject({ kind: 'ok', digest: D('a') });
+    expect(harness.dialed).toEqual(['registry.k8s.io', 'us-central1-docker.pkg.dev']);
+  });
+
+  it('registry.k8s.io redirect to an unlisted host (other region / other pkg.dev) is still unsupported_registry', async () => {
+    harness = await fakeRegistry((_req, res) => {
+      res.writeHead(307, { location: 'https://europe-west4-docker.pkg.dev/v2/k8s-artifacts-prod/images/pause/manifests/3.9' });
+      res.end();
+    });
+    const result = await client().lookup({ registry: 'registry.k8s.io', path: 'pause', tag: '3.9', localDigests: [] });
+    expect(result).toEqual({ kind: 'unsupported_registry' });
+    expect(harness.dialed).toEqual(['registry.k8s.io']);
   });
 
   it('refuses a token realm off the allowlist without contacting it', async () => {
