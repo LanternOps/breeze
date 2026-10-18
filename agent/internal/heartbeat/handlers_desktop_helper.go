@@ -323,7 +323,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		// wait for the lifecycle manager to bring it up. Strict by design (#434) —
 		// no fallback to another session.
 		if h.lifecycleMode() == "on-demand" {
-			return h.startDesktopOnDemand(sessionID, targetSession, req)
+			return h.startDesktopOnDemand(sessionID, targetSession, req, fenceInput)
 		}
 		return h.startDesktopAlwaysOn(sessionID, targetSession, req)
 	})
@@ -500,15 +500,18 @@ func (h *Heartbeat) startDesktopOnSession(session *sessionbroker.Session, sessio
 // leased system-role helper in the pinned session, then drive the start
 // against exactly that helper. A non-ready wait surfaces the typed reason
 // rather than a bare timeout, and never substitutes another session (#434).
-func (h *Heartbeat) startDesktopOnDemand(sessionID, targetSession string, req ipc.DesktopStartRequest) tools.CommandResult {
+//
+// Its failure exits release the session-keyed target and leases through
+// releaseFailedDesktopStart: if a newer start for the session was admitted
+// while this one waited on its helper, those now belong to the newer start.
+func (h *Heartbeat) startDesktopOnDemand(sessionID, targetSession string, req ipc.DesktopStartRequest, fenceInput desktopStartFenceInput) tools.CommandResult {
 	lc := h.lifecycleController()
 	if lc == nil {
 		return tools.NewErrorResult(errors.New("helper lifecycle manager is not running"), 0)
 	}
 	winID, err := resolveDesktopTargetWinID(targetSession)
 	if err != nil {
-		h.releaseDesktopLeases(sessionID)
-		h.takeDesktopTarget(sessionID)
+		h.releaseFailedDesktopStart(sessionID, fenceInput)
 		return tools.NewErrorResult(err, 0)
 	}
 
@@ -518,8 +521,7 @@ func (h *Heartbeat) startDesktopOnDemand(sessionID, targetSession string, req ip
 	if res.Status != sessionbroker.HelperWaitReady {
 		log.Warn("on-demand desktop helper never became ready",
 			"sessionId", sessionID, "winSession", winID, "status", string(res.Status))
-		h.releaseDesktopLeases(sessionID)
-		h.takeDesktopTarget(sessionID)
+		h.releaseFailedDesktopStart(sessionID, fenceInput)
 		return tools.NewErrorResult(errors.New(helperWaitFailureMessage(res)), 0)
 	}
 
@@ -528,8 +530,7 @@ func (h *Heartbeat) startDesktopOnDemand(sessionID, targetSession string, req ip
 	// a different session is exactly what strict targeting forbids.
 	result, _ := h.startDesktopOnSession(res.Session, sessionID, req)
 	if result.Status == "failed" {
-		h.releaseDesktopLeases(sessionID)
-		h.takeDesktopTarget(sessionID)
+		h.releaseFailedDesktopStart(sessionID, fenceInput)
 		return result
 	}
 	h.startDesktopLeaseRenewal(sessionID)

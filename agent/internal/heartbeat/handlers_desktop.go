@@ -278,12 +278,21 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if consentGated {
 		consent = h.runConsentGate(sessionID, prompt, targetSession)
 		if !consent.proceed {
+			// A newer start admitted while this prompt was up owns the
+			// session now. Report this start as superseded, not denied: a
+			// consent_denied marker would finalize the session the newer
+			// start is about to serve, and the target and leases are its.
+			if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok && reason == desktopFenceReasonSuperseded {
+				log.Warn("dropping the consent verdict of a start superseded while its prompt was up",
+					"sessionId", sessionID, "commandId", cmd.ID, "reason", consent.reason, "outcome", consent.outcome)
+				return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
+			}
 			log.Info("remote session denied by consent gate",
 				"sessionId", sessionID, "reason", consent.reason, "outcome", consent.outcome)
 			// The session never started — no disconnect event will ever arrive
-			// to release this via handleConsentSessionEnd, so clear it here.
-			h.releaseDesktopLeases(sessionID)
-			h.takeDesktopTarget(sessionID)
+			// to release this via handleConsentSessionEnd, so clear it here
+			// (unless a newer start for the session now owns it).
+			h.releaseFailedDesktopStart(sessionID, fenceInput)
 			if consent.detail == consentDetailSessionEnded {
 				// A stop withdrew the prompt: report it as the stop it was.
 				return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
