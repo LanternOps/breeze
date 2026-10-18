@@ -53,6 +53,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TOOL_OUTPUT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   AI_TOOL_OUTPUT_RETENTION_CRON: 'job schedule override',
   AI_TOOL_OUTPUT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  AI_TRANSCRIPT_SWEEPER_CRON: 'job schedule override',
+  AI_TRANSCRIPT_SWEEPER_ENABLED: 'job toggle',
+  AI_TRANSCRIPT_SWEEPER_GRACE_HOURS: 'transcript sweep grace window',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
@@ -141,6 +144,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // CHILD_*
   CHILD_ENROLLMENT_KEY_TTL_MINUTES: 'timing knob',
   // CLAUDE_*
+  CLAUDE_CONFIG_DIR: 'SDK transcript directory (filesystem path)',
   CLAUDE_AGENT_SDK_CLIENT_APP: 'SDK child-process label',
   // COOKIE_*
   COOKIE_FORCE_SECURE: 'cookie policy override',
