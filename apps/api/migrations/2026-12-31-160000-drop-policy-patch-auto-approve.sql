@@ -35,11 +35,12 @@
 --
 -- (3) Writes rows, so it elects system scope first (FORCE RLS would otherwise
 -- match zero rows). The removed keys are inert: no reader consults them and
--- patchInlineSettingsSchema no longer defines them. Links whose stored `apps`
--- were left behind by the W02 backfill (an invalid ring reference: missing,
--- not a ring, another partner's ring, or a disabled ring) already deny every
--- candidate at read time (ring_reference_invalid). No ring enforces their
--- rules, so before the strip each such link is reported in one
+-- patchInlineSettingsSchema no longer defines them. Some links' stored `apps`
+-- are enforced by no valid ring: an invalid ring reference (missing, not a
+-- ring, another partner's ring, or a disabled ring), which already denies
+-- every candidate at read time (ring_reference_invalid), or no ring at all,
+-- which leaves manual approvals only. Before the strip each such link is
+-- reported in one
 -- `drop_policy_patch_auto_approve unenforced_app_rules` WARNING carrying the
 -- link id, policy id, ring reference and the stored `apps` JSON (bounded to
 -- 4000 characters) — the record an operator needs to recreate the rules on a
@@ -213,8 +214,11 @@ BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
   -- Forensic record: legacy app rules that no valid ring enforces are
-  -- discarded with the key. These links already fail closed
-  -- (ring_reference_invalid); one WARNING per link keeps what was there.
+  -- discarded with the key (the link has an invalid ring reference, which
+  -- fails closed, or no ring, which is manual-approval only); one WARNING per
+  -- link keeps what was there. The non-empty test is `<> '[]'`, never
+  -- jsonb_array_length: the planner may evaluate quals in any order, and
+  -- jsonb_array_length raises on a non-array `apps` (null, object, scalar).
   n := 0;
   FOR r IN
     SELECT l.id AS link_id, l.config_policy_id, l.feature_policy_id,
@@ -225,7 +229,7 @@ BEGIN
     WHERE l.feature_type = 'patch'
       AND jsonb_typeof(l.inline_settings) = 'object'
       AND jsonb_typeof(l.inline_settings->'apps') = 'array'
-      AND jsonb_array_length(l.inline_settings->'apps') > 0
+      AND l.inline_settings->'apps' <> '[]'::jsonb
       AND NOT EXISTS (
         SELECT 1 FROM patch_policies p
         WHERE p.id = l.feature_policy_id

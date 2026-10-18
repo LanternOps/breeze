@@ -162,6 +162,20 @@ describe('2026-12-31-160000 drop policy patch auto-approve migration (#8188)', (
     const lEmptyApps = await seedLink(await seedPolicy('empty apps', { orgId: O1 }), 'patch', null, {
       apps: [], rebootPolicy: 'never',
     });
+    // Non-array `apps` must not crash the unenforced-rules scan (the planner
+    // may evaluate jsonb_array_length before the jsonb_typeof guard).
+    const lAppsNull = await seedLink(await seedPolicy('apps null', { orgId: O1 }), 'patch', null, { apps: null });
+    const lAppsObject = await seedLink(await seedPolicy('apps object', { orgId: O1 }), 'patch', null, {
+      apps: { source: 'third_party' }, scheduleTime: '05:00',
+    });
+    // Partner-wide policy on a valid ring of its partner: enforced, not reported.
+    const lPartnerWideRing = await seedLink(await seedPolicy('partner-wide, valid ring', { partnerId: P }), 'patch', ring, {
+      apps: [firefox],
+    });
+    // Non-object documents that `?|` would match ('apps' as an array element
+    // or the scalar itself) must be left alone, never handed to jsonb `-`.
+    const lArray = await seedLink(await seedPolicy('array inline', { orgId: O1 }), 'patch', null, ['apps']);
+    const lScalar = await seedLink(await seedPolicy('scalar inline', { orgId: O1 }), 'patch', null, 'apps');
     const lClean = await seedLink(await seedPolicy('clean', { orgId: O1 }), 'patch', ring, { sources: ['os'] });
     const lNull = await seedLink(await seedPolicy('null inline', { orgId: O1 }), 'patch', null, null);
     const lOther = await seedLink(await seedPolicy('maintenance', { orgId: O1 }), 'maintenance', null, {
@@ -173,7 +187,8 @@ describe('2026-12-31-160000 drop policy patch auto-approve migration (#8188)', (
         .select({ id: configPolicyFeatureLinks.id, inline: configPolicyFeatureLinks.inlineSettings })
         .from(configPolicyFeatureLinks)
         .where(inArray(configPolicyFeatureLinks.id, [
-          lValid, lDisabled, lNoRing, lPartnerWide, lEmptyApps, lClean, lNull, lOther,
+          lValid, lDisabled, lNoRing, lPartnerWide, lEmptyApps, lAppsNull, lAppsObject, lPartnerWideRing,
+          lClean, lNull, lOther, lArray, lScalar,
         ]));
       return new Map(rows.map((r) => [r.id, r.inline as Record<string, unknown> | null]));
     };
@@ -219,7 +234,7 @@ describe('2026-12-31-160000 drop policy patch auto-approve migration (#8188)', (
 
     // The data step matched rows under FORCE RLS, and reported each link whose
     // rules no valid ring enforces (disabled ring, no ring).
-    expect(first!.stripped).toBe(5);
+    expect(first!.stripped).toBe(8);
     expect(first!.unenforced).toBe(2);
     expect(first!.unenforcedLinks).toEqual([lDisabled, lNoRing].sort());
     // Re-run: nothing left to strip or report.
@@ -231,11 +246,14 @@ describe('2026-12-31-160000 drop policy patch auto-approve migration (#8188)', (
     expect(after.get(lNoRing)).toEqual({});
     expect(after.get(lPartnerWide)).toEqual({});
     expect(after.get(lEmptyApps)).toEqual({ rebootPolicy: 'never' });
-    for (const id of [lValid, lDisabled, lNoRing, lPartnerWide, lEmptyApps]) {
+    expect(after.get(lAppsNull)).toEqual({});
+    expect(after.get(lAppsObject)).toEqual({ scheduleTime: '05:00' });
+    expect(after.get(lPartnerWideRing)).toEqual({});
+    for (const id of [lValid, lDisabled, lNoRing, lPartnerWide, lEmptyApps, lAppsNull, lAppsObject, lPartnerWideRing]) {
       for (const key of RETIRED_KEYS) expect(after.get(id)).not.toHaveProperty(key);
     }
     // Untouched: a link without retired keys, a NULL document, a non-patch link.
-    for (const id of [lClean, lNull, lOther]) expect(after.get(id)).toEqual(before.get(id));
+    for (const id of [lClean, lNull, lOther, lArray, lScalar]) expect(after.get(id)).toEqual(before.get(id));
 
     const columns = await getTestDb().execute(
       sql`
