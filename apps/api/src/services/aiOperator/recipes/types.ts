@@ -52,6 +52,23 @@ export type TaskPhase = 'investigate' | 'plan' | 'execute' | 'verify' | 'documen
 export type EffectProvider = 'breeze' | 'm365' | 'google';
 
 /**
+ * What a pure `next` resolver may read (R1).
+ *
+ * All three are READONLY and all three are server-side facts: the frozen
+ * admission input, the deterministic discovery facts, and the computed
+ * capability readiness map. Nothing model-authored is in here, which is what
+ * keeps a `deterministic` recipe deterministic (spec §9).
+ */
+export interface NextStepContext {
+  readonly input: unknown;
+  readonly facts: Readonly<Record<string, unknown>>;
+  readonly readiness: Readonly<Record<string, boolean>>;
+}
+
+/** Pure. Same context must always yield the same step key. */
+export type NextStepResolver = (ctx: NextStepContext) => string;
+
+/**
  * One step of a recipe.
  *
  * `phase` is on the step, not on the coordinator's call site: `writeLeasedStep`
@@ -68,6 +85,20 @@ export interface StepDefinition {
   inputSchema?: z.ZodTypeAny;
   /** True for a step no other step may follow. */
   terminal?: boolean;
+  /**
+   * The step that deterministically follows this one (R1).
+   *
+   * OPTIONAL AND ADDITIVE. `service_recovery` declares none and is unaffected.
+   *
+   * This is NOT `permittedNextSteps`. That map is the set the MODEL may
+   * propose from a `reason` step, and it stays exactly what it is. `next` is
+   * what the COORDINATOR does when a non-`reason` step settles: it resolves
+   * this (`resolveNextStep.ts`), writes it into the task checkpoint's
+   * `resumeStepKey` (E3), and the generic advancers pick it up. A
+   * deterministic recipe's spine therefore lives in one file — the recipe —
+   * rather than as `if` chains in `taskCoordinator.ts`.
+   */
+  next?: string | NextStepResolver;
 }
 
 /**
@@ -94,6 +125,27 @@ export interface RecipeBounds {
 }
 
 /**
+ * Whether a missing capability is something the TENANT can fix (R1).
+ *
+ *  - `tenant_fixable` — connect a provider, re-consent Microsoft 365 to the
+ *    current profile version, add the recipe's tools to the helpdesk agent's
+ *    allowlist. There is an action a technician or a customer can take, so a
+ *    recipe missing one is `setup_required` and the card links to the fix.
+ *  - `always_manual` — Breeze does not automate this yet. Nothing anyone can
+ *    do would make it satisfied, so it must NOT hold a recipe at
+ *    `setup_required` forever: a fully-consented org would read "setup
+ *    required" permanently, which trains technicians to ignore the badge and
+ *    misstates whose problem it is. The recipe reads `ready` and the card says
+ *    how many steps are done by hand.
+ *
+ * Absent means `tenant_fixable`, which is the SAFE default: a capability
+ * nobody classified is assumed fixable and therefore blocking, so forgetting
+ * the field can only ever over-report setup, never under-report it.
+ */
+export const CAPABILITY_AVAILABILITIES = Object.freeze(['tenant_fixable', 'always_manual'] as const);
+export type CapabilityAvailability = (typeof CAPABILITY_AVAILABILITIES)[number];
+
+/**
  * One thing an org must have before this recipe is `ready` (spec §4.1).
  *
  * Nothing EVALUATES these in E1 — readiness computation is R1. The shape is
@@ -110,6 +162,8 @@ export interface CapabilityRequirement {
   detail: string;
   /** Tool names the admitting agent's allowlist must contain, if any. */
   toolNames?: readonly string[];
+  /** Absent means `tenant_fixable`. See CapabilityAvailability. */
+  availability?: CapabilityAvailability;
 }
 
 /**
@@ -179,12 +233,20 @@ export interface RecipeDefinition<Input = unknown> {
   bounds: RecipeBounds;
   /** Pure. Same input + same facts must always produce the same ordered list. */
   buildPlan(input: Input, facts: DiscoveryFacts): PlannedEffect[];
-  /** Delegates to `buildTaskOperationKey`; never formats its own string. */
+  /**
+   * Delegates to `buildTaskOperationKey`; never formats its own string.
+   *
+   * `toolName` (R1, optional) is the EFFECT's tool name, giving the
+   * one-operation-per-external-effect identity `effectDispatch.ts` already
+   * builds. Absent — the shipped `service_recovery` shape — means the recipe
+   * supplies its own.
+   */
   operationKey(args: {
     stepKey: string;
     targetId: string | null;
     planRevision: number;
     ordinal: number;
+    toolName?: string;
   }): string;
   /**
    * Optional pure cross-check of a model-proposed step's inputs against the
