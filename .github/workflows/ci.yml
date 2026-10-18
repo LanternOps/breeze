@@ -2200,6 +2200,32 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - the test was renamed or removed" }
 
+      # #9091: the user-helper's Windows toast tests had only ever compiled.
+      # internal/userhelper is not in the package list above (its other
+      # Windows-tagged tests have never been run natively), so these run by
+      # name: toast backend routing, including no PowerShell retry when
+      # toasts are disabled (so FallbackDialog fires); the NotificationSetting
+      # mapping; the hidden PowerShell fallback command; and the real WinRT
+      # sequence, which must fail no earlier than IToastNotifier::Show (this
+      # runner has no interactive desktop, so Show itself may be refused).
+      # TestShowToastWinRTLive raises a visible toast and stays unselected.
+      - name: Run Windows user-helper toast tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/userhelper -run '^Test(ShowNotificationOS|NotificationSettingError|ToastPowerShellCommandIsHidden|ShowToastWinRTFailsNoEarlierThanShow)$' -timeout 5m -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the user-helper toast tests SKIPPED" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 4) { throw "expected exactly 4 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          $subPasses = @($out | Select-String -Pattern '^\s+--- PASS: Test').Count
+          if ($subPasses -ne 11) { throw "expected exactly 11 subtest PASS lines, got $subPasses - a table case was renamed, removed, or added without updating this count" }
+
       # #7629: the agent re-secures its config folder if another account
       # created it, before reading anything from it. The tests plant
       # C:\ProgramData\Breeze-shaped folders as a simulated standard user

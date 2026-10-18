@@ -27,6 +27,7 @@ import (
 //	RoActivateInstance("Windows.Data.Xml.Dom.XmlDocument")  → IXmlDocumentIO::LoadXml
 //	RoGetActivationFactory("…ToastNotification")              → IToastNotificationFactory::CreateToastNotification
 //	RoGetActivationFactory("…ToastNotificationManager")       → IToastNotificationManagerStatics::CreateToastNotifierWithId
+//	IToastNotifier::get_Setting                                → refuse (errToastsDisabled) unless Enabled
 //	IToastNotifier::Show
 var (
 	modcombase = windows.NewLazySystemDLL("combase.dll")
@@ -71,7 +72,30 @@ const (
 	methIToastNotificationFactoryCreate       = vtblFirstMethod + 0 // CreateToastNotification(IXmlDocument*, IToastNotification**)
 	methIToastNotificationManagerCreateWithId = vtblFirstMethod + 1 // CreateToastNotifierWithId(HSTRING applicationId, IToastNotifier**)
 	methIToastNotifierShow                    = vtblFirstMethod + 0 // Show(IToastNotification*)
+	methIToastNotifierGetSetting              = vtblFirstMethod + 2 // get_Setting(NotificationSetting*) — after Show, Hide
 )
+
+// notificationSettingEnabled is NotificationSetting_Enabled. The other values
+// (DisabledForApplication 1, DisabledForUser 2, DisabledByGroupPolicy 3,
+// DisabledByManifest 4) all mean Windows will drop the toast without telling
+// the caller: Show() still returns S_OK.
+const notificationSettingEnabled int32 = 0
+
+// errToastsDisabled reports that the notifier's NotificationSetting is not
+// Enabled. showNotificationOS must NOT retry through PowerShell on it: that
+// path raises the same toast through the same notifier, is dropped just as
+// silently, and reports success — so the caller's FallbackDialog (#6864) would
+// never fire.
+var errToastsDisabled = errors.New("toast notifications are disabled")
+
+// notificationSettingError maps an IToastNotifier::get_Setting value to nil
+// (Enabled) or errToastsDisabled.
+func notificationSettingError(setting int32) error {
+	if setting == notificationSettingEnabled {
+		return nil
+	}
+	return fmt.Errorf("%w (NotificationSetting=%d)", errToastsDisabled, setting)
+}
 
 var errWinRTUnavailable = errors.New("Windows Runtime activation entry points not available")
 
@@ -86,7 +110,13 @@ type comObject struct {
 
 // showToastWinRT raises toastXML as a toast under aumid, entirely in-process.
 // It returns an error describing the first failing WinRT step so the caller
-// can fall back; a nil return means Show() reported success.
+// can fall back; errToastsDisabled when the notifier reports toasts disabled;
+// a nil return means Show() reported success.
+//
+// The WinRT work runs on its own goroutine pinned to an OS thread, so the
+// apartment it initialises is never the caller's. That goroutine exits still
+// locked, which makes the runtime retire the thread rather than hand it, and
+// any COM state on it, back to the scheduler.
 func showToastWinRT(aumid, toastXML string) error {
 	for _, p := range []*windows.LazyProc{procRoInitialize, procRoUninitialize, procRoActivateInstance,
 		procRoGetActivationFactory, procWindowsCreateString, procWindowsDeleteString} {
@@ -95,18 +125,28 @@ func showToastWinRT(aumid, toastXML string) error {
 		}
 	}
 
-	// RoInitialize is per OS thread and must be paired with RoUninitialize on
-	// the same thread; pin the goroutine for the duration.
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	done := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread() // deliberately never unlocked; see above
+		done <- showToastWinRTOnLockedThread(aumid, toastXML)
+	}()
+	return <-done
+}
 
+// showToastWinRTOnLockedThread is the WinRT sequence. The caller has locked the
+// goroutine to its OS thread: RoInitialize is per thread and must be paired
+// with RoUninitialize on the same one.
+func showToastWinRTOnLockedThread(aumid, toastXML string) error {
 	hr, _, _ := procRoInitialize.Call(roInitMultithreaded)
 	switch uint32(hr) {
 	case hrOK, hrFalse:
 		defer procRoUninitialize.Call()
 	case hrRPCChangedMode:
-		// Thread is already an STA (e.g. a UI message loop); activation works
-		// there too and the owner of that init owns the uninit.
+		// The thread is already a single-threaded apartment. Nothing pumps
+		// messages on it, so calls marshalled to it would never complete. A
+		// thread fresh from the runtime should not be in this state; refuse
+		// rather than proceed on it, and let the caller fall back.
+		return hresultError("RoInitialize (thread is already a single-threaded apartment)", hr)
 	default:
 		return hresultError("RoInitialize", hr)
 	}
@@ -134,7 +174,7 @@ func showToastWinRT(aumid, toastXML string) error {
 		return err
 	}
 	defer deleteHString(hXML)
-	if hr, err = comCall(xmlDocIO, methIXmlDocumentIOLoadXml, hXML); err != nil {
+	if _, err = comCall(xmlDocIO, methIXmlDocumentIOLoadXml, hXML); err != nil {
 		return fmt.Errorf("IXmlDocumentIO::LoadXml: %w", err)
 	}
 
@@ -172,6 +212,17 @@ func showToastWinRT(aumid, toastXML string) error {
 		return fmt.Errorf("IToastNotificationManagerStatics::CreateToastNotifierWithId: %w", err)
 	}
 	defer comRelease(notifier)
+
+	// A disabled notifier still accepts Show() and returns S_OK, then drops
+	// the toast. Refuse here so the caller can reach the user another way. A
+	// get_Setting failure is not proof of either state, so it is logged and
+	// the toast is still attempted.
+	var setting int32
+	if _, err = comCall(notifier, methIToastNotifierGetSetting, uintptr(unsafe.Pointer(&setting))); err != nil {
+		log.Warn("IToastNotifier::get_Setting failed; attempting the toast anyway", "error", err.Error())
+	} else if err := notificationSettingError(setting); err != nil {
+		return err
+	}
 
 	if _, err = comCall(notifier, methIToastNotifierShow, uintptr(unsafe.Pointer(toast))); err != nil {
 		return fmt.Errorf("IToastNotifier::Show: %w", err)

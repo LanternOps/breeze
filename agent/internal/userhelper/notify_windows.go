@@ -3,6 +3,7 @@
 package userhelper
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -57,6 +58,13 @@ func showNotificationOS(req ipc.NotifyRequest) bool {
 	toastXML := buildToastXML(req.Title, req.Body)
 
 	if err := toastWinRTFn(notifyAUMID, toastXML); err != nil {
+		if errors.Is(err, errToastsDisabled) {
+			// The PowerShell path raises the same toast through the same
+			// notifier: it would be dropped just as silently and report
+			// success. Report undelivered so FallbackDialog can fire.
+			log.Warn("toast notifications are disabled; not retrying via PowerShell", "error", err.Error())
+			return false
+		}
 		log.Warn("WinRT toast failed; falling back to PowerShell", "error", err.Error())
 		return toastPowerShellFn(toastXML)
 	}
