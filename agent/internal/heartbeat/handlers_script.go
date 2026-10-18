@@ -227,13 +227,17 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv, 
 	// matching a numeric targetSessionId against it would risk silently
 	// hitting an unrelated user's helper.
 	if targetSessionID >= 0 && h.sessionBroker != nil && strings.EqualFold(script.RunAs, "user") {
-		return h.executeScriptInSession(cmd, script, uint32(targetSessionID), start, cp)
+		return h.runOnUserHelperOnce(cmd, start, cp, func() tools.CommandResult {
+			return h.executeScriptInSession(cmd, script, uint32(targetSessionID), start, cp)
+		})
 	}
 
 	// Phase 3: If runAs is specified and a user helper is connected, forward via IPC
 	if script.RunAs != "" && h.sessionBroker != nil {
 		if session := resolveRunAsSession(h.sessionBroker, script.RunAs); session != nil {
-			return h.executeViaUserHelper(session, cmd, script.Timeout, cp)
+			return h.runOnUserHelperOnce(cmd, start, cp, func() tools.CommandResult {
+				return h.executeViaUserHelper(session, cmd, script.Timeout, cp)
+			})
 		}
 	}
 	if strings.EqualFold(script.RunAs, "user") {
@@ -336,6 +340,39 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv, 
 		}
 	}
 	return result
+}
+
+// runOnUserHelperOnce runs a user-helper-bound script under a reservation of
+// its command id, refusing a second delivery of an id that is still in flight
+// (#9164). It is the user-helper mirror of the local path's
+// executor.DuplicateExecutionError -> cp.Abandon() guard above, and it has to
+// run earlier than the helper's own duplicate checks for two reasons:
+//
+//   - The service process takes the restore-point checkpoint immediately
+//     before the IPC handoff (executeViaUserHelper). Session.SendCommand's
+//     ErrDuplicateCommand and the helper's executor both refuse a duplicate,
+//     but only AFTER that checkpoint — so the redelivery took a second point
+//     (existing_accepted inside System Restore's frequency window) and its
+//     answer competed with the original run's outcome for the ledger row.
+//   - On the on-demand (RDS) path, leases are owned per opID, which is the
+//     command id. A duplicate that acquired and then released "its" lease
+//     dropped the ORIGINAL run's ownership while that script was still running.
+//
+// Like the executor, the duplicate never releases the reservation: it does
+// not own it. The reservation ends when the owning run returns, so a delivery
+// after completion is governed by the heartbeat's own dedup window, exactly as
+// on the local path.
+func (h *Heartbeat) runOnUserHelperOnce(cmd Command, start time.Time, cp *systemrestore.Checkpoint, run func() tools.CommandResult) tools.CommandResult {
+	if _, loaded := h.helperScriptsInFlight.LoadOrStore(cmd.ID, struct{}{}); loaded {
+		// That run owns the restore-point request, so this delivery answers
+		// nothing (see systemrestore.Checkpoint.Abandon).
+		cp.Abandon()
+		err := &executor.DuplicateExecutionError{ID: cmd.ID}
+		log.Warn("refusing a duplicate user-helper script delivery for an id already in flight", "commandId", cmd.ID)
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	defer h.helperScriptsInFlight.Delete(cmd.ID)
+	return run()
 }
 
 // isRunningElevated is an indirection over privilege.IsRunningAsRoot so the

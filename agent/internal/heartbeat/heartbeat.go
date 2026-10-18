@@ -678,6 +678,13 @@ type Heartbeat struct {
 	seenCommands   map[string]time.Time
 	seenCommandsMu sync.Mutex
 
+	// helperScriptsInFlight holds the command id of every script currently
+	// dispatched to a user helper (#9164) — the user-helper counterpart of the
+	// local executor's running map, which only ever sees service-path runs.
+	// A redelivery after the seenCommands window is refused against it BEFORE
+	// the restore-point checkpoint and the helper lease. Zero value is ready.
+	helperScriptsInFlight sync.Map
+
 	// commandInFlightWarnAfter overrides the wedged-worker watchdog interval
 	// in executeCommandViaPool for non-ephemeral commands; non-positive means
 	// defaultCommandInFlightWarnAfter. Set before the heartbeat runs (tests
