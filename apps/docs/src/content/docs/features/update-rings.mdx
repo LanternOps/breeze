@@ -54,6 +54,7 @@ Devices are assigned to rings through the **Configuration Policy** system, not d
 | Patch sources | enum[] | null | Patch sources to include: `microsoft`, `apple`, `linux`, `third_party`, `custom` |
 | Category rules | object[] | `[]` | Per-category auto-approval and deferral override rules |
 | Auto-approve settings | JSON | `{}` | Auto-approval configuration |
+| Application rules (`appRules`) | object[] | `[]` | Per-application **block** and **pin** rules for the devices this ring covers. Up to 200, one per package. See [Application Rules](/features/patch-management/#application-rules) |
 | Device targets | JSON | `{}` | Device targeting rules (device groups, tags, sites, etc.) |
 
 ### Patch Sources

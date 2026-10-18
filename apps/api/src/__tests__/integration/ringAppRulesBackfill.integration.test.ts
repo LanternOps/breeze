@@ -16,8 +16,9 @@
  *  - D  invalid ring references (missing, another partner's ring) → untouched;
  *       W02 makes those policies fail closed at read time.
  *  - a ring that already carries DIFFERENT rules → the migration aborts.
- *  - the SQL normaliser equals the runtime salvage
- *    (`normalizeStoredInlineSettingsWithSalvage`) entry for entry.
+ *  - the SQL normaliser equals the runtime salvage of that release
+ *    (`normalizeStoredInlineSettingsWithSalvage`, frozen below as
+ *    `w02RuntimeSalvagedApps` since #8188 retired it) entry for entry.
  *  - policy-level auto-approve is never converted into a ring.
  *  - a second run writes nothing and every write count reports 0.
  *
@@ -27,6 +28,12 @@
  * the file touches, so FORCE RLS is in effect as on a managed-Postgres or
  * self-hosted non-bypass install. Fixtures are seeded and read back through
  * the superuser test connection.
+ *
+ * #8188 (W04) dropped `config_policy_patch_settings.auto_approve`, which this
+ * file's step 4 reads. On a fresh install the backfill runs before that drop;
+ * the replay here re-creates the column inside the replay transaction (and
+ * drops it again before commit) so the shipped file runs against the schema it
+ * was written for, without the shared test database ever seeing the column.
  *
  * Run:
  *   cd apps/api && npx vitest run -c vitest.integration.config.ts \
@@ -39,7 +46,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { canonicalAppRuleKey } from '@breeze/shared/validators';
+import { canonicalAppRuleKey, policyAppRuleSchema } from '@breeze/shared/validators';
 import {
   configPolicyFeatureLinks,
   configurationPolicies,
@@ -47,7 +54,6 @@ import {
   patches,
   patchPolicies,
 } from '../../db/schema';
-import { normalizeStoredInlineSettingsWithSalvage } from '../../services/configPolicyPatching';
 import { Hono } from 'hono';
 import { createAccessToken } from '../../services/jwt';
 import { configPolicyRoutes } from '../../routes/configurationPolicies';
@@ -124,14 +130,21 @@ async function applyMigration(): Promise<{ metrics: Map<string, number>; notices
     onnotice: (notice) => notices.push(String(notice.message ?? '')),
   });
   try {
-    await client.unsafe(`SET ROLE ${MIGRATOR}`);
-    const [role] = await client.unsafe<{ rolname: string; rolsuper: boolean; rolbypassrls: boolean }[]>(
-      'SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user',
-    );
-    // Precondition: the replay must not bypass RLS, or a missing system-scope
-    // election would read green here and match zero rows in production.
-    expect(role).toEqual({ rolname: MIGRATOR, rolsuper: false, rolbypassrls: false });
-    await client.unsafe(readFileSync(MIGRATION_FILE, 'utf8'));
+    await client.begin(async (tx) => {
+      // Pre-#8188 schema shim (see the file header): plain ADD so a database
+      // that still has the column fails loudly instead of being altered.
+      await tx.unsafe('ALTER TABLE public.config_policy_patch_settings ADD COLUMN auto_approve boolean NOT NULL DEFAULT false');
+      await tx.unsafe(`SET LOCAL ROLE ${MIGRATOR}`);
+      const [role] = await tx.unsafe<{ rolname: string; rolsuper: boolean; rolbypassrls: boolean }[]>(
+        'SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user',
+      );
+      // Precondition: the replay must not bypass RLS, or a missing system-scope
+      // election would read green here and match zero rows in production.
+      expect(role).toEqual({ rolname: MIGRATOR, rolsuper: false, rolbypassrls: false });
+      await tx.unsafe(readFileSync(MIGRATION_FILE, 'utf8'));
+      await tx.unsafe('RESET ROLE');
+      await tx.unsafe('ALTER TABLE public.config_policy_patch_settings DROP COLUMN auto_approve');
+    });
   } finally {
     await client.end();
   }
@@ -144,6 +157,31 @@ async function applyMigration(): Promise<{ metrics: Map<string, number>; notices
 }
 
 type Rule = Record<string, unknown>;
+
+/**
+ * The runtime's per-entry `apps` salvage as it shipped with this migration
+ * (configPolicyPatching.normalizeStoredInlineSettingsWithSalvage, retired by
+ * #8188): first valid entry per canonical key wins, invalid entries are
+ * dropped whole, capped at 200. When the whole document parsed, the result
+ * was the same list, so the per-entry form is the complete reference.
+ */
+function w02RuntimeSalvagedApps(inline: unknown): Rule[] {
+  const raw = inline && typeof inline === 'object' && !Array.isArray(inline)
+    ? (inline as Record<string, unknown>).apps
+    : undefined;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: Rule[] = [];
+  for (const entry of raw) {
+    const parsed = policyAppRuleSchema.safeParse(entry);
+    if (!parsed.success) continue;
+    const key = canonicalAppRuleKey(parsed.data.source, parsed.data.packageId);
+    if (seen.has(key) || out.length >= 200) continue;
+    seen.add(key);
+    out.push(parsed.data);
+  }
+  return out;
+}
 
 async function seedPolicy(opts: { orgId?: string | null; partnerId?: string | null; name: string }) {
   const [row] = await getTestDb()
@@ -506,7 +544,7 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
     for (const [linkId, inline] of [[linkS, salvageInline], [linkCap, { apps: manyApps }], [linkEdge, edgeInline]] as const) {
       const ring = (await linkTarget(linkId))!;
       expect(ring).not.toBeNull();
-      const expected = normalizeStoredInlineSettingsWithSalvage(inline, { configPolicyId: 'parity', featureLinkId: linkId }).apps;
+      const expected = w02RuntimeSalvagedApps(inline);
       const actual = (await ringRow(ring)).app_rules;
       expect(canonical(actual)).toEqual(canonical(expected));
     }
@@ -608,8 +646,12 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
   });
 });
 
-describe('backfill -> feature-link PATCH seam (#8678)', () => {
-  runDb('a PATCH that does not send `apps` preserves the backfilled link\'s inline apps through the real route', async () => {
+describe('backfill -> feature-link PATCH seam (#8678, #8188)', () => {
+  // Before #8188 a PATCH had to carry the link's legacy inline `apps` forward.
+  // Since #8188 the policy schema strips them on every write: the rules are
+  // safe because they live on the ring the backfill linked, which a PATCH
+  // that does not change featurePolicyId leaves untouched.
+  runDb('a PATCH after the backfill keeps the link on its rule-carrying ring and stores no inline apps', async () => {
     const env = await setupTestEnvironment({ scope: 'partner' });
     const P = env.partner.id;
     const firefoxBlock: Rule = { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' };
@@ -647,11 +689,12 @@ describe('backfill -> feature-link PATCH seam (#8678)', () => {
     expect(res.status).toBe(200);
 
     const rows = await getTestDb().execute(sql`
-      SELECT inline_settings->'apps' AS apps, inline_settings->>'scheduleTime' AS schedule_time
+      SELECT inline_settings ? 'apps' AS has_apps, inline_settings->>'scheduleTime' AS schedule_time
       FROM config_policy_feature_links WHERE id = ${linkId}`);
-    const row = (rows as unknown as Array<{ apps: unknown; schedule_time: string | null }>)[0]!;
+    const row = (rows as unknown as Array<{ has_apps: boolean; schedule_time: string | null }>)[0]!;
     expect(row.schedule_time).toBe('03:30'); // the PATCH really landed
-    expect(canonical(row.apps)).toEqual([firefoxBlock]); // ...and did not clobber apps
-    expect(await linkTarget(linkId)).toBe(ringId);
+    expect(row.has_apps).toBe(false); // the retired key is stripped on write...
+    expect(await linkTarget(linkId)).toBe(ringId); // ...and the link keeps its ring,
+    expect(canonical((await ringsOf(P)).find((r) => r.id === ringId)!.appRules)).toEqual([firefoxBlock]); // which keeps the rules
   });
 });

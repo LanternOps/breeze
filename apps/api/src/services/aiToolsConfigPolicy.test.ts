@@ -150,7 +150,6 @@ import {
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import { GENERIC_TOOL_ERROR_MESSAGE } from './aiToolErrors';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
-import { PolicyApprovalFieldMovedError } from './configPolicyPatching';
 import { MFA_GATED_TOOL_ACTIONS, isMfaGatedToolAction, isToolWhollyMfaGated, mfaGatedActionsForTool } from './aiToolMfaGate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -733,70 +732,47 @@ describe('configuration policy AI tools', () => {
     expect(updated.error).toContain('needs a human');
   });
 
-  // #8186: app rules / auto-approval moved to the Update Ring. The service's
-  // 400 must reach the model as a readable redirect, not the generic sanitizer.
-  it('surfaces PolicyApprovalFieldMovedError as a readable redirect on add and update', async () => {
+  // #8188: policy-level app rules / auto-approval are retired. A patch link
+  // write that still carries them succeeds; the service strips the keys.
+  it('accepts a patch link add and update that still carry the retired approval keys', async () => {
     vi.mocked(getConfigPolicy).mockResolvedValue({
       id: POLICY_ID,
       orgId: ORG_ID,
       partnerId: null,
       name: 'Org policy',
     } as any);
-    vi.mocked(addFeatureLink).mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
-    vi.mocked(updateFeatureLink).mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
+    vi.mocked(addFeatureLink).mockResolvedValueOnce({ id: 'link-1', featureType: 'patch' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValueOnce({ id: 'link-1', featureType: 'patch' } as any);
     mockSelectRows([{ featureType: 'patch' }]);
 
     const tools = new Map<string, any>();
     registerConfigPolicyTools(tools);
-    const rule = { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' };
+    const stale = {
+      sources: ['os'],
+      autoApprove: true,
+      autoApproveSeverities: ['critical'],
+      apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+    };
 
     const added = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
       action: 'add',
       configPolicyId: POLICY_ID,
       featureType: 'patch',
-      inlineSettings: { sources: ['os'], apps: [rule] },
+      inlineSettings: stale,
     }, makeAuth()));
     const updated = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
       action: 'update',
       configPolicyId: POLICY_ID,
       featureLinkId: 'link-1',
-      inlineSettings: { sources: ['os'], apps: [rule] },
+      inlineSettings: stale,
     }, makeAuth()));
 
     for (const res of [added, updated]) {
-      expect(res.error).not.toBe(GENERIC_TOOL_ERROR_MESSAGE);
-      expect(res.error).toContain('Update Ring');
-      expect(res.error).toContain('manage_update_rings');
-      expect(res.code).toBe('APPROVAL_RULES_MOVED_TO_RING');
+      expect(res.error).toBeUndefined();
+      expect(res.success).toBe(true);
     }
-  });
-
-  // #8678: repointing a link with legacy app rules off a broken ring onto one
-  // that lacks them. The model must be told to put those rules on the ring.
-  it('surfaces RING_LACKS_POLICY_APP_RULES with a repair instruction', async () => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({
-      id: POLICY_ID,
-      orgId: ORG_ID,
-      partnerId: null,
-      name: 'Org policy',
-    } as any);
-    vi.mocked(updateFeatureLink).mockRejectedValueOnce(
-      new PolicyApprovalFieldMovedError('RING_LACKS_POLICY_APP_RULES'),
-    );
-    mockSelectRows([{ featureType: 'patch' }]);
-
-    const tools = new Map<string, any>();
-    registerConfigPolicyTools(tools);
-    const res = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
-      action: 'update',
-      configPolicyId: POLICY_ID,
-      featureLinkId: 'link-1',
-      featurePolicyId: '00000000-0000-4000-8000-0000000000aa',
-    }, makeAuth()));
-
-    expect(res.code).toBe('RING_LACKS_POLICY_APP_RULES');
-    expect(res.error).toContain('manage_update_rings');
-    expect(res.error).toMatch(/add exactly these rules to the target ring/i);
+    expect(addFeatureLink).toHaveBeenCalledTimes(1);
+    expect(updateFeatureLink).toHaveBeenCalledTimes(1);
   });
 
   // #1724 regression: partner-OWNED policies (org_id NULL) were invisible to the

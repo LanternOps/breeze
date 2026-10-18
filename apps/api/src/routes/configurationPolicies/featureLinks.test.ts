@@ -452,13 +452,17 @@ describe('featureLinks routes', () => {
     });
   });
 
-  // #8671: patchInlineSettingsSchema defaults `apps` / `autoApprove*`, so a
-  // PATCH that omits them must not reach the service as an explicit `[]` /
-  // `false` — the service would judge that as an approval-rule edit and, on a
-  // ring change, the write would wipe the link's stored legacy rules.
-  describe('PATCH /:id/features/:linkId — patch legacy approval keys (#8671)', () => {
-    const LEGACY_KEYS = ['apps', 'autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays'];
+  // #8188: policy-level approval keys are retired. A stale tab still sends them;
+  // the write succeeds and the service strips them (normalizePatchInlineSettings).
+  describe('patch writes carrying retired approval keys (#8188)', () => {
     const RING_ID = '44444444-4444-4444-8444-444444444444';
+    const STALE_INLINE = {
+      scheduleTime: '04:00',
+      autoApprove: true,
+      autoApproveSeverities: ['critical'],
+      autoApproveDeferralDays: 3,
+      apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+    };
 
     beforeEach(() => {
       vi.clearAllMocks();
@@ -466,78 +470,29 @@ describe('featureLinks routes', () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_PATCH_LINK);
       validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
       updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
     });
 
-    function sentInline(): Record<string, unknown> {
-      return updateFeatureLinkMock.mock.calls[0]![1].inlineSettings;
-    }
-
-    it('does not forward schema-defaulted approval keys the client did not send', async () => {
+    it('PATCH with the retired keys (and a ring change) is accepted, not refused', async () => {
       const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inlineSettings: { scheduleTime: '04:00' } }),
+        body: JSON.stringify({ featurePolicyId: RING_ID, inlineSettings: STALE_INLINE }),
       });
       expect(res.status).toBe(200);
-      const inline = sentInline();
-      expect(inline).toMatchObject({ scheduleTime: '04:00', sources: ['os'] });
-      for (const key of LEGACY_KEYS) expect(inline).not.toHaveProperty(key);
-    });
-
-    it('does not forward them on a ring change either', async () => {
-      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ featurePolicyId: RING_ID, inlineSettings: { scheduleTime: '04:00' } }),
-      });
-      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock).toHaveBeenCalledTimes(1);
       expect(updateFeatureLinkMock.mock.calls[0]![1].featurePolicyId).toBe(RING_ID);
-      for (const key of LEGACY_KEYS) expect(sentInline()).not.toHaveProperty(key);
+      expect(updateFeatureLinkMock.mock.calls[0]![1].inlineSettings).toMatchObject({ scheduleTime: '04:00' });
     });
 
-    it('forwards explicitly sent approval keys, parsed, so the service still judges them', async () => {
-      const apps = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
-      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
-        method: 'PATCH',
+    it('POST with the retired keys is accepted, not refused', async () => {
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ featurePolicyId: RING_ID, inlineSettings: { apps, autoApprove: true, autoApproveSeverities: ['critical'] } }),
+        body: JSON.stringify({ featureType: 'patch', inlineSettings: STALE_INLINE }),
       });
-      expect(res.status).toBe(200);
-      expect(sentInline()).toMatchObject({ apps, autoApprove: true, autoApproveSeverities: ['critical'] });
-      expect(sentInline()).not.toHaveProperty('autoApproveDeferralDays');
-    });
-
-    it('forwards an explicit empty apps list as []', async () => {
-      await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inlineSettings: { apps: [] } }),
-      });
-      expect(sentInline()).toMatchObject({ apps: [] });
-    });
-
-    it('maps the service refusal to 400 APPROVAL_RULES_MOVED_TO_RING', async () => {
-      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
-      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
-      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inlineSettings: { apps: [] } }),
-      });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({ code: 'APPROVAL_RULES_MOVED_TO_RING' });
-    });
-
-    it('passes the repair-flow code RING_LACKS_POLICY_APP_RULES through as a 400 (#8678)', async () => {
-      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
-      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError('RING_LACKS_POLICY_APP_RULES'));
-      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inlineSettings: { apps: [] } }),
-      });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({ code: 'RING_LACKS_POLICY_APP_RULES' });
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1702,39 +1657,6 @@ describe('featureLinks routes', () => {
       });
 
       expect(res.status).toBe(400);
-    });
-  });
-
-  describe('approval rules moved to the Update Ring (#8186)', () => {
-    it('maps a PolicyApprovalFieldMovedError on add to a 400 with its code', async () => {
-      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
-      addFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
-
-      const res = await app.request(`/${POLICY_ID}/features`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ featureType: 'patch', inlineSettings: { sources: ['os'] } }),
-      });
-
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({
-        error: 'Approval and application rules are configured on the Update Ring linked to this policy.',
-        code: 'APPROVAL_RULES_MOVED_TO_RING',
-      });
-    });
-
-    it('maps a PolicyApprovalFieldMovedError on update to a 400 with its code', async () => {
-      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
-      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
-
-      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inlineSettings: {} }),
-      });
-
-      expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({ code: 'APPROVAL_RULES_MOVED_TO_RING' });
     });
   });
 

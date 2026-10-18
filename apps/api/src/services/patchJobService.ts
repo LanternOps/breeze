@@ -77,8 +77,6 @@ export async function createPatchJobFromConfigPolicy(
       name,
       patches: {
         sources: patchSettings.sources,
-        autoApprove: patchSettings.autoApprove,
-        autoApproveSeverities: patchSettings.autoApproveSeverities,
         rebootPolicy: patchSettings.rebootPolicy,
       },
       targets: {

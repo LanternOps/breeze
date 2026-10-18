@@ -151,7 +151,6 @@ describe('patchInlineSettingsSchema', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.sources).toEqual(['os']);
-      expect(result.data.autoApprove).toBe(false);
       expect(result.data.scheduleFrequency).toBe('weekly');
       expect(result.data.scheduleTime).toBe('02:00');
       expect(result.data.scheduleDayOfWeek).toBe('sun');
@@ -162,10 +161,6 @@ describe('patchInlineSettingsSchema', () => {
 
   it('should reject invalid scheduleTime', () => {
     expect(patchInlineSettingsSchema.safeParse({ scheduleTime: '25:00' }).success).toBe(false);
-  });
-
-  it('should reject autoApprove without severities', () => {
-    expect(patchInlineSettingsSchema.safeParse({ autoApprove: true, autoApproveSeverities: [] }).success).toBe(false);
   });
 
   it('should accept legacy source values', () => {
@@ -209,72 +204,46 @@ describe('patchInlineSettingsSchema offlineBehavior (#5128 W3)', () => {
   });
 });
 
-describe('patchInlineSettingsSchema app rules + deferral', () => {
-  it('defaults autoApproveDeferralDays to 0 and apps to []', () => {
-    const result = patchInlineSettingsSchema.safeParse({});
-    expect(result.success).toBe(true);
-    if (!result.success) return;
-    expect(result.data.autoApproveDeferralDays).toBe(0);
-    expect(result.data.apps).toEqual([]);
+describe('patchInlineSettingsSchema retired policy-level approval keys (#8188)', () => {
+  // Auto-approval and per-app block/pin rules live on the Update Ring
+  // (patch_policies.auto_approve / app_rules). The policy schema no longer
+  // defines them, so zod strips them: a stale client's write is ignored rather
+  // than validated, defaulted or stored.
+  const RETIRED = ['apps', 'autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays'] as const;
+
+  it('does not default any retired key', () => {
+    const parsed = patchInlineSettingsSchema.parse({});
+    for (const key of RETIRED) expect(parsed).not.toHaveProperty(key);
   });
 
-  it('accepts a valid block rule and a valid pin rule', () => {
-    const result = patchInlineSettingsSchema.safeParse({
-      apps: [
-        { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-        { source: 'third_party', packageId: 'VideoLAN.VLC', displayName: 'VLC', action: 'pin', pinnedVersion: '3.0.20' },
-      ],
+  it('strips valid retired keys from a payload', () => {
+    const parsed = patchInlineSettingsSchema.parse({
+      sources: ['os'],
+      autoApprove: true,
+      autoApproveSeverities: ['critical'],
+      autoApproveDeferralDays: 7,
+      apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
     });
-    expect(result.success).toBe(true);
+    for (const key of RETIRED) expect(parsed).not.toHaveProperty(key);
+    expect(parsed.sources).toEqual(['os']);
   });
 
-  it('rejects a pin rule without pinnedVersion', () => {
-    const result = patchInlineSettingsSchema.safeParse({
-      apps: [{ source: 'third_party', packageId: 'VideoLAN.VLC', action: 'pin' }],
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects duplicate (source, packageId) entries case-insensitively', () => {
-    const result = patchInlineSettingsSchema.safeParse({
-      apps: [
-        { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-        { source: 'third_party', packageId: 'mozilla.firefox', action: 'pin', pinnedVersion: '120.0' },
-      ],
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects negative or >60 deferral days', () => {
-    expect(patchInlineSettingsSchema.safeParse({ autoApproveDeferralDays: -1 }).success).toBe(false);
-    expect(patchInlineSettingsSchema.safeParse({ autoApproveDeferralDays: 61 }).success).toBe(false);
-  });
-
-  it('still rejects autoApprove without severities (existing refinement intact)', () => {
-    expect(patchInlineSettingsSchema.safeParse({ autoApprove: true, autoApproveSeverities: [] }).success).toBe(false);
-  });
-
-  it('rejects duplicates across the third_party/custom bucket (same packageId, different source)', () => {
-    const result = patchInlineSettingsSchema.safeParse({
-      apps: [
-        { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-        { source: 'custom', packageId: 'mozilla.firefox', action: 'pin', pinnedVersion: '120.0' },
-      ],
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects apps arrays longer than 200 entries', () => {
-    const apps = Array.from({ length: 201 }, (_, i) => ({
-      source: 'third_party' as const,
-      packageId: `Vendor.App${i}`,
-      action: 'block' as const,
-    }));
-    expect(patchInlineSettingsSchema.safeParse({ apps }).success).toBe(false);
-  });
-
-  it('rejects non-integer autoApproveDeferralDays', () => {
-    expect(patchInlineSettingsSchema.safeParse({ autoApproveDeferralDays: 2.5 }).success).toBe(false);
+  it('no longer rejects shapes only the retired keys made invalid (they are stripped, not checked)', () => {
+    for (const payload of [
+      { autoApprove: true, autoApproveSeverities: [] },
+      { autoApproveDeferralDays: 61 },
+      { apps: [{ source: 'third_party', packageId: 'VideoLAN.VLC', action: 'pin' }] },
+      {
+        apps: [
+          { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+          { source: 'custom', packageId: 'mozilla.firefox', action: 'block' },
+        ],
+      },
+    ]) {
+      const result = patchInlineSettingsSchema.safeParse(payload);
+      expect(result.success).toBe(true);
+      if (result.success) for (const key of RETIRED) expect(result.data).not.toHaveProperty(key);
+    }
   });
 });
 

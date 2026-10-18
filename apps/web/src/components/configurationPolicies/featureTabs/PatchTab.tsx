@@ -30,8 +30,8 @@ type RebootPolicy = "never" | "if_required" | "always" | "maintenance_window";
 type OfflineBehavior = "skip" | "queue";
 type PatchSourceOption = "os" | "third_party";
 // #8187: no approval keys (`autoApprove*`, `apps`). The Update Ring owns them,
-// and the API judges any sent one as an attempt to edit ring-owned rules
-// (400 APPROVAL_RULES_MOVED_TO_RING), so the tab neither holds nor sends them.
+// so the tab neither holds nor sends them; since #8188 the API strips them
+// from any patch link write.
 type PatchDeploymentSettings = {
   sources: PatchSourceOption[];
   scheduleFrequency: ScheduleFrequency;
@@ -69,7 +69,10 @@ const defaults: PatchDeploymentSettings = {
   rebootPromptButton: null,
   exclusiveWindowsUpdate: false,
 };
-/** Keys a link may still store from before the Update Ring owned approval (#8187). */
+/**
+ * Keys a link stored before the Update Ring owned approval (#8187). The #8188
+ * migration strips them, so this filter is defensive only.
+ */
 const RING_OWNED_APPROVAL_KEYS = new Set([
   "apps",
   "autoApprove",
@@ -85,7 +88,10 @@ function settingsFromInline(
   ) as Partial<PatchDeploymentSettings>;
   return { ...kept, sources: normalizeSources(kept.sources) };
 }
-/** The legacy app rules a link still stores (W04 strips them), for the repair prompt. */
+/**
+ * The legacy app rules a link still stores, for the repair prompt. Always
+ * empty once the #8188 migration has stripped `apps`.
+ */
 function legacyAppRules(inline: Record<string, unknown> | null | undefined): RingAppRule[] {
   const apps = inline?.apps;
   return Array.isArray(apps)

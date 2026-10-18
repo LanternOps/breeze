@@ -400,7 +400,7 @@ Outstanding patches are split into **Approved** and **Pending Approval**: approv
 
 ## Patch Scheduling via Configuration Policies
 
-Patch *scheduling and settings* — when to scan, which severities to auto-approve, and what reboot policy to apply — are managed through [Configuration Policies](/features/configuration-policies/). This is the primary way to automate patching at scale. The legacy `PATCH /patch-policies` and `DELETE /patch-policies` routes have been removed; `GET /patch-policies` remains for backwards compatibility only.
+Patch *scheduling and settings* — which sources to patch, when to run, and what reboot policy to apply — are managed through [Configuration Policies](/features/configuration-policies/). *Approval* — which severities and categories auto-approve, after what deferral, and which applications are blocked or pinned — is set on the [update ring](/features/update-rings/) the patch feature links to. This is the primary way to automate patching at scale. The legacy `PATCH /patch-policies` and `DELETE /patch-policies` routes have been removed; `GET /patch-policies` remains for backwards compatibility only.
 
 A patch feature can be added to a [partner-wide (all organizations)](/features/configuration-policies/#policy-ownership-organization-vs-partner-wide) configuration policy, including linking an [update ring](/features/update-rings/) directly to it — you set the schedule, auto-approve rules, and ring once and it schedules across every organization you manage. Deployment jobs created from a partner-wide policy are still grouped and tracked one-per-organization, so per-customer compliance reporting is unaffected.
 
@@ -414,10 +414,6 @@ Content-Type: application/json
   "featureType": "patch",
   "inlineSettings": {
     "sources": ["os", "third_party"],
-    "apps": [
-      { "source": "third_party", "packageId": "Mozilla.Firefox", "action": "block" },
-      { "source": "third_party", "packageId": "Google.Chrome", "action": "pin", "pinnedVersion": "120.0.1" }
-    ],
     "scheduleFrequency": "weekly",
     "scheduleTime": "02:00",
     "scheduleDayOfWeek": "sun",
@@ -431,8 +427,7 @@ Content-Type: application/json
 | Field | Type | Description |
 |-------|------|-------------|
 | `sources` | string[] | Which patch sources this policy covers — **at least one is required**. See [Patch Sources](#patch-sources-1) below |
-| `autoApprove`, `autoApproveSeverities`, `autoApproveDeferralDays` | | **Not used for approval.** These policy-level fields are still accepted and stored, but Breeze does not read them when it decides what to install. Set auto-approval, severities and deferral on the [update ring](/features/update-rings/) instead. The device **Config** tab leaves them out and shows where approval comes from |
-| `apps` | object[] | Per-application **block** and **pin** rules. See [Application Rules](#application-rules) below |
+| `autoApprove`, `autoApproveSeverities`, `autoApproveDeferralDays`, `apps` | | **Removed.** Auto-approval and per-application rules are set on the [update ring](/features/update-rings/) (see [Application Rules](#application-rules)). A request that still sends these fields is accepted, and the fields are ignored and not stored. The partner API configuration export no longer includes them |
 | `scheduleFrequency` | string | How often to run patching: `daily`, `weekly`, or `monthly` |
 | `scheduleTime` | string | Time of day in `HH:MM` format (24-hour, UTC unless timezone configured at site level) |
 | `scheduleDayOfWeek` | string | For weekly schedules: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
@@ -509,7 +504,7 @@ Each patch policy must declare which **patch sources** it manages, and at least 
 
 #### Application Rules
 
-Application rules give you per-app control over third-party and custom updates within a policy. Each rule targets a specific package and chooses one of two actions:
+Application rules give you per-app control over third-party and custom updates. They are part of the [update ring](/features/update-rings/) (the ring's `appRules` list, under **Application rules** in the ring editor), so they apply to every configuration policy that links that ring. Each rule targets a specific package and chooses one of two actions:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -518,7 +513,7 @@ Application rules give you per-app control over third-party and custom updates w
 | `action` | string | `block` to prevent the application from being updated, or `pin` to hold it at a specific version |
 | `pinnedVersion` | string | **Required when `action` is `pin`** — the version the application is held at. Updates beyond this version are withheld until the pin is changed |
 
-A **block** rule keeps the application off the approved/installable list entirely. A **pin** rule allows the application up to the pinned version but holds back anything newer, which is useful when a vendor's latest release is known to break a line-of-business workflow. A policy can carry up to 200 application rules.
+A **block** rule keeps the application off the approved/installable list entirely. A **pin** rule allows the application up to the pinned version but holds back anything newer, which is useful when a vendor's latest release is known to break a line-of-business workflow. A ring can carry up to 200 application rules, one per package. A rule overrides a manual approval: a blocked application is not installed by a scheduled run even when someone approved the patch.
 
 ### Creating a patch deployment job from a policy
 

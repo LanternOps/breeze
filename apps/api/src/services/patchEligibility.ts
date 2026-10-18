@@ -451,11 +451,6 @@ export async function resolveDevicePatchEvaluation(
     categories: ringId ? ring.categories : undefined,
     excludeCategories: ringId ? ring.excludeCategories : undefined,
     sources: settings.sources,
-    policyAutoApprove: {
-      enabled: settings.autoApprove ?? false,
-      severities: settings.autoApproveSeverities ?? [],
-      deferralDays: settings.autoApproveDeferralDays ?? 0,
-    },
     // The ring owns the app rules (#8186); the resolver already normalised
     // them (coerceRingAppRules). The policy's inline `apps` is not read.
     ringAppRules: ringId ? ring.appRules : [],

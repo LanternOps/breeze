@@ -12,10 +12,6 @@ import { requirePartnerApiScope, type PartnerApiPrincipalContext } from '../../m
 import { acquirePartnerExportReadLocks } from './consistency';
 import { getPartnerExportFetchLimit } from './pagination';
 import {
-  normalizePatchInlineSettings,
-  tryNormalizePatchInlineSettings,
-} from '../../services/configPolicyPatching';
-import {
   bindPartnerExportSnapshot,
   buildEnvelope,
   clientError,
@@ -44,10 +40,12 @@ interface DesiredConfigurationRow extends Record<string, unknown> {
   definition: Record<string, unknown>;
 }
 
+// Exactly the keys breeze_partner_export_policy_settings_pre_patch emits for a
+// patch link (latest definition: 2026-12-31-160000-drop-policy-patch-auto-approve.sql).
+// The retired policy-level approval keys are not here (#8188): a projection
+// that still emits one fails the policy closed below.
 const PATCH_NORMALIZED_MATERIAL_KEYS = [
   'sources',
-  'autoApprove',
-  'autoApproveSeverities',
   'scheduleFrequency',
   'scheduleTime',
   'scheduleDayOfWeek',
@@ -134,13 +132,10 @@ function canonicalizePolicyPatchSettings(
     const normalizedMaterial = patchInlineSettingsSchema.safeParse(materialized);
     if (!normalizedMaterial.success) return { safe: false };
 
-    const canonicalMirror = tryNormalizePatchInlineSettings(rawMirror).settings;
-    const settings = normalizePatchInlineSettings({
-      ...normalizedMaterial.data,
-      autoApproveDeferralDays: canonicalMirror.autoApproveDeferralDays,
-      apps: canonicalMirror.apps,
-    });
-    features.push({ ...feature, settings });
+    // Every exported patch setting comes from the relational material; the raw
+    // mirror is only inspected for the reserved key above, never exported
+    // (#8188 retired the mirror-only autoApproveDeferralDays/apps keys).
+    features.push({ ...feature, settings: normalizedMaterial.data });
   }
 
   return { safe: true, definition: { ...definition, features } };

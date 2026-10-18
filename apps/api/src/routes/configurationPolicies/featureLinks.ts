@@ -61,7 +61,6 @@ import {
   linkIdParamSchema,
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
-import { omitUnsentLegacyApprovalKeys, PolicyApprovalFieldMovedError } from '../../services/configPolicyPatching';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
 import { checkSecurityRuleSetsWrite } from './securityRuleSetGate';
@@ -507,11 +506,6 @@ featureLinkRoutes.post(
       if (error instanceof BackupDestinationNotInOrgError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
-      // #8186 / #8678: approval / app rules live on the Update Ring; `code`
-      // says whether this was a stale edit or a repair onto a ring lacking them.
-      if (error instanceof PolicyApprovalFieldMovedError) {
-        return c.json({ error: error.message, code: error.code }, 400);
-      }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
       }
@@ -640,9 +634,6 @@ featureLinkRoutes.patch(
             400
           );
         }
-        // #8671: the schema defaults omitted approval keys; forward only the
-        // ones the client sent (the service keeps the stored values).
-        data.inlineSettings = omitUnsentLegacyApprovalKeys(data.inlineSettings, parsed.data);
       }
       if (existingLink.featureType === 'backup') {
         // PATCH may keep the existing profile reference (featurePolicyId
@@ -820,11 +811,6 @@ featureLinkRoutes.patch(
         return c.json(error.body, error.status);
       }
       if (error instanceof BackupDestinationNotInOrgError) {
-        return c.json({ error: error.message, code: error.code }, 400);
-      }
-      // #8186 / #8678: approval / app rules live on the Update Ring; `code`
-      // says whether this was a stale edit or a repair onto a ring lacking them.
-      if (error instanceof PolicyApprovalFieldMovedError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {

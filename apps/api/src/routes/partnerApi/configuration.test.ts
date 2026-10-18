@@ -12,10 +12,11 @@ const DEVICE_ID = '66666666-6666-4666-8666-666666666666';
 const CREATED_AT = new Date('2026-07-10T12:00:00.000Z');
 const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 const PATCH_INLINE_MIRROR_MATERIAL = '__breezePatchInlineMirror';
+// #8188 (W04): the projection no longer carries the retired policy-level
+// approval keys (autoApprove, autoApproveSeverities, autoApproveDeferralDays,
+// apps); approval and per-app rules live on the Update Ring.
 const NORMALIZED_PATCH_FACTS = {
   sources: ['os'],
-  autoApprove: false,
-  autoApproveSeverities: [],
   scheduleFrequency: 'weekly',
   scheduleTime: '02:00',
   scheduleDayOfWeek: 'sun',
@@ -224,11 +225,8 @@ describe('partner desired-configuration exports', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.blocked).toBeUndefined();
-    expect(body.data[0].features[0].settings).toEqual({
-      ...NORMALIZED_PATCH_FACTS,
-      autoApproveDeferralDays: 7,
-      apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
-    });
+    // A stale mirror still carrying the retired keys does not leak them.
+    expect(body.data[0].features[0].settings).toEqual(NORMALIZED_PATCH_FACTS);
     expect(JSON.stringify(body)).not.toMatch(/__breezePatchInlineMirror|hunter2/u);
 
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
@@ -250,11 +248,7 @@ describe('partner desired-configuration exports', () => {
     })]);
     const invalidBody = await (await request('/configuration-policies', 'configuration:read')).json();
     expect(invalidBody.blocked).toBeUndefined();
-    expect(invalidBody.data[0].features[0].settings).toEqual({
-      ...NORMALIZED_PATCH_FACTS,
-      autoApproveDeferralDays: 0,
-      apps: [],
-    });
+    expect(invalidBody.data[0].features[0].settings).toEqual(NORMALIZED_PATCH_FACTS);
     expect(JSON.stringify(invalidBody)).not.toMatch(/__breezePatchInlineMirror|sk-live-never-export/u);
   });
 
@@ -287,6 +281,37 @@ describe('partner desired-configuration exports', () => {
       fieldPaths: ['features'],
     }]);
     expect(JSON.stringify(body)).not.toMatch(/__breezePatchInlineMirror|attacker-value/u);
+  });
+
+  it('blocks patch material still projecting a retired approval key (pre-#8188 function)', async () => {
+    // Exact membership: a projection that emits a key outside
+    // PATCH_NORMALIZED_MATERIAL_KEYS fails the policy closed rather than
+    // exporting it.
+    for (const retired of [
+      { autoApprove: false },
+      { autoApproveSeverities: [] },
+      { autoApproveDeferralDays: 0 },
+      { apps: [] },
+    ]) {
+      mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+        sourceScope: 'organization',
+        name: 'Stale projection',
+        description: null,
+        status: 'active',
+        features: [{
+          id: SOURCE_B,
+          type: 'patch',
+          policyId: null,
+          settings: { ...patchMaterial(), ...retired },
+        }],
+      })]);
+      const body = await (await request('/configuration-policies', 'configuration:read')).json();
+      expect(body.data).toEqual([]);
+      expect(body.blocked).toEqual([expect.objectContaining({
+        resource: 'configuration-policies', id: SOURCE_A, orgId: ORG_A,
+        reason: 'secret_detected', fieldPaths: ['features'],
+      })]);
+    }
   });
 
   it('blocks an attacker collision nested inside otherwise valid patch mirror material', async () => {
