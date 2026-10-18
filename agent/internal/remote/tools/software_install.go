@@ -146,16 +146,6 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
-	// #9165: an installer this OS cannot run is refused here, before the
-	// detection gate, the network policy and the download, rather than by
-	// executeInstaller after a full download + checksum. It is a property of
-	// the command, not of the device, so it is decided before any device state
-	// is read; and nothing has been fetched or checkpointed, so the deferred
-	// Report gives skipped_no_mutation for a stamped request.
-	if !installerSupportedOnPlatform(fileType, runtime.GOOS) {
-		return NewErrorResult(unsupportedInstallerError(fileType, runtime.GOOS), time.Since(startTime).Milliseconds())
-	}
-
 	// Detection rules (#2022): evaluated against the device's real state so the
 	// reported status reflects whether the app is actually present rather than
 	// just the installer exit code.
@@ -180,6 +170,21 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 				"detail":             "already installed; " + pre.Detail,
 			}, time.Since(startTime).Milliseconds())
 		}
+	}
+
+	// #9165: an installer this OS cannot run is refused here, before the
+	// network policy and the download, rather than by executeInstaller after a
+	// full download + checksum + restore-point checkpoint. Nothing has been
+	// fetched or checkpointed, so the deferred Report gives
+	// skipped_no_mutation for a stamped request.
+	//
+	// It sits AFTER the detection gate on purpose: the gate never downloads or
+	// checkpoints either, and a package that is already present keeps
+	// reporting "already installed" even when the installer offered for it is
+	// for another OS (a version with no recorded file type is sent as "exe",
+	// so a cross-platform deployment can hit exactly that).
+	if !installerSupportedOnPlatform(fileType, runtime.GOOS) {
+		return NewErrorResult(unsupportedInstallerError(fileType, runtime.GOOS), time.Since(startTime).Milliseconds())
 	}
 
 	// Outbound network policy (Wave 6 Task 5, security remediation). The

@@ -521,6 +521,11 @@ func TestInstallSoftware_ErrorNeverLeaksTheDownloadURL(t *testing.T) {
 	if strings.Contains(result.Error, secret) || strings.Contains(result.Error, "10.0.0.5") {
 		t.Fatalf("download error leaked the URL: %q", result.Error)
 	}
+	// Positive anchor: the refusal must come from the network path, or this
+	// test passes on any earlier failure without exercising the leak at all.
+	if !strings.Contains(result.Error, netpolicy.ReasonPrivateAddressNotAllowed) {
+		t.Fatalf("expected the network-policy refusal %q, got %q", netpolicy.ReasonPrivateAddressNotAllowed, result.Error)
+	}
 }
 
 // ---------------------------------------------------------------------------

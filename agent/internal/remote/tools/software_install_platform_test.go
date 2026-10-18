@@ -99,11 +99,12 @@ func TestInstallSoftwareRefusesAnUnsupportedPairingBeforeDownloading(t *testing.
 	}
 }
 
-// The pairing is a property of the command, not of the device: a wrong-OS
-// installer is refused even when a detection rule says the app is present.
-func TestInstallSoftwareRefusesAnUnsupportedPairingBeforeTheDetectionGate(t *testing.T) {
+// The detection gate still runs first: a package that is already present
+// reports "already installed" even when the installer offered for it is for
+// another OS, exactly as before #9165. Neither path fetches or checkpoints.
+func TestInstallSoftwareDetectionGateStillPrecedesThePlatformCheck(t *testing.T) {
 	var order []string
-	swCheckpointProbe(t, &order)
+	calls := swCheckpointProbe(t, &order)
 	recordingPipeline(t, &order, nil)
 	present := filepath.Join(t.TempDir(), "acme.bin")
 	if err := os.WriteFile(present, []byte("x"), 0o600); err != nil {
@@ -117,13 +118,51 @@ func TestInstallSoftwareRefusesAnUnsupportedPairingBeforeTheDetectionGate(t *tes
 
 	res := InstallSoftware(p)
 
-	if res.Status != "failed" {
-		t.Fatalf("status = %q, want failed", res.Status)
+	if res.Status != "completed" {
+		t.Fatalf("status = %q (error %q), want completed: the already-installed skip must win", res.Status, res.Error)
 	}
-	if len(order) != 0 {
-		t.Fatalf("stages = %v, want none", order)
+	if !strings.Contains(res.Stdout, "already installed") {
+		t.Fatalf("stdout = %q, want the already-installed skip", res.Stdout)
+	}
+	if *calls != 0 || len(order) != 0 {
+		t.Fatalf("attempts = %d, stages = %v, want none", *calls, order)
 	}
 	requireNoMutation(t, res)
+}
+
+// The platform check runs before the network policy: a wrong-OS installer
+// behind a URL the policy would also refuse reports the platform error.
+func TestInstallSoftwarePlatformCheckPrecedesTheNetworkPolicy(t *testing.T) {
+	stubInstallPipeline(t,
+		func(*http.Client, string, string) error {
+			t.Fatal("downloader must not run")
+			return nil
+		},
+		func(string, string, string, []uint32) (int, string, bool, error) {
+			t.Fatal("installer must not run")
+			return 0, "", false, nil
+		},
+	)
+	fileType, fileName := unsupportedOnHost(t)
+	p := installPayload("http://downloads.example.com/"+fileName, nil)
+	p["fileType"] = fileType
+	p["fileName"] = fileName
+
+	res := InstallSoftware(p)
+
+	if want := `unsupported file type "` + fileType + `" on ` + runtime.GOOS; res.Error != want {
+		t.Fatalf("error = %q, want %q", res.Error, want)
+	}
+}
+
+// Many tests rely on installPayload producing an installer the host can run;
+// if it ever hard-codes one type again, tests that only assert "failed" would
+// go quietly vacuous on the other CI OSes.
+func TestInstallPayloadFixtureIsRunnableOnThisHost(t *testing.T) {
+	ft, _ := installPayload("https://downloads.example.com/x", nil)["fileType"].(string)
+	if !installerSupportedOnPlatform(ft, runtime.GOOS) {
+		t.Fatalf("installPayload fileType %q is not runnable on %s; use hostInstaller", ft, runtime.GOOS)
+	}
 }
 
 // Input validation still runs first: a payload that is malformed AND

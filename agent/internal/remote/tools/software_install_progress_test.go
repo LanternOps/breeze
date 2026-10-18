@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/netpolicy"
 )
 
 // stubInstallPipeline swaps the download and installer seams for the duration
@@ -80,6 +83,9 @@ func TestInstallSoftwareWithProgress_RejectedPayloadReportsNothing(t *testing.T)
 
 	if result.Status != "failed" {
 		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if !strings.Contains(result.Error, netpolicy.ReasonSchemeNotAllowed) {
+		t.Fatalf("error = %q, want the network-policy refusal %q", result.Error, netpolicy.ReasonSchemeNotAllowed)
 	}
 	if len(rec.stages) != 0 {
 		t.Fatalf("stages = %v, want none", rec.stages)
