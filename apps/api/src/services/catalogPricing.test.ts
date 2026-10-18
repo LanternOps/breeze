@@ -179,6 +179,7 @@ describe('computeBundleEconomicsFrom', () => {
     expect(r.allocationTotal).toBe('100.00');
     expect(r.allocationMatchesHeadline).toBe(true);
     expect(r.missingPriceComponentIds).toEqual([]);
+    expect(r.missingCostComponentIds).toEqual([]);
   });
 
   it('withholds all cost economics when a component lacks target-currency pricing', () => {
@@ -246,6 +247,46 @@ describe('computeBundleEconomicsFrom', () => {
     expect(r.margin).toBeNull();
     expect(r.marginPct).toBeNull();
     expect(r.allocationTotal).toBe('100.00');
+  });
+
+  // #9223: a component with no cost is UNKNOWN cost, never zero. Counting it
+  // as 0 reported an inflated bundle margin (here 60.00 / 60%).
+  it('withholds cost economics when a component cost is NULL (unknown, never 0)', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'USD',
+      headlinePrice: '100.00',
+      components: [
+        { componentItemId: componentA, quantity: '2', costBasis: '20.00', costCurrency: 'USD', revenueAllocation: '40.00', allocationCurrency: 'USD', hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1', costBasis: null, costCurrency: 'USD', revenueAllocation: '60.00', allocationCurrency: 'USD', hasPriceInCurrency: true }
+      ]
+    });
+
+    expect(r.priceBookComplete).toBe(true);
+    expect(r.marginAvailable).toBe(false);
+    expect(r.missingCostComponentIds).toEqual([componentB]);
+    expect(r.totalCost).toBeNull();
+    expect(r.margin).toBeNull();
+    expect(r.marginPct).toBeNull();
+    // The allocation split does not depend on cost and stays available.
+    expect(r.allocationTotal).toBe('100.00');
+    expect(r.allocationMatchesHeadline).toBe(true);
+  });
+
+  it('an explicit 0.00 component cost is a KNOWN zero, not a missing cost', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'USD',
+      headlinePrice: '100.00',
+      components: [
+        { componentItemId: componentA, quantity: '2', costBasis: '20.00', costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1', costBasis: '0.00', costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true }
+      ]
+    });
+
+    expect(r.marginAvailable).toBe(true);
+    expect(r.missingCostComponentIds).toEqual([]);
+    expect(r.totalCost).toBe('40.00');
+    expect(r.margin).toBe('60.00');
+    expect(r.marginPct).toBe(60);
   });
 
   it('marks price-book pricing incomplete when the bundle lacks a headline price', () => {

@@ -4398,7 +4398,9 @@
     "nMoreCurrencies_other": "+{{count}} para birimi",
     "incompletePriceBook": "Eksik fiyat listesi",
     "marginUnavailable": "Marj kullanılamıyor",
-    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor"
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+    "marginUnknownMissingCost_one": "Marj bilinmiyor — {{count}} bileşenin maliyeti yok",
+    "marginUnknownMissingCost_other": "Marj bilinmiyor — {{count}} bileşenin maliyeti yok"
   },
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",

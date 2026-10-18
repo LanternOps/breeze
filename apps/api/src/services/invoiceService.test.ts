@@ -1314,7 +1314,8 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     currencyCode: 'USD', headlinePrice: '100.00', headlineGap: null, headlineGapMessage: null,
     priceBookComplete: true, marginAvailable: true,
     totalCost: '40.00', margin: '60.00', marginPct: 60, allocationTotal: '100.00',
-    allocationAvailable: true, allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[], ...over,
+    allocationAvailable: true, allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[],
+    missingCostComponentIds: [] as string[], ...over,
   });
 
   it('addBundleLine computes economics in the INVOICE currency and snapshots child cost only in the same currency', async () => {

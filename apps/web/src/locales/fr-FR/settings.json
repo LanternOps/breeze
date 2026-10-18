@@ -4398,7 +4398,9 @@
     "nMoreCurrencies_other": "+{{count}} devises",
     "incompletePriceBook": "Grille tarifaire incomplète",
     "marginUnavailable": "Marge indisponible",
-    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible"
+    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
+    "marginUnknownMissingCost_one": "Marge inconnue — {{count}} composant n’a pas de coût",
+    "marginUnknownMissingCost_other": "Marge inconnue — {{count}} composants n’ont pas de coût"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",

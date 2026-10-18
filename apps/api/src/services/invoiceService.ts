@@ -365,7 +365,7 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
     const parent = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'bundle', sourceId: null, catalogItemId: bundleId, parentLineId: null, ticketId: null,
       name: bundle?.name ?? 'Bundle', description: bundle?.description ?? null, quantity: qty, unitPrice: econ.headlinePrice,
-      costBasis: econ.totalCost, // null when any component's cost is in another currency (margin unavailable)
+      costBasis: econ.totalCost, // null when any component's cost is unknown (NULL, #9223) or in another currency (margin unavailable)
       taxable: true, customerVisible: true,
       lineTotal: computeLineTotal(qty, econ.headlinePrice, inv.currencyCode), isUnapprovedTime: false
     });
