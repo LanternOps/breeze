@@ -57,6 +57,11 @@ describe('resolveProxyTarget — host mode', () => {
     ['a duplicated ticket', `${TUNNEL}/__bz/enter?t=A&t=B`],
     ['an extra param', `${TUNNEL}/__bz/enter?t=T&x=1`],
     ['mode=tab in the frame context', `${TUNNEL}/__bz/enter?t=T&mode=tab`],
+    ['an uppercased reserved path', `${TUNNEL}/__BZ/enter?t=T`],
+    ['a percent-encoded reserved path', `${TUNNEL}/%5F%5Fbz/enter?t=T`],
+    ['a wss: URL', `wss://${ID}.us.breezetunnel.test/__bz/enter?t=T`],
+    ['an IP host', 'https://192.0.2.1/__bz/enter?t=T'],
+    ['a dev tunnel with no suffix label', `http://${ID}.localhost:18480/__bz/enter?t=T`],
     ['javascript:', 'javascript:alert(1)'],
     ['data:', 'data:text/html,<p>x</p>'],
     ['an unparseable string', 'https://'],
@@ -84,6 +89,10 @@ describe('resolveProxyTarget — host mode', () => {
     });
     // A tunnel host under the dev app host is still refused.
     expect(resolve(`http://${ID}.app.localhost:18480/__bz/enter?t=T`, dev)).toBeNull();
+  });
+
+  it('accepts an explicit port on the tunnel origin (the server validator owns port policy)', () => {
+    expect(resolve(`https://${ID}.us.breezetunnel.test:8443/__bz/enter?t=T`)?.mode).toBe('host');
   });
 
   it('compares against an app host configured with a trailing dot as the same name', () => {

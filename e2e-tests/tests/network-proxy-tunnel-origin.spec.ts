@@ -66,11 +66,16 @@ test('Open in New Tab opens a top-level tunnel tab with its own tab ticket and n
   const tabTicket = page.waitForResponse((r) =>
     new URL(r.url()).pathname === `/api/v1/tunnels/${id}/http-ticket` && new URL(r.url()).searchParams.get('mode') === 'tab');
   const popupPromise = page.context().waitForEvent('page');
+  // Context-level, registered before the click: the popup's responses can
+  // arrive before a listener on the popup page itself would attach. The app
+  // page's own iframe also loads `/` from this tunnel host, so exclude it.
+  const rootPromise = page.context().waitForEvent('response', (r) => onTunnel(id, '/')(r) && r.frame().page() !== page);
   await page.getByTestId('proxy-open-new-tab').click();
   expect((await tabTicket).status()).toBe(200);
   const popup = await popupPromise;
 
-  const root = await popup.waitForResponse(onTunnel(id, '/'));
+  const root = await rootPromise;
+  expect(root.frame().page()).toBe(popup);
   expect(root.status()).toBe(502);
   // The bootstrap page navigates to `/` itself; wait for that commit before evaluating.
   await popup.waitForURL((u) => u.hostname === tunnelHost(id) && u.pathname === '/');
@@ -95,7 +100,8 @@ test('Close shows Disconnected only after the DELETE succeeds', async ({ authedP
   await expect(page.getByTestId('toast-container')).toContainText('boom');
   await expect(page.getByTestId('proxy-close')).toBeEnabled();
   await expect(page.getByTestId('proxy-session-expired-overlay')).toHaveCount(0);
-  expect(tunnelStatus(id)).not.toBe('disconnected');
+  // Untouched by the failed close (the iframe exchange may or may not have activated it yet).
+  expect(['pending', 'active']).toContain(tunnelStatus(id));
 
   await page.unroute(closeRoute);
   await page.getByTestId('proxy-close').click();
@@ -163,9 +169,11 @@ test('a browser that refuses the iframe cookie gets the new-tab notice @3pc-bloc
 
   // The top-level tab is first-party, so it works where the iframe could not.
   const popupPromise = page.context().waitForEvent('page');
+  const rootPromise = page.context().waitForEvent('response', (r) => onTunnel(id, '/')(r) && r.frame().page() !== page);
   await page.getByTestId('proxy-cookie-blocked-open-new-tab').click();
   const popup = await popupPromise;
-  const root = await popup.waitForResponse(onTunnel(id, '/'));
+  const root = await rootPromise;
+  expect(root.frame().page()).toBe(popup);
   expect(root.status()).toBe(502);
   await popup.close();
 });
