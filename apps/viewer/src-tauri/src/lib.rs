@@ -7,6 +7,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
+mod dev_build;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
 mod screenshot;
@@ -315,6 +316,63 @@ fn run_best_effort(program: &str, args: &[&std::ffi::OsStr]) {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn register_url_scheme() -> Result<(), String> {
     Ok(())
+}
+
+/// Register `breeze://` unless this is a development build (#8956).
+///
+/// macOS and Linux re-register on every launch, so the last-launched install
+/// wins the scheme. A local dev build carries the `999.*` version marker and,
+/// once launched, would keep every console deep link for itself. Windows has no
+/// launch-time registration (the MSI writes it), so there is nothing to skip.
+fn register_url_scheme_for(version: &str, major: u64) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    dev_build::scheme_registration_allowed(
+        version,
+        major,
+        &own_install_path(),
+        std::env::var(dev_build::DEV_REGISTER_ENV).ok().as_deref(),
+    )?;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let _ = (version, major);
+    register_url_scheme()
+}
+
+/// Human-readable location of the running install, for messages only: the
+/// `.app` bundle on macOS, the `.AppImage` file on Linux, else the executable.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn own_install_path() -> String {
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = std::env::var("APPIMAGE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        return appimage;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return "an unknown location".to_string();
+    };
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "app"))
+    {
+        return bundle.display().to_string();
+    }
+    exe.display().to_string()
+}
+
+/// Time since the running executable was written — for a local build, roughly
+/// when it was built. `None` when that cannot be read, or the timestamp lies in
+/// the future; [`dev_build::classify_build`] treats both as stale.
+#[cfg_attr(debug_assertions, allow(dead_code))] // only `auto_update` (release builds) uses it
+fn running_build_age() -> Option<std::time::Duration> {
+    let modified = std::fs::metadata(std::env::current_exe().ok()?)
+        .ok()?
+        .modified()
+        .ok()?;
+    std::time::SystemTime::now().duration_since(modified).ok()
 }
 
 /// Per-window pending deep link URLs. Key = window label, value = deep link URL.
@@ -1111,7 +1169,31 @@ async fn auto_update(app: tauri::AppHandle) {
     // banner is showing yet, and a launch with no reachable update server is
     // not something to interrupt the user about.
     let current = app.package_info().version.to_string();
-    let updater = match app.updater() {
+    // A dev-marker build past its grace period accepts any real release, so a
+    // forgotten local build stops outranking every published version (#8956).
+    // Release builds get exactly the plugin's default "remote is newer" rule.
+    let build_kind =
+        dev_build::classify_build(app.package_info().version.major, running_build_age());
+    if build_kind == dev_build::BuildKind::DevStale {
+        log_update(
+            &app,
+            &format!(
+                "Running development build {current} older than {} days (or of unknown age): any published release will replace it",
+                dev_build::DEV_BUILD_UPDATE_GRACE.as_secs() / 86_400
+            ),
+        );
+    }
+    let updater = match app
+        .updater_builder()
+        .version_comparator(move |current, release| {
+            dev_build::release_supersedes(
+                build_kind,
+                release.version.major,
+                release.version > current,
+            )
+        })
+        .build()
+    {
         Ok(u) => u,
         Err(e) => {
             log_update(
@@ -1345,7 +1427,8 @@ pub fn run() {
         .setup(|app| {
             // Kept so the idle card can say registration failed instead of
             // claiming the viewer is ready when `breeze://` will not resolve.
-            let scheme_registration = register_url_scheme();
+            let version = &app.package_info().version;
+            let scheme_registration = register_url_scheme_for(&version.to_string(), version.major);
             if let Err(ref err) = scheme_registration {
                 eprintln!("breeze:// registration failed: {err}");
             }
