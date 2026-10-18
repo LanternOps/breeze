@@ -82,11 +82,15 @@ const (
 const notificationSettingEnabled int32 = 0
 
 // errToastsDisabled reports that the notifier's NotificationSetting is not
-// Enabled. showNotificationOS must NOT retry through PowerShell on it: that
-// path raises the same toast through the same notifier, is dropped just as
-// silently, and reports success — so the caller's FallbackDialog (#6864) would
-// never fire.
+// Enabled. showNotificationOS reports the toast undelivered on it, without
+// retrying through PowerShell (same notifier, same setting), so the caller's
+// FallbackDialog (#6864) fires. Show() alone would return S_OK and drop it.
 var errToastsDisabled = errors.New("toast notifications are disabled")
+
+// toastSettingReadHook observes the raw IToastNotifier::get_Setting result.
+// Nil in production; the CI WinRT test sets it to prove the check runs and
+// reads an in-range value.
+var toastSettingReadHook func(setting int32, err error)
 
 // notificationSettingError maps an IToastNotifier::get_Setting value to nil
 // (Enabled) or errToastsDisabled.
@@ -143,9 +147,9 @@ func showToastWinRTOnLockedThread(aumid, toastXML string) error {
 		defer procRoUninitialize.Call()
 	case hrRPCChangedMode:
 		// The thread is already a single-threaded apartment. Nothing pumps
-		// messages on it, so calls marshalled to it would never complete. A
-		// thread fresh from the runtime should not be in this state; refuse
-		// rather than proceed on it, and let the caller fall back.
+		// messages on it, so calls marshalled to it would never complete. Only
+		// code that left an STA initialised on a pooled thread could cause
+		// this; refuse rather than proceed on it, and let the caller fall back.
 		return hresultError("RoInitialize (thread is already a single-threaded apartment)", hr)
 	default:
 		return hresultError("RoInitialize", hr)
@@ -218,7 +222,11 @@ func showToastWinRTOnLockedThread(aumid, toastXML string) error {
 	// get_Setting failure is not proof of either state, so it is logged and
 	// the toast is still attempted.
 	var setting int32
-	if _, err = comCall(notifier, methIToastNotifierGetSetting, uintptr(unsafe.Pointer(&setting))); err != nil {
+	_, err = comCall(notifier, methIToastNotifierGetSetting, uintptr(unsafe.Pointer(&setting)))
+	if toastSettingReadHook != nil {
+		toastSettingReadHook(setting, err)
+	}
+	if err != nil {
 		log.Warn("IToastNotifier::get_Setting failed; attempting the toast anyway", "error", err.Error())
 	} else if err := notificationSettingError(setting); err != nil {
 		return err

@@ -116,10 +116,40 @@ func TestNotificationSettingError(t *testing.T) {
 // only accepted outcomes are success, a failure at Show itself, or the toast
 // setting reporting disabled (which needs get_Setting to have succeeded on a
 // real notifier). It must never be skipped.
+//
+// The get_Setting check is observed directly: it must run on every path that
+// reaches the notifier, and a value it reads must be a defined
+// NotificationSetting (0..4). Production tolerates a get_Setting failure (logs
+// it and shows the toast). Here that is tolerated only when Show then fails
+// too, i.e. this session has no notification platform to answer either call
+// (a desktop-less runner). If Show succeeds while get_Setting failed, the
+// disabled-notifications check is dead on a host that can show toasts: red.
 func TestShowToastWinRTFailsNoEarlierThanShow(t *testing.T) {
 	notifyAumidOnce.Do(registerToastAUMID)
+	settingReads := 0
+	var settingErr error
+	prevHook := toastSettingReadHook
+	toastSettingReadHook = func(setting int32, err error) {
+		settingReads++
+		settingErr = err
+		switch {
+		case err != nil:
+			t.Logf("IToastNotifier::get_Setting failed: %v", err)
+		case setting < 0 || setting > 4:
+			t.Errorf("IToastNotifier::get_Setting returned undefined NotificationSetting %d — wrong vtable slot?", setting)
+		default:
+			t.Logf("IToastNotifier::get_Setting = %d", setting)
+		}
+	}
+	t.Cleanup(func() { toastSettingReadHook = prevHook })
+
 	err := showToastWinRT(notifyAUMID, buildToastXML("Breeze CI", "WinRT sequence check"))
+	if settingReads != 1 {
+		t.Errorf("get_Setting check ran %d times, want 1 — the disabled-notifications check is not on the WinRT path", settingReads)
+	}
 	switch {
+	case err == nil && settingErr != nil:
+		t.Fatalf("Show() succeeded but get_Setting failed (%v) — the disabled-notifications check never runs on a host that can show toasts", settingErr)
 	case err == nil:
 		t.Log("showToastWinRT: Show() reported success")
 	case errors.Is(err, errToastsDisabled):
@@ -128,6 +158,30 @@ func TestShowToastWinRTFailsNoEarlierThanShow(t *testing.T) {
 		t.Logf("showToastWinRT: failed at Show (accepted without a desktop): %v", err)
 	default:
 		t.Fatalf("showToastWinRT failed before IToastNotifier::Show — a WinRT IID, class name or vtable slot is wrong: %v", err)
+	}
+}
+
+// The PowerShell fallback is reached when WinRT fails before its own setting
+// check (activation, apartment). On a host with toasts disabled its Show()
+// would return success and drop the toast, so the script must read the
+// notifier's Setting and exit non-zero, which showToastPowerShell reports as
+// undelivered. A Setting read that throws is tolerated, as on the WinRT path.
+func TestToastPowerShellScriptRefusesDisabledNotifier(t *testing.T) {
+	args := newToastPowerShellCmd(`<toast/>`).Args
+	script := args[len(args)-1]
+	checkAt := strings.Index(script, "$setting -ne [Windows.UI.Notifications.NotificationSetting]::Enabled")
+	showAt := strings.Index(script, "$notifier.Show($toast)")
+	if checkAt < 0 || showAt < 0 {
+		t.Fatalf("script lacks the Setting check or the notifier Show:\n%s", script)
+	}
+	if checkAt > showAt {
+		t.Fatal("Setting is checked after Show; a disabled toast would already be dropped")
+	}
+	if !strings.Contains(script[checkAt:showAt], "exit 3") {
+		t.Error("disabled Setting does not exit non-zero before Show")
+	}
+	if !strings.Contains(script, "try { $setting = $notifier.Setting } catch { }") {
+		t.Error("a throwing Setting read is not tolerated; it would turn every fallback toast into a failure")
 	}
 }
 

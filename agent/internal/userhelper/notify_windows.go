@@ -60,8 +60,8 @@ func showNotificationOS(req ipc.NotifyRequest) bool {
 	if err := toastWinRTFn(notifyAUMID, toastXML); err != nil {
 		if errors.Is(err, errToastsDisabled) {
 			// The PowerShell path raises the same toast through the same
-			// notifier: it would be dropped just as silently and report
-			// success. Report undelivered so FallbackDialog can fire.
+			// notifier, so it cannot succeed either; don't spawn it. Report
+			// undelivered so FallbackDialog can fire.
 			log.Warn("toast notifications are disabled; not retrying via PowerShell", "error", err.Error())
 			return false
 		}
@@ -85,7 +85,14 @@ func newToastPowerShellCmd(toastXML string) *exec.Cmd {
   $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
   $doc.LoadXml($env:BREEZE_TOAST_XML)
   $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
-  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('` + notifyAUMID + `').Show($toast)
+  $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('` + notifyAUMID + `')
+  $setting = $null
+  try { $setting = $notifier.Setting } catch { }
+  if ($null -ne $setting -and $setting -ne [Windows.UI.Notifications.NotificationSetting]::Enabled) {
+    [Console]::Error.WriteLine("toast notifications are disabled (Setting=$setting)")
+    exit 3
+  }
+  $notifier.Show($toast)
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1
