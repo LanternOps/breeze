@@ -2207,11 +2207,12 @@ jobs:
       # toasts are disabled (so FallbackDialog fires); the NotificationSetting
       # mapping; the hidden PowerShell fallback command and its own Setting
       # check; and the real WinRT sequence, which must read get_Setting and
-      # fail no earlier than IToastNotifier::Show (this runner has no
-      # interactive desktop, so Show itself may be refused), judged by the
-      # rule TestWinRTSequenceVerdict pins. On this runner get_Setting returns
-      # ERROR_NOT_FOUND (0x80070490) while Show succeeds; that one failure is
-      # accepted, any other get_Setting failure next to a successful Show is not.
+      # fail no earlier than IToastNotifier::Show, judged by the rule
+      # TestWinRTSequenceVerdict pins. Show may be refused without an
+      # interactive desktop, but in run 39156151658 it returned S_OK while
+      # get_Setting returned ERROR_NOT_FOUND (0x80070490); that exact
+      # get_Setting failure is accepted next to a successful Show, any other
+      # is not.
       # TestShowToastWinRTLive raises a visible toast and stays unselected.
       - name: Run Windows user-helper toast tests (must not skip)
         working-directory: agent
@@ -2228,7 +2229,7 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 6) { throw "expected exactly 6 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
           $subPasses = @($out | Select-String -Pattern '^\s+--- PASS: Test').Count
-          if ($subPasses -ne 20) { throw "expected exactly 20 subtest PASS lines, got $subPasses - a table case was renamed, removed, or added without updating this count" }
+          if ($subPasses -ne 21) { throw "expected exactly 21 subtest PASS lines, got $subPasses - a table case was renamed, removed, or added without updating this count" }
 
       # #7629: the agent re-secures its config folder if another account
       # created it, before reading anything from it. The tests plant
