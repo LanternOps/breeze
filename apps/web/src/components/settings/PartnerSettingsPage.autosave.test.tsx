@@ -6,6 +6,7 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), handleSessionExpir
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: vi.fn(() => ({ scope: null, orgId: null, partnerId: null })) }));
+vi.mock('../auth/MfaPolicyOffBanner', () => ({ PARTNER_SETTINGS_SAVED_EVENT: 'breeze:partner-settings-saved', default: () => null }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import PartnerSettingsPage from './PartnerSettingsPage';
