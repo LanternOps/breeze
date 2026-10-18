@@ -80,7 +80,9 @@ export const EVIDENCE_HOLD_SCOPED_ERASURE_KEY = 'evidenceHoldScopedErasureAt';
  * `organizations` columns a held shell's scoped erasure nulls on the row it
  * keeps (W6, #8208): contact and billing PII, the tax id, and the SSO
  * configuration (which can hold client secrets). Identity (`name`, `slug`)
- * stays so survivors can label held history; `settings` stays (engine keys).
+ * stays so survivors can label held history. `settings` is not nulled but cut
+ * down to ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS (it holds sealed tenant
+ * credentials too; see cascadeDeleteOrg's scoped-hold stamp).
  */
 export const EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS = [
   'billing_contact',

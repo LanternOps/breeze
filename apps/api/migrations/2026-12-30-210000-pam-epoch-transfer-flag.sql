@@ -86,6 +86,40 @@ BEGIN
 END $$;
 REVOKE ALL ON public.pam_epoch_transfer_config FROM PUBLIC;
 
+-- Second barrier: ensureAppRole.ts grants every public table to breeze_app at
+-- boot and re-revokes this one in a LATER statement, so for a few
+-- milliseconds per boot the privilege alone does not hold (the audit tables
+-- with the same gap keep a trigger guard; this one gets its own). A write by
+-- any session that logged in as, or has SET ROLE to, breeze_app is refused
+-- regardless of grants. session_user is checked too, so a breeze_app session
+-- that SET ROLEs to a role it is a member of is still refused.
+CREATE OR REPLACE FUNCTION public.breeze_pam_epoch_transfer_config_write_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF session_user::text = 'breeze_app' OR current_user::text = 'breeze_app' THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'pam_epoch_transfer_config is owner-managed; the request role cannot write it';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.breeze_pam_epoch_transfer_config_write_guard() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS pam_epoch_transfer_config_write_guard ON public.pam_epoch_transfer_config;
+CREATE TRIGGER pam_epoch_transfer_config_write_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON public.pam_epoch_transfer_config
+  FOR EACH ROW EXECUTE FUNCTION public.breeze_pam_epoch_transfer_config_write_guard();
+
+DROP TRIGGER IF EXISTS pam_epoch_transfer_config_truncate_guard ON public.pam_epoch_transfer_config;
+CREATE TRIGGER pam_epoch_transfer_config_truncate_guard
+  BEFORE TRUNCATE ON public.pam_epoch_transfer_config
+  FOR EACH STATEMENT EXECUTE FUNCTION public.breeze_pam_epoch_transfer_config_write_guard();
+
 -- Definer read. Scope elevated in-body and restored before RETURN (an error
 -- aborts the statement, which rolls the set_config back too): the owner is
 -- itself subject to the FORCEd system-only policy. A function-level
@@ -128,7 +162,7 @@ CREATE OR REPLACE FUNCTION public.breeze_guard_pam_device_org_move()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_catalog
+SET search_path = pg_catalog, public
 AS $$
 BEGIN
   IF NEW.org_id IS NOT DISTINCT FROM OLD.org_id THEN
@@ -180,7 +214,7 @@ CREATE OR REPLACE FUNCTION public.breeze_restamp_unactuated_elevation_requests()
   RETURNS trigger
   LANGUAGE plpgsql
   SECURITY DEFINER
-  SET search_path = public, pg_catalog
+  SET search_path = pg_catalog, public
   AS $$
 BEGIN
   IF NEW.org_id IS NOT DISTINCT FROM OLD.org_id

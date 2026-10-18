@@ -249,8 +249,12 @@ export class OrgMergeBlockedError extends Error {
     readonly blockers: MergeBlocker[],
     reason: OrgMergeBlockedReason = 'blocks_merge',
     pamTransfer = false,
+    options?: { cause?: unknown },
   ) {
-    super(reason === 'lineage_depth' ? LINEAGE_DEPTH_BLOCKED_MESSAGE : buildMergeBlockedMessage(blockers, pamTransfer));
+    super(
+      reason === 'lineage_depth' ? LINEAGE_DEPTH_BLOCKED_MESSAGE : buildMergeBlockedMessage(blockers, pamTransfer),
+      options,
+    );
     this.name = 'OrgMergeBlockedError';
     this.reason = reason;
     this.blockerCodes = reason === 'lineage_depth'
@@ -268,13 +272,13 @@ export function typedPamMergeRefusal(err: unknown): OrgMergeBlockedError | null 
   const node = pgErrorNode(err);
   // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by pgErrorNode.
   if (node?.code !== '23514') return null;
-  if (node.constraint_name === PAM_MOVE_OPEN_ACTUATION_CONSTRAINT) {
-    return new OrgMergeBlockedError([{ table: 'pam_actuations', loserRows: 1 }], 'blocks_merge', true);
-  }
-  if (node.constraint_name === PAM_MOVE_GUARD_CONSTRAINT) {
-    return new OrgMergeBlockedError([{ table: 'pam_actuations', loserRows: 1 }], 'blocks_merge', false);
-  }
-  return null;
+  const transfer = node.constraint_name === PAM_MOVE_OPEN_ACTUATION_CONSTRAINT
+    ? true
+    : node.constraint_name === PAM_MOVE_GUARD_CONSTRAINT ? false : null;
+  if (transfer === null) return null;
+  // The trigger refuses per device, so the row count is not known here: one
+  // refusing actuation is the floor. The original error stays as `cause`.
+  return new OrgMergeBlockedError([{ table: 'pam_actuations', loserRows: 1 }], 'blocks_merge', transfer, { cause: err });
 }
 
 /** Phase-B hold writer, exported so the engine calls it through `self` (spyable). */
@@ -1455,7 +1459,15 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
     // an actuation created after the in-transaction recheck makes the devices
     // repoint raise 23514. Surface it as the typed refusal, never the raw
     // constraint error.
-    const err = typedPamMergeRefusal(caught) ?? caught;
+    const typed = typedPamMergeRefusal(caught);
+    if (typed) {
+      const node = pgErrorNode(caught);
+      console.warn(
+        `[orgMerge] PAM move guard refused the devices repoint of org ${loser.id} mid-walk (an actuation appeared after the recheck): `
+        + `${node?.message ?? 'no message'}${node?.detail ? ` — ${node.detail}` : ''}`,
+      );
+    }
+    const err = typed ?? caught;
     // Order matters: restore the org first (that is what unblocks the
     // partner), then record. Neither cleanup step may mask the original
     // failure, which is the thing the caller and the job must see.
@@ -1472,7 +1484,8 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         loserOrgName: loser.name,
         survivorOrgId: survivor.id,
         error: err instanceof Error ? err.message : String(err),
-        ...(err instanceof OrgMergeBlockedError ? { reason: err.reason } : {}),
+        ...(err instanceof OrgMergeBlockedError ? { reason: err.reason, blockerCodes: err.blockerCodes } : {}),
+        ...(typed ? { observedVia: 'device_trigger_backstop' } : {}),
       },
     });
     throw err;

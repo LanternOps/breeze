@@ -517,7 +517,9 @@ describe('W6-pre (#8746): an evidence hold scopes erasure to the retained eviden
              billing_address_line1 = '1 Example St', billing_address_line2 = 'Suite 2',
              billing_address_city = 'Exampleville', billing_address_region = 'EX',
              billing_address_postal_code = '00000', billing_address_country = 'US',
-             tax_id = 'TAX-123', sso_config = '{"clientSecret":"s3cret"}'::jsonb
+             tax_id = 'TAX-123', sso_config = '{"clientSecret":"s3cret"}'::jsonb,
+             settings = COALESCE(settings, '{}'::jsonb)
+               || '{"logForwarding":{"elasticsearchApiKey":"sealed:abc"},"eventLogs":{"password":"sealed:def"}}'::jsonb
        WHERE id = ${m.loser}::uuid`);
     const [identityBefore] = rowsOf<{ name: string; slug: string }>(await getTestDb().execute(sql`
       SELECT name, slug FROM organizations WHERE id = ${m.loser}::uuid`));
@@ -551,6 +553,11 @@ describe('W6-pre (#8746): an evidence hold scopes erasure to the retained eviden
       tax_id: null,
       sso_config: null,
     });
+    // settings keeps only engine-owned lifecycle keys (the merge fixture's
+    // mergePriorStatus is not set here, so just the scoped-erasure stamp).
+    const [settingsRow] = rowsOf<{ keys: string[] }>(await getTestDb().execute(sql`
+      SELECT array(SELECT jsonb_object_keys(settings) ORDER BY 1) AS keys FROM organizations WHERE id = ${m.loser}::uuid`));
+    expect(settingsRow!.keys).toEqual([EVIDENCE_HOLD_SCOPED_ERASURE_KEY]);
     await eventually(async () => {
       const completed = await auditsFor('tenant.erasure.completed', m.loser);
       expect(completed).toHaveLength(1);

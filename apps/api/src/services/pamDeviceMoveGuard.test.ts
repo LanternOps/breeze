@@ -123,6 +123,17 @@ describe('PAM ownership epoch transfer (W6, #8208)', () => {
     })).resolves.toBeUndefined();
   });
 
+  it('fails closed (throws) when the precondition query returns no row, in both modes', async () => {
+    for (const transferEnabled of [false, true]) {
+      const tx = { execute: vi.fn(async (_q: unknown) => ({ rows: [] })) } as never;
+      await expect(assertPamDeviceOrgMoveAllowed(tx, {
+        deviceId: DEVICE_ID,
+        sourceOrgId: SOURCE_ORG_ID,
+        transferEnabled,
+      })).rejects.toThrow(/returned no row/);
+    }
+  });
+
   it('OD4: expires pending un-actuated requests with reason ownership_changed and audits each', async () => {
     const { expireUnactuatedElevationRequests } = await import('./pamDeviceMoveGuard');
     const execute = vi.fn(async (_q: unknown) => [{ id: 'r1' }, { id: 'r2' }]);

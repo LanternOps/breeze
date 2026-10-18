@@ -383,7 +383,8 @@ describe('matrix: device move', () => {
     const md5A = await evidenceMd5(a.id);
     const md5B = await evidenceMd5(b.id);
     const ledger = await snapshotLedger(device);
-    if (row.chains.includes('closed')) expect(ledger.before.filter((s) => s !== 'unresolved').length).toBeGreaterThan(0);
+    // Non-vacuous: every PAM-seeded row starts with resolvable bindings.
+    if (row.chains.length > 0) expect(ledger.before.filter((s) => s !== 'unresolved').length).toBeGreaterThan(0);
 
     const result = await moveDevice(device, a, b, actor).then(() => null, (err: unknown) => err);
 
@@ -552,6 +553,63 @@ describe('matrix: device move', () => {
     expect((await lineage(device.id)).device).toEqual({ org_id: a.id, ownership_epoch: 1 });
   }, 120_000);
 
+  it('the switch refuses breeze_app even while it holds a grant (the boot-time GRANT -> REVOKE gap)', async () => {
+    // What ensureAppRole's blanket boot-time grant hands out, before its re-revoke.
+    await q(sql`GRANT ALL ON pam_epoch_transfer_config TO breeze_app`);
+    try {
+      for (const statement of [
+        sql`UPDATE pam_epoch_transfer_config SET enabled = true`,
+        sql`DELETE FROM pam_epoch_transfer_config`,
+        sql`TRUNCATE pam_epoch_transfer_config`,
+        sql`INSERT INTO pam_epoch_transfer_config (singleton, enabled) VALUES (true, true) ON CONFLICT (singleton) DO UPDATE SET enabled = true`,
+      ]) {
+        const err = await getAppDb().transaction(async (tx) => {
+          await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+          await tx.execute(statement);
+        }).then(() => null, (e: unknown) => e);
+        expect(pgError(err)).toMatchObject({ code: '42501' });
+        expect(pgError(err).message).toMatch(/owner-managed/);
+      }
+    } finally {
+      await q(sql`REVOKE ALL ON pam_epoch_transfer_config FROM breeze_app`);
+    }
+    const [enabled] = await q<{ on: boolean }>(sql`SELECT public.breeze_pam_epoch_transfer_enabled() AS on`);
+    expect(enabled!.on).toBe(false);
+  }, 120_000);
+
+  it('OD4 expires every live un-actuated status (pending, approved, auto_approved, actuating) and nothing terminal', async () => {
+    const partner = await createPartner();
+    const a = await newOrg(partner.id);
+    const b = await newOrg(partner.id);
+    const device = await newDevice(a);
+    const actor = await actorFor(partner.id);
+    const seed = async (status: string, extra: SQL) => {
+      const [r] = await q<{ id: string }>(sql`
+        INSERT INTO elevation_requests (org_id, site_id, partner_id, device_id, flow_type, subject_username, reason,
+          target_executable_path, target_executable_hash, status, approved_at, denial_reason)
+        VALUES (${a.id}::uuid, ${a.siteId}::uuid, ${partner.id}::uuid, ${device.id}::uuid, 'uac_intercept',
+          'matrix-user', 'od4 status', ${EXE}, ${HASH}, ${status}, ${extra}, ${status === 'denied' ? 'no' : null})
+        RETURNING id`);
+      return r!.id;
+    };
+    const live: Record<string, string> = {};
+    live.pending = await seed('pending', sql`NULL`);
+    for (const status of ['approved', 'auto_approved', 'actuating']) live[status] = await seed(status, sql`now()`);
+    const denied = await seed('denied', sql`NULL`);
+
+    await moveDevice(device, a, b, actor);
+
+    for (const [prior, id] of Object.entries(live)) {
+      const [row] = await q<{ status: string; org_id: string; prior: string }>(sql`
+        SELECT r.status::text AS status, r.org_id::text AS org_id,
+               (SELECT e.details ->> 'prior_status' FROM elevation_audit e
+                 WHERE e.elevation_request_id = r.id AND e.details ->> 'cause' = 'ownership_changed') AS prior
+          FROM elevation_requests r WHERE r.id = ${id}::uuid`);
+      expect(row, prior).toEqual({ status: 'expired', org_id: a.id, prior });
+    }
+    expect(await requestState(denied)).toMatchObject({ status: 'denied', org_id: a.id, expired_audits: 0 });
+  }, 120_000);
+
   it('switch on, cause unset (a non-route writer): the trigger keeps the state-blind refusal', async () => {
     const partner = await createPartner();
     const a = await newOrg(partner.id);
@@ -588,6 +646,7 @@ const MERGE_ROWS: MergeRow[] = [
   { name: 'loser cleanup pending -> 422 (pam_open_actuation)', transfer: TRANSFER_ON, loser: ['cleanup_pending'], survivor: [], outcome: 'pam_open_actuation', hold: null },
   { name: 'both sides closed -> proceeds, loser held', transfer: TRANSFER_ON, loser: ['closed'], survivor: ['closed'], outcome: 'merged', hold: 'pam_evidence' },
   { name: 'loser closed, transfer off -> 422 (pam_evidence, flag-off parity)', transfer: TRANSFER_OFF, loser: ['closed'], survivor: [], outcome: 'pam_evidence', hold: null },
+  { name: 'no PAM history, transfer off -> proceeds (OD4 still applies), no hold', transfer: TRANSFER_OFF, loser: [], survivor: [], outcome: 'merged', hold: null },
 ];
 
 describe('matrix: org merge', () => {
@@ -607,6 +666,17 @@ describe('matrix: org merge', () => {
     const md5S = await evidenceMd5(survivor.id);
     const ledgerL = await snapshotLedger(dL);
     const ledgerS = await snapshotLedger(dS);
+    if (row.loser.length > 0) expect(ledgerL.before.filter((s) => s !== 'unresolved').length).toBeGreaterThan(0);
+    if (row.survivor.length > 0) expect(ledgerS.before.filter((s) => s !== 'unresolved').length).toBeGreaterThan(0);
+
+    if (row.outcome === 'merged') {
+      // The preview agrees with the engine: not blocked, no blocker codes, and
+      // closed loser evidence is announced as staying under a hold.
+      const preview = await orgMergeModule.previewOrgMerge(loser.id, survivor.id, partner.id);
+      expect(preview.verdict).not.toBe('blocked');
+      expect(preview.blockerCodes).toEqual([]);
+      expect(preview.warnings.some((w) => w.includes('evidence-hold shell'))).toBe(row.loser.length > 0);
+    }
 
     const outcome = await mergeOrgs(loser, survivor, partner.id, actor).then((r) => r, (err: unknown) => err);
 
@@ -698,6 +768,30 @@ describe('matrix: org merge', () => {
       rowsOf<{ n: number }>(await db.execute(sql`SELECT count(*)::int AS n FROM pam_actuations WHERE org_id = ${a.id}::uuid`))));
     expect(visible[0]!.n).toBe(1);
   }, 300_000);
+
+  it('a request whose device already left the loser stays with the shell (no 23514/42501) and keeps it held', async () => {
+    const partner = await createPartner();
+    const loser = await newOrg(partner.id);
+    const survivor = await newOrg(partner.id);
+    const elsewhere = await newOrg(partner.id);
+    const traveller = await newDevice(loser);
+    const leftBehind = await seedPendingRequest(loser, partner.id, traveller);
+    const actor = await actorFor(partner.id);
+    // Device leaves the loser first: OD4 expires its request, which stays in the loser at epoch 1.
+    await moveDevice(traveller, loser, elsewhere, actor);
+    const stay = await newDevice(loser);
+    const follows = await seedPendingRequest(loser, partner.id, stay);
+    await setTransfer(TRANSFER_ON);
+
+    const result = await mergeOrgs(loser, survivor, partner.id, actor);
+
+    expect(await requestState(leftBehind)).toMatchObject({ org_id: loser.id, device_epoch: 1, status: 'expired', audit_orgs: [loser.id] });
+    expect(await requestState(follows)).toMatchObject({ org_id: survivor.id, device_epoch: 2, status: 'expired', audit_orgs: [survivor.id] });
+    // The left-behind request is PAM-chain history the loser still owns, so the shell is held.
+    expect(result.evidenceHold).toBe('pam_evidence');
+    expect(await holdRow(loser.id)).toMatchObject({ survivor_org_id: survivor.id });
+    expect((await lineage(traveller.id)).device).toEqual({ org_id: elsewhere.id, ownership_epoch: 2 });
+  }, 240_000);
 
   it('depth overflow -> 422 ORG_MERGE_BLOCKED (lineage_depth), nothing written', async () => {
     const partner = await createPartner();

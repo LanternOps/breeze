@@ -1556,8 +1556,9 @@ export interface CascadeStats {
    * walk did not complete.
    *
    * The kept `organizations` row is scrubbed in the same run: billing contact
-   * and address, tax id and SSO configuration are nulled; name, slug and
-   * settings stay (EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS).
+   * and address, tax id and SSO configuration are nulled
+   * (EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS) and `settings` is cut down to the
+   * engine-owned lifecycle keys; name and slug stay.
    */
   evidenceHoldScoped?: true;
 }
@@ -1909,6 +1910,7 @@ async function cascadeDeleteOrgInternal(
       // tenant.erasure.completed must be able to tell it from a full erasure.
       scoped_hold: true,
       scrubbedOrganizationColumns: [...EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS],
+      settingsReducedToEngineKeys: true,
       retainedTables: [...retainedTables],
       survivorOrgId: scopedHold.survivorOrgId,
       mergeEventId: scopedHold.mergeEventId,
@@ -2383,15 +2385,28 @@ async function cascadeDeleteOrgInternal(
   //
   // The same statement erases what the kept `organizations` row still holds
   // beyond what the lineage needs (PAM ownership epochs W6, #8208): billing
-  // contact, billing address, tax id, and the SSO configuration (it can carry
-  // client secrets). `name` and `slug` stay — survivors render held history
-  // under the shell's name — and `settings` stays (engine-owned keys,
-  // including this stamp and the merge bookkeeping). Re-running it is a no-op.
+  // contact, billing address, tax id, the SSO configuration (it can carry
+  // client secrets), and every tenant key of `settings` — that blob holds
+  // sealed credentials (log-forwarding / event-log API keys, launcher
+  // passwords, webhooks; settingsSecretMasking.ts). Only the engine-owned
+  // lifecycle keys (ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS) survive, plus this
+  // stamp. `name` and `slug` stay — survivors render held history under the
+  // shell's name. Re-running it is a no-op.
   if (scopedHold) {
     try {
+      // Imported lazily: orgSettingsInternalKeys imports orgMerge, which
+      // imports this module.
+      const { ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS } = await import('./orgSettingsInternalKeys');
+      const engineKeys = sql`ARRAY[${sql.join(ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS.map((k) => sql`${k}`), sql`, `)}]::text[]`;
       await dbModule.withSystemDbAccessContext(() => dbModule.db.execute(sql`
         UPDATE organizations
-           SET settings = COALESCE(settings, '{}'::jsonb)
+           SET settings = COALESCE(
+                 CASE WHEN jsonb_typeof(settings) = 'object' THEN
+                   (SELECT jsonb_object_agg(e.key, e.value)
+                      FROM jsonb_each(settings) AS e
+                     WHERE e.key = ANY(${engineKeys}))
+                 END,
+                 '{}'::jsonb)
                  || jsonb_build_object(${EVIDENCE_HOLD_SCOPED_ERASURE_KEY}::text, now()),
                ${sql.join(EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS.map((c) => sql`${sql.identifier(c)} = NULL`), sql`, `)}
          WHERE id = ${orgId}::uuid`));

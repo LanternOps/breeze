@@ -16,14 +16,18 @@
  *
  * TTL: `PAM_EVIDENCE_RETENTION_DAYS`, default 400 (a little over a year of
  * evidence). The spec names no TTL; 400 is a DEFAULT TO BE CONFIRMED BY THE
- * OWNER, not a ruling.
+ * OWNER, not a ruling. Values below 30 days are clamped to 30 and an invalid
+ * value falls back to the default; both are reported to Sentry once per process.
  *
  * UNIT OF DELETION: one elevation-request chain — an `elevation_requests` row,
  * its `elevation_audit` rows, its `pam_actuations` and those actuations'
- * `pam_actuation_results`. A chain expires only when its NEWEST activity is
- * older than the TTL (request created/updated, newest audit row, newest
- * actuation created/updated, newest result received/observed), so a chain that
- * is still being written to is never half-deleted. Deletion is FK-safe:
+ * `pam_actuation_results`. A chain expires only when the later of its NEWEST
+ * activity (request created/updated, newest audit row, newest actuation
+ * created/updated, newest result received/observed) and the shell's
+ * `org_evidence_holds.created_at` (the merge) is older than the TTL, so a chain
+ * that is still being written to is never half-deleted and merging an org with
+ * already-old evidence does not delete it on the next run. Each shell's delete
+ * transaction re-checks the hold still exists and skips the shell if not. Deletion is FK-safe:
  * results -> actuations -> audit -> requests, all scoped to the shell's
  * `org_id` and the expired request ids. `pam_actuations.elevation_request_id`
  * is NOT NULL and results hang off actuations, so every chain row belongs to
@@ -40,7 +44,9 @@
  * trigger on pam_actuation_results requires. Grants:
  * migrations/2026-12-30-210000-pam-epoch-transfer-flag.sql section 4.
  *
- * Per-shell transaction isolation: one shell's failure does not abort the pass.
+ * Per-shell transaction isolation: one shell's failure does not abort the pass,
+ * but the job always records the run and then throws a summary error when any
+ * shell failed, so the BullMQ job shows as failed.
  *
  * Schedule: daily (see `pam-evidence-retention` in scheduleRegistry).
  * Kill switch: `PAM_EVIDENCE_RETENTION_ENABLED=false` skips schedule
@@ -56,7 +62,7 @@ import {
   logAuditAdminPoolMode,
 } from '../db/auditAdminPool';
 import { extractRowCount } from '../db/rowCount';
-import { captureException } from '../services/sentry';
+import { captureException, captureMessage } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { jobSchedule } from './scheduleRegistry';
@@ -68,24 +74,64 @@ const REPEAT_JOB_ID = 'pam-evidence-retention';
 const DAILY_CRON = jobSchedule('pam-evidence-retention');
 
 const DEFAULT_RETENTION_DAYS = 400;
+/** A typo ("3", "1") must never wipe evidence: shorter TTLs are clamped to this. */
+const MIN_RETENTION_DAYS = 30;
 const DEFAULT_BATCH_SIZE = 500;
 const DEFAULT_MAX_BATCHES = 100;
 
-function parsePositiveIntEnv(name: string, defaultValue: number): number {
+function parsePositiveIntEnv(name: string, defaultValue: number, onInvalid?: () => void): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return defaultValue;
   const trimmed = raw.trim();
   // Whole-string validation: parseInt("1e9") would silently become 1.
   if (!/^\d+$/.test(trimmed)) {
     console.warn(`[PamEvidenceRetention] Invalid ${name}="${raw}" (not a plain integer), using default ${defaultValue}`);
+    onInvalid?.();
     return defaultValue;
   }
   const parsed = Number.parseInt(trimmed, 10);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     console.warn(`[PamEvidenceRetention] Invalid ${name}="${raw}", using default ${defaultValue}`);
+    onInvalid?.();
     return defaultValue;
   }
   return parsed;
+}
+
+// Config problems are reported to Sentry once per process: the job runs daily
+// and a misconfigured env var would otherwise page on every run.
+const reported = { invalid: false, floor: false };
+
+function resetConfigReports(): void {
+  reported.invalid = false;
+  reported.floor = false;
+}
+
+function resolveRetentionDays(override: number | undefined): number {
+  const requested = resolveLimit(
+    'retentionDays',
+    override,
+    parsePositiveIntEnv('PAM_EVIDENCE_RETENTION_DAYS', DEFAULT_RETENTION_DAYS, () => {
+      if (reported.invalid) return;
+      reported.invalid = true;
+      captureMessage(
+        `[PamEvidenceRetention] PAM_EVIDENCE_RETENTION_DAYS is not a positive integer; using the ${DEFAULT_RETENTION_DAYS}-day default`,
+        { eventCode: 'pam_evidence_retention_config', level: 'warning' },
+      );
+    }),
+  );
+  if (requested >= MIN_RETENTION_DAYS) return requested;
+  console.warn(
+    `[PamEvidenceRetention] retention ${requested}d is below the ${MIN_RETENTION_DAYS}-day floor; clamping to ${MIN_RETENTION_DAYS}`,
+  );
+  if (!reported.floor) {
+    reported.floor = true;
+    captureMessage(
+      `[PamEvidenceRetention] retention TTL ${requested}d is below the ${MIN_RETENTION_DAYS}-day floor; clamped to ${MIN_RETENTION_DAYS}`,
+      { eventCode: 'pam_evidence_retention_config', level: 'warning' },
+    );
+  }
+  return MIN_RETENTION_DAYS;
 }
 
 function isRetentionEnabled(): boolean {
@@ -172,13 +218,28 @@ async function deleteExpiredChains(
 ): Promise<ShellPruneResult> {
   const out: ShellPruneResult = { chains: 0, results: 0, actuations: 0, audit: 0, requests: 0, hasMore: false };
 
+  // Re-check inside the delete transaction that the shell is still held: the
+  // shell list was read earlier, and a hold released since then means the org
+  // is no longer a retention target.
+  const heldRows = (await exec.execute(sql`
+    SELECT EXISTS (SELECT 1 FROM org_evidence_holds WHERE loser_org_id = ${shellOrgId}::uuid) AS held
+  `)) as unknown as Array<{ held: boolean }> | undefined;
+  if (!Array.isArray(heldRows)) {
+    throw new Error(`[PamEvidenceRetention] hold re-check returned no result for org=${shellOrgId}`);
+  }
+  if (heldRows[0]?.held !== true) return out;
+
   for (let batch = 0; batch < maxBatches; batch++) {
-    // A chain's newest activity across all four tables must be past the TTL.
+    // A chain expires when the later of (its newest activity across all four
+    // tables) and (the hold's creation, i.e. the merge) is past the TTL, so
+    // merging an org whose evidence is already old does not delete it at once.
     const idRows = (await exec.execute(sql`
       SELECT r.id::text AS id
         FROM elevation_requests r
+        JOIN org_evidence_holds h ON h.loser_org_id = r.org_id
        WHERE r.org_id = ${shellOrgId}::uuid
          AND GREATEST(
+               h.created_at,
                r.created_at,
                r.updated_at,
                COALESCE((SELECT max(e.created_at) FROM elevation_audit e
@@ -268,11 +329,7 @@ export async function prunePamEvidence(
   options: PamEvidenceRetentionOptions = {},
 ): Promise<PamEvidenceRetentionStats> {
   const startedAt = Date.now();
-  const retentionDays = resolveLimit(
-    'retentionDays',
-    options.retentionDays,
-    parsePositiveIntEnv('PAM_EVIDENCE_RETENTION_DAYS', DEFAULT_RETENTION_DAYS),
-  );
+  const retentionDays = resolveRetentionDays(options.retentionDays);
   const batchSize = resolveLimit('batchSize', options.batchSize, DEFAULT_BATCH_SIZE);
   const maxBatches = resolveLimit('maxBatches', options.maxBatches, DEFAULT_MAX_BATCHES);
 
@@ -289,63 +346,70 @@ export async function prunePamEvidence(
     durationMs: 0,
   };
 
-  // Held shells only. Read under its own system context, separate from the
-  // per-shell DELETE transactions.
-  const shells = await runWithSystemDbAccess(async () =>
-    (await dbModule.db.execute(sql`
-      SELECT loser_org_id::text AS loser_org_id FROM org_evidence_holds ORDER BY created_at, loser_org_id
-    `)) as unknown as Array<{ loser_org_id: string }>);
-  stats.shells = shells.length;
+  // Every exit path records the run: a run that threw or left work behind must
+  // not look like a clean one to the retention metrics.
+  let incomplete = true;
+  let rowsDeleted = 0;
+  try {
+    // Held shells only. Read under its own system context, separate from the
+    // per-shell DELETE transactions.
+    const shells = await runWithSystemDbAccess(async () =>
+      (await dbModule.db.execute(sql`
+        SELECT loser_org_id::text AS loser_org_id FROM org_evidence_holds ORDER BY created_at, loser_org_id
+      `)) as unknown as Array<{ loser_org_id: string }>);
+    stats.shells = shells.length;
 
-  for (const shell of shells) {
-    let pruned: ShellPruneResult;
-    try {
-      pruned = await pruneShell(shell.loser_org_id, retentionDays, batchSize, maxBatches);
-    } catch (err) {
-      // Transactional: nothing from this shell was deleted. Continue the pass.
-      stats.errors += 1;
-      captureException(err, undefined, {
-        job: 'pam-evidence-retention',
-        stage: 'prune',
-        orgId: shell.loser_org_id,
-      });
-      console.error(
-        `[PamEvidenceRetention] prune failed for shell=${shell.loser_org_id} — expired evidence retained:`,
-        err instanceof Error ? err.message : err,
-      );
-      continue;
+    for (const shell of shells) {
+      let pruned: ShellPruneResult;
+      try {
+        pruned = await pruneShell(shell.loser_org_id, retentionDays, batchSize, maxBatches);
+      } catch (err) {
+        // Transactional: nothing from this shell was deleted. Continue the pass.
+        stats.errors += 1;
+        captureException(err, undefined, {
+          job: 'pam-evidence-retention',
+          stage: 'prune',
+          orgId: shell.loser_org_id,
+        });
+        console.error(
+          `[PamEvidenceRetention] prune failed for shell=${shell.loser_org_id} — expired evidence retained:`,
+          err instanceof Error ? err.message : err,
+        );
+        continue;
+      }
+      stats.shellsPruned += 1;
+      stats.chainsDeleted += pruned.chains;
+      stats.resultsDeleted += pruned.results;
+      stats.actuationsDeleted += pruned.actuations;
+      stats.auditRowsDeleted += pruned.audit;
+      stats.requestsDeleted += pruned.requests;
+      if (pruned.hasMore) stats.shellsWithBacklog += 1;
     }
-    stats.shellsPruned += 1;
-    stats.chainsDeleted += pruned.chains;
-    stats.resultsDeleted += pruned.results;
-    stats.actuationsDeleted += pruned.actuations;
-    stats.auditRowsDeleted += pruned.audit;
-    stats.requestsDeleted += pruned.requests;
-    if (pruned.hasMore) stats.shellsWithBacklog += 1;
+
+    stats.durationMs = Date.now() - startedAt;
+    rowsDeleted = stats.resultsDeleted + stats.actuationsDeleted + stats.auditRowsDeleted + stats.requestsDeleted;
+    incomplete = stats.errors > 0 || stats.shellsWithBacklog > 0;
+    console.log(
+      `[PamEvidenceRetention] Deleted ${stats.chainsDeleted} chain(s) (${rowsDeleted} row(s)) across ${stats.shellsPruned}/${stats.shells} held shell(s) in ${stats.durationMs}ms (errors=${stats.errors}, backlogged=${stats.shellsWithBacklog}, ttlDays=${retentionDays})`,
+    );
+    if (stats.shellsWithBacklog > 0) {
+      captureException(
+        new Error(`[PamEvidenceRetention] ${stats.shellsWithBacklog} shell(s) stopped at the ${maxBatches}-batch ceiling; the next run continues`),
+        undefined,
+        { job: 'pam-evidence-retention', reason: 'backlog_ceiling' },
+      );
+    }
+  } finally {
+    recordRetentionRun('pam_evidence_retention', { rowsDeleted, incomplete });
   }
 
-  stats.durationMs = Date.now() - startedAt;
-  const rowsDeleted = stats.resultsDeleted + stats.actuationsDeleted + stats.auditRowsDeleted + stats.requestsDeleted;
-  console.log(
-    `[PamEvidenceRetention] Deleted ${stats.chainsDeleted} chain(s) (${rowsDeleted} row(s)) across ${stats.shellsPruned}/${stats.shells} held shell(s) in ${stats.durationMs}ms (errors=${stats.errors}, backlogged=${stats.shellsWithBacklog}, ttlDays=${retentionDays})`,
-  );
   if (stats.errors > 0) {
-    console.error(
-      `[PamEvidenceRetention] ${stats.errors}/${stats.shells} shell(s) FAILED — expired PAM evidence retained for those shells`,
+    // Other shells' deletes are already committed. Throw so the BullMQ job is
+    // marked failed instead of reporting success with evidence left behind.
+    throw new Error(
+      `[PamEvidenceRetention] ${stats.errors} of ${stats.shells} held shell(s) failed to prune — expired PAM evidence retained for those shells`,
     );
   }
-  if (stats.shellsWithBacklog > 0) {
-    captureException(
-      new Error(`[PamEvidenceRetention] ${stats.shellsWithBacklog} shell(s) stopped at the ${maxBatches}-batch ceiling; the next run continues`),
-      undefined,
-      { job: 'pam-evidence-retention', reason: 'backlog_ceiling' },
-    );
-  }
-
-  recordRetentionRun('pam_evidence_retention', {
-    rowsDeleted,
-    incomplete: stats.errors > 0 || stats.shellsWithBacklog > 0,
-  });
   return stats;
 }
 
@@ -452,4 +516,7 @@ export const __testOnly = {
   isRetentionEnabled,
   parsePositiveIntEnv,
   resolveLimit,
+  MIN_RETENTION_DAYS,
+  resetConfigReports,
+  resolveRetentionDays,
 };

@@ -14,7 +14,10 @@ const {
   workerCloseMock,
   dbExecuteMock,
   captureExceptionMock,
+  captureMessageMock,
   recordRetentionRunMock,
+  hasDedicatedPoolMock,
+  getAuditAdminDbMock,
   capturedWorker,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
@@ -24,7 +27,10 @@ const {
   workerCloseMock: vi.fn(),
   dbExecuteMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  captureMessageMock: vi.fn(),
   recordRetentionRunMock: vi.fn(),
+  hasDedicatedPoolMock: vi.fn(),
+  getAuditAdminDbMock: vi.fn(),
   capturedWorker: { name: null as null | string, processor: null as null | ((job: unknown) => Promise<unknown>) },
 }));
 
@@ -63,6 +69,13 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
+  captureMessage: (...args: unknown[]) => captureMessageMock(...(args as [])),
+}));
+
+vi.mock('../db/auditAdminPool', () => ({
+  hasDedicatedAuditAdminPool: () => hasDedicatedPoolMock(),
+  getAuditAdminDb: () => getAuditAdminDbMock(),
+  logAuditAdminPoolMode: () => {},
 }));
 
 vi.mock('../services/retentionMetrics', () => ({
@@ -108,6 +121,8 @@ describe('pamEvidenceRetention worker', () => {
     queueCloseMock.mockResolvedValue(undefined);
     workerCloseMock.mockResolvedValue(undefined);
     dbExecuteMock.mockResolvedValue([]);
+    hasDedicatedPoolMock.mockReturnValue(false);
+    __testOnly.resetConfigReports();
     capturedWorker.name = null;
     capturedWorker.processor = null;
   });
@@ -217,6 +232,7 @@ describe('pamEvidenceRetention worker', () => {
     it('arms the role + retention GUC before any DELETE on the legacy path', async () => {
       dbExecuteMock.mockImplementation(async (q: unknown) => {
         const t = sqlText(q);
+        if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
         if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }];
         return []; // no expired chains
       });
@@ -234,6 +250,7 @@ describe('pamEvidenceRetention worker', () => {
       let served = false;
       dbExecuteMock.mockImplementation(async (q: unknown) => {
         const t = sqlText(q);
+        if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
         if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }];
         if (/FROM elevation_requests r/.test(t)) {
           if (served) return [];
@@ -253,10 +270,11 @@ describe('pamEvidenceRetention worker', () => {
       expect(recordRetentionRunMock).toHaveBeenCalledWith('pam_evidence_retention', { rowsDeleted: 4, incomplete: false });
     });
 
-    it('a failing shell does not abort the pass and marks the run incomplete', async () => {
+    it('a failing shell does not abort the pass, marks the run incomplete, then fails the job', async () => {
       const err = vi.spyOn(console, 'error').mockImplementation(() => {});
       dbExecuteMock.mockImplementation(async (q: unknown) => {
         const t = sqlText(q);
+        if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
         if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }, { loser_org_id: SHELL_B }];
         if (/FROM elevation_requests r/.test(t)) {
           // Shell A (first select) blows up; shell B finds nothing.
@@ -266,8 +284,9 @@ describe('pamEvidenceRetention worker', () => {
         }
         return [];
       });
-      const stats = await prunePamEvidence();
-      expect(stats).toMatchObject({ shells: 2, shellsPruned: 1, errors: 1 });
+      await expect(prunePamEvidence()).rejects.toThrow(
+        '[PamEvidenceRetention] 1 of 2 held shell(s) failed to prune',
+      );
       expect(captureExceptionMock).toHaveBeenCalledWith(
         expect.any(Error),
         undefined,
@@ -283,20 +302,21 @@ describe('pamEvidenceRetention worker', () => {
       const err = vi.spyOn(console, 'error').mockImplementation(() => {});
       dbExecuteMock.mockImplementation(async (q: unknown) => {
         const t = sqlText(q);
+        if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
         if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }];
         if (/FROM elevation_requests r/.test(t)) return [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }];
         if (/^\s*DELETE FROM/.test(t)) return {};
         return [];
       });
-      const stats = await prunePamEvidence();
-      expect(stats.errors).toBe(1);
-      expect(stats.chainsDeleted).toBe(0);
+      await expect(prunePamEvidence()).rejects.toThrow(/1 of 1 held shell\(s\) failed to prune/);
+      expect(recordRetentionRunMock).toHaveBeenCalledWith('pam_evidence_retention', { rowsDeleted: 0, incomplete: true });
       err.mockRestore();
     });
 
     it('reports a backlog when the batch ceiling is hit with full batches', async () => {
       dbExecuteMock.mockImplementation(async (q: unknown) => {
         const t = sqlText(q);
+        if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
         if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }];
         if (/FROM elevation_requests r/.test(t)) return [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }];
         if (/^\s*DELETE FROM/.test(t)) return { count: 1 };
@@ -306,6 +326,184 @@ describe('pamEvidenceRetention worker', () => {
       expect(stats.shellsWithBacklog).toBe(1);
       expect(stats.chainsDeleted).toBe(2);
       expect(recordRetentionRunMock).toHaveBeenCalledWith('pam_evidence_retention', expect.objectContaining({ incomplete: true }));
+    });
+
+    it('skips a shell whose hold vanished before the delete transaction ran', async () => {
+      dbExecuteMock.mockImplementation(async (q: unknown) => {
+        const t = sqlText(q);
+        if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: false }];
+        if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }];
+        return [];
+      });
+      const stats = await prunePamEvidence();
+      expect(stats).toMatchObject({ shells: 1, errors: 0, chainsDeleted: 0 });
+      expect(executed().some((t) => /FROM elevation_requests r/.test(t))).toBe(false);
+      expect(executed().some((t) => /^\s*DELETE FROM/.test(t))).toBe(false);
+    });
+
+    it('the expiry predicate counts from the hold creation (merge) as well as chain activity', async () => {
+      dbExecuteMock.mockImplementation(async (q: unknown) => {
+        const t = sqlText(q);
+        if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
+        if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }];
+        return [];
+      });
+      await prunePamEvidence();
+      const select = executed().find((t) => /FROM elevation_requests r/.test(t))!;
+      expect(select).toMatch(/org_evidence_holds h/);
+      expect(select).toMatch(/h\.created_at/);
+    });
+
+    describe('failure reporting', () => {
+      it('all shells failing: records the run incomplete, then throws a summary', async () => {
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+        dbExecuteMock.mockImplementation(async (q: unknown) => {
+          const t = sqlText(q);
+          if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
+          if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }, { loser_org_id: SHELL_B }];
+          if (/FROM elevation_requests r/.test(t)) throw new Error('boom');
+          return [];
+        });
+        await expect(prunePamEvidence()).rejects.toThrow(
+          '[PamEvidenceRetention] 2 of 2 held shell(s) failed to prune',
+        );
+        expect(recordRetentionRunMock).toHaveBeenCalledTimes(1);
+        expect(recordRetentionRunMock).toHaveBeenCalledWith('pam_evidence_retention', { rowsDeleted: 0, incomplete: true });
+        err.mockRestore();
+      });
+
+      it('one of two failing: the other shell still deleted before the summary throw', async () => {
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+        let selects = 0;
+        dbExecuteMock.mockImplementation(async (q: unknown) => {
+          const t = sqlText(q);
+          if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
+          if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }, { loser_org_id: SHELL_B }];
+          if (/FROM elevation_requests r/.test(t)) {
+            selects += 1;
+            if (selects === 1) throw new Error('boom'); // shell A
+            return selects === 2 ? [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] : [];
+          }
+          if (/^\s*DELETE FROM/.test(t)) return { count: 1 };
+          return [];
+        });
+        await expect(prunePamEvidence()).rejects.toThrow(/1 of 2 held shell\(s\) failed to prune/);
+        expect(executed().filter((t) => /^\s*DELETE FROM/.test(t))).toHaveLength(4);
+        expect(recordRetentionRunMock).toHaveBeenCalledWith('pam_evidence_retention', { rowsDeleted: 4, incomplete: true });
+        err.mockRestore();
+      });
+
+      it('a failing held-shells query records the run incomplete, then rethrows', async () => {
+        dbExecuteMock.mockRejectedValue(new Error('holds down'));
+        await expect(prunePamEvidence()).rejects.toThrow('holds down');
+        expect(recordRetentionRunMock).toHaveBeenCalledTimes(1);
+        expect(recordRetentionRunMock).toHaveBeenCalledWith('pam_evidence_retention', { rowsDeleted: 0, incomplete: true });
+      });
+    });
+
+    describe('TTL configuration', () => {
+      const ttlParamSeen = (n: number) =>
+        dbExecuteMock.mock.calls.some((c: unknown[]) => {
+          const chunks = (c[0] as { queryChunks?: unknown[] }).queryChunks ?? [];
+          return chunks.some((ch) => ch === n || (ch as { value?: unknown })?.value === n);
+        });
+      const oneShell = () =>
+        dbExecuteMock.mockImplementation(async (q: unknown) => {
+          const t = sqlText(q);
+          if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
+          if (/FROM org_evidence_holds/.test(t)) return [{ loser_org_id: SHELL_A }];
+          return [];
+        });
+
+      it('an invalid env value falls back to 400 and reports once per process', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        process.env.PAM_EVIDENCE_RETENTION_DAYS = '90d';
+        oneShell();
+        await prunePamEvidence();
+        await prunePamEvidence();
+        expect(ttlParamSeen(400)).toBe(true);
+        expect(captureMessageMock).toHaveBeenCalledTimes(1);
+        expect(captureMessageMock).toHaveBeenCalledWith(
+          expect.stringContaining('PAM_EVIDENCE_RETENTION_DAYS'),
+          expect.objectContaining({ eventCode: expect.any(String) }),
+        );
+        warn.mockRestore();
+      });
+
+      it('a valid env value reports nothing', async () => {
+        process.env.PAM_EVIDENCE_RETENTION_DAYS = '90';
+        oneShell();
+        await prunePamEvidence();
+        expect(captureMessageMock).not.toHaveBeenCalled();
+        expect(ttlParamSeen(90)).toBe(true);
+      });
+
+      it('a value below the 30-day floor is clamped to 30 and reported once', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        process.env.PAM_EVIDENCE_RETENTION_DAYS = '1';
+        oneShell();
+        await prunePamEvidence();
+        await prunePamEvidence();
+        expect(ttlParamSeen(30)).toBe(true);
+        expect(ttlParamSeen(1)).toBe(false);
+        expect(captureMessageMock).toHaveBeenCalledTimes(1);
+        expect(captureMessageMock).toHaveBeenCalledWith(
+          expect.stringContaining('30'),
+          expect.objectContaining({ eventCode: expect.any(String) }),
+        );
+        warn.mockRestore();
+      });
+
+      it('the floor also applies to a per-run override', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        oneShell();
+        await prunePamEvidence({ retentionDays: 5 });
+        expect(ttlParamSeen(30)).toBe(true);
+        expect(ttlParamSeen(5)).toBe(false);
+        warn.mockRestore();
+      });
+    });
+
+    describe('dedicated audit-admin pool path', () => {
+      it('arms system scope + retention GUC before the first DELETE and never SET LOCAL ROLE', async () => {
+        hasDedicatedPoolMock.mockReturnValue(true);
+        dbExecuteMock.mockImplementation(async (q: unknown) => {
+          if (/FROM org_evidence_holds/.test(sqlText(q))) return [{ loser_org_id: SHELL_A }];
+          return [];
+        });
+        const txSql: string[] = [];
+        let served = false;
+        const tx = {
+          execute: async (q: unknown) => {
+            const t = sqlText(q);
+            txSql.push(t);
+            if (/EXISTS \(SELECT 1 FROM org_evidence_holds/.test(t)) return [{ held: true }];
+            if (/FROM elevation_requests r/.test(t)) {
+              if (served) return [];
+              served = true;
+              return [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }];
+            }
+            if (/^\s*DELETE FROM/.test(t)) return { count: 1 };
+            return [];
+          },
+        };
+        getAuditAdminDbMock.mockReturnValue({ transaction: async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx) });
+
+        const stats = await prunePamEvidence();
+
+        expect(stats).toMatchObject({ shellsPruned: 1, chainsDeleted: 1, errors: 0 });
+        const scopeIdx = txSql.findIndex((t) => /set_config\(\s*'breeze\.scope',\s*'system',\s*true\s*\)/.test(t));
+        const gucIdx = txSql.findIndex((t) => /SET LOCAL breeze\.allow_audit_retention = '1'/.test(t));
+        const firstDelete = txSql.findIndex((t) => /^\s*DELETE FROM/.test(t));
+        expect(scopeIdx).toBeGreaterThan(-1);
+        expect(gucIdx).toBeGreaterThan(-1);
+        expect(firstDelete).toBeGreaterThan(-1);
+        expect(scopeIdx).toBeLessThan(firstDelete);
+        expect(gucIdx).toBeLessThan(firstDelete);
+        expect(txSql.some((t) => /SET LOCAL ROLE/.test(t))).toBe(false);
+        // Nothing destructive went through the app-pool mock.
+        expect(executed().some((t) => /SET LOCAL ROLE|DELETE FROM/.test(t))).toBe(false);
+      });
     });
   });
 });

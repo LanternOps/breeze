@@ -113,7 +113,8 @@ export async function assertPamDeviceOrgMoveAllowed(
           AND NOT pam_actuation_is_closed(a)
       ) AS blocked
     `));
-    if (open?.blocked) throw new PamDeviceMoveActiveError();
+    if (!open) throw new Error('[pamDeviceMoveGuard] PAM move precondition query returned no row');
+    if (open.blocked) throw new PamDeviceMoveActiveError();
     return;
   }
   const row = rows<{ blocked: boolean }>(await tx.execute(sql`
@@ -124,7 +125,8 @@ export async function assertPamDeviceOrgMoveAllowed(
         AND org_id = ${input.sourceOrgId}::uuid
     ) AS blocked
   `))[0];
-  if (row?.blocked) throw new PamDeviceMoveBlockedError();
+  if (!row) throw new Error('[pamDeviceMoveGuard] PAM move precondition query returned no row');
+  if (row.blocked) throw new PamDeviceMoveBlockedError();
 }
 
 /**
@@ -154,7 +156,7 @@ export async function expireUnactuatedElevationRequests(
          ${deviceFilter}
          AND r.status IN ('pending', 'approved', 'auto_approved', 'actuating')
          AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)
-       FOR UPDATE OF r
+       FOR NO KEY UPDATE OF r
     ), flipped AS (
       UPDATE elevation_requests e
          SET status = 'expired', expired_at = now(), updated_at = now()

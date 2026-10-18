@@ -24,13 +24,32 @@ import { prunePamEvidence } from '../../jobs/pamEvidenceRetention';
 
 const TTL_DAYS = 400;
 
-/** Held shell L (owns the seeded epoch-1 chain) merged into survivor S. */
-async function seedHeldShell() {
+/**
+ * Backdate a hold's created_at. The hold row is immutable (BEFORE UPDATE
+ * trigger, no UPDATE grant), so this goes through the superuser test pool with
+ * triggers disabled for the transaction.
+ */
+async function backdateHold(loserOrgId: string, daysAgo: number): Promise<void> {
+  await getTestDb().transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.execute(sql`UPDATE org_evidence_holds SET created_at = now() - make_interval(days => ${daysAgo})
+      WHERE loser_org_id = ${loserOrgId}::uuid`);
+  });
+}
+
+/**
+ * Held shell L (owns the seeded epoch-1 chain) merged into survivor S. The TTL
+ * clock counts from the merge too, so by default the hold is backdated well
+ * past the TTL; pass `holdDaysAgo: 0` for a just-merged shell.
+ */
+async function seedHeldShell(opts: { holdDaysAgo?: number } = {}) {
   const seeded = await seedMovedDeviceWithHistory({ path: ['L', 'S'] });
   const loser = seeded.orgs.L!.id;
   const survivor = seeded.orgs.S!.id;
   const mergeEventId = await markMergedShell({ partnerId: seeded.partnerId, loserOrgId: loser, survivorOrgId: survivor });
   await insertHoldRaw({ partnerId: seeded.partnerId, loserOrgId: loser, survivorOrgId: survivor, mergeEventId });
+  const holdDaysAgo = opts.holdDaysAgo ?? TTL_DAYS + 365;
+  if (holdDaysAgo > 0) await backdateHold(loser, holdDaysAgo);
   return { ...seeded, loser, survivor };
 }
 
@@ -119,6 +138,25 @@ describe('PAM evidence retention (real Postgres)', () => {
     const released = await release();
     expect(released.map((h) => h.loserOrgId)).toContain(m.loser);
     expect(await holdRow(m.loser)).toBeUndefined();
+  }, 60_000);
+
+  it('(a2) TTL counts from the merge: an old chain on a just-held shell survives; backdating the hold expires it', async () => {
+    const m = await seedHeldShell({ holdDaysAgo: 0 });
+    await insertAudit(m.loser, m.epoch1.requestId);
+    await ageChain(m.loser, m.epoch1.requestId, 500);
+    const before = await chainMd5(m.loser);
+
+    const first = await prunePamEvidence();
+    expect(first.errors).toBe(0);
+    expect(await countChainRows(m.loser)).toBe(4);
+    expect(await chainMd5(m.loser)).toBe(before);
+    expect(await holdRow(m.loser)).toBeDefined();
+
+    await backdateHold(m.loser, 500);
+    const second = await prunePamEvidence();
+    expect(second.errors).toBe(0);
+    expect(await countChainRows(m.loser)).toBe(0);
+    expect((await release()).map((h) => h.loserOrgId)).toContain(m.loser);
   }, 60_000);
 
   it('(b) deletes only the expired chain of a shell; a fresh chain keeps the hold', async () => {
