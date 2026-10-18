@@ -158,7 +158,9 @@ export const sentinelOneEndpointSource: VendorEndpointSource = {
         ),
       ));
 
-    return rows.map((row) => ({
+    // Sync marks agents the console stopped returning 'absent' (#9248): decommissioned,
+    // so they must not read as covered.
+    return rows.filter((row) => row.status !== 'absent').map((row) => ({
       endpointId: row.id,
       orgId: row.orgId,
       deviceId: row.deviceId,

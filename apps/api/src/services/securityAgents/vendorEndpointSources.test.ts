@@ -98,6 +98,17 @@ describe('sentinelOneEndpointSource.listForOrg — view availability', () => {
   });
 });
 
+describe('sentinelOneEndpointSource.listForOrg — absent rows (#9248)', () => {
+  it('drops rows sync marked absent so a decommissioned endpoint is not counted as covered', async () => {
+    queueS1({ agents: [
+      { id: 'a1', orgId: ORG, deviceId: 'd1', hostname: 'ws-1', status: 'online' },
+      { id: 'a2', orgId: ORG, deviceId: 'd2', hostname: 'ws-2', status: 'absent' },
+    ] });
+    const views = (await sentinelOneEndpointSource.listForOrg(ORG)) as VendorEndpointView[];
+    expect(views.map((v) => v.endpointId)).toEqual(['a1']);
+  });
+});
+
 describe('SentinelOne views through the reconciler', () => {
   function device(overrides: Partial<DeviceCoverageInput> = {}): DeviceCoverageInput {
     return {

@@ -733,7 +733,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // ever emits ORG-owned rows (the exporter filters on org_id), so a
   // partner-owned connection never appears in a customer's export — correct:
   // it is the MSP's credential, not the customer's data.
-  "psa_connections": tablePolicy("org_id", {"included":["id","org_id","partner_id","provider","name","enabled","last_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["credentials","settings","sync_settings"]}),
+  "psa_connections": tablePolicy("org_id", {"included":["id","org_id","partner_id","provider","name","enabled","last_sync_at","last_full_agent_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["credentials","settings","sync_settings"]}),
   // origin / method / reference / recorded_by_user_id (accept-on-behalf, spec
   // 2026-09-21 §6): the provenance of an acceptance. All four are plain
   // scalars — no json/jsonb/bytea open container, no SUSPICIOUS_NAME_PARTS
