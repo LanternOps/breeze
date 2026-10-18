@@ -110,7 +110,16 @@ const DEV_ENV: Record<string, string> = {
 const NO_LIVE_MAIL_KEYS = ['RESEND_API_KEY', 'MAILGUN_API_KEY', 'SMTP_HOST'] as const;
 
 /** Keys set after compose runs (see setStackEnvValues); a rewrite keeps them. */
-const RUNTIME_KEYS = ['WEBAUTHN_ORIGIN', 'WEBAUTHN_RP_ID'] as const;
+const RUNTIME_KEYS = [
+  'WEBAUTHN_ORIGIN', 'WEBAUTHN_RP_ID',
+  // Network Proxy host mode on a local stack (#8155 W03): set by
+  // e2e-tests/helpers/tunnelOriginStack.ts once caddy's port is known.
+  // PUBLIC_PORTAL_URL travels with them: with the template set, the API's
+  // config validator refuses compose's `https://${BREEZE_DOMAIN}/portal`
+  // default (no host), so dropping it on a re-up would leave api unbootable.
+  'TUNNEL_ORIGIN_TEMPLATE', 'TUNNEL_FRAME_ANCESTOR', 'TUNNEL_SITE_ADDRESS', 'TUNNEL_HOST_SUFFIX',
+  'PUBLIC_PORTAL_URL',
+] as const;
 
 /**
  * The dev images are built locally from the worktree, but docker-compose.yml
