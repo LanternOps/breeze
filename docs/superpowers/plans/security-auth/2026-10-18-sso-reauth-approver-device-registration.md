@@ -41,7 +41,7 @@ Both advisors chose the same road independently. Two points differed and are res
    - The `#4470` invariant (`rejectProof` doc comment in `helpers.ts`) reserves 401 for the bearer.
    - The new SSO-road failures (`enrollment_proof_required`, `enrollment_grant_expired`) would otherwise land on the web's "401 means session expired, reload" branch.
    - The current web client already treats `400 + code: 'invalid_credentials'` as a proof rejection (`ApproverDevicesSection.tsx` `isProofRejection`), so moving the password road to 400 is backward compatible with a stale browser tab.
-   - Mobile never calls this route (it uses the login-time grant).
+   - Mobile never calls this route (it uses the login-time grant). The only other caller, `e2e-tests/webauthn.ts` (~L110), sends `currentPassword` and checks `.ok`, so it is unaffected.
    - Status stays uniform within the call site, so the password/passwordless oracle stays closed.
 3. **Binding.** The SSO grant is bound to `{ userId, operation, authEpoch, mfaEpoch, sid }` captured at `/sso/reauth/start` and re-checked at the callback (`validateSessionBinding`). `resolveEnrollmentStepUp` rebuilds that tuple from the **requesting bearer's** `auth.token.sid` and **live** epochs, so the grant fails if any of these differ: another session, another user, a factor change since (mfa_epoch), or a password/membership change since (auth_epoch). The minted `register_approver_device` grant is bound to the same live tuple, as on the password road. Callback `mode` is untouched: still `reauth`, still redirects to `/settings/profile#ssoReauthGrant=<id>`, still mints no tokens.
 4. **TTL is not capped across the exchange (default; Todd may override).** The SSO grant lives 300 s. The exchange mints a fresh 300 s register grant, so the worst-case age of the IdP `auth_time` at `/devices/webauthn/verify` is about 600 s (plus the callback's freshness skew). The password road has the same shape: proof first, then a 300 s grant. The WebAuthn ceremony needs the window. Capping would mean storing the SSO grant's mint time and threading it through `consumeStepUpGrant`, which is new surface for little gain. **Recorded as a decision for Todd** in the PR body.
@@ -110,20 +110,22 @@ PR 2 branches from `main` **after PR 1 merges** (a PR stacked on a non-main base
   | success (either road) | 200 | `{ registerGrantId }` |
   | TOTP/passkey held | 403 | `{ error: 'stronger_factor_required' }` |
   | wrong password; or password account sent a grant or nothing; or passwordless account sent a password | 400 | `{ error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' }` |
+  | password account, empty body `{}` (was a zod 400) | 400 | `invalid_credentials` body as above |
   | passwordless, no proof | 400 | `{ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' }` |
   | passwordless, dead/expired/mismatched/spent grant | 400 | `{ error, message: 'Your identity verification has expired. Please verify with your identity provider again.', code: 'enrollment_grant_expired', reauthUrl: '/sso/reauth/start' }` |
   | throttled / Redis or epochs down | 429 / 503 | unchanged |
 
 - Audit: `auth.authenticator.register_grant.minted` `details.method` is `'password'` or `'sso_reauth'` (whichever field drove the road; password wins when both are sent). New `auth.authenticator.register_grant.denied` with `reason: 'sso_reauth_rejected'`, `details: { hadGrantId: true }` when a grant was presented, no password was sent, and the resolver returned an error. The existing `stronger_factor_required` denial is unchanged.
 
-- [ ] **Step 1: Write the failing route tests** in `authenticator.test.ts` (helpers are mocked there; add `resolveEnrollmentStepUp: vi.fn()` to the `vi.mock('./auth/helpers', …)` factory at ~L143 and stop asserting on `requireCurrentPasswordStepUp` in this describe):
+- [ ] **Step 1: Write the failing route tests** in `authenticator.test.ts`. Helpers are mocked there and the `vi.mock('./auth/helpers', …)` factory (~L143) spreads `...helperMocks`, so add `resolveEnrollmentStepUp: vi.fn()` to the `helperMocks` object itself. Retarget every existing `requireCurrentPasswordStepUp` assertion in this describe to `resolveEnrollmentStepUp`; the `'403 stronger_factor_required'` test now asserts `resolveEnrollmentStepUp` was **not** called. New tests:
   - `'password road: calls resolveEnrollmentStepUp with consume + 400 + authenticator:pwd'`: `expect(helperMocks.resolveEnrollmentStepUp).toHaveBeenCalledWith(expect.anything(), expect.anything(), { currentPassword: 'hunter2!' }, { keyPrefix: 'authenticator:pwd', consume: true, rejectionStatus: 400 })`; 200 `{ registerGrantId: 'grant-uuid' }`; minted audit `details: { method: 'password' }`.
   - `'sso road: ssoReauthGrantId alone mints and audits method sso_reauth'`: body `{ ssoReauthGrantId: 'sso-grant' }` → resolver called with `{ ssoReauthGrantId: 'sso-grant' }`; `mintStepUpGrant` called with `objectContaining({ operation: 'register_approver_device', sid: <test sid> })`; audit `details: { method: 'sso_reauth' }`.
   - `'stronger factor 403s before the resolver runs'`: `userHasStrongerReauthFactor → true`, body `{ ssoReauthGrantId: 'g' }` → 403, `resolveEnrollmentStepUp` **not** called.
   - `'resolver rejection is returned verbatim and nothing is minted'`: resolver returns `c.json({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' }, 400)` → 400 with that exact body; `mintStepUpGrant` not called.
   - `'sso rejection is audited without the grant value'`: body `{ ssoReauthGrantId: 'secret-grant' }`, resolver returns a 400 → `writeAuthAudit` called with `objectContaining({ action: 'auth.authenticator.register_grant.denied', reason: 'sso_reauth_rejected', details: { hadGrantId: true } })`, and `JSON.stringify(writeAuthAudit.mock.calls)` does not contain `'secret-grant'`.
   - `'empty body reaches the resolver (no zod 400)'`: body `{}` → resolver called with `{}`.
-  - `'ssoReauthGrantId over 128 chars is a 400 validation error before any gate'`: `'x'.repeat(129)` → 400; `userHasStrongerReauthFactor` not called.
+  - `'ssoReauthGrantId over 128 chars is a 400 validation error before any gate'`: body `{ currentPassword: 'hunter2!', ssoReauthGrantId: 'x'.repeat(129) }` → 400; `userHasStrongerReauthFactor` not called. (With `currentPassword` present, today's schema would accept the body and reach the gate. The test is red only once the grant field is bounded.)
+  - `'epochs unavailable 503s BEFORE the resolver consumes the grant'`: `getUserEpochs → null`, body `{ ssoReauthGrantId: 'g' }` → 503; `resolveEnrollmentStepUp` not called (see Step 4 ordering).
   - Update `'propagates password step-up failures'` so the resolver returns a 400 → expect 400.
 
 - [ ] **Step 2: Write the failing unmocked-resolver test** `authenticator.registerGrantSso.test.ts`. Mount `authenticatorRoutes` with the **real** `./auth/helpers` and mock only its collaborators: `../services/mfaStepUpGrant` (`consumeStepUpGrant`, `validateStepUpGrant`, `mintStepUpGrant`), the `../services` barrel (`getUserEpochs`, `getRedis`, `rateLimiter`, `verifyPassword`. Both `authenticator.ts` and `auth/helpers.ts` import from the barrel, so mocking `../services/authEpochs` would not intercept them. See `vi.mock('../../services', …)` in `helpers.enrollmentStepUp.test.ts` ~L67), the `db` select for `users.passwordHash`, the passkey/mfa row read by `userIsMfaProtected` / `userHasStrongerReauthFactor`, `authMiddleware` (sets `auth.user.id = USER_ID`, `auth.token.sid = SID`), `getRedis`, `writeAuthAudit`. Mirror the mock style in `apps/api/src/routes/auth/helpers.enrollmentStepUp.test.ts`. Tests:
@@ -139,7 +141,7 @@ PR 2 branches from `main` **after PR 1 merges** (a PR stacked on a non-main base
   Run: `cd apps/api && npx vitest run src/routes/authenticator.test.ts src/routes/authenticator.registerGrantSso.test.ts`
   Expected: FAIL. The schema rejects `{ ssoReauthGrantId }` / `{}` with a zod 400, and `resolveEnrollmentStepUp` is never called.
 
-- [ ] **Step 4: Implement.** In `authenticator.ts`, change `registerGrantMintSchema` to `z.object({ currentPassword: z.string().min(1).max(256).optional(), ssoReauthGrantId: z.string().min(1).max(128).optional() })`. In the handler, keep the stronger-factor block first. Replace the `requireCurrentPasswordStepUp` call with `resolveEnrollmentStepUp(c, auth, { currentPassword, ssoReauthGrantId }, { keyPrefix: 'authenticator:pwd', consume: true, rejectionStatus: 400 })`. On error, write the `sso_reauth_rejected` denial when `!currentPassword && ssoReauthGrantId`, then return the error. Set `method = currentPassword ? 'password' : 'sso_reauth'` for the minted audit. Drop the now-unused `requireCurrentPasswordStepUp` import if nothing else uses it. Rewrite the header comment above the route: two roads, stronger factor first, 400 per #4470, and the exchange policy from Decision 1. Update the doc comments in `helpers.ts` and `mfaStepUpGrant.ts` listed under Files.
+- [ ] **Step 4: Implement.** In `authenticator.ts`, change `registerGrantMintSchema` to `z.object({ currentPassword: z.string().min(1).max(256).optional(), ssoReauthGrantId: z.string().min(1).max(128).optional() })`. In the handler, keep the stronger-factor block first. Next, move the existing `getUserEpochs` + `auth.token?.sid` check (and its `epochs_unavailable` 503 + audit) **ahead of** proof redemption, so an infra blip there cannot burn a single-use SSO grant. A `mintStepUpGrant` null after a successful consume still burns it; that is accepted and the user re-verifies. Then replace the `requireCurrentPasswordStepUp` call with `resolveEnrollmentStepUp(c, auth, { currentPassword, ssoReauthGrantId }, { keyPrefix: 'authenticator:pwd', consume: true, rejectionStatus: 400 })`. On error, write the `sso_reauth_rejected` denial when `!currentPassword && ssoReauthGrantId`, then return the error. Set `method = currentPassword ? 'password' : 'sso_reauth'` for the minted audit. Drop the now-unused `requireCurrentPasswordStepUp` import if nothing else uses it. Rewrite the header comment above the route: two roads, stronger factor first, 400 per #4470, and the exchange policy from Decision 1. Update the doc comments in `helpers.ts` and `mfaStepUpGrant.ts` listed under Files.
 
 - [ ] **Step 5: Run; verify pass, plus the neighbours that share the helpers**
 
@@ -215,6 +217,12 @@ PR 2 branches from `main` **after PR 1 merges** (a PR stacked on a non-main base
     - `{ status: 400, message: 'enrollment_proof_required' }` → same toast.
     - `{ status: 400, code: 'invalid_credentials' }` on the password tier → `incorrectPassword` (unchanged).
     - `{ status: 401, message: 'Invalid or expired token' }` → `sessionExpiredReloadAndTryAgain` (unchanged).
+  - **Rewrite the existing tests that depend on the legacy 401 arm** to `{ status: 400, code: 'invalid_credentials' }`:
+    - `ApproverDevicesSection.test.tsx` ~L175 (the "incorrect password" toast on a 401).
+    - `ApproverDevicesSection.test.tsx` ~L265 (the passkey-tier message on a 401).
+    - `stores/authenticator.test.ts` ~L362 (`{ status: 401 }` from a mocked 401).
+
+    They must keep passing after the arm is removed (Step 3).
 
 - [ ] **Step 2: Run; verify fail**
 
@@ -244,6 +252,8 @@ PR 2 branches from `main` **after PR 1 merges** (a PR stacked on a non-main base
 - Produces:
   - `SsoReauthIntent` adds `'approver_device'`.
   - `ApproverDevicesSection` props become `{ passkeyCount: number; mfaMethod: string | null; hasPassword?: boolean; ssoReauthGrantId?: string | null; isStartingSsoReauth?: boolean; onStartSsoReauth?: () => void; onSsoReauthGrantSpent?: () => void; landOnRegister?: boolean }`.
+  - The section passes `sso={{ verified: !!ssoReauthGrantId, starting: !!isStartingSsoReauth, onStart: onStartSsoReauth ?? noop }}` to `StepUpPrompt`.
+  - Already on main: `handleSsoReauthStart(intent: SsoReauthIntent)`, `isStartingSsoReauth`, `ssoReauthGrantId`/`setSsoReauthGrantId`. **New** in this task: ProfilePage state `approverReauthReturn: boolean` (default `false`).
   - ProfilePage passes `hasPassword={user?.hasPassword}`, `ssoReauthGrantId`, `isStartingSsoReauth`, `onStartSsoReauth={() => handleSsoReauthStart('approver_device')}`, `onSsoReauthGrantSpent={() => setSsoReauthGrantId(null)}`, `landOnRegister={approverReauthReturn}`.
 
 - [ ] **Step 1: Write failing tests.**
@@ -256,7 +266,7 @@ PR 2 branches from `main` **after PR 1 merges** (a PR stacked on a non-main base
   - `ProfilePage.approverSsoReauth.test.tsx`:
     - `window.location.hash = '#ssoReauthGrant=sso-g'`, sessionStorage intent `approver_device`, `/users/me` returns `hasPassword: false`: `callsTo('/auth/mfa/setup')` has length 0 (same helper as `ProfilePage.ssoFactorManagement.test.tsx`); `approver-stepup-sso-verified` is rendered; the hash is stripped.
     - Clicking `approver-stepup-sso-start` POSTs `/sso/reauth/start` and stashes `approver_device` before `window.location.assign`.
-    - After a successful register, the MFA card no longer reports a grant (`ssoReauthGrantAvailable` false). Assert the MFA settings' "verify with your identity provider" affordance is shown again.
+    - After a register attempt that the server **rejects** (`register-grant` → 400 `enrollment_grant_expired`), the MFA card's "verify with your identity provider" affordance is shown again, and the approver section shows `approver-stepup-sso-start` again (the grant was spent or dead either way). The success case is covered by the section test's clear-before-resolve assertion.
 
 - [ ] **Step 2: Run; verify fail**
 
