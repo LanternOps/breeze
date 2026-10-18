@@ -438,3 +438,84 @@ func expectChange(t *testing.T, changes []ChangeRecord, changeType ChangeType, a
 	}
 	t.Fatalf("expected change %s/%s for %q, got %#v", changeType, action, subject, changes)
 }
+
+func TestNormalizeStringStripsControlCharacters(t *testing.T) {
+	if got := normalizeString("\x00\x00Spooler \x00"); got != "spooler" {
+		t.Fatalf("normalizeString = %q, want %q", got, "spooler")
+	}
+}
+
+// TestMergeServiceReads_CarriesForwardUnreliableAccount covers #8904: a CIM
+// read returned "\x00\x00\x00\x00lSystem" for a service whose account is
+// LocalSystem. The tracker must keep the previous value instead of recording
+// a LocalSystem -> lSystem -> LocalSystem flicker.
+func TestMergeServiceReads_CarriesForwardUnreliableAccount(t *testing.T) {
+	prev := map[string]ServiceInfo{
+		"googleupdaterinternalservice156.0.8067.0": {
+			Name:        "GoogleUpdaterInternalService156.0.8067.0",
+			State:       "running",
+			StartupType: "automatic",
+			Account:     "LocalSystem",
+		},
+	}
+	current := []ServiceInfo{{
+		Name:                  "GoogleUpdaterInternalService156.0.8067.0",
+		State:                 "running",
+		StartupType:           "uto",
+		Account:               "lSystem",
+		accountUnreliable:     true,
+		startupTypeUnreliable: true,
+	}}
+
+	merged := mergeServiceReads(prev, current)
+	got, ok := merged[serviceKey(current[0])]
+	if !ok {
+		t.Fatalf("merged services missing key %q: %#v", serviceKey(current[0]), merged)
+	}
+	if got.Account != "LocalSystem" {
+		t.Errorf("Account = %q, want previous value %q", got.Account, "LocalSystem")
+	}
+	if got.StartupType != "automatic" {
+		t.Errorf("StartupType = %q, want previous value %q", got.StartupType, "automatic")
+	}
+	if got.accountUnreliable || got.startupTypeUnreliable {
+		t.Errorf("merged entry still flagged unreliable: %#v", got)
+	}
+
+	collector := NewChangeTrackerCollector(filepath.Join(t.TempDir(), "snapshot.json"))
+	collector.lastSnapshot = &Snapshot{Services: prev}
+	if changes := collector.diffServices(&Snapshot{Services: merged}); len(changes) != 0 {
+		t.Fatalf("expected no service changes for an unreliable read, got %#v", changes)
+	}
+}
+
+func TestMergeServiceReads_ReliableChangeStillDetected(t *testing.T) {
+	prev := map[string]ServiceInfo{
+		"spooler": {Name: "Spooler", StartupType: "automatic", Account: "LocalSystem"},
+	}
+	current := []ServiceInfo{{Name: "Spooler", StartupType: "manual", Account: "NT AUTHORITY\\NetworkService"}}
+
+	merged := mergeServiceReads(prev, current)
+	got := merged["spooler"]
+	if got.Account != "NT AUTHORITY\\NetworkService" || got.StartupType != "manual" {
+		t.Fatalf("reliable read was overridden: %#v", got)
+	}
+}
+
+func TestMergeServiceReads_UnreliableWithoutPreviousKeepsSanitizedValue(t *testing.T) {
+	current := []ServiceInfo{{Name: "NewSvc", StartupType: "manual", Account: "lSystem", accountUnreliable: true}}
+
+	for _, prev := range []map[string]ServiceInfo{nil, {}} {
+		merged := mergeServiceReads(prev, current)
+		got, ok := merged["newsvc"]
+		if !ok {
+			t.Fatalf("merged services missing new service: %#v", merged)
+		}
+		if got.Account != "lSystem" {
+			t.Errorf("Account = %q, want sanitized read %q", got.Account, "lSystem")
+		}
+		if got.accountUnreliable {
+			t.Errorf("merged entry still flagged unreliable: %#v", got)
+		}
+	}
+}

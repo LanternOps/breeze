@@ -470,10 +470,11 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 			snapshot.Services = maps.Clone(c.lastSnapshot.Services)
 		}
 	} else {
-		for _, svc := range services {
-			key := serviceKey(svc)
-			snapshot.Services[key] = svc
+		var prevServices map[string]ServiceInfo
+		if c.lastSnapshot != nil {
+			prevServices = c.lastSnapshot.Services
 		}
+		snapshot.Services = mergeServiceReads(prevServices, services)
 	}
 
 	if adaptersErr != nil {
@@ -1301,5 +1302,36 @@ func taskSubject(item TrackedScheduledTask) string {
 }
 
 func normalizeString(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return strings.ToLower(strings.TrimSpace(stripCollectorControlChars(value)))
+}
+
+// mergeServiceReads keys the collected services for a snapshot. When a field
+// of a service was read unreliably (its raw value contained control
+// characters, #8904) and the previous snapshot has the same service, the
+// previous value is kept: the stripped read is still wrong, and recording it
+// would log a false change now and its reversal on the next clean read. With
+// no previous value there is nothing better, so the sanitised read is used.
+func mergeServiceReads(prev map[string]ServiceInfo, services []ServiceInfo) map[string]ServiceInfo {
+	out := make(map[string]ServiceInfo, len(services))
+	for _, svc := range services {
+		key := serviceKey(svc)
+		if svc.accountUnreliable || svc.startupTypeUnreliable {
+			if old, ok := prev[key]; ok {
+				if svc.accountUnreliable {
+					svc.Account = old.Account
+				}
+				if svc.startupTypeUnreliable {
+					svc.StartupType = old.StartupType
+				}
+				slog.Warn("service read contained control characters, keeping previous value",
+					"service", svc.Name,
+					"account", svc.accountUnreliable,
+					"startupType", svc.startupTypeUnreliable)
+			}
+			svc.accountUnreliable = false
+			svc.startupTypeUnreliable = false
+		}
+		out[key] = svc
+	}
+	return out
 }
