@@ -107,32 +107,121 @@ func TestNotificationSettingError(t *testing.T) {
 	}
 }
 
+// hrElementNotFound is HRESULT_FROM_WIN32(ERROR_NOT_FOUND).
+const hrElementNotFound = 0x80070490
+
+// isSettingUnavailable reports whether err is exactly the get_Setting failure
+// seen on the windows-latest runner: ERROR_NOT_FOUND from the get_Setting slot.
+// The expected text is built with the same formatter comCall uses, so the same
+// HRESULT from another slot, or another HRESULT from this one, does not match.
+func isSettingUnavailable(err error) bool {
+	want := hresultError(fmt.Sprintf("vtable[%d]", methIToastNotifierGetSetting), hrElementNotFound)
+	return err != nil && err.Error() == want.Error()
+}
+
+// winRTSequenceVerdict judges one real run of showToastWinRT. err is its
+// return; settingErr and setting are what get_Setting reported (setting counts
+// only when settingErr is nil). It returns nil for an accepted outcome and the
+// reason otherwise.
+//
+// Accepted:
+//   - Show succeeded after get_Setting read Enabled.
+//   - Show succeeded after get_Setting failed with ERROR_NOT_FOUND
+//     (0x80070490). windows-latest runner (CI run 39156151658): the HKCU
+//     AppUserModelId key for the test host is written, yet the notification
+//     platform has no setting for it, so get_Setting returns ERROR_NOT_FOUND
+//     while Show() returns S_OK. Production logs that and attempts the toast,
+//     which is right: the setting is unknown, not disabled. Any other
+//     get_Setting failure next to a successful Show stays red.
+//   - Show failed (no notification platform in this session). Any get_Setting
+//     failure alongside it is tolerated: neither call could be answered.
+//   - errToastsDisabled, after get_Setting read a Disabled* value.
+//
+// Rejected: a failure before Show (a wrong IID, class name or vtable slot), a
+// Disabled* read that did not return errToastsDisabled, and errToastsDisabled
+// without a Disabled* read.
+func winRTSequenceVerdict(err, settingErr error, setting int32) error {
+	settingDisabled := settingErr == nil && setting != notificationSettingEnabled
+	switch {
+	case errors.Is(err, errToastsDisabled):
+		if !settingDisabled {
+			return fmt.Errorf("errToastsDisabled without get_Setting reading a Disabled value (setting=%d, get_Setting error=%v): %w", setting, settingErr, err)
+		}
+		return nil
+	case settingDisabled:
+		return fmt.Errorf("get_Setting read NotificationSetting=%d but the toast was still attempted (showToastWinRT returned %v)", setting, err)
+	case err == nil:
+		if settingErr != nil && !isSettingUnavailable(settingErr) {
+			return fmt.Errorf("Show() succeeded but get_Setting failed with an unexpected error (%v); only ERROR_NOT_FOUND from the get_Setting slot is accepted", settingErr)
+		}
+		return nil
+	case strings.HasPrefix(err.Error(), "IToastNotifier::Show:"):
+		return nil
+	default:
+		return fmt.Errorf("showToastWinRT failed before IToastNotifier::Show — a WinRT IID, class name or vtable slot is wrong: %w", err)
+	}
+}
+
+// TestWinRTSequenceVerdict pins the acceptance rule the real-WinRT test below
+// applies, with synthetic results, so every branch runs whatever the CI host's
+// notification platform does.
+func TestWinRTSequenceVerdict(t *testing.T) {
+	settingSlot := fmt.Sprintf("vtable[%d]", methIToastNotifierGetSetting)
+	notFound := hresultError(settingSlot, hrElementNotFound)
+	disabled := notificationSettingError(2)
+	showFailed := fmt.Errorf("IToastNotifier::Show: %w", hresultError(fmt.Sprintf("vtable[%d]", methIToastNotifierShow), 0x80070005))
+	cases := []struct {
+		name       string
+		err        error
+		settingErr error
+		setting    int32
+		wantOK     bool
+	}{
+		{name: "ShowSucceededSettingEnabled", wantOK: true},
+		{name: "ShowSucceededSettingNotFound", settingErr: notFound, wantOK: true},
+		{name: "ShowSucceededSettingOtherHRESULT", settingErr: hresultError(settingSlot, 0x80004005), wantOK: false},
+		{name: "ShowSucceededNotFoundFromAnotherSlot", settingErr: hresultError(fmt.Sprintf("vtable[%d]", methIToastNotifierGetSetting-1), hrElementNotFound), wantOK: false},
+		{name: "ShowFailedSettingFailed", err: showFailed, settingErr: hresultError(settingSlot, 0x80004005), wantOK: true},
+		{name: "DisabledAfterDisabledRead", err: disabled, setting: 2, wantOK: true},
+		{name: "DisabledWithoutDisabledRead", err: disabled, settingErr: notFound, wantOK: false},
+		{name: "DisabledReadButToastAttempted", setting: 2, wantOK: false},
+		{name: "FailedBeforeShow", err: errors.New("IToastNotificationManagerStatics::CreateToastNotifierWithId: boom"), wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := winRTSequenceVerdict(tc.err, tc.settingErr, tc.setting)
+			if (got == nil) != tc.wantOK {
+				t.Fatalf("winRTSequenceVerdict(%v, %v, %d) = %v, want accepted=%v", tc.err, tc.settingErr, tc.setting, got, tc.wantOK)
+			}
+		})
+	}
+}
+
 // TestShowToastWinRTFailsNoEarlierThanShow drives the real WinRT sequence on a
 // Windows host with no interactive desktop (the CI runner). Delivery cannot be
-// asserted there — Show() returns E_ACCESSDENIED outside an interactive
-// session — but every step BEFORE Show can: a wrong IID, runtime class or
+// asserted there, but every step BEFORE Show can: a wrong IID, runtime class or
 // vtable slot for activation, LoadXml, CreateToastNotification or
-// CreateToastNotifierWithId fails at that step, and the error names it. So the
-// only accepted outcomes are success, a failure at Show itself, or the toast
-// setting reporting disabled (which needs get_Setting to have succeeded on a
-// real notifier). It must never be skipped.
+// CreateToastNotifierWithId fails at that step, and the error names it. The
+// accepted outcomes are listed on winRTSequenceVerdict. It must never be
+// skipped.
 //
-// The get_Setting check is observed directly: it must run on every path that
-// reaches the notifier, and a value it reads must be a defined
-// NotificationSetting (0..4). Production tolerates a get_Setting failure (logs
-// it and shows the toast). Here that is tolerated only when Show then fails
-// too, i.e. this session has no notification platform to answer either call
-// (a desktop-less runner). If Show succeeds while get_Setting failed, the
-// disabled-notifications check is dead on a host that can show toasts: red.
+// The get_Setting check is observed directly: it must run exactly once on the
+// path to Show, and a value it reads must be a defined NotificationSetting
+// (0..4). Where the host answers get_Setting with ERROR_NOT_FOUND (the
+// windows-latest runner), this test cannot prove the slot reads a setting;
+// TestShowToastWinRTLive on a real desktop has to.
 func TestShowToastWinRTFailsNoEarlierThanShow(t *testing.T) {
 	notifyAumidOnce.Do(registerToastAUMID)
 	settingReads := 0
 	var settingErr error
+	var settingValue int32
 	prevHook := toastSettingReadHook
 	toastSettingReadHook = func(setting int32, err error) {
 		settingReads++
-		settingErr = err
+		settingErr, settingValue = err, setting
 		switch {
+		case isSettingUnavailable(err):
+			t.Logf("IToastNotifier::get_Setting: no setting for this AUMID on this host: %v", err)
 		case err != nil:
 			t.Logf("IToastNotifier::get_Setting failed: %v", err)
 		case setting < 0 || setting > 4:
@@ -145,20 +234,12 @@ func TestShowToastWinRTFailsNoEarlierThanShow(t *testing.T) {
 
 	err := showToastWinRT(notifyAUMID, buildToastXML("Breeze CI", "WinRT sequence check"))
 	if settingReads != 1 {
-		t.Errorf("get_Setting check ran %d times, want 1 — the disabled-notifications check is not on the WinRT path", settingReads)
+		t.Fatalf("get_Setting check ran %d times, want 1 — the disabled-notifications check is not on the WinRT path (showToastWinRT returned %v)", settingReads, err)
 	}
-	switch {
-	case err == nil && settingErr != nil:
-		t.Fatalf("Show() succeeded but get_Setting failed (%v) — the disabled-notifications check never runs on a host that can show toasts", settingErr)
-	case err == nil:
-		t.Log("showToastWinRT: Show() reported success")
-	case errors.Is(err, errToastsDisabled):
-		t.Logf("showToastWinRT: toasts disabled on this host (accepted): %v", err)
-	case strings.HasPrefix(err.Error(), "IToastNotifier::Show:"):
-		t.Logf("showToastWinRT: failed at Show (accepted without a desktop): %v", err)
-	default:
-		t.Fatalf("showToastWinRT failed before IToastNotifier::Show — a WinRT IID, class name or vtable slot is wrong: %v", err)
+	if verr := winRTSequenceVerdict(err, settingErr, settingValue); verr != nil {
+		t.Fatal(verr)
 	}
+	t.Logf("showToastWinRT returned %v (accepted)", err)
 }
 
 // The PowerShell fallback is reached when WinRT fails before its own setting

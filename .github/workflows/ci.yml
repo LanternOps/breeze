@@ -2208,7 +2208,10 @@ jobs:
       # mapping; the hidden PowerShell fallback command and its own Setting
       # check; and the real WinRT sequence, which must read get_Setting and
       # fail no earlier than IToastNotifier::Show (this runner has no
-      # interactive desktop, so Show itself may be refused).
+      # interactive desktop, so Show itself may be refused), judged by the
+      # rule TestWinRTSequenceVerdict pins. On this runner get_Setting returns
+      # ERROR_NOT_FOUND (0x80070490) while Show succeeds; that one failure is
+      # accepted, any other get_Setting failure next to a successful Show is not.
       # TestShowToastWinRTLive raises a visible toast and stays unselected.
       - name: Run Windows user-helper toast tests (must not skip)
         working-directory: agent
@@ -2216,16 +2219,16 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/userhelper -run '^Test(ShowNotificationOS|NotificationSettingError|ToastPowerShellCommandIsHidden|ToastPowerShellScriptRefusesDisabledNotifier|ShowToastWinRTFailsNoEarlierThanShow)$' -timeout 5m -v 2>&1
+          $out = go test ./internal/userhelper -run '^Test(ShowNotificationOS|NotificationSettingError|ToastPowerShellCommandIsHidden|ToastPowerShellScriptRefusesDisabledNotifier|WinRTSequenceVerdict|ShowToastWinRTFailsNoEarlierThanShow)$' -timeout 5m -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the user-helper toast tests SKIPPED" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 5) { throw "expected exactly 5 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 6) { throw "expected exactly 6 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
           $subPasses = @($out | Select-String -Pattern '^\s+--- PASS: Test').Count
-          if ($subPasses -ne 11) { throw "expected exactly 11 subtest PASS lines, got $subPasses - a table case was renamed, removed, or added without updating this count" }
+          if ($subPasses -ne 20) { throw "expected exactly 20 subtest PASS lines, got $subPasses - a table case was renamed, removed, or added without updating this count" }
 
       # #7629: the agent re-secures its config folder if another account
       # created it, before reading anything from it. The tests plant
