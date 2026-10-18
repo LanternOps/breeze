@@ -423,7 +423,8 @@ try {
 const DELETE_PRINTER_BY_NAME_CONTENT = `# Delete Printer by Name (Windows).
 #
 # Removes every printer queue whose name matches printer_name (case-insensitive,
-# wildcards * and ? allowed). Never touches ports or drivers.
+# wildcards * and ? allowed; an exact name always matches itself, even with
+# [ ] in it). Never touches ports or drivers.
 # Exit 1: blank parameter, print spooler unavailable, or any removal failed
 # (the remaining matches are still attempted). Exit 0 otherwise, including
 # when nothing matched.
@@ -445,7 +446,7 @@ try {
 }
 
 Write-Output "Pattern: $pattern$(if ($dryRun) { ' (dry run - nothing will be removed)' })"
-$matched = @($printers | Where-Object { $_.Name -like $pattern })
+$matched = @($printers | Where-Object { ($_.Name -ieq $pattern) -or ($_.Name -like $pattern) })
 if ($matched.Count -eq 0) {
   Write-Output 'No printers matched.'
   exit 0
@@ -508,7 +509,7 @@ $failed = 0
 foreach ($p in $printers) {
   $isKept = $false
   foreach ($k in $keep) {
-    if ($p.Name -like $k) { $isKept = $true; break }
+    if (($p.Name -ieq $k) -or ($p.Name -like $k)) { $isKept = $true; break }
   }
   if ($isKept) {
     Write-Output "KEPT: $($p.Name)"

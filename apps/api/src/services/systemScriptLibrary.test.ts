@@ -140,15 +140,7 @@ describe('SYSTEM_LIBRARY_SCRIPTS definitions', () => {
   });
 });
 
-// #5016 — the script used to run the whole uninstall -> restore -> install
-// dance inside the agent's own script process. The uninstall stops that agent,
-// and a script cannot outlive its agent: current agents contain every script in
-// a KILL_ON_JOB_CLOSE Job Object (agent/internal/executor/job.go), which the
-// kernel fires the moment the agent process exits — killing the script between
-// the uninstall and the install and leaving the device agent-less. Only a
-// script that EXITS NORMALLY gets its containment released (releaseContainment)
-// so detached descendants survive. So the destructive leg must run in a
-// detached stage 2 that starts only after stage 1 has exited.
+
 const deleteByName = SYSTEM_LIBRARY_SCRIPTS.find((s) => s.name === 'Delete Printer by Name (Windows)');
 const deleteExcept = SYSTEM_LIBRARY_SCRIPTS.find((s) => s.name === 'Delete All Printers Except Listed (Windows)');
 
@@ -210,6 +202,11 @@ describe('printer cleanup scripts (#8290)', () => {
     });
   }
 
+  it('matches names literally before falling back to wildcards (names may contain [ ])', () => {
+    expect(deleteByName!.content).toContain('($_.Name -ieq $pattern) -or ($_.Name -like $pattern)');
+    expect(deleteExcept!.content).toContain('($p.Name -ieq $k) -or ($p.Name -like $k)');
+  });
+
   it('by-name: reports no match and exits 0', () => {
     expect(deleteByName).toBeDefined();
     expect(deleteByName!.content).toMatch(/no printers matched/i);
@@ -241,6 +238,15 @@ describe('printer cleanup scripts (#8290)', () => {
   });
 });
 
+// #5016 — the script used to run the whole uninstall -> restore -> install
+// dance inside the agent's own script process. The uninstall stops that agent,
+// and a script cannot outlive its agent: current agents contain every script in
+// a KILL_ON_JOB_CLOSE Job Object (agent/internal/executor/job.go), which the
+// kernel fires the moment the agent process exits — killing the script between
+// the uninstall and the install and leaving the device agent-less. Only a
+// script that EXITS NORMALLY gets its containment released (releaseContainment)
+// so detached descendants survive. So the destructive leg must run in a
+// detached stage 2 that starts only after stage 1 has exited.
 describe('edition migration hand-off to a detached stage 2 (#5016)', () => {
   const content = () => editionMigration!.content;
   const stage2 = () => {
