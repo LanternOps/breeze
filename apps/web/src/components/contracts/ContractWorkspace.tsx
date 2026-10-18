@@ -6,6 +6,7 @@ import '@/lib/i18n';
 import ContractEditor from './ContractEditor';
 import ContractDetail from './ContractDetail';
 import { usePermissions } from '../../lib/permissions';
+import RecordSignedAgreementDialog from '../agreements/RecordSignedAgreementDialog';
 import {
   getContract,
   CONTRACT_STATUS_ROLES,
@@ -79,6 +80,9 @@ export default function ContractWorkspace({ contractId }: Props) {
   // "First by created_at" (spec §6) = the LAST element: the service orders
   // desc(createdAt).
   const [firstAgreement, setFirstAgreement] = useState<ContractDocument | null>(null);
+  const [recordOpen, setRecordOpen] = useState(false);
+  // Bumped after a recording so the pill below re-reads the agreement list.
+  const [recordedTick, setRecordedTick] = useState(0);
   useEffect(() => {
     if (isNew || !contractId) return;
     let cancelled = false;
@@ -98,7 +102,7 @@ export default function ContractWorkspace({ contractId }: Props) {
       }
     })();
     return () => { cancelled = true; };
-  }, [isNew, contractId]);
+  }, [isNew, contractId, recordedTick]);
 
   if (isNew) {
     return (
@@ -167,6 +171,17 @@ export default function ContractWorkspace({ contractId }: Props) {
             )}
           </div>
         </div>
+        <div className="flex shrink-0 items-center gap-2">
+        {can('agreements', 'write') && (
+          <button
+            type="button"
+            onClick={() => setRecordOpen(true)}
+            data-testid="contract-record-signed-open"
+            className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+          >
+            {t('agreements.signedPage.recordSigned')}
+          </button>
+        )}
         {contract.status === 'active' && canWrite && (
           <button
             type="button"
@@ -177,7 +192,21 @@ export default function ContractWorkspace({ contractId }: Props) {
             {editing ? t('contracts.contractWorkspace.doneEditing') : t('common:actions.edit')}
           </button>
         )}
+        </div>
       </div>
+      {can('agreements', 'write') && (
+        <RecordSignedAgreementDialog
+          open={recordOpen}
+          onClose={() => setRecordOpen(false)}
+          lockedOrgId={contract.orgId}
+          lockedContractId={contract.id}
+          onRecorded={() => {
+            setRecordOpen(false);
+            setRecordedTick((n) => n + 1);
+            void load();
+          }}
+        />
+      )}
       {showEditor ? (
         <ContractEditor detail={detail} autopayEnabled={detail.autopayEnabled} onChanged={() => void load()} />
       ) : (

@@ -24,6 +24,22 @@ vi.mock('../../lib/api/contracts', async (importOriginal) => {
   return { ...orig, ...contractsApi };
 });
 
+const perms = vi.hoisted(() => ({ granted: new Set<string>() }));
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => perms.granted.has(`${r}:${a}`) }),
+}));
+
+// The dialog has its own suite; here it is a stub that exposes the props the
+// page passes and a way to fire onRecorded.
+vi.mock('./RecordSignedAgreementDialog', () => ({
+  default: (p: { open: boolean; lockedOrgId?: string; lockedContractId?: string; onRecorded: (id: string) => void }) =>
+    p.open ? (
+      <div data-testid="agreements-record-dialog" data-org={p.lockedOrgId ?? ''} data-contract={p.lockedContractId ?? ''}>
+        <button type="button" data-testid="stub-recorded" onClick={() => p.onRecorded('sa-1')} />
+      </div>
+    ) : null,
+}));
+
 import SignedAgreementsPage from './SignedAgreementsPage';
 
 const resp = (payload: unknown, status = 200) =>
@@ -57,6 +73,7 @@ const UNATTACHED_DOC = {
 describe('SignedAgreementsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    perms.granted = new Set();
     window.location.hash = '';
     fetchWithAuth.mockResolvedValue(resp({ data: [{ id: 'org-1', name: 'Acme' }] }));
     docsApi.listContractDocuments.mockResolvedValue(resp({ data: [UNATTACHED_DOC] }));
@@ -193,5 +210,38 @@ describe('SignedAgreementsPage', () => {
     await waitFor(() =>
       expect(screen.getByTestId('contract-documents-empty')).toHaveTextContent(/No unlinked signed agreements/i),
     );
+  });
+
+  describe('Record signed agreement entry point (#8865 W1c)', () => {
+    it('renders the button only when the user holds agreements:write', async () => {
+      render(<SignedAgreementsPage />);
+      await screen.findByTestId('signed-agreements-tab');
+      expect(screen.queryByTestId('agreements-record-open')).not.toBeInTheDocument();
+    });
+
+    it('opens the dialog and reloads the list after a recording', async () => {
+      perms.granted = new Set(['agreements:write']);
+      render(<SignedAgreementsPage />);
+      fireEvent.click(await screen.findByTestId('agreements-record-open'));
+      expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-org', '');
+      const before = docsApi.listContractDocuments.mock.calls.length;
+      fireEvent.click(screen.getByTestId('stub-recorded'));
+      await waitFor(() => expect(docsApi.listContractDocuments.mock.calls.length).toBeGreaterThan(before));
+      expect(screen.queryByTestId('agreements-record-dialog')).not.toBeInTheDocument();
+    });
+
+    it('is available in the org embed with the org locked', async () => {
+      perms.granted = new Set(['agreements:write']);
+      render(<SignedAgreementsPage lockedOrgId="org-1" />);
+      fireEvent.click(await screen.findByTestId('agreements-record-open'));
+      expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-org', 'org-1');
+    });
+
+    it('is available in the contract embed with org-less contract lock', async () => {
+      perms.granted = new Set(['agreements:write']);
+      render(<SignedAgreementsPage lockedContractId="ct-1" />);
+      fireEvent.click(await screen.findByTestId('agreements-record-open'));
+      expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-contract', 'ct-1');
+    });
   });
 });

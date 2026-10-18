@@ -12,6 +12,8 @@ import { listContracts, type ContractSummary } from '../../lib/api/contracts';
 import { usePdfDownload } from '../billing/shared/usePdfDownload';
 import { formatDate } from '../billing/invoiceTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePermissions } from '../../lib/permissions';
+import RecordSignedAgreementDialog from './RecordSignedAgreementDialog';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -66,6 +68,10 @@ export default function SignedAgreementsPage({
   const { t } = useTranslation('billing');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const locked = Boolean(lockedOrgId || lockedContractId);
+  const { can } = usePermissions();
+  // UX only — the record-signed route re-checks agreements:write server-side.
+  const canRecord = can('agreements', 'write');
+  const [recordOpen, setRecordOpen] = useState(false);
 
   // CLAUDE.md: hash for transient UI state, never query params. Embeds do NOT
   // read the hash — two lists on one page (org record) would fight over it.
@@ -183,11 +189,29 @@ export default function SignedAgreementsPage({
   return (
     <div className="space-y-4" data-testid="signed-agreements-tab">
       {/* Inside an embed the surrounding section already names this list (the
-          org record's <summary>, the contract page's own heading). */}
-      {!locked && (
-        <div>
-          <h2 className="text-lg font-semibold">{t('agreements.signedPage.title')}</h2>
-          <p className="text-sm text-muted-foreground">{t('agreements.signedPage.description')}</p>
+          org record's <summary>, the contract page's own heading), so the
+          header row there holds only the record button. The button lives in
+          this row on all three surfaces. */}
+      {(!locked || canRecord) && (
+        <div className="flex items-start justify-between gap-3">
+          {!locked ? (
+            <div>
+              <h2 className="text-lg font-semibold">{t('agreements.signedPage.title')}</h2>
+              <p className="text-sm text-muted-foreground">{t('agreements.signedPage.description')}</p>
+            </div>
+          ) : (
+            <span />
+          )}
+          {canRecord && (
+            <button
+              type="button"
+              onClick={() => setRecordOpen(true)}
+              data-testid="agreements-record-open"
+              className="shrink-0 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              {t('agreements.signedPage.recordSigned')}
+            </button>
+          )}
         </div>
       )}
 
@@ -336,6 +360,19 @@ export default function SignedAgreementsPage({
             </tbody>
           </table>
         </div>
+      )}
+
+      {canRecord && (
+        <RecordSignedAgreementDialog
+          open={recordOpen}
+          onClose={() => setRecordOpen(false)}
+          lockedOrgId={lockedOrgId}
+          lockedContractId={lockedContractId}
+          onRecorded={() => {
+            setRecordOpen(false);
+            void load();
+          }}
+        />
       )}
 
       {linkingDoc && (
