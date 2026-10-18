@@ -662,7 +662,10 @@ async function syncAgentsForIntegration(
       const returnedIds = fetchedAgents.map((a) => a.id);
       await db
         .update(s1Agents)
-        .set({ status: S1_AGENT_STATUS_ABSENT, updatedAt: new Date() })
+        // Also unlink/clear so every other s1_agents reader (posture evidence, device
+        // read model, status summaries, action targeting) stops matching the row; a
+        // returning agent is re-linked by the upsert.
+        .set({ status: S1_AGENT_STATUS_ABSENT, deviceId: null, infected: false, threatCount: 0, updatedAt: new Date() })
         .where(and(
           eq(s1Agents.integrationId, integration.id),
           sql`${s1Agents.status} IS DISTINCT FROM ${S1_AGENT_STATUS_ABSENT}`,

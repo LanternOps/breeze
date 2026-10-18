@@ -733,7 +733,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // ever emits ORG-owned rows (the exporter filters on org_id), so a
   // partner-owned connection never appears in a customer's export — correct:
   // it is the MSP's credential, not the customer's data.
-  "psa_connections": tablePolicy("org_id", {"included":["id","org_id","partner_id","provider","name","enabled","last_sync_at","last_full_agent_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["credentials","settings","sync_settings"]}),
+  "psa_connections": tablePolicy("org_id", {"included":["id","org_id","partner_id","provider","name","enabled","last_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["credentials","settings","sync_settings"]}),
   // origin / method / reference / recorded_by_user_id (accept-on-behalf, spec
   // 2026-09-21 §6): the provenance of an acceptance. All four are plain
   // scalars — no json/jsonb/bytea open container, no SUSPICIOUS_NAME_PARTS
@@ -793,7 +793,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "roles": tablePolicy("org_id", {"included":["id","partner_id","org_id","parent_role_id","scope","name","description","is_system","created_at","updated_at"],"reviewedIncluded":["force_mfa"],"excludedSensitive":[],"excludedOpen":[]}),
   "s1_actions": tablePolicy("org_id", {"included":["id","org_id","device_id","requested_by","action","status","provider_action_id","requested_at","completed_at","error"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   "s1_agents": tablePolicy("org_id", {"included":["id","org_id","integration_id","s1_agent_id","device_id","status","infected","threat_count","policy_name","last_seen_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["metadata"]}),
-  "s1_integrations": tablePolicy("org_id", {"included":["id","partner_id","org_id","name","management_url","is_active","last_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["api_token_encrypted"],"excludedOpen":[]}),
+  "s1_integrations": tablePolicy("org_id", {"included":["id","partner_id","org_id","name","management_url","is_active","last_sync_at","last_full_agent_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["api_token_encrypted"],"excludedOpen":[]}),
   "s1_org_mappings": tablePolicy("org_id", {"included":["id","integration_id","partner_id","s1_site_id","s1_site_name","org_id","agents_count","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["registration_token"],"excludedOpen":["metadata"]}),
   "s1_site_mappings": tablePolicy("org_id", {"included":["id","integration_id","site_name","org_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "s1_threats": tablePolicy("org_id", {"included":["id","org_id","integration_id","device_id","s1_threat_id","classification","severity","threat_name","process_name","file_path","status","detected_at","resolved_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["mitre_tactics","details"]}),

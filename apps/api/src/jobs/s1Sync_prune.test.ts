@@ -162,6 +162,7 @@ describe('#9248 s1Sync marks agents the console no longer returns as absent', ()
     await run();
     expect(listAgentsMock).toHaveBeenCalledWith(undefined); // full listing, not incremental
     expect(absentUpdates()).toHaveLength(1);
+    expect(absentUpdates()[0]).toMatchObject({ deviceId: null, infected: false, threatCount: 0 });
     expect(fullStamps()).toHaveLength(1);
   });
 
