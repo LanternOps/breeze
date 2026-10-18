@@ -17,6 +17,7 @@ import {
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
 import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../services/permissions';
+import { findCycleForSave } from '../services/groupFilterRefs';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from '../services/deviceGroupDelete';
@@ -780,6 +781,19 @@ groupRoutes.patch(
         return c.json({ error: 'Invalid filter conditions', details: validation.errors }, 400);
       }
       filterFieldsUsed = extractFieldsFromFilter(payload.filterConditions);
+      if (effectiveType === 'dynamic') {
+        // #9179: a dynamic group may not reference itself or form a membership
+        // cycle with other dynamic groups (group exclusion would oscillate).
+        const cycle = await findCycleForSave(group.orgId, id, payload.filterConditions);
+        if (cycle) {
+          return c.json({
+            error: 'Invalid filter conditions',
+            details: [cycle.length === 2
+              ? 'A dynamic group cannot reference itself in its own filter'
+              : 'Filter creates a membership cycle between dynamic groups'],
+          }, 400);
+        }
+      }
     } else if (filterChanged && payload.filterConditions === null) {
       // Clearing filter conditions
       filterFieldsUsed = [];

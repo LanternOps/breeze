@@ -421,6 +421,31 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
     expect(sql).not.toMatch(/any\s*\(/i);
   });
 
+  // #9179: group exclusion. A device in no group must match "not equal".
+  it('groupId notEquals → NOT EXISTS membership', () => {
+    const sql = render({ field: 'groupId', operator: 'notEquals', value: G1 });
+    expect(sql).toMatch(/not exists \(select 1 from "device_group_memberships"/i);
+    expect(sql).toMatch(/"group_id" in \(\$\d\)/i);
+  });
+
+  it('groupId notIn → NOT EXISTS membership with an explicit IN list', () => {
+    const sql = render({ field: 'groupId', operator: 'notIn', value: [G1, G2] });
+    expect(sql).toMatch(/not exists \(select 1 from "device_group_memberships"/i);
+    expect(sql).toMatch(/"group_id" in \(\$\d, \$\d\)/i);
+    expect(sql).not.toMatch(/any\s*\(/i);
+  });
+
+  it('groupId negative operators with only non-UUID values match every device', () => {
+    expect(render({ field: 'groupId', operator: 'notEquals', value: 'Cash Registers' })).toMatch(/true/i);
+    expect(render({ field: 'groupId', operator: 'notIn', value: ['Cash Registers'] })).toMatch(/true/i);
+  });
+
+  it('validateFilter accepts notEquals/notIn on groupId only among hierarchy fields', () => {
+    expect(validateFilter({ field: 'groupId', operator: 'notEquals', value: G1 }).valid).toBe(true);
+    expect(validateFilter({ field: 'groupId', operator: 'notIn', value: [G1] }).valid).toBe(true);
+    expect(validateFilter({ field: 'siteId', operator: 'notEquals', value: G1 }).valid).toBe(false);
+  });
+
   // #8760: a group NAME where an id belongs raised 22P02 and failed the whole
   // filter. A non-UUID value can match no membership, so it is dropped.
   it('groupId drops non-UUID values instead of sending them to a uuid column', () => {

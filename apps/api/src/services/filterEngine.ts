@@ -141,7 +141,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Hierarchy fields
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
   { key: 'siteId', label: 'Site', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
-  { key: 'groupId', label: 'Device Group', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
+  { key: 'groupId', label: 'Device Group', category: 'hierarchy', type: 'string', operators: ['equals', 'notEquals', 'in', 'notIn'], description: 'Group membership. Excluding a dynamic group uses its last evaluated membership.' },
 
   // Computed fields
   { key: 'daysSinceLastSeen', label: 'Days Since Last Seen', category: 'computed', type: 'number', operators: OPERATORS_BY_TYPE.number, computed: true },
@@ -587,6 +587,14 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     // 22P02 and fail the whole filter.
     const ids = (Array.isArray(value) ? value : [value])
       .filter((v): v is string => typeof v === 'string' && PG_UUID_REGEX.test(v));
+    const negated = operator === 'notEquals' || (operator === 'notIn' && Array.isArray(value));
+    if (negated) {
+      // #9179: group exclusion. A device in no group (or with no matching
+      // id) must match, hence NOT EXISTS rather than a negated join.
+      if (ids.length === 0) return sql`TRUE`;
+      const items = ids.map((id) => sqlValue(id));
+      return sql`NOT EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} IN (${sql.join(items, sql`, `)}))`;
+    }
     if (operator === 'equals' || (operator === 'in' && Array.isArray(value))) {
       if (ids.length === 0) return sql`FALSE`;
       // Explicit IN list, not `= ANY(${value})`: postgres.js binds a JS array
