@@ -515,8 +515,16 @@ describe('ProxyTunnelPage host mode', () => {
       hostModeFetch();
       render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
       const frame = await screen.findByTestId('network-proxy-frame');
-      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID.toUpperCase(), reason: 'weird' });
-      expect(await screen.findByTestId('proxy-cookie-blocked-notice')).toHaveAttribute('data-reason', 'cookie');
+      // The message listener is registered in a passive effect that can commit
+      // after the iframe is already in the DOM (slow under load, #9159): re-post
+      // until the listener is live so the single assertion below stays strict.
+      await waitFor(
+        () => {
+          postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID.toUpperCase(), reason: 'weird' });
+          expect(screen.getByTestId('proxy-cookie-blocked-notice')).toHaveAttribute('data-reason', 'cookie');
+        },
+        { timeout: 5000 },
+      );
     });
 
     it('offers Open in New Tab from the notice', async () => {
