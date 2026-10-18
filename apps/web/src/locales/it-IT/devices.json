@@ -10,7 +10,7 @@
     "site": "Sede",
     "policy": "Criterio",
     "states": {
-      "not_reported": "Nessun dato sull’ora disponibile — è necessario un aggiornamento dell’agente che includa la sincronizzazione dell’ora",
+      "not_reported": "Nessun dato sull’ora disponibile — aggiornamento dell’agente richiesto per la sincronizzazione dell’ora",
       "unsupported_os": "Non ancora supportato su questo sistema operativo"
     },
     "health": {
@@ -470,7 +470,7 @@
     },
     "runScript": "Esegui script",
     "remoteTools": "Strumenti remoti",
-    "reRunAgentInventoryCollectorsSo": "Esegui di nuovo i moduli di raccolta dell'inventario dell'agente, così l'interfaccia mostra dati hardware, software e di rete aggiornati senza attendere il successivo heartbeat",
+    "reRunAgentInventoryCollectorsSo": "Raccogli subito l’inventario",
     "refresh": "Aggiorna",
     "reboot": "Riavvia",
     "wake": "Riattiva",
@@ -865,7 +865,10 @@
     "loadingDevice": "Caricamento dispositivo...",
     "backToDevices": "Torna ai dispositivi",
     "goBack": "Torna indietro",
-    "devices": "Dispositivi"
+    "devices": "Dispositivi",
+    "devicesCrumbOtherOrg": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro resta {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro non cambia",
+    "switchOrgFailed": "Impossibile cambiare organizzazione. Riprova."
   },
   "deviceDetails": {
     "overview": "Panoramica",
@@ -899,7 +902,7 @@
     "scriptExecutionHistory": "Cronologia di esecuzione degli script",
     "management": "Gestione",
     "agentSettingsAndDeviceManagement": "Impostazioni dell'agente e gestione dei dispositivi",
-    "config": "Config",
+    "config": "Configurazione",
     "resolvedConfigurationFromAllAssignedPolicies": "Configurazione risolta da tutte le policy assegnate",
     "security": "Sicurezza",
     "playbooks": "Playbook",
@@ -951,7 +954,13 @@
       "extensions": "Estensioni"
     },
     "workloads": "Carichi di lavoro",
-    "workloadsTitle": "Container e macchine virtuali su questo host"
+    "workloadsTitle": "Container e macchine virtuali su questo host",
+    "offlineLastSeen": "Offline · ultimo contatto {{ago}}",
+    "locatedIn": "presso <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Stai visualizzando un dispositivo di {{org}}",
+      "switch": "Passa a {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -1510,7 +1519,8 @@
     "tags": "Tag",
     "customFields": "Campi personalizzati",
     "text2": "*",
-    "edit": "Modifica"
+    "edit": "Modifica",
+    "roleNotAssessed": "Ruolo non ancora valutato"
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -2050,7 +2060,9 @@
       "writeThroughput": "Throughput in scrittura"
     },
     "networkBandwidth": "Larghezza di banda di rete",
-    "title": "Grafici delle prestazioni"
+    "title": "Grafici delle prestazioni",
+    "noSamples": "Nessun campione nelle ultime {{range}}",
+    "offlineSince": "Dispositivo offline · ultimo contatto {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2127,7 +2139,7 @@
     "details": "dettagli",
     "disabled": "Il punteggio di affidabilità è disabilitato per questa organizzazione.",
     "distinctEvents": "Eventi distinti nella finestra {{window}}.",
-    "empty": "Nessuna istantanea di affidabilità ancora disponibile.",
+    "empty": "Nessun dato di affidabilità ancora disponibile",
     "errors": {
       "loadDetail": "Impossibile caricare i dettagli di affidabilità",
       "loadScore": "Impossibile caricare il punteggio di affidabilità",
@@ -2473,7 +2485,7 @@
     "loadFailed": "Impossibile caricare la garanzia.",
     "lookupUnavailable": "Ricerca della garanzia non disponibile per questo produttore",
     "manufacturer": "Produttore",
-    "noInformation": "Nessuna informazione sulla garanzia",
+    "noInformation": "Nessuna garanzia registrata",
     "renews": "Si rinnova",
     "serialNumber": "Numero di serie",
     "source": "Fonte: {{source}}",
@@ -2499,7 +2511,8 @@
       "refreshing": "Aggiornamento della garanzia…",
       "stillInProgress": "L'aggiornamento della garanzia è ancora in corso; la scheda si aggiornerà al completamento.",
       "updated": "Informazioni sulla garanzia aggiornate."
-    }
+    },
+    "lookUp": "Cerca"
   },
   "devicesPage": {
     "accessDenied": "Non hai il permesso di visualizzare i dispositivi.",
@@ -4455,5 +4468,17 @@
     "updatesPaused": "Aggiornamenti in tempo reale in pausa — nuovo tentativo in corso",
     "closeNotAnnounced": "La chat è chiusa qui. La finestra di chat dell'utente potrebbe restare aperta finché il suo dispositivo non si riconnette o finché non risponde.",
     "unavailable": "Questa chat non è più disponibile"
+  },
+  "deviceOverviewState": {
+    "label": "Stato del dispositivo",
+    "lastCheckIn": "Ultimo contatto {{ago}}",
+    "openAlerts_one": "{{count}} avviso aperto",
+    "openAlerts_other": "{{count}} avvisi aperti",
+    "openTickets_one": "{{count}} ticket aperto",
+    "openTickets_other": "{{count}} ticket aperti",
+    "noOpenAlerts": "Nessun avviso aperto",
+    "untitledAlert": "Avviso segnalato",
+    "alertsUnavailable": "Impossibile caricare gli avvisi aperti",
+    "viewAlerts": "Vedi avvisi"
   }
 }

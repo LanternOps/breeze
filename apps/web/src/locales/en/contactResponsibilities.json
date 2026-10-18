@@ -18,5 +18,7 @@
     "organization": "Entire organization",
     "site": "This site",
     "device_group": "Device group"
-  }
+  },
+  "emptyCompact": "No responsible contacts",
+  "assign": "Assign"
 }

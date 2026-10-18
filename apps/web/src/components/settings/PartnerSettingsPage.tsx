@@ -77,6 +77,9 @@ import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 import { useStableT } from '@/lib/i18n/useStableT';
 
+// Scalar security limits the API unsets when sent as null (see PATCH /partners/me).
+const CLEARABLE_SECURITY_KEYS = ['minLength', 'complexity', 'expirationDays', 'sessionTimeout', 'maxSessions'] as const;
+
 type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules' | 'trustCenter';
 
 type Partner = {
@@ -493,7 +496,14 @@ export default function PartnerSettingsPage() {
     };
 
     // Always include all categories so clearing all fields removes locks
-    settings.security = securityData;
+    // The API deep-merges `security`, so an omitted key keeps its stored value.
+    // A cleared scalar limit must go out as an explicit null to be unset (#8976).
+    settings.security = {
+      ...securityData,
+      ...Object.fromEntries(
+        CLEARABLE_SECURITY_KEYS.filter(key => securityData[key] === undefined).map(key => [key, null])
+      ),
+    };
     settings.notifications = notificationsData;
     settings.eventLogs = eventLogsData;
     settings.defaults = defaultsData;

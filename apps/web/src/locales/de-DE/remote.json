@@ -109,7 +109,8 @@
       "waylandUnsupported": "Dies ist ein Wayland-Desktop — Remote-Desktop erfordert einen neueren Agenten",
       "x11AuthFailed": "Authentifizierung am Anzeigeserver (X-Authority) nicht möglich",
       "x11ConnectFailed": "Verbindung zum Anzeigeserver auf diesem Gerät nicht möglich"
-    }
+    },
+    "opensNewWindow": "(öffnet ein neues Fenster)"
   },
   "connectVncButton": {
     "creatingTunnel": "Tunnel erstellen...",

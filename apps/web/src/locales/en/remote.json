@@ -109,7 +109,8 @@
       "waylandUnsupported": "This is a Wayland desktop — remote desktop needs a newer agent",
       "x11AuthFailed": "Couldn't authenticate to the display server (X authority)",
       "x11ConnectFailed": "Couldn't connect to the display server on this device"
-    }
+    },
+    "opensNewWindow": "(opens in a new window)"
   },
   "connectVncButton": {
     "creatingTunnel": "Creating tunnel...",

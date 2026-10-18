@@ -109,7 +109,8 @@
       "waylandUnsupported": "Questo è un desktop Wayland: per il desktop remoto è necessario un agente più recente",
       "x11AuthFailed": "Impossibile autenticarsi sul server grafico (autorità X)",
       "x11ConnectFailed": "Impossibile connettersi al server grafico su questo dispositivo"
-    }
+    },
+    "opensNewWindow": "(si apre in una nuova finestra)"
   },
   "connectVncButton": {
     "creatingTunnel": "Creazione del tunnel in corso...",

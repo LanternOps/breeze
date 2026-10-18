@@ -109,7 +109,8 @@
       "waylandUnsupported": "Esta é uma área de trabalho Wayland — a área de trabalho remota requer um agente mais recente",
       "x11AuthFailed": "Não foi possível autenticar no servidor de exibição (autoridade X)",
       "x11ConnectFailed": "Não foi possível conectar ao servidor de exibição deste dispositivo"
-    }
+    },
+    "opensNewWindow": "(abre em uma nova janela)"
   },
   "connectVncButton": {
     "creatingTunnel": "Criando túnel...",

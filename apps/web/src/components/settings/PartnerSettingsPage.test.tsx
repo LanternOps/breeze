@@ -252,6 +252,47 @@ describe('PartnerSettingsPage language control', () => {
   });
 });
 
+describe('PartnerSettingsPage security clear (#8976)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    await act(async () => { await i18n.changeLanguage('en'); });
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  it('sends an explicit null for a cleared session timeout so the server drops the stored value', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro',
+        createdAt: '2026-02-09T00:00:00.000Z',
+        settings: {
+          timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en',
+          businessHours: { preset: 'business' }, contact: {},
+          security: { sessionTimeout: 720, maxSessions: 3 },
+        },
+      })
+    );
+    render(<PartnerSettingsPage />);
+    await screen.findByRole('heading', { name: /Partner Settings/i });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^security$/i }));
+
+    const input = screen.getByDisplayValue('720') as HTMLInputElement;
+    await user.clear(input);
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.settings.security.sessionTimeout).toBeNull();
+    // Untouched fields keep their value.
+    expect(body.settings.security.maxSessions).toBe(3);
+  });
+});
+
 describe('PartnerSettingsPage Company tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();

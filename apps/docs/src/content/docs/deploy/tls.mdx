@@ -233,6 +233,10 @@ If you prefer nginx, here's an equivalent configuration.
   When using nginx instead of Caddy, remove the `caddy` service from `docker-compose.yml` and set `TRUST_PROXY_HEADERS=true` in your `.env`.
 </Aside>
 
+<Aside type="caution" title="Trust Center embeds and proxy-added framing headers">
+  The server-level `add_header X-Frame-Options "DENY" always;` above also lands on `/portal/trust/embed/` responses, the one portal path that may be framed by the websites a [Trust Center embed](/security/trust-center-embed/) allows. A proxy that adds its own `Content-Security-Policy` to those responses always breaks embedding, because a second, restrictive CSP is enforced alongside the portal's. A proxy-added `X-Frame-Options` is ignored by modern browsers when the portal's `frame-ancestors` is present, but it still blocks the embed in older browsers. Exclude `location /portal/trust/embed/` from both, for example with its own `location` block that sets only the headers you need (nginx does not inherit server-level `add_header` into a block that declares its own).
+</Aside>
+
 ## Security Headers
 
 Both configurations include these security headers:

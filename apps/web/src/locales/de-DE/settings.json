@@ -4426,7 +4426,8 @@
     "reEnterYourNewPassword": "Geben Sie Ihr neues Passwort erneut ein",
     "confirmPassword": "bestätigenPasswort",
     "newPassword2": "neuesPasswort",
-    "changingPassword": "Passwort ändern..."
+    "changingPassword": "Passwort ändern...",
+    "noPasswordNotice": "Dieses Konto meldet sich über den Identitätsanbieter Ihrer Organisation an und hat kein Passwort, daher gibt es hier nichts zu ändern. Wenn Ihre Organisation kein Single Sign-On vorschreibt, können Sie auf der Anmeldeseite über „Passwort vergessen“ eines festlegen."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single Sign-On verbunden.",

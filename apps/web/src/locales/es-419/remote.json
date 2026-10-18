@@ -109,7 +109,8 @@
       "waylandUnsupported": "Este es un escritorio Wayland — el escritorio remoto requiere un agente más reciente",
       "x11AuthFailed": "No se pudo autenticar en el servidor de pantalla (autoridad X)",
       "x11ConnectFailed": "No se pudo conectar al servidor de pantalla de este dispositivo"
-    }
+    },
+    "opensNewWindow": "(se abre en una ventana nueva)"
   },
   "connectVncButton": {
     "creatingTunnel": "Creando túnel...",

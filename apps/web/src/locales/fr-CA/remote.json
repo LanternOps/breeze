@@ -109,7 +109,8 @@
       "waylandUnsupported": "Il s’agit d’un bureau Wayland — le bureau à distance nécessite un agent plus récent",
       "x11AuthFailed": "Impossible de s’authentifier auprès du serveur d’affichage (autorité X)",
       "x11ConnectFailed": "Impossible de se connecter au serveur d’affichage de cet appareil"
-    }
+    },
+    "opensNewWindow": "(s’ouvre dans une nouvelle fenêtre)"
   },
   "connectVncButton": {
     "creatingTunnel": "Création du tunnel...",

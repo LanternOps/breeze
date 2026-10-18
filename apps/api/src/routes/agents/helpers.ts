@@ -43,10 +43,10 @@ import {
   recordSoftwareRemediationDecision
 } from '../metrics';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { releaseFilesystemScanGenerationForCommand } from '../../services/filesystemScanGenerationRelease';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
   claimFilesystemScanGeneration,
-  clearFilesystemScanGeneration,
   setFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
@@ -1744,20 +1744,7 @@ async function releaseFailedFilesystemScanGeneration(
   command: typeof deviceCommands.$inferSelect,
   status: string,
 ): Promise<void> {
-  const [deviceRow] = await db
-    .select({ osType: devices.osType })
-    .from(devices)
-    .where(eq(devices.id, command.deviceId))
-    .limit(1);
-  if (!deviceRow) {
-    console.warn(
-      `[agents/helpers] filesystem_analysis command ${command.id} ended ${status} but device ${command.deviceId} has no devices row; scan generation not released`
-    );
-    return;
-  }
-  const payload = isObject(command.payload) ? command.payload : {};
-  const scanPath = normalizeScanPath(deviceRow.osType, asString(payload.path) ?? osRootScanPath(deviceRow.osType));
-  await clearFilesystemScanGeneration(command.deviceId, scanPath, command.id);
+  await releaseFilesystemScanGenerationForCommand(command, status);
 }
 
 export async function handleFilesystemAnalysisCommandResult(

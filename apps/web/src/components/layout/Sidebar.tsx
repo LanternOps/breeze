@@ -1131,7 +1131,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const sidebarContent = (
     <aside
       className={cn(
-        'flex h-full flex-col border-r bg-card transition-all duration-200',
+        'flex h-full flex-col border-r bg-card transition-shadow duration-200',
         // Hide completely on mobile — the overlay handles it
         isMobile && 'hidden',
         // z-30: app-chrome overlay band. In-page sticky chrome (e.g. the quote/
