@@ -228,11 +228,12 @@ vi.mock('./DeviceCard', () => ({
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
 type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; lastLogAt?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters, sortInHash }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void; sortInHash?: boolean }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
       data-include-decommissioned={includeDecommissioned ? 'true' : 'false'}
+      data-sort-in-hash={sortInHash ? 'true' : 'false'}
       data-can-hide-decommissioned={onHideDecommissioned ? 'true' : 'false'}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
@@ -1797,6 +1798,9 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     await waitFor(() => {
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
       expect(messages.some(m => /1/.test(m) && /host-beta/.test(m))).toBe(true);
+      // #9037: plural key resolves with `count` (a stale `succeeded:` would
+      // leave "{{count}}" or the raw key in the toast).
+      expect(messages).toContain('1 device removed; 1 failed: host-beta');
     });
   });
 
@@ -3493,9 +3497,12 @@ describe('DevicesPage — page chrome (#9035)', () => {
   const NET_9 = '99999999-9999-9999-9999-999999999999';
   const savedOrgState = { ...orgStoreState };
 
-  afterEach(() => {
+  afterEach(async () => {
     Object.assign(orgStoreState, savedOrgState);
     history.replaceState(null, '', '/');
+    // mockReturnValue persists across tests; hand later suites the harness default.
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(activeFilter);
   });
 
   async function renderAgentOnly() {
@@ -3552,6 +3559,11 @@ describe('DevicesPage — page chrome (#9035)', () => {
     expect(await screen.findByTestId('device-class-segment')).toBeInTheDocument();
   });
 
+  it('lets the list mirror its sort into the URL hash (#9037)', async () => {
+    const list = await renderAgentOnly();
+    expect(list.getAttribute('data-sort-in-hash')).toBe('true');
+  });
+
   it('moves the list/grid toggle into the table header strip', async () => {
     await renderAgentOnly();
     const actions = screen.getByTestId('device-list-header-actions');
@@ -3572,9 +3584,12 @@ describe('DevicesPage — page chrome (#9035)', () => {
 describe('DevicesPage — empty states (#9036)', () => {
   const savedOrgState = { ...orgStoreState };
 
-  afterEach(() => {
+  afterEach(async () => {
     Object.assign(orgStoreState, savedOrgState);
     history.replaceState(null, '', '/');
+    // mockReturnValue persists across tests; hand later suites the harness default.
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(activeFilter);
   });
 
   async function renderEmpty() {
@@ -3644,6 +3659,14 @@ describe('DevicesPage — empty states (#9036)', () => {
     expect(empty).toHaveTextContent('Your fleet is empty');
     expect(screen.queryByTestId('devices-empty-org')).toBeNull();
     expect(screen.queryByTestId('device-filter-toolbar-stub')).toBeNull();
+  });
+
+  it('(c) offers no Clear filters when nothing clearable is active (review)', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(screen.queryByTestId('stub-clear-filters')).toBeNull();
   });
 
   it('(c) keeps the toolbar and hands the list a Clear filters action when filters match nothing', async () => {

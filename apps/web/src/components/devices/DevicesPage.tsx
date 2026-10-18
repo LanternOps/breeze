@@ -266,9 +266,9 @@ export default function DevicesPage() {
   // mint enrollment keys — the same UX gate as the Add menu item (#7217).
   const { can } = usePermissions();
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  // Org scope is shown by the always-visible top-bar switcher (scope pill +
-  // org picker); the page header no longer repeats it. orgStoreOrgs is still
-  // used to name orgs in the run-script confirm dialog.
+  // Org scope is shown by the top-bar switcher and, since #9035, as a muted
+  // suffix in this page's heading (ContextScopeLine skips /devices). orgStoreOrgs
+  // is still used to name orgs in the run-script confirm dialog.
   const { organizations: orgStoreOrgs } = useOrgStore();
 
   // #4147 — the list fetch carries no orgId of its own: fetchWithAuth injects
@@ -568,8 +568,9 @@ export default function DevicesPage() {
   // The merged list narrowed by class only — what the table receives.
   // DeviceList applies the shared predicate itself (it owns paging), while the
   // grid below applies it here; both start from the same class-narrowed set.
-  // The segment only renders when it has something to say (#9035): a network
-  // or manual row exists in the unfiltered list, or a deep link names a
+  // The segment only renders when it has something to say (#9035): a manual
+  // row, or (network arm on) a network row, exists in the unfiltered list, or a
+  // deep link names a
   // non-agent class (so the choice stays visible and undoable). An agent-only
   // fleet gets no "Agent 3 / Network 0 / Manual 0" row. When it is hidden, a
   // remembered Network or Manual choice would empty the list with no control
@@ -578,6 +579,8 @@ export default function DevicesPage() {
   const classPinnedByHash =
     typeof window !== 'undefined' &&
     (deviceClassFilter === 'manual' || (deviceClassFilter === 'network' && ENABLE_NETWORK_DEVICES_IN_LIST)) &&
+    // Read at render on purpose: the segment click writes the hash and sets
+    // state in the same step, so this never lags a user choice.
     readDeviceClassFromHash(window.location.hash) === deviceClassFilter;
   // An empty list has nothing to segment (#9036): no "All 0 / Agent 0" row.
   const showDeviceClassSegment =
@@ -2126,6 +2129,12 @@ export default function DevicesPage() {
     setAdvancedFilter(null);
     setListFilters(DEFAULT_LIST_FILTERS);
   };
+  // Offer "Clear filters" only when it would change something: a list emptied
+  // by the hidden-removed rule alone has the count line's "show" hint instead.
+  const hasClearableFilters =
+    (advancedFilter?.conditions.length ?? 0) > 0 ||
+    listFilters.search.trim() !== '' ||
+    (listFilters.vpn ?? 'all') !== 'all';
   // The unfiltered fetch is empty: nothing to filter, segment, count or page.
   const listIsEmpty = devices.length === 0;
   const emptyOrgScope = orgScope.status === 'resolved' && orgScope.scope === 'org' ? orgScope : null;
@@ -2444,7 +2453,7 @@ export default function DevicesPage() {
           networkDevicesEnabled={ENABLE_NETWORK_DEVICES_IN_LIST}
           effectiveAgentVersionByOrgId={effectiveAgentVersionByOrgId}
           headerActions={viewToggle}
-          onClearFilters={handleClearFilters}
+          onClearFilters={hasClearableFilters ? handleClearFilters : undefined}
           sortInHash
         />
       ) : (
@@ -2500,13 +2509,16 @@ export default function DevicesPage() {
               className="flex flex-col items-center gap-2 rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground"
             >
               <p className="font-medium text-foreground">{t('deviceList.noMatchesTitle')}</p>
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                className="rounded-md border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted"
-              >
-                {t('deviceFilters.clearFilters')}
-              </button>
+              {hasClearableFilters && (
+                <button
+                  type="button"
+                  data-testid="device-grid-clear-filters"
+                  onClick={handleClearFilters}
+                  className="rounded-md border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted"
+                >
+                  {t('deviceFilters.clearFilters')}
+                </button>
+              )}
             </div>
           )}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

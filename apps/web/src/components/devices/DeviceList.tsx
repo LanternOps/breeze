@@ -569,8 +569,9 @@ type DeviceListProps = {
   // header strip next to Columns, so the count, view and column controls share
   // one row instead of stacking above the table.
   headerActions?: React.ReactNode;
-  // #9036: resets every filter the page owns (advanced group, search, VPN,
-  // removed-devices toggle). When given, the no-match row offers "Clear filters".
+  // #9036: clears the page's clearable filters (advanced group, search, VPN).
+  // The page passes it only while one of those is active; when given, the
+  // no-match row offers "Clear filters".
   onClearFilters?: () => void;
   // #9037: mirror the sort into the URL hash (`sort=<column>.<dir>`) so a
   // sorted view survives reload. Off by default: the organization record's
@@ -1061,11 +1062,14 @@ export default function DeviceList({
     });
   };
 
-  // Neighbor is the visible column above/below; hidden columns in
-  // columnOrder are skipped so the swap matches what the user sees.
+  // Neighbor is the drawn column above/below; hidden, unavailable and
+  // class-gated columns are skipped so the swap matches what the user sees
+  // (the chooser's up/down state is computed from the same drawn set).
   const moveColumn = (id: ColumnId, direction: -1 | 1) => {
     setColumnOrder((prev) => {
-      const visibleIds = prev.filter((c) => visibleColumns.has(c));
+      const visibleIds = prev.filter(
+        (c) => visibleColumns.has(c) && isColumnAvailable(c) && classAllowsColumn(c),
+      );
       const visibleIdx = visibleIds.indexOf(id);
       if (visibleIdx === -1) return prev;
       const targetVisibleIdx = visibleIdx + direction;
@@ -2843,7 +2847,8 @@ export default function DeviceList({
           {/* Search / Status / OS / quick chips / More / Advanced live in
               DeviceFilterToolbar and the class segment in DevicesPage. What
               stays next to the count is list-local: the VPN facet, the
-              "Collapse linked" toggle and the Columns menu. */}
+              "Collapse linked" toggle, the Columns chooser, the page's
+              headerActions (list/grid toggle) and per-page. */}
           <div className="flex flex-wrap items-center gap-2">
             {visibleColumns.has("vpn") && hasAgentRows && (
               <select
@@ -3175,8 +3180,9 @@ export default function DeviceList({
                   className="px-3 py-6 text-center text-sm text-muted-foreground"
                 >
                   {devices.length > 0 ? (
-                    // Rows exist; the filters (search, VPN, advanced group or
-                    // the removed-devices rule) excluded all of them (#9036 c).
+                    // Rows exist; the filters (search, VPN, advanced group) or
+                    // the hidden-removed rule excluded all of them (#9036 c).
+                    // The removed case has its own "show" hint on the count line.
                     <div data-testid="device-list-no-matches" className="flex flex-col items-center gap-2">
                       <p className="font-medium text-foreground">{t("deviceList.noMatchesTitle")}</p>
                       {onClearFilters && (

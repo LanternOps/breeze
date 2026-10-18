@@ -37,9 +37,10 @@ const TONE_CLASS: Record<EntityLinkTone, string> = {
 // make it solid. inline-flex + min-h keeps a 24px target. The name sits in a
 // truncating inner span so a link in a narrow cell still ellipsizes (an
 // overflowing inline-flex box would otherwise be swallowed whole by the
-// parent's ellipsis).
+// parent's ellipsis). min-w-0 lets the anchor shrink when it is itself a flex
+// item (a metadata row), so the inner span can ellipsize there too.
 const LINK_CLASS =
-  'inline-flex max-w-full min-h-[24px] items-center rounded-sm underline underline-offset-4 decoration-border ' +
+  'inline-flex min-w-0 max-w-full min-h-[24px] items-center rounded-sm underline underline-offset-4 decoration-border ' +
   'hover:decoration-current focus-visible:decoration-current focus-visible:outline-none ' +
   'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
 

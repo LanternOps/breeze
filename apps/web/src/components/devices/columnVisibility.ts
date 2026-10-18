@@ -160,7 +160,7 @@ export const COLUMN_GROUPS: Record<ColumnId, ColumnGroup> = {
 };
 
 // The Device column names the row; a table without it is unreadable, so it is
-// shown on every read and never persisted as hidden (#9034).
+// shown on every read and forced visible on every visibility write (#9034).
 const LOCKED_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>(['hostname']);
 
 export function isColumnLocked(id: ColumnId): boolean {

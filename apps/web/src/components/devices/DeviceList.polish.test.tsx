@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
+import { DEFAULT_VISIBLE_COLUMNS, writeColumnVisibility } from './columnVisibility';
 
 vi.mock('../../stores/auth', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/auth')>()),
@@ -199,6 +200,8 @@ describe('DeviceList polish (#9037)', () => {
   });
 
   it('renders no text below 11px for pills (class, source, status, reboot)', () => {
+    // Opt the source and pending-reboot columns in so their pills render.
+    writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS, 'source', 'pendingReboot']);
     const { container } = render(
       <DeviceList
         networkDevicesEnabled
@@ -210,5 +213,14 @@ describe('DeviceList polish (#9037)', () => {
       />,
     );
     expect(container.innerHTML).not.toContain('text-[10px]');
+    expect(container.querySelectorAll('.text-\\[11px\\]').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('keeps the org and site links muted and the device link primary (#9033 tone)', () => {
+    const { container } = render(<DeviceList devices={[device(1)]} />);
+    const row = container.querySelector('tbody tr') as HTMLElement;
+    expect(within(row).getByTestId('org-record-link')).toHaveClass('text-muted-foreground');
+    expect(within(row).getByTestId('site-record-link')).toHaveClass('text-muted-foreground');
+    expect(within(row).getByTestId('device-record-link')).toHaveClass('text-foreground');
   });
 });

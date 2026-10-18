@@ -46,8 +46,9 @@ const groupHeadingClass =
 /**
  * The devices list "Columns" popover (#9034): a non-modal dialog with a filter
  * box, the shown columns in render order (reorderable), and the rest grouped
- * by section. Escape and an outside click close it and hand focus back to the
- * trigger; Tab stays inside while it is open.
+ * by section. Escape closes it and refocuses the trigger; an outside click
+ * closes it and refocuses the trigger only if focus would otherwise be lost.
+ * Non-modal (aria-modal=false: the page stays live) but Tab wraps inside.
  */
 export function ColumnChooser({
   columnOrder,
@@ -80,6 +81,7 @@ export function ColumnChooser({
     }
     // An outside click on something focusable keeps that focus; a click on
     // inert space would otherwise strand focus on <body> once the panel goes.
+    // A 0ms timeout suffices: the mousedown's default focus move has run by then.
     setTimeout(() => {
       const active = document.activeElement;
       if (!active || active === document.body) triggerRef.current?.focus();

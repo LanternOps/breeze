@@ -16,7 +16,8 @@ import { useTranslation } from 'react-i18next';
  *   fleet view, org-required→ "This page shows one organization at a time"
  *
  * Org view on an org page renders nothing (the trigger already says it), as do
- * partner-settings and device/self surfaces.
+ * partner-settings and device/self surfaces, and pages whose own heading states
+ * the scope (isScopeInHeadingRoute — the devices list, #9035).
  */
 export default function ContextScopeLine() {
   const { t } = useTranslation('common');

@@ -131,6 +131,8 @@ describe('EntityLink', () => {
   it('keeps a 24px minimum target', () => {
     render(<EntityLink kind="device" id="d1" name="web-01" />);
     expect(screen.getByTestId('device-record-link')).toHaveClass('inline-flex', 'items-center', 'min-h-[24px]');
+    // Shrinkable as a flex item, so the inner span can ellipsize in a flex row.
+    expect(screen.getByTestId('device-record-link')).toHaveClass('min-w-0');
   });
 
   it('defaults to the primary (foreground) tone and does not change colour on hover', () => {

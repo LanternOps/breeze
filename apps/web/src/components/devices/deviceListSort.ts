@@ -24,7 +24,9 @@ export function readSortFromHash(hash: string): ListSort | null {
   for (const part of fragmentParts(hash)) {
     const [key, value] = part.split('=');
     if (key !== HASH_KEY || !value) continue;
-    const [field, direction] = decodeURIComponent(value).split('.');
+    // No decodeURIComponent: the writer never encodes (tokens are [A-Za-z.]),
+    // and a malformed %-sequence in a shared link would throw on mount.
+    const [field, direction] = value.split('.');
     if (field && isValidColumnId(field) && (direction === 'asc' || direction === 'desc')) {
       return { field, direction };
     }

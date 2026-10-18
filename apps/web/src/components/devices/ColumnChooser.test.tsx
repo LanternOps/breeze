@@ -149,6 +149,17 @@ describe('ColumnChooser (#9034)', () => {
     expect(within(screen.getByTestId('column-chooser-shown')).queryByTestId('column-chooser-option-class')).toBeNull();
   });
 
+  it.each<[ColumnId, ColumnGateReason, string]>([
+    ['cpu', 'networkOnlyView', 'Hidden while only network devices are listed'],
+    ['assetTag', 'noManualAssets', 'Shown only when manual assets are listed'],
+  ])('explains a %s column gated by %s', (id, reason, copy) => {
+    renderChooser({ gateReason: (c) => (c === id ? reason : null) });
+    open();
+    const option = screen.getByTestId(`column-chooser-option-${id}`);
+    expect(within(option).getByRole('checkbox')).toBeDisabled();
+    expect(option).toHaveTextContent(copy);
+  });
+
   it('locks the Device column: checked, disabled, "Always shown", no "Hide Device"', () => {
     const onToggle = vi.fn();
     renderChooser({ onToggle });

@@ -78,4 +78,18 @@ describe('DeviceList — column chooser wiring (#9034)', () => {
     fireEvent.click(within(screen.getByTestId('column-chooser-option-site')).getByRole('checkbox'));
     expect(container.querySelector('thead')).not.toHaveTextContent('Site');
   });
+
+  it('moves a column past a class-gated neighbour so the swap is visible (#9034 review)', () => {
+    // Default order: hostname, class (gated off: agent-only fleet), type, organization…
+    const { container } = render(<DeviceList devices={[agent]} networkDevicesEnabled />);
+    const headers = () =>
+      Array.from(container.querySelectorAll('thead th')).map((th) => th.textContent?.trim()).filter(Boolean);
+    expect(headers().slice(0, 2)).toEqual(['Device', 'Organization']);
+    fireEvent.click(screen.getByTestId('column-chooser-trigger'));
+    fireEvent.click(
+      within(screen.getByTestId('column-chooser-option-organization')).getByRole('button', { name: 'Move Organization up' }),
+    );
+    expect(headers().slice(0, 2)).toEqual(['Organization', 'Device']);
+  });
 });
+

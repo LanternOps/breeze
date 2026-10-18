@@ -215,7 +215,8 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
 
       {open && (
         // #9037: a dialog, not a menu — it holds buttons, a star toggle and a
-        // name input. Escape closes and hands focus back to the trigger; below
+        // name input. Escape closes and hands focus back to the trigger (while
+        // naming, Escape only cancels the name input); below
         // `sm` it pins to the viewport gutters instead of hanging off the left
         // edge from its right-aligned anchor.
         <div
