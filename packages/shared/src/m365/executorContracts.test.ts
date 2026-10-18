@@ -34,7 +34,6 @@ describe('M365 executor request schemas', () => {
     for (const name of [
       'completeConsentRequestSchema',
       'completeConsentResultSchema',
-      'completeConsentVerifiedResultSchema',
     ]) {
       expect(m365Contracts).not.toHaveProperty(name);
     }

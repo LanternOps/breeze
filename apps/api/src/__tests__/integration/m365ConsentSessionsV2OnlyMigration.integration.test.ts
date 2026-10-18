@@ -9,9 +9,10 @@
  *
  * The test connection is a superuser and owns the table, so it bypasses even
  * FORCE ROW LEVEL SECURITY. The cleanup DO block is therefore first run on its
- * own as the RLS-bound breeze_app role at the default ('none') scope: only the
- * block's own system-scope election lets its DELETE see the rows. The whole
- * file then runs twice as the owner to prove it is idempotent.
+ * own, inside a rolled-back savepoint, as the RLS-bound breeze_app role at the
+ * default ('none') scope: only the block's own system-scope election lets its
+ * DELETE see the rows. The whole file then runs as the owner against the still
+ * populated table (the deploy path), and once more to prove it is idempotent.
  *
  * Run:
  *   cd apps/api && npx vitest run --config vitest.integration.config.ts \
@@ -116,17 +117,28 @@ describe('m365_consent_sessions v2-only migration (#7910 W04)', () => {
           SELECT flow_version FROM m365_consent_sessions WHERE connection_id = ${fx.connectionId} ORDER BY state_hash
         `).map((row) => row.flow_version);
 
-        // The cleanup block alone, as the RLS-bound app role at default scope.
-        await tx.unsafe("SELECT set_config('breeze.scope', 'none', true)");
-        await tx.unsafe('SET LOCAL ROLE breeze_app');
-        await tx.unsafe(W04_CLEANUP_BLOCK);
-        await tx.unsafe('RESET ROLE');
-        observed.afterCleanup = (await tx`
+        // The cleanup block alone, as the RLS-bound app role at default scope,
+        // inside a savepoint that is then rolled back so the v1 rows survive.
+        await tx.savepoint(async (sp) => {
+          await sp.unsafe("SELECT set_config('breeze.scope', 'none', true)");
+          await sp.unsafe('SET LOCAL ROLE breeze_app');
+          await sp.unsafe(W04_CLEANUP_BLOCK);
+          await sp.unsafe('RESET ROLE');
+          observed.afterCleanup = (await sp`
+            SELECT state_hash, flow_version FROM m365_consent_sessions WHERE connection_id = ${fx.connectionId}
+          `).map((row) => ({ stateHash: row.state_hash, flowVersion: row.flow_version }));
+          throw new Rollback();
+        }).catch((error: unknown) => { if (!(error instanceof Rollback)) throw error; });
+        observed.beforeFullRun = (await tx`
+          SELECT flow_version FROM m365_consent_sessions WHERE connection_id = ${fx.connectionId} ORDER BY state_hash
+        `).map((row) => row.flow_version);
+
+        // The full file as deployed (owner, table still holding v1 rows), then
+        // again: re-applying must be a no-op.
+        await tx.unsafe(W04_SQL);
+        observed.afterFullRun = (await tx`
           SELECT state_hash, flow_version FROM m365_consent_sessions WHERE connection_id = ${fx.connectionId}
         `).map((row) => ({ stateHash: row.state_hash, flowVersion: row.flow_version }));
-
-        // The full file, twice: re-applying must be a no-op.
-        await tx.unsafe(W04_SQL);
         await tx.unsafe(W04_SQL);
 
         observed.flowVersionCheck = (await tx`
@@ -163,11 +175,16 @@ describe('m365_consent_sessions v2-only migration (#7910 W04)', () => {
     }
 
     expect(observed.seededFlowVersions).toEqual([1, 1, 2]);
+    // The RLS-bound cleanup saw both v1 rows (its own system-scope election)...
     expect(observed.afterCleanup).toEqual([{ stateHash: '3'.repeat(64), flowVersion: 2 }]);
-    // Exactly one count warning: the RLS-bound cleanup saw both v1 rows; the
-    // two later full runs found nothing and stayed silent.
-    expect(notices.filter((n) => /legacy m365_consent_sessions rows/.test(n)))
-      .toEqual(['WARNING: cleaned 2 legacy m365_consent_sessions rows']);
+    // ...and was rolled back, so the full run started from a populated table.
+    expect(observed.beforeFullRun).toEqual([1, 1, 2]);
+    expect(observed.afterFullRun).toEqual([{ stateHash: '3'.repeat(64), flowVersion: 2 }]);
+    // One count warning per run that found rows; the re-apply stayed silent.
+    expect(notices.filter((n) => /legacy m365_consent_sessions rows/.test(n))).toEqual([
+      'WARNING: cleaned 2 legacy m365_consent_sessions rows',
+      'WARNING: cleaned 2 legacy m365_consent_sessions rows',
+    ]);
     expect(observed.flowVersionCheck).toEqual(['CHECK ((flow_version = 2))']);
     expect(observed.phaseFieldsCheck).toHaveLength(1);
     expect(String((observed.phaseFieldsCheck as string[])[0])).not.toMatch(/flow_version = 1/);

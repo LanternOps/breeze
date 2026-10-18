@@ -101,6 +101,27 @@ describe('retestOperation', () => {
     });
   });
 
+  it('preserves verified tenant proof when grant reconciliation is unavailable', async () => {
+    const result = await retestOperation({
+      correlationId: '11111111-1111-4111-8111-111111111111',
+      tenantId: TENANT,
+    }, deps());
+
+    expect(result).toMatchObject({
+      success: true,
+      tenantId: TENANT,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Example',
+      manifestVersion: getM365PermissionProfile('customer-graph-actions').version,
+      grantReconciliation: 'unavailable',
+      errorCode: 'grant_reconciliation_unavailable',
+      observedGrants: null,
+      missingGrants: null,
+      unexpectedGrants: null,
+      grantsVerifiedAt: null,
+    });
+  });
+
   it('fails closed when the application proof does not match the fixed configured app', async () => {
     const d = deps();
     d.graphClient.probeTenant = vi.fn().mockResolvedValue({

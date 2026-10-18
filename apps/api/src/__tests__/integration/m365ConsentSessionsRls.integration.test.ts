@@ -166,7 +166,9 @@ describe('m365_consent_sessions forced system-only RLS', () => {
       consentAttemptId: '99999999-9999-4999-8999-999999999999',
       userId: fx.user.id,
       expiresAt: new Date(Date.now() + 300_000),
-    }))).rejects.toMatchObject({ cause: { code: '23503' } });
+    }))).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'm365_consent_sessions_connection_identity_fkey' },
+    });
   });
 
   runDb('rolls back the consent-session consume when the verifying CAS loses', async () => {

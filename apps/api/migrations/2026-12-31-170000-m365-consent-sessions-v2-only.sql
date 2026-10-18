@@ -14,8 +14,9 @@
 -- so the DELETE elects system scope first; without it the DELETE would silently
 -- match zero rows. m365_consent_sessions_phase_check is unchanged:
 -- 'tenant_confirmation' is the live W03 confirm-tenant phase. No column is
--- dropped: tenant_hint_hash still pins a v2 identity-phase row to its bound
--- tenant.
+-- dropped: tenant_hint_hash is still written by a v2 identity-phase row pinned
+-- to a bound tenant (reconnect, upgrade) and must be NULL once the identity is
+-- verified.
 --
 -- Idempotent: the DELETE is a no-op once no v1 row exists, and every constraint
 -- is DROP IF EXISTS + ADD.

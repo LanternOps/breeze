@@ -232,11 +232,11 @@ export type NewM365ConsentSessionRow = typeof m365ConsentSessions.$inferInsert;
  * table has `org_id NOT NULL` and a composite FK into the org-axis unique index, so it
  * structurally cannot hold a user-owned row.
  *
- * Note the absence of `tenantHintHash`, which is the substantive difference rather than an
- * omission. The shipped `identity_verification` phase requires a tenant GUID *before*
- * authorization, because an admin consented for a known customer tenant. A user's first
- * delegated sign-in happens at `/common` and Breeze learns `tid` only from the ID token
- * that comes back — there is nothing to hash beforehand.
+ * Note the absence of `tenantHintHash`, which is deliberate rather than an omission. The
+ * org-axis `identity_verification` phase hashes the tenant it is pinned to when one is
+ * already bound (reconnect, manifest upgrade). A user's delegated sign-in happens at
+ * `/common` and Breeze learns `tid` only from the ID token that comes back, so there is
+ * never a tenant to pin beforehand.
  */
 export type M365DelegatedConsentPhase = 'delegated_consent';
 
