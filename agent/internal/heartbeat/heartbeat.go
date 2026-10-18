@@ -7527,11 +7527,22 @@ type patchCommandRef struct {
 	Title      string
 	// Category is the catalog category the server sends alongside a stamped
 	// restore-point block (#4609 W07); "" when absent. Only the
-	// definitions-only checkpoint skip reads it.
+	// definitions-update checkpoint skip reads it.
 	Category string
 }
 
+// patchBeforeInstallFunc runs immediately before one patch is installed — see
+// patching.BeforeInstallFunc — with the ref it is installing and the
+// provider's own category for it ("" when the provider reports none).
+type patchBeforeInstallFunc func(ref patchCommandRef, providerCategory string)
+
 func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback bool) tools.CommandResult {
+	return h.executePatchInstall(payload, rollback, nil)
+}
+
+// executePatchInstall is executePatchInstallCommand with an optional
+// before-install hook (install only; rollback never calls it).
+func (h *Heartbeat) executePatchInstall(payload map[string]any, rollback bool, before patchBeforeInstallFunc) tools.CommandResult {
 	start := time.Now()
 	if h.patchMgr == nil || len(h.patchMgr.ProviderIDs()) == 0 {
 		return tools.NewErrorResult(fmt.Errorf("no patch providers available"), time.Since(start).Milliseconds())
@@ -7575,7 +7586,12 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 			continue
 		}
 
-		installResult, err := h.patchMgr.Install(installID)
+		var hook patching.BeforeInstallFunc
+		if before != nil {
+			ref := ref
+			hook = func(providerCategory string) { before(ref, providerCategory) }
+		}
+		installResult, err := h.patchMgr.InstallWithHook(installID, hook)
 		if err != nil {
 			failedCount++
 			result := patchCommandResultFields(ref, installID)

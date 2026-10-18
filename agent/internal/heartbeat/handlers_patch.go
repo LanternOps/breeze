@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching"
@@ -168,8 +169,8 @@ func handleInstallPatches(h *Heartbeat, cmd Command) (result tools.CommandResult
 	refs := h.patchRefsFromPayload(cmd.Payload)
 	cp := newCommandCheckpoint(cmd.Payload, true, fmt.Sprintf("install %d update(s)", len(refs)))
 	// Every return path reports: a stamped request that never reached the
-	// checkpoint (preflight rejection, nothing installable) becomes
-	// skipped_no_mutation rather than vanishing.
+	// checkpoint (preflight rejection, nothing installable, every update
+	// already installed) becomes skipped_no_mutation rather than vanishing.
 	defer func() { result.RestorePoint = cp.Report() }()
 
 	// Run pre-flight checks before install
@@ -177,38 +178,41 @@ func handleInstallPatches(h *Heartbeat, cmd Command) (result tools.CommandResult
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
-	// Taken AFTER preflight and the same no-provider / no-patch checks
-	// executePatchInstallCommand makes first, so a command that cannot install
-	// anything does not consume the day's one restore point; and BEFORE that
-	// call, which is the first mutation.
-	if h.patchMgr != nil && len(h.patchMgr.ProviderIDs()) > 0 && len(refs) > 0 {
-		if allDefinitionsOnly(refs) {
-			cp.Skip(systemrestore.StatusSkippedDefinitions, "every patch in this command is a definitions update")
-		} else {
-			takeCheckpoint(cp)
+	// Taken LAZILY, at the first update the provider is actually about to
+	// install: for Windows Update that is after its own "already installed /
+	// no longer offered" check and the download (the spot the old per-update
+	// call used); any other provider calls the hook just before Install.
+	// Definitions updates never trigger it, by the device-observed category
+	// when the provider reports one, else by the server's catalog category.
+	// The Checkpoint makes the per-update calls at-most-once.
+	var sawDefinitions atomic.Bool
+	before := func(ref patchCommandRef, providerCategory string) {
+		if isDefinitionsUpdate(ref, providerCategory) {
+			sawDefinitions.Store(true)
+			return
 		}
+		takeCheckpoint(cp)
 	}
-
-	return h.executePatchInstallCommand(cmd.Payload, false)
+	result = h.executePatchInstall(cmd.Payload, false, before)
+	if sawDefinitions.Load() {
+		// No-op once a checkpoint was taken: only an all-definitions command
+		// that installed something is reported this way.
+		cp.Skip(systemrestore.StatusSkippedDefinitions, "only definitions updates were installed")
+	}
+	return result
 }
 
-// allDefinitionsOnly reports whether every patch in the command is a
-// definitions update. UNKNOWN OR EMPTY CATEGORY COUNTS AS RISKY: an unlabelled
-// patch might be anything, so we fail toward taking the checkpoint. The server
-// sends `category` only alongside a stamped block (patchJobExecutor), so an
-// unstamped legacy payload is all-unknown and takes its one best-effort
-// attempt even when every patch is a definitions update (the removed
-// per-update code read the category from WUA instead).
-func allDefinitionsOnly(refs []patchCommandRef) bool {
-	if len(refs) == 0 {
-		return false
+// isDefinitionsUpdate decides whether one update is a definitions update for
+// the checkpoint skip. The provider's device-observed category wins when it
+// has one; otherwise the server's catalog category (sent only alongside a
+// stamped block). UNKNOWN OR EMPTY COUNTS AS RISKY: an unlabelled update might
+// be anything, so we fail toward taking the checkpoint.
+func isDefinitionsUpdate(ref patchCommandRef, providerCategory string) bool {
+	category := strings.TrimSpace(providerCategory)
+	if category == "" {
+		category = strings.TrimSpace(ref.Category)
 	}
-	for _, r := range refs {
-		if !strings.EqualFold(strings.TrimSpace(r.Category), "definitions") {
-			return false
-		}
-	}
-	return true
+	return strings.EqualFold(category, "definitions")
 }
 
 func handleRollbackPatches(h *Heartbeat, cmd Command) tools.CommandResult {

@@ -266,12 +266,19 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv, 
 			"runAs", script.RunAs, "commandId", cmd.ID)
 	}
 
-	// #4609: the executor calls this once every one of its own refusal paths
-	// has passed and before the script's timeout clock starts, so a refused
-	// script never consumes the day's one restore point and the checkpoint
-	// (bounded by its own restorePointBudget) never eats timeoutSeconds.
+	// #4609: the executor calls this after its content refusals and before the
+	// script's timeout clock starts, so a script refused for its content never
+	// consumes the day's one restore point and the checkpoint (bounded by its
+	// own restorePointBudget) never eats timeoutSeconds. See
+	// executor.ScriptExecution.BeforeLaunch for the few refusals after it.
 	script.BeforeLaunch = func() { takeCheckpoint(cp) }
 	scriptResult, execErr := h.executor.Execute(script)
+	var dup *executor.DuplicateExecutionError
+	if errors.As(execErr, &dup) {
+		// A redelivery of a command still running under this id: that run
+		// owns the restore-point request, so this delivery answers nothing.
+		cp.Abandon()
+	}
 	if execErr != nil && scriptResult == nil {
 		return tools.NewErrorResult(execErr, time.Since(start).Milliseconds())
 	}

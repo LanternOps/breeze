@@ -46,8 +46,22 @@ type Checkpoint struct {
 	stamped   bool
 	create    CreateFunc
 
-	mu      sync.Mutex
-	outcome *Outcome
+	mu        sync.Mutex
+	outcome   *Outcome
+	abandoned bool
+}
+
+// Abandon makes this checkpoint inert: no later Take, nothing to Report. For a
+// command refused as a duplicate of an execution still running under the same
+// id — that execution owns the request and its outcome, and any answer from
+// the duplicate would win the server's compare-and-set on the ledger row.
+func (c *Checkpoint) Abandon() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.abandoned = true
 }
 
 // NewCheckpoint parses the restore-point block off payload (see ParseRequest
@@ -81,6 +95,9 @@ func (c *Checkpoint) Take(ctx context.Context) *Outcome {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.abandoned {
+		return nil
+	}
 	if c.outcome == nil {
 		out := c.create(ctx, c.req)
 		if out.Status != StatusCreated {
@@ -114,6 +131,9 @@ func (c *Checkpoint) Report() *Outcome {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.abandoned {
+		return nil
+	}
 	if c.outcome == nil {
 		return c.synthesized(StatusSkippedNoMutation, noMutationMessage)
 	}

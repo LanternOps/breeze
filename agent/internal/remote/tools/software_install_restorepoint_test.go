@@ -150,6 +150,7 @@ func TestInstallSoftwareSkipsCheckpointWhenValidationRejects(t *testing.T) {
 		"bad exit codes":      func(p map[string]any) { p["successExitCodes"] = "nope" },
 		"cleartext URL":       func(p map[string]any) { p["downloadUrl"] = "http://downloads.example.com/pkg.exe" },
 		"missing downloadUrl": func(p map[string]any) { delete(p, "downloadUrl") },
+		"download failure":    func(map[string]any) {},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -158,6 +159,14 @@ func TestInstallSoftwareSkipsCheckpointWhenValidationRejects(t *testing.T) {
 			recordingPipeline(t, &order, nil)
 			p := withSoftwareBlock(installPayload("https://downloads.example.com/pkg.exe", nil))
 			mutate(p)
+			if name == "download failure" {
+				stubInstallPipeline(t,
+					func(*http.Client, string, string) error { return errors.New("connection reset") },
+					func(string, string, string, []uint32) (int, string, bool, error) {
+						t.Fatal("installer must not run after a failed download")
+						return 0, "", false, nil
+					})
+			}
 			res := InstallSoftware(p)
 			if res.Status != "failed" {
 				t.Fatalf("status = %q, want failed", res.Status)

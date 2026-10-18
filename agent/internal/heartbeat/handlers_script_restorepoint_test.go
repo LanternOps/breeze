@@ -248,6 +248,61 @@ func TestScriptHelperWithoutRunAsUserScopeTakesNoCheckpoint(t *testing.T) {
 	}
 }
 
+func TestScriptHelperSendFailureAfterTheCheckpointStillReportsIt(t *testing.T) {
+	// The checkpoint precedes the IPC send; if the send then fails, the point
+	// genuinely exists and must be reported as taken, not lost and not
+	// relabelled skipped_no_mutation.
+	rec := installCheckpointRecorder(t)
+	serverConn, clientConn := createTestSocketPair(t)
+	session := sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "1000", "u", "quartz", "send-fail", []string{"run_as_user"})
+	clientConn.Close()
+	session.Close() // the send fails: the helper is gone
+	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+
+	res := runScript(h, withScriptBlock(map[string]any{"runAs": "user"}))
+	if res.Status != "failed" {
+		t.Fatalf("expected the IPC failure, got %+v", res)
+	}
+	if rec.count() != 1 {
+		t.Fatalf("attempts = %d, want 1", rec.count())
+	}
+	if res.RestorePoint == nil || res.RestorePoint.Status != systemrestore.StatusCreated {
+		t.Fatalf("RestorePoint = %+v, want the created outcome", res.RestorePoint)
+	}
+}
+
+func TestScriptRedeliveredWhileRunningReportsNoOutcome(t *testing.T) {
+	// The server can redeliver a running script's command after the agent's
+	// 2-minute dedup window. The executor refuses the duplicate before its
+	// boundary; that refusal must NOT answer the request, or its
+	// skipped_no_mutation would win the ledger CAS over the original run's
+	// real outcome.
+	skipUnlessBash(t)
+	rec := installCheckpointRecorder(t)
+	started := make(chan struct{})
+	rec.onCall = func() { close(started) }
+	h := newTestHeartbeat(nil)
+
+	firstDone := make(chan tools.CommandResult, 1)
+	go func() { firstDone <- runScript(h, withScriptBlock(map[string]any{"content": "sleep 2"})) }()
+	<-started // the first run has reached its boundary (and holds the id)
+
+	second := runScript(h, withScriptBlock(map[string]any{"content": "sleep 2"}))
+	if second.Status != "failed" {
+		t.Fatalf("duplicate = %+v, want the already-running refusal", second)
+	}
+	if second.RestorePoint != nil {
+		t.Fatalf("duplicate RestorePoint = %+v, want nil -- the original run owns the outcome", second.RestorePoint)
+	}
+	first := <-firstDone
+	if first.RestorePoint == nil || first.RestorePoint.Status != systemrestore.StatusCreated {
+		t.Fatalf("original RestorePoint = %+v, want created", first.RestorePoint)
+	}
+	if rec.count() != 1 {
+		t.Fatalf("attempts = %d, want 1", rec.count())
+	}
+}
+
 func TestScriptCheckpointDoesNotConsumeTheScriptTimeoutBudget(t *testing.T) {
 	// The checkpoint allowance must not come out of the script's own
 	// timeoutSeconds: a 1.5s checkpoint before a 1s-timeout script that

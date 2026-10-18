@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,6 +54,29 @@ func TestBeforeLaunchNotCalledForAScriptCancelledWhileQueued(t *testing.T) {
 	}
 	if res == nil || !res.Cancelled {
 		t.Fatalf("result = %+v, want the queued-cancel refusal", res)
+	}
+}
+
+func TestDuplicateExecutionIsTypedAndNeverCallsBeforeLaunch(t *testing.T) {
+	e := newTestExecutor()
+	// Hold a reservation for the id, as a still-running execution would.
+	running, _, _ := e.reserve("bl-dup", time.Now(), ScriptTypeBash)
+	defer e.release("bl-dup", running)
+
+	calls := 0
+	res, err := e.Execute(ScriptExecution{
+		ID: "bl-dup", ScriptType: ScriptTypeBash, Script: "echo hi",
+		BeforeLaunch: func() { calls++ },
+	})
+	var dup *DuplicateExecutionError
+	if !errors.As(err, &dup) || dup.ID != "bl-dup" {
+		t.Fatalf("err = %v, want a *DuplicateExecutionError for bl-dup", err)
+	}
+	if err.Error() != "execution bl-dup is already running" || res == nil || res.Error != err.Error() {
+		t.Fatalf("message changed: err %q, result %+v", err, res)
+	}
+	if calls != 0 {
+		t.Fatalf("BeforeLaunch calls = %d, want 0", calls)
 	}
 }
 

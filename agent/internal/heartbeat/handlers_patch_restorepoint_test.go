@@ -214,6 +214,121 @@ func TestInstallPatchesHonoursAnExplicitDisable(t *testing.T) {
 	}
 }
 
+// wuaLikeProvider implements patching.HookedInstaller the way
+// WindowsUpdateProvider does: it decides "already installed" itself (no hook)
+// and otherwise calls the hook with its own category just before installing.
+type wuaLikeProvider struct {
+	heartbeatMockProvider
+	// categories maps a local patch id to the provider-observed category;
+	// skipped lists local ids that are no longer offered.
+	categories map[string]string
+	skipped    map[string]bool
+}
+
+func (p *wuaLikeProvider) InstallWithHook(patchID string, before patching.BeforeInstallFunc) (patching.InstallResult, error) {
+	if p.skipped[patchID] {
+		return patching.InstallResult{PatchID: patchID, Skipped: true, SkipReason: "already_installed"}, nil
+	}
+	if before != nil {
+		before(p.categories[patchID])
+	}
+	return p.Install(patchID)
+}
+
+func newWUAHarness(t *testing.T, categories map[string]string, skipped map[string]bool) *patchCheckpointHarness {
+	t.Helper()
+	ph := newPatchCheckpointHarness(t)
+	wua := &wuaLikeProvider{heartbeatMockProvider: heartbeatMockProvider{id: "apt"}, categories: categories, skipped: skipped}
+	ph.provider = &wua.heartbeatMockProvider
+	ph.h.patchMgr = patching.NewPatchManager(wua)
+	return ph
+}
+
+func TestInstallPatchesTakesNoCheckpointWhenTheProviderSkipsEveryPatch(t *testing.T) {
+	// Stale inventory: Windows installed the approved updates overnight, so
+	// the provider reports every one "already installed" before mutating.
+	// The day's one restore point must not be spent on a no-op.
+	ph := newWUAHarness(t, nil, map[string]bool{"pkg0": true, "pkg1": true})
+	res := ph.install(patchPayload(true, "security", "security"))
+	if ph.rec.count() != 0 {
+		t.Fatalf("attempts = %d, want 0 when nothing is installed", ph.rec.count())
+	}
+	if res.RestorePoint == nil || res.RestorePoint.Status != systemrestore.StatusSkippedNoMutation {
+		t.Fatalf("RestorePoint = %+v, want skipped_no_mutation", res.RestorePoint)
+	}
+}
+
+func TestInstallPatchesCheckpointsAtTheFirstRealInstall(t *testing.T) {
+	ph := newWUAHarness(t, map[string]string{"pkg1": "security", "pkg2": "security"}, map[string]bool{"pkg0": true})
+	res := ph.install(patchPayload(true, "security", "security", "security"))
+	if ph.rec.count() != 1 {
+		t.Fatalf("attempts = %d, want 1", ph.rec.count())
+	}
+	if ph.installsBeforeCheckpoint != 0 {
+		t.Fatalf("%d install(s) before the checkpoint", ph.installsBeforeCheckpoint)
+	}
+	if res.RestorePoint == nil || res.RestorePoint.Status != systemrestore.StatusCreated {
+		t.Fatalf("RestorePoint = %+v", res.RestorePoint)
+	}
+}
+
+func TestInstallPatchesUsesTheProviderCategoryForDefinitions(t *testing.T) {
+	// The server sends no category here (e.g. an unstamped-shape record); the
+	// device's own WUA category says every update is definitions.
+	ph := newWUAHarness(t, map[string]string{"pkg0": "definitions", "pkg1": "definitions"}, nil)
+	res := ph.install(patchPayload(true, "", ""))
+	if ph.rec.count() != 0 {
+		t.Fatalf("attempts = %d, want 0", ph.rec.count())
+	}
+	if res.RestorePoint == nil || res.RestorePoint.Status != systemrestore.StatusSkippedDefinitions {
+		t.Fatalf("RestorePoint = %+v, want skipped_definition_only", res.RestorePoint)
+	}
+	if len(ph.provider.installIDs) != 2 {
+		t.Fatalf("installs = %d, want 2", len(ph.provider.installIDs))
+	}
+}
+
+func TestInstallPatchesLegacyDefinitionsOnlyTakesNoAttempt(t *testing.T) {
+	// The pre-W07 per-update code skipped definitions updates by their WUA
+	// category; an old server's unstamped definitions job keeps that.
+	ph := newWUAHarness(t, map[string]string{"pkg0": "definitions"}, nil)
+	res := ph.install(patchPayload(false, ""))
+	if ph.rec.count() != 0 || res.RestorePoint != nil {
+		t.Fatalf("attempts = %d, RestorePoint = %+v", ph.rec.count(), res.RestorePoint)
+	}
+}
+
+func TestInstallPatchesProviderCategoryOverridesAPayloadDefinitionsLabel(t *testing.T) {
+	// Fail toward protection: the catalog says definitions, the device says
+	// security. The device-observed category wins.
+	ph := newWUAHarness(t, map[string]string{"pkg0": "security"}, nil)
+	ph.install(patchPayload(true, "definitions"))
+	if ph.rec.count() != 1 {
+		t.Fatalf("attempts = %d, want 1", ph.rec.count())
+	}
+}
+
+func TestInstallPatchesMixedProviderCategoriesCheckpointOnce(t *testing.T) {
+	ph := newWUAHarness(t, map[string]string{"pkg0": "definitions", "pkg1": "security", "pkg2": "critical"}, nil)
+	res := ph.install(patchPayload(true, "", "", ""))
+	if ph.rec.count() != 1 {
+		t.Fatalf("attempts = %d, want 1", ph.rec.count())
+	}
+	if res.RestorePoint == nil || res.RestorePoint.Status != systemrestore.StatusCreated {
+		t.Fatalf("RestorePoint = %+v, want created (a definitions update installed first does not mask it)", res.RestorePoint)
+	}
+}
+
+func TestInstallPatchesPlainProviderStillCheckpointsBeforeEachInstallAttempt(t *testing.T) {
+	// A provider without the hook (apt, winget...) cannot say "already
+	// installed" before mutating, so the checkpoint precedes its Install.
+	ph := newPatchCheckpointHarness(t)
+	ph.install(patchPayload(true, "security", "security"))
+	if ph.rec.count() != 1 || ph.installsBeforeCheckpoint != 0 {
+		t.Fatalf("attempts = %d, installs before = %d", ph.rec.count(), ph.installsBeforeCheckpoint)
+	}
+}
+
 func TestRollbackPatchesNeverCheckpoints(t *testing.T) {
 	ph := newPatchCheckpointHarness(t)
 	res := handleRollbackPatches(ph.h, Command{ID: "cmd-rb", Type: tools.CmdRollbackPatches, Payload: patchPayload(true, "security")})

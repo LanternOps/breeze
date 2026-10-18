@@ -61,8 +61,20 @@ func (w *WindowsUpdateProvider) Scan() ([]AvailablePatch, error) {
 	})
 }
 
+// Without this the manager would silently fall back to calling the #4609
+// checkpoint hook before Install, i.e. before the skip check and download.
+var _ HookedInstaller = (*WindowsUpdateProvider)(nil)
+
 // Install installs a Windows Update by update ID.
 func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
+	return w.InstallWithHook(patchID, nil)
+}
+
+// InstallWithHook is Install calling before (when non-nil) at the true
+// mutation boundary: after the "no longer offered / already installed" skip
+// and the download, immediately before the installer is created. It is never
+// called for a skipped update.
+func (w *WindowsUpdateProvider) InstallWithHook(patchID string, before BeforeInstallFunc) (InstallResult, error) {
 	var result InstallResult
 	result.PatchID = patchID
 
@@ -107,10 +119,13 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 			}
 		}
 
-		// No restore point here: since #4609 W07 the install_patches handler
-		// (heartbeat.handleInstallPatches) takes ONE checkpoint per command,
-		// before the first install, where the server's policy decision is
-		// available.
+		// #4609 W07: the install_patches handler's before-mutation hook runs
+		// HERE — the spot the old per-update restore point used — and takes
+		// at most ONE checkpoint per command (heartbeat.handleInstallPatches).
+		// The category lets it skip definitions updates as the old code did.
+		if before != nil {
+			before(w.mapCategory(update))
+		}
 
 		installer, err := w.createInstaller(session, update)
 		if err != nil {

@@ -190,12 +190,28 @@ func TestCheckpointUnknownBlockVersionFallsBackToTheLegacyDefault(t *testing.T) 
 	}
 }
 
+func TestCheckpointAbandonedReportsNothing(t *testing.T) {
+	// A redelivered command refused as a duplicate of one still running must
+	// not answer the request: the original execution owns the outcome, and a
+	// skipped_no_mutation from the duplicate would win the ledger CAS.
+	calls := 0
+	cp := NewCheckpoint(stampedPayload("req-5", true, "x"), false, "x", countingCreate(&calls, nil))
+	cp.Abandon()
+	if got := cp.Report(); got != nil {
+		t.Fatalf("Report = %+v, want nil after Abandon", got)
+	}
+	if got := cp.Take(context.Background()); got != nil || calls != 0 {
+		t.Fatalf("Take after Abandon = %+v (calls %d), want inert", got, calls)
+	}
+}
+
 func TestCheckpointNilReceiverIsSafe(t *testing.T) {
 	var cp *Checkpoint
 	if cp.Requested() || cp.Take(context.Background()) != nil || cp.Report() != nil {
 		t.Fatal("nil checkpoint must be inert")
 	}
 	cp.Skip(StatusSkippedDefinitions, "x")
+	cp.Abandon()
 }
 
 func TestCheckpointReportReturnsACopy(t *testing.T) {
