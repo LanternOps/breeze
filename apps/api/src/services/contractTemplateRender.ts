@@ -12,8 +12,9 @@
 //     version content is immutable, so reading it ahead of (outside) any
 //     org-scoped transaction is safe — it can never see a value that later
 //     changes underneath the caller.
-//  2. resolveAutoVariables — derive the AUTO_CONTRACT_VARIABLES values from a
-//     quote row (money via the shared formatMoney with the document's resolved
+//  2. renderContextFromQuote + resolveAutoVariables — derive the
+//     AUTO_CONTRACT_VARIABLES values from an AgreementRenderContext (built from
+//     a quote row by renderContextFromQuote) (money via the shared formatMoney with the document's resolved
 //     locale so a contract's totals render byte-identical to the quote PDF's
 //     own summary on the same page).
 //  3. substituteVariables / findUnresolvedVariables — pure text substitution
@@ -48,7 +49,7 @@ export type ContractBlockRenderData = {
 };
 
 // Decoupled from the full Drizzle row only insofar as it IS the full row —
-// resolveAutoVariables is always called with an already-fetched quote (the
+// renderContextFromQuote is always called with an already-fetched quote (the
 // caller already has the whole thing in hand for the render), so there is no
 // benefit to a narrower hand-rolled shape here the way quotePdf.ts's
 // QuoteHeader decouples from a partial select.
@@ -276,53 +277,119 @@ function formatAddressLine(addr: BillToAddress | null | undefined): string {
     .join(', ');
 }
 
-/** Resolve every AUTO_CONTRACT_VARIABLES entry from a quote row. Money is
+/** Everything the auto-variable resolver needs, independent of where the
+ *  agreement came from (#8865 W1a). A quote-backed agreement carries `quote`;
+ *  a standalone agreement request (W1b) does not, and its map then simply has
+ *  no quote-only keys.
+ *
+ *  `renderLocale` is ALREADY RESOLVED by the factory that builds the context
+ *  (renderContextFromQuote for quotes) — the resolver applies no precedence of
+ *  its own, so the locale that fills a document is decided in exactly one
+ *  place per source. */
+export interface AgreementRenderContext {
+  clientName: string;
+  clientAddress: BillToAddress | null;
+  sellerName: string;
+  currencyCode: string;
+  renderLocale: string;
+  effectiveDate: string | Date;
+  quote?: {
+    number: string | null;
+    title: string | null;
+    expiryDate: string | null;
+    totals: { oneTime: string; monthly: string; annual: string; total: string };
+  };
+}
+
+/** Build the render context for a quote row — reads exactly the fields the
+ *  pre-W1 quote resolver read, so the resulting map (and every acceptance hash
+ *  folded from it) is unchanged.
+ *
+ *  Locale precedence (#3777, identical to the quote/invoice PDFs):
+ *  `opts.renderLocale` — the locale PERSISTED on a quote_acceptances row
+ *  (acceptanceRenderLocale) — wins over everything, including a stamped
+ *  `quote.documentLocale`, so a legacy acceptance hashed under the pre-#3777
+ *  'en' fallback still re-verifies after the 2026-09-01-b backfill stamped its
+ *  quote with the partner's language; accept-time callers pass the value they
+ *  are about to persist, display callers never set it. Otherwise a stamped
+ *  `quote.documentLocale` (send-time snapshot) wins; an unstamped draft preview
+ *  uses `opts.locale` — the locale the caller already resolved for the
+ *  surrounding quote PDF/detail (partner's CURRENT language) — so contract
+ *  totals never disagree with the quote totals on the same page; `'en'` only
+ *  when the caller has nothing (unit tests, legacy callers).
+ *
+ *  `effectiveDate` defaults to "now" (an un-accepted quote's display render). */
+export function renderContextFromQuote(
+  quote: QuoteRow,
+  opts?: { effectiveDate?: string | Date; locale?: string | null; renderLocale?: string | null },
+): AgreementRenderContext {
+  const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
+  return {
+    clientName: quote.billToName ?? '',
+    clientAddress: (quote.billToAddress as BillToAddress | null) ?? null,
+    sellerName: seller?.name ?? '',
+    currencyCode: quote.currencyCode ?? 'USD',
+    renderLocale: opts?.renderLocale ?? quote.documentLocale ?? opts?.locale ?? 'en',
+    effectiveDate: opts?.effectiveDate ?? new Date(),
+    quote: {
+      number: quote.quoteNumber,
+      title: quote.title,
+      expiryDate: quote.expiryDate,
+      totals: {
+        oneTime: quote.oneTimeTotal,
+        monthly: quote.monthlyRecurringTotal,
+        annual: quote.annualRecurringTotal,
+        total: quote.total,
+      },
+    },
+  };
+}
+
+/** Resolve every AUTO_CONTRACT_VARIABLES entry from a render context. Money is
  *  formatted via the shared formatMoney (same helper the quote PDF's own
  *  summary uses) so a contract's totals never drift from the proposal's.
  *
- *  Locale precedence (#3777, identical to the quote/invoice PDFs): a stamped
- *  `quote.documentLocale` (send-time snapshot) always wins; an unstamped draft
- *  preview uses `opts.locale` — the locale the caller already resolved for the
- *  surrounding quote PDF/detail (partner's CURRENT language) — so contract
- *  totals never disagree with the quote totals on the same page; `'en'` only
- *  when the caller has nothing (unit tests, legacy callers). */
+ *  A context without `quote` OMITS the seven quote-only keys (`quote.number`,
+ *  `quote.title`, `totals.*`, `dates.expiry`) — absent, never `''` — because
+ *  findUnresolvedVariables tests key PRESENCE: a template declaring
+ *  `{{totals.monthly}}` must be reported unresolved on a standalone request,
+ *  not silently filled with an empty string. */
 export function resolveAutoVariables(
-  quote: QuoteRow,
+  ctx: AgreementRenderContext,
   /** `pdf: true` when the values are drawn by pdfkit (WinAnsi Helvetica) —
    *  money goes through formatMoneyForPdf so fr-FR narrow spaces / non-WinAnsi
    *  symbols cannot corrupt the contract text. HTML callers leave it unset. */
-  opts?: {
-    effectiveDate?: string | Date;
-    locale?: string | null;
-    pdf?: boolean;
-    /** The locale PERSISTED on a quote_acceptances row (acceptanceRenderLocale).
-     *  Wins over everything — including a stamped `quote.documentLocale` — so a
-     *  legacy acceptance hashed under the pre-#3777 'en' fallback still
-     *  re-verifies after the 2026-09-01-b backfill stamped its quote with the
-     *  partner's language. Accept-time callers pass the value they are about
-     *  to persist; display callers never set it. */
-    renderLocale?: string | null;
-  }
+  opts?: { pdf?: boolean },
 ): Record<string, string> {
-  const currency = quote.currencyCode ?? 'USD';
-  const locale = opts?.renderLocale ?? quote.documentLocale ?? opts?.locale ?? 'en';
   const money = opts?.pdf ? formatMoneyForPdf : formatMoney;
-  const address = (quote.billToAddress as BillToAddress | null) ?? null;
-  const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
-
+  const q = ctx.quote;
   return {
-    'client.name': quote.billToName ?? '',
-    'client.address': formatAddressLine(address),
-    'seller.name': seller?.name ?? '',
-    'quote.number': quote.quoteNumber ?? '',
-    'quote.title': quote.title ?? '',
-    'totals.one_time': money(quote.oneTimeTotal, currency, locale),
-    'totals.monthly': money(quote.monthlyRecurringTotal, currency, locale),
-    'totals.annual': money(quote.annualRecurringTotal, currency, locale),
-    'totals.total': money(quote.total, currency, locale),
-    'dates.effective': formatDate(opts?.effectiveDate ?? new Date()),
-    'dates.expiry': formatDate(quote.expiryDate),
+    'client.name': ctx.clientName,
+    'client.address': formatAddressLine(ctx.clientAddress),
+    'seller.name': ctx.sellerName,
+    ...(q
+      ? {
+          'quote.number': q.number ?? '',
+          'quote.title': q.title ?? '',
+          'totals.one_time': money(q.totals.oneTime, ctx.currencyCode, ctx.renderLocale),
+          'totals.monthly': money(q.totals.monthly, ctx.currencyCode, ctx.renderLocale),
+          'totals.annual': money(q.totals.annual, ctx.currencyCode, ctx.renderLocale),
+          'totals.total': money(q.totals.total, ctx.currencyCode, ctx.renderLocale),
+        }
+      : {}),
+    'dates.effective': formatDate(ctx.effectiveDate),
+    ...(q ? { 'dates.expiry': formatDate(q.expiryDate) } : {}),
   };
+}
+
+/** Back-compat wrapper for quote callers — identical output to the pre-W1
+ *  `resolveAutoVariables(quote, opts)`. See renderContextFromQuote for the
+ *  locale precedence. */
+export function resolveQuoteAutoVariables(
+  quote: QuoteRow,
+  opts?: { effectiveDate?: string | Date; locale?: string | null; pdf?: boolean; renderLocale?: string | null },
+): Record<string, string> {
+  return resolveAutoVariables(renderContextFromQuote(quote, opts), { pdf: opts?.pdf });
 }
 
 /** The {{dates.effective}} value a DISPLAY render should use for a quote: for an
@@ -513,7 +580,7 @@ export async function renderContractBlocksForClient<T extends { id: string; bloc
   const renderData = await loadContractBlockRenderData(blocks);
   if (renderData.length === 0) return blocks;
   const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
-  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale });
+  const autoValues = resolveQuoteAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale });
 
   return blocks.map((block) => {
     const data = byBlockId.get(block.id);
@@ -586,7 +653,7 @@ export async function loadContractPdfInputs(
   if (renderData.length === 0) return { contractRenderData, uploads };
 
   const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
-  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale, pdf: true });
+  const autoValues = resolveQuoteAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale, pdf: true });
 
   for (const block of blocks) {
     const data = byBlockId.get(block.id);

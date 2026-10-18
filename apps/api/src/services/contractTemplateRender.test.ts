@@ -16,6 +16,8 @@ import {
   loadContractBlockRenderData,
   loadContractBlockAuthoring,
   resolveAutoVariables,
+  resolveQuoteAutoVariables,
+  renderContextFromQuote,
   substituteVariables,
   findUnresolvedVariables,
   renderContractBlocksForClient,
@@ -41,7 +43,7 @@ function selectOrdered(rows: unknown[]) {
   return { from: () => ({ where: () => ({ orderBy: () => Promise.resolve(rows) }) }) };
 }
 
-// Full quotes row fixture — resolveAutoVariables takes the whole row (see
+// Full quotes row fixture — resolveQuoteAutoVariables takes the whole row (see
 // contractTemplateRender.ts's QuoteRow comment), so every column needs a value.
 function fixtureQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
   const base: QuoteRow = {
@@ -137,7 +139,7 @@ describe('substituteVariables', () => {
 
 describe('resolveAutoVariables', () => {
   it('formats money via the shared formatMoney helper (USD, unstamped, no caller locale → en)', () => {
-    const values = resolveAutoVariables(fixtureQuote());
+    const values = resolveQuoteAutoVariables(fixtureQuote());
     expect(values['totals.one_time']).toBe('$810.00');
     expect(values['totals.monthly']).toBe('$0.00');
     expect(values['totals.annual']).toBe('$0.00');
@@ -145,7 +147,7 @@ describe('resolveAutoVariables', () => {
   });
 
   it('an explicit renderLocale (persisted acceptance locale) beats the stamped documentLocale', () => {
-    const values = resolveAutoVariables(
+    const values = resolveQuoteAutoVariables(
       fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }),
       { renderLocale: 'en' },
     );
@@ -153,26 +155,26 @@ describe('resolveAutoVariables', () => {
   });
 
   it('renders money in the stamped documentLocale (de-DE EUR)', () => {
-    const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'de-DE' }));
+    const values = resolveQuoteAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'de-DE' }));
     expect(values['totals.one_time']).toBe('810,00\u00a0€');
     expect(values['totals.total']).toBe('810,00\u00a0€');
   });
 
   it('pdf: true routes money through the WinAnsi-safe formatter (fr-FR narrow spaces folded, same digits)', () => {
-    const html = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }));
-    const pdf = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }), { pdf: true });
+    const html = resolveQuoteAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }));
+    const pdf = resolveQuoteAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }), { pdf: true });
     expect(html['totals.total']).toContain('\u202f');
     expect(pdf['totals.total']).not.toContain('\u202f');
     expect(pdf['totals.total']).toBe((html['totals.total'] ?? '').replace(/\u202f/g, '\u00a0'));
   });
 
   it('falls back to the caller-resolved locale when the quote is unstamped (draft preview)', () => {
-    const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: null }), { locale: 'fr-FR' });
+    const values = resolveQuoteAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: null }), { locale: 'fr-FR' });
     expect(values['totals.one_time']).toBe('810,00\u00a0€');
   });
 
   it('falls back to en when the quote is unstamped and the caller passes no locale', () => {
-    const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: null }), { locale: null });
+    const values = resolveQuoteAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: null }), { locale: null });
     expect(values['totals.one_time']).toBe('€810.00');
   });
 
@@ -180,12 +182,12 @@ describe('resolveAutoVariables', () => {
     // 'en' as the caller locale (not 'fr-FR' as first drafted): on Node's ICU
     // de-DE and fr-FR both render EUR as "810,00 €", so a fr override could not
     // prove precedence — en's "€810.00" can.
-    const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'de-DE' }), { locale: 'en' });
+    const values = resolveQuoteAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'de-DE' }), { locale: 'en' });
     expect(values['totals.one_time']).toBe('810,00\u00a0€');
   });
 
   it('resolves the non-money auto variables from the quote fixture', () => {
-    const values = resolveAutoVariables(fixtureQuote());
+    const values = resolveQuoteAutoVariables(fixtureQuote());
     expect(values['client.name']).toBe('Acme Co');
     expect(values['client.address']).toBe('1 Main St, Springfield, IL, 62701, USA');
     expect(values['seller.name']).toBe('Breeze MSP');
@@ -194,21 +196,63 @@ describe('resolveAutoVariables', () => {
   });
 
   it('defaults dates.effective to today and formats dates.expiry from the quote', () => {
-    const values = resolveAutoVariables(fixtureQuote());
+    const values = resolveQuoteAutoVariables(fixtureQuote());
     expect(values['dates.expiry']).toBe('Aug 01, 2026');
     expect(values['dates.effective']).toMatch(/^[A-Z][a-z]{2} \d{2}, \d{4}$/);
   });
 
   it('honors an explicit effectiveDate override', () => {
-    const values = resolveAutoVariables(fixtureQuote(), { effectiveDate: '2026-09-15' });
+    const values = resolveQuoteAutoVariables(fixtureQuote(), { effectiveDate: '2026-09-15' });
     expect(values['dates.effective']).toBe('Sep 15, 2026');
   });
 
   it('falls back to empty strings for null client/seller fields', () => {
-    const values = resolveAutoVariables(fixtureQuote({ billToName: null, billToAddress: null, sellerSnapshot: null }));
+    const values = resolveQuoteAutoVariables(fixtureQuote({ billToName: null, billToAddress: null, sellerSnapshot: null }));
     expect(values['client.name']).toBe('');
     expect(values['client.address']).toBe('');
     expect(values['seller.name']).toBe('');
+  });
+});
+
+describe('renderContextFromQuote + resolveAutoVariables(ctx)', () => {
+  it('quote context map equals resolveQuoteAutoVariables (back-compat wrapper) key for key', () => {
+    const q = fixtureQuote({ currencyCode: 'EUR', documentLocale: 'de-DE' });
+    const viaCtx = resolveAutoVariables(renderContextFromQuote(q, { effectiveDate: '2026-09-15' }));
+    expect(viaCtx).toEqual(resolveQuoteAutoVariables(q, { effectiveDate: '2026-09-15' }));
+    expect(Object.keys(viaCtx)).toHaveLength(11);
+  });
+  it('renderLocale precedence is unchanged: renderLocale > documentLocale > locale > en', () => {
+    const q = fixtureQuote({ currencyCode: 'EUR', documentLocale: 'de-DE' });
+    expect(renderContextFromQuote(q, { renderLocale: 'fr-FR', locale: 'en' }).renderLocale).toBe('fr-FR');
+    expect(renderContextFromQuote(q, { locale: 'en' }).renderLocale).toBe('de-DE');
+    expect(renderContextFromQuote(fixtureQuote({ documentLocale: null }), { locale: 'fr-CA' }).renderLocale).toBe('fr-CA');
+    expect(renderContextFromQuote(fixtureQuote({ documentLocale: null })).renderLocale).toBe('en');
+  });
+  it('reads exactly the quote fields the pre-W1 resolver read (null client/seller → empty, currency → USD)', () => {
+    const ctx = renderContextFromQuote(
+      fixtureQuote({ billToName: null, billToAddress: null, sellerSnapshot: null, currencyCode: null as unknown as string }),
+      { effectiveDate: '2026-09-15' },
+    );
+    expect(ctx).toMatchObject({ clientName: '', clientAddress: null, sellerName: '', currencyCode: 'USD', effectiveDate: '2026-09-15' });
+    expect(ctx.quote).toEqual({
+      number: 'Q-1001', title: 'Managed Services Proposal', expiryDate: '2026-08-01',
+      totals: { oneTime: '810.00', monthly: '0.00', annual: '0.00', total: '810.00' },
+    });
+  });
+  it('a context without a quote OMITS the quote-only keys (findUnresolvedVariables is key-presence)', () => {
+    const map = resolveAutoVariables({
+      clientName: 'Acme', clientAddress: null, sellerName: 'MSP', currencyCode: 'USD', renderLocale: 'en', effectiveDate: '2026-10-01',
+    });
+    expect(Object.keys(map).sort()).toEqual(['client.address', 'client.name', 'dates.effective', 'seller.name']);
+    expect(map).not.toHaveProperty('totals.monthly');
+    expect(map).not.toHaveProperty('dates.expiry');
+    expect(map['dates.effective']).toBe('Oct 01, 2026');
+  });
+  it('pdf: true routes money through formatMoneyForPdf for a quote context only', () => {
+    const q = fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' });
+    const pdf = resolveAutoVariables(renderContextFromQuote(q), { pdf: true });
+    expect(pdf['totals.total']).not.toContain('\u202f');
+    expect(resolveAutoVariables(renderContextFromQuote(q))['totals.total']).toContain('\u202f');
   });
 });
 

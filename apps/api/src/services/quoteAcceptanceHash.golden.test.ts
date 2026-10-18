@@ -21,7 +21,7 @@ vi.mock('../db', () => ({
 
 import { buildContractHashParts } from './contractDocumentService';
 import { computeQuoteSha256 } from './quoteContentHash';
-import { resolveAutoVariables } from './contractTemplateRender';
+import { renderContextFromQuote, resolveAutoVariables, resolveQuoteAutoVariables } from './contractTemplateRender';
 import type { ContractBlockRenderData, QuoteRow } from './contractTemplateRender';
 
 // Copied from contractTemplateRender.test.ts (test files do not export fixtures).
@@ -149,11 +149,14 @@ describe('acceptance hash golden vectors (characterization — recorded on main 
   it('v2 with no contract parts (pre-contract acceptance)', () =>
     expect(computeQuoteSha256(quote as any, [block] as any, [line] as any, [], 2)).toBe('45871af38131e3ff5c1ecbc5f96b98257e92c78ca9136686b5726bf82c819d10'));
   it('quote-context HTML map is key- and value-stable', () => {
-    expect(resolveAutoVariables(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR' })).toEqual(HTML_MAP);
+    expect(resolveQuoteAutoVariables(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR' })).toEqual(HTML_MAP);
+    // Same map through the context path the freeze uses (#8865 W1a Task 3+).
+    expect(resolveAutoVariables(renderContextFromQuote(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR' }))).toEqual(HTML_MAP);
+    expect(resolveAutoVariables(renderContextFromQuote(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR' }), { pdf: true })).toEqual(PDF_MAP);
   });
   it('pdf map differs from the HTML map only in money formatting', () => {
-    const html = resolveAutoVariables(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR' });
-    const pdf = resolveAutoVariables(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR', pdf: true });
+    const html = resolveQuoteAutoVariables(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR' });
+    const pdf = resolveQuoteAutoVariables(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR', pdf: true });
     expect(Object.keys(pdf).sort()).toEqual(Object.keys(html).sort());
     expect(pdf['client.name']).toBe(html['client.name']);
     expect(pdf['totals.monthly']).not.toBe(html['totals.monthly']); // U+202F → NBSP

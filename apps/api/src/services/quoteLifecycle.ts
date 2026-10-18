@@ -38,7 +38,7 @@ import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { freezeDocumentFooter, resolveDocumentFooter } from './documentFooter';
-import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs, type ContractBlockRenderData } from './contractTemplateRender';
+import { loadContractBlockRenderData, resolveQuoteAutoVariables, findUnresolvedVariables, loadContractPdfInputs, type ContractBlockRenderData } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
 import { notifyQuoteOutcome } from './quoteOutcomeNotify';
@@ -453,7 +453,7 @@ export function assertQuoteSendGates(
   // `{{token}}` placeholder into a legal document, or (on the accept path)
   // execute it with the variable substituted as an empty string.
   if (contractRenderData.length > 0) {
-    const autoValues = resolveAutoVariables(quote);
+    const autoValues = resolveQuoteAutoVariables(quote);
     const contentByBlockId = new Map(blocks.map((b) => [b.id, b.content as { variableValues?: Record<string, string> } | null]));
     const unresolved = new Set<string>();
     for (const data of contractRenderData) {

@@ -28,7 +28,7 @@ import { quotes, quoteAcceptances } from '../db/schema/quotes';
 import { QuoteServiceError } from './quoteTypes';
 import type { HashableContractPart } from './quoteContentHash';
 import {
-  resolveAutoVariables,
+  resolveQuoteAutoVariables,
   substituteVariables,
   type ContractBlockRenderData,
   type QuoteRow,
@@ -77,7 +77,7 @@ function resolvedValuesForBlock(
   renderLocale: string,
   opts: { pdf?: boolean } = {},
 ): Record<string, string> {
-  return { ...resolveAutoVariables(quote, { effectiveDate, renderLocale, pdf: opts.pdf }), ...manualValuesOf(content) };
+  return { ...resolveQuoteAutoVariables(quote, { effectiveDate, renderLocale, pdf: opts.pdf }), ...manualValuesOf(content) };
 }
 
 // ---------------------------------------------------------------------------
