@@ -23,6 +23,16 @@ const { audit, publish, state, tryAutoPromote, dbUpdateChain, sendTrustApprovedE
   };
 });
 
+const afterExit = vi.hoisted(() => {
+  const deferred: Array<{ label: string; work: () => unknown }> = [];
+  const state = { hold: false };
+  const register = vi.fn((label: string, work: () => unknown) => {
+    if (state.hold) deferred.push({ label, work });
+    else void work();
+  });
+  return { deferred, state, register };
+});
+
 vi.mock('./auditService', () => ({ createAuditLog: audit }));
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({ publish })) }));
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: vi.fn(() => 'enforce') }));
@@ -33,6 +43,7 @@ vi.mock('../db', () => ({
   db: { update: vi.fn(() => dbUpdateChain) },
   withSystemDbAccessContext: async (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
+  runAfterDbContextExit: afterExit.register,
 }));
 vi.mock('./partnerTrust.repo', () => ({
   readTrust: vi.fn(async () => state),
@@ -260,6 +271,22 @@ describe('trust_page_publish capability', () => {
     expect(sendTrustApprovedEmail).toHaveBeenCalledTimes(1);
     expect(sendTrustApprovedEmail).toHaveBeenCalledWith({ partnerId: 'p1' });
     expect(audit.mock.invocationCallOrder[0]).toBeLessThan(sendTrustApprovedEmail.mock.invocationCallOrder[0]!);
+  });
+
+  it('sends the approval email via runAfterDbContextExit, not inline', async () => {
+    state.trustState = 'probation';
+    afterExit.state.hold = true;
+    try {
+      await setTrustState('p1', 'trusted', 'admin:promote', 'user-1');
+
+      expect(sendTrustApprovedEmail).not.toHaveBeenCalled();
+      expect(afterExit.deferred.map((d) => d.label)).toEqual(['partnerTrust.approvedEmail']);
+      await afterExit.deferred[0]!.work();
+      expect(sendTrustApprovedEmail).toHaveBeenCalledWith({ partnerId: 'p1' });
+    } finally {
+      afterExit.state.hold = false;
+      afterExit.deferred.length = 0;
+    }
   });
 
   it('emails the partner on the auto-promotion CAS path too', async () => {

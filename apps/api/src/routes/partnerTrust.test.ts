@@ -12,12 +12,25 @@ const state = vi.hoisted(() => ({
 
 const dbSpies = vi.hoisted(() => ({ update: vi.fn(), select: vi.fn() }));
 
+const afterCommit = vi.hoisted(() => {
+  const deferred: Array<{ label: string; work: () => unknown }> = [];
+  const state = { hold: false };
+  const register = vi.fn((label: string, work: () => unknown) => {
+    if (state.hold) deferred.push({ label, work });
+    else void work();
+  });
+  return { deferred, state, register };
+});
+
 vi.mock('../db', () => ({
   db: {
     update: dbSpies.update,
     select: dbSpies.select,
   },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  // Deferred-until-commit work: tests that don't care run it inline; the
+  // deferral tests below hold it back and flush it by hand.
+  runAfterDbContextCommit: afterCommit.register,
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
 }));
@@ -198,6 +211,32 @@ describe('partner trust routes', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ requested: true });
+  });
+
+  it('defers both notifications until the request transaction commits', async () => {
+    afterCommit.state.hold = true;
+    try {
+      const response = await buildApp().request('/partner/trust/request-review', { method: 'POST' });
+
+      expect(response.status).toBe(200);
+      // Nothing has been sent while the transaction is still open.
+      expect(sendEvidenceCard).not.toHaveBeenCalled();
+      expect(sendTrustReviewReceivedEmail).not.toHaveBeenCalled();
+      expect(afterCommit.deferred.map((d) => d.label)).toEqual([
+        'partnerTrust.evidenceCard',
+        'partnerTrust.reviewReceivedEmail',
+      ]);
+
+      for (const { work } of afterCommit.deferred) await work();
+      expect(sendEvidenceCard).toHaveBeenCalledWith(auth.partnerId, 'review_requested');
+      expect(sendTrustReviewReceivedEmail).toHaveBeenCalledWith({
+        partnerId: auth.partnerId,
+        requestedByUserId: auth.user.id,
+      });
+    } finally {
+      afterCommit.state.hold = false;
+      afterCommit.deferred.length = 0;
+    }
   });
 
   it('returns 429 when a review was requested within 24 hours', async () => {

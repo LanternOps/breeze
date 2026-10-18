@@ -66,7 +66,7 @@ export function buildTrustApprovedTemplate(input: { partnerName: string; appUrl:
   const lead = `${input.partnerName} has been reviewed and approved.`;
   // Mirrors GatedCapability in user words. Update this sentence when a
   // capability is added to the gate; there is no generated list.
-  const enabled = 'Remote control and script execution are now enabled. The probation limits on agent enrollment, installer links and custom sending domains are lifted.';
+  const enabled = 'Remote control, script execution and Trust Center page publishing are now enabled. The probation limits on agent enrollment, installer links and custom sending domains are lifted.';
   const docs = 'New to Breeze? Start with the getting-started guide:';
 
   const body = `
@@ -108,6 +108,7 @@ function meetingUrl(): string | null {
 
 interface MailContext {
   partnerName: string;
+  trustState: string;
   requesterEmail: string | null;
 }
 
@@ -122,7 +123,7 @@ interface MailContext {
 async function loadMailContext(partnerId: string, requestedByUserId?: string): Promise<MailContext | null> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [partner] = await db
-      .select({ name: partners.name, status: partners.status })
+      .select({ name: partners.name, status: partners.status, trustState: partners.trustState })
       .from(partners)
       .where(eq(partners.id, partnerId))
       .limit(1);
@@ -137,7 +138,7 @@ async function loadMailContext(partnerId: string, requestedByUserId?: string): P
         .limit(1);
       requesterEmail = requester?.email?.trim() || null;
     }
-    return { partnerName: partner.name, requesterEmail };
+    return { partnerName: partner.name, trustState: partner.trustState, requesterEmail };
   }, 'partnerTrustPartnerMail.context'));
 }
 
@@ -159,12 +160,17 @@ export async function sendTrustReviewReceivedEmail(input: { partnerId: string; r
   try {
     const context = await loadMailContext(input.partnerId, input.requestedByUserId);
     if (!context) return 0;
+    // Already trusted (approved while the request was in flight, or a stale
+    // click): "we'll email you when it's done" would contradict reality.
+    if (context.trustState === 'trusted') return 0;
     const admins = await listActivePartnerAdmins(input.partnerId);
     const to = dedupe([context.requesterEmail, ...admins.map((admin) => admin.email)]);
     if (to.length === 0) return 0;
     const template = buildTrustReviewReceivedTemplate({ partnerName: context.partnerName, meetingUrl: meetingUrl() });
-    // Every DB context above has closed; the transport round trip holds no
-    // pooled connection (#1105).
+    // loadMailContext and listActivePartnerAdmins run in their own system
+    // contexts, which have closed here. Callers defer this send until the
+    // request transaction has ended (runAfterDbContextCommit/Exit), so the
+    // transport round trip holds no pooled connection (#1105).
     await email.sendEmail({
       to,
       purpose: 'account.trust_review_received',

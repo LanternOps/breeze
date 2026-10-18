@@ -1308,12 +1308,9 @@ Expected: PASS. No contract suite (RLS, org-cascade, export-policy) is needed: n
 Run: `cd apps/api && pnpm lint`
 Expected: clean.
 
-- [ ] **Step 5: Confirm the public artefacts carry only the rules, not the reasoning**
+- [ ] **Step 5: Confirm the public artefacts carry only the rules**
 
-Grep the branch diff for anything that explains *why* restriction sends no email, *why* the review-received copy avoids a turnaround, or *why* `status = 'active'` matters:
-
-Run: `git diff main...HEAD -- apps/ | grep -niE "fraud|scam|tip.?off|operator|manual.?sql|backfill" ; echo "grep exit=$?"`
-Expected: `grep exit=1` (no matches). The spec and this plan state those as bare rules; the diff must do the same.
+Check that the diff contains no explanatory comments for these rules (restriction sends no email; the review-received copy states no turnaround; `status = 'active'` is required). Comments describe what the code does, not the reasoning behind those rules.
 
 - [ ] **Step 6: Open the PR**
 

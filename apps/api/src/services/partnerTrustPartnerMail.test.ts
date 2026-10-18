@@ -122,7 +122,8 @@ describe('buildTrustApprovedTemplate', () => {
     expect(tpl.subject).toBe('Your Breeze account is approved');
     expect(tpl.html).toContain('Account approved');
     expect(tpl.html).toContain('Acme &lt;MSP&gt;');
-    expect(tpl.text).toContain('Remote control and script execution are now enabled');
+    expect(tpl.text).toContain('Remote control, script execution and Trust Center page publishing are now enabled');
+    expect(tpl.text).toContain('Trust Center page publishing');
     expect(tpl.text).toContain(GETTING_STARTED_DOCS_URL);
     expect(tpl.html).toContain(`href="${GETTING_STARTED_DOCS_URL}"`);
     expect(tpl.html).not.toContain('Open Breeze');
@@ -193,6 +194,19 @@ describe('sendTrustReviewReceivedEmail', () => {
     await expect(sendTrustReviewReceivedEmail({ partnerId: PARTNER_ID, requestedByUserId: REQUESTER_ID })).resolves.toBe(0);
     expect(listActivePartnerAdmins).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 0 and sends nothing when the partner is already trusted', async () => {
+    dbResults.push([{ ...ACTIVE_PARTNER, trustState: 'trusted' }]);
+    await expect(sendTrustReviewReceivedEmail({ partnerId: PARTNER_ID, requestedByUserId: REQUESTER_ID })).resolves.toBe(0);
+    expect(listActivePartnerAdmins).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('still emails a partner in probation', async () => {
+    dbResults.push([{ ...ACTIVE_PARTNER, trustState: 'probation' }]);
+    dbResults.push([{ email: 'owner@acme.test' }]);
+    await expect(sendTrustReviewReceivedEmail({ partnerId: PARTNER_ID, requestedByUserId: REQUESTER_ID })).resolves.toBe(2);
   });
 
   it('calls the transport only after the system-scope callback has resolved', async () => {
