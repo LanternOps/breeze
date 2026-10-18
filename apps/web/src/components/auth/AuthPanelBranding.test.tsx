@@ -66,8 +66,11 @@ describe('AuthPanelBranding', () => {
     // wide wordmark cannot overflow the ~242px-wide panel at the md breakpoint.
     const logoClasses = logo.className.split(/\s+/);
     expect(logoClasses).not.toContain('h-8');
-    expect(logoClasses).toContain('h-16');
-    expect(logoClasses).toContain('lg:h-20');
+    // Reporter follow-up: still too small at h-16/lg:h-20, so one step up.
+    expect(logoClasses).not.toContain('h-16');
+    expect(logoClasses).not.toContain('lg:h-20');
+    expect(logoClasses).toContain('h-24');
+    expect(logoClasses).toContain('lg:h-32');
     expect(logoClasses).toContain('object-contain');
     expect(logoClasses).toContain('max-w-[min(100%,280px)]');
     expect(logoClasses).not.toContain('max-w-[180px]');
