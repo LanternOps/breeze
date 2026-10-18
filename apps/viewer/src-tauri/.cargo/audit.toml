@@ -56,10 +56,10 @@ ignore = [
   "RUSTSEC-2026-0369",
   # zbus stack unmaintained (2026-10-17): zvariant (0370), zbus_names (0371),
   # zvariant_derive (0372). Informational "unmaintained" notices, not
-  # vulnerabilities; transitive via the Tauri Linux stack (tauri/wry/tray → zbus
-  # 5.x), no direct dependency here. Not fixable from this crate. Re-evaluate
-  # when tauri / tauri-plugin-* move to a maintained zbus line; remove these
-  # three ids then (tracked in #9113).
+  # vulnerabilities; reached only via tauri-plugin-single-instance (zbus 5.x,
+  # Linux D-Bus single-instance), which this crate depends on directly. Not
+  # fixable from here. Re-evaluate when tauri-plugin-single-instance moves to a
+  # maintained zbus line; remove these three ids then (tracked in #9113).
   "RUSTSEC-2026-0370", # zvariant
   "RUSTSEC-2026-0371", # zbus_names
   "RUSTSEC-2026-0372", # zvariant_derive
