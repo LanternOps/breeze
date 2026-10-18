@@ -57,7 +57,7 @@ Quorum: my position plus `codex exec` (read-only, xhigh). The outcome is recorde
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | **Last success per kind.** Columns and gates are in the Sources table below; no new column anywhere. **edr:** each stream's `last_*_sync_at` is stamped only in its success transaction, `success` or `partial` (`jobs/edrProviderSync.ts`, the inventory and detections success writes). Stale = either stream. **accounting:** `last_reconcile_at` is stamped only after a CDC run in which no item failed, or by the pull-off freeze branch (`stampReconcileRunAt` / `advanceReconcileCursor`, `services/accounting/accountingConnectionService.ts`). `last_sync_at` is never written by non-test code and is unusable. A provider with a **daily call budget** (Xero today, `limits.rate.dailyPerConnection`) intentionally skips background reconcile while under 20% of budget (`shouldDeferBackgroundWork`, `jobs/accountingReconcileWorker.ts` sweep pass 1). The budget window is one fixed 24 h key (`services/accounting/accountingRateLimit.ts`, `DAY_MS`), so the longest legitimate pause is 24 h plus a sweep: **threshold 1500 min for daily-budget providers, 60 min otherwise.** **dns_filter:** `last_sync` advances only with `last_sync_status = 'success'` (`jobs/dnsSyncJob.ts`); the error path writes status and error only. It is a successful *slice checkpoint* (window end), so a slow catch-up after an outage also reads stale until it is within the threshold: data lag, which is a true "sync stalled". **m365_sync:** per domain `last_success_at`, stamped for `success`/`partial` only (`services/m365Sync/run.ts`). **ticket_mailbox:** `last_polled_at` is written whenever a poll persists a cursor: the M365 delta/resume link, or a truthy Gmail history id, even an unchanged one (`jobs/ticketMailboxPollWorker.ts`). An idle inbox therefore stays fresh, and transient failures leave it behind. **td_synnex_sftp:** `last_sync_at` is stamped on success *and* failure (`services/tdSynnexSftpSync.ts`), which is the Pax8 shape W4 shipped: the arm reads "no attempt finished", and a finished failure is already `sync_failed`. | Every kind has a success-only stamp (or the Pax8 attempt semantics), so a derived "latest successful run" read is never needed. None of these kinds has a `*_sync_runs` table. |
+| D1 | **Last success per kind.** Columns and gates are in the Sources table below; no new column anywhere. **edr:** each stream's `last_*_sync_at` is stamped only in its success transaction, `success` or `partial` (`jobs/edrProviderSync.ts`, the inventory and detections success writes). Stale = either stream. **accounting:** `last_reconcile_at` is stamped only after a CDC run in which no item failed, or by the pull-off freeze branch (`stampReconcileRunAt` / `advanceReconcileCursor`, `services/accounting/accountingConnectionService.ts`). `last_sync_at` is never written by non-test code and is unusable. A provider with a **daily call budget** (Xero today, `limits.rate.dailyPerConnection`) intentionally skips background reconcile while under 20% of budget (`shouldDeferBackgroundWork`, `jobs/accountingReconcileWorker.ts` sweep pass 1). Each provider response re-arms the `day-remaining` key for 24 h (`noteDailyRemaining`, `services/accounting/accountingRateLimit.ts`), so a busy tenant can stay deferred for more than a day. The spec rule is applied to the effective cadence while deferred (one run per 24 h window): **threshold `staleAfterMinutes(1440)` = 4320 min for daily-budget providers, 60 min otherwise.** Past 72 h, payment reconcile really is three windows behind, and reporting it is intended. **dns_filter:** `last_sync` advances only with `last_sync_status = 'success'` (`jobs/dnsSyncJob.ts`); the error path writes status and error only. It is a successful *slice checkpoint* (window end), so a slow catch-up after an outage also reads stale until it is within the threshold: data lag, which is a true "sync stalled". **m365_sync:** per domain `last_success_at`, stamped for `success`/`partial` only (`services/m365Sync/run.ts`). **ticket_mailbox:** `last_polled_at` is written whenever a poll persists a cursor: the M365 delta/resume link, or a truthy Gmail history id, even an unchanged one (`jobs/ticketMailboxPollWorker.ts`). An idle inbox therefore stays fresh, and transient failures leave it behind. **td_synnex_sftp:** `last_sync_at` is stamped on success *and* failure (`services/tdSynnexSftpSync.ts`), which is the Pax8 shape W4 shipped: the arm reads "no attempt finished", and a finished failure is already `sync_failed`. Rows are created disabled, and enabling one does not enqueue a sync (only the nightly cron or the manual route does). The baseline is therefore `GREATEST(last_sync_at, updated_at)`: the config upsert bumps `updated_at` on every save or toggle, and so do the running, ok and error writes. A row enabled today on an old `created_at` is not stale at once. | Every kind has a success-only stamp (or the Pax8 attempt semantics), so a derived "latest successful run" read is never needed. None of these kinds has a `*_sync_runs` table. |
 | D2 | **Thresholds are constants in each source; no setting.** The interval feeding `3 ×` is the row's own where the operator can set one: DNS `config.syncInterval`, EDR `effective_*_interval_minutes` (already derived from the operator's override and the vendor budget), M365 `interval_seconds` (adaptive). Elsewhere it is the scheduler's fixed cadence: accounting reconcile sweep 15 min, mailbox sweep 90 s, SFTP nightly. `connectionHealthSettings.ts` is untouched. | A threshold setting would be a second knob for the same concept: the operator already tunes the interval itself. Settings rule 9: places this is configured, before = 0, after = 0. |
 | D3 | **State machine reuse.** `sync_stale` stays transient, one incident per connection, opened on the second consecutive observation (§1.2), with the reopen window, 2-healthy recovery and onboarding grace (`applyGrace`, 2 h) all unchanged. `applyGrace` makes **any** transient break on a connection younger than 2 h `unknown`. The arm counts from `created_at` when the stamp is NULL, so a never-synced row opens only after `max(threshold, 2 h)` plus one more observation. Rows that are not yet live are never read: each arm is gated on the kind's live status (`connected`, `enabled`, `next_sync_at IS NOT NULL`). That excludes accounting `pending_tenant`, mailbox `pending_consent` and unscheduled M365 domains. No nudge: staleness has no write point. | Spec [R]: one incident per connection. The pending exclusions match the shipped UniFi arm (`status = 'connected' AND stale`). |
 | D4 | **Evaluation path.** The stale arm is an `OR` on each source's existing broken query, inside the existing 15-minute reconciler, at the source's existing `intervalMinutes`. No new job, so no `WORKER_REGISTRY` or worker-readiness entry and no schedule slot. | W4 D1. Zero extra queries; the cadence follows the signal (§1.3). |
@@ -65,22 +65,22 @@ Quorum: my position plus `codex exec` (read-only, xhigh). The outcome is recorde
 | D6 | **TD SYNNEX.** EC Express has no sync columns and no schedule (`last_test_*` only, from a manual test). Digital Bridge has no schedule: `last_sync_at` moves only after a user-initiated search (`services/tdSynnexDigitalBridge.ts`). Both **stay exempt and are dropped from scope**; their existing `SOURCE_COVERAGE_EXEMPTIONS` reasons already say so. **SFTP** runs nightly (`jobs/scheduleRegistry.ts` `'tdsynnex-sftp-sync': '38 5 * * *'`, `enabled = true` rows) and becomes a **new kind `td_synnex_sftp`** with `sync_failed` + `sync_stale`. That replaces its exemption. Its own PR (C). | A stale arm needs a failure arm beside it (precedence). SFTP has no source today, so the new kind is the smallest correct unit. As a new kind, the first observe seeds incidents silently (§1.2). |
 | D7 | **M365 flag lifecycle.**<br>(a) The stale arm is compiled only when `isM365TenantSyncEnabled()` is true (`config/env.ts`, default off; read per `observe()`, not at module load).<br>(b) **Flag off → every `m365_sync` observation is `retired`.** A tracked incident closes with no "restored" notice instead of resolving from old success timestamps, and none opens. A connection's consent state stays covered by `m365_connection`.<br>(c) Domain staleness also requires the parent connection's `tenant_id IS NOT NULL`, mirroring the claim's eligibility (`services/m365Sync/claim.ts`). The parent-not-`active` → unknown rule is kept.<br>(d) **Re-enable backlog: accepted, not warmed up.** Rows are seeded only while the flag is on (`onConnectionConsented` and `reconcileEligibleConnections` both return early when it is off), so the first enable has no backlog. A re-enable keeps old `last_success_at` values, and re-armed domains are due at once. A domain still unsynced at the second hourly observation opens `sync_stale`. Operators re-enabling on a large fleet count first (D9). | With the flag off no domain ever syncs. Without (a) every M365 org would go stale; without (b) turning the flag off would announce false recoveries. A warm-up (a Redis "enabled since" key written by the ticker and read by the reconciler) was rejected: it adds a cross-module contract for a rare, deliberate operator action, and a missing key would silently disable detection. |
 | D8 | **Copy and fix links.** No new copy: `sync_stale` → "Sync stalled" already exists in the panel, digest and 8 locales (W4 Task 8). Fix links are each source's existing `FIX_HREF`. The new kind uses `/integrations#tdsynnex-sftp`: `IntegrationsPage.tsx` routes distributor sub-tab hashes, and `fixLinks.contract.test.ts` checks the quoted id. Its display name is `TD SYNNEX price file`, an API string like the other display names. `apps/docs/src/content/docs/features/notifications.mdx` "Stalled syncs" lists the new kinds. | W4 D1–D2; the conditions contract already enforces labels. |
-| D9 | **Deploy backlog.** The five existing kinds are already seeded, so any connection that is stale **today** opens an incident *with* a notice on the first two observations after deploy (first-run silence is only for new kinds). This is accepted: each one is a connection that really stopped syncing. Each PR body carries a read-only query that counts the **distinct connections** matching its new arm, split by whether an open incident already tracks them (those only change condition). Todd runs it per region before the deploy that includes the PR. `td_synnex_sftp` seeds silently. | Re-seeding existing kinds would also swallow genuine `sync_failed` breaks that land in the same window. |
+| D9 | **Deploy backlog.** The five existing kinds are already seeded, so any connection that is stale **today** opens an incident *with* a notice on the first two observations after deploy (first-run silence is only for new kinds). This is accepted: each one is a connection that really stopped syncing. Each PR body carries a read-only query that counts the **distinct connections** matching its new arm, split by whether an open incident already tracks them (those only change condition). Todd runs it per region before the deploy that includes the PR. `td_synnex_sftp` seeds silently. **Fleet-wide outage** of one kind's worker (mailbox poller, DNS/EDR/accounting sweep) or of Redis/BullMQ stales every connection of that kind at about 60 min. That is accepted and intended: the integration really is not syncing, and the per-user daily digest bounds the email volume. No mass-suppression guard is added. | Re-seeding existing kinds would also swallow genuine `sync_failed` breaks that land in the same window. |
 
 ## Sources (this plan)
 
 | Kind | Axis | Last-success read | Stale arm (gated) | Threshold | Index |
 |---|---|---|---|---|---|
 | `edr` | partner | `last_inventory_sync_at`, `last_detection_sync_at` (timestamptz) | `is_active AND status = 'connected' AND (inv stale OR det stale)` | per stream `GREATEST(3 * COALESCE(effective_<stream>_interval_minutes, 60), 60)` min | none (partner axis) |
-| `accounting` | partner | `last_reconcile_at` (timestamptz) | `status = 'connected' AND (pull_payments OR push_payments) AND provider IN (<paymentPull providers>)` | 60 min (15-min sweep); 1500 min for daily-budget providers (`xero`) | none |
+| `accounting` | partner | `last_reconcile_at` (timestamptz) | `status = 'connected' AND (pull_payments OR push_payments) AND provider IN (<paymentPull providers>)` | 60 min (15-min sweep); 4320 min for daily-budget providers (`xero`) | none |
 | `ticket_mailbox` | partner | `last_polled_at` (timestamptz) | `status = 'connected'` | 60 min (90 s sweep) | none |
 | `dns_filter` | **org** | `last_sync` (timestamp) | `is_active` | `GREATEST(3 * clamp(config.syncInterval, 5..1440; absent → 15; unparseable → 1440), 60)` min | `dns_filter_integrations_stale_idx` (expression, `WHERE is_active`) |
 | `m365_sync` | **org** | per domain `last_success_at` (timestamptz) | `next_sync_at IS NOT NULL`, parent `tenant_id IS NOT NULL`, flag on (D7) | `GREATEST(3 * interval_seconds, 3600)` s | `m365_sync_state_stale_idx` (expression, `WHERE next_sync_at IS NOT NULL`) |
-| `td_synnex_sftp` (new) | partner | `last_sync_at` (timestamp, attempt-stamped) | `enabled` | 4320 min (nightly) | none |
+| `td_synnex_sftp` (new) | partner | `GREATEST(last_sync_at, updated_at)` (timestamp, attempt-stamped) | `enabled` | 4320 min (nightly) | none |
 
 **DNS interval parity.** The job computes `Number(syncInterval)` → `Math.round` → clamp, with a non-finite value → 15. SQL cannot reproduce JS `Number()` coercion of strings, so the SQL `CASE` takes this shape:
-- absent / JSON null → 15;
-- matches `^-?[0-9]+(\.[0-9]+)?$` → `round` + clamp (identical to the job);
+- absent / JSON null → 15 (the job's `Number(null)` = 0 clamps to 5; both fall under the 60-minute floor);
+- matches `^-?[0-9]+([.][0-9]+)?$` → `round` + clamp (identical to the job). Use `[.]`, not `\.`: a template literal cooks `\.` to `.`, which would accept `"1a5"` and make `::numeric` throw for the whole kind;
 - anything else (a string such as `" 30 "`, a boolean, an object) → **1440**, which is never earlier than the job's threshold.
 
 The route's Zod schema (`z.number().int().min(5).max(1440)`) makes that branch unreachable for new rows. Its only effect is that a corrupt legacy value is detected late, never falsely. Every input whose job interval is ≤ 20 min shares the 60-minute floor, so it cannot diverge at all.
@@ -104,7 +104,7 @@ It would need either a new condition code (a new label in all 8 locales) or reus
 2. **M365 tenant sync is switched off (the default).** Expect no `m365_sync` stale incident anywhere, and no stale rows read. Test: Task 6 integration "flag off".
 3. **A connected M365 mailbox whose tenant ownership row is missing, or a Gmail row whose org/partner diverge.** The sweep never lists it (`listConnectedMailboxes` inner-joins ownership; the Gmail list drops divergent rows), so mail never flows. Expect `sync_stale` after the threshold: a real break that was silent before. Test: Task 3 integration "connected, never polled".
 4. **An accounting connection with both payment switches off.** No sweep runs for it. Expect it never stale, however old `last_reconcile_at` is. Test: Task 2 integration.
-5. **A Xero connection that spent 80% of its daily call budget by noon.** Background reconcile pauses for the rest of the budget window. Expect no `sync_stale` for up to 25 h, and `sync_stale` past that. Test: Task 2 integration.
+5. **A Xero connection that spent 80% of its daily call budget by noon.** Background reconcile pauses for the rest of the budget window. Expect no `sync_stale` while it stays deferred for up to 72 h, and `sync_stale` past that. Test: Task 2 integration.
 
 The EDR "detections hung in `running`" case is pinned by the Task 1 verdict rows and integration case.
 
@@ -142,7 +142,7 @@ Bodies: `Refs #9127`, `Refs #8844`. Only the last PR carries `Closes #9127`.
   - `sync_stale` now covers edr, accounting, ticket_mailbox, dns_filter, m365_sync and the new `td_synnex_sftp`;
   - EC Express and Digital Bridge stay exempt (no schedule);
   - org-axis arms ride on expression indexes (D5);
-  - daily-budget accounting providers use a 1500-minute threshold (D1);
+  - daily-budget accounting providers use `staleAfterMinutes(1440)` (D1);
   - the M365 arm is gated on its flag, and flag off retires `m365_sync` (D7).
 - [ ] Commit with Task 1.
 
@@ -156,7 +156,7 @@ Bodies: `Refs #9127`, `Refs #8844`. Only the last PR carries `Closes #9127`.
   - `stale` + `reauth_required` → permanent `reauth_required`;
   - inactive + `stale` → retired;
   - not stale + `running` → unknown (unchanged).
-- [ ] **Red (fixture):** a stale row → `{ condition: 'sync_stale', detail: null }`, even with an old `lastInventorySyncError`.
+- [ ] **Guard (fixture; already passes, not the red case):** a stale row → `{ condition: 'sync_stale', detail: null }`, even with an old `lastInventorySyncError`.
 - [ ] **Red (integration, `describe('edr')`):**
   - `effective_detection_interval_minutes = 10`, detections success 70 min ago, inventory fresh → broken `sync_stale`;
   - detections 50 min ago → not returned;
@@ -177,7 +177,7 @@ Bodies: `Refs #9127`, `Refs #8844`. Only the last PR carries `Closes #9127`.
 **Interfaces:**
 - `accountingHealth(row: { status: string; stale?: boolean }): HealthVerdict`;
 - `export const RECONCILED_PROVIDERS: readonly AccountingProviderId[] = ['quickbooks', 'xero']` and `export const DAILY_BUDGET_PROVIDERS: readonly AccountingProviderId[] = ['xero']` in `sources/accounting.ts`;
-- `ACCOUNTING_STALE_MINUTES = staleAfterMinutes(15)` (60) and `DAILY_BUDGET_STALE_MINUTES = 24 * 60 + 60` (1500);
+- `ACCOUNTING_STALE_MINUTES = staleAfterMinutes(15)` (60) and `DAILY_BUDGET_STALE_MINUTES = staleAfterMinutes(1440)` (4320);
 - `AccountingRow.stale: boolean`.
 - [ ] **Red (verdict):**
   - `connected` + `stale` → transient `sync_stale`;
@@ -192,12 +192,12 @@ Bodies: `Refs #9127`, `Refs #8844`. Only the last PR carries `Closes #9127`.
 - [ ] **Red (integration, `describe('accounting')`):**
   - QuickBooks `connected`, pull on, `last_reconcile_at` 70 min ago → `sync_stale`;
   - QuickBooks, 40 min ago → absent;
-  - Xero, 20 h ago → absent; Xero, 26 h ago → `sync_stale` (Review Focus 5);
+  - Xero, 26 h ago → absent; Xero, 73 h ago → `sync_stale` (Review Focus 5);
   - pull and push off, `last_reconcile_at` 30 days ago → absent;
   - `pending_tenant`, old → absent;
   - never reconciled, `created_at` 3 h ago → `sync_stale`.
 - [ ] **Implement:**
-  - `stale = (status = 'connected' AND (pull_payments OR push_payments) AND provider IN (<RECONCILED_PROVIDERS literals>) AND staleArm(last_reconcile_at, created_at, now, sql\`CASE WHEN provider IN (<DAILY_BUDGET_PROVIDERS literals>) THEN 1500 ELSE 60 END\`, tz))`;
+  - `stale = (status = 'connected' AND (pull_payments OR push_payments) AND provider IN (<RECONCILED_PROVIDERS literals>) AND staleArm(last_reconcile_at, created_at, now, sql\`CASE WHEN provider IN (<DAILY_BUDGET_PROVIDERS literals>) THEN 4320 ELSE 60 END\`, tz))`;
   - `brokenWhere` becomes `status IN (…) OR <stale>`.
 - [ ] Green, then commit.
 
@@ -235,7 +235,7 @@ Bodies: `Refs #9127`, `Refs #8844`. Only the last PR carries `Closes #9127`.
 ### Task 5: DNS filter stale arm + index (PR B)
 **Files:** `sources/dnsFilter.ts`, `integrationStates.ts` (+ test), `sources.test.ts`, migration, `db/schema/dnsSecurity.ts` (builder + index declaration), integration file, `connectionHealthSourceIndexes.integration.test.ts`.
 **Interfaces:**
-- `export function dnsFilterStaleAt(t: typeof dnsFilterIntegrations): SQL` in `db/schema/dnsSecurity.ts`, used by the index declaration `staleIdx: index('dns_filter_integrations_stale_idx').on(dnsFilterStaleAt(table)).where(sql\`${table.isActive}\`)` and by the source;
+- `export function dnsFilterStaleAt(t: { lastSync: AnyPgColumn; createdAt: AnyPgColumn; config: AnyPgColumn }): SQL` in `db/schema/dnsSecurity.ts`. The parameter is structural because the `pgTable` extra-config callback passes the column map, and `typeof dnsFilterIntegrations` there would make the initializer circular. It is used by the index declaration `staleIdx: index('dns_filter_integrations_stale_idx').on(dnsFilterStaleAt(table)).where(sql\`${table.isActive}\`)` and by the source;
 - `dnsFilterHealth(row: { isActive; lastSyncStatus; stale?: boolean })`;
 - `DnsFilterRow.stale: boolean`.
 
@@ -243,7 +243,7 @@ The expression, with `DNS_SYNC_INTERVAL_MINUTES` and the `3` / `60` of the thres
 ```sql
 (COALESCE(last_sync, created_at) + make_interval(mins => GREATEST(3 * (CASE
   WHEN config->>'syncInterval' IS NULL THEN 15
-  WHEN config->>'syncInterval' ~ '^-?[0-9]+(\.[0-9]+)?$'
+  WHEN config->>'syncInterval' ~ '^-?[0-9]+([.][0-9]+)?$'
     THEN LEAST(1440, GREATEST(5, round((config->>'syncInterval')::numeric)))::int
   ELSE 1440 END), 60)))
 ```
@@ -257,23 +257,24 @@ The expression, with `DNS_SYNC_INTERVAL_MINUTES` and the `3` / `60` of the thres
     - expected threshold = `staleAfterMinutes(syncIntervalMinutesFromConfig(config))`;
     - a row at `threshold + 5 min` is `stale` and a row at `threshold − 5 min` is not.
   - for `"abc"`, `" 30 "`, `true`: the row is *not* stale at the job's threshold + 5 min, and is stale at 4325 min. This is the conservative 1440 branch (see "DNS interval parity").
+  - `"1a5"` → treated like `"abc"`, and the observe does not throw. This pins the `[.]` regex.
   - Seed the tz-less columns as UTC wall time, as W4's UniFi case does.
   - never synced, `created_at` 3 h ago → `sync_stale`;
   - inactive, old → absent.
 - [ ] **Red (EXPLAIN):**
   - add `['dns_filter', 'dns_filter_integrations_stale_idx']` to the `uses` table;
-  - new case: the line after `Bitmap Index Scan on dns_filter_integrations_stale_idx` contains `Index Cond` (D5c);
+  - new case: the plan matches `/Bitmap Index Scan on dns_filter_integrations_stale_idx\s*\n\s*Index Cond:/` (D5c);
   - `dns_filter_integrations_sync_error_idx` is still used.
 - [ ] **Implement:**
-  - the source's `brokenWhere` is the OR-of-ANDs form `(is_active AND last_sync_status = 'error') OR (is_active AND staleAtBefore(dnsFilterStaleAt(), now))`;
+  - the source's `brokenWhere` is the OR-of-ANDs form `(is_active AND last_sync_status = 'error') OR (is_active AND staleAtBefore(dnsFilterStaleAt(t), now))`;
   - the select carries `stale`;
   - the migration creates `dns_filter_integrations_stale_idx ON public.dns_filter_integrations (<expr>) WHERE is_active`, plus the guard row.
-- [ ] `pnpm db:check-drift`, green, then commit.
+- [ ] `pnpm db:check-drift` (it proves the migration applies; it does not compare indexes, so the EXPLAIN contract is what ties the schema declaration to the migration), green, then commit.
 
 ### Task 6: M365 sync stale arm + index (PR B)
 **Files:** `sources/m365Sync.ts`, `integrationStates.ts` (+ test), `sources.test.ts`, migration (second index + guard row), `db/schema/m365Sync.ts` (builder + index declaration), integration files, `notifications.mdx`.
 **Interfaces:**
-- `export function m365SyncStaleAt(t: typeof m365SyncState): SQL` in `db/schema/m365Sync.ts` = `((COALESCE(last_success_at, created_at) AT TIME ZONE 'UTC') + make_interval(secs => GREATEST(3 * interval_seconds, 3600)))`. The index is declared with `.on(m365SyncStaleAt(table)).where(sql\`${table.nextSyncAt} IS NOT NULL\`)`.
+- `export function m365SyncStaleAt(t: { lastSuccessAt: AnyPgColumn; createdAt: AnyPgColumn; intervalSeconds: AnyPgColumn }): SQL` in `db/schema/m365Sync.ts` (structural, as above) = `((COALESCE(last_success_at, created_at) AT TIME ZONE 'UTC') + make_interval(secs => GREATEST(3 * interval_seconds, 3600)))`. The index is declared with `.on(m365SyncStaleAt(table)).where(sql\`${table.nextSyncAt} IS NOT NULL\`)`.
 - `M365SyncDomain.stale: boolean`.
 - `m365SyncHealth(connectionStatus, domainStatuses, opts: { anyStale?: boolean; syncEnabled?: boolean } = {})`. `syncEnabled` defaults to `true` so existing callers keep their behaviour; the source passes `isM365TenantSyncEnabled()`.
 - `brokenConnectionsQuery(now: Date, syncEnabled: boolean)`.
@@ -292,11 +293,11 @@ The expression, with `DNS_SYNC_INTERVAL_MINUTES` and the `3` / `60` of the thres
   - never succeeded, `created_at` 2 days ago → `sync_stale`;
   - parent connection with `tenant_id` NULL, success 30 days ago → not `sync_stale` (D7c).
 - [ ] **Red (integration, flag off):** the same 19 h row → absent untracked; tracked (an open `sync_stale` incident id passed in) → `retired`, never `healthy` (Review Focus 2, D7b).
-- [ ] **Red (EXPLAIN):** `m365_sync` uses both `m365_sync_state_unhealthy_idx` and `m365_sync_state_stale_idx`, with `Index Cond` on the latter. Flag on for this case.
+- [ ] **Red (EXPLAIN):** `m365_sync` uses both `m365_sync_state_unhealthy_idx` and `m365_sync_state_stale_idx`, with `Index Cond` on the latter. Stub `M365_TENANT_SYNC_ENABLED=true` for the **whole** index-contract file (`beforeAll`), so the generic per-kind no-seq-scan case also plans the stale arm.
 - [ ] **Implement:**
   - `brokenConnectionsQuery(now, syncEnabled)` selects distinct `connection_id` where `last_status IN (…)` OR (flag on) `(next_sync_at IS NOT NULL AND staleAtBefore(m365SyncStaleAt(s), now))`;
   - `loadConnections(ids, now, syncEnabled)` selects a per-domain `stale` = `next_sync_at IS NOT NULL AND m365_connections.tenant_id IS NOT NULL AND staleAtBefore(…)` (literal `false` when the flag is off);
-  - `brokenQuery: (now) => brokenConnectionsQuery(now)`;
+  - `brokenQuery: (now) => brokenConnectionsQuery(now, isM365TenantSyncEnabled())`, and the broken predicate is the OR-of-ANDs `last_status IN ('needs_consent', 'error') OR (next_sync_at IS NOT NULL AND <stale-at> < now)`, so each arm uses its own partial index;
   - the migration creates `m365_sync_state_stale_idx ON public.m365_sync_state (<expr>) WHERE next_sync_at IS NOT NULL`.
 - [ ] Docs: the bullet names DNS filtering and Microsoft 365 tenant sync (when enabled).
 - [ ] Green, `pnpm db:check-drift`, then run the **PR B exit checklist**, open PR B.
@@ -315,17 +316,18 @@ The expression, with `DNS_SYNC_INTERVAL_MINUTES` and the `3` / `60` of the thres
   - `ok` → healthy;
   - `running` or null → unknown.
 - [ ] **Red (contracts, expected to fail first):** `coverage.contract.test.ts` "one source per declared kind" and the exemption checks, after the kind is added but before registration and exemption removal; `fixLinks.contract.test.ts` gains the new href.
-- [ ] **Red (integration, `describe('td_synnex_sftp')`):**
+- [ ] **Red (integration, `describe('td_synnex_sftp')`):** (seed `updated_at` = `last_sync_at` unless a case says otherwise)
   - `ok`, `last_sync_at` 80 h ago → `sync_stale`;
   - 20 h ago → absent;
   - `error` 1 h ago → `sync_failed` with sanitized detail;
   - `running`, last attempt 80 h ago → `sync_stale`;
   - `enabled = false` → absent untracked, retired when tracked;
-  - never synced, `created_at` 4 days ago → `sync_stale`.
+  - never synced, `created_at` and `updated_at` 4 days ago → `sync_stale`;
+  - `created_at` 10 days ago, enabled (`updated_at`) 5 min ago, never synced → absent.
 - [ ] **Red (EXPLAIN):** `td_synnex_sftp_integrations` joins `PARTNER_AXIS_TABLES` (one row per partner, unique `partner_id`).
 - [ ] **Implement:**
   - `defineRowSource` in the `pax8.ts`/`unifi.ts` style;
-  - `staleArm(last_sync_at, created_at, now, staleAfterMinutes(1440), withTimezone: false)`;
+  - `staleArm({ lastOk: sql\`GREATEST(${t.lastSyncAt}, ${t.updatedAt})\`, createdAt: t.createdAt, now, minutes: staleAfterMinutes(1440), withTimezone: false })`;
   - `brokenWhere` = `enabled AND (last_sync_status = 'error' OR stale)`;
   - register in `HEALTH_SOURCES` and delete the `td_synnex_sftp_integrations` exemption.
 - [ ] Docs: the bullet adds the TD SYNNEX price file, and the reconciler section notes that EC Express and Digital Bridge are not watched (no schedule).
@@ -363,7 +365,7 @@ Position first (D1–D9 as drafted), then `codex exec -s read-only` at `xhigh` o
   - the PR split;
   - deploy acceptance.
 - **Disagreed, resolved on the merits:**
-  1. Accounting: Xero's daily-budget deferral would read as stale at 60 min. Adopted as a budget-aware 1500-min threshold (D1, Task 2).
+  1. Accounting: Xero's daily-budget deferral would read as stale at 60 min. Adopted as a budget-aware threshold, `staleAfterMinutes(1440)` for daily-budget providers (D1, Task 2). The plan review then showed that the deferral re-arms on every Xero response; 72 h replaced the first-draft 25 h.
   2. M365 flag lifecycle. Adopted: flag off must not manufacture recovery, and eligibility mirrors the claim's `tenant_id` rule (D7b, D7c). Codex offered `unknown` for flag-off. This plan uses `retired`, which also avoids a false recovery and does not leave incidents open indefinitely for a sync the operator turned off. For the re-enable backlog Codex allowed "accept and count, or warm up"; this plan accepts and counts (D7d), with the reason recorded there.
   3. The #9126 seam: Google probe capacity (about 768 a day) makes a wall-clock 24 h rule wrong at scale. Recorded under the seam.
 - **Clarifications folded in:**
