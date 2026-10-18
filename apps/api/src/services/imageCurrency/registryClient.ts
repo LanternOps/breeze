@@ -422,7 +422,11 @@ export function createRegistryClient(options: RegistryClientOptions = {}): Regis
       // manifests to off-list hosts): a standing answer, rechecked on the 6 h
       // cadence. Address-policy refusals (e.g. a private-range resolution) may
       // be transient and stay `error` (1 h).
-      if (err instanceof HostNotAllowedError) return { kind: 'unsupported_registry' };
+      if (err instanceof HostNotAllowedError) {
+        // Name the refused hop so a new regional redirect host is discoverable (#8549).
+        log(`lookup on ${host} refused redirect/realm host ${err.hostname ?? 'unknown'}: unsupported_registry`);
+        return { kind: 'unsupported_registry' };
+      }
       return { kind: 'error', reason };
     }
   }

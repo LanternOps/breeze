@@ -153,9 +153,13 @@ describe('lookup — SSRF guard', () => {
       res.writeHead(307, { location: 'https://europe-west4-docker.pkg.dev/v2/k8s-artifacts-prod/images/pause/manifests/3.9' });
       res.end();
     });
-    const result = await client().lookup({ registry: 'registry.k8s.io', path: 'pause', tag: '3.9', localDigests: [] });
+    const logs: string[] = [];
+    const result = await createRegistryClient({ sleep: noSleep, random: () => 0, log: (m) => logs.push(m) }).lookup({
+      registry: 'registry.k8s.io', path: 'pause', tag: '3.9', localDigests: [],
+    });
     expect(result).toEqual({ kind: 'unsupported_registry' });
     expect(harness.dialed).toEqual(['registry.k8s.io']);
+    expect(logs.join('\n')).toContain('europe-west4-docker.pkg.dev');
   });
 
   it('refuses a token realm off the allowlist without contacting it', async () => {
