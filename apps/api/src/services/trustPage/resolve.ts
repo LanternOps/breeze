@@ -9,9 +9,11 @@ export { livePublicationPredicate } from './predicate';
 /**
  * Partner slugs that can never address a trust page: `preview` is the path segment of the public
  * preview-token route (/trust/public/preview/:token), which is registered ahead of the slug routes;
- * `access` is the portal's gated-document request path (/trust/access/*, amendment 36).
+ * `access` is the portal's gated-document request path (/trust/access/*, amendment 36); `embed` is the portal's
+ * framable card route (/trust/embed/*, W03a), which shadows a partner slug `embed`. validatePublishSlugs rejects all
+ * of them for new publishes.
  */
-export const TRUST_RESERVED_PARTNER_SLUGS: ReadonlySet<string> = new Set(['preview', 'access']);
+export const TRUST_RESERVED_PARTNER_SLUGS: ReadonlySet<string> = new Set(['preview', 'access', 'embed']);
 
 export function parseTrustSlugs(partnerSlug: string, orgSlug?: string): { partnerSlug: string; orgSlug: string | null } | null {
   if (typeof partnerSlug !== 'string' || !TRUST_SLUG_RE.test(partnerSlug)) return null;
@@ -25,9 +27,12 @@ export interface ResolvedTrustPage {
   pageId: string; orgId: string; partnerId: string; publishedAt: Date; searchIndexable: boolean;
   lastEvaluatedAt: Date | null; snapshotId: string | null; payload: TrustPagePublicPayloadAny | null;
 }
+/** W03a: what the resolver returns — the page plus its live iframe allowlist (never frozen at publish; W3 plan Open
+ *  Decision 4). A separate type so consumers that only need the publication keep their narrower fixtures. */
+export type ResolvedTrustPageWithEmbed = ResolvedTrustPage & { embedAllowedOrigins: string[] };
 
 /** ONE indexed query. Caller holds the system db context. Unknown/unpublished/non-live/untrusted → null. */
-export async function resolvePublishedTrustPage(partnerSlug: string, orgSlug: string | null): Promise<ResolvedTrustPage | null> {
+export async function resolvePublishedTrustPage(partnerSlug: string, orgSlug: string | null): Promise<ResolvedTrustPageWithEmbed | null> {
   const target = orgSlug === null
     ? eq(trustPages.isPartnerHome, true)
     : sql`lower(${organizations.slug}) = ${orgSlug}`;
@@ -36,6 +41,8 @@ export async function resolvePublishedTrustPage(partnerSlug: string, orgSlug: st
       // Frozen at publish (Ruling 20): the draft column only takes effect on the next publish. No config → noindex.
       searchIndexable: sql<boolean>`coalesce((${trustPages.publishedConfig} ->> 'searchIndexable')::boolean, false)`,
       lastEvaluatedAt: trustPages.lastEvaluatedAt,
+      // Live, like the publication itself: an origin removed from the allowlist stops framing on the next request.
+      embedAllowedOrigins: trustPages.embedAllowedOrigins,
       snapshotId: trustPageSnapshots.id, payload: trustPageSnapshots.payload,
     })
     .from(trustPages)
@@ -46,5 +53,5 @@ export async function resolvePublishedTrustPage(partnerSlug: string, orgSlug: st
     .where(and(eq(partners.slug, partnerSlug), target, livePublicationPredicate()))
     .limit(1);
   if (!row || !row.publishedAt) return null;
-  return { ...row, publishedAt: row.publishedAt, payload: (row.payload as TrustPagePublicPayloadAny | null) ?? null };
+  return { ...row, publishedAt: row.publishedAt, payload: (row.payload as TrustPagePublicPayloadAny | null) ?? null, embedAllowedOrigins: row.embedAllowedOrigins ?? [] };
 }

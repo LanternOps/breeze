@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Back to Reports",
+      "backupPreview": {
+        "title": "Preview",
+        "description": "Builds the current backup snapshot with the options above. It runs only when you ask.",
+        "run": "Generate preview",
+        "error": "Could not generate the preview."
+      },
       "description": "Update the configuration for \"{{name}}\".",
       "errors": {
         "fetchReport": "Failed to fetch report",

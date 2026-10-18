@@ -366,7 +366,6 @@
       "supportedGeos": "Prend en charge : {{geos}}",
       "refreshQueued": "Actualisation des modèles mise en file d'attente",
       "refreshFailed": "Impossible de mettre l'actualisation des modèles en file d'attente.",
-      "alreadyConnected": "Déjà connectée",
       "addKind": {
         "anthropic_byok": "Clé API Anthropic",
         "openai_compatible": "Point de terminaison compatible OpenAI"
@@ -1021,6 +1020,11 @@
       "schemeRequired": "Le modèle URL doit commencer par un schéma suivi de deux-points (par exemple rustdesk:, https:)",
       "schemeBlocked": "Ce schéma URL n’est pas autorisé — javascript :, data :, vbscript :, file :, about :, chrome :, jar :, blob :, view-source : et filesystem : sont bloqués.",
       "idRequired": "Le modèle URL doit inclure le marqueur {id} pour la valeur par appareil."
+    },
+    "networkProxy": {
+      "title": "Proxy réseau",
+      "label": "Servir le proxy réseau depuis une origine dédiée",
+      "help": "S'applique à toutes les organisations ; les organisations ne peuvent pas le remplacer. Ne prend effet que là où votre région propose une origine dédiée, et améliore la compatibilité avec les interfaces web des appareils."
     }
   },
   "partnerSettingsPage": {
@@ -4422,7 +4426,8 @@
     "reEnterYourNewPassword": "Saisissez à nouveau votre nouveau mot de passe",
     "confirmPassword": "confirmerMot de passe",
     "newPassword2": "newPassword",
-    "changingPassword": "Changement de mot de passe..."
+    "changingPassword": "Changement de mot de passe...",
+    "noPasswordNotice": "Ce compte se connecte via le fournisseur d'identité de votre organisation et n'a pas de mot de passe ; il n'y a donc rien à modifier ici. Si votre organisation n'impose pas l'authentification unique, utilisez « Mot de passe oublié » sur la page de connexion pour en définir un."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Connexion simple connectée.",
@@ -5857,6 +5862,12 @@
         "merge": "Échec du démarrage de la fusion",
         "missingResult": "La fusion s'est terminée mais n'a renvoyé aucune donnée de résultat. Réessayez.",
         "mfaRequired": "La fusion d'organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
+      },
+      "blockers": {
+        "pam_open_actuation": "L'organisation absorbée par la fusion a des sessions d'accès privilégié (PAM) dont le nettoyage n'est pas terminé. Attendez leur fermeture, puis relancez la fusion.",
+        "pam_evidence": "L'organisation absorbée par la fusion a un historique d'accès privilégié (PAM), et le déplacement de l'historique PAM entre organisations n'est pas activé sur ce déploiement. Fusionnez dans l'autre sens, ou ne fusionnez pas ces organisations.",
+        "payment_in_flight": "Un paiement de l'organisation absorbée par la fusion est encore en cours. Attendez qu'il soit réglé, puis relancez la fusion.",
+        "lineage_depth": "Ces organisations ont déjà été fusionnées trop de fois ; cette fusion dépasserait la profondeur maximale de l'historique de fusions."
       }
     },
     "archive": {

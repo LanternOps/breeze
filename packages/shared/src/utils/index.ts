@@ -58,3 +58,4 @@ export * from './scanPath';
 export * from './securityScanSettings';
 export * from './paymentMethodLabel';
 export * from './discoverySubnetLimit';
+export * from './networkProxyOptIn';

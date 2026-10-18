@@ -50,6 +50,7 @@ const TARGET_GLOBS = [
   'src/components/trustCenter/TrustHistorySection.tsx',
   'src/components/trustCenter/TrustAccessSection.tsx',
   'src/components/trustCenter/TrustTemplateSettings.tsx',
+  'src/components/trustCenter/TrustEmbedSection.tsx',
   'src/components/settings/OrganizationForm.tsx',
   // Caller verification W04 (#6354): technician client + the three components that mutate through it.
   'src/lib/api/callerVerification.ts',
@@ -950,7 +951,8 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center sections (Task 16) add Controls/Content/Documents sections: 234 → 237.
     // Trust Center W2 (#8770 W02a) pre-lists six W2 sections, TrustTemplateSettings and OrganizationForm: 237 → 245.
     // #8330 adds filters/SavedFilterList.tsx: 245 → 246.
-    expect(absoluteFiles.length).toBe(246);
+    // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
+    expect(absoluteFiles.length).toBe(247);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

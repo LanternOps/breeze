@@ -543,6 +543,29 @@
         "copy": "Snippet kopieren",
         "copied": "Snippet kopiert",
         "copyFailed": "Das Snippet konnte nicht kopiert werden."
+      },
+      "embed": {
+        "title": "Auf Ihrer Website einbetten",
+        "description": "Zeigen Sie eine kompakte, aktuelle Karte zur Sicherheitslage in einem iframe auf Ihrer eigenen Website an. Nur die hier aufgeführten Websites dürfen sie anzeigen; die vollständige Vertrauensseite selbst lässt sich nie einbetten.",
+        "liveNote": "Änderungen gelten beim nächsten Laden der eingebetteten Karte; eine erneute Veröffentlichung ist nicht nötig.",
+        "unpublishedNote": "Die eingebettete Karte erscheint, sobald die Seite veröffentlicht ist.",
+        "originLabel": "Website-Adresse (nur https, ohne Pfad)",
+        "add": "Website hinzufügen",
+        "remove": "Entfernen",
+        "save": "Websites speichern",
+        "saved": "Einbettungs-Websites gespeichert",
+        "saveFailed": "Die Einbettungs-Websites konnten nicht gespeichert werden.",
+        "invalidOrigin": "Geben Sie eine exakte https-Adresse ohne Pfad, Platzhalter oder IP-Adresse ein, zum Beispiel https://www.example.com",
+        "duplicateOrigin": "Diese Website steht bereits in der Liste.",
+        "maxReached": "Sie können höchstens {{max}} Websites zulassen.",
+        "preview": "Wird gespeichert als",
+        "snippetLabel": "Einbettungs-HTML",
+        "frameTitle": "Karte zur Sicherheitslage",
+        "copy": "Code kopieren",
+        "copied": "Code kopiert",
+        "copyFailed": "Der Code konnte nicht kopiert werden.",
+        "emptyNote": "Fügen Sie mindestens eine Website hinzu, um das Einbetten zu aktivieren.",
+        "mfaRequired": "Das Ändern der Einbettungs-Websites erfordert eine Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut."
       }
     },
     "documents": {

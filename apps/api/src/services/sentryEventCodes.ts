@@ -381,12 +381,23 @@ export const SENTRY_EVENT_CODES = [
    */
   'retention_backlog_remaining',
   /**
+   * #8208: PAM_EVIDENCE_RETENTION_DAYS is not a positive integer (the job
+   * falls back to the 400-day default) or is below the 30-day floor (clamped
+   * to 30). Fix the env value; evidence is never deleted sooner than the floor.
+   */
+  'pam_evidence_retention_config',
+  /**
    * #8855: a nightly AI tool output retention run finished with orgs that
    * failed or were skipped, or transcript deletes that failed, so expired tool
    * outputs (or SDK transcripts) remain. Per-org errors are in the worker log
    * (`[AiToolOutputRetention]`).
    */
   'ai_tool_output_retention_incomplete',
+  /**
+   * #9050: the nightly SDK transcript sweep found orphaned transcripts it could
+   * not delete on this container's disk (`[AiTranscriptSweeper]` log has ids).
+   */
+  'ai_transcript_sweep_incomplete',
 
   // --- server-side i18n (#3860) -----------------------------------------
   /** `tApi` was asked for a key no bundle defines — the raw key string is

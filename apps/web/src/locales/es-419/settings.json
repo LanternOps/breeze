@@ -366,7 +366,6 @@
       "supportedGeos": "Admite: {{geos}}",
       "refreshQueued": "Actualización de modelos en cola",
       "refreshFailed": "No se pudo poner en cola la actualización de modelos.",
-      "alreadyConnected": "Ya conectada",
       "addKind": {
         "anthropic_byok": "Clave de API de Anthropic",
         "openai_compatible": "Endpoint compatible con OpenAI"
@@ -1021,6 +1020,11 @@
       "schemeRequired": "La plantilla URL debe comenzar con un esquema seguido de dos puntos (por ejemplo, rustdesk:, https:)",
       "schemeBlocked": "Ese esquema URL no está permitido: javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: y filesystem: están bloqueados.",
       "idRequired": "La plantilla URL debe incluir el marcador de posición {id} para el valor por dispositivo."
+    },
+    "networkProxy": {
+      "title": "Proxy de red",
+      "label": "Servir el proxy de red desde un origen dedicado",
+      "help": "Se aplica a todas las organizaciones; las organizaciones no pueden anularlo. Solo tiene efecto donde su región ofrece un origen dedicado y mejora la compatibilidad con las interfaces web de los dispositivos."
     }
   },
   "partnerSettingsPage": {
@@ -4422,7 +4426,8 @@
     "reEnterYourNewPassword": "Vuelva a ingresar su nueva contraseña",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Cambiando contraseña..."
+    "changingPassword": "Cambiando contraseña...",
+    "noPasswordNotice": "Esta cuenta inicia sesión mediante el proveedor de identidad de su organización y no tiene contraseña, por lo que no hay nada que cambiar aquí. Si su organización no exige inicio de sesión único, use «Olvidé mi contraseña» en la página de inicio de sesión para establecer una."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Inicio de sesión único conectado.",
@@ -5857,6 +5862,12 @@
         "merge": "No se pudo iniciar la fusión",
         "missingResult": "La fusión terminó pero no devolvió datos de resultado. Vuelva a intentarlo.",
         "mfaRequired": "Fusionar organizaciones requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo."
+      },
+      "blockers": {
+        "pam_open_actuation": "La organización que se fusionará (y dejará de existir) tiene sesiones de acceso privilegiado (PAM) que aún no terminaron de limpiarse. Espere a que se cierren y vuelva a intentar la fusión.",
+        "pam_evidence": "La organización que se fusionará tiene historial de acceso privilegiado (PAM), y mover el historial PAM entre organizaciones no está habilitado en esta implementación. Fusione en la dirección opuesta o no fusione estas organizaciones.",
+        "payment_in_flight": "Hay un pago de la organización que se fusionará que aún está en proceso. Espere a que se complete y vuelva a intentar la fusión.",
+        "lineage_depth": "Estas organizaciones ya se fusionaron demasiadas veces, y esta fusión superaría la profundidad máxima del historial de fusiones."
       }
     },
     "archive": {

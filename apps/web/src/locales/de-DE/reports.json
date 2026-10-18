@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Zurück zu Berichten",
+      "backupPreview": {
+        "description": "Erstellt den aktuellen Backup-Snapshot mit den oben gewählten Optionen. Er läuft nur auf Ihre Anforderung.",
+        "error": "Die Vorschau konnte nicht erstellt werden.",
+        "run": "Vorschau erstellen",
+        "title": "Vorschau"
+      },
       "description": "Aktualisieren Sie die Konfiguration für „{{name}}“.",
       "errors": {
         "fetchReport": "Der Bericht konnte nicht abgerufen werden",

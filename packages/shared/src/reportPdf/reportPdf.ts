@@ -2131,7 +2131,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     renderBackupStatusReport(
       doc,
       opts.summary as BackupStatusReportData,
-      { generatedAt: opts.generatedAt },
+      { generatedAt: opts.generatedAt, timezone: opts.timezone },
       {
         C,
         PAGE,

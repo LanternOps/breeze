@@ -370,7 +370,7 @@ elevationRequestsRoutes.post(
       // on, which is unbounded table growth and push flooding with zero
       // product value. Mirrors the existing 'ignored' response shape (the
       // agent treats any 200/201 as success and ignores the body either way).
-      const pamSettings = await buildPamConfigUpdate(device.id);
+      const pamSettings = await buildPamConfigUpdate(device.id, { orgId: device.orgId });
       if (!pamSettings.uacInterceptionEnabled) {
         console.warn(
           `[ElevationRequests] ingest refused: PAM/UAC interception disabled for device=${device.id} org=${device.orgId}`,

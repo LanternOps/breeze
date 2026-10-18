@@ -72,7 +72,7 @@ describe('buildHelperConfigUpdate', () => {
     const settings = await buildHelperConfigUpdate('dev-1', 'org-1');
 
     expect(settings.enabled).toBe(true);
-    expect(redis.set).toHaveBeenCalledWith('helper:settings:device:dev-1', expect.any(String), 'EX', 120);
+    expect(redis.set).toHaveBeenCalledWith('helper:settings:v2:device:dev-1', expect.any(String), 'EX', 120);
   });
 
   it('skipCacheWrite: resolves the same value but never writes the device cache (#8616)', async () => {

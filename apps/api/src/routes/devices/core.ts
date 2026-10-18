@@ -605,8 +605,9 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * event-time site_id — it belongs to the org that owned the device then, even
  * when that is the same org (A -> B -> A). Only the device's current-epoch rows
  * follow the site change. Read after the devices row has been updated, so on
- * an org move this is the NEW epoch, which the un-actuated requests have just
- * been re-anchored into.
+ * an org move this is the NEW epoch, which holds no request yet: since W6
+ * (#8208) every request stays in the epoch it was created in on a device move,
+ * so the move's site rewrite matches nothing for this table.
  */
 const DEVICE_SITE_REWRITE_FILTERS: Readonly<Record<string, (deviceId: string) => SQL>> = {
   elevation_requests: (deviceId) =>

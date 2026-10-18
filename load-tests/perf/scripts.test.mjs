@@ -374,3 +374,33 @@ test('run-perf.sh on Linux refuses an empty hardware fingerprint, falling back t
   assert.doesNotMatch(r.log, /cli build/);
   assert.match(r.log, /pnpm wt-stack down/);
 });
+
+test('run-perf.sh --storm runs storm.sh with admission enforce and a pinned caddy port, passes its exit code, builds no KPI (#8642)', () => {
+  const fx = makeFixture();
+  const agentsim = path.join(fx.repo, 'load-tests', 'agentsim');
+  script(
+    path.join(agentsim, 'storm.sh'),
+    '#!/usr/bin/env bash\n' +
+      'echo "storm.sh $*" >> "$STUB_LOG"\n' +
+      'echo "STORM_ADMISSION=$BREEZE_ADMISSION_MODE CADDY_PORT=$BREEZE_WT_CADDY_PORT" >> "$STUB_LOG"\n' +
+      'mkdir -p "$(dirname "$0")/reports"; echo "{}" > "$(dirname "$0")/reports/storm-$1-stub.json"\n' +
+      'exit "${STUB_STORM_RC:-0}"\n',
+  );
+  const out = path.join(fx.root, 'out');
+  const args = ['--storm', 'storm-suite', '--out-dir', out, '--', '--agents', '400', '--gate-heartbeat-p95', '1s'];
+  const ok = run(fx, 'run-perf.sh', args);
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.log, /^storm\.sh storm-suite --agents 400 --gate-heartbeat-p95 1s$/m);
+  assert.match(ok.log, /^STORM_ADMISSION=enforce CADDY_PORT=\d+$/m);
+  assert.match(ok.log, /pnpm wt-stack down/);
+  assert.ok(!/^cli /m.test(ok.log) && !/^run\.sh /m.test(ok.log), ok.log);
+  assert.ok(existsSync(path.join(out, 'storm.json')));
+  const red = run(fx, 'run-perf.sh', args, { STUB_STORM_RC: '3' });
+  assert.equal(red.code, 3, red.err);
+});
+
+test('run-perf.sh refuses --storm together with --profile', () => {
+  const fx = makeFixture();
+  const r = run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--profile', 'smoke', '--out-dir', path.join(fx.root, 'o')]);
+  assert.equal(r.code, 64);
+});

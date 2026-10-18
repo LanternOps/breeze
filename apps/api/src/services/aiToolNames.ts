@@ -59,3 +59,13 @@ export function hasCoreAiToolName(toolName: string): boolean {
 }
 
 extensionContributionRegistry.configureReservedAiToolNames(hasCoreAiToolName);
+
+/**
+ * B-W02 (#6156, D-B8): `whoami` is a server-intrinsic MCP tool (it needs the
+ * MCP principal context, which registry handlers never receive), so it is not
+ * in the `aiTools` map. Reserve its name here, in the leaf, so an extension
+ * can never register a tool that shadows it — and so `mcpDomains.ts` /
+ * `mcpWhoami.ts` can import the constant without an `aiTools` import cycle.
+ */
+export const MCP_WHOAMI_TOOL_NAME = 'whoami';
+registerReservedAiToolNamePredicate((name) => name === MCP_WHOAMI_TOOL_NAME);

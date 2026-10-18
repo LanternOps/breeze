@@ -366,7 +366,6 @@
       "supportedGeos": "Supporta: {{geos}}",
       "refreshQueued": "Aggiornamento dei modelli in coda",
       "refreshFailed": "Impossibile mettere in coda l'aggiornamento dei modelli.",
-      "alreadyConnected": "Già connessa",
       "addKind": {
         "anthropic_byok": "Chiave API Anthropic",
         "openai_compatible": "Endpoint compatibile con OpenAI"
@@ -1021,6 +1020,11 @@
       "schemeRequired": "Il template URL deve iniziare con uno schema seguito da due punti (ad es. rustdesk:, https:)",
       "schemeBlocked": "Questo schema URL non è consentito — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: e filesystem: sono bloccati.",
       "idRequired": "Il template URL deve includere il placeholder {id} per il valore per-dispositivo."
+    },
+    "networkProxy": {
+      "title": "Proxy di rete",
+      "label": "Servi il proxy di rete da un’origine dedicata",
+      "help": "Si applica a tutte le organizzazioni; le organizzazioni non possono sovrascriverlo. Ha effetto solo dove la tua regione offre un’origine dedicata e migliora la compatibilità con le interfacce web dei dispositivi."
     }
   },
   "partnerSettingsPage": {
@@ -4417,7 +4421,8 @@
     "reEnterYourNewPassword": "Reinserisci la nuova password",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Cambio password..."
+    "changingPassword": "Cambio password...",
+    "noPasswordNotice": "Questo account accede tramite il provider di identità della tua organizzazione e non ha una password, quindi qui non c'è nulla da modificare. Se la tua organizzazione non richiede il Single Sign-On, usa «Password dimenticata» nella pagina di accesso per impostarne una."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single sign-on connesso.",
@@ -5905,6 +5910,12 @@
         "merge": "Impossibile avviare l'unione",
         "missingResult": "L'unione è terminata ma non ha restituito dati di risultato. Riprova.",
         "mfaRequired": "L'unione delle organizzazioni richiede l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del tuo profilo e riprova."
+      },
+      "blockers": {
+        "pam_open_actuation": "L'organizzazione che verrà unita (e dismessa) ha sessioni di accesso privilegiato (PAM) che non hanno ancora completato la pulizia. Attendi che si chiudano, poi riprova l'unione.",
+        "pam_evidence": "L'organizzazione che verrà unita ha una cronologia di accesso privilegiato (PAM) e lo spostamento della cronologia PAM tra organizzazioni non è abilitato in questa distribuzione. Unisci nella direzione opposta, oppure non unire queste organizzazioni.",
+        "payment_in_flight": "Un pagamento dell'organizzazione che verrà unita è ancora in corso. Attendi che si concluda, poi riprova l'unione.",
+        "lineage_depth": "Queste organizzazioni sono già state unite troppe volte e questa unione supererebbe la profondità massima della cronologia delle unioni."
       }
     },
     "archive": {

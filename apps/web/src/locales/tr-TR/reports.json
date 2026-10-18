@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Raporlara Geri Dön",
+      "backupPreview": {
+        "description": "Yukarıdaki seçeneklerle güncel yedekleme anlık görüntüsünü oluşturur. Yalnızca siz istediğinizde çalışır.",
+        "error": "Önizleme oluşturulamadı.",
+        "run": "Önizleme oluştur",
+        "title": "Önizleme"
+      },
       "description": "\"{{name}}\" için yapılandırmayı güncelleyin.",
       "errors": {
         "fetchReport": "Rapor getirilemedi",

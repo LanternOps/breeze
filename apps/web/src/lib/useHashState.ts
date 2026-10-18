@@ -34,6 +34,45 @@ import {
 const useIsomorphicLayoutEffect =
   typeof window === "undefined" ? useEffect : useLayoutEffect;
 
+// One window `hashchange` listener shared by every useHashState on the page
+// (#8978). With a listener per hook, a page holding several hooks was
+// committed after each listener (hashchange is a discrete event), so an
+// external hash change (sidebar link, bookmark, back/forward) landed one field
+// at a time and a state-to-hash writer could clobber the half-applied URL.
+// A single listener runs all appliers in one event callback, so React batches
+// them into one commit.
+const hashAppliers = new Set<() => void>();
+let hashListenerAttached = false;
+
+function onHashChange(): void {
+  for (const apply of Array.from(hashAppliers)) {
+    // One hook's throwing parser must not starve the rest (they used to have
+    // independent listeners); surface the error without aborting the loop.
+    try {
+      apply();
+    } catch (err) {
+      queueMicrotask(() => {
+        throw err;
+      });
+    }
+  }
+}
+
+function subscribeHashChange(apply: () => void): () => void {
+  hashAppliers.add(apply);
+  if (!hashListenerAttached) {
+    window.addEventListener("hashchange", onHashChange);
+    hashListenerAttached = true;
+  }
+  return () => {
+    hashAppliers.delete(apply);
+    if (hashAppliers.size === 0 && hashListenerAttached) {
+      window.removeEventListener("hashchange", onHashChange);
+      hashListenerAttached = false;
+    }
+  };
+}
+
 /**
  * Hash-derived state with a custom parser.
  *
@@ -63,8 +102,7 @@ export function useHashState<T>(
       setValue(parsed === undefined ? latest.current.defaultValue : parsed);
     };
     applyHash();
-    window.addEventListener("hashchange", applyHash);
-    return () => window.removeEventListener("hashchange", applyHash);
+    return subscribeHashChange(applyHash);
   }, []);
 
   return [value, setValue];

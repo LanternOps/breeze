@@ -53,6 +53,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TOOL_OUTPUT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   AI_TOOL_OUTPUT_RETENTION_CRON: 'job schedule override',
   AI_TOOL_OUTPUT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  AI_TRANSCRIPT_SWEEPER_CRON: 'job schedule override',
+  AI_TRANSCRIPT_SWEEPER_ENABLED: 'job toggle',
+  AI_TRANSCRIPT_SWEEPER_GRACE_HOURS: 'transcript sweep grace window',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
@@ -141,6 +144,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // CHILD_*
   CHILD_ENROLLMENT_KEY_TTL_MINUTES: 'timing knob',
   // CLAUDE_*
+  CLAUDE_CONFIG_DIR: 'SDK transcript directory (filesystem path)',
   CLAUDE_AGENT_SDK_CLIENT_APP: 'SDK child-process label',
   // COOKIE_*
   COOKIE_FORCE_SECURE: 'cookie policy override',
@@ -297,6 +301,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 'rate limit knob',
   // MCP_*
   MCP_EXECUTE_TOOL_ALLOWLIST: 'MCP tool policy',
+  MCP_INSUFFICIENT_SCOPE_HTTP_403: 'MCP step-up challenge flag',
   MCP_MAX_SSE_SESSIONS_PER_KEY: 'rate limit knob',
   MCP_MESSAGE_MAX_BODY_BYTES: 'request size limit',
   MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
@@ -369,6 +374,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   ORG_MERGE_MAX_ROWS: 'org merge safety limit',
   // PAM_*
   PAM_ACTUATOR_ENABLED: 'feature flag',
+  PAM_EVIDENCE_RETENTION_DAYS: 'retention TTL knob',
+  PAM_EVIDENCE_RETENTION_ENABLED: 'retention job kill switch',
+  PAM_OWNERSHIP_EPOCH_TRANSFER: 'feature flag (also needs the owner-only DB switch)',
   PAM_PENDING_REQUEST_TTL_MINUTES: 'timing knob',
   // PARTNER_*
   PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES: 'timing knob',

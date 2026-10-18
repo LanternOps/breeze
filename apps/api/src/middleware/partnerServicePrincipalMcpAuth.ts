@@ -238,6 +238,9 @@ export async function partnerServicePrincipalMcpAuthMiddleware(c: Context, next:
     principalType: 'partner_service_principal',
     principalId: credential.partnerServicePrincipalId,
     partnerServicePrincipalId: credential.partnerServicePrincipalId,
+    // B-W02 (#6156, D-B5): partner service principal keys stay unrestricted
+    // this wave. Set explicitly — an absent field fails closed to core-only.
+    mcpDomains: null,
   });
 
   // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment (same contract as the

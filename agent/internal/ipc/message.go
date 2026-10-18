@@ -683,6 +683,13 @@ type StateSync struct {
 	// ignore it, and LastHeartbeat stays empty so they cannot mistake it for
 	// a successful heartbeat.
 	AuthRejectedAt string `json:"authRejectedAt,omitempty"`
+	// ServerUnavailableAt (RFC3339) is set instead of LastHeartbeat when the
+	// agent's heartbeat loop is alive but the server answered with an
+	// overload status (429/502/503/504). The watchdog treats a fresh value as
+	// "running, server overloaded" and does not restart the agent for its
+	// stale heartbeat (#8934). Same compatibility contract as AuthRejectedAt:
+	// older watchdogs ignore it and LastHeartbeat stays empty.
+	ServerUnavailableAt string `json:"serverUnavailableAt,omitempty"`
 }
 
 // IntegrityCheck asks the agent to verify the integrity of the given targets.

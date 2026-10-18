@@ -366,7 +366,6 @@
       "supportedGeos": "Suporta: {{geos}}",
       "refreshQueued": "Atualização de modelos na fila",
       "refreshFailed": "Não foi possível enfileirar a atualização de modelos.",
-      "alreadyConnected": "Já conectada",
       "addKind": {
         "anthropic_byok": "Chave de API da Anthropic",
         "openai_compatible": "Endpoint compatível com OpenAI"
@@ -1021,6 +1020,11 @@
       "schemeRequired": "O modelo de URL deve começar com um esquema seguido por dois-pontos (ex.: rustdesk:, https:)",
       "schemeBlocked": "Esse esquema de URL não é permitido — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: e filesystem: estão bloqueados.",
       "idRequired": "O modelo de URL deve incluir o espaço reservado {id} para o valor por dispositivo."
+    },
+    "networkProxy": {
+      "title": "Proxy de rede",
+      "label": "Servir o proxy de rede a partir de uma origem dedicada",
+      "help": "Aplica-se a todas as organizações; as organizações não podem substituí-lo. Só tem efeito onde sua região oferece uma origem dedicada e melhora a compatibilidade com as interfaces web dos dispositivos."
     }
   },
   "partnerSettingsPage": {
@@ -4422,7 +4426,8 @@
     "reEnterYourNewPassword": "Digite novamente sua nova senha",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Alterando a senha..."
+    "changingPassword": "Alterando a senha...",
+    "noPasswordNotice": "Esta conta entra pelo provedor de identidade da sua organização e não tem senha, então não há nada para alterar aqui. Se a sua organização não exige login único, use \"Esqueci a senha\" na página de login para definir uma."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Logon único conectado.",
@@ -5910,6 +5915,12 @@
         "merge": "Falha ao iniciar a mesclagem",
         "missingResult": "A mesclagem terminou, mas não retornou dados de resultado. Tente novamente.",
         "mfaRequired": "Mesclar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
+      },
+      "blockers": {
+        "pam_open_actuation": "A organização que será mesclada (e encerrada) tem sessões de acesso privilegiado (PAM) que ainda não terminaram a limpeza. Aguarde o encerramento delas e tente a mesclagem novamente.",
+        "pam_evidence": "A organização que será mesclada tem histórico de acesso privilegiado (PAM), e mover o histórico PAM entre organizações não está habilitado nesta implantação. Mescle na direção oposta ou não mescle estas organizações.",
+        "payment_in_flight": "Há um pagamento da organização que será mesclada ainda em andamento. Aguarde a conclusão e tente a mesclagem novamente.",
+        "lineage_depth": "Estas organizações já foram mescladas vezes demais, e esta mesclagem excederia a profundidade máxima do histórico de mesclagens."
       }
     },
     "archive": {

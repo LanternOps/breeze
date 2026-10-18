@@ -75,6 +75,33 @@ describe('card', () => {
     const { data } = await res.json();
     expect(data).toMatchObject({ locale: 'de-DE', title: 'Acme · Security posture', summaryLine: expect.stringMatching(/^Showing 15 of 15/), controlsMet: 9 });
   });
+  it('W03a: card includes frameAncestors from the resolved page', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: ['https://example.com'] });
+    const { data } = await (await app.request('/trust/card/nw/acme')).json();
+    expect(data.frameAncestors).toEqual(['https://example.com']);
+  });
+  it('W03a: card reflects an allowlist edit on the next request (live, not from the payload)', async () => {
+    resolve.resolvePublishedTrustPage
+      .mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: ['https://a.example.com', 'https://b.example.com'] })
+      .mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: ['https://b.example.com'] });
+    expect((await (await app.request('/trust/card/nw/acme')).json()).data.frameAncestors).toEqual(['https://a.example.com', 'https://b.example.com']);
+    expect((await (await app.request('/trust/card/nw/acme')).json()).data.frameAncestors).toEqual(['https://b.example.com']);
+  });
+  it('W03a: card frameAncestors is [] when the column is empty', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: [] });
+    expect((await (await app.request('/trust/card/nw/acme')).json()).data.frameAncestors).toEqual([]);
+  });
+  it('W03a: card is no-store (a cached copy of a live framing policy is wrong)', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: ['https://example.com'] });
+    const res = await app.request('/trust/card/nw/acme');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+  it("W03a: reserved partner slug 'embed' → generic 404 with zero Redis and zero SQL", async () => {
+    for (const path of ['/trust/card/embed', '/trust/card/embed/acme', '/trust/public/embed/acme']) await expectGeneric404(await app.request(path));
+    expect(serving.isServing).not.toHaveBeenCalled();
+    expect(resolve.resolvePublishedTrustPage).not.toHaveBeenCalled();
+  });
   it('partner-home card resolves without an org slug', async () => {
     const res = await app.request('/trust/card/nw');
     expect(res.status).toBe(200);

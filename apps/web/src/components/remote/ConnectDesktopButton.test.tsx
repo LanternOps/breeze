@@ -154,11 +154,17 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
         />,
       );
 
-      // The compact variant is a menuitem that uses aria-disabled so its
-      // reason stays keyboard-reachable (#9025); the others keep native disabled.
+      // The compact menuitem (#9025) and the full header button (#9026) use
+      // aria-disabled so their reason stays keyboard-reachable; iconOnly keeps
+      // native disabled.
       const btn = screen.getByRole(variant === 'compact' ? 'menuitem' : 'button');
-      if (variant === 'compact') expect(btn).toHaveAttribute('aria-disabled', 'true');
-      else expect(btn).toBeDisabled();
+      if (variant === 'iconOnly') expect(btn).toBeDisabled();
+      else expect(btn).toHaveAttribute('aria-disabled', 'true');
+      if (variant === 'full') {
+        expect(btn).not.toHaveAttribute('disabled');
+        const reason = document.getElementById(btn.getAttribute('aria-describedby') ?? '');
+        expect(reason).toHaveTextContent('Device is offline');
+      }
       expect(btn).toHaveAttribute('title', 'Device is offline');
     });
 
@@ -197,7 +203,7 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
       />,
     );
     const btn = screen.getByRole('button');
-    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute('aria-disabled', 'true');
     expect(btn.getAttribute('title')).toMatch(/no active graphical session|log in/i);
   });
 
@@ -223,7 +229,7 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
     // tooltip is visible rather than the leftover "Connection failed" title.
     rerender(<ConnectDesktopButton deviceId="dev-x" disabled disabledTitle="Device is offline" />);
     const btn = screen.getByRole('button');
-    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute('aria-disabled', 'true');
     expect(btn).toHaveAttribute('title', 'Device is offline');
     expect(screen.queryByText(/connection failed/i)).toBeNull();
   });

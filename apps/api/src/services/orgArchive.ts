@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations } from '../db/schema';
 import { envInt } from '../utils/envInt';
 import { liftArchiveSuspension } from './tenantLifecycle';
+import { ARCHIVE_PRIOR_STATUS_KEY } from './orgSettingsInternalKeys';
 import {
   abortOrganizationOffboarding,
   beginOrganizationOffboarding,
@@ -30,7 +31,7 @@ const ARCHIVABLE_STATUSES = ['active', 'trial', 'suspended'] as const;
  * recording that it had ever been suspended. The `trial` case was quieter but
  * the same defect: a trial org silently promoted to `active`.
  */
-export const ARCHIVE_PRIOR_STATUS_KEY = 'archivePriorStatus';
+export { ARCHIVE_PRIOR_STATUS_KEY }; // declared in orgSettingsInternalKeys.ts (a leaf module)
 
 /**
  * Statuses restore will hand back. A hand-edited, absent or since-retired value

@@ -63,7 +63,14 @@
  * deployment (`BREEZE_ROLE=all`), none on a split worker. A transcript the job
  * cannot reach is no longer referenced by any session, so the product can
  * never resume or read it again; it remains on that container's disk until
- * the container is replaced.
+ * the container is replaced, or until that container's `aiTranscriptSweeper`
+ * run deletes it (#9050).
+ *
+ * ORPHANED TRANSCRIPTS on other containers are swept by `aiTranscriptSweeper`
+ * (#9050), which each API process runs against its own projects dir.
+ *
+ * `action_intents.result` of terminal intents past the same window is nulled
+ * in the same run (#9050; `nullIntentResultsBatch`).
  *
  * Not covered (spec "Out of scope"): user/assistant prose, continuation
  * summaries, screenshots, run workspaces. `ai_messages.content_blocks` holds no
@@ -78,6 +85,7 @@ import { AI_TOOL_OUTPUT_SCRUBBED, type AiToolOutputTombstone } from '@breeze/sha
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { aiDataPolicies, organizations, type AiDataPolicyRow } from '../db/schema';
+import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { mergeAiDataPolicies } from '../services/aiDataPolicy';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
@@ -117,6 +125,8 @@ export interface OrgScrubResult {
   messages: BatchedPruneResult;
   executions: BatchedPruneResult;
   artifacts: BatchedPruneResult;
+  /** `action_intents.result` payloads nulled (#9050). */
+  intents: BatchedPruneResult;
   /** Old `sdk_session_id`s cleared by this run, for transcript deletion. */
   clearedSdkSessionIds: string[];
 }
@@ -218,6 +228,33 @@ async function expireCapturesBatch(orgId: string, cutoffIso: string, batchSize: 
   return extractRowCount(result);
 }
 
+/**
+ * #9050: `action_intents.result` holds the executed tool's output (and, for a
+ * refused intent, its denial breadcrumb) outside the tables above. Same
+ * window, same org: a TERMINAL intent created before the cutoff has its
+ * `result` nulled. `result` is lifecycle data, not covered by the
+ * `action_intents_block_content_update` trigger, so the intent row, status,
+ * arguments and audit columns all stay. Idempotent through
+ * `result IS NOT NULL`; live (pending/approved/executing) intents are never
+ * touched.
+ */
+async function nullIntentResultsBatch(orgId: string, cutoffIso: string, batchSize: number): Promise<number> {
+  const result = await inFreshSystemContext('aiToolOutputRetention.action_intents', () => db.execute(sql`
+    UPDATE action_intents
+    SET result = NULL
+    WHERE id IN (
+      SELECT id FROM action_intents
+      WHERE org_id = ${orgId}::uuid
+        AND result IS NOT NULL
+        AND status IN ('completed', 'failed', 'rejected', 'expired', 'cancelled')
+        AND created_at < ${cutoffIso}::timestamptz
+      LIMIT ${batchSize}
+      FOR UPDATE SKIP LOCKED
+    )
+  `));
+  return extractRowCount(result);
+}
+
 async function batched(
   batchSize: number,
   maxBatches: number,
@@ -250,6 +287,11 @@ export async function scrubOrgToolOutputs(
   const quietSinceIso = new Date(now.getTime() - LIVE_SESSION_QUIET_MS).toISOString();
   // Rows older than this are scrubbed even in a live session (see the header).
   const deferUntilIso = new Date(now.getTime() - retentionDays * DAY_MS - LIVE_SESSION_MAX_DEFER_MS).toISOString();
+  // An intent's `result` may carry a sealed one-time secret (temporary password)
+  // that the tech can reveal for REVEAL_WINDOW_DAYS; never null it sooner, even
+  // for an org whose retention is shorter than that window.
+  const revealFloorIso = new Date(now.getTime() - REVEAL_WINDOW_DAYS * DAY_MS).toISOString();
+  const intentCutoffIso = revealFloorIso < cutoffIso ? revealFloorIso : cutoffIso;
   const markerJson = JSON.stringify(tombstone(now));
   const clearedSdkSessionIds: string[] = [];
 
@@ -265,7 +307,8 @@ export async function scrubOrgToolOutputs(
   const messages = await scrubTable('ai_messages');
   const executions = await scrubTable('ai_tool_executions');
   const artifacts = await batched(opts.batchSize, opts.maxBatches, () => expireCapturesBatch(orgId, cutoffIso, opts.batchSize));
-  return { messages, executions, artifacts, clearedSdkSessionIds };
+  const intents = await batched(opts.batchSize, opts.maxBatches, () => nullIntentResultsBatch(orgId, intentCutoffIso, opts.batchSize));
+  return { messages, executions, artifacts, intents, clearedSdkSessionIds };
 }
 
 /** Delete one SDK transcript (`<id>.jsonl` + its subagent dir) from this process's projects dir. */
@@ -320,7 +363,7 @@ export interface RetentionRunSummary {
   orgsKeptForever: number;
   orgsSkipped: number;
   orgsFailed: number;
-  totals: { messages: number; executions: number; artifacts: number; sessions: number };
+  totals: { messages: number; executions: number; artifacts: number; intents: number; sessions: number };
   transcripts: { deleted: number; notFound: number; failed: number };
   incomplete: boolean;
   durationMs: number;
@@ -331,7 +374,7 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
   const deleteTranscript = opts.deleteTranscript ?? deleteSdkTranscript;
   const summary: RetentionRunSummary = {
     orgsScanned: 0, orgsScrubbed: 0, orgsKeptForever: 0, orgsSkipped: 0, orgsFailed: 0,
-    totals: { messages: 0, executions: 0, artifacts: 0, sessions: 0 },
+    totals: { messages: 0, executions: 0, artifacts: 0, intents: 0, sessions: 0 },
     transcripts: { deleted: 0, notFound: 0, failed: 0 },
     incomplete: false,
     durationMs: 0,
@@ -367,8 +410,10 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
       summary.totals.messages += r.messages.deleted;
       summary.totals.executions += r.executions.deleted;
       summary.totals.artifacts += r.artifacts.deleted;
+      summary.totals.intents += r.intents.deleted;
       for (const [target, result] of [
         ['ai_messages', r.messages], ['ai_tool_executions', r.executions], ['ai_run_artifacts', r.artifacts],
+        ['action_intents', r.intents],
       ] as const) {
         if (result.hasMore) {
           summary.incomplete = true;
@@ -400,13 +445,13 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
   summary.durationMs = Date.now() - startedAt;
   const { totals, transcripts } = summary;
   console.log(
-    `${LOG} Scrubbed messages=${totals.messages} executions=${totals.executions} captures=${totals.artifacts} ` +
+    `${LOG} Scrubbed messages=${totals.messages} executions=${totals.executions} captures=${totals.artifacts} intents=${totals.intents} ` +
     `sessions=${totals.sessions} (transcripts deleted=${transcripts.deleted} notFound=${transcripts.notFound} failed=${transcripts.failed}) ` +
     `across ${summary.orgsScrubbed}/${summary.orgsScanned} orgs (keptForever=${summary.orgsKeptForever}, ` +
     `skipped=${summary.orgsSkipped}, failed=${summary.orgsFailed}) in ${summary.durationMs}ms`,
   );
   recordRetentionRun('ai_tool_output_retention', {
-    rowsDeleted: totals.messages + totals.executions + totals.artifacts,
+    rowsDeleted: totals.messages + totals.executions + totals.artifacts + totals.intents,
     incomplete: summary.incomplete,
   });
   return summary;

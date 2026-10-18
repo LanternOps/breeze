@@ -430,4 +430,49 @@ describe('OverflowTabs', () => {
       expect(afterCount).toBeLessThan(beforeCount);
     });
   });
+
+  // #9028: below md, mobileMode="scroll" keeps every primary tab in a
+  // horizontally scrolling strip instead of collapsing all but one into More.
+  describe('mobileMode="scroll"', () => {
+    const originalMatchMedia = window.matchMedia;
+    const stubViewport = (narrow: boolean) => {
+      window.matchMedia = ((query: string) => ({
+        matches: narrow && query.includes('max-width'),
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })) as unknown as typeof window.matchMedia;
+    };
+    afterEach(() => {
+      window.matchMedia = originalMatchMedia;
+    });
+
+    const mixed: OverflowTab[] = [
+      { id: 'a', label: 'Alpha', icon: <span /> },
+      { id: 'b', label: 'Beta', icon: <span />, count: 3 },
+      { id: 'c', label: 'Gamma', icon: <span /> },
+      { id: 'd', label: 'Delta', icon: <span />, secondary: true },
+    ];
+
+    it('below md: every primary tab stays in a scroll-snapping strip with its count; secondaries stay in More', () => {
+      stubViewport(true);
+      // jsdom's zero widths would collapse everything into More in width mode.
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" mobileMode="scroll" />);
+      expect(screen.getAllByRole('tab').map((t) => t.id)).toEqual(['t-a', 't-b', 't-c']);
+      const tablist = screen.getByRole('tablist');
+      expect(tablist.className).toContain('overflow-x-auto');
+      expect(tablist.className).toContain('snap-x');
+      expect(tablist.className).not.toContain('flex-wrap');
+      expect(screen.getByTestId('t-b-count')).toHaveTextContent('3');
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Delta']);
+    });
+
+    it('at md and up: behaves exactly like the width-collapsing default', () => {
+      stubViewport(false);
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" mobileMode="scroll" />);
+      expect(screen.getAllByRole('tab').map((t) => t.id)).toEqual(['t-a']);
+      expect(screen.getByRole('tablist').className).not.toContain('overflow-x-auto');
+    });
+  });
 });

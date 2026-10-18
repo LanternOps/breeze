@@ -10,7 +10,7 @@
     "site": "Sitio",
     "policy": "Política",
     "states": {
-      "not_reported": "Aún no hay datos de hora — se necesita una actualización del agente que incluya sincronización horaria",
+      "not_reported": "Aún no hay datos de hora — se requiere actualizar el agente para la sincronización horaria",
       "unsupported_os": "Aún no se admite en este sistema operativo"
     },
     "health": {
@@ -474,7 +474,7 @@
     },
     "runScript": "Ejecutar secuencia de comandos",
     "remoteTools": "Herramientas remotas",
-    "reRunAgentInventoryCollectorsSo": "Vuelva a ejecutar los recopiladores de inventario de agentes para que UI vea datos nuevos de hardware/software/red sin esperar el siguiente ciclo de latidos.",
+    "reRunAgentInventoryCollectorsSo": "Recopilar inventario ahora",
     "refresh": "Actualizar",
     "reboot": "Reiniciar",
     "wake": "Despertar",
@@ -865,7 +865,10 @@
     "loadingDevice": "Cargando dispositivo...",
     "backToDevices": "Volver a dispositivos",
     "goBack": "Volver",
-    "devices": "Dispositivos"
+    "devices": "Dispositivos",
+    "devicesCrumbOtherOrg": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo sigue siendo {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo no cambia",
+    "switchOrgFailed": "No se pudo cambiar de organización. Inténtalo de nuevo."
   },
   "deviceDetails": {
     "overview": "Descripción general",
@@ -899,7 +902,7 @@
     "scriptExecutionHistory": "Historial de ejecución de scripts",
     "management": "Gestión",
     "agentSettingsAndDeviceManagement": "Configuración de agentes y administración de dispositivos",
-    "config": "configuración",
+    "config": "Configuración",
     "resolvedConfigurationFromAllAssignedPolicies": "Configuración resuelta de todas las políticas asignadas.",
     "security": "Seguridad",
     "playbooks": "Playbooks",
@@ -951,7 +954,13 @@
       "extensions": "Extensiones"
     },
     "workloads": "Cargas de trabajo",
-    "workloadsTitle": "Contenedores y máquinas virtuales en este host"
+    "workloadsTitle": "Contenedores y máquinas virtuales en este host",
+    "offlineLastSeen": "Sin conexión · visto por última vez {{ago}}",
+    "locatedIn": "en <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Estás viendo un dispositivo de {{org}}",
+      "switch": "Cambiar a {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -1510,7 +1519,8 @@
     "tags": "Etiquetas",
     "customFields": "Campos personalizados",
     "text2": "*",
-    "edit": "Editar"
+    "edit": "Editar",
+    "roleNotAssessed": "Rol aún no evaluado"
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -2071,13 +2081,15 @@
       "cpu": "CPU",
       "disk": "Disco",
       "download": "Descargar",
-      "ram": "Ram",
+      "ram": "Memoria RAM",
       "readThroughput": "Rendimiento de lectura",
       "upload": "Subir",
       "writeThroughput": "Rendimiento de escritura"
     },
     "networkBandwidth": "Ancho de banda de red",
-    "title": "Gráficos de rendimiento"
+    "title": "Gráficos de rendimiento",
+    "noSamples": "Sin muestras en las últimas {{range}}",
+    "offlineSince": "Dispositivo sin conexión · visto por última vez {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2154,7 +2166,7 @@
     "details": "detalles",
     "disabled": "La puntuación de confiabilidad está deshabilitada para esta organización.",
     "distinctEvents": "Eventos distintos del {{window}}.",
-    "empty": "Aún no hay una instantánea de confiabilidad disponible.",
+    "empty": "Aún no hay datos de confiabilidad",
     "errors": {
       "loadDetail": "No se pudieron cargar los detalles de confiabilidad",
       "loadScore": "No se pudo cargar la puntuación de confiabilidad",
@@ -2500,7 +2512,7 @@
     "loadFailed": "No se pudo cargar la garantía.",
     "lookupUnavailable": "La búsqueda de garantía no está disponible para este fabricante",
     "manufacturer": "Fabricante",
-    "noInformation": "Sin información de garantía",
+    "noInformation": "No hay garantía registrada",
     "renews": "Renueva",
     "serialNumber": "Número de serie",
     "source": "Fuente: {{source}}",
@@ -2526,7 +2538,8 @@
       "refreshing": "Garantía actualizada...",
       "stillInProgress": "La actualización de la garantía aún está en curso; la tarjeta se actualizará cuando se complete.",
       "updated": "Información de garantía actualizada."
-    }
+    },
+    "lookUp": "Consultar"
   },
   "devicesPage": {
     "accessDenied": "No tiene permiso para ver dispositivos.",
@@ -3027,7 +3040,9 @@
     "submitting": "Procesando…",
     "cancel": "Cancelar",
     "genericError": "No se pudo mover el dispositivo.",
-    "timeout": "El traslado está tardando más de lo esperado y es posible que aún se esté completando en el servidor. Espera un minuto y luego actualiza la página para comprobar en qué organización está el dispositivo antes de volver a intentarlo."
+    "timeout": "El traslado está tardando más de lo esperado y es posible que aún se esté completando en el servidor. Espera un minuto y luego actualiza la página para comprobar en qué organización está el dispositivo antes de volver a intentarlo.",
+    "pamMoveActive": "Este dispositivo tiene una sesión de acceso privilegiado (PAM) que aún no terminó de limpiarse. Espere a que se cierre y luego vuelva a mover el dispositivo.",
+    "pamMoveBlocked": "Este dispositivo tiene historial de acceso privilegiado (PAM), y mover dispositivos con PAM entre organizaciones no está habilitado en esta implementación."
   },
   "networkDeviceDetailPage": {
     "approval": {
@@ -4504,5 +4519,17 @@
     "updatesPaused": "Actualizaciones en vivo en pausa — reintentando",
     "closeNotAnnounced": "El chat está cerrado aquí. Es posible que la ventana de chat del usuario siga abierta hasta que su dispositivo se reconecte o él responda.",
     "unavailable": "Este chat ya no está disponible"
+  },
+  "deviceOverviewState": {
+    "label": "Estado del dispositivo",
+    "lastCheckIn": "Último reporte {{ago}}",
+    "openAlerts_one": "{{count}} alerta abierta",
+    "openAlerts_other": "{{count}} alertas abiertas",
+    "openTickets_one": "{{count}} ticket abierto",
+    "openTickets_other": "{{count}} tickets abiertos",
+    "noOpenAlerts": "No hay alertas abiertas",
+    "untitledAlert": "Alerta reportada",
+    "alertsUnavailable": "No se pudieron cargar las alertas abiertas",
+    "viewAlerts": "Ver alertas"
   }
 }

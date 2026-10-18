@@ -1212,7 +1212,7 @@ monitoringRoutes.get(
     });
     // #8287: a watch removed from the policy stops reporting; its last row
     // (e.g. not_found) must not keep rendering as a live problem.
-    const latest = filterToActiveWatches(deduped, await loadActiveWatchKeys(deviceId));
+    const latest = filterToActiveWatches(deduped, await loadActiveWatchKeys(deviceId, device.orgId));
 
     return c.json({
       data: latest.map(r => ({
@@ -1270,7 +1270,7 @@ monitoringRoutes.get(
     const seen = new Set<string>();
     const latestStatuses: string[] = [];
     // #8287: only watches still in the device's resolved config count.
-    const activeResults = filterToActiveWatches(allResults, await loadActiveWatchKeys(deviceId));
+    const activeResults = filterToActiveWatches(allResults, await loadActiveWatchKeys(deviceId, device.orgId));
     for (const r of activeResults) {
       const key = watchKey(r.watchType, r.name);
       if (seen.has(key)) continue;

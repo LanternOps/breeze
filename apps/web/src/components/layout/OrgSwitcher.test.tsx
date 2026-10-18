@@ -183,20 +183,27 @@ describe('OrgSwitcher (unified control)', () => {
     fireEvent.click(orgButtons[0]);
   }
 
-  it('redirects to /devices when switching orgs from a device-detail page', async () => {
-    const { reloadMock, hrefSetter } = stubLocation('/devices/abc123');
+  // #9027: a name click from a record page switches the working org and keeps
+  // the user on the record instead of bouncing them to the (possibly empty)
+  // list. Sub-item destinations keep their explicit targets.
+  it.each(['/devices/abc123', '/organizations/org-z', '/tickets/t-1'])(
+    'stays on the record when switching orgs by name from %s',
+    async (path) => {
+      const { reloadMock, hrefSetter } = stubLocation(path);
 
-    render(<OrgSwitcher />);
+      render(<OrgSwitcher />);
 
-    openDropdownAndClickOrg('Org B');
+      openDropdownAndClickOrg('Org B');
 
-    expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
-    // Navigation is gated behind await waitForPendingRefresh() (#950 race guard).
-    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/devices', { replace: true }));
-    expect(reloadMock).not.toHaveBeenCalled();
-    expect(hrefSetter).not.toHaveBeenCalled();
-    expect(waitForPendingRefreshMock).toHaveBeenCalled();
-  });
+      expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
+      // Navigation is gated behind await waitForPendingRefresh() (#950 race guard).
+      await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith(path, { replace: false }));
+      expect(navigateToMock).not.toHaveBeenCalledWith('/devices', expect.anything());
+      expect(reloadMock).not.toHaveBeenCalled();
+      expect(hrefSetter).not.toHaveBeenCalled();
+      expect(waitForPendingRefreshMock).toHaveBeenCalled();
+    },
+  );
 
   it('soft-navigates in place (no reload) when switching orgs from a non-detail page', async () => {
     const { reloadMock, hrefSetter } = stubLocation('/devices');
@@ -237,6 +244,8 @@ describe('OrgSwitcher (unified control)', () => {
     expect(selectAllOrgsMock).not.toHaveBeenCalled();
     expect(reloadMock).not.toHaveBeenCalled();
     expect(hrefSetter).not.toHaveBeenCalled();
+    // #9027: no stay-on-record navigation either — nothing changed.
+    expect(navigateToMock).not.toHaveBeenCalled();
   });
 
   it('renders a pinned "All organizations" fleet row with >1 org', () => {
@@ -316,6 +325,14 @@ describe('OrgSwitcher (unified control)', () => {
 
     expect(screen.getByTestId('org-switcher-label').textContent).toBe('Org A');
     expect(screen.getByTestId('org-switcher-trigger').getAttribute('data-scope')).toBe('org');
+  });
+
+  it('keeps the org name in the mobile top bar, truncated rather than hidden (#9028)', () => {
+    stubLocation('/devices');
+    render(<OrgSwitcher />);
+    const label = screen.getByTestId('org-switcher-label');
+    expect(label.className).not.toMatch(/(^|\s)hidden(\s|$)/);
+    expect(label.className).toContain('truncate');
   });
 
   it('label shows the selection placeholder on a transient null (not fleet view)', () => {

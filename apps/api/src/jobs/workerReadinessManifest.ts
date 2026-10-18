@@ -60,6 +60,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('fleetRemediationDispatchWorker'),
   consumers('mlOutputRetention'),
   consumers('aiToolOutputRetention'),
+  consumers('aiTranscriptSweeper'),
   consumers('offlineDetector'),
   consumers('notificationDispatcher'),
   // #5306 — daily MFA enrolment grace notices. Plain Redis-required consumer:
@@ -119,6 +120,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('softwareUploadSessionCleanup'),
   consumers('softwareRemediationRequestCleanup'),
   consumers('auditRetention'),
+  consumers('pamEvidenceRetention'),
   consumers('auditChainVerify', ['auditChainVerify'], 'audit_chain_verify_enabled'),
   consumers('auditChainAnchor'),
   consumers('tenantErasure'),

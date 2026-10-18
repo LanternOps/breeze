@@ -366,7 +366,6 @@
       "supportedGeos": "Desteklenen: {{geos}}",
       "refreshQueued": "Model yenileme sıraya alındı",
       "refreshFailed": "Model yenileme sıraya alınamadı.",
-      "alreadyConnected": "Zaten bağlı",
       "addKind": {
         "anthropic_byok": "Anthropic API anahtarı",
         "openai_compatible": "OpenAI uyumlu uç nokta"
@@ -1021,6 +1020,11 @@
       "schemeRequired": "URL şablonu bir şemayla başlamalı ve ardından iki nokta üst üste gelmelidir (ör. Rustdesk:, https:)",
       "schemeBlocked": "Bu URL şemasına izin verilmiyor — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: ve filesystem: engellendi.",
       "idRequired": "URL şablonu, cihaz başına değer için {id} yer tutucusunu içermelidir."
+    },
+    "networkProxy": {
+      "title": "Ağ Proxy’si",
+      "label": "Ağ Proxy’sini ayrılmış bir kaynaktan sun",
+      "help": "Tüm kuruluşlara uygulanır; kuruluşlar bunu geçersiz kılamaz. Yalnızca bölgenizin ayrılmış bir kaynak sunduğu yerlerde etkili olur ve cihaz web arayüzleriyle uyumluluğu artırır."
     }
   },
   "partnerSettingsPage": {
@@ -4422,7 +4426,8 @@
     "reEnterYourNewPassword": "Yeni şifrenizi tekrar girin",
     "confirmPassword": "onaylaŞifre",
     "newPassword2": "yeniŞifre",
-    "changingPassword": "Şifre değiştiriliyor..."
+    "changingPassword": "Şifre değiştiriliyor...",
+    "noPasswordNotice": "Bu hesap kuruluşunuzun kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur, bu nedenle burada değiştirilecek bir şey yoktur. Kuruluşunuz çoklu oturum açmayı zorunlu kılmıyorsa, oturum açma sayfasındaki Parolamı unuttum seçeneğiyle bir parola belirleyebilirsiniz."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Tek oturum açma bağlandı.",
@@ -5910,6 +5915,12 @@
         "merge": "Birleştirme başlatılamadı",
         "missingResult": "Birleştirme tamamlandı ancak sonuç verisi döndürmedi. Tekrar deneyin.",
         "mfaRequired": "Kuruluşları birleştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      },
+      "blockers": {
+        "pam_open_actuation": "Birleştirilerek kapatılacak kuruluşta temizliği henüz tamamlanmamış ayrıcalıklı erişim (PAM) oturumları var. Oturumların kapanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
+        "pam_evidence": "Birleştirilerek kapatılacak kuruluşun ayrıcalıklı erişim (PAM) geçmişi var ve PAM geçmişinin kuruluşlar arasında taşınması bu dağıtımda etkin değil. Ters yönde birleştirin veya bu kuruluşları birleştirmeyin.",
+        "payment_in_flight": "Birleştirilerek kapatılacak kuruluşun işlemdeki bir ödemesi var. Ödemenin tamamlanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
+        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak."
       }
     },
     "archive": {

@@ -280,7 +280,7 @@ const EXPECTED_NAMES = [
   'topologyTelemetryMaintenance',
   'topologyPresenceWorker',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention', 'aiTranscriptSweeper',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
@@ -293,7 +293,7 @@ const EXPECTED_NAMES = [
   'serviceProcessCheckRetention', 'changeLogRetention', 'restorePointAttemptRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'migrationWindowSweep', 'partnerApiIdempotencyRetention', 'quickSupportReaper', 'softwareUploadSessionCleanup',
-  'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
+  'softwareRemediationRequestCleanup', 'auditRetention', 'pamEvidenceRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   // Helper-uploaded screenshot retention (per-device storage quota).
   'helperScreenshotRetentionWorker',

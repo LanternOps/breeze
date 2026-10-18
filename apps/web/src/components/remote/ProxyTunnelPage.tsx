@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ArrowLeft, X, Globe, Network, ExternalLink, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
@@ -6,6 +6,14 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { showToast } from '../shared/Toast';
+import { runAction, ActionError } from '@/lib/runAction';
+import {
+  HOST_MODE_SANDBOX,
+  PATH_MODE_SANDBOX,
+  resolveProxyTarget,
+  type ProxyTarget,
+  type ProxyTicketContext,
+} from '@/lib/proxyTunnelUrl';
 
 interface Props {
   tunnelId: string;
@@ -34,11 +42,22 @@ interface SessionFields {
 // itself reported failure.
 const IDLE_EXPIRY_SECONDS = 330;
 
+// postMessage the tunnel host's `/__bz/enter` bootstrap page sends when the
+// embedded session cannot work (apps/api/src/routes/tunnelHost.ts):
+// `{ type, tunnelId, reason: 'cookie' | 'storage' }`.
+const COOKIE_BLOCKED_MESSAGE_TYPE = 'breeze-tunnel-cookie-blocked';
+type CookieBlockedReason = 'cookie' | 'storage';
+
 /**
- * Network Proxy page. Renders the proxied device's web UI in an iframe served
- * through the API HTTP reverse proxy (`/api/v1/tunnel-http/:id/*`). A one-time
- * http-ticket authorizes the first navigation, which the proxy exchanges for a
- * short-lived, path-scoped cookie used by all sub-resource requests.
+ * Network Proxy page. Renders the proxied device's web UI in an iframe. The
+ * server picks the transport and returns the URL with each one-time
+ * http-ticket (`{ ticket, url, mode }`):
+ *   - path mode: the API reverse proxy (`/api/v1/tunnel-http/:id/*`), whose
+ *     ticket is exchanged for a short-lived, path-scoped cookie;
+ *   - host mode (#8155): a dedicated per-tunnel origin on a separate
+ *     registrable domain, entered via `/__bz/enter`.
+ * The URL is validated (resolveProxyTarget) before it is ever rendered, and
+ * the iframe sandbox follows the validated mode.
  *
  * Note: unlike VNC/terminal there is no long-lived relay WebSocket, so the
  * `tunnel_sessions` status never flips to "active" from a relay's point of
@@ -48,16 +67,25 @@ const IDLE_EXPIRY_SECONDS = 330;
  * `idleSeconds` + terminal status) since the iframe's onLoad only ever fires
  * once and cannot un-set a stale green "Connected" badge on its own.
  */
-function buildProxyUrl(tunnelId: string, ticket: string): string {
-  const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
-  return `${apiUrl}/api/v1/tunnel-http/${tunnelId}/?__bzt=${encodeURIComponent(ticket)}`;
+function apiBase(): string {
+  return import.meta.env.PUBLIC_API_URL || window.location.origin;
+}
+
+// Fallback ONLY for an API that predates the server-built `url` (#8155 W01).
+function legacyPathUrl(tunnelId: string, ticket: string): string {
+  return `/api/v1/tunnel-http/${tunnelId}/?__bzt=${encodeURIComponent(ticket)}`;
 }
 
 export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
   const { t } = useTranslation('remote');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [status, setStatus] = useState<TunnelStatus>('connecting');
-  const [proxyUrl, setProxyUrl] = useState<string | null>(null);
+  const [proxyTarget, setProxyTarget] = useState<ProxyTarget | null>(null);
+  // Set by the tunnel host's bootstrap page (host mode only) when the
+  // embedded session cannot work in this browser; offers a new tab instead.
+  const [blockedReason, setBlockedReason] = useState<CookieBlockedReason | null>(null);
+  const [closing, setClosing] = useState(false);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Raw `errorMessage` code from the last poll (e.g. 'tls_cert_untrusted') —
   // distinguishes the in-place TLS retry screen from the generic expiry overlay.
@@ -107,47 +135,75 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
   }, [pollStatus]);
 
   // Tickets are one-time: every navigation that enters the proxy (the iframe,
-  // a reconnect, a new tab) needs its own.
-  const requestTicketUrl = useCallback(async (): Promise<string> => {
-    const res = await fetchWithAuth(`/tunnels/${tunnelId}/http-ticket`, { method: 'POST' });
+  // a reconnect, a new tab) needs its own. In host mode each context also gets
+  // its own cookie (`?mode=tab` → the unpartitioned top-level cookie).
+  // Throws; it never touches iframe state, so the new-tab flow can reuse it.
+  const requestTarget = useCallback(async (context: ProxyTicketContext): Promise<ProxyTarget> => {
+    const res = await fetchWithAuth(
+      `/tunnels/${tunnelId}/http-ticket${context === 'tab' ? '?mode=tab' : ''}`,
+      { method: 'POST' },
+    );
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || stableT('proxyTunnelPage.errors.obtainTicket'));
+      throw new Error(extractApiError(body, stableT('proxyTunnelPage.errors.obtainTicket')));
     }
     const body = await res.json();
-    // The mint endpoint wraps the ticket: `{ ticket: { ticket, expiresInSeconds } }`.
+    // The mint endpoint wraps the ticket: `{ ticket: { ticket, expiresInSeconds }, url, mode }`.
     const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
     if (!ticket) {
       throw new Error(stableT('proxyTunnelPage.errors.invalidTicket'));
     }
-    return buildProxyUrl(tunnelId, ticket);
+    // A present-but-bad `url` is refused below; only a missing one falls back.
+    const url: unknown = body.url === undefined ? legacyPathUrl(tunnelId, ticket) : body.url;
+    const resolved = resolveProxyTarget({
+      url,
+      tunnelId,
+      context,
+      appOrigin: window.location.origin,
+      apiBase: apiBase(),
+    });
+    if (!resolved) {
+      // The user sees one generic message; leave operators the shape that was
+      // refused (never the URL itself: it carries the one-time ticket).
+      let host = typeof url === 'string' && url.startsWith('/') ? '(relative)' : '(unparseable)';
+      try { if (typeof url === 'string' && !url.startsWith('/')) host = new URL(url).host; } catch { /* keep */ }
+      console.warn('[network-proxy] refused the server-built proxy URL', {
+        tunnelId, context, mode: body.mode, host, appOrigin: window.location.origin, apiBase: apiBase(),
+      });
+      throw new Error(stableT('proxyTunnelPage.errors.invalidProxyUrl'));
+    }
+    return resolved;
   }, [tunnelId, stableT]);
 
-  // Mints (or re-mints) the one-time http-ticket and points the iframe at a
-  // fresh `?__bzt=` URL. Reused by the initial mount AND the idle-reconnect
-  // branch below — the ticket itself is stripped from the URL by the existing
-  // 302 (ticket -> cookie exchange), so re-minting never puts new capability
-  // material somewhere it lingers.
+  // Mints (or re-mints) the one-time http-ticket and points the iframe at the
+  // validated server URL. Reused by the initial mount AND the idle-reconnect
+  // branch below.
   const mintTicket = useCallback(async (): Promise<boolean> => {
     try {
-      setProxyUrl(await requestTicketUrl());
+      const next = await requestTarget('frame');
+      setBlockedReason(null);
+      setProxyTarget(next);
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('proxyTunnelPage.errors.prepareConnection'));
       return false;
     }
-  }, [requestTicketUrl, stableT]);
+  }, [requestTarget, stableT]);
 
   // The iframe's ticket was consumed by the iframe, so the new tab mints its
   // own. The tab is opened synchronously inside the click (an `await` first
-  // would get it popup-blocked), detached from this window, and navigated
-  // once the ticket arrives.
+  // would get it popup-blocked), detached from this window so device content
+  // can never reach it, and navigated once the validated ticket URL arrives.
+  // A failure here never tears down a working iframe: it toasts instead.
   const handleOpenInNewTab = useCallback(async () => {
     const tab = window.open('about:blank', '_blank');
-    if (!tab) return;
+    if (!tab) {
+      showToast({ type: 'error', message: stableT('proxyTunnelPage.errors.popupBlocked') });
+      return;
+    }
     tab.opener = null;
     try {
-      tab.location.replace(await requestTicketUrl());
+      tab.location.replace((await requestTarget('tab')).src);
     } catch (err) {
       tab.close();
       showToast({
@@ -155,7 +211,28 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
         message: err instanceof Error ? err.message : stableT('proxyTunnelPage.errors.prepareConnection'),
       });
     }
-  }, [requestTicketUrl, stableT]);
+  }, [requestTarget, stableT]);
+
+  // Host mode only: the bootstrap page reports a blocked cookie or blocked web
+  // storage. Accepted only from this iframe's window, on this tunnel's exact
+  // origin, about this tunnel.
+  useEffect(() => {
+    if (proxyTarget?.mode !== 'host') return;
+    const expectedOrigin = proxyTarget.origin;
+    const expectedTunnelId = tunnelId.toLowerCase();
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== expectedOrigin) return;
+      if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+      const data: unknown = event.data;
+      if (!data || typeof data !== 'object') return;
+      const msg = data as { type?: unknown; tunnelId?: unknown; reason?: unknown };
+      if (msg.type !== COOKIE_BLOCKED_MESSAGE_TYPE) return;
+      if (typeof msg.tunnelId !== 'string' || msg.tunnelId.toLowerCase() !== expectedTunnelId) return;
+      setBlockedReason(msg.reason === 'storage' ? 'storage' : 'cookie');
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [proxyTarget, tunnelId]);
 
   useEffect(() => {
     mintTicket();
@@ -223,10 +300,26 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
     void createTunnelAndNavigate(true);
   }, [createTunnelAndNavigate]);
 
-  const handleClose = useCallback(() => {
-    fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch(() => {});
-    setStatus('disconnected');
-  }, [tunnelId]);
+  // "Disconnected" only once the server confirms the close (spec §4): a failed
+  // DELETE leaves the session live, so the page must not claim otherwise.
+  const handleClose = useCallback(async () => {
+    setClosing(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }),
+        errorFallback: t('proxyTunnelPage.errors.closeFailed'),
+      });
+      setStatus('disconnected');
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        console.error('[network-proxy] close failed', err);
+        showToast({ type: 'error', message: t('proxyTunnelPage.errors.closeFailed') });
+      }
+    } finally {
+      setClosing(false);
+    }
+  }, [tunnelId, t]);
 
   const isTerminal = status === 'failed' || status === 'disconnected';
   const isTlsUntrusted = status === 'failed' && errorCode === 'tls_cert_untrusted';
@@ -269,16 +362,19 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
           <span className="truncate font-mono text-xs text-muted-foreground">{target || '—'}</span>
           {/* A badge left showing "Connected" here would be stale once the row is
               actually terminal or idle-expired — the overlay below is the source
-              of truth in that case, so the badge steps aside for it. */}
-          {!showExpiredOverlay && (
-            <span className={`shrink-0 text-xs font-medium ${statusColor}`}>{statusLabel}</span>
+              of truth in that case, so the badge steps aside for it. Likewise
+              for the cookie/storage-blocked notice: the iframe "loaded" (the
+              bootstrap page), but the embedded session cannot work. */}
+          {!showExpiredOverlay && !blockedReason && (
+            <span data-testid="proxy-status" className={`shrink-0 text-xs font-medium ${statusColor}`}>{statusLabel}</span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {proxyUrl && (
+          {proxyTarget && (
             <button
               type="button"
-              onClick={handleOpenInNewTab}
+              data-testid="proxy-open-new-tab"
+              onClick={() => void handleOpenInNewTab()}
               className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
             >
               <ExternalLink className="h-4 w-4" />
@@ -287,8 +383,9 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
           )}
           <button
             type="button"
-            onClick={handleClose}
-            disabled={status === 'disconnected' || status === 'failed'}
+            data-testid="proxy-close"
+            onClick={() => void handleClose()}
+            disabled={closing || status === 'disconnected' || status === 'failed'}
             className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
           >
             <X className="h-4 w-4" />
@@ -354,23 +451,50 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
               </div>
             </div>
           </div>
-        ) : proxyUrl ? (
+        ) : proxyTarget ? (
           <iframe
-            src={proxyUrl}
+            ref={frameRef}
+            src={proxyTarget.src}
             title={t('proxyTunnelPage.proxiedService')}
             data-testid="network-proxy-frame"
-            // The proxied device is untrusted. Omitting `allow-same-origin` forces
-            // the framed content into a null origin so its scripts cannot read this
-            // app's cookies/storage or reach the parent frame (defense-in-depth with
-            // the server-set sandbox CSP). The proxy auth cookie is HttpOnly and
-            // attaches by site, so auth still works.
-            sandbox="allow-scripts allow-forms allow-popups"
+            data-proxy-mode={proxyTarget.mode}
+            // The proxied device is untrusted.
+            // Host mode: allow-same-origin is safe ONLY because resolveProxyTarget
+            // proved the URL is this tunnel's own origin, not on or under the
+            // app/API host (spec §6); the device keeps its origin so its SPA works.
+            // Path mode: the device shares the API origin, so omitting
+            // allow-same-origin forces it into an opaque origin that cannot read
+            // this app's cookies/storage or reach the parent frame (defense in
+            // depth with the server-set sandbox CSP).
+            sandbox={proxyTarget.mode === 'host' ? HOST_MODE_SANDBOX : PATH_MODE_SANDBOX}
             className="h-full w-full border-0"
             onLoad={() => setStatus((s) => (s === 'failed' || s === 'disconnected' ? s : 'active'))}
           />
         ) : (
           <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
             {t('proxyTunnelPage.preparingConnection')}
+          </div>
+        )}
+
+        {blockedReason && !showExpiredOverlay && (
+          <div
+            data-testid="proxy-cookie-blocked-notice"
+            data-reason={blockedReason}
+            role="alert"
+            className="absolute inset-x-0 top-0 z-10 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+          >
+            <strong>{t('proxyTunnelPage.cookieBlocked.title')}</strong>{' '}
+            {blockedReason === 'storage'
+              ? t('proxyTunnelPage.cookieBlocked.storageBody')
+              : t('proxyTunnelPage.cookieBlocked.body')}
+            <button
+              type="button"
+              data-testid="proxy-cookie-blocked-open-new-tab"
+              onClick={() => void handleOpenInNewTab()}
+              className="ml-2 font-medium underline"
+            >
+              {t('proxyTunnelPage.openInNewTab')}
+            </button>
           </div>
         )}
 

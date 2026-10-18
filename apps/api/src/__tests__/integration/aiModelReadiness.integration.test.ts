@@ -2,7 +2,7 @@
  * W08 (#7606): topology AI readiness reads the registry — the org's effective
  * `chat` default offering and its connection — on the caller's HELD system
  * connection (the #6671 pool shape), instead of the retired compat connection
- * and its pinned legacy_default_model.
+ * and its pinned legacy default model (column dropped by W08b).
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -105,8 +105,8 @@ describe('chatReadinessInSystemContext (W08)', () => {
     await changeAnthropicEndpoint({
       partnerId: s.partnerId, connectionId: s.connectionId!, catalogEntryId: entryId, acknowledgeDataNote: true, userId: s.userId,
     });
-    const [conn] = await fixtureSql`SELECT kind, legacy_default_model FROM partner_ai_connections WHERE id = ${s.connectionId}`;
-    expect(conn).toEqual({ kind: 'catalog', legacy_default_model: null });
+    const [conn] = await fixtureSql`SELECT kind FROM partner_ai_connections WHERE id = ${s.connectionId}`;
+    expect(conn).toEqual({ kind: 'catalog' });
     expect(await ready(s.orgId)).toBeNull();
 
     // The entry's active revision stops mapping the offering's model → unavailable.

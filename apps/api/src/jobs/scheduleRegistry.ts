@@ -102,6 +102,9 @@ export const JOB_SCHEDULES = {
   // AI device file read policy W03 (#8855): nightly scrub of AI tool outputs
   // past each org's retention window. Daily tier, minute ≡ 3 (mod 5).
   'ai-tool-output-retention': '33 4 * * *',
+  // #9050: per-process SDK transcript sweep, five minutes after the retention
+  // scrub so it sees the cleared sdk_session_id pointers. Daily tier.
+  'ai-transcript-sweeper': '38 4 * * *',
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
   // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
@@ -134,6 +137,9 @@ export const JOB_SCHEDULES = {
   'ml-output-retention': '23 8 * * *',
   'user-risk-retention': '43 8 * * *',
   'vulnerability-msrc-sync': '3 9 * * *',
+  // PAM ownership epochs W5 (#8207): held-shell PAM evidence retention. Daily
+  // tier, minute = 3 (mod 5); hour 9 held only :03 and the weekly :18.
+  'pam-evidence-retention': '33 9 * * *',
   'abuse-signals-digest': '18 9 * * 1',
   'vulnerability-nvd-sync': '3 10 * * *',
   // Patch compliance report files past PATCH_REPORT_RETENTION_DAYS (default

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
 import { and, eq } from 'drizzle-orm';
+import { mcpDomainsInputSchema, normalizeMcpDomainsInput, type McpGrantableDomain } from '@breeze/shared';
 import { getProvider } from '../oauth/provider';
 import { setGrantBreezeMeta } from '../oauth/adapter';
 import { isAcceptedResourceIndicator } from '../oauth/resourceIndicators';
@@ -80,7 +81,9 @@ function ensureInteractionBoundToUser(details: any, userId: string): void {
   }
 }
 
-async function parseConsentBody(c: any): Promise<{ partner_id: string; approve: boolean }> {
+async function parseConsentBody(
+  c: any,
+): Promise<{ partner_id: string; approve: boolean; mcp_domains: McpGrantableDomain[] | null }> {
   let body: unknown;
   try {
     body = await c.req.json();
@@ -91,7 +94,7 @@ async function parseConsentBody(c: any): Promise<{ partner_id: string; approve: 
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new HTTPException(400, { message: 'invalid consent request body' });
   }
-  const candidate = body as { partner_id?: unknown; approve?: unknown };
+  const candidate = body as { partner_id?: unknown; approve?: unknown; mcp_domains?: unknown };
   if (typeof candidate.approve !== 'boolean') {
     throw new HTTPException(400, { message: 'approve must be a boolean' });
   }
@@ -99,7 +102,18 @@ async function parseConsentBody(c: any): Promise<{ partner_id: string; approve: 
     throw new HTTPException(400, { message: 'partner_id must be a valid UUID' });
   }
 
-  return { partner_id: candidate.partner_id, approve: candidate.approve };
+  // B-W02 #6156: absent/null = unrestricted. A present value must be a
+  // non-empty list of grantable domains (`[]` and `core` are rejected).
+  const parsedDomains = mcpDomainsInputSchema.safeParse(candidate.mcp_domains ?? null);
+  if (!parsedDomains.success) {
+    throw new HTTPException(400, { message: 'mcp_domains must be a non-empty list of valid tool domains' });
+  }
+
+  return {
+    partner_id: candidate.partner_id,
+    approve: candidate.approve,
+    mcp_domains: normalizeMcpDomainsInput(parsedDomains.data),
+  };
 }
 
 if (MCP_OAUTH_ENABLED) {
@@ -434,7 +448,11 @@ if (MCP_OAUTH_ENABLED) {
     // null` that bearer middleware rejects. The Grant.save() above is
     // recoverable on a retry click since the auth code is short-lived.
     try {
-      await setGrantBreezeMeta(grantId, { partner_id: body.partner_id, org_id: orgId });
+      await setGrantBreezeMeta(grantId, {
+        partner_id: body.partner_id,
+        org_id: orgId,
+        mcp_domains: body.mcp_domains,
+      });
     } catch {
       // setGrantBreezeMeta already logs with errorId. Surface a generic 500
       // to the consent client; they can retry.
@@ -492,6 +510,8 @@ if (MCP_OAUTH_ENABLED) {
           client_id: clientIdForUpdate,
           partner_id: body.partner_id,
           user_id: userId,
+          grantId,
+          mcpDomains: body.mcp_domains,
         },
       });
     } catch (err) {

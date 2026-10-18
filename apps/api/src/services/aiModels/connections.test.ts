@@ -165,7 +165,7 @@ describe('connection reads never select key material (#7600 W02)', () => {
 describe('createConnection error scrubbing (PR #7665 handoff)', () => {
   function drizzleInsertError(code: string, params: unknown[]): Error {
     const pg = Object.assign(new Error('duplicate key value violates unique constraint'), {
-      code, constraint_name: 'partner_ai_connections_compat_uq', severity: 'ERROR', query: 'insert', parameters: params,
+      code, constraint_name: 'partner_ai_connections_id_partner_uq', severity: 'ERROR', query: 'insert', parameters: params,
     });
     return Object.assign(new Error(`Failed query: insert … params: ${params.join(',')}`), {
       name: 'DrizzleQueryError', query: 'insert', params, cause: pg,
@@ -181,7 +181,7 @@ describe('createConnection error scrubbing (PR #7665 handoff)', () => {
     expect(err).toBeInstanceOf(RegistryWriteError);
     expect(err.code).toBe('conflict');
     expect(err.status).toBe(409);
-    expect(err.details).toEqual({ constraint: 'partner_ai_connections_compat_uq' });
+    expect(err.details).toEqual({ constraint: 'partner_ai_connections_id_partner_uq' });
     const surfaced = `${String(err.message)} ${String(err.cause)} ${JSON.stringify(err.details)}`;
     expect(surfaced).not.toContain('SECRET');
     expect((err.cause as { code?: string }).code).toBe('23505');

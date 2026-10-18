@@ -366,7 +366,6 @@
       "supportedGeos": "Unterstützt: {{geos}}",
       "refreshQueued": "Modellaktualisierung eingeplant",
       "refreshFailed": "Die Modellaktualisierung konnte nicht eingeplant werden.",
-      "alreadyConnected": "Bereits verbunden",
       "addKind": {
         "anthropic_byok": "Anthropic-API-Schlüssel",
         "openai_compatible": "OpenAI-kompatibler Endpunkt"
@@ -1021,6 +1020,11 @@
       "schemeRequired": "URL Vorlage muss mit einem Schema gefolgt von einem Doppelpunkt beginnen (z. B. rustdesk:, https:)",
       "schemeBlocked": "Dieses URL-Schema ist nicht zulässig – javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: und filesystem: sind blockiert.",
       "idRequired": "Die Vorlage URL muss den Platzhalter {id} für den Wert pro Gerät enthalten."
+    },
+    "networkProxy": {
+      "title": "Netzwerk-Proxy",
+      "label": "Netzwerk-Proxy über einen eigenen Ursprung bereitstellen",
+      "help": "Gilt für alle Organisationen; Organisationen können dies nicht überschreiben. Wirkt nur, wo Ihre Region einen eigenen Ursprung anbietet, und verbessert die Kompatibilität mit Weboberflächen von Geräten."
     }
   },
   "partnerSettingsPage": {
@@ -4422,7 +4426,8 @@
     "reEnterYourNewPassword": "Geben Sie Ihr neues Passwort erneut ein",
     "confirmPassword": "bestätigenPasswort",
     "newPassword2": "neuesPasswort",
-    "changingPassword": "Passwort ändern..."
+    "changingPassword": "Passwort ändern...",
+    "noPasswordNotice": "Dieses Konto meldet sich über den Identitätsanbieter Ihrer Organisation an und hat kein Passwort, daher gibt es hier nichts zu ändern. Wenn Ihre Organisation kein Single Sign-On vorschreibt, können Sie auf der Anmeldeseite über „Passwort vergessen“ eines festlegen."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single Sign-On verbunden.",
@@ -5857,6 +5862,12 @@
         "merge": "Zusammenführung konnte nicht gestartet werden",
         "missingResult": "Die Zusammenführung wurde abgeschlossen, lieferte aber keine Ergebnisdaten. Versuchen Sie es erneut.",
         "mfaRequired": "Das Zusammenführen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      },
+      "blockers": {
+        "pam_open_actuation": "Die aufzulösende Organisation hat PAM-Sitzungen (privilegierter Zugriff), deren Bereinigung noch nicht abgeschlossen ist. Warten Sie, bis sie beendet sind, und versuchen Sie die Zusammenführung dann erneut.",
+        "pam_evidence": "Die aufzulösende Organisation hat einen PAM-Verlauf (privilegierter Zugriff), und das Verschieben von PAM-Verlauf zwischen Organisationen ist in dieser Bereitstellung nicht aktiviert. Führen Sie die Organisationen in umgekehrter Richtung zusammen oder gar nicht.",
+        "payment_in_flight": "Eine Zahlung der aufzulösenden Organisation ist noch in Bearbeitung. Warten Sie, bis sie abgeschlossen ist, und versuchen Sie die Zusammenführung dann erneut.",
+        "lineage_depth": "Diese Organisationen wurden bereits zu oft zusammengeführt; diese Zusammenführung würde die maximale Tiefe des Zusammenführungsverlaufs überschreiten."
       }
     },
     "archive": {

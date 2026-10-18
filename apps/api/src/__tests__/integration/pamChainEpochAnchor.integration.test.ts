@@ -353,7 +353,27 @@ describe('PAM chain epoch anchor — freeze and insert guards (W2 Task 2.2)', ()
     await expectPgCode(() => insertActuation(a.id, fx.deviceId, fx.epoch1.requestId, { epoch: 1 }), '23514');
   });
 
-  it('an un-actuated request follows its device into the new epoch on a move', async () => {
+  // W6 (#8208): an un-actuated request follows its device only on an org
+  // merge (cause org_merge); on a device move every request stays in the
+  // epoch it was created in (source-org history, spec §7.3/§8, OD4).
+  it('an un-actuated request follows its device into the new epoch on a merge-caused org change', async () => {
+    const source = await createTenant();
+    const target = await createTenant(source.partnerId);
+    const { id: deviceId } = await createDevice({ orgId: source.orgId, siteId: source.siteId });
+    const requestId = await insertRequest(source, deviceId, { status: 'pending' });
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.ownership_change_cause', 'org_merge', true)`);
+      await tx.execute(sql`
+        UPDATE devices SET org_id = ${target.orgId}, site_id = ${target.siteId} WHERE id = ${deviceId}`);
+    });
+    const [row] = await getTestDb().execute<{ org_id: string; device_epoch: number; ownership_epoch: number }>(sql`
+      SELECT r.org_id::text AS org_id, r.device_epoch, d.ownership_epoch
+      FROM elevation_requests r JOIN devices d ON d.id = r.device_id
+      WHERE r.id = ${requestId}`);
+    expect(row).toEqual({ org_id: target.orgId, device_epoch: 2, ownership_epoch: 2 });
+  });
+
+  it('an un-actuated request stays in its epoch on a device move (no merge cause)', async () => {
     const source = await createTenant();
     const target = await createTenant(source.partnerId);
     const { id: deviceId } = await createDevice({ orgId: source.orgId, siteId: source.siteId });
@@ -364,7 +384,7 @@ describe('PAM chain epoch anchor — freeze and insert guards (W2 Task 2.2)', ()
       SELECT r.org_id::text AS org_id, r.device_epoch, d.ownership_epoch
       FROM elevation_requests r JOIN devices d ON d.id = r.device_id
       WHERE r.id = ${requestId}`);
-    expect(row).toEqual({ org_id: target.orgId, device_epoch: 2, ownership_epoch: 2 });
+    expect(row).toEqual({ org_id: source.orgId, device_epoch: 1, ownership_epoch: 2 });
   });
 
   it('an un-actuated request cannot be re-homed away from its device, re-pointed, or given a foreign epoch', async () => {

@@ -298,6 +298,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #9050: nightly sweep of orphaned SDK transcripts on this container's own
+    // disk. socket-owner ON PURPOSE (not the mechanical `global` its closure
+    // would classify it as): transcripts are written by the API role, so it
+    // must run there and not on a `worker`. The contract test only forbids a
+    // `global` entry from reaching socket dispatch, not the reverse.
+    name: 'aiTranscriptSweeper',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/aiTranscriptSweeper');
+      return { init: m.initializeAiTranscriptSweeper, shutdown: m.shutdownAiTranscriptSweeper };
+    },
+  },
+  {
     name: 'offlineDetector',
     placement: 'global',
     load: async () => {
@@ -761,6 +774,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/auditRetention');
       return { init: m.initializeAuditRetentionWorker, shutdown: m.shutdownAuditRetentionWorker };
+    },
+  },
+  {
+    name: 'pamEvidenceRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/pamEvidenceRetention');
+      return { init: m.initializePamEvidenceRetentionWorker, shutdown: m.shutdownPamEvidenceRetentionWorker };
     },
   },
   {

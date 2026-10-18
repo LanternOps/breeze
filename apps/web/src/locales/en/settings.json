@@ -366,7 +366,6 @@
       "supportedGeos": "Supports: {{geos}}",
       "refreshQueued": "Model refresh queued",
       "refreshFailed": "Couldn't queue a model refresh.",
-      "alreadyConnected": "Already connected",
       "addKind": {
         "anthropic_byok": "Anthropic API key",
         "openai_compatible": "OpenAI-compatible endpoint"
@@ -1021,6 +1020,11 @@
       "schemeRequired": "URL template must start with a scheme followed by a colon (e.g. rustdesk:, https:)",
       "schemeBlocked": "That URL scheme is not permitted — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: and filesystem: are blocked.",
       "idRequired": "URL template must include the {id} placeholder for the per-device value."
+    },
+    "networkProxy": {
+      "title": "Network Proxy",
+      "label": "Serve Network Proxy from a dedicated origin",
+      "help": "Applies to all organizations; organizations cannot override it. Takes effect only where your region offers a dedicated origin, and improves compatibility with device web UIs."
     }
   },
   "partnerSettingsPage": {
@@ -4422,7 +4426,8 @@
     "reEnterYourNewPassword": "Re-enter your new password",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Changing password..."
+    "changingPassword": "Changing password...",
+    "noPasswordNotice": "This account signs in through your organization's identity provider and has no password, so there is nothing to change here. If your organization does not require single sign-on, use Forgot password on the sign-in page to set one."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single sign-on connected.",
@@ -5905,6 +5910,12 @@
         "merge": "Failed to start the merge",
         "missingResult": "The merge finished but returned no result data. Try again.",
         "mfaRequired": "Merging organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
+      },
+      "blockers": {
+        "pam_open_actuation": "The organization being merged away has privileged-access (PAM) sessions that have not finished cleanup. Wait for them to close, then try the merge again.",
+        "pam_evidence": "The organization being merged away has privileged-access (PAM) history, and moving PAM history between organizations is not enabled on this deployment. Merge in the opposite direction, or do not merge these organizations.",
+        "payment_in_flight": "A payment for the organization being merged away is still in flight. Wait for it to settle, then try the merge again.",
+        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth."
       }
     },
     "archive": {
