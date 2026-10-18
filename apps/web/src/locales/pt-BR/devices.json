@@ -1218,6 +1218,8 @@
   "deviceFilterToolbar": {
     "searchDevices": "Pesquisar dispositivos",
     "quickFilters": "Filtros rápidos",
+    "scrollChipsLeft": "Rolar filtros para a esquerda",
+    "scrollChipsRight": "Rolar filtros para a direita",
     "addFilter": "Adicionar filtro",
     "advanced": "Avançado",
     "clear": "Limpar"

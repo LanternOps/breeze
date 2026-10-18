@@ -1218,6 +1218,8 @@
   "deviceFilterToolbar": {
     "searchDevices": "Cihazları arayın",
     "quickFilters": "Hızlı filtreler",
+    "scrollChipsLeft": "Filtreleri sola kaydır",
+    "scrollChipsRight": "Filtreleri sağa kaydır",
     "addFilter": "Filtre ekle",
     "advanced": "Gelişmiş",
     "clear": "Temizle"
