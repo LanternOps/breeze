@@ -210,7 +210,7 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
   ),
 }));
 
-vi.mock('../agentWs', () => ({ sendCommandToAgent }));
+vi.mock('../agentWs', () => ({ sendCommandToAgent, sendDesktopIceCandidateToAgent: vi.fn(() => true) }));
 
 vi.mock('../../services/agentCommandRelay', () => ({ dispatchCommandToAgent }));
 

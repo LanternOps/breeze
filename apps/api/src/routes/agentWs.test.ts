@@ -330,6 +330,13 @@ vi.mock('../services/automationActionResults', () => ({
 }));
 
 // Keep the real software result module exports while mocking reconciliation.
+vi.mock('../services/remoteDesktopIceTrickle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/remoteDesktopIceTrickle')>();
+  return {
+    ...actual,
+    appendAgentIceCandidate: vi.fn(),
+  };
+});
 vi.mock('../services/commandProgress', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/commandProgress')>();
   return {
@@ -445,6 +452,7 @@ import {
   processOrphanedCommandResult,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
+  sendDesktopIceCandidateToAgent,
   AGENT_CREDENTIAL_RECHECK_TTL_MS,
   AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS,
   AGENT_CREDENTIAL_RECHECK_GRACE_MS,
@@ -454,6 +462,7 @@ import {
 import { metricsRegistry } from '../services/metricsRegistry';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import { applyCommandProgress, COMMAND_PROGRESS_CAPABILITY } from '../services/commandProgress';
+import { appendAgentIceCandidate, DESKTOP_ICE_TRICKLE_CAPABILITY } from '../services/remoteDesktopIceTrickle';
 import { dispatchCommandToAgent } from '../services/agentCommandRelay';
 import {
   applySoftwareInstallResult,
@@ -7587,6 +7596,133 @@ describe('command_progress frames (#3578)', () => {
 
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('command_progress'))).toBe(true);
     warnSpy.mockRestore();
+  });
+});
+
+// #9182 — trickle ICE: the agent sends late local candidates for a desktop
+// session; viewer candidates are relayed to it as id-less frames.
+// ---------------------------------------------------------------------------
+describe('desktop_ice_candidate frames (#9182)', () => {
+  const preValidatedAgent = { deviceId: 'device-9182', orgId: 'org-9182', partnerId: 'partner-9182' };
+  const SESSION_ID = '91829182-9182-4182-8182-918291829182';
+  const RELAY = 'candidate:9 1 udp 16777215 198.51.100.7 3478 typ relay raddr 203.0.113.5 rport 50000';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(appendAgentIceCandidate).mockResolvedValue(true);
+  });
+
+  it('advertises the desktop_ice_trickle capability so agents know to send candidates', () => {
+    expect(AGENT_WS_CAPABILITIES).toContain(DESKTOP_ICE_TRICKLE_CAPABILITY);
+  });
+
+  it('records a late candidate against the AUTHENTICATED device, and sends no ack or error', async () => {
+    const handlers = createAgentWsHandlers('agent-9182', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    vi.mocked(ws.send).mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'desktop_ice_candidate',
+        sessionId: SESSION_ID,
+        startGeneration: '9007199254740993',
+        seq: 1,
+        candidate: { candidate: RELAY, sdpMid: '0', sdpMLineIndex: 0 },
+        deviceId: 'some-other-device',
+      }),
+    } as any, ws as any);
+
+    expect(vi.mocked(appendAgentIceCandidate)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(appendAgentIceCandidate)).toHaveBeenCalledWith({
+      deviceId: 'device-9182',
+      sessionId: SESSION_ID,
+      startGeneration: '9007199254740993',
+      seq: 1,
+      candidate: { candidate: RELAY, sdpMid: '0', sdpMLineIndex: 0 },
+    });
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it('records the end-of-gathering marker', async () => {
+    const handlers = createAgentWsHandlers('agent-9182-done', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'desktop_ice_candidate', sessionId: SESSION_ID, startGeneration: '4', seq: 2, complete: true }),
+    } as any, ws as any);
+
+    expect(vi.mocked(appendAgentIceCandidate)).toHaveBeenCalledWith({
+      deviceId: 'device-9182',
+      sessionId: SESSION_ID,
+      startGeneration: '4',
+      seq: 2,
+      complete: true,
+    });
+  });
+
+  it('drops a malformed frame without writing or answering', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const handlers = createAgentWsHandlers('agent-9182-bad', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    vi.mocked(ws.send).mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'desktop_ice_candidate', sessionId: 'not-a-uuid', startGeneration: '4', seq: 0, candidate: { candidate: RELAY } }),
+    } as any, ws as any);
+
+    expect(vi.mocked(appendAgentIceCandidate)).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('drops a frame from a superseded socket without writing', async () => {
+    const handlersA = createAgentWsHandlers('agent-9182-sup', preValidatedAgent);
+    const wsA = wsMock();
+    await connectAgentSocket(handlersA, wsA);
+    const handlersB = createAgentWsHandlers('agent-9182-sup', preValidatedAgent);
+    const wsB = wsMock();
+    await connectAgentSocket(handlersB, wsB);
+
+    await handlersA.onMessage({
+      data: JSON.stringify({ type: 'desktop_ice_candidate', sessionId: SESSION_ID, startGeneration: '4', seq: 0, candidate: { candidate: RELAY } }),
+    } as any, wsA as any);
+
+    expect(vi.mocked(appendAgentIceCandidate)).not.toHaveBeenCalled();
+  });
+
+  it('does not let a failed write escape the message handler', async () => {
+    vi.mocked(appendAgentIceCandidate).mockRejectedValue(new Error('db down'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const handlers = createAgentWsHandlers('agent-9182-err', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+
+    await expect(handlers.onMessage({
+      data: JSON.stringify({ type: 'desktop_ice_candidate', sessionId: SESSION_ID, startGeneration: '4', seq: 0, candidate: { candidate: RELAY } }),
+    } as any, ws as any)).resolves.toBeUndefined();
+
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('desktop_ice_candidate'))).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('relays a viewer candidate to the connected agent as an id-less frame', async () => {
+    const handlers = createAgentWsHandlers('agent-9182-relay', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    vi.mocked(ws.send).mockClear();
+
+    const frame = {
+      type: 'desktop_ice_candidate' as const,
+      sessionId: SESSION_ID,
+      startGeneration: '4',
+      candidate: { candidate: RELAY, usernameFragment: 'abcd' },
+    };
+    expect(sendDesktopIceCandidateToAgent('agent-9182-relay', frame)).toBe(true);
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual(frame);
+    expect(sendDesktopIceCandidateToAgent('agent-not-connected', frame)).toBe(false);
   });
 });
 

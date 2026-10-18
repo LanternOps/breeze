@@ -4745,6 +4745,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'addIceCandidate',
         tags: ['Remote'],
         summary: 'Add ICE candidate',
+        description: 'Trickles a viewer ICE candidate gathered after the offer: stored against the session\'s current start and relayed to the agent hosting it.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         responses: {
           '200': {

@@ -255,6 +255,9 @@ export async function commitDesktopStartIntent(
     .set({
       webrtcOffer: input.offer,
       webrtcAnswer: null,
+      // #9182: trickled candidates belong to one start; a new offer is a new
+      // ICE negotiation.
+      iceCandidates: [],
       desktopStartCommandId: input.startCommandId,
       desktopPromptMode: input.promptMode,
       desktopConsentUnavailableBehavior: input.consentUnavailableBehavior,
@@ -320,6 +323,7 @@ export async function commitDesktopStreamStartIntent(
       // attempt so nothing can mistake it for this start's.
       webrtcOffer: null,
       webrtcAnswer: null,
+      iceCandidates: [],
       desktopStartCommandId: input.startCommandId,
       desktopPromptMode: input.promptMode,
       desktopConsentUnavailableBehavior: input.consentUnavailableBehavior,

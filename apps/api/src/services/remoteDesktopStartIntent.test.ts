@@ -181,12 +181,23 @@ describe('remoteDesktopStartIntent', () => {
       desktopConsentUnavailableBehavior: 'block',
       webrtcOffer: null,
       webrtcAnswer: null,
+      // #9182: no trickled ICE candidate from an earlier start survives.
+      iceCandidates: [],
     });
     // Activation belongs to the agent's accepted result, never to the start
     // decision. startedAt marks this start attempt: the stale-session cutoff
     // for a connecting row and the lease hard deadline are measured from it,
     // so a start waiting on its consent prompt is not expired as stale.
     expect(written.startedAt).toBeInstanceOf(Date);
+  });
+
+  // #9182: trickled candidates belong to one start. A new offer starts a new
+  // ICE negotiation, so the previous start's entries must not reach it.
+  it('clears the previous start\'s trickled ICE candidates with the generation bump', async () => {
+    returningMock.mockResolvedValue([{ generation: 2n }]);
+    await commitDesktopStartIntent(INPUT);
+    const written = setMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(written).toMatchObject({ webrtcAnswer: null, iceCandidates: [] });
   });
 
   it('returns the committed generation as a bigint and formats it as a decimal string', async () => {
