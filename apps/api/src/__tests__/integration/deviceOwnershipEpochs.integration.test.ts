@@ -441,6 +441,7 @@ describe('device ownership epochs — advance on org change', () => {
       'ai_operator_tasks',
       'device_ownership_epoch_closures',
       'device_ownership_epochs',
+      'elevation_requests',
       'fix_outcomes',
       'invoice_line_devices',
       'offline_transition_effects',

@@ -6,14 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
@@ -158,6 +159,11 @@ type Client struct {
 	stopMu    sync.RWMutex
 	isRunning bool
 	runningMu sync.RWMutex
+	// localClose is set by ForceReconnect when it drops a live connection, so
+	// the reconnect loop can tell an agent-initiated drop (re-dial quickly)
+	// from a server-initiated close (back off, #8841). Guarded by connMu when
+	// set; swapped by the reconnect loop once the pumps have exited.
+	localClose atomic.Bool
 
 	// OnConnected, if set, is invoked synchronously from the read pump once
 	// the server's "connected" welcome frame has been parsed — i.e. after a
@@ -367,7 +373,14 @@ func (c *Client) IsConnected() bool {
 }
 
 // ForceReconnect closes the active connection so the reconnect loop re-dials.
+// The drop is marked as agent-initiated so the loop re-dials after a short
+// jittered wait instead of the server-close backoff.
 func (c *Client) ForceReconnect() {
+	c.connMu.RLock()
+	if c.conn != nil {
+		c.localClose.Store(true)
+	}
+	c.connMu.RUnlock()
 	c.closeCurrentConn(false)
 }
 
@@ -383,18 +396,20 @@ func (c *Client) connect() error {
 		return fmt.Errorf("auth token is nil or zeroed — cannot connect")
 	}
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig:  c.currentTLSConfig(),
-		// Last-known-good DNS cache (#2288) — TCP dial layer only; the TLS
-		// handshake above still verifies the URL hostname.
-		NetDialContext: netcache.Shared().DialContext,
-	}
+	dialer := c.newDialer()
 	headers := http.Header{
 		"Authorization": {"Bearer " + c.config.AuthToken.Reveal()},
 	}
-	conn, _, err := dialer.Dial(wsURL, headers)
+	// Keep the handshake response: a refused upgrade (W08 503
+	// WS_UPGRADE_REFUSED, #8456; or a 429) carries Retry-After, which the
+	// reconnect loop honours (#8841).
+	conn, resp, err := dialer.Dial(wsURL, headers)
 	if err != nil {
+		// gorilla also returns the response for a 101 with malformed
+		// handshake headers; that is not a refusal.
+		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols {
+			return fmt.Errorf("failed to connect: %w", newUpgradeRefusedError(resp, err, time.Now()))
+		}
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
@@ -425,8 +440,14 @@ func (c *Client) buildWSURL() (string, error) {
 	return serverURL.String(), nil
 }
 
+// reconnectLoop dials, runs the pumps until the connection ends, and dials
+// again. Every path back to dial waits first (#8841): a failed dial waits the
+// jittered exponential step (or the server's Retry-After, if longer), and a
+// connection that ended waits according to who closed it and how — see
+// reconnectBackoff. The step resets only after a connection that lasted past
+// stableConnectionThreshold.
 func (c *Client) reconnectLoop() {
-	backoff := initialBackoff
+	backoff := newReconnectBackoff(nil)
 
 	for {
 		select {
@@ -435,64 +456,58 @@ func (c *Client) reconnectLoop() {
 		default:
 		}
 
+		var sleep time.Duration
 		if err := c.connect(); err != nil {
-			log.Warn("connection failed", "error", err.Error())
+			sleep = backoff.afterDialFailure(err)
+			log.Warn("connection failed", "error", err.Error(), "retryIn", sleep)
+		} else {
+			// Run read/write pumps — track how long the connection lasted
+			connStart := time.Now()
+			pumpDone := make(chan struct{})
+			writerDone := make(chan struct{})
+			go c.writePump(pumpDone, writerDone)
+			readErr := c.readPump()
+			close(pumpDone)
+			<-writerDone
+			c.closeCurrentConn(false)
+			lasted := time.Since(connStart)
 
-			jitter := time.Duration(float64(backoff) * jitterFactor * (rand.Float64()*2 - 1))
-			sleep := backoff + jitter
-			if sleep < 0 {
-				sleep = backoff
-			}
-
-			log.Info("retrying", "delay", sleep)
-			select {
-			case <-c.done:
+			// Check if we should stop
+			c.runningMu.RLock()
+			running := c.isRunning
+			c.runningMu.RUnlock()
+			if !running {
 				return
-			case <-time.After(sleep):
 			}
 
-			backoff = time.Duration(float64(backoff) * backoffFactor)
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-			continue
+			kind, code := classifyDisconnect(readErr, c.localClose.Swap(false))
+			sleep = backoff.afterDisconnect(kind, lasted)
+			log.Info("disconnected", "kind", kind.String(), "closeCode", code,
+				"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
 		}
 
-		// Run read/write pumps — track how long the connection lasted
-		connStart := time.Now()
-		pumpDone := make(chan struct{})
-		writerDone := make(chan struct{})
-		go c.writePump(pumpDone, writerDone)
-		c.readPump()
-		close(pumpDone)
-		<-writerDone
-		c.closeCurrentConn(false)
-
-		// Only reset backoff if connection was stable (lasted > 30s).
-		// Immediate disconnects (e.g. auth rejection) keep exponential backoff
-		// so a misconfigured agent doesn't flood the server.
-		if time.Since(connStart) > 30*time.Second {
-			backoff = initialBackoff
-		}
-
-		// Check if we should stop
-		c.runningMu.RLock()
-		running := c.isRunning
-		c.runningMu.RUnlock()
-		if !running {
+		timer := time.NewTimer(sleep)
+		select {
+		case <-c.done:
+			timer.Stop()
 			return
+		case <-timer.C:
 		}
 	}
 }
 
-func (c *Client) readPump() {
+// readPump reads frames until the connection ends and returns the read error
+// that ended it (a *websocket.CloseError when the peer sent a close frame).
+// It returns nil when there was no connection to read, or if a panic was
+// recovered; the reconnect loop treats both as an abnormal close.
+func (c *Client) readPump() error {
 	defer observability.Recoverer("websocket.readPump")
 	c.connMu.RLock()
 	conn := c.conn
 	c.connMu.RUnlock()
 
 	if conn == nil {
-		return
+		return nil
 	}
 
 	conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -507,7 +522,7 @@ func (c *Client) readPump() {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 				log.Warn("read error", "error", err.Error())
 			}
-			return
+			return err
 		}
 
 		// First, check if this is a server message (has type but no id)
@@ -1344,5 +1359,28 @@ func (c *Client) SendRevocationLeaseRenewWithNonce(sessionID, nonce string) erro
 		return fmt.Errorf("client is stopped")
 	default:
 		return fmt.Errorf("send channel full, dropping revocation_lease_renew")
+	}
+}
+
+// newDialer builds the WebSocket dialer. The TLS handshake goes through the
+// shared ECH dialer (plain-first; ECH only after the filter signature, with
+// plain as the in-dial fallback); gorilla passes
+// no NextProtos and the dialer sets ServerName itself. gorilla v1.5.3 uses
+// NetDialTLSContext for every wss dial, even when a Proxy is configured, so it
+// never handshakes with TLSClientConfig; the field is kept only for parity
+// with the HTTP clients and as documentation. No Proxy is set here: one would
+// wrap NetDialTLSContext, and the ECH dialer would then run its TLS handshake
+// with the proxy rather than the control plane. HandshakeTimeout bounds TCP +
+// TLS + upgrade, and the ECH dialer caps its attempt so the plain fallback
+// fits in the budget.
+func (c *Client) newDialer() websocket.Dialer {
+	tlsCfg := c.currentTLSConfig()
+	return websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:  tlsCfg,
+		// Last-known-good DNS cache (#2288) — TCP dial layer only; the TLS
+		// handshake still verifies the URL hostname.
+		NetDialContext:    netcache.Shared().DialContext,
+		NetDialTLSContext: ech.Shared().DialTLS(tlsCfg, nil),
 	}
 }

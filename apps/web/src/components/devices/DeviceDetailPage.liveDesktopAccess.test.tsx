@@ -36,7 +36,7 @@ function emitDeviceEvent(event: DeviceEvent): void {
   });
 }
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 // ScriptPickerModal (rendered closed by the page) reads permissions for its
 // live session list.
 vi.mock('../../lib/permissions', () => ({

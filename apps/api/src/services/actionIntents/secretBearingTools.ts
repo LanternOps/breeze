@@ -23,6 +23,9 @@ import {
 
 export const SECRET_BEARING_TOOLS: readonly string[] = Object.freeze([
   'm365_reset_password',
+  // POST /users carries a passwordProfile: the created user's temporary
+  // credential is sealed exactly like a reset's.
+  'm365_create_user',
   'google_reset_password',
 ]);
 

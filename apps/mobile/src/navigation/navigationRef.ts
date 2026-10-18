@@ -50,6 +50,11 @@ export function navigateToTicket(ticketId: string, options: TicketOpenOptions = 
   if (options.focusComposer !== undefined) params.focusComposer = options.focusComposer;
   navigationRef.navigate('TicketsTab', {
     screen: 'TicketDetail',
+    // Without this, a tap that lands before the Tickets stack has ever mounted
+    // makes TicketDetail that stack's FIRST route: no Tickets list beneath it,
+    // so no back button, and the Tickets tab stays stuck on the ticket.
+    // `initial: false` keeps the stack's initialRouteName underneath.
+    initial: false,
     params,
   });
 }

@@ -67,6 +67,9 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'POST /:id/topology/adjacency': 'standard',
   // Periodic workload report (added after the plan baseline); no agent sender yet.
   'PUT /:id/workloads': 'standard',
+  // Endpoint-messaging receipts (#8741): small, user-attested; the agent keeps
+  // sticky messages and re-reports, so shedding at level 2+ loses nothing.
+  'POST /:id/message-events': 'standard',
   // bulk
   'PUT /:id/hardware': 'bulk',
   'PUT /:id/software': 'bulk',

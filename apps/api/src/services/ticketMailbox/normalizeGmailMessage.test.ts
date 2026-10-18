@@ -228,6 +228,20 @@ describe('normalizeGmailMessage', () => {
     expect(n.senderAuth?.verified).toBe(false);
   });
 
+  it('ignores Exchange organization headers: the intra-tenant signal is Microsoft 365 only (#8299)', () => {
+    // A Gmail mailbox can receive these on mail relayed from a Microsoft tenant;
+    // here they are sender-controlled content and must not verify anything.
+    const msg = baseMessage([
+      { name: 'From', value: 'staff@example.com' },
+      { name: 'Authentication-Results', value: 'mx.google.com; dkim=none; dmarc=none' },
+      { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Internal' },
+      { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
+      { name: 'X-Forefront-Antispam-Report', value: 'SFV:NSPM;DIR:INT;' },
+    ]);
+    const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
+    expect(n.senderAuth).toEqual({ spf: 'unknown', dkim: 'none', dmarc: 'none', verified: false });
+  });
+
   it('reads the real dmarc clause, not a value hidden inside a comment', () => {
     // `spf=pass (dmarc=pass)` must NOT be read as dmarc=pass; the genuine
     // dmarc=fail clause wins → unverified.

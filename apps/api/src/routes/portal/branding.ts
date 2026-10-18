@@ -5,6 +5,8 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { portalBranding } from '../../db/schema';
 import { brandingParamSchema } from './schemas';
 import { applyPortalCacheHeaders, buildWeakEtag, isEtagFresh } from './helpers';
+import { resolvePortalCapabilities } from './featureFlags';
+import { ERROR_CODES } from '@breeze/shared';
 
 export const brandingRoutes = new Hono();
 
@@ -56,7 +58,7 @@ brandingRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema)
   const { domain } = c.req.valid('param');
   const branding = await resolveBrandingByDomain(domain);
   if (!branding) {
-    return c.json({ error: 'Branding not found' }, 404);
+    return c.json({ error: 'Branding not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   const payload = { branding };
@@ -136,10 +138,13 @@ brandingRoutes.get('/branding', async (c) => {
     // default state, not an error. Match the public /branding/:domain 404
     // contract so the portal falls into its documented 404 → defaultBranding
     // path (flags undefined → every gated surface fails closed).
-    return c.json({ error: 'Branding not found' }, 404);
+    return c.json({ error: 'Branding not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  const payload = { branding };
+  // Trust Center W3d: a per-USER capability (org flag + org-scoped admin contact), read fresh like the
+  // flags; the trust-page routes re-check it on every request. Part of the ETag, so a change is never a 304.
+  const { canEditTrustPage } = await resolvePortalCapabilities({ id: auth.user.id, orgId: auth.user.orgId });
+  const payload = { branding: { ...branding, canEditTrustPage } };
   applyPortalCacheHeaders(c, {
     scope: 'private',
     browserMaxAgeSeconds: 30,

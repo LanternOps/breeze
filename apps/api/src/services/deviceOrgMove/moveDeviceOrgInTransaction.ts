@@ -466,6 +466,31 @@ export async function moveDeviceOrgInTransaction(
   await revokeWorkstationGrantsForMove(tx, sourceOrgId, deviceId);
   await revokeDiagnosticGrantsForMove(tx, sourceOrgId, deviceId, input.actor.userId);
 
+  // Endpoint messaging (#8742 W02): delivery and receipt history follows the
+  // device, but the message (and its body) stays with the source org. The
+  // (endpoint_message_id, org_id) -> endpoint_messages(id, org_id) FK is
+  // DEFERRABLE INITIALLY IMMEDIATE, and breeze_cascade_device_org_id()
+  // restamps the delivery's org_id inside the devices UPDATE below, so the
+  // pointer must be severed BEFORE the flip or that UPDATE 23503s.
+  // LOAD-BEARING, like the invoice_line_devices detach.
+  await tx.execute(
+    sql`UPDATE endpoint_message_deliveries SET endpoint_message_id = NULL, updated_at = now()
+        WHERE device_id = ${deviceId}::uuid AND endpoint_message_id IS NOT NULL`,
+  );
+
+  // Endpoint live chat (#8743 W03): chat history follows the device (both
+  // tables are restamped by breeze_cascade_device_org_id()), but a LIVE chat
+  // must not: a destination-org technician would otherwise inherit, and could
+  // post into, a conversation the source org opened. End it here, in the
+  // source org, before the flip. The agent is not told (post-commit side
+  // effects are the caller's); its next reply gets 409 conversation_closed
+  // and the helper closes the window's input.
+  await tx.execute(
+    sql`UPDATE endpoint_conversations
+           SET status = 'closed', close_reason = 'device_moved', closed_at = now(), updated_at = now()
+         WHERE device_id = ${deviceId}::uuid AND status IN ('opening', 'open')`,
+  );
+
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
   const [row] = await tx
@@ -882,6 +907,21 @@ export async function moveDeviceOrgInTransaction(
     // ON UPDATE CASCADE, so the devices row flip above already performed
     // the trusted org-only restamp inside this transaction.
     if (DEVICE_ORG_FK_CASCADE_TABLES.includes(table)) continue;
+    if (table === 'elevation_requests') {
+      // PAM ownership epochs W6-pre (#8746): an ACTUATED request of ANY epoch
+      // is PAM-chain evidence frozen at its (org_id, device_epoch);
+      // breeze_pam_chain_epoch_guard() refuses (42501) a restamp of it. Only
+      // un-actuated requests follow the device (the guard re-anchors them into
+      // the new epoch). Same statement as the
+      // devices_restamp_unactuated_elevation_requests trigger, which has
+      // normally already run, so this copy matches nothing.
+      await tx.execute(
+        sql`UPDATE ${sql.identifier(table)} r SET org_id = ${targetOrgId}::uuid
+            WHERE r.device_id = ${deviceId}::uuid AND r.org_id IS DISTINCT FROM ${targetOrgId}::uuid
+              AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)`,
+      );
+      continue;
+    }
     if (table === 'tickets') {
       // Deliberately NOT filtered on `org_id IS DISTINCT FROM` like the
       // generic branch below: breeze_cascade_device_org_id() has already

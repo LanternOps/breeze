@@ -479,6 +479,7 @@
     "alertResolved": "Alerta resolvido",
     "alertSuppressed": "\"{{title}}\" suprimido",
     "failedToSuppressAlert": "Falha ao suprimir alerta",
+    "failedToRestoreAlert": "Não foi possível restaurar o alerta. Ele continua silenciado.",
     "failedBulkAction": "Falha ao {{action}} alertas",
     "skippedCount": "{{count}} ignorados",
     "failedCount": "{{count}} falharam",

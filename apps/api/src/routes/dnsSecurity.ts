@@ -1020,10 +1020,19 @@ dnsSecurityRoutes.post(
     }
     const body = c.req.valid('json');
 
-    const orgResult = resolveOrgId(auth, body.orgId);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
+    // The owning org comes from the integration, not the request (#8329).
+    // Integrations are org-owned and a policy always targets one, so a
+    // partner user with several orgs needs no `orgId` in the body. An explicit
+    // `orgId` is still access-checked first and must match the integration.
+    if (body.orgId) {
+      const orgResult = resolveOrgId(auth, body.orgId);
+      if ('error' in orgResult) {
+        return c.json({ error: orgResult.error }, orgResult.status);
+      }
     }
+
+    const integrationConditions: SQL[] = [eq(dnsFilterIntegrations.id, body.integrationId)];
+    withOrgCondition(integrationConditions, auth.orgCondition(dnsFilterIntegrations.orgId));
 
     const [integration] = await db
       .select({
@@ -1031,16 +1040,20 @@ dnsSecurityRoutes.post(
         orgId: dnsFilterIntegrations.orgId
       })
       .from(dnsFilterIntegrations)
-      .where(
-        and(
-          eq(dnsFilterIntegrations.id, body.integrationId),
-          eq(dnsFilterIntegrations.orgId, orgResult.orgId)
-        )
-      )
+      .where(and(...integrationConditions))
       .limit(1);
 
-    if (!integration) {
+    // Same 404 for "does not exist" and "not yours", so integration IDs in
+    // other tenants cannot be probed. canAccessOrg re-checks the row's org on
+    // top of the scoped query.
+    if (!integration || !auth.canAccessOrg(integration.orgId)) {
       return c.json({ error: 'Integration not found' }, 404);
+    }
+
+    if (body.orgId && body.orgId !== integration.orgId) {
+      return c.json({
+        error: 'orgId does not match the organization that owns this integration; omit orgId to use the integration\'s organization'
+      }, 400);
     }
 
     const nowIso = new Date().toISOString();

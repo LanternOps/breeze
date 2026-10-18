@@ -527,6 +527,18 @@ describe('featureLinks routes', () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ code: 'APPROVAL_RULES_MOVED_TO_RING' });
     });
+
+    it('passes the repair-flow code RING_LACKS_POLICY_APP_RULES through as a 400 (#8678)', async () => {
+      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
+      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError('RING_LACKS_POLICY_APP_RULES'));
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { apps: [] } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'RING_LACKS_POLICY_APP_RULES' });
+    });
   });
 
   describe('feature link reserved export material validation', () => {
@@ -1990,5 +2002,214 @@ describe('compliance rule set names', () => {
 
     expect(res.status).toBe(200);
     expect(updateFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================
+// security_agents (#6960): inline-only; Huntress enableable from W02
+// ============================================================
+describe('security_agents feature links (#6960)', () => {
+  const WRITE_ONLY = { permissions: [{ resource: 'devices', action: 'write' }] } as any;
+  const DISABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: false }] };
+  const ENABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: true }] };
+  const S1_ENABLED = { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] };
+  const PARTNER_ID = '99999999-9999-9999-9999-999999999999';
+  const SA_LINK = { id: LINK_ID, featureType: 'security_agents' };
+
+  function appWith(authOverrides: Record<string, unknown> = {}) {
+    const a = new Hono();
+    a.use('*', async (c, next) => {
+      c.set('auth', makeAuth(authOverrides));
+      c.set('permissions', permState.permissions);
+      await next();
+    });
+    a.route('/', featureLinkRoutes);
+    return a;
+  }
+
+  const post = (a: Hono, body: unknown) => a.request(`/${POLICY_ID}/features`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const patch = (a: Hono, body: unknown) => a.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mfaState.satisfied = true;
+    permState.permissions = { permissions: [{ resource: '*', action: '*' }] } as any;
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [SA_LINK] });
+    validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+    addFeatureLinkMock.mockResolvedValue(SA_LINK);
+    updateFeatureLinkMock.mockResolvedValue(SA_LINK);
+  });
+
+  it('(a) is partner-linkable, and the service refuses a non-NULL featurePolicyId for it', async () => {
+    const { PARTNER_LINKABLE_FEATURE_TYPES, validateFeaturePolicyExists } =
+      await vi.importActual<typeof import('../../services/configurationPolicy')>('../../services/configurationPolicy');
+    expect(PARTNER_LINKABLE_FEATURE_TYPES.has('security_agents')).toBe(true);
+    await expect(validateFeaturePolicyExists('security_agents', null, { orgId: ORG_ID, partnerId: null }))
+      .resolves.toEqual({ valid: true });
+    const refused = await validateFeaturePolicyExists('security_agents', LINK_ID, { orgId: ORG_ID, partnerId: null });
+    expect(refused.valid).toBe(false);
+  });
+
+  it('stores the strictly parsed settings for a disabled-only link → 201', async () => {
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: DISABLED });
+    expect(res.status).toBe(201);
+    expect(addFeatureLinkMock).toHaveBeenCalledWith(
+      POLICY_ID, 'security_agents', undefined, DISABLED, expect.anything(), undefined,
+      { securityAgentsArmAuthorized: true },
+    );
+  });
+
+  it('accepts an empty agent list (opt-out link) → 201', async () => {
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: { version: 1, agents: [] } });
+    expect(res.status).toBe(201);
+  });
+
+  it('(b) POST with featurePolicyId → 400, nothing written', async () => {
+    const res = await post(appWith(), { featureType: 'security_agents', featurePolicyId: LINK_ID, inlineSettings: DISABLED });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('security_agents_feature_policy_not_allowed');
+    expect(validateFeaturePolicyExistsMock).not.toHaveBeenCalled();
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('(c) POST with an unknown inline key (a secret) → 400, nothing written', async () => {
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: { ...DISABLED, apiKey: '<acct-key>' } });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('security_agents_invalid_settings');
+    expect(JSON.stringify(body)).not.toContain('<acct-key>');
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('(d) POST enabling a vendor that is not enableable yet → 400 vendor_not_enableable', async () => {
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: S1_ENABLED });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('vendor_not_enableable');
+    expect(body.vendors).toEqual(['sentinelone']);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('POST enabling Huntress with devices.execute reaches the service with arming authorized → 201', async () => {
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: ENABLED });
+    expect(res.status).toBe(201);
+    expect(addFeatureLinkMock).toHaveBeenCalledWith(
+      POLICY_ID, 'security_agents', undefined, ENABLED, expect.anything(), undefined,
+      { securityAgentsArmAuthorized: true },
+    );
+  });
+
+  it('a missing catalog package (generator refusal) → 400 with the integration setup path', async () => {
+    const { SecurityAgentsLinkWriteError } = await vi.importActual<
+      typeof import('../../services/securityAgents/securityAgentsLinkWrite')
+    >('../../services/securityAgents/securityAgentsLinkWrite');
+    addFeatureLinkMock.mockRejectedValueOnce(new SecurityAgentsLinkWriteError({
+      status: 400,
+      body: {
+        error: 'Huntress cannot be enabled until its integration is connected for this partner.',
+        code: 'security_agents_catalog_missing',
+        vendors: ['huntress'],
+        setupPath: '/integrations#huntress',
+      },
+    }));
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: ENABLED });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'security_agents_catalog_missing',
+      vendors: ['huntress'],
+      setupPath: '/integrations#huntress',
+    });
+  });
+
+  it('POST limiting an enabled vendor to an unsupported platform → 400', async () => {
+    const res = await post(appWith(), {
+      featureType: 'security_agents',
+      inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: true, platforms: ['linux'] }] },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('security_agents_platform_unsupported');
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('(e) partner-wide policy without full partner org access → 403 before any security_agents check', async () => {
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide', featureLinks: [SA_LINK] });
+    const a = appWith({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'selected' });
+    for (const res of [
+      await post(a, { featureType: 'security_agents', inlineSettings: ENABLED }),
+      await patch(a, { inlineSettings: ENABLED }),
+    ]) {
+      expect(res.status).toBe(403);
+      expect(String((await res.json()).error)).toMatch(/full partner org access/);
+    }
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('partner-wide policy with full partner access stores a disabled-only link → 201', async () => {
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide', featureLinks: [] });
+    const a = appWith({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+    const res = await post(a, { featureType: 'security_agents', inlineSettings: DISABLED });
+    expect(res.status).toBe(201);
+  });
+
+  it('(f) enabling a vendor without devices.execute → 403, checked before the enableable refusal', async () => {
+    permState.permissions = WRITE_ONLY;
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: ENABLED });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('security_agents_execute_required');
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('(f) the execute gate also runs before validation, so a malformed arming payload is still 403', async () => {
+    permState.permissions = WRITE_ONLY;
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: { agents: [{ vendor: 'huntress', enabled: true, apiKey: 'x' }] } });
+    expect(res.status).toBe(403);
+  });
+
+  it('a devices.write-only user may save a disabled-only link, and the service is told arming was NOT authorized', async () => {
+    permState.permissions = WRITE_ONLY;
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: DISABLED });
+    expect(res.status).toBe(201);
+    expect(addFeatureLinkMock).toHaveBeenCalledWith(
+      POLICY_ID, 'security_agents', undefined, DISABLED, expect.anything(), undefined,
+      { securityAgentsArmAuthorized: false },
+    );
+  });
+
+  it('PATCH: featurePolicyId → 400; unknown key → 400; null → 400; not-enableable vendor → 400; none written', async () => {
+    const a = appWith();
+    const cases: Array<[unknown, string]> = [
+      [{ featurePolicyId: LINK_ID }, 'security_agents_feature_policy_not_allowed'],
+      [{ inlineSettings: { ...DISABLED, orgKey: '<org-key>' } }, 'security_agents_invalid_settings'],
+      [{ inlineSettings: null }, 'security_agents_invalid_settings'],
+      [{ inlineSettings: S1_ENABLED }, 'vendor_not_enableable'],
+    ];
+    for (const [body, code] of cases) {
+      const res = await patch(a, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect((await res.json()).code).toBe(code);
+    }
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH enabling a vendor without devices.execute → 403', async () => {
+    permState.permissions = WRITE_ONLY;
+    const res = await patch(appWith(), { inlineSettings: ENABLED });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('security_agents_execute_required');
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH with valid disabled-only settings → 200 with the parsed settings', async () => {
+    const res = await patch(appWith(), { inlineSettings: DISABLED });
+    expect(res.status).toBe(200);
+    expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+      LINK_ID, { inlineSettings: DISABLED }, POLICY_ID, expect.anything(), undefined,
+      { securityAgentsArmAuthorized: true },
+    );
   });
 });

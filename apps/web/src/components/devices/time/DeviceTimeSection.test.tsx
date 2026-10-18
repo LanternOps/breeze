@@ -21,7 +21,7 @@ beforeEach(() => vi.mocked(fetchWithAuth).mockReset());
 it.each([
   [
     'not_reported',
-    'No time data yet — this needs an agent update that includes time sync',
+    'No time data yet — agent update required for time sync',
   ],
   ['unsupported_os', 'Not supported on this OS yet'],
 ] as const)('renders %s as an ordinary empty state', async (state, message) => {

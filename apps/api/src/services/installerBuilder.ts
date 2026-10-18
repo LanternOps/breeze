@@ -17,6 +17,7 @@ import {
 } from './binarySource';
 import {
   fetchVerifiedGithubReleaseArtifact,
+  peekVerifiedGithubReleaseArtifact,
   probeSafeReleaseArtifact,
   verifyReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
@@ -257,8 +258,29 @@ sudo installer -pkg "$TMPPKG" -target /
 ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
 [ -n "$ENROLLMENT_SECRET" ] && ENROLL_ARGS+=(--enrollment-secret "$ENROLLMENT_SECRET")
 
+# The .pkg installs the agent to /Library/Breeze/bin or /usr/local/bin
+# (agent/installer/macos/install-location.sh, #7211); enroll with the binary it
+# actually installed (#8778). Mirrors choose_bin_dir there: an agent already in
+# the trusted dir stays there, so it wins over a leftover /usr/local/bin copy.
+MACOS_TRUSTED_BIN_DIR="/Library/Breeze/bin"
+MACOS_LEGACY_BIN_DIR="/usr/local/bin"
+resolve_macos_agent_bin() {
+  local p
+  for p in "$MACOS_TRUSTED_BIN_DIR/breeze-agent" "$MACOS_LEGACY_BIN_DIR/breeze-agent"; do
+    if [[ -f "$p" && ! -L "$p" && -x "$p" ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+AGENT_BIN="$(resolve_macos_agent_bin)" || {
+  echo "Error: the package installed, but no breeze-agent was found in /Library/Breeze/bin or /usr/local/bin."
+  exit 1
+}
+
 echo "Enrolling agent..."
-sudo /usr/local/bin/breeze-agent enroll "\${ENROLL_ARGS[@]}"
+sudo "$AGENT_BIN" enroll "\${ENROLL_ARGS[@]}"
 
 # Restart the service so it picks up the new enrollment config. Surface a failure
 # rather than swallowing it — a silent kickstart failure leaves an enrolled
@@ -508,13 +530,82 @@ async function fetchVerifiedLocalArtifact(args: {
   return { buffer, verified };
 }
 
+/**
+ * Background refresh of one arch's verified pkg (#8333). On the GitHub source
+ * it first fetches only the signed manifest pair (a few KB) and, when the
+ * signed sha256/release match the entry already cached, just extends that
+ * entry's expiry instead of re-downloading the (up to 128 MiB) pkg. Only a
+ * changed digest, or no usable cached entry, pays for the body. A failed
+ * refresh never evicts a still-good entry. Never called by a request.
+ */
+async function refreshVerifiedMacosPkg(arch: 'amd64' | 'arm64'): Promise<void> {
+  const cached = verifiedMacosPkgCache.get(arch);
+  if (cached && getBinarySource() === 'github') {
+    const current = await cached.value.catch(() => null);
+    if (current) {
+      const assetName = `breeze-agent-darwin-${arch}.pkg`;
+      const peeked = await peekVerifiedGithubReleaseArtifact({
+        assetName,
+        manifestUrl: getGithubReleaseArtifactManifestUrl(),
+        signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+        expectedRepository: getGithubReleaseRepository(),
+        expectedRelease: getGithubExpectedReleaseTag(),
+        expectedPlatformTrust: MACOS_PLATFORM_TRUST,
+        expectedEdition: 'self-host',
+        requireMacosPublisher: true,
+      });
+      if (
+        peeked.sha256 === current.artifact.sha256 &&
+        peeked.release === current.artifact.release
+      ) {
+        verifiedMacosPkgCache.set(arch, {
+          expiresAt: Date.now() + VERIFIED_MACOS_PKG_CACHE_MS,
+          value: cached.value,
+        });
+        return;
+      }
+    }
+  }
+  const value = await fetchVerifiedMacosPkgUncached(arch);
+  verifiedMacosPkgCache.set(arch, {
+    expiresAt: Date.now() + VERIFIED_MACOS_PKG_CACHE_MS,
+    value: Promise.resolve(value),
+  });
+}
+
+// Lazy warmer: armed by the first macOS installer-link pre-flight on this
+// replica, so deployments with no Mac fleet never pay for it. The first
+// request still fetches on its own; every later one is a cache hit.
+const MACOS_PKG_WARM_SAFETY_MARGIN_MS = 30_000;
+let macosPkgWarmTimer: ReturnType<typeof setInterval> | null = null;
+
+function warmMacosPkgCache(): void {
+  for (const arch of ['amd64', 'arm64'] as const) {
+    refreshVerifiedMacosPkg(arch).catch((err) => {
+      console.warn(
+        `[installer-builder] background macOS ${arch} pkg cache warm failed (next request falls back to its own fetch):`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
+}
+
+function armMacosPkgWarmer(): void {
+  if (macosPkgWarmTimer) return;
+  const intervalMs = Math.max(1_000, VERIFIED_MACOS_PKG_CACHE_MS - MACOS_PKG_WARM_SAFETY_MARGIN_MS);
+  macosPkgWarmTimer = setInterval(warmMacosPkgCache, intervalMs);
+  macosPkgWarmTimer.unref?.();
+}
+
 export async function fetchVerifiedMacosPkg(
   arch: 'amd64' | 'arm64',
 ): Promise<VerifiedMacosPackage> {
   const cached = verifiedMacosPkgCache.get(arch);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const value = fetchVerifiedMacosPkgUncached(arch).catch((err) => {
-    verifiedMacosPkgCache.delete(arch);
+  const value: Promise<VerifiedMacosPackage> = fetchVerifiedMacosPkgUncached(arch).catch((err) => {
+    // Only evict our own entry: the background warmer may have swapped in a
+    // good one while this request's fetch was in flight (#8333).
+    if (verifiedMacosPkgCache.get(arch)?.value === value) verifiedMacosPkgCache.delete(arch);
     throw err;
   });
   verifiedMacosPkgCache.set(arch, {
@@ -698,6 +789,7 @@ function warmRegularMsiCache(): void {
       err instanceof Error ? err.message : err,
     );
   });
+
 }
 
 /**
@@ -717,6 +809,10 @@ export function startRegularMsiCacheWarmer(): void {
 }
 
 export function __stopRegularMsiCacheWarmer(): void {
+  if (macosPkgWarmTimer) {
+    clearInterval(macosPkgWarmTimer);
+    macosPkgWarmTimer = null;
+  }
   if (regularMsiWarmTimer) {
     clearInterval(regularMsiWarmTimer);
     regularMsiWarmTimer = null;
@@ -781,6 +877,7 @@ async function fetchRegularMsiUncached(): Promise<Buffer> {
  * — an amd64-only outage must not pass a probe that Intel customers then hit).
  */
 export async function assertMacosInstallerPkgsReachable(): Promise<void> {
+  armMacosPkgWarmer();
   const arches = ['amd64', 'arm64'] as const;
   for (const arch of arches) {
     try {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildFallbackCspDirectives, resolvePortalCspHeader } from './csp';
+import { buildFallbackCspDirectives, embedFramingHeaders, resolvePortalCspHeader, withFrameAncestors } from './csp';
 
 /**
  * Regression coverage for the dead public-quote island (Accept/Decline fired zero
@@ -179,3 +179,41 @@ describe('resolvePortalCspHeader — runtime style nonce', () => {
     expect(resolvePortalCspHeader({ ...base, isDev: true, styleNonce: 'abc123' })).toEqual({ action: 'delete' });
   });
 });
+
+// Trust Center W03a: the embed card's frame-ancestors carve-out.
+describe('withFrameAncestors', () => {
+  it('replaces frame-ancestors, never merges', () => {
+    const csp = "default-src 'self'; frame-ancestors 'none'; object-src 'none'";
+    expect(withFrameAncestors(csp, ['https://example.com', 'https://www.example.com']))
+      .toBe("default-src 'self'; frame-ancestors https://example.com https://www.example.com; object-src 'none'");
+  });
+  it("adds the directive when absent and falls back to 'none' for an empty list", () => {
+    expect(withFrameAncestors("default-src 'self'", ['https://example.com'])).toBe("default-src 'self'; frame-ancestors https://example.com");
+    expect(withFrameAncestors('frame-ancestors https://x.example', [])).toBe("frame-ancestors 'none'");
+  });
+  it('replaces every frame-ancestors directive, whatever its case', () => {
+    expect(withFrameAncestors("Frame-Ancestors 'none'; default-src 'self'; frame-ancestors 'self'", ['https://example.com']))
+      .toBe("frame-ancestors https://example.com; default-src 'self'");
+  });
+  it('keeps the rest of a real policy intact', () => {
+    const fallback = buildFallbackCspDirectives({ isDev: false });
+    const out = withFrameAncestors(fallback, ['https://example.com']);
+    expect(out).toContain('frame-ancestors https://example.com');
+    expect(out).not.toContain("frame-ancestors 'none'");
+    expect(out.replace('frame-ancestors https://example.com', "frame-ancestors 'none'")).toBe(fallback);
+  });
+  it('refuses a source that is not a normalized https origin', () => {
+    expect(() => withFrameAncestors("frame-ancestors 'none'", ['https://example.com; script-src *'])).toThrow();
+    expect(() => withFrameAncestors("frame-ancestors 'none'", ["'self'"])).toThrow();
+    expect(() => withFrameAncestors("frame-ancestors 'none'", ['https://Example.com'])).toThrow(); // not its own normalization
+    expect(() => withFrameAncestors("frame-ancestors 'none'", ['*'])).toThrow();
+  });
+});
+
+describe('embedFramingHeaders', () => {
+  it("lists the origins and drops XFO only when there is at least one", () => {
+    expect(embedFramingHeaders(['https://example.com'])).toEqual({ frameAncestors: 'frame-ancestors https://example.com', deleteXfo: true });
+    expect(embedFramingHeaders([])).toEqual({ frameAncestors: "frame-ancestors 'none'", deleteXfo: false });
+  });
+});
+

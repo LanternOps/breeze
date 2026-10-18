@@ -39,6 +39,7 @@ import { useFilterPreview } from '../../hooks/useFilterPreview';
 import { useTranslation } from 'react-i18next';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { isBusinessReportType } from './businessReportAccess';
+import { hasTemplateOptionsForm } from './templateReportTypes';
 import { BUSINESS_REFUSED_CONFIG_KEYS, omitConfigKeys } from './businessReportConfig';
 import { CoversControl } from './series/CoversControl';
 import { SeriesRecipientsSection } from './series/SeriesRecipientsSection';
@@ -885,6 +886,11 @@ export default function ReportBuilder({
   // free-text email list alone, which the worker already sends to.
   const businessType = isBusinessReportType(defaultValues?.type);
   const contactRecipientsRefused = businessType || partnerOwned;
+  // A type with its own options form (a business type, or a curated template
+  // type, #8796) renders outside the builder: the builder shows only the
+  // report details and the delivery section, never its custom-report sections
+  // or the live preview built from them.
+  const ownOptionsFormType = businessType || hasTemplateOptionsForm(defaultValues?.type);
   const [saveTemplate, setSaveTemplate] = useState(defaultValues?.saveTemplate ?? false);
   const [templateName, setTemplateName] = useState(defaultValues?.templateName ?? '');
   const [emailInput, setEmailInput] = useState('');
@@ -1026,7 +1032,9 @@ export default function ReportBuilder({
   }, [aggregation, groupBy, fieldLabelMap, t]);
 
   useEffect(() => {
-    if (mode === 'adhoc') return;
+    // No live preview for a type with its own options form: it is not rendered
+    // (see below), so a generate request for it would only be wasted work.
+    if (mode === 'adhoc' || ownOptionsFormType) return;
     if (orgMissing) {
       // No org chosen under All organizations: the preview would 400. Drop any
       // in-flight preview and say what to do instead.
@@ -1154,7 +1162,7 @@ export default function ReportBuilder({
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [builderType, targetOrgId, orgMissing, previewOrgPending, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, stableT]);
+  }, [builderType, targetOrgId, orgMissing, previewOrgPending, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, ownOptionsFormType, stableT]);
 
   const normalizedPreviewRows = useMemo(
     () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),
@@ -1622,10 +1630,11 @@ export default function ReportBuilder({
 
     const payload = {
       name: values.name || 'Untitled Report',
-      // A business type has no builder equivalent (the builder would name a
-      // legacy type like alert_summary); send the report's own type. PUT ignores
-      // `type` today, but the body must not claim a different one.
-      type: isBusiness && defaultValues?.type ? defaultValues.type : values.type,
+      // A type with its own options form has no builder equivalent (the
+      // builder would name a legacy type like device_inventory); send the
+      // report's own type. PUT ignores `type` today, but the body must not
+      // claim a different one.
+      type: ownOptionsFormType && defaultValues?.type ? defaultValues.type : values.type,
       schedule: values.schedule,
       format: primaryFormat,
       ...(targetOrgId && !partnerOwned ? { orgId: targetOrgId } : {}),
@@ -1978,12 +1987,13 @@ export default function ReportBuilder({
           )}
         </div>
 
-        {/* Dead for a business type: its own options form owns period/groupBy/etc,
-            and the submit path (handleFormSubmit above) never includes this
-            builder's dataSource/columns/filters/groupBy/chartType state in the
-            payload for isBusiness — see the businessConfig() comment on
-            ReportEditPage. Rendering these anyway is misleading (sweep #B1). */}
-        {!businessType && (
+        {/* Dead for a type with its own options form: that form owns what the
+            report selects. For a business type the submit path never includes
+            this builder's dataSource/columns/filters/groupBy/chartType state
+            (see the businessConfig() comment on ReportEditPage); for a curated
+            template type it is not what the report renders (#8796). Rendering
+            these anyway is misleading (sweep #B1). */}
+        {!ownOptionsFormType && (
         <>
         <div data-testid="report-builder-generic-sections" className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2">
@@ -2668,11 +2678,11 @@ export default function ReportBuilder({
         </div>
       </div>
 
-      {/* Dead for a business type: the preview below reflects builder
-          state (dataSource/columns/chartType) that a business report's own
-          options form doesn't populate, so it renders stale/generic content
-          (sweep F1 — the #B1 fix above hid the input sections but not this). */}
-      {!businessType && (
+      {/* Dead for a type with its own options form: the preview below
+          reflects builder state (dataSource/columns/chartType) that the
+          report's own options form doesn't populate, so it renders a generic
+          device summary, not the report (sweep F1, #8796). */}
+      {!ownOptionsFormType && (
       <div data-testid="report-builder-live-preview" className="min-w-0 space-y-6 lg:sticky lg:top-6 self-start">
         <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">
           <div className="flex items-center justify-between">

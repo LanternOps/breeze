@@ -22,7 +22,11 @@ export interface UpDeps {
 export const HEALTH_SERVICES = ['postgres', 'redis', 'api', 'web', 'portal', 'caddy'];
 
 export function upStack(
-  opts: { worktreePath: string; project: string; rebuild: boolean; admin: StackDescriptor['admin'] },
+  opts: {
+    worktreePath: string; project: string; rebuild: boolean; admin: StackDescriptor['admin'];
+    /** #8718 — the BREEZE_WT_CADDY_PORT pin, when set. */
+    pinnedCaddyPort?: number | null;
+  },
   deps: UpDeps,
 ): StackDescriptor {
   const { worktreePath, project } = opts;
@@ -31,6 +35,10 @@ export function upStack(
   deps.waitHealthy(project, HEALTH_SERVICES, 5 * 60_000);
   deps.seedDatabase(project);
   const caddyPort = deps.publishedPort(project, 'caddy', 80);
+  const pinned = opts.pinnedCaddyPort ?? null;
+  if (pinned !== null && pinned !== caddyPort) {
+    throw new Error(`BREEZE_WT_CADDY_PORT=${pinned} was requested but caddy published port ${caddyPort}. Is the compose override missing the pin? (The stack is up; .breeze-stack.json was not refreshed.)`);
+  }
   const baseUrl = `http://localhost:${caddyPort}`;
   // #6443 — the passkey origin/RP ID are only knowable once caddy's random
   // port is published; pin them and recreate api so it re-reads the env files.
@@ -44,6 +52,7 @@ export function upStack(
     apiUrl: `${baseUrl}/api`,
     portalUrl: `${baseUrl}/portal`,
     webPort: caddyPort,
+    caddyPortPinned: pinned !== null,
     pgContainer: deps.containerName(project, 'postgres'),
     redisContainer: deps.containerName(project, 'redis'),
     admin: opts.admin,

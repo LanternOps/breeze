@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { partnerPaymentSettingsPatchSchema, orgPaymentSettingsPatchSchema } from '@breeze/shared';
+import { ERROR_CODES, partnerPaymentSettingsPatchSchema, orgPaymentSettingsPatchSchema } from '@breeze/shared';
 import { db } from '../db';
 import { organizations } from '../db/schema';
 import { zValidator } from '../lib/validation';
@@ -66,7 +66,7 @@ billingPaymentSettingsRoutes.put('/partner/billing/payment-settings', authMiddle
   requireInteractiveSession(), requireMfa(), writePermission,
   zValidator('json', partnerPutBody), async c => {
     const auth = c.get('auth');
-    if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     const partnerId = partnerFrom(c); const { patch, stepUpGrant } = c.req.valid('json');
     const refusal = await refuseDisabledAutopay(c, partnerId, patch); if (refusal) return refusal;
     const stepUpRefusal = await requireBillingStepUp(c, { operation: 'partner_payment_settings_update',

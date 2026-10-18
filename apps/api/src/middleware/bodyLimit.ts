@@ -41,12 +41,18 @@ export type BodyLimitRule =
   | 'ticket-attachment'
   | 'org-document'
   | 'quote-acceptance-evidence'
+  | 'edr-webhook'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
   | 'agent-logs'
   | 'agent-process-sample'
-  | 'agent-pam-observation';
+  | 'agent-pam-observation'
+  // #8839: agentAuthMiddleware's own ceiling while it buffers a wrapped agent
+  // route's body before opening the org transaction (agentRequestBody.ts). It
+  // sits ABOVE every agent carve-out here, so behind the global gate it only
+  // answers if the gate is ever bypassed or reordered.
+  | 'agent-wrapped-body';
 
 export interface BodyLimitPolicy {
   rule: BodyLimitRule;
@@ -55,6 +61,12 @@ export interface BodyLimitPolicy {
 }
 
 export function bodyLimitForPath(path: string): BodyLimitPolicy {
+  // EDR vendor push webhook (W03 PR-B): unauthenticated ingress whose body is
+  // only a hint (opaque ids), so it is capped BELOW the default. GravityZone
+  // batches events; 256 KB is ample and bounds pre-auth work.
+  if (/^\/api\/v1\/webhooks\/edr\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) {
+    return { rule: 'edr-webhook', maxSize: 256 * 1024, error: 'Request body too large' };
+  }
   // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
   if (path.startsWith('/api/v1/dev/push')) {
     return { rule: 'dev-push', maxSize: 150 * 1024 * 1024, error: 'Binary too large (max 150MB)' };

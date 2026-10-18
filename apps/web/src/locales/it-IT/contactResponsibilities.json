@@ -1,0 +1,24 @@
+{
+  "title": "Contatti responsabili",
+  "subtitle": "Risolto per questo record. Le assegnazioni più specifiche hanno la precedenza.",
+  "loading": "Caricamento dei contatti responsabili…",
+  "loadFailed": "Impossibile caricare i contatti responsabili.",
+  "empty": "Nessun contatto responsabile è ancora assegnato.",
+  "primary": "Principale",
+  "roles": {
+    "billing": "Fatturazione",
+    "technical": "Tecnico",
+    "escalation": "Escalation",
+    "admin": "Amministrazione",
+    "site": "Contatto locale",
+    "after_hours": "Fuori orario",
+    "portal": "Portale"
+  },
+  "scope": {
+    "organization": "Intera organizzazione",
+    "site": "Questo sito",
+    "device_group": "Gruppo di dispositivi"
+  },
+  "emptyCompact": "Nessun contatto responsabile",
+  "assign": "Assegna"
+}

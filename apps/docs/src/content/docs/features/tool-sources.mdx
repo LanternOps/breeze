@@ -1,11 +1,11 @@
 ---
 title: Tool Sources
-description: Connect your own MCP servers so their tools become available to the AI assistant, with per-tool risk tiers, approvals and per-source credentials.
+description: Connect your own MCP servers or OpenAPI (REST) APIs so their tools become available to the AI assistant, with per-tool risk tiers, approvals and per-source credentials.
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Tool Sources let you point Breeze at an **MCP server you already run** — your documentation platform, your PSA, an internal service — and have its tools appear alongside Breeze's own in AI chat. Each discovered tool gets a risk tier, so the same approval rules that govern Breeze's built-in tools govern yours.
+Tool Sources let you point Breeze at an **MCP server you already run** — your documentation platform, your PSA, an internal service — or at a **REST API described by an OpenAPI document**, and have its tools appear alongside Breeze's own in AI chat. Each discovered tool gets a risk tier, so the same approval rules that govern Breeze's built-in tools govern yours.
 
 <Aside type="note">
   Tool Sources is off by default. A self-hosted deployment enables it with `TOOL_SOURCES_ENABLED=true` on the API; while it is off, the `/tool-sources` routes answer 404, the nav item is hidden, and AI chat resolves zero external tools.
@@ -13,7 +13,7 @@ Tool Sources let you point Breeze at an **MCP server you already run** — your 
 
 ## What a tool source is
 
-A tool source is one MCP endpoint plus the credential Breeze uses to reach it. Breeze connects over streamable HTTP, asks the server for its tool list, and records each tool it finds. Tools are **disabled on arrival** — nothing reaches the assistant until you enable it.
+A tool source is one MCP endpoint (or, for an [OpenAPI source](#openapi-sources), one API) plus the credential Breeze uses to reach it. For an MCP source, Breeze connects over streamable HTTP, asks the server for its tool list, and records each tool it finds. Tools are **disabled on arrival** — nothing reaches the assistant until you enable it.
 
 Every tool is addressed as `<slug>__<name>`, where the slug is yours (`hudu__get_asset`). The slug is fixed at creation because it is part of every tool's name: renaming it would rename every tool the assistant knows.
 
@@ -68,6 +68,48 @@ On a source's detail page each tool shows its proposed tier, its effective tier,
 ## Testing a tool
 
 Tier-1 tools have a **Test** action: supply arguments as JSON and Breeze performs the real call with the source's credential, showing the raw result and how long it took. A failed call reports as a failure — it is a live call, not a simulation, so run it against a source you are comfortable touching.
+
+## OpenAPI sources
+
+Choose **OpenAPI (REST)** as the kind when the system you want to reach has a REST API with an OpenAPI description instead of an MCP server. Breeze reads the document and turns each operation it can call safely into a tool. Everything on this page about [tiers](#tiers-and-what-they-mean-for-approvals), enabling and testing tools applies unchanged; this section covers only what is different.
+
+### Two URLs, on purpose
+
+An OpenAPI source has two URLs, and they do different jobs:
+
+- **API base URL** — where every operation is called, and the only origin your credential is ever sent to. Operation paths are appended to it.
+- **OpenAPI document URL** — where Breeze reads the API description. It is only read. The credential is sent with that request **only when the document is on the same origin as the API base URL**; a document hosted elsewhere is fetched without it.
+
+The document's own `servers[]` list is **ignored on purpose**. A vendor can edit that document at any time, and a credential must never follow whatever it says. If the document lists servers on other origins, the source's page shows a warning naming them, and calls still go only to the base URL you entered.
+
+Neither request follows redirects: a 3xx response fails the call, so nothing is forwarded to a location you did not approve.
+
+### Tiers
+
+The HTTP verb sets the proposed tier: `GET` and `HEAD` start at **Tier 1**; everything else (`POST`, `PUT`, `PATCH`, `DELETE`) starts at **Tier 3**. A tech can raise or lower a tool's tier, and re-discovery never lowers one you or Breeze already set.
+
+### What gets skipped
+
+Breeze skips an operation rather than guess at how to call it. Skipped operations have no tool, so there is nothing to enable. They are listed with the reason on the source's page, under **Skipped operations**. The usual reasons:
+
+- an HTTP method other than `GET`, `HEAD`, `POST`, `PUT`, `PATCH` or `DELETE`
+- a path that cannot be called safely
+- a parameter style or location Breeze does not support — cookie parameters, or non-default styles such as `deepObject`
+- a request body that is not JSON
+- a credential required in the query string or a cookie, or OpenID Connect or mutual TLS
+- a generated input schema larger than 64 KB
+- more than 100 parameters
+- a name that does not fit the 64-character tool-name limit
+
+### Supported documents and limits
+
+- OpenAPI **3.0.x and 3.1.x** only. Swagger 2.0 documents are refused.
+- Only **local** `$ref` references are resolved; a reference to another file or URL is refused.
+- The document can be at most **5 MB** and describe at most **2,000 operations**. Over either limit, discovery fails with an error — nothing is truncated, because a half-imported API is worse than a clear failure.
+
+### Refreshing
+
+Breeze does not poll the document. After the vendor changes their API, open the source and choose **Re-discover tools**.
 
 ## Troubleshooting
 

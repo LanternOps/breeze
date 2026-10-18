@@ -4,9 +4,12 @@ import { HttpError } from '@/lib/httpError';
 
 const fetchEdrEndpoints = vi.fn();
 const fetchEdrDetections = vi.fn();
+const fetchEdrActions = vi.fn().mockResolvedValue([]);
 vi.mock('@/lib/edrProviders', () => ({
   fetchEdrEndpoints: (...a: unknown[]) => fetchEdrEndpoints(...a),
   fetchEdrDetections: (...a: unknown[]) => fetchEdrDetections(...a),
+  fetchEdrActions: (...a: unknown[]) => fetchEdrActions(...a),
+  requestEdrEndpointAction: vi.fn(),
   edrProviderLabel: (k: string) => (k === 'bitdefender' ? 'Bitdefender GravityZone' : null),
 }));
 

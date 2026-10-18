@@ -383,6 +383,30 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
   }
 }
 
+/**
+ * Which connections a partner-scope status read reports. With an explicit
+ * `orgId`: those reaching THAT org (a tenant mapped to it, or an endpoint row).
+ * With no `orgId`, a partner user restricted to selected orgs (#8658) sees only
+ * connections reaching an org in their reach — a mapped tenant (the tenant
+ * rows are already narrowed to reachable orgs, plus unmapped ones) or an
+ * endpoint row (already org-narrowed). Otherwise every connection.
+ */
+export function selectStatusConnections<C extends { id: string }>(
+  connections: readonly C[],
+  tenants: ReadonlyArray<{ connectionId: string; orgId: string | null }>,
+  endpoints: ReadonlyArray<{ connectionId: string }>,
+  q: { orgId?: string; narrowToReach: boolean },
+): C[] {
+  const hasEndpoint = (id: string) => endpoints.some((e) => e.connectionId === id);
+  if (q.orgId) {
+    return connections.filter((c) => tenants.some((t) => t.connectionId === c.id && t.orgId === q.orgId) || hasEndpoint(c.id));
+  }
+  if (q.narrowToReach) {
+    return connections.filter((c) => tenants.some((t) => t.connectionId === c.id && t.orgId !== null) || hasEndpoint(c.id));
+  }
+  return [...connections];
+}
+
 export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): Promise<EdrStatusSummary> {
   const auth = scope.auth;
   const syncHealthVisible = auth.scope === 'partner' || auth.scope === 'system';
@@ -457,11 +481,12 @@ export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): 
         isNull(edrTenants.vendorMissingSince),
         tenantOrg ? (or(isNull(edrTenants.orgId), tenantOrg) as SQL) : undefined,
       ));
-    // A specific-org query only reports the connections that reach that org.
-    const relevant = q.orgId
-      ? connRows.filter((c) => tenantRows.some((t) => t.connectionId === c.id && t.orgId === q.orgId)
-        || endpointRows.some((e) => e.connectionId === c.id))
-      : connRows;
+    // A specific-org query, or a selected-org partner user (#8658), only
+    // reports the connections that reach the caller's org(s).
+    const relevant = selectStatusConnections(connRows, tenantRows, endpointRows, {
+      orgId: q.orgId,
+      narrowToReach: auth.scope === 'partner' && auth.partnerOrgAccess === 'selected',
+    });
     connections = relevant.map((c) => ({
       id: c.id,
       provider: c.provider,

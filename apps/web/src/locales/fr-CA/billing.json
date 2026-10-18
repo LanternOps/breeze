@@ -1029,8 +1029,8 @@
         "title": "Ligne de pied de page (chaque page)",
         "helper": "Une courte ligne imprimée en bas de chaque page — par exemple, des dates de validité. Laissez vide pour utiliser le pied de page par défaut. Les mentions légales vont dans Conditions générales, pas ici.",
         "placeholder": "Vide = utiliser le pied de page par défaut",
-        "inheritedPartner": "Utilise le pied de page de facture du partenaire depuis les Paramètres : « {{text}} »",
-        "inheritedBrand": "Utilise le texte de pied de page de la trousse de marque : « {{text}} »",
+        "inheritedPartner": "Utilise le pied de page des documents du partenaire depuis les paramètres de facturation : « {{text}} »",
+        "inheritedBrand": "Utilise le texte de pied de page de cette organisation depuis ses paramètres du portail : « {{text}} »",
         "inheritedNone": "Aucun pied de page par défaut n'est défini dans les Paramètres — le pied de page de la page sera vide.",
         "counter": "{{count}} / {{max}}"
       },
@@ -2050,7 +2050,10 @@
       "syncingToProvider": "Synchronisation…",
       "providerSyncFailed": "Échec de la synchronisation {{provider}}",
       "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}",
-      "overpayment": "Le montant dépasse le solde dû ({{balance}})."
+      "overpayment": "Le montant dépasse le solde dû ({{balance}}).",
+      "fillLabel": "Remplir le montant",
+      "fillDeposit": "Acompte ({{amount}})",
+      "fillBalance": "Solde total ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Facture envoyée",
@@ -2065,7 +2068,8 @@
       "paid": "Payé",
       "subtotal": "Sous-total",
       "tax": "Taxe",
-      "total": "Total"
+      "total": "Total",
+      "depositDueNow": "Acompte dû maintenant"
     },
     "terms": "Conditions générales",
     "void": {
@@ -2281,6 +2285,7 @@
       "title": "Devise",
       "description": "Les nouveaux devis, factures, contrats, saisies de temps et pièces de cette organisation sont horodatés dans cette devise. Rien de ce qui existe déjà n'est modifié.",
       "label": "Devise de facturation",
+      "partnerDefault": "Non hérité : chaque organisation conserve sa propre devise de facturation. La valeur par défaut du partenaire ({{currency}}) s'applique seulement aux organisations créées à partir de maintenant.",
       "loading": "Vérification de l'impact d'un passage à {{currency}}…",
       "error": "Le résumé du changement de devise n'a pas pu être chargé.",
       "panelTitle": "Changer la devise de facturation pour {{currency}} ?",
@@ -2365,10 +2370,11 @@
       "autoEmailInvoiceHelp": "Lorsqu'un client accepte une proposition, la facture émise est envoyée immédiatement par courriel avec un lien sécurisé pour consulter et payer — sans connexion.",
       "notifyOnBehalfAcceptance": "Aviser le client par courriel lorsque vous enregistrez une acceptation en son nom",
       "notifyOnBehalfAcceptanceHelp": "Lorsqu'un membre de votre équipe accepte une soumission pour un client, celui-ci reçoit une courte note indiquant qui l'a enregistrée et quand, avec le numéro de facture si une facture a été émise. Il peut répondre en cas d'erreur. Désactivé par défaut.",
-      "currencyCode": "Code devise",
+      "currencyCode": "Devise par défaut des nouvelles organisations",
+      "currencyHelp": "Les nouvelles organisations démarrent dans cette devise. Les organisations existantes conservent la leur — modifiez-la dans l'onglet Facturation de chaque organisation.",
       "defaultMarkup": "Marge par défaut (%)",
       "defaultTaxRate": "Taux de taxe par défaut (%)",
-      "description": "Devise, taxe, numérotation et conditions appliquées aux nouveaux devis et factures de tous vos clients.",
+      "description": "Valeurs par défaut des devis et factures de vos clients. Une organisation peut définir son propre taux de taxe et ses propres conditions de paiement. Sa devise part de la devise par défaut définie ici et se modifie dans l'onglet Facturation de cette organisation.",
       "deviceAppendix": "Inclure l'annexe des appareils facturés dans les PDF de factures",
       "deviceAppendixHelp": "Ajoute une page listant chaque appareil compté sur chaque ligne de facture. Désactivé par défaut ; le choix est figé à l'émission de la facture.",
       "documentPageSize": "Format de page",
@@ -2377,7 +2383,8 @@
       "documentTheme": "Polices des documents",
       "documentThemeClassic": "Helvetica",
       "documentThemeCondensed": "Barlow Condensed + DM Sans",
-      "invoiceFooter": "Pied de facture",
+      "invoiceFooter": "Pied de page des documents",
+      "invoiceFooterHelp": "Imprimé au bas de chaque page de vos devis et factures. Le texte de pied de page propre à une organisation (dans ses paramètres du portail) le remplace pour cette organisation, et la ligne de pied de page propre à un devis remplace les deux.",
       "invoiceFooterPlaceholder": "Instructions de paiement, message de remerciement, etc.",
       "invoiceNumberPrefix": "Préfixe de numéro de facture",
       "markupHelp": "Marge par défaut sur le coût distributeur, utilisée pour préremplir le prix de vente lors de l'import d'articles du catalogue. La marge brute résultante est affichée pendant l'import.",

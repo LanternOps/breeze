@@ -223,6 +223,28 @@ export default function DeviceWarrantyCard({
   }
 
   if (!warranty) {
+    // #9029: on the Overview an empty warranty is one muted line with the one
+    // next step this card offers — a vendor lookup.
+    if (compact && !error) {
+      return (
+        <p
+          data-testid="device-warranty-empty"
+          className="flex flex-wrap items-center gap-x-1.5 rounded-lg border bg-card px-5 py-3 text-sm text-muted-foreground"
+        >
+          <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>{t('deviceWarrantyCard.noInformation')}</span>
+          <span aria-hidden="true">·</span>
+          <button
+            type="button"
+            onClick={() => void handleRefresh()}
+            disabled={refreshing}
+            className="font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground disabled:cursor-progress disabled:no-underline"
+          >
+            {refreshing ? t('deviceWarrantyCard.checking') : t('deviceWarrantyCard.lookUp')}
+          </button>
+        </p>
+      );
+    }
     if (compact) {
       return (
         <div className="rounded-lg border bg-card p-4 shadow-xs">

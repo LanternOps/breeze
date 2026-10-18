@@ -80,6 +80,7 @@ import {
 } from '../../routes/agents/helpers';
 import { PAM_DEFAULTS } from '../../routes/agents/pamSettings';
 import { getRedis } from '../../services/redis';
+import { allDevicePolicyCacheKeys } from '../../services/devicePolicyCache';
 import { createPartner, createOrganization, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -326,12 +327,7 @@ async function seedPatchPolicy(
 async function purgeCaches(deviceId: string) {
   const redis = getRedis();
   if (!redis) return;
-  await redis.del(
-    `eventlog:settings:device:${deviceId}`,
-    `monitoring:settings:device:${deviceId}`,
-    `pam:settings:device:${deviceId}`,
-    `helper:settings:device:${deviceId}`,
-  );
+  await redis.del(...allDevicePolicyCacheKeys(deviceId));
 }
 
 describe('agent-facing config-policy resolvers honour partner-wide policies (#2930)', () => {

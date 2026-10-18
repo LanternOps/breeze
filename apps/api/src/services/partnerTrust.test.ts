@@ -41,11 +41,13 @@ vi.mock('./partnerTrust.repo', () => ({
 }));
 vi.mock('./partnerTrustPromotion', () => ({ tryAutoPromote }));
 vi.mock('./partnerTrustPartnerMail', () => ({ sendTrustApprovedEmail }));
+vi.mock('./trustPage/servingSet', () => ({ scheduleServingRefreshForPartner: vi.fn() }));
 
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
   evaluateCapabilityContinuation,
+  evaluateCapabilityContinuationForState,
   GATED_COMMAND_TYPES,
   isLifecycleCommand,
   LIFECYCLE_COMMAND_TYPES,
@@ -53,6 +55,7 @@ import {
   unresolvedPartnerDecision,
 } from './partnerTrust';
 import { readTrust, writeTrust } from './partnerTrust.repo';
+import { scheduleServingRefreshForPartner } from './trustPage/servingSet';
 
 function sourceFilesUnder(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -174,6 +177,7 @@ function agentDispatcherCommandTypes(): { commandTypes: string[]; unresolvedCons
 
 beforeEach(() => {
   audit.mockClear();
+  vi.mocked(scheduleServingRefreshForPartner).mockClear();
   publish.mockClear();
   tryAutoPromote.mockClear();
   sendTrustApprovedEmail.mockClear();
@@ -217,6 +221,35 @@ describe('setTrustState', () => {
     expect(result).toBe(false);
     expect(publish).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
+    expect(scheduleServingRefreshForPartner).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the trust page serving set for the partner after a landed change', async () => {
+    await setTrustState('p1', 'restricted', 'abuse', 'user-1');
+
+    expect(scheduleServingRefreshForPartner).toHaveBeenCalledWith('p1', 'partner.trust');
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'partner.trust.restricted' }));
+  });
+
+  it('a failing serving-set refresh never fails the trust-state change', async () => {
+    vi.mocked(scheduleServingRefreshForPartner).mockImplementationOnce(() => { throw new Error('redis down'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(setTrustState('p1', 'restricted', 'abuse', 'user-1')).resolves.toBe(true);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'partner.trust.restricted' }));
+    warn.mockRestore();
+  });
+});
+
+describe('trust_page_publish capability', () => {
+  const ctx = { partnerId: 'p1' };
+  it('denies probation (default deny) and restricted, allows trusted', () => {
+    expect(evaluateCapabilityContinuationForState('trust_page_publish', ctx, { trustState: 'probation', probationEnrollments: 0 }))
+      .toEqual({ allow: false, code: 'TRUST_PROBATION', capability: 'trust_page_publish', reason: 'probation_default_deny' });
+    expect(evaluateCapabilityContinuationForState('trust_page_publish', ctx, { trustState: 'restricted', probationEnrollments: 0 }))
+      .toEqual({ allow: false, code: 'TRUST_RESTRICTED', capability: 'trust_page_publish', reason: 'restricted' });
+    expect(evaluateCapabilityContinuationForState('trust_page_publish', ctx, { trustState: 'trusted', probationEnrollments: 0 }))
+      .toEqual({ allow: true });
   });
 
   it('emails the partner once on probation → trusted, after the audit row', async () => {
@@ -306,6 +339,35 @@ describe('evaluateCapability', () => {
       }));
     },
   );
+
+  it('gates notify_user under device_execute for a probation partner but lets lifecycle script_cancel through (#8741)', async () => {
+    // Call site: commandQueue -> assertDeviceExecuteAllowed -> evaluateCapability('device_execute', { commandType }).
+    state.trustState = 'probation';
+    expect(await evaluateCapability('device_execute', { partnerId: 'p1', commandType: 'notify_user' }))
+      .toMatchObject({ allow: false, code: 'TRUST_PROBATION', capability: 'device_execute', reason: 'probation_default_deny' });
+    expect(await evaluateCapability('device_execute', { partnerId: 'p1', commandType: 'script_cancel' }))
+      .toEqual({ allow: true });
+  });
+
+  it('gates chat_open/chat_message for a probation partner but lets lifecycle chat_close through (#8743)', async () => {
+    state.trustState = 'probation';
+    for (const commandType of ['chat_open', 'chat_message']) {
+      expect(await evaluateCapability('device_execute', { partnerId: 'p1', commandType }))
+        .toMatchObject({ allow: false, code: 'TRUST_PROBATION', capability: 'device_execute' });
+    }
+    expect(isLifecycleCommand('chat_close')).toBe(true);
+    expect(await evaluateCapability('device_execute', { partnerId: 'p1', commandType: 'chat_close' }))
+      .toEqual({ allow: true });
+  });
+
+  it('denies PAM reconciliation reset for a restricted partner', async () => {
+    state.trustState = 'restricted';
+    expect(isLifecycleCommand('pam_reconcile_v2')).toBe(false);
+    const decision = await evaluateCapability('device_execute', {
+      partnerId: 'p1', deviceId: 'device-1', commandType: 'pam_reconcile_v2',
+    });
+    expect(decision).toMatchObject({ allow: false, code: 'TRUST_RESTRICTED', capability: 'device_execute' });
+  });
 
   it('denies custom_sending_domain for a restricted partner with reason "restricted"', async () => {
     state.trustState = 'restricted';
@@ -558,6 +620,7 @@ describe('command allowlist', () => {
       'network_http_check',
       'network_dns_check',
       'pam_apply_v2',
+      'pam_reconcile_v2',
       'apply_browser_policy',
       'dev_update',
       'snmp_poll',

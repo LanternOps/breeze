@@ -1,4 +1,4 @@
-import type { FilterCondition, FilterConditionGroup, FilterOperator } from '@breeze/shared';
+import type { FilterCondition, FilterConditionGroup, FilterFieldDefinition, FilterOperator } from '@breeze/shared';
 import { FILTER_FIELDS } from '../filters/filterFields';
 import { OPERATOR_LABELS } from '../filters/OperatorSelector';
 
@@ -54,7 +54,9 @@ export function legacyRulesToFilterConditions(rules: LegacyDeviceGroupRule[]): F
   return { operator: 'AND', conditions };
 }
 
-const FIELD_LABELS = new Map(FILTER_FIELDS.map(field => [field.key, field.label]));
+type FieldLabels = ReadonlyMap<string, string>;
+
+const FIELD_LABELS: FieldLabels = new Map(FILTER_FIELDS.map(field => [field.key, field.label]));
 
 export const NO_VALUE_OPERATORS: FilterOperator[] = ['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'];
 
@@ -74,14 +76,14 @@ function formatFilterValue(value: unknown): string {
   return String(value);
 }
 
-function describeEntry(entry: FilterCondition | FilterConditionGroup): string {
+function describeEntry(entry: FilterCondition | FilterConditionGroup, labels: FieldLabels): string {
   if (isConditionGroup(entry)) {
-    const inner = entry.conditions.map(describeEntry).filter(Boolean);
+    const inner = entry.conditions.map(child => describeEntry(child, labels)).filter(Boolean);
     if (inner.length === 0) return '';
     return `(${inner.join(entry.operator === 'OR' ? ' OR ' : ' AND ')})`;
   }
 
-  const fieldLabel = FIELD_LABELS.get(entry.field) ?? entry.field;
+  const fieldLabel = labels.get(entry.field) ?? entry.field;
   const operatorLabel = OPERATOR_LABELS[entry.operator] ?? entry.operator;
   if (NO_VALUE_OPERATORS.includes(entry.operator)) return `${fieldLabel} ${operatorLabel}`;
 
@@ -98,12 +100,19 @@ function describeEntry(entry: FilterCondition | FilterConditionGroup): string {
  * round-tripping a real filter through legacy rules for DISPLAY silently
  * relabels most conditions as "Hostname contains …". Describe the filter
  * directly instead.
+ *
+ * `fields` is the catalog to resolve labels from — pass the one the
+ * FilterBuilder was given (useDeviceFilterFields) so `custom.<key>` conditions
+ * read as the custom field's name (#8843). Defaults to the static catalog;
+ * an unknown field falls back to its raw key.
  */
 export function describeFilterConditions(
-  conditions: FilterConditionGroup | null | undefined
+  conditions: FilterConditionGroup | null | undefined,
+  fields?: readonly FilterFieldDefinition[]
 ): string[] {
   if (!conditions || !Array.isArray(conditions.conditions)) return [];
-  const parts = conditions.conditions.map(describeEntry).filter(Boolean);
+  const labels: FieldLabels = fields ? new Map(fields.map(field => [field.key, field.label])) : FIELD_LABELS;
+  const parts = conditions.conditions.map(entry => describeEntry(entry, labels)).filter(Boolean);
   // A top-level OR must not render as a list of chips — the card reads those
   // as ANDed. Collapse it into one chip that states the operator.
   if (conditions.operator === 'OR' && parts.length > 1) return [parts.join(' OR ')];

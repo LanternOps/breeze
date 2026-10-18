@@ -33,6 +33,9 @@ export const CONFIG_FEATURE_TYPES = [
   'workload_inventory',
   // #4609 — Windows System Restore checkpoint toggles, inline-only.
   'system_protection',
+  // #6960 — third-party security agents (Huntress, SentinelOne, DNS filters),
+  // inline-only desired state; the install policy is generated from the link.
+  'security_agents',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
@@ -121,6 +124,7 @@ export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protec
   pam: 'execution_gated', // privileged elevation rules
   onedrive_helper: 'execution_gated', // delivers OneDrive helper library-mapping/credential config
   helper: 'execution_gated', // Breeze Assist technician/AI-chat capability grants on the device
+  security_agents: 'execution_gated', // arms installation of third-party security agents (with per-customer keys substituted at dispatch)
   maintenance: 'execution_gated', // grants suppression of alerting/monitoring for the window — capability to evade detection, not merely a restriction
 
   // protective — restricts the device or only detects/reports; never grants a

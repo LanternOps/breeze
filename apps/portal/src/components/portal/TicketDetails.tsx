@@ -5,6 +5,7 @@ import { ArrowLeft, AlertCircle, Loader2 } from 'lucide-react';
 import {
   portalApi,
   portalAttachmentContentPath,
+  type PortalApproval,
   type TicketComment,
   type TicketCommentAttachment,
   type TicketDetails as TicketDetailsType,
@@ -12,6 +13,7 @@ import {
 } from '@/lib/api';
 import { formatDate, formatDateTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import { approvalAskSentence } from '@/lib/approvalText';
 import { BTN_PRIMARY, INPUT, StatusMark } from './ui';
 import { ticketStatusLabel, ticketStatusTone, ticketTypeLabel } from './ticketMarks';
 import { TicketSlaBadge } from './TicketList';
@@ -46,7 +48,11 @@ interface TicketDetailsProps {
   /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
   statusCode?: number;
   /** A work-approval request on this ticket that the viewer can decide (#8200). */
-  pendingApproval?: { id: string; askSentence?: string } | null;
+  pendingApproval?: {
+    id: string;
+    /** Raw ask (ISO timestamps), formatted client-side so times render in the viewer's zone. */
+    approval: Pick<PortalApproval, 'trigger' | 'ticketNumber' | 'ask'>;
+  } | null;
 }
 
 /**
@@ -221,6 +227,9 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const when = (iso: string) => (mounted ? formatDateTime(iso) : '');
+  // The ask sentence carries times in the viewer's zone, so (like `when`) it is
+  // computed only after mount; the server-rendered UTC text never reaches the page.
+  const askSentence = mounted && pendingApproval ? approvalAskSentence(pendingApproval.approval) : null;
 
   if (error || !ticket) {
     return (
@@ -268,7 +277,7 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
         >
           <div>
             <p className="font-semibold">This ticket has work waiting for your approval</p>
-            {pendingApproval.askSentence && <p className="mt-0.5">{pendingApproval.askSentence}</p>}
+            {askSentence && <p className="mt-0.5">{askSentence}</p>}
           </div>
           <a
             href={`${withBase('/approvals')}#${encodeURIComponent(pendingApproval.id)}`}
@@ -355,6 +364,9 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
               // author_type alone showed the customer their IT team's reply
               // labelled "Customer email".
               const isCustomerEmail = c.authorType === 'email' && c.senderPortalUserId != null;
+              // A reply the customer wrote in the helpdesk this one was
+              // imported from (#8313): theirs, though it has no portal login.
+              const isImportedCustomerReply = c.originalAuthorKind === 'requester';
               return (
               <li key={c.id} className="py-4" data-testid="ticket-comment">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -363,7 +375,10 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
                     {isCustomerEmail && (
                       <span className="ml-1.5 text-xs font-medium text-muted-foreground">Customer email</span>
                     )}
-                    {c.authorType !== 'portal' && !isCustomerEmail && (
+                    {isImportedCustomerReply && !isCustomerEmail && (
+                      <span className="ml-1.5 text-xs font-medium text-muted-foreground" data-testid="ticket-comment-imported-customer">Customer</span>
+                    )}
+                    {c.authorType !== 'portal' && !isCustomerEmail && !isImportedCustomerReply && (
                       <span className="ml-1.5 text-xs font-medium text-muted-foreground">Your IT team</span>
                     )}
                   </span>

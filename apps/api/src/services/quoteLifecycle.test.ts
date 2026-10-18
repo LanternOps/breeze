@@ -1169,7 +1169,7 @@ describe('sendQuote presentation snapshot', () => {
 
 /**
  * #6232 — the send-time `terms` stamp must use the SAME three-level footer chain
- * (quote.terms → partners.invoiceFooter → portal_branding.footerText) as every
+ * (quote.terms → portal_branding.footerText → partners.invoiceFooter, #7510) as every
  * render path (resolveDocumentFooter). A two-level stamp left a sent quote with
  * no partner footer following later portal-footer edits instead of freezing.
  */
@@ -1228,8 +1228,14 @@ describe('sendQuote footer stamp (#6232)', () => {
     expect(claimSet().terms).toBe('Portal footer');
   });
 
-  it('prefers the partner footer over the portal-branding footer', async () => {
+  it('prefers the org (portal-branding) footer over the partner default (#7510)', async () => {
     queueSendPath(baseQuote, partner('Partner footer'), 'Portal footer');
+    await sendQuote('q1', actor);
+    expect(claimSet().terms).toBe('Portal footer');
+  });
+
+  it('freezes the partner footer when the org sets none', async () => {
+    queueSendPath(baseQuote, partner('Partner footer'), null);
     await sendQuote('q1', actor);
     expect(claimSet().terms).toBe('Partner footer');
   });
@@ -1257,7 +1263,7 @@ describe('sendQuote footer stamp (#6232)', () => {
   });
 
   it('renders the send-time emailed PDF with the frozen footer, not a two-level live chain', async () => {
-    queueSendPath(baseQuote, partner('Partner footer'), 'Portal footer');
+    queueSendPath(baseQuote, partner('Partner footer'), null);
     await (await sendQuote('q1', actor)).deliverEmail();
     expect(capturedPdfArgs).not.toBeNull();
     // renderQuotePdf(quote, blocks, lines, loadImage, branding, ...) — the

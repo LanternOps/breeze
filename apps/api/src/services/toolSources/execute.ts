@@ -11,6 +11,8 @@
  *   truncate -> audit (never the input values or output).
  */
 import { McpClient, type McpCallResult } from './mcpClient';
+import { OpenApiClient } from './openapiClient';
+import { asOperationBinding } from './openapiProjection';
 import { decryptToolSourceAuth, redactSecrets, secretValuesOf } from './secrets';
 import { loadTenantToolForExecution, type TenantToolDescriptor } from './resolver';
 import { checkTenantToolRateLimit } from './guardrails';
@@ -145,14 +147,8 @@ export async function executeTenantToolDetailed(
         isError = true;
         resultText = `Tool "${d.qualifiedName}" is no longer available (disabled, removed, or its source is inactive).`;
       } else {
-        const { source } = loaded;
+        const { source, tool } = loaded;
         const authConfig = decryptToolSourceAuth(source);
-        const client = new McpClient({
-          endpointUrl: source.endpointUrl,
-          credentialOrigin: source.credentialOrigin,
-          auth: authConfig,
-          allowPrivateNetwork: toolSourcesAllowPrivateEgress(),
-        });
 
         // Outside any DB context: `loadTenantToolForExecution` has already
         // resolved and its system-scoped transaction has closed by the time we
@@ -160,9 +156,38 @@ export async function executeTenantToolDetailed(
         // connection open across the network round trip.
         let rawResultText: string;
         try {
-          const callResult = await client.callTool(d.name, input);
-          isError = callResult.isError === true;
-          rawResultText = buildResultText(callResult);
+          if (source.kind === 'openapi') {
+            // The routing binding comes from the FRESH row, never from the
+            // descriptor's trimmed fields. A row without a valid binding
+            // (hand-edited jsonb, pre-W2) never produces a call with guessed
+            // routing; it still reaches the audit write below.
+            const binding = asOperationBinding(tool.annotations);
+            if (!binding) {
+              isError = true;
+              rawResultText = 'This tool is missing its operation binding; re-discover the source.';
+            } else {
+              const openApi = new OpenApiClient({
+                // Always the source's API base URL — never the document's servers[].
+                baseUrl: source.endpointUrl,
+                credentialOrigin: source.credentialOrigin,
+                auth: authConfig,
+                allowPrivateNetwork: toolSourcesAllowPrivateEgress(),
+              });
+              const callResult = await openApi.callOperation(binding, input);
+              isError = callResult.isError;
+              rawResultText = callResult.text;
+            }
+          } else {
+            const client = new McpClient({
+              endpointUrl: source.endpointUrl,
+              credentialOrigin: source.credentialOrigin,
+              auth: authConfig,
+              allowPrivateNetwork: toolSourcesAllowPrivateEgress(),
+            });
+            const callResult = await client.callTool(d.name, input);
+            isError = callResult.isError === true;
+            rawResultText = buildResultText(callResult);
+          }
         } catch (err) {
           isError = true;
           rawResultText = err instanceof Error ? err.message : String(err);

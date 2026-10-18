@@ -4,6 +4,7 @@ import JSZip from 'jszip';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import {
   buildMacosInstallerZip,
@@ -1259,7 +1260,7 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     const zip = await JSZip.loadAsync(zipBuffer);
     const script = await zip.files['install.sh']!.async('string');
     expect(script).toContain('#!/bin/bash');
-    expect(script).toContain('breeze-agent enroll');
+    expect(script).toContain('sudo "$AGENT_BIN" enroll');
     expect(script).toContain('enrollment.json');
   });
 
@@ -1273,7 +1274,7 @@ describe('buildMacosInstallerZip — install.sh content', () => {
 
     const zip = await JSZip.loadAsync(zipBuffer);
     const script = await zip.files['install.sh']!.async('string');
-    expect(script).toContain('breeze-agent enroll');
+    expect(script).toContain('sudo "$AGENT_BIN" enroll');
     expect(script).not.toContain('--site-id');
   });
 
@@ -1360,6 +1361,69 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     // enrollment.json holds the enrollment secret — the EXIT trap must remove it
     // so a failed/aborted install never leaves it in the extracted download dir.
     expect(script).toMatch(/trap '.*rm -f "\$ENROLLMENT_JSON".*' EXIT/);
+  });
+});
+
+describe('buildMacosInstallerZip — enrolls with the binary the .pkg installed (#8778)', () => {
+  // The .pkg installs to /Library/Breeze/bin or /usr/local/bin
+  // (agent/installer/macos/install-location.sh). Run the script's resolver
+  // against temp directories standing in for the two real ones.
+  let tmp: string;
+  let legacy: string;
+  let trusted: string;
+  let fn: string;
+
+  beforeEach(async () => {
+    const zipBuffer = await buildMacosInstallerZip({
+      serverUrl: 'https://x.com',
+      enrollmentKey: realEnrollmentKey(),
+      enrollmentSecret: '',
+      siteId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+    const script = await (await JSZip.loadAsync(zipBuffer)).files['install.sh']!.async('string');
+    const m = script.match(/^resolve_macos_agent_bin\(\) \{[\s\S]*?^\}$/m);
+    expect(m, 'install.sh defines resolve_macos_agent_bin').not.toBeNull();
+    fn = m![0];
+    expect(script).not.toContain('sudo /usr/local/bin/breeze-agent enroll');
+    tmp = mkdtempSync(join(tmpdir(), 'breeze-mac-zip-bin-'));
+    legacy = join(tmp, 'usr-local-bin');
+    trusted = join(tmp, 'Library-Breeze-bin');
+    mkdirSync(legacy);
+    mkdirSync(trusted);
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function resolve(): { code: number; out: string } {
+    const harness = `${fn}\nMACOS_LEGACY_BIN_DIR='${legacy}'\nMACOS_TRUSTED_BIN_DIR='${trusted}'\nresolve_macos_agent_bin`;
+    try {
+      return { code: 0, out: execFileSync('bash', ['-c', harness]).toString().trim() };
+    } catch (e) {
+      return { code: (e as { status?: number }).status ?? 1, out: '' };
+    }
+  }
+  const agent = (dir: string) => writeFileSync(join(dir, 'breeze-agent'), '#!/bin/sh\n', { mode: 0o755 });
+
+  it('uses /Library/Breeze/bin when the .pkg installed there', () => {
+    agent(trusted);
+    expect(resolve()).toEqual({ code: 0, out: join(trusted, 'breeze-agent') });
+  });
+
+  it('uses /usr/local/bin when the .pkg installed there', () => {
+    agent(legacy);
+    expect(resolve()).toEqual({ code: 0, out: join(legacy, 'breeze-agent') });
+  });
+
+  it('prefers /Library/Breeze/bin over a leftover /usr/local/bin copy', () => {
+    agent(legacy);
+    agent(trusted);
+    expect(resolve()).toEqual({ code: 0, out: join(trusted, 'breeze-agent') });
+  });
+
+  it('fails when neither location has an executable agent', () => {
+    expect(resolve().code).not.toBe(0);
   });
 });
 
@@ -1734,5 +1798,98 @@ describe('installers for a BINARY_VERSION pinned before the edition field (#7830
       buffer: asset,
       artifact: { release: 'v0.120.0', edition: 'self-host', signingTeamId: 'D8W6N2JYMA' },
     });
+  });
+});
+
+// #8333 — POST /enrollment-keys/:id/installer-link (macOS) calls
+// assertMacosInstallerPkgsReachable under the request's held transaction; on a
+// cold cache that is a safeFetch inside the tx (#1105 tripwire). A LAZY warmer,
+// armed by the first pre-flight, keeps the verified-pkg cache hot, and skips the
+// body download whenever the signed manifest digest is unchanged.
+describe('lazy macOS pkg cache warmer (#8333)', () => {
+  const originalEnv = process.env;
+  const pkgs: Record<string, Buffer> = {
+    'breeze-agent-darwin-amd64.pkg': Buffer.from('amd64-pkg'),
+    'breeze-agent-darwin-arm64.pkg': Buffer.from('arm64-pkg'),
+  };
+
+  function serve(version: Record<string, Buffer>) {
+    const signed = signedReleaseManifestEntries(Object.entries(version).map(([name, bytes]) => ({
+      name,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      size: bytes.length,
+      platformTrust: 'macos-developer-id-notarization-required',
+      edition: 'self-host',
+      signingIdentity: 'Developer ID Installer: LanternOps LLC (D8W6N2JYMA)',
+      signingTeamId: 'D8W6N2JYMA',
+    })));
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      for (const [name, bytes] of Object.entries(version)) {
+        if (url.endsWith(`/${name}`)) return new Response(new Uint8Array(bytes));
+      }
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+  const pkgBodyCalls = (m: ReturnType<typeof serve>) =>
+    m.mock.calls.filter(([u]) => String(u).endsWith('.pkg')).length;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    __resetVerifiedMacosPkgCache();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    __stopRegularMsiCacheWarmer();
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    __resetVerifiedMacosPkgCache();
+  });
+
+  it('does nothing until the first pre-flight arms it', async () => {
+    const fetchMock = serve(pkgs);
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshes by manifest digest only: no pkg body re-download while unchanged', async () => {
+    const fetchMock = serve(pkgs);
+    await assertMacosInstallerPkgsReachable();
+    expect(pkgBodyCalls(fetchMock)).toBe(2);
+    const manifestBefore = fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/release-artifact-manifest.json')).length;
+
+    await vi.advanceTimersByTimeAsync(4.5 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(4.5 * 60 * 1000);
+
+    expect(pkgBodyCalls(fetchMock)).toBe(2); // bodies skipped
+    const manifestAfter = fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/release-artifact-manifest.json')).length;
+    expect(manifestAfter).toBeGreaterThan(manifestBefore); // but the digest was checked
+    // Entry stayed warm past the original 5 min TTL: a request is a pure cache hit.
+    const before = fetchMock.mock.calls.length;
+    await assertMacosInstallerPkgsReachable();
+    expect(fetchMock.mock.calls.length).toBe(before);
+  });
+
+  it('re-downloads the body when the signed digest changed', async () => {
+    let fetchMock = serve(pkgs);
+    await assertMacosInstallerPkgsReachable();
+    expect(pkgBodyCalls(fetchMock)).toBe(2);
+
+    fetchMock = serve({
+      'breeze-agent-darwin-amd64.pkg': Buffer.from('amd64-pkg-v2'),
+      'breeze-agent-darwin-arm64.pkg': Buffer.from('arm64-pkg-v2'),
+    });
+    await vi.advanceTimersByTimeAsync(4.5 * 60 * 1000);
+    expect(pkgBodyCalls(fetchMock)).toBe(2);
+    await expect(fetchVerifiedMacosPkg('arm64')).resolves.toMatchObject({ buffer: Buffer.from('arm64-pkg-v2') });
   });
 });

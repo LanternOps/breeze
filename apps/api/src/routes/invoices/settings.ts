@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
+import { ERROR_CODES, partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
 import { updatePartnerBillingSettings, updateOrgBillingSettings } from '../../services/invoiceService';
 import { BillingProfileServiceError } from '../../services/billingProfileService';
 import { getOrgCurrencyImpact } from '../../services/orgCurrencyService';
@@ -28,7 +28,7 @@ const profileWritePerm = requirePermission(PERMISSIONS.BILLING_PROFILES_WRITE.re
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
 const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
   if (!canManagePartnerWidePolicies(c.get('auth'))) {
-    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
   await next();
 };

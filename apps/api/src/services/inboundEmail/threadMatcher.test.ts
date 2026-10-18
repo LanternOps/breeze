@@ -15,7 +15,7 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('../ticketEmailLinks', () => ({ findTicketIdsByMessageIds: mocks.links }));
 
-import { findClosedTicketInPartner, findTicketInPartner, type MatchedTicket, type SenderResolver } from './threadMatcher';
+import { findClosedTicketInPartner, findTicketInPartner, stripTicketTokens, type MatchedTicket, type SenderResolver } from './threadMatcher';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -83,6 +83,26 @@ describe.each([
     expect(mocks.inbound).not.toHaveBeenCalled();
   });
 
+  it('matches a bracketed customer-facing ticket_number in the subject, partner-scoped (#8965)', async () => {
+    const found = await match({ subject: 'Re: [KQ04YOHZ-N] Printer is down' }, PARTNER);
+    expect(found).toEqual(ticket);
+    const compiled = new PgDialect().sqlToQuery(mocks.where.mock.calls[0]![0]);
+    expect(compiled.sql).toContain('"tickets"."ticket_number"');
+    expect(compiled.sql).toContain('"tickets"."partner_id" =');
+    expect(compiled.params).toContain('KQ04YOHZ-N');
+  });
+
+  it('still matches the staff-style [T-YYYY-NNNN] subject token', async () => {
+    expect(await match({ subject: 'Re: [T-2026-0001] Printer' }, PARTNER)).toEqual(ticket);
+    const compiled = new PgDialect().sqlToQuery(mocks.where.mock.calls[0]![0]);
+    expect(compiled.params).toContain('T-2026-0001');
+  });
+
+  it('ignores an unbracketed uppercase word that merely looks like a ticket_number', async () => {
+    expect(await match({ subject: 'Re: ABCDEFGHIJ printer' }, PARTNER)).toBeNull();
+    expect(mocks.where).not.toHaveBeenCalled();
+  });
+
   it('locks the matched ticket before checking requester identity', async () => {
     const resolver = sender('requester');
     vi.mocked(resolver.portalUser).mockImplementation(async () => {
@@ -119,5 +139,13 @@ describe.each([
     expect(compiled.sql).toContain('"tickets"."partner_id" =');
     expect(compiled.sql).toContain('"tickets"."deleted_at" is null');
     expect(compiled.params).toContain(PARTNER);
+  });
+});
+
+describe('stripTicketTokens (#8965)', () => {
+  it('strips both the staff and customer ticket tokens', () => {
+    expect(stripTicketTokens('Re: [KQ04YOHZ-N] Printer')).toBe('Re: Printer');
+    expect(stripTicketTokens('Re: [T-2026-0001] Printer')).toBe('Re: Printer');
+    expect(stripTicketTokens('Printer [lowercase1] down')).toBe('Printer [lowercase1] down');
   });
 });

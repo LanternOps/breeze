@@ -152,3 +152,26 @@ func TestLoadHelperConfigErrors(t *testing.T) {
 		}
 	})
 }
+
+// Helper processes configure the shared ECH dialer from LoadHelperConfig, so
+// the operator opt-out (`ech: false`) and the persisted server kill switch
+// (`ech_server_enabled: false`) must survive it; absent keys keep the default
+// (true).
+func TestLoadHelperConfigReadsECHFlags(t *testing.T) {
+	path := writeHelperAgentYAML(t, "agent_id: a\nech: false\nech_server_enabled: false\n")
+	cfg, err := LoadHelperConfig(path)
+	if err != nil {
+		t.Fatalf("LoadHelperConfig() error = %v", err)
+	}
+	if cfg.ECH || cfg.ECHServerEnabled {
+		t.Fatalf("ECH=%v ECHServerEnabled=%v, want both false from agent.yaml", cfg.ECH, cfg.ECHServerEnabled)
+	}
+
+	cfg, err = LoadHelperConfig(writeHelperAgentYAML(t, "agent_id: a\n"))
+	if err != nil {
+		t.Fatalf("LoadHelperConfig() error = %v", err)
+	}
+	if !cfg.ECH || !cfg.ECHServerEnabled {
+		t.Fatalf("ECH=%v ECHServerEnabled=%v, want default true for absent keys", cfg.ECH, cfg.ECHServerEnabled)
+	}
+}

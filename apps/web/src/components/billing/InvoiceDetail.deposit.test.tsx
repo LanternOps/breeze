@@ -69,6 +69,76 @@ describe('InvoiceDetail deposit + due-date + request payment', () => {
     expect(strip).toHaveTextContent('Deposit paid');
   });
 
+  // #8786: while a deposit is unpaid the headline leads with what the customer's
+  // Pay button charges (computeChargeNow), and the full balance stays visible.
+  it('leads with "Deposit due now" while the deposit is unpaid, keeping the full balance visible', async () => {
+    render(<InvoiceDetail detail={detail({ depositDue: '300.00', amountPaid: '100.00', balance: '900.00', status: 'partially_paid' })} onChanged={vi.fn()} />);
+    const headline = await screen.findByTestId('invoice-detail-deposit-due-now');
+    // Remaining deposit = 300 - 100, not the full 300 and not the 900 balance.
+    expect(headline).toHaveTextContent('$200.00');
+    expect(screen.getByTestId('invoice-detail-headline-label')).toHaveTextContent('Deposit due now');
+    expect(screen.getByTestId('invoice-detail-balance')).toHaveTextContent('$900.00');
+  });
+
+  it('reverts to the balance-due headline once the deposit is met', async () => {
+    render(<InvoiceDetail detail={detail({ depositDue: '300.00', amountPaid: '300.00', balance: '700.00', status: 'partially_paid' })} onChanged={vi.fn()} />);
+    await screen.findByTestId('invoice-deposit-strip');
+    expect(screen.queryByTestId('invoice-detail-deposit-due-now')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-detail-headline-label')).toHaveTextContent('Balance due');
+    expect(screen.getByTestId('invoice-detail-balance')).toHaveTextContent('$700.00');
+    expect(screen.queryByTestId('invoice-payment-fill-deposit')).not.toBeInTheDocument();
+  });
+
+  it('shows the void state, not a deposit headline, on a void invoice with an unpaid deposit', async () => {
+    render(<InvoiceDetail detail={detail({ status: 'void', depositDue: '300.00' })} onChanged={vi.fn()} />);
+    expect(await screen.findByTestId('invoice-detail-void-state')).toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-detail-deposit-due-now')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-form')).not.toBeInTheDocument();
+  });
+
+  // A draft isn't payable yet (the portal has no Pay button for it), so nothing is "due now".
+  it('keeps the balance-due headline on a draft invoice that has a deposit set', async () => {
+    render(<InvoiceDetail detail={detail({ status: 'draft', depositDue: '300.00' })} onChanged={vi.fn()} />);
+    await screen.findByTestId('invoice-deposit-strip');
+    expect(screen.queryByTestId('invoice-detail-deposit-due-now')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-detail-headline-label')).toHaveTextContent('Balance due');
+  });
+
+  it('keeps the balance-due headline and offers no deposit chip when there is no deposit', async () => {
+    render(<InvoiceDetail detail={detail()} onChanged={vi.fn()} />);
+    await screen.findByTestId('invoice-payment-form');
+    expect(screen.queryByTestId('invoice-detail-deposit-due-now')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-detail-headline-label')).toHaveTextContent('Balance due');
+    expect(screen.queryByTestId('invoice-payment-fill-deposit')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('invoice-payment-fill-balance'));
+    expect(screen.getByTestId('invoice-payment-amount')).toHaveValue(1000);
+  });
+
+  it('pre-fills the record-payment amount with the remaining deposit or the full balance', async () => {
+    render(<InvoiceDetail detail={detail({ depositDue: '300.00', amountPaid: '100.00', balance: '900.00', status: 'partially_paid' })} onChanged={vi.fn()} />);
+    const depositChip = await screen.findByTestId('invoice-payment-fill-deposit');
+    expect(depositChip).toHaveTextContent('$200.00');
+    const balanceChip = screen.getByTestId('invoice-payment-fill-balance');
+    expect(balanceChip).toHaveTextContent('$900.00');
+    const amount = screen.getByTestId('invoice-payment-amount');
+    fireEvent.click(depositChip);
+    expect(amount).toHaveValue(200);
+    fireEvent.click(balanceChip);
+    expect(amount).toHaveValue(900);
+  });
+
+  it('records the deposit pre-fill as the payment amount', async () => {
+    render(<InvoiceDetail detail={detail({ depositDue: '300.00' })} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('invoice-payment-fill-deposit'));
+    fireEvent.click(screen.getByTestId('invoice-payment-submit'));
+    fireEvent.click(await screen.findByTestId('invoice-payment-confirm'));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => c[0] === '/invoices/inv-1/payments' && (c[1] as RequestInit | undefined)?.method === 'POST');
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body)).amount).toBe(300);
+    });
+  });
+
   it('inline-edits the due date via PATCH /invoices/:id/due-date', async () => {
     render(<InvoiceDetail detail={detail()} onChanged={vi.fn()} />);
     fireEvent.click(await screen.findByTestId('invoice-due-date-edit'));

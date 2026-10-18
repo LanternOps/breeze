@@ -130,10 +130,13 @@ const findForeignSnapshotClaimMock = vi.fn();
 // (backupStorageWriteSessions / backupSnapshotIdReservations integration
 // suites); here no job has a write session unless a test says otherwise.
 const allowedSnapshotIdsForJobMock = vi.hoisted(() => vi.fn(async (): Promise<string[] | null> => null));
+const loadReservationKeyRootMock = vi.hoisted(() =>
+  vi.fn(async (_snapshotId: string): Promise<{ keyLayout: string; keyPrefix: string | null } | null> => null));
 vi.mock('./backupSnapshotIdReservations', () => ({
   SNAPSHOT_ID_RESERVATION_CONSTRAINT: 'backup_snapshot_id_reservations_pkey',
   allowedSnapshotIdsForJob: allowedSnapshotIdsForJobMock,
   isReservedToAnotherJob: vi.fn(async () => false),
+  loadReservationKeyRoot: loadReservationKeyRootMock,
 }));
 const createAuditLogMock = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('./auditService', () => ({ createAuditLog: createAuditLogMock }));
@@ -2805,5 +2808,84 @@ describe('snapshot attestation hand-off', () => {
       dispatchExpectationVerified: true,
     });
     expect(attestLateAgentResultMock).not.toHaveBeenCalled();
+  });
+});
+
+// #7081: a published snapshot row records the key root its id was reserved
+// with — copied from the reservation, never from the helper's result — and
+// the root is never rewritten by a later publish of the same row.
+describe('snapshot key root at publish (#7081)', () => {
+  const PREFIX = 'msp/acme';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+    findForeignSnapshotClaimMock.mockResolvedValue(null);
+  });
+
+  function arrange(existing: Record<string, unknown> | null = null) {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', createdAt: new Date() }]) as any)
+      .mockReturnValue(chainMock(existing ? [{ ...existing }] : []) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock(existing ? [existing] : []) as any)
+      .mockReturnValue(chainMock([]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(
+      chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any,
+    );
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+    resolveBackupProtectionForDeviceMock.mockResolvedValue(null);
+  }
+
+  const publish = (result: Record<string, unknown> = {}) => applyBackupCommandResultToJob({
+    jobId: 'job-1',
+    orgId: 'org-1',
+    deviceId: 'device-1',
+    resultStatus: 'completed',
+    result: { snapshotId: 'provider-snap-1', filesBackedUp: 1, ...result },
+  });
+
+  const written = () => (vi.mocked(db.insert).mock.results[0]?.value?.values as any).mock.calls[0][0];
+
+  it('copies a prefixed reservation root onto the new row, with the physical location', async () => {
+    arrange();
+    loadReservationKeyRootMock.mockResolvedValue({ keyLayout: 'prefixed_flat', keyPrefix: PREFIX });
+    await publish();
+    expect(loadReservationKeyRootMock).toHaveBeenCalledWith('provider-snap-1');
+    expect(written()).toMatchObject({ keyLayout: 'prefixed_flat', keyPrefix: PREFIX, location: `${PREFIX}/snapshots/provider-snap-1` });
+  });
+
+  it('records legacy_flat with no reservation (legacy ids), keeping today\'s location', async () => {
+    arrange();
+    loadReservationKeyRootMock.mockResolvedValue(null);
+    await publish({ snapshot: { id: 'provider-snap-1', metadata: { storagePrefix: 's3://b/legacy/snapshots/provider-snap-1' } } });
+    expect(written()).toMatchObject({ keyLayout: 'legacy_flat', keyPrefix: null });
+  });
+
+  it('ignores a helper-reported keyLayout and metadata.storagePrefix for the root', async () => {
+    arrange();
+    loadReservationKeyRootMock.mockResolvedValue({ keyLayout: 'prefixed_flat', keyPrefix: PREFIX });
+    await publish({
+      keyLayout: 'legacy_flat',
+      keyPrefix: 'evil',
+      metadata: { storagePrefix: 'evil/snapshots/provider-snap-1' },
+      snapshot: { id: 'provider-snap-1', metadata: { storagePrefix: 'evil/snapshots/provider-snap-1' } },
+    });
+    expect(written()).toMatchObject({ keyLayout: 'prefixed_flat', keyPrefix: PREFIX, location: `${PREFIX}/snapshots/provider-snap-1` });
+  });
+
+  it('never writes the root when it updates an existing row', async () => {
+    arrange({ id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result', keyLayout: 'legacy_flat', keyPrefix: null });
+    loadReservationKeyRootMock.mockResolvedValue({ keyLayout: 'prefixed_flat', keyPrefix: PREFIX });
+    await publish();
+    expect(db.insert).not.toHaveBeenCalled();
+    const sets = vi.mocked(db.update).mock.results
+      .flatMap((r) => ((r.value as any)?.set?.mock?.calls ?? []).map((c: unknown[]) => c[0] as Record<string, unknown>));
+    const snapshotSet = sets.find((v) => 'snapshotId' in v);
+    expect(snapshotSet).toBeDefined();
+    expect(snapshotSet).not.toHaveProperty('keyLayout');
+    expect(snapshotSet).not.toHaveProperty('keyPrefix');
   });
 });

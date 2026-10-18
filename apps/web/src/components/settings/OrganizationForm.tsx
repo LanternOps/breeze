@@ -1,9 +1,11 @@
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { fetchWithAuth } from '../../stores/auth';
+import { fetchTrustPagePublication } from '../../lib/api/trustPagePublication';
 
 // Derive a URL-safe slug from an organization name. Matches the slug schema
 // (^[a-z0-9-]+$) and the existing setup-wizard slugify behavior.
@@ -51,6 +53,8 @@ type OrganizationFormProps = {
   onSubmit?: (values: OrganizationFormValues) => void | Promise<void>;
   onCancel?: () => void;
   defaultValues?: Partial<OrganizationFormValues>;
+  /** Edit mode: the organization being edited. Enables the published-trust-page slug-rename warning. */
+  orgId?: string;
   submitLabel?: string;
   loading?: boolean;
   /** Classes on the `<form>`. Defaults to a standalone card; a host that is
@@ -80,6 +84,7 @@ export default function OrganizationForm({
   defaultValues,
   submitLabel,
   loading,
+  orgId,
   className = 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'
 }: OrganizationFormProps) {
   const { t } = useTranslation('settings');
@@ -88,6 +93,7 @@ export default function OrganizationForm({
     register,
     handleSubmit,
     setValue,
+    watch,
     formState: { errors, isSubmitting }
   } = useForm<z.input<typeof organizationSchema>, unknown, z.output<typeof organizationSchema>>({
     resolver: zodResolver(organizationSchema),
@@ -110,6 +116,21 @@ export default function OrganizationForm({
   // If the form was seeded with an existing slug (edit mode), treat it as
   // already manually set so we never overwrite it.
   const slugManuallyEdited = useRef<boolean>(Boolean(defaultValues?.slug));
+
+  // Amendment 23: renaming the slug of an org with a live trust page changes its public URL and breaks the
+  // old link. Advisory only — a failed status read shows no warning rather than blocking the edit.
+  const [trustPagePublished, setTrustPagePublished] = useState(false);
+  useEffect(() => {
+    if (!orgId) return;
+    let cancelled = false;
+    fetchTrustPagePublication(fetchWithAuth, orgId)
+      .then((p) => { if (!cancelled) setTrustPagePublished(p.published); })
+      .catch((err) => { console.warn('[OrganizationForm] trust page status unavailable; no slug warning', err); });
+    return () => { cancelled = true; };
+  }, [orgId]);
+  const initialSlug = defaultValues?.slug;
+  const slugValue = watch('slug');
+  const showTrustSlugWarning = trustPagePublished && initialSlug !== undefined && slugValue !== initialSlug;
 
   const nameField = register('name');
   const slugField = register('slug');
@@ -163,6 +184,11 @@ export default function OrganizationForm({
             {t('organizationForm.help.slug')}
           </p>
           {errors.slug && <p className="text-sm text-destructive">{errors.slug.message}</p>}
+          {showTrustSlugWarning && (
+            <p role="status" data-testid="org-slug-trust-warning" className="text-sm text-warning-strong">
+              {t('organizationForm.trustSlugWarning')}
+            </p>
+          )}
         </div>
 
         <div className="space-y-2">

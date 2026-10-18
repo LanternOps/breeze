@@ -59,6 +59,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('fleetFindingsWorker'),
   consumers('fleetRemediationDispatchWorker'),
   consumers('mlOutputRetention'),
+  consumers('aiToolOutputRetention'),
   consumers('offlineDetector'),
   consumers('notificationDispatcher'),
   // #5306 — daily MFA enrolment grace notices. Plain Redis-required consumer:
@@ -77,6 +78,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('cisJobs'),
   consumers('automationWorker'),
   consumers('securityPostureWorker'),
+  consumers('trustPageSnapshotWorker'),
   consumers('reliabilityWorker'),
   consumers('userRiskWorker'),
   consumers('abuseSignalsWorker', ['abuseSignalsWorker'], 'abuse_or_partner_trust_enabled'),
@@ -90,6 +92,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // One Worker, no flag gate; attaches under 'helperScreenshotRetention',
   // which differs from its registry key.
   consumers('helperScreenshotRetentionWorker', ['helperScreenshotRetention']),
+  consumers('endpointMessageRetention'),
   consumers('ipHistoryRetention'),
   consumers('reliabilityRetention'),
   consumers('processSampleRetention'),
@@ -100,6 +103,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Disk Cleanup v2 W03. Plain Redis-required consumer: it constructs and
   // attaches unconditionally wherever it is placed, with no feature flag.
   consumers('filesystemCleanupRunRetention'),
+  // #8581. Plain Redis-required consumer, no feature flag.
+  consumers('restorePointAttemptRetention'),
   consumers('oauthCleanup'),
   consumers('stripeAccountCacheRefresh'),
   consumers('exchangeRateSync'),
@@ -271,6 +276,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // accountingReconcileWorker likewise reads no integrations flag — its
   // per-connection gating happens inside the sweep job, at job time.
   consumers('aiBudgetAlertDeliveryWorker', ['ai-budget-alert-delivery']),
+  // Connection health W1 (#8845) — one Worker, no flag gate, constructed and
+  // attached unconditionally under CONNECTION_HEALTH_QUEUE, which differs from
+  // the registry key.
+  consumers('connectionHealthReconcileWorker', ['connection-health-reconcile']),
+  consumers('connectionHealthDigestWorker', ['connection-health-digest']),
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),

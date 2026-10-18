@@ -185,6 +185,8 @@ describe('backup snapshot storage', () => {
         secretKey: 'secret',
       },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
       retainUntil: new Date('2026-04-30T00:00:00.000Z'),
     });
@@ -225,6 +227,8 @@ describe('backup snapshot storage', () => {
         secretKey: 'secret',
       },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
       retainUntil: new Date('2026-04-30T00:00:00.000Z'),
     });
@@ -264,6 +268,8 @@ describe('backup snapshot storage', () => {
         secretKey: 'secret',
       },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
     });
 
@@ -292,6 +298,8 @@ describe('backup snapshot storage', () => {
         prefix: 'w05',
       },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
       retainUntil: new Date('2026-04-30T00:00:00.000Z'),
     });
@@ -324,6 +332,8 @@ describe('backup snapshot storage', () => {
         prefix: 'w05',
       },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
     });
 
@@ -351,6 +361,8 @@ describe('backup snapshot storage', () => {
       provider: 's3',
       providerConfig: { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
     })).rejects.toThrow(/1 object.*snapshots\/provider-snap-1\/data\.bin.*Object is locked/s);
   });
@@ -374,6 +386,8 @@ describe('backup snapshot storage', () => {
       provider: 's3',
       providerConfig: { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
     }).catch((e: Error) => e);
 
@@ -411,6 +425,8 @@ describe('backup snapshot storage', () => {
       provider: 's3',
       providerConfig: { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
     })).rejects.toThrow(/snapshots\/provider-snap-1\/a.*AccessDenied/s);
     expect(deleteCalls).toBe(2);
@@ -431,6 +447,8 @@ describe('backup snapshot storage', () => {
         secretKey: 'secret',
       },
       snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
       retainUntil: new Date('2026-04-30T00:00:00.000Z'),
     })).rejects.toThrow('No snapshot objects found for provider-enforced immutability');
@@ -746,6 +764,8 @@ describe('local-provider GC I/O (real filesystem)', () => {
       provider: 'local',
       providerConfig: { path: root, prefix: 'w05' },
       snapshotId: 'snapA',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
       metadata: {},
     });
 
@@ -906,5 +926,91 @@ describe('local-provider GC I/O (real filesystem)', () => {
     expect(result.deletedKeys).toEqual([]);
     expect(result.failedKeys).toHaveLength(1);
     expect(result.failedKeys[0]!.error).toContain('path traversal detected');
+  });
+});
+
+// #7081: immutability and deletion address a snapshot's objects under its
+// recorded key root. A prefixed_flat snapshot never honours helper-reported
+// metadata.storagePrefix; an unreadable root is refused before any storage call.
+describe('snapshot storage key root (#7081)', () => {
+  const config = { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' };
+
+  beforeEach(() => sendMock.mockReset());
+
+  it('lists and retains a prefixed snapshot under its root, ignoring metadata.storagePrefix', async () => {
+    const retained: string[] = [];
+    sendMock
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(ListObjectsV2Command);
+        expect(command.input.Prefix).toBe('msp/acme/snapshots/provider-snap-1');
+        return {
+          Contents: [
+            { Key: 'msp/acme/snapshots/provider-snap-1/manifest.json' },
+            { Key: 'msp/acme/snapshots/provider-snap-10/manifest.json' },
+          ],
+          IsTruncated: false,
+        };
+      })
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(PutObjectRetentionCommand);
+        retained.push(command.input.Key);
+        return {};
+      });
+
+    const result = await applyBackupSnapshotImmutability({
+      provider: 's3',
+      providerConfig: config,
+      snapshotId: 'provider-snap-1',
+      keyLayout: 'prefixed_flat',
+      keyPrefix: 'msp/acme',
+      metadata: { storagePrefix: 'evil/snapshots/provider-snap-1' },
+      retainUntil: new Date('2026-04-30T00:00:00.000Z'),
+    });
+
+    expect(result.objectCount).toBe(1);
+    expect(retained).toEqual(['msp/acme/snapshots/provider-snap-1/manifest.json']);
+  });
+
+  it('keeps honouring metadata.storagePrefix for a legacy_flat snapshot', async () => {
+    sendMock.mockImplementationOnce(async (command) => {
+      expect(command.input.Prefix).toBe('legacy/snapshots/provider-snap-1');
+      return { Contents: [], IsTruncated: false };
+    });
+    await expect(applyBackupSnapshotImmutability({
+      provider: 's3',
+      providerConfig: config,
+      snapshotId: 'provider-snap-1',
+      keyLayout: 'legacy_flat',
+      keyPrefix: null,
+      metadata: { storagePrefix: 's3://backups/legacy/snapshots/provider-snap-1' },
+      retainUntil: new Date('2026-04-30T00:00:00.000Z'),
+    })).rejects.toThrow();
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['prefixed_flat', null],
+    ['prefixed_flat', 'x/snapshots'],
+    ['device_scoped', null],
+    [undefined, null],
+  ])('refuses %s/%s before any storage call', async (keyLayout, keyPrefix) => {
+    await expect(applyBackupSnapshotImmutability({
+      provider: 's3',
+      providerConfig: config,
+      snapshotId: 'provider-snap-1',
+      keyLayout,
+      keyPrefix,
+      metadata: {},
+      retainUntil: new Date('2026-04-30T00:00:00.000Z'),
+    })).rejects.toThrow(/key root/);
+    await expect(deleteBackupSnapshotArtifacts({
+      provider: 's3',
+      providerConfig: config,
+      snapshotId: 'provider-snap-1',
+      keyLayout,
+      keyPrefix,
+      metadata: {},
+    })).rejects.toThrow(/key root/);
+    expect(sendMock).not.toHaveBeenCalled();
   });
 });

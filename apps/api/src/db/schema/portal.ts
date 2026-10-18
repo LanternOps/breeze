@@ -98,6 +98,10 @@ export const portalBranding = pgTable('portal_branding', {
   // vendor-neutral "Managed endpoint protection" leg of the security view.
   // Inside "Enable all" (not sensitive: no vendor/product names are exposed).
   enableEdrVisibility: boolean('enable_edr_visibility').notNull().default(false),
+  // Trust Center W3d: permission flag (PORTAL_PERMISSION_FLAG_KEYS). Lets the
+  // org's admin contacts edit part of the trust page draft from the portal.
+  // Never in "Enable all"; publishing stays with the MSP.
+  enableTrustPageEditing: boolean('enable_trust_page_editing').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -248,10 +252,10 @@ export const tickets = pgTable('tickets', {
   budgetMinutes: integer('budget_minutes'),
   budgetAmount: numeric('budget_amount', { precision: 12, scale: 2 }),
   budgetCurrencyCode: char('budget_currency_code', { length: 3 }),
-  // Ticket migration windows (#8313, 2026-12-23-110000): the window that
+  // Ticket migration windows (#8313, 2026-12-25-120000): the window that
   // imported this ticket, null for live tickets. An FK-less snapshot, so it
   // outlives window retention and never couples an org table to a partner
-  // table. Partial index idx_tickets_migration_window (2026-12-23-110100) is
+  // table. Partial index idx_tickets_migration_window (2026-12-25-120100) is
   // not modeled here, like the other partial indexes in this file.
   migrationWindowId: uuid('migration_window_id'),
 });
@@ -331,14 +335,14 @@ export const ticketComments = pgTable('ticket_comments', {
   // same "partial index" reason as that index and ticketDrafts.ts's
   // ticket_drafts_active_uq.
   proposedByRunId: uuid('proposed_by_run_id'),
-  // Ticket migration windows (#8313, 2026-12-23-110000), all null on live
+  // Ticket migration windows (#8313, 2026-12-25-120000), all null on live
   // comments. migrationWindowId marks an imported comment (FK-less, like
   // tickets.migration_window_id). originalAuthorEmail/originalAuthorKind
   // ('staff' | 'requester', CHECK ticket_comments_original_author_kind_chk)
   // are the display-only "originally by" of an imported comment: authorName
   // carries the original name and no user or contact is created.
   // importSourceId is the source's comment id, unique per principal through
-  // the partial index ticket_comments_import_source_uq (2026-12-23-110100),
+  // the partial index ticket_comments_import_source_uq (2026-12-25-120100),
   // so a rerun skips what it already imported.
   migrationWindowId: uuid('migration_window_id'),
   originalAuthorEmail: varchar('original_author_email', { length: 320 }),

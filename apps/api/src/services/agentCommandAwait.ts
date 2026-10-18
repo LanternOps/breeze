@@ -43,42 +43,6 @@ type PendingEntry = {
 const pending = new Map<string, PendingEntry>();
 
 /**
- * Node's http.Server `requestTimeout` default (ms). `serve(...)` in index.ts
- * does not override it, so it is the only bound on a proxied request's body
- * read (`await c.req.arrayBuffer()` in routes/tunnelHttp.ts path mode).
- */
-const NODE_DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
-/**
- * Agent round-trip timeout for a proxied request. Restated from
- * `HTTP_REQUEST_TIMEOUT_MS` in routes/tunnelHttpCore.ts (which imports this
- * module, so importing it here would be circular); keep the two in sync.
- */
-const PROXIED_REQUEST_TIMEOUT_MS = 25_000;
-const TOMBSTONE_SLACK_MS = 5_000;
-
-/**
- * Cancellation tombstones: a prefix cancelled by `cancelPendingAgentCommandsByPrefix`
- * keeps refusing NEW sends with that prefix for a while. Closes the window where
- * a request passed its gates but had not yet registered in `pending` when Close
- * swept. The longest such gap is the request body read, bounded only by the
- * server's requestTimeout, plus the agent round-trip timeout; after that the
- * request would have been killed anyway.
- */
-export const CANCELLED_PREFIX_TOMBSTONE_TTL_MS =
-  NODE_DEFAULT_REQUEST_TIMEOUT_MS + PROXIED_REQUEST_TIMEOUT_MS + TOMBSTONE_SLACK_MS;
-const cancelledPrefixes = new Map<string, { error: string; expiresAt: number }>();
-
-function findCancelledPrefix(commandId: string): string | null {
-  const now = Date.now();
-  let found: string | null = null;
-  for (const [prefix, t] of cancelledPrefixes) {
-    if (t.expiresAt <= now) { cancelledPrefixes.delete(prefix); continue; }
-    if (found === null && commandId.startsWith(prefix)) found = t.error;
-  }
-  return found;
-}
-
-/**
  * Send a command to an agent and await its result.
  *
  * Resolves with the result payload when `resolvePendingAgentCommand` is called
@@ -100,10 +64,6 @@ export function sendCommandToAgentAwaitResult(
       '[BREEZE_ROLE] sendCommandToAgentAwaitResult is socket-local and api-role-affine '
       + '(its correlation map cannot resolve cross-process) — it cannot run in the worker role',
     );
-  }
-  const cancelledError = findCancelledPrefix(command.id);
-  if (cancelledError !== null) {
-    return Promise.resolve({ status: 'failed', error: cancelledError });
   }
   const sent = sendCommandToAgent(agentId, command);
   if (!sent) {
@@ -148,15 +108,14 @@ export function resolvePendingAgentCommand(
 
 /**
  * Resolve every in-flight awaited command whose id starts with `prefix` as
- * `{status:'failed', error}`, and tombstone the prefix so sends racing this call
- * (not yet registered in `pending`) are refused too. Used by tunnel Close (spec 2026-10-06 §4) to
+ * `{status:'failed', error}`. Used by tunnel Close (spec 2026-10-06 §4) to
  * cancel that tunnel's proxied requests. Process-local like the rest of this
- * module: a request in flight on ANOTHER api replica is not reached (single
- * api replica per region today — plan G9).
+ * module: a request in flight on ANOTHER api replica is not reached here.
+ * Requests that have passed their gates but not yet been sent are refused by
+ * the status re-read in `dispatchTunnelHttpRequest` (routes/tunnelHttpCore.ts),
+ * which holds across replicas.
  */
 export function cancelPendingAgentCommandsByPrefix(prefix: string, error: string): number {
-  findCancelledPrefix(''); // lazy prune of expired tombstones
-  cancelledPrefixes.set(prefix, { error, expiresAt: Date.now() + CANCELLED_PREFIX_TOMBSTONE_TTL_MS });
   let cancelled = 0;
   for (const [id, entry] of pending) {
     if (!id.startsWith(prefix)) continue;
@@ -166,9 +125,4 @@ export function cancelPendingAgentCommandsByPrefix(prefix: string, error: string
     cancelled += 1;
   }
   return cancelled;
-}
-
-/** Test-only: drop all cancellation tombstones so they cannot leak between tests. */
-export function __resetCancelledPrefixTombstonesForTests(): void {
-  cancelledPrefixes.clear();
 }

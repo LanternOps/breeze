@@ -36,12 +36,15 @@ import {
   MAINTENANCE_DATETIME_TIME_PATTERN,
   MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
   MAINTENANCE_TIME_OF_DAY_PATTERN,
+  securityAgentsInlineSettingsSchema,
+  type SecurityAgentsInlineSettings,
 } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
 import type { DbExecutor } from './monitors/monitorCompiler';
 import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
+import { resolveExecutionSafeGroupIds } from './executionTargetGating';
 import { notHoldingOrgCondition, notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // ============================================
@@ -997,17 +1000,6 @@ export async function resolveSoftwarePolicyForDevice(
 }
 
 /**
- * Batch resolver: finds all device IDs that should be governed by a given software policy
- * via config policy assignments. Used by the compliance worker.
- *
- * Steps:
- * 1. Find all config policies that link to this software policy
- * 2. Get all assignments for those config policies
- * 3. Resolve each assignment to device IDs based on level/targetId
- * 4. For each device, verify this software policy is the "winning" one
- *    (closest wins — if a device has a closer assignment linking to a different policy, exclude it)
- */
-/**
  * Resolve the candidate device IDs for one config-policy assignment row, by
  * level. Extracted from {@link resolveDeviceIdsForSoftwarePolicy}'s switch so
  * {@link resolveAllSecurityScanScheduledDevices} (#6263 W01) doesn't need a
@@ -1059,9 +1051,311 @@ async function resolveAssignmentDeviceIds(level: string, targetId: string): Prom
   }
 }
 
+export type ResolvedSecurityAgentsLink = {
+  /** The winning link's id. For an inherited link this is the PARENT's link id. */
+  linkId: string;
+  /** The policy that owns the link (the authoring parent for an inherited link). */
+  configPolicyId: string;
+  /** The assigned policy whose assignment won the hierarchy walk. */
+  assignedPolicyId: string;
+  inlineSettings: SecurityAgentsInlineSettings;
+};
+
+/** Links already logged as unparseable; see resolveSecurityAgentsLinkForDevice. */
+const warnedUnparseableSecurityAgentsLinks = new Set<string>();
+
+/**
+ * #6960: the winning `security_agents` link for a device. Closest wins WITHIN
+ * this feature type, using the same hierarchy walk and effective-links view as
+ * every other feature, and the whole link replaces any broader one (a closer
+ * link with `agents: []` opts the device out).
+ *
+ * A stored blob that no longer parses resolves as `agents: []`: install nothing
+ * rather than guess at a link the write path would have refused.
+ *
+ * `security_agents` is execution_gated, so a device_group whose rules key on a
+ * field the device reports about itself is not a valid target here: the same
+ * field-provenance rule resolveEffectiveConfig applies to its display.
+ */
+export async function resolveSecurityAgentsLinkForDevice(
+  deviceId: string
+): Promise<ResolvedSecurityAgentsLink | null> {
+  const loaded = await loadDeviceHierarchy(deviceId);
+  if (!loaded) return null;
+  const { allowedGroupIds } = await resolveExecutionSafeGroupIds(loaded.groupIds);
+  const hierarchy: DeviceHierarchy = { ...loaded, groupIds: allowedGroupIds };
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      linkId: configPolicyEffectiveFeatureLinks.id,
+      sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      assignedPolicyId: configurationPolicies.id,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+      assignmentId: configPolicyAssignments.id,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy)
+      )
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'security_agents')
+      )
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt
+    );
+
+  if (rows.length === 0) return null;
+
+  const winner = sortByHierarchy(rows)[0]!;
+  const parsed = securityAgentsInlineSettingsSchema.safeParse(winner.inlineSettings);
+  if (!parsed.success && !warnedUnparseableSecurityAgentsLinks.has(winner.linkId)) {
+    // Once per link per process: a bad partner-wide link would otherwise log
+    // for every device it reaches. The write path refuses such blobs, so this
+    // means a direct DB edit or a schema change; the policy id lets an operator
+    // find and re-save it.
+    warnedUnparseableSecurityAgentsLinks.add(winner.linkId);
+    console.error('[featureConfigResolver] security_agents link has unparseable settings; resolving as no agents', {
+      linkId: winner.linkId,
+      configPolicyId: winner.sourcePolicyId,
+      issue: parsed.error.issues[0]?.message,
+    });
+  }
+  return {
+    linkId: winner.linkId,
+    configPolicyId: winner.sourcePolicyId,
+    assignedPolicyId: winner.assignedPolicyId,
+    inlineSettings: parsed.success ? parsed.data : { version: 1, agents: [] },
+  };
+}
+
+/**
+ * #6960 W02: the winning `security_agents` link id for MANY devices, with a
+ * fixed number of queries per chunk of 500 devices (devices, their orgs, their
+ * group memberships, every candidate assignment, plus one execution-safe group
+ * lookup when the chunk has group memberships) instead of the per-device
+ * walk {@link resolveSecurityAgentsLinkForDevice} does. A partner-wide policy
+ * can reach thousands of devices and the compliance worker resolves its device
+ * set every pass, so the per-device form (3+ queries per device) does not
+ * scale.
+ *
+ * It is the same decision evaluated in memory, rule for rule:
+ *  - ownership: the policy is owned by the device's org, or is partner-wide
+ *    for the device's partner (none for a device parked in the holding pool,
+ *    exactly as loadDeviceHierarchy drops its partner);
+ *  - targets: device, execution-safe device groups only, site, org, partner;
+ *  - role / OS filters via {@link matchesRoleOsFilter} (the SQL predicate's
+ *    twin);
+ *  - closest wins via {@link sortByHierarchy}.
+ * The integration suite pins it against the per-device resolver on real
+ * Postgres. A device no link reaches (or that does not exist) maps to null.
+ */
+export async function resolveSecurityAgentsLinksForDevices(
+  deviceIds: readonly string[],
+): Promise<Map<string, string | null>> {
+  const winners = new Map<string, string | null>();
+  const unique = Array.from(new Set(deviceIds));
+  const CHUNK = 500;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const chunk = unique.slice(i, i + CHUNK);
+    for (const [deviceId, linkId] of await resolveSecurityAgentsLinkChunk(chunk)) winners.set(deviceId, linkId);
+  }
+  return winners;
+}
+
+async function resolveSecurityAgentsLinkChunk(deviceIds: string[]): Promise<Map<string, string | null>> {
+  const result = new Map<string, string | null>(deviceIds.map((id) => [id, null] as const));
+  if (deviceIds.length === 0) return result;
+
+  const deviceRows = await db
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType })
+    .from(devices)
+    .where(inArray(devices.id, deviceIds));
+  if (deviceRows.length === 0) return result;
+
+  const orgIds = Array.from(new Set(deviceRows.map((d) => d.orgId)));
+  const orgRows = await db
+    .select({ id: organizations.id, partnerId: organizations.partnerId, type: organizations.type })
+    .from(organizations)
+    .where(inArray(organizations.id, orgIds));
+  const partnerByOrg = new Map<string, string | null>(
+    orgRows.map((org) => [org.id, isUnassignedPoolOrgType(org.type) ? null : org.partnerId ?? null] as const),
+  );
+
+  const membershipRows = await db
+    .select({ deviceId: deviceGroupMemberships.deviceId, groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(inArray(deviceGroupMemberships.deviceId, deviceIds));
+  const allGroupIds = Array.from(new Set(membershipRows.map((m) => m.groupId)));
+  const safeGroups = new Set(
+    allGroupIds.length > 0 ? (await resolveExecutionSafeGroupIds(allGroupIds)).allowedGroupIds : [],
+  );
+  const groupsByDevice = new Map<string, string[]>();
+  for (const m of membershipRows) {
+    if (!safeGroups.has(m.groupId)) continue;
+    const list = groupsByDevice.get(m.deviceId) ?? [];
+    list.push(m.groupId);
+    groupsByDevice.set(m.deviceId, list);
+  }
+
+  const partnerIds = Array.from(new Set(Array.from(partnerByOrg.values()).filter((p): p is string => !!p)));
+  const ownership = partnerIds.length > 0
+    ? or(
+      inArray(configurationPolicies.orgId, orgIds),
+      and(isNull(configurationPolicies.orgId), inArray(configurationPolicies.partnerId, partnerIds)),
+    )
+    : inArray(configurationPolicies.orgId, orgIds);
+
+  const candidates = await db
+    .select({
+      linkId: configPolicyEffectiveFeatureLinks.id,
+      policyOrgId: configurationPolicies.orgId,
+      policyPartnerId: configurationPolicies.partnerId,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentTargetId: configPolicyAssignments.targetId,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        ownership,
+      ),
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'security_agents'),
+      ),
+    )
+    // Same ORDER BY as the per-device walk, so sortByHierarchy breaks a full
+    // tie the same way in both.
+    .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
+
+  for (const device of deviceRows) {
+    const partnerId = partnerByOrg.get(device.orgId) ?? null;
+    const groups = groupsByDevice.get(device.id) ?? [];
+    const applicable = candidates.filter((row) => {
+      const owned = row.policyOrgId === device.orgId
+        || (row.policyOrgId === null && partnerId !== null && row.policyPartnerId === partnerId);
+      if (!owned) return false;
+      const targeted =
+        (row.assignmentLevel === 'device' && row.assignmentTargetId === device.id)
+        || (row.assignmentLevel === 'device_group' && groups.includes(row.assignmentTargetId))
+        || (row.assignmentLevel === 'site' && row.assignmentTargetId === device.siteId)
+        || (row.assignmentLevel === 'organization' && row.assignmentTargetId === device.orgId)
+        || (row.assignmentLevel === 'partner' && partnerId !== null && row.assignmentTargetId === partnerId);
+      return targeted && matchesRoleOsFilter(row, device);
+    });
+    if (applicable.length === 0) continue;
+    result.set(device.id, sortByHierarchy([...applicable])[0]!.linkId);
+  }
+  return result;
+}
+
+/**
+ * Device ids of every candidate device that holds one of these config-policy
+ * assignments. Used by the managed (security_agents) dimension below; the
+ * customer software_policy path still inlines the same steps.
+ */
+async function resolveCandidateDeviceIdsForConfigPolicies(configPolicyIds: string[]): Promise<string[]> {
+  if (configPolicyIds.length === 0) return [];
+  const assignments = await db
+    .select({
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+    })
+    .from(configPolicyAssignments)
+    .where(inArray(configPolicyAssignments.configPolicyId, configPolicyIds));
+
+  const candidateDeviceIds = new Set<string>();
+  for (const assignment of assignments) {
+    for (const id of await resolveAssignmentDeviceIds(assignment.level, assignment.targetId)) {
+      candidateDeviceIds.add(id);
+    }
+  }
+  return Array.from(candidateDeviceIds);
+}
+
+/**
+ * #6960: device set of a software policy GENERATED from a `security_agents`
+ * link. It does not compete with customer `software_policy` links (neither
+ * shadows the other): candidates are the effective assignments of the managed
+ * link (the owning policy plus every child that inherits it), kept only where
+ * that link wins the `security_agents` hierarchy walk for the device.
+ */
+async function resolveDeviceIdsForManagedSoftwarePolicy(managedByLinkId: string): Promise<string[]> {
+  const holders = await db
+    .select({ configPolicyId: configPolicyEffectiveFeatureLinks.configPolicyId })
+    .from(configPolicyEffectiveFeatureLinks)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .where(
+      and(
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'security_agents'),
+        eq(configPolicyEffectiveFeatureLinks.id, managedByLinkId)
+      )
+    );
+
+  const candidates = await resolveCandidateDeviceIdsForConfigPolicies(holders.map((h) => h.configPolicyId));
+  // Batched winner walk: a fixed number of queries per 500 candidates.
+  const winners = await resolveSecurityAgentsLinksForDevices(candidates);
+  return candidates.filter((deviceId) => winners.get(deviceId) === managedByLinkId);
+}
+
+/**
+ * Batch resolver: finds all device IDs that should be governed by a given software policy
+ * via config policy assignments. Used by the compliance worker.
+ *
+ * Steps:
+ * 1. Find all config policies that link to this software policy
+ * 2. Get all assignments for those config policies
+ * 3. Resolve each assignment to device IDs based on level/targetId
+ * 4. For each device, verify this software policy is the "winning" one
+ *    (closest wins — if a device has a closer assignment linking to a different policy, exclude it)
+ */
 export async function resolveDeviceIdsForSoftwarePolicy(
   softwarePolicyId: string
 ): Promise<string[]> {
+  // #6960: a generated (managed) policy resolves through its own dimension and
+  // ignores the software_policy winner entirely.
+  const [owner] = await db
+    .select({ managedByLinkId: softwarePolicies.managedByLinkId })
+    .from(softwarePolicies)
+    .where(eq(softwarePolicies.id, softwarePolicyId))
+    .limit(1);
+  if (owner?.managedByLinkId) {
+    return resolveDeviceIdsForManagedSoftwarePolicy(owner.managedByLinkId);
+  }
+
   // 1. Find config policies linking to this software policy
   const links = await db
     .select({

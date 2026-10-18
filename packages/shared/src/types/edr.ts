@@ -35,8 +35,14 @@ export const EDR_ACTIONS = [
   'isolate', 'unisolate', 'scan', 'update_agent', 'kill_process', 'rollback',
   'resolve_detection', 'mark_false_positive', 'quarantine_restore', 'quarantine_delete',
 ] as const;
+/** Actions aimed at an endpoint (W03). With EDR_DETECTION_ACTIONS this partitions EDR_ACTIONS. */
+export const EDR_ENDPOINT_ACTIONS = ['isolate', 'unisolate', 'scan', 'update_agent', 'kill_process'] as const;
+/** Actions aimed at one detection / quarantine item (W03). */
+export const EDR_DETECTION_ACTIONS = [
+  'rollback', 'resolve_detection', 'mark_false_positive', 'quarantine_restore', 'quarantine_delete',
+] as const;
 
-export type EdrSeverity = (typeof EDR_SEVERITIES)[number];
+export type EdrSeverity =(typeof EDR_SEVERITIES)[number];
 export type EdrDetectionStatus = (typeof EDR_DETECTION_STATUSES)[number];
 export type EdrOpenDetectionStatus = (typeof EDR_OPEN_DETECTION_STATUSES)[number];
 export type EdrEndpointHealth = (typeof EDR_ENDPOINT_HEALTH)[number];
@@ -51,6 +57,50 @@ export type EdrActionStatus = (typeof EDR_ACTION_STATUSES)[number];
 export type EdrActionRequestedVia = (typeof EDR_ACTION_REQUESTED_VIA)[number];
 export type EdrVendorKind = (typeof EDR_VENDOR_KINDS)[number];
 export type EdrActionKey = (typeof EDR_ACTIONS)[number];
+export type EdrEndpointActionKey = (typeof EDR_ENDPOINT_ACTIONS)[number];
+export type EdrDetectionActionKey = (typeof EDR_DETECTION_ACTIONS)[number];
+
+/**
+ * Whether one action can be taken on one endpoint right now, and why not
+ * (W03). Computed without a vendor call from the connection, tenant and
+ * endpoint rows; the vendor stays authoritative at dispatch.
+ */
+export interface EdrEndpointActionAvailability {
+  action: EdrActionKey;
+  available: boolean;
+  reason: string | null;
+  /**
+   * Set (true) only when the action would be allowed but the session has not
+   * passed MFA, so the UI can prompt for verification instead of a dead button.
+   */
+  mfaRequired?: boolean;
+}
+
+/**
+ * One `edr_actions` ledger row as routes, AI tools and the web UI see it (W03).
+ * The jsonb `payload` is never part of it. `outcomeUnknown` = the request may
+ * have reached the vendor but no answer came back; the reconciler settles it
+ * and nothing re-sends.
+ */
+export interface EdrActionDto {
+  id: string;
+  orgId: string;
+  provider: string;
+  action: EdrActionKey;
+  status: EdrActionStatus;
+  requestedVia: EdrActionRequestedVia;
+  requestedBy: string | null;
+  aiSessionId: string | null;
+  approvalId: string | null;
+  endpointId: string | null;
+  detectionId: string | null;
+  breezeDeviceId: string | null;
+  error: string | null;
+  outcomeUnknown: boolean;
+  requestedAt: string;
+  submittedAt: string | null;
+  completedAt: string | null;
+}
 
 /**
  * One EDR-framework detection as the read routes, AI tools and web UI see it

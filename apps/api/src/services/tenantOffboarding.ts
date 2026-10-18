@@ -32,7 +32,12 @@ import { envInt } from '../utils/envInt';
 import { enqueueTenantErasure } from '../jobs/tenantErasure';
 import { getOrgMergeQueue } from '../jobs/orgMerge';
 import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
-import { EVIDENCE_HOLD_RELEASED_ACTION, findEvidenceHold, releaseEmptyEvidenceHolds } from './orgEvidenceHold';
+import {
+  EVIDENCE_HOLD_RELEASED_ACTION,
+  EVIDENCE_HOLD_SCOPED_ERASURE_KEY,
+  findEvidenceHold,
+  releaseEmptyEvidenceHolds,
+} from './orgEvidenceHold';
 import { getEmailService } from './email';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { escapeHtml, renderLayout } from './emailLayout';
@@ -1473,13 +1478,14 @@ export async function sweepOffboardingTenants(
         // job a chance to finish" — this never fires for a merge whose job is
         // simply still running.
         //
-        // Held shells (PAM ownership epochs W5, org_evidence_holds) are
-        // filtered out here, in SQL, not skipped per row: a hold can stand for
-        // the whole audit-retention period, and a per-pass skip would write an
-        // audit every hour for every held shell. The hold's deferral is
-        // audited once, by the merge job's Phase C; release is handled by the
-        // evidence-hold pass below; and cascadeDeleteOrg refuses a held shell
-        // no matter how it is reached.
+        // Held shells (PAM ownership epochs, org_evidence_holds) are erased
+        // SCOPED (#8746) and keep their organizations row, so they would match
+        // this case forever. They are picked up only until their scoped
+        // erasure has completed (cascadeDeleteOrg stamps
+        // settings.<EVIDENCE_HOLD_SCOPED_ERASURE_KEY>), filtered here in SQL
+        // rather than per row: a hold can stand for the whole audit-retention
+        // period. Release, and the full erasure that follows it, is the
+        // evidence-hold pass below.
         const mergeErasurePending = await db
           .select({ id: organizations.id })
           .from(organizations)
@@ -1488,7 +1494,8 @@ export async function sweepOffboardingTenants(
               eq(organizations.status, 'merging'),
               isNotNull(organizations.deletedAt),
               sql`${organizations.updatedAt} < now() - interval '1 hour'`,
-              sql`NOT EXISTS (SELECT 1 FROM org_evidence_holds h WHERE h.loser_org_id = ${organizations.id})`
+              sql`(NOT EXISTS (SELECT 1 FROM org_evidence_holds h WHERE h.loser_org_id = ${organizations.id})
+                   OR NOT (COALESCE(${organizations.settings}, '{}'::jsonb) ? ${EVIDENCE_HOLD_SCOPED_ERASURE_KEY}::text))`
             )
           );
         // Task 4, case 2: Phase A fenced the loser (`status='merging'`,
@@ -1819,8 +1826,9 @@ export async function sweepOffboardingTenants(
       )) as unknown as Array<{ id: string }>;
       if (stamped.length === 0) continue;
 
-      // A held shell (W5) is stamped like any other — it must stop looking
-      // like a live org — but is NOT handed to erasure.
+      // A held shell is stamped and handed to erasure like any other; the
+      // erasure keeps its evidence (cascadeDeleteOrg scopes it, #8746). The
+      // hold is read only to word the audit.
       const hold = await runOutsideDbContext(() =>
         withSystemDbAccessContext(() => findEvidenceHold(org.id))
       );
@@ -1828,7 +1836,7 @@ export async function sweepOffboardingTenants(
       // Same idempotent handoff case 1 uses: jobId `tenant-erasure-<orgId>`
       // collapses a duplicate, and ANONYMOUS_ACTOR_ID is a real uuid because
       // it lands in the erasure worker's own `actor_id` column.
-      if (!hold) await enqueueTenantErasure({ orgId: org.id, performedBy: ANONYMOUS_ACTOR_ID });
+      await enqueueTenantErasure({ orgId: org.id, performedBy: ANONYMOUS_ACTOR_ID });
       mergeShellsStamped++;
       writeAuditEvent(requestLikeFromSnapshot({}), {
         orgId: null,
@@ -1841,7 +1849,7 @@ export async function sweepOffboardingTenants(
         details: {
           partnerId: org.partnerId,
           note: hold
-            ? 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and kept under its evidence hold (not erased)'
+            ? 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and handed to tenant erasure, which keeps the privileged-access evidence under its evidence hold'
             : 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and handed to tenant erasure',
           ...(hold ? { evidenceHold: { survivorOrgId: hold.survivorOrgId, reason: hold.reason } } : {}),
         },

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { createTicketLinkSchema, ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { requireScope, requirePermission } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import {
   addTicketLink,
   findTicketIdByNumber,
@@ -49,7 +49,10 @@ ticketLinkRoutes.get('/:id/links', scopes, readPerm, zValidator('param', idParam
   if (!ticket) return notFound(c);
   // The counterpart passes the same site axis as the ticket itself; links to a
   // ticket the caller cannot see are omitted, not redacted.
-  return c.json({ data: await listTicketLinks(ticket.id, { counterpartFilter: ticketCounterpartScopeCondition(auth) }) });
+  // A trashed counterpart's subject is manager-only (#8747); set by readPerm.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const canManage = perms ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action) : false;
+  return c.json({ data: await listTicketLinks(ticket.id, { counterpartFilter: ticketCounterpartScopeCondition(auth), canManage }) });
 });
 
 ticketLinkRoutes.post(

@@ -646,3 +646,104 @@ describe('loadTenantToolBindingState — live row mapping (#5216 PR B)', () => {
     expect(await loadTenantToolBindingState('11111111-1111-4111-8111-111111111111')).toBeNull();
   });
 });
+
+/**
+ * Tool catalog W02 (#5217): the openapi kind adds `spec_url` (+ the
+ * `tool_sources_spec_url_kind_chk` CHECK) and `last_discovery_summary` on the
+ * same dual-axis table. These prove the CHECK in both directions, that the
+ * forge refusal and the partner-wide read branch reach an openapi row exactly
+ * as they reach an MCP one, and that the resolver reports the real kind.
+ * Migration under test: 2026-12-30-150000-tool-sources-spec-url.sql.
+ */
+describe('openapi sources (#5217 W02)', () => {
+  beforeEach(() => {
+    process.env.TOOL_SOURCES_ENABLED = 'true';
+  });
+
+  const openapiValues = (owner: { orgId: string | null; partnerId: string | null }, slug: string) => ({
+    orgId: owner.orgId,
+    partnerId: owner.partnerId,
+    slug,
+    name: `OpenAPI ${slug}`,
+    kind: 'openapi' as const,
+    endpointUrl: 'https://api.tool-source.example.test/v1',
+    specUrl: 'https://docs.tool-source.example.test/openapi.json',
+    credentialOrigin: 'https://api.tool-source.example.test',
+  });
+
+  it('refuses an openapi row with no spec_url (23514, tool_sources_spec_url_kind_chk)', async () => {
+    const partner = await createPartner();
+    await expectSqlState(
+      () =>
+        withDbAccessContext(SYSTEM_CTX, () =>
+          db.insert(toolSources).values({ ...openapiValues({ orgId: null, partnerId: partner.id }, 'nospec'), specUrl: null }).returning(),
+        ),
+      '23514',
+    );
+  });
+
+  it('refuses an mcp row carrying a spec_url (23514, same CHECK, other direction)', async () => {
+    const partner = await createPartner();
+    await expectSqlState(
+      () =>
+        withDbAccessContext(SYSTEM_CTX, () =>
+          db
+            .insert(toolSources)
+            .values({
+              orgId: null,
+              partnerId: partner.id,
+              slug: 'mcpspec',
+              name: 'MCP with spec',
+              kind: 'mcp',
+              endpointUrl: 'https://tool-source.example.test/mcp',
+              specUrl: 'https://tool-source.example.test/openapi.json',
+              credentialOrigin: 'https://tool-source.example.test',
+            })
+            .returning(),
+        ),
+      '23514',
+    );
+  });
+
+  it('partner B forging partner A\'s partner_id on an openapi source is rejected (42501)', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    await expectSqlState(
+      () =>
+        withDbAccessContext(partnerContext(partnerB.id, []), () =>
+          db.insert(toolSources).values(openapiValues({ orgId: null, partnerId: partnerA.id }, 'forgedoa')).returning(),
+        ),
+      '42501',
+    );
+  });
+
+  it('resolves a partner-wide openapi tool for an org-scoped caller with sourceKind openapi, and never another partner\'s', async () => {
+    const partner = await createPartner();
+    const otherPartner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const rand = Math.random().toString(36).slice(2, 8);
+
+    const [mine] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(toolSources).values(openapiValues({ orgId: null, partnerId: partner.id }, `oa${rand}`)).returning({ id: toolSources.id }),
+    );
+    createdSourceIds.push(mine!.id);
+    await seedTool(mine!.id, { partnerId: partner.id }, { enabled: true, name: 'listPets', qualifiedName: `oa${rand}__listPets` });
+
+    const [theirs] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(toolSources).values(openapiValues({ orgId: null, partnerId: otherPartner.id }, `ob${rand}`)).returning({ id: toolSources.id }),
+    );
+    createdSourceIds.push(theirs!.id);
+    await seedTool(theirs!.id, { partnerId: otherPartner.id }, { enabled: true, name: 'listPets', qualifiedName: `ob${rand}__listPets` });
+
+    // The DB-level partner-wide SELECT branch reaches the openapi row too.
+    expect(await countSources(orgContext(org.id, partner.id), mine!.id)).toBe(1);
+    expect(await countSources(orgContext(org.id, partner.id), theirs!.id)).toBe(0);
+
+    const orgAuth = { scope: 'organization', orgId: org.id, partnerId: partner.id, user: { id: 'test-user' } } as unknown as AuthContext;
+    const resolved = await resolveTenantTools(orgAuth);
+    const mineDescriptor = resolved.find((d) => d.qualifiedName === `oa${rand}__listPets`);
+    expect(mineDescriptor).toBeDefined();
+    expect(mineDescriptor!.sourceKind).toBe('openapi');
+    expect(resolved.map((d) => d.qualifiedName)).not.toContain(`ob${rand}__listPets`);
+  });
+});

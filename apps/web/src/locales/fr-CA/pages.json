@@ -175,7 +175,8 @@
     "securityScans": "Balayages IOC",
     "devicesTime": "Synchronisation de l’heure",
     "adminAiModels": "Modèles d'IA",
-    "billingAutopay": "Automatic payments"
+    "billingAutopay": "Automatic payments",
+    "endpointMessages": "Messages aux terminaux"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -183,6 +184,10 @@
   },
   "authShell": {
     "tagline": "La plateforme RMM moderne conçue pour la rapidité, la clarté et l'échelle."
+  },
+  "authFooter": {
+    "reportAbuse": "Signaler un abus",
+    "security": "Sécurité"
   },
   "errorPage": {
     "notFoundBody": "La page que vous recherchez n'existe pas ou a peut-être été déplacée.",

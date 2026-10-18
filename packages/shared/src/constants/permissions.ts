@@ -156,6 +156,12 @@ export const PERMISSION_GRANTS = {
   SITES_DELETE: { resource: 'sites', action: 'delete' },
   SITES_SET_LOCATION: { resource: 'sites', action: 'set_location' },
 
+  // Endpoint messaging (#8293): push a message to the person at a device.
+  // Deliberately separate from devices:execute ("may talk to a user" is not
+  // "may run code").
+  ENDPOINT_MESSAGES_SEND: { resource: 'endpoint_messages', action: 'send' },
+  ENDPOINT_MESSAGES_READ: { resource: 'endpoint_messages', action: 'read' },
+
   // Automations
   AUTOMATIONS_READ: { resource: 'automations', action: 'read' },
   AUTOMATIONS_WRITE: { resource: 'automations', action: 'write' },

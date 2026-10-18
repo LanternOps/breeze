@@ -34,6 +34,14 @@ permissions:
 env:
   PNPM_VERSION: '10.34.5'
   OUT: load-tests/perf/out
+  # Storm-suite gate thresholds (#8642). Source: the W06 plan (PR #8587) and its
+  # acceptance command on #8145 (2026-10-13 re-run, 400 agents): heartbeat p95 <= 1 s
+  # and pool >= 80 % of its usable size are the W1c spec targets, pool recovery 30 s.
+  # The re-run met pool-min-ratio but missed heartbeat-p95 on 4 of 5 events and
+  # pool-recovery on api-kill / rolling-deploy, hence the two-week warn-only window.
+  STORM_GATE_HEARTBEAT_P95: 1s
+  STORM_GATE_POOL_MIN_RATIO: '0.8'
+  STORM_GATE_POOL_RECOVERY: 30s
 
 jobs:
   gate:
@@ -57,7 +65,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -132,9 +140,77 @@ jobs:
 
       - name: Upload KPI records and samples
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: perf-${{ github.run_id }}-${{ github.run_attempt }}
+          path: load-tests/perf/out/**
+          retention-days: 30
+          if-no-files-found: warn
+
+  # #8642: nightly storm-suite, one fault schedule per run (api-kill, rolling-deploy,
+  # socket-drop, slow-loop, stall) against a 400-agent lab stack. Warn-only until
+  # the repository variable PERF_GATES_ENFORCE is 'true' (owner decision: flip it on
+  # or after 2026-10-31; no PR needed). A red gate while warn-only is a ::warning::
+  # and a green job; once enforced it fails the job and the notifier files the issue.
+  # needs: gate serializes it on the single runner; always() so a KPI regression
+  # does not hide the storm result.
+  storm:
+    name: Storm suite (400 agents)
+    needs: gate
+    if: always() && github.repository == 'LanternOps/breeze' && (github.event_name == 'workflow_dispatch' || vars.PERF_NIGHTLY_ENABLED == 'true') && inputs.inject != 'slow-heartbeat'
+    runs-on: [self-hosted, breeze-perf]
+    # storm-suite is a 32 min simulator window plus stack up/down.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # continue-on-error is the warn-only switch: unset PERF_GATES_ENFORCE keeps
+      # the job green, and the step still reports the red gate below.
+      - name: Run storm-suite with gates
+        continue-on-error: ${{ vars.PERF_GATES_ENFORCE != 'true' }}
+        env:
+          PERF_GATES_ENFORCE: ${{ vars.PERF_GATES_ENFORCE }}
+        run: |
+          set -uo pipefail
+          rc=0
+          load-tests/perf/run-perf.sh --storm storm-suite --out-dir "$OUT/storm" -- \
+            --agents 400 --ramp 20 --warmup 2m --duration 32m --start cold \
+            --gate-heartbeat-p95 "$STORM_GATE_HEARTBEAT_P95" \
+            --gate-pool-min-ratio "$STORM_GATE_POOL_MIN_RATIO" \
+            --gate-pool-recovery "$STORM_GATE_POOL_RECOVERY" || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$PERF_GATES_ENFORCE" != 'true' ]; then
+            echo "::warning::storm-suite exited $rc (3 = a gate failed); warn-only until PERF_GATES_ENFORCE=true"
+          fi
+          exit "$rc"
+
+      - name: Upload storm report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: perf-storm-${{ github.run_id }}-${{ github.run_attempt }}
           path: load-tests/perf/out/**
           retention-days: 30
           if-no-files-found: warn
@@ -144,7 +220,7 @@ jobs:
   # write token.
   notify:
     name: File the nightly regression
-    needs: gate
+    needs: [gate, storm]
     if: failure() && github.event_name == 'schedule' && github.repository == 'LanternOps/breeze'
     runs-on: ubuntu-latest
     timeout-minutes: 5

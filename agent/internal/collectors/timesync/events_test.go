@@ -192,3 +192,27 @@ func TestEventQueryErrorKeepsPowerShellReason(t *testing.T) {
 		t.Fatalf("empty-stderr exit not wrapped: %v", err)
 	}
 }
+
+// powershell.exe can write its stderr as UTF-16LE (seen with exit status
+// 0xffff0000). Read as bytes, every ASCII character is followed by a NUL, and
+// the NULs reach the server in the heartbeat's Warn, where Postgres rejects
+// U+0000. The reason must arrive decoded and NUL-free.
+func TestEventQueryErrorDecodesUTF16Stderr(t *testing.T) {
+	const reason = "Service is not running.\r\n"
+	for _, bom := range []bool{true, false} {
+		var stderr []byte
+		if bom {
+			stderr = append(stderr, 0xFF, 0xFE)
+		}
+		for _, c := range []byte(reason) {
+			stderr = append(stderr, c, 0x00)
+		}
+		got := eventQueryError(&exec.ExitError{Stderr: stderr}).Error()
+		if strings.ContainsRune(got, 0) {
+			t.Fatalf("bom=%v: NUL survived into the error: %q", bom, got)
+		}
+		if !strings.HasSuffix(got, ": Service is not running.") {
+			t.Fatalf("bom=%v: UTF-16 reason not decoded: %q", bom, got)
+		}
+	}
+}

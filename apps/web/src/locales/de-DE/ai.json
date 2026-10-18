@@ -137,7 +137,8 @@
     "approvedCompleted": "Genehmigt · abgeschlossen",
     "input": "Eingabe:",
     "error": "Fehler:",
-    "output": "Ausgabe:"
+    "output": "Ausgabe:",
+    "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen"
   },
   "aiForOfficePage": {
     "title": "KI für Office",

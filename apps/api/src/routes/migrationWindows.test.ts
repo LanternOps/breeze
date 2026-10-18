@@ -38,6 +38,7 @@ vi.mock('../services/mfaStepUpGrant', async (orig) => ({
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: mocks.audit }));
 vi.mock('../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.7' }));
 vi.mock('../services/migrationWindows', () => ({
+  MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED_MESSAGE: 'partner admins only',
   openMigrationWindow: mocks.open,
   closeMigrationWindow: mocks.close,
   listMigrationWindows: mocks.list,
@@ -136,6 +137,40 @@ describe('migration window routes', () => {
     expect(mocks.list).not.toHaveBeenCalled();
   });
 
+  // #8486 review: a system-scope session has no partner membership, so the
+  // sweep would close its window at once as opener_inactive. Refused up front.
+  it('refuses a system-scope open with MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED, before any other check', async () => {
+    mocks.authMiddleware.mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'system',
+        partnerId: null,
+        user: { id: USER_ID, email: 'platform@example.test' },
+        token: { mfa: true, aep: 3, mep: 2, sid: 'session-1' },
+      });
+      c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
+      return next();
+    });
+    const res = await post(`/migration-windows?partnerId=${PARTNER_ID}`, openBody({ partnerId: PARTNER_ID }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED' });
+    expect(mocks.validateStepUpGrant).not.toHaveBeenCalled();
+    expect(mocks.open).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
+  it('still lets a system-scope admin list and close a partner\'s windows (narrowing)', async () => {
+    mocks.authMiddleware.mockImplementation((c: any, next: any) => {
+      c.set('auth', { scope: 'system', partnerId: null, user: { id: USER_ID }, token: { mfa: true } });
+      c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
+      return next();
+    });
+    mocks.list.mockResolvedValueOnce([view]);
+    expect((await app().request(`/migration-windows?partnerId=${PARTNER_ID}`)).status).toBe(200);
+    mocks.close.mockResolvedValueOnce({ window: { ...view, status: 'closed' }, alreadyClosed: false });
+    expect((await post(`/migration-windows/${WINDOW_ID}/close?partnerId=${PARTNER_ID}`, {})).status).toBe(200);
+    expect(mocks.close).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ partnerId: PARTNER_ID, reason: 'closed_by_admin' }));
+  });
+
   it('refuses to open without tickets:write, the permission the delegation table requires', async () => {
     auth({ permissions: [{ resource: 'organizations', action: 'write' }] });
     const res = await post('/migration-windows', openBody());
@@ -209,6 +244,7 @@ describe('migration window routes', () => {
 
   it.each([
     ['SERVICE_PRINCIPAL_OWNER_REQUIRED', 403],
+    ['MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED', 403],
     ['MIGRATION_WINDOW_PRINCIPAL_HAS_KEY', 409],
     ['MIGRATION_WINDOW_PRINCIPAL_INACTIVE', 409],
     ['MIGRATION_WINDOW_ALREADY_OPEN', 409],

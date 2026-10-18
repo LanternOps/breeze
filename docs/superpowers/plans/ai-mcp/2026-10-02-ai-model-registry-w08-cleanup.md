@@ -78,7 +78,7 @@ Real code wins over this table. Before Task 1 the executor checks each row again
 - **Never move funding implicitly (spec §9.1, §10).** The new bootstrap keeps a partner on its own Anthropic-dialect connection if it has exactly one; it never moves a partner with a connection onto the platform key. Pinned by Task 2.
 - **Never bill at a guessed rate on hosted (spec §8, §15 #3).** The only rate constant left (`ENV_DEFAULT_MODEL_BOOTSTRAP_RATES`, the documented self-host rate for an unlisted `ANTHROPIC_MODEL`) is applied only when `isHosted()` is false. Pinned by Task 2.
 - **Retired API input is rejected, never ignored (#6472).** A retired request field is declared `z.never({ error: <actionable message> }).optional()` so the request fails with 400 naming the field and its replacement, before any part is applied. Every retirement gets a `breaking-changes.json` entry and an id in `RECORDED_ENTRY_IDS`.
-- **Migration slot (W08b):** `apps/api/migrations/2026-11-28-100000-ai-model-registry-legacy-drop.sql`. At commit time run `bash scripts/check-migration-naming.sh --against-ref origin/main` and `git ls-tree --name-only origin/main apps/api/migrations/ | grep -E '/[0-9]{4}-' | sort | tail -1`; if anything sorts after `2026-11-28-100000`, rename to sort last (keep the `-ai-model-registry-legacy-drop` slug) and update every reference (Task 13 fixture, test, docs). It must sort after W10's `2026-11-26-100400-…` and W09's `2026-11-25-100000-…`. The migration writes rows (the archive), so system scope is elected first, both at file level and inside each `DO` block.
+- **Migration slot (W08b):** `apps/api/migrations/2026-12-30-200000-ai-model-registry-legacy-drop.sql` (planned as `2026-11-28-100000`; renamed at implementation because main had moved past it — the preflight under `migrations/preflight/` keeps its original `2026-11-28-100000` name). At commit time run `bash scripts/check-migration-naming.sh --against-ref origin/main` and `git ls-tree --name-only origin/main apps/api/migrations/ | grep -E '/[0-9]{4}-' | sort | tail -1`; if anything sorts after `2026-11-28-100000`, rename to sort last (keep the `-ai-model-registry-legacy-drop` slug) and update every reference (Task 13 fixture, test, docs). It must sort after W10's `2026-11-26-100400-…` and W09's `2026-11-25-100000-…`. The migration writes rows (the archive), so system scope is elected first, both at file level and inside each `DO` block.
 - **New `org_id` table (W08b):** `ai_model_registry_legacy_archive` is shape 3 (partner axis, like `legacy_labour_pricing_archive`) with `org_id` as metadata. Registrations in the same task: `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry` (`repoint`), `CORE_TENANT_EXPORT_POLICY`, and in `rls-coverage.integration.test.ts` both `ORG_AXIS_POLICY_EXCLUDED_TABLES` and `PARTNER_TENANT_TABLES`. The composite `(org_id, partner_id) → organizations(id, partner_id)` FK is `ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE` (cascade: rollback safety for R1, which does not list the table). Its policy has **no `TO` clause** (a role-scoped policy would refuse the non-BYPASSRLS migration owner under FORCE RLS).
 - **Export policy follows the live schema, across both releases.** `buildTenantExportPlan` compares policy columns with live columns and throws on a mismatch. W08a therefore moves each soon-dropped column into a new `retiring` group (excluded, allowed to be absent), so R1 works before and after W08b's drop; W08b then deletes the `retiring` entries.
 - **Gates (spec §12) are unchanged.** Connection writes keep `BILLING_MANAGE` + `requireMfa()` + `canManagePartnerWidePolicies`, through W04's `partnerWrite` / `requirePartnerWide` / `registryWrite`.
@@ -187,7 +187,7 @@ Each item is pinned by the named test.
 
 | Path | Action | Task |
 |---|---|---|
-| `apps/api/migrations/2026-11-28-100000-ai-model-registry-legacy-drop.sql` | create | 13 |
+| `apps/api/migrations/2026-12-30-200000-ai-model-registry-legacy-drop.sql` | create | 13 |
 | `apps/api/src/db/schema/aiModelRegistryLegacyArchive.ts`, `db/schema/index.ts` | create / modify | 13 |
 | `apps/api/src/__tests__/integration/fixtures/aiModelRegistryLegacyConfig.ts` | create | 13 |
 | `apps/api/src/__tests__/integration/aiModelRegistryLegacyDrop.integration.test.ts` | create | 13 |
@@ -355,7 +355,7 @@ Expected: FAIL — `ENOENT … 2026-11-28-100000-ai-model-registry-legacy-drop-p
 ```sql
 -- READ-ONLY preflight for the AI model registry legacy removal (#7606):
 --   gate G1 — before W08a (code removal) merges, run against release R0;
---   gate G2 — before W08b (2026-11-28-100000-ai-model-registry-legacy-drop.sql)
+--   gate G2 — before W08b (2026-12-30-200000-ai-model-registry-legacy-drop.sql)
 --             merges, run against release R1.
 -- Run on EACH prod region. Send the output to Todd; never paste it into a PR
 -- (it names partner ids).
@@ -3761,14 +3761,14 @@ Run:
 git fetch origin main
 git ls-tree --name-only origin/main apps/api/migrations/ | grep -E '/[0-9]{4}-' | sort | tail -3
 ```
-Expected: nothing sorts after `2026-11-28-100000`. If something does, use a later `YYYY-MM-DD-HHMMSS` that sorts after it (slug unchanged) everywhere Tasks 13–15 name the file.
+Expected: nothing sorts after the slot (done at implementation: `2026-11-28-100000` → `2026-12-30-200000`). If something does, use a later `YYYY-MM-DD-HHMMSS` that sorts after it (slug unchanged) everywhere Tasks 13–15 name the file.
 
 ---
 
 ### Task 13: Archive, then drop — the migration and its registrations
 
 **Files:**
-- Create: `apps/api/migrations/2026-11-28-100000-ai-model-registry-legacy-drop.sql`
+- Create: `apps/api/migrations/2026-12-30-200000-ai-model-registry-legacy-drop.sql`
 - Create: `apps/api/src/db/schema/aiModelRegistryLegacyArchive.ts`; modify `db/schema/index.ts`
 - Create: `apps/api/src/__tests__/integration/fixtures/aiModelRegistryLegacyConfig.ts`
 - Create: `apps/api/src/__tests__/integration/aiModelRegistryLegacyDrop.integration.test.ts`
@@ -3802,7 +3802,7 @@ Archive shape (one row per legacy value; `value` holds the raw value, never key 
 // apps/api/src/__tests__/integration/fixtures/aiModelRegistryLegacyConfig.ts
 /**
  * Recreates, inside a test transaction that is rolled back, exactly the legacy
- * objects 2026-11-28-100000-ai-model-registry-legacy-drop.sql drops, so the
+ * objects 2026-12-30-200000-ai-model-registry-legacy-drop.sql drops, so the
  * migration can be exercised against seeded legacy data. Column shapes follow
  * the shipped migrations that created them (2026-09-04-partner-llm-configs.sql,
  * 2026-11-14-100000-ai-model-registry-connections.sql, 0001-baseline.sql,
@@ -3889,7 +3889,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { RESTORE_AI_MODEL_LEGACY_CONFIG_SQL } from './fixtures/aiModelRegistryLegacyConfig';
 
-const MIGRATION = '2026-11-28-100000-ai-model-registry-legacy-drop.sql';
+const MIGRATION = '2026-12-30-200000-ai-model-registry-legacy-drop.sql';
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 type Tx = postgres.TransactionSql<Record<string, unknown>>;
 class Rollback extends Error { constructor() { super('intentional rollback'); } }
@@ -4079,7 +4079,7 @@ describe('ai_model_registry_legacy_archive — partner-axis RLS', () => {
 - [ ] **Step 3: Run it to verify it fails**
 
 Run: `pnpm test-stack up && cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiModelRegistryLegacyDrop.integration.test.ts`
-Expected: FAIL — `ENOENT … 2026-11-28-100000-ai-model-registry-legacy-drop.sql`.
+Expected: FAIL — `ENOENT … 2026-12-30-200000-ai-model-registry-legacy-drop.sql`.
 
 - [ ] **Step 4: Write the migration**
 
@@ -4389,7 +4389,7 @@ Expected: PASS everywhere (the migration-RLS-scope guard accepts the file becaus
 - [ ] **Step 7: Commit**
 
 ```bash
-git add -A apps/api/migrations/2026-11-28-100000-ai-model-registry-legacy-drop.sql apps/api/src
+git add -A apps/api/migrations/2026-12-30-200000-ai-model-registry-legacy-drop.sql apps/api/src
 git commit -m "feat(ai)!: archive then drop the legacy AI model configuration (#7606)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -4645,7 +4645,7 @@ Independent review: Codex `gpt-6-astra`, reasoning `high`, read-only, against th
 | `ai-provider-endpoints`, `ai-script-policy-reviewer-model`, `client-ai-policy-allowed-models`, `ai-agent-policy-model` | manifest ids | `upgrade/breaking-changes.json` | W08a |
 | Sentry event `ai_registry_bootstrap_existing_connection` | telemetry | `registryCutover.ts` | W08a |
 | `migrations/preflight/2026-11-28-100000-ai-model-registry-legacy-drop-preflight.sql` (queries `sanity`, `sweep_state`, `blocking_uncut_with_legacy`, `counts`, `unrepresented_models`) | operator SQL | — | W08a |
-| `ai_model_registry_legacy_archive` (shape 3) / `aiModelRegistryLegacyArchive` | table / Drizzle | `migrations/2026-11-28-100000-ai-model-registry-legacy-drop.sql`, `db/schema/aiModelRegistryLegacyArchive.ts` | W08b |
+| `ai_model_registry_legacy_archive` (shape 3) / `aiModelRegistryLegacyArchive` | table / Drizzle | `migrations/2026-12-30-200000-ai-model-registry-legacy-drop.sql`, `db/schema/aiModelRegistryLegacyArchive.ts` | W08b |
 | `RESTORE_AI_MODEL_LEGACY_CONFIG_SQL` | test fixture | `__tests__/integration/fixtures/aiModelRegistryLegacyConfig.ts` | W08b |
 
 **Removed names** (later waves must not use them): `partnerLlmConfig.ts` and everything in it; `compatRemap.ts`'s compat exports; `ownConnectionId`; `getCompatConnection`; `legacyProjection.ts`, `legacyReconcile.ts`, `legacySurfaceModels.ts`, `parity/*`; `legacyCostEvents.ts`; `registerInvocationLedgerShadow`, `recordShadowInvocation`, `surfaceFromSession`, `buildShadowRateSnapshot`, `shadowCostDiff`; `runRegistryCutoverSweep*`, `REGISTRY_CUTOVER_RETRY_DELAYS_MS`, the lease functions, `disableUnproducedOfferings`, `nextUncutPartners`; `resolveLlmConfig`, `resolveLlmConfigForOrg`, `llmUnusableCodeForOrgInSystemContext`, `llmUnusableCode`; `resolveReviewerDefaultModel`, `AI_SCRIPT_REVIEWER_MODEL`; `bindAgentModel`; `mergeAgentPolicies`' third argument; `AiAgentPolicy.model`, `AiAgentDto.model`, `ScriptPolicyDto.reviewerModel`, `ClientAiOrgPolicy.allowedModels`; tables `partner_llm_configs`, `ai_model_registry_state`; index `partner_ai_connections_compat_uq`.

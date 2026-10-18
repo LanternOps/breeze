@@ -28,6 +28,11 @@ import {
 } from '../services/softwarePolicyService';
 import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
 import { readLatestPolicyOwnedInstallByDevice } from '../services/softwarePolicyInstallRemediation';
+import { repairManagedSoftwarePolicies } from '../services/securityAgents/managedPolicyGenerator';
+import {
+  loadManagedRuleApplicability,
+  type ManagedRuleApplicability,
+} from '../services/securityAgents/managedRuleApplicability';
 import {
   scheduleSoftwareInstallRemediation,
   scheduleSoftwareRemediation,
@@ -503,7 +508,21 @@ export function getSoftwareComplianceQueue(): Queue<SoftwareComplianceJobData> {
   return softwareComplianceQueue;
 }
 
-async function processScanPolicies(): Promise<{ queued: number }> {
+/** Exported for tests and for the BullMQ processor switch. */
+export async function processScanPolicies(): Promise<{ queued: number }> {
+  // #6960: re-derive every security_agents link's generated software policy
+  // first, so drift is repaired and a policy activated by the repair is in this
+  // scan. Best effort: the scan of every other policy must not depend on it.
+  try {
+    const repair = await repairManagedSoftwarePolicies();
+    if (repair.failed > 0) {
+      console.error('[SoftwareComplianceWorker] Generated software policy repair failed for some links', repair);
+    }
+  } catch (error) {
+    console.error('[SoftwareComplianceWorker] Generated software policy repair sweep failed', error);
+    captureException(error);
+  }
+
   const activePolicies = await db
     .select({ id: softwarePolicies.id })
     .from(softwarePolicies)
@@ -542,6 +561,14 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   violations: number;
   remediationQueued: number;
   installRemediationQueued: number;
+  /**
+   * #6960, generated (security agents) policies only: devices with at least one
+   * rule that is not applicable to them (org not mapped, platform unsupported,
+   * …), and the (device, rule) pairs per reason. Nothing durable stores these
+   * yet; this return value and the pass log are where they are visible.
+   */
+  notApplicable?: number;
+  notApplicableByReason?: Record<string, number>;
 }> {
   const [policy] = await db
     .select()
@@ -602,12 +629,16 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   // then narrowing deviceIds to what it returned keeps them out of compliance
   // evaluation AND out of the remediation (software install/uninstall) queue.
   const orgByDevice = new Map<string, string>();
+  const osTypeByDevice = new Map<string, string>();
   for (const chunk of chunkArray(deviceIds)) {
     const rows = await db
-      .select({ id: devices.id, orgId: devices.orgId })
+      .select({ id: devices.id, orgId: devices.orgId, osType: devices.osType })
       .from(devices)
       .where(and(inArray(devices.id, chunk), eq(devices.isEphemeral, false), notParkedDeviceCondition()));
-    for (const row of rows) orgByDevice.set(row.id, row.orgId);
+    for (const row of rows) {
+      orgByDevice.set(row.id, row.orgId);
+      osTypeByDevice.set(row.id, row.osType);
+    }
   }
   deviceIds = deviceIds.filter((id) => orgByDevice.has(id));
 
@@ -623,6 +654,25 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
   const normalizedRules = normalizeSoftwarePolicyRules(policy.rules);
   const remediationOptions = readRemediationOptions(policy.remediationOptions);
+  // #6960: a policy generated from a security_agents link installs a vendor's
+  // agent with per-org keys. A (device, rule) the vendor cannot serve (org not
+  // mapped, platform unsupported, …) is NOT APPLICABLE: its `missing` violation
+  // is dropped before anything below reads it, so the device is not reported
+  // non-compliant, nothing is queued for it, and it never consumes the
+  // (policy, device) attempt budget or cooldown another vendor relies on.
+  const managedApplicability: ManagedRuleApplicability | null = policy.managedByLinkId
+    ? await loadManagedRuleApplicability(
+      { id: policy.id, managedByLinkId: policy.managedByLinkId, rules: normalizedRules },
+      deviceIds.map((deviceId) => ({
+        deviceId,
+        orgId: orgByDevice.get(deviceId)!,
+        osType: osTypeByDevice.get(deviceId) ?? '',
+      })),
+    )
+    : null;
+  const notApplicableByReason: Record<string, number> = {};
+  const notApplicableSample: Array<{ deviceId: string; reasons: string[] }> = [];
+  let notApplicableDevices = 0;
   // Contract D11: ONE arming truth, shared with softwareRemediationWorker.ts and
   // the AI compliance tool. Evaluated once per pass — the policy row cannot
   // change mid-loop, and the generation gate above already refused a job whose
@@ -666,8 +716,22 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       const existing = existingByDevice.get(deviceId);
       const inventory = inventoryByDevice.get(deviceId) ?? [];
       const evaluated = evaluateSoftwarePolicyAgainstInventory(policy, inventory);
+      let evaluatedViolations = evaluated.violations;
+      if (managedApplicability) {
+        const filtered = managedApplicability.filterViolations(deviceId, evaluatedViolations);
+        evaluatedViolations = filtered.violations;
+        if (filtered.notApplicable.length > 0) {
+          notApplicableDevices += 1;
+          if (notApplicableSample.length < 10) {
+            notApplicableSample.push({ deviceId, reasons: filtered.notApplicable.map((entry) => entry.reason) });
+          }
+          for (const entry of filtered.notApplicable) {
+            notApplicableByReason[entry.reason] = (notApplicableByReason[entry.reason] ?? 0) + 1;
+          }
+        }
+      }
       const violationsWithStableTimestamps = withStableViolationTimestamps(
-        evaluated.violations,
+        evaluatedViolations,
         existing?.violations ?? null
       );
       const status = violationsWithStableTimestamps.length > 0 ? 'violation' : 'compliant';
@@ -966,12 +1030,23 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     recordSoftwareRemediationDecision('install_scheduled', installRemediationQueued);
   }
 
+  if (managedApplicability && notApplicableDevices > 0) {
+    console.info('[SoftwareComplianceWorker] Managed security-agent rules not applicable to some devices', {
+      policyId: policy.id,
+      managedByLinkId: policy.managedByLinkId,
+      devices: notApplicableDevices,
+      byReason: notApplicableByReason,
+      sample: notApplicableSample,
+    });
+  }
+
   return {
     policyId: policy.id,
     devicesEvaluated: deviceIds.length,
     violations,
     remediationQueued,
     installRemediationQueued,
+    ...(managedApplicability ? { notApplicable: notApplicableDevices, notApplicableByReason } : {}),
   };
 }
 

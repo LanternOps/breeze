@@ -146,6 +146,34 @@ A ticket migration window lets a partner admin import ticket history from anothe
 |-------|---------|-------------|
 | `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
 
+### Integration Events
+
+Integration events report the health of an organization's own connections: an integration, a sync or an OAuth grant. A health incident opens when a connection breaks and resolves when it recovers or is retired.
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `integration.health_opened` | `incidentId`, `orgId`, `sourceKind`, `sourceId`, `condition`, `severity`, `fixHref`, `openedAt`, `resolvedAt`, `resolution` | A connection health incident opened. `resolvedAt` and `resolution` are `null` |
+| `integration.health_resolved` | `incidentId`, `orgId`, `sourceKind`, `sourceId`, `condition`, `severity`, `fixHref`, `openedAt`, `resolvedAt`, `resolution` | A connection health incident resolved |
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `incidentId` | string (uuid) | The incident. Both events for one incident carry the same value |
+| `orgId` | string (uuid) | The organization that owns the connection |
+| `sourceKind` | string | The kind of connection, for example `m365_connection`, `dns_filter` or `webhook` |
+| `sourceId` | string or `null` | The connection's id. `null` for `oauth_grant`, because that id embeds a user id |
+| `condition` | string | A fixed code for what is wrong, for example `sync_failed` or `reauth_required` |
+| `severity` | string | `permanent` (needs someone to act) or `transient` (may clear on its own) |
+| `fixHref` | string | A relative path in the Breeze web app where the connection can be repaired |
+| `openedAt` | string (ISO timestamp) | When the incident opened |
+| `resolvedAt` | string (ISO timestamp) or `null` | When the incident resolved. `null` while it is open |
+| `resolution` | string or `null` | `recovered` or `retired`. `null` while the incident is open |
+
+- **No free text.** The payload never contains provider error text or the connection's display name. Use `fixHref` and the API to look up more.
+- **Organization connections only.** Only incidents about an organization's own connections emit events. Partner-wide connections do not.
+- **Level-triggered.** Events follow the state seen at each health check, about every 15 minutes. A connection that breaks and recovers between two checks may emit nothing. A consumer can also receive an `integration.health_resolved` event for an incident it never saw open, for example an incident that existed before the feature shipped.
+- **Stable event ids.** The event id is stable for a given incident and state, so retried deliveries are deduplicated.
+- **No self-delivery.** An incident about a webhook is never delivered to that same webhook.
+
 ### Other Events
 
 | Event | Description |
@@ -542,6 +570,10 @@ All webhook routes require authentication and are scoped to `organization`, `par
 - **Managing** (create, update, delete, test, retry) requires `organizations:write`.
 
 `webhooks:read` is granted by default to Org Admin, Org Technician and Partner Technician; Partner Admin holds it through `*:*`. In the dashboard, a user without `webhooks:read` does not see the Webhooks tab under Integrations, and a user without `organizations:write` sees webhooks and their delivery history without the create, edit, delete, test, pause/resume or retry controls. See [Users & Roles](/reference/users-and-roles/#permission-model) to grant either permission to a role.
+
+<Aside type="caution" title="Upgrading to v0.122.1: some roles lose webhook visibility">
+  Before v0.122.1, `organizations:read` was enough to view webhooks. The upgrade grants `webhooks:read` to the built-in roles above and to every custom role that holds `organizations:write`, but not to viewer, billing or security-approver roles. **Partner Viewer** and **Partner Security Approver** no longer see webhooks, and a **custom role with `organizations:read` but not `organizations:write` loses access to webhooks and their delivery history until an administrator adds `webhooks:read` to it** under **Settings → Roles**. Self-hosters can find those roles in the upgrade log: the migration logs a `webhooks-read-permission:` warning with their count and up to 20 names.
+</Aside>
 
 ---
 

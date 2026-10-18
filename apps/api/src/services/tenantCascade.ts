@@ -54,9 +54,10 @@ import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { captureMessage } from './sentry';
 import {
-  EVIDENCE_HOLD_DEFERRED_ACTION,
   EVIDENCE_HOLD_LINEAGE_DEPTH_CAP,
   EVIDENCE_HOLD_RELEASED_ACTION,
+  EVIDENCE_HOLD_RETAINED_TABLES,
+  EVIDENCE_HOLD_SCOPED_ERASURE_KEY,
   deleteEvidenceHold,
   findEvidenceHold,
   listHeldLineage,
@@ -313,6 +314,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
+  // AI device file read policy: only the org override row cascades; the
+  // partner default has org_id NULL and never participates.
+  'ai_data_policies',
   // ai_invocations (AI model registry W02, #7600): shape 1, APPEND-ONLY
   // (REVOKE UPDATE/DELETE from breeze_app + ai_invocations_append_only), so it
   // is ALSO in AUDIT_ADMIN_REQUIRED_TABLES. Leaf: FK out to organizations only,
@@ -324,6 +328,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // (cascade + a deferrable composite), partner_ai_models (partner axis, not in
   // this list), partners. Nothing references it.
   'ai_model_assignments',
+  // AI model registry W08b (#7606): snapshot of the dropped legacy AI model
+  // config. Partner axis (shape 3) like legacy_labour_pricing_archive; org_id
+  // is metadata on org-level rows. Its composite (org_id, partner_id) FK to
+  // organizations is also ON DELETE CASCADE (W08 D12: the previous release's
+  // cascade list does not know the table, so a rollback must not abort an
+  // erasure on it). Nothing references it.
+  'ai_model_registry_legacy_archive',
   // AI Operator thin slice (#5205 W03, #5208). All three are Shape 1 with a
   // NOT NULL org_id, so all three are required here.
   //   - ai_operator_operations references action_intents and ai_agent_runs,
@@ -492,6 +503,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'config_policy_onedrive_libraries',
   'config_policy_onedrive_settings',
   'configuration_policies',
+  'connection_health_incidents',
   // NB: 'contact_external_links' sorts BEFORE 'contacts' — localeCompare puts
   // the '_' in 'contact_' ahead of the 's' in 'contacts' (the same
   // prefix-extension trap noted below for custom_field_definitions).
@@ -624,6 +636,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'edr_tenants',
   'elevation_audit',
   'elevation_requests',
+  // Endpoint live chat (#8743 W03). messages -> conversations (conversation_id,
+  // org_id) FK is ON DELETE CASCADE; both also cascade from devices.
+  'endpoint_conversation_messages',
+  'endpoint_conversations',
+  // Endpoint messaging (#8742 W02). receipts -> deliveries -> endpoint_messages
+  // FKs are all ON DELETE CASCADE; topologicalCascadeOrder() orders the live
+  // FK graph regardless of position.
+  'endpoint_message_deliveries',
+  'endpoint_message_receipts',
+  'endpoint_messages',
   'enrollment_keys',
   'escalation_policies',
   'event_delivery_receipts',
@@ -712,7 +734,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'metric_anomaly_incidents',
   'metric_rollups',
   'metric_rollups_default',
-  // migration_window_orgs (#8313, 2026-12-23-110000): partner-axis, but its
+  // migration_window_orgs (#8313, 2026-12-25-120000): partner-axis, but its
   // org_id names an org a migration window may import into, so erasing the
   // org drops it from every window. It references organizations (deleted
   // last) and migration_windows (a partner table, not in this list).
@@ -873,6 +895,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sensitive_data_scans',
   // service_deliverable_* : evidence -> occurrences -> deliverables (children first);
   // localeCompare puts '_e' < '_o' < 's', so alphabetical order IS FK order here.
+  'service_catalog_items',
+  'service_catalogs',
   'service_deliverable_evidence',
   'service_deliverable_occurrences',
   'service_deliverables',
@@ -1047,6 +1071,17 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'topology_site_template_bindings',
   'topology_telemetry_arms',
   'topology_view_exclusions',
+  // trust_page_* : children -> trust_pages (children first); access_tokens -> access_requests.
+  // localeCompare puts '_' before 's', so alphabetical order IS FK order here (and the
+  // runtime topological sort handles FK direction regardless).
+  'trust_page_access_requests',
+  'trust_page_access_tokens',
+  'trust_page_declarations',
+  'trust_page_documents',
+  'trust_page_faq_items',
+  'trust_page_snapshots',
+  'trust_page_subprocessors',
+  'trust_pages',
   'tunnel_allowlists',
   'tunnel_sessions',
   'unifi_clients',
@@ -1506,6 +1541,18 @@ export interface CascadeStats {
    * 1a-ter, detachSharedIdentitiesFromOrg). Not counted in `totalRowsDeleted`.
    */
   usersDetached: number;
+  /**
+   * Set only when the org is a merged-away shell under an evidence hold
+   * (PAM ownership epochs, #8746): everything was erased except its
+   * `organizations` row and EVIDENCE_HOLD_RETAINED_TABLES, and the held shells
+   * it is itself the survivor of were left alone.
+   *
+   * Retained rows can still be touched by ON DELETE SET NULL FKs when the walk
+   * deletes a parent the shell owns (users, approval requests, ...). A real
+   * Phase B repoints those parents to the survivor, so a held shell normally
+   * owns none; if one does, the pointer is nulled like any erased reference.
+   */
+  evidenceHoldScoped?: true;
 }
 
 /**
@@ -1593,7 +1640,7 @@ async function detachSharedIdentitiesFromOrg(orgId: string): Promise<string[]> {
   return detachedIds;
 }
 
-export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE' | 'EVIDENCE_HOLD_ACTIVE';
+export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE';
 
 /**
  * Thrown by `cascadeDeleteOrg` when the erasure is refused before any row is
@@ -1611,11 +1658,6 @@ export class TenantCascadeRefusalError extends Error {
     this.name = 'TenantCascadeRefusalError';
   }
 }
-
-export const EVIDENCE_HOLD_ACTIVE_MESSAGE =
-  'This organization was merged into another and still holds privileged-access evidence, so it is kept '
-  + 'under an evidence hold. It is erased together with the organization it was merged into, or once '
-  + 'audit retention has removed that evidence.';
 
 export const LEGAL_HOLD_ACTIVE_MESSAGE =
   'This organization\'s backups are under legal hold (on a backup snapshot, a backup policy or a '
@@ -1767,6 +1809,14 @@ export async function hasActiveBackupLegalHold(orgId: string): Promise<boolean> 
  * active legal hold. The operator must release the hold(s) first; the refusal
  * itself is audited so there's a forensic record of the attempt.
  *
+ * A merged-away shell under an evidence hold (org_evidence_holds, PAM
+ * ownership epochs) is erased SCOPED (#8746): every row is erased except its
+ * `organizations` row and the PAM evidence the hold retains
+ * (EVIDENCE_HOLD_RETAINED_TABLES); the shell's own held lineage is left
+ * alone; on completion `settings.<EVIDENCE_HOLD_SCOPED_ERASURE_KEY>` is
+ * stamped. The rest goes when the hold is released (survivor erasure, or
+ * retention emptying the chain, after which the shell erases in full).
+ *
  * Idempotent: re-running on an already-erased org matches zero rows.
  */
 export async function cascadeDeleteOrg(
@@ -1780,9 +1830,10 @@ export async function cascadeDeleteOrg(
 
 /**
  * Module-private so no caller outside the erasure path can pass
- * `releasingEvidenceHold`: the only way to erase a held shell is to erase the
- * survivor that holds it (or to let retention empty its chain, after which
- * the sweeper deletes the hold and the shell erases like any other).
+ * `releasingEvidenceHold`, i.e. request a FULL erasure of a held shell. That
+ * happens only by erasing the survivor that holds it, or once retention has
+ * emptied its chain and the sweeper has deleted the hold (after which the
+ * shell erases like any other). Any direct call erases a held shell scoped.
  */
 async function cascadeDeleteOrgInternal(
   orgId: string,
@@ -1791,38 +1842,20 @@ async function cascadeDeleteOrgInternal(
   opts: { erasureJobId?: string | null },
   evidence: { releasingEvidenceHold: boolean; depth: number },
 ): Promise<CascadeStats> {
-  // PAM ownership epochs W5 (#8207), spec §7.1: a merged-away shell under an
-  // evidence hold is never erased directly — not by the merge job's Phase C,
-  // the offboarding sweeper, an archive purge, or an operator erasure. This
-  // is the one gate all of them pass through.
-  if (!evidence.releasingEvidenceHold) {
-    const hold = await dbModule.withSystemDbAccessContext(() => findEvidenceHold(orgId));
-    if (hold) {
-      await createAuditLog({
-        orgId: null,
-        actorType: 'user',
-        actorId: performedBy,
-        actorEmail: performedByEmail,
-        action: EVIDENCE_HOLD_DEFERRED_ACTION,
-        resourceType: 'organization',
-        resourceId: orgId,
-        details: {
-          stage: 'erasure_entry',
-          reason: 'EVIDENCE_HOLD_ACTIVE',
-          survivorOrgId: hold.survivorOrgId,
-          mergeEventId: hold.mergeEventId,
-          holdReason: hold.reason,
-        },
-        result: 'failure',
-        errorMessage: EVIDENCE_HOLD_ACTIVE_MESSAGE,
-      });
-      captureMessage(
-        `[tenantCascade] erasure refused for org=${orgId}: evidence hold for survivor ${hold.survivorOrgId}`,
-        { eventCode: 'tenant_erasure_deferred_evidence_hold', level: 'warning', tags: { stage: 'entry' } },
-      );
-      throw new TenantCascadeRefusalError('EVIDENCE_HOLD_ACTIVE', EVIDENCE_HOLD_ACTIVE_MESSAGE);
-    }
-  }
+  // PAM ownership epochs (W5 #8207, spec §7.1; scoped by W6-pre #8746): a
+  // merged-away shell under an evidence hold keeps its PAM evidence and its
+  // organizations row, and ONLY those — every other row it owns (audit logs,
+  // AI operator rows, consents, ...) is erased like any org's. This is the one
+  // gate every erasure path (merge Phase C, the offboarding sweeper, an
+  // archive purge, an operator erasure) passes through. Erasing the SURVIVOR
+  // is what releases the hold and erases the shell in full (below, with
+  // releasingEvidenceHold = true).
+  const scopedHold = evidence.releasingEvidenceHold
+    ? null
+    : await dbModule.withSystemDbAccessContext(() => findEvidenceHold(orgId));
+  const retainedTables: ReadonlySet<string> = scopedHold
+    ? new Set<string>([...EVIDENCE_HOLD_RETAINED_TABLES, 'organizations'])
+    : new Set<string>();
 
   const holdSource: BackupLegalHoldSource | null = await findActiveBackupLegalHold(orgId);
   if (holdSource) {
@@ -1859,7 +1892,17 @@ async function cascadeDeleteOrgInternal(
     totalRowsDeleted: 0,
     foreignTopologyAlertsDeleted: 0,
     usersDetached: 0,
+    ...(scopedHold ? { evidenceHoldScoped: true as const } : {}),
   };
+  const scopedDetails = scopedHold
+    ? {
+      evidenceHoldScoped: true,
+      retainedTables: [...retainedTables],
+      survivorOrgId: scopedHold.survivorOrgId,
+      mergeEventId: scopedHold.mergeEventId,
+      holdReason: scopedHold.reason,
+    }
+    : {};
 
   // Survivor erasure releases its evidence holds (spec §7.2): each held
   // shell is erased FIRST (recursively — a held shell may itself hold an
@@ -1871,7 +1914,12 @@ async function cascadeDeleteOrgInternal(
   // Before anything is erased, the whole held lineage is checked for backup
   // legal holds: a hold on any shell refuses the survivor's erasure up front,
   // so it never erases one shell and then stops at the next.
-  if (evidence.depth === 0) {
+  //
+  // A held shell's own (scoped) erasure skips both steps: it is not releasing
+  // anything, and erasing the shells it is the survivor of would destroy the
+  // very evidence its own hold exists to keep (A -> B -> C: B's erasure must
+  // leave A alone).
+  if (evidence.depth === 0 && !scopedHold) {
     const lineage = await dbModule.withSystemDbAccessContext(() => listHeldLineage(orgId));
     for (const shellOrgId of lineage) {
       const shellHold = await findActiveBackupLegalHold(shellOrgId);
@@ -1896,7 +1944,9 @@ async function cascadeDeleteOrgInternal(
     }
   }
 
-  const heldShells = await dbModule.withSystemDbAccessContext(() => listHoldsBySurvivor(orgId));
+  const heldShells = scopedHold
+    ? []
+    : await dbModule.withSystemDbAccessContext(() => listHoldsBySurvivor(orgId));
   for (const held of heldShells) {
     if (evidence.depth >= EVIDENCE_HOLD_LINEAGE_DEPTH_CAP) {
       throw new Error(
@@ -1952,7 +2002,7 @@ async function cascadeDeleteOrgInternal(
     action: 'tenant.erasure.started',
     resourceType: 'organization',
     resourceId: orgId,
-    details: { startedAt },
+    details: { startedAt, ...scopedDetails },
     result: 'success',
   });
 
@@ -2219,6 +2269,8 @@ async function cascadeDeleteOrgInternal(
   //    system-context transaction so a failure on one table aborts
   //    cleanly without poisoning the next statement.
   for (const table of order) {
+    // Held shell: the evidence the hold retains, and the shell's own row.
+    if (retainedTables.has(table)) continue;
     try {
       const count = table === 'software_catalog'
         ? await deleteSoftwareCatalogsAndObjects({ orgId }).then((deleted) => {
@@ -2312,6 +2364,27 @@ async function cascadeDeleteOrgInternal(
     }
   }
 
+  // A held shell's scoped erasure is complete: stamp it, so the offboarding
+  // sweeper's merge-erasure retry stops handing the shell back to erasure.
+  // Stamped only after the walk succeeded — a failed walk leaves no stamp and
+  // the retry re-runs it (the walk is idempotent).
+  if (scopedHold) {
+    try {
+      await dbModule.withSystemDbAccessContext(() => dbModule.db.execute(sql`
+        UPDATE organizations
+           SET settings = COALESCE(settings, '{}'::jsonb)
+                 || jsonb_build_object(${EVIDENCE_HOLD_SCOPED_ERASURE_KEY}::text, now())
+         WHERE id = ${orgId}::uuid`));
+    } catch (err) {
+      await writeErasureFailedAudit(orgId, performedBy, performedByEmail, 'organizations (evidence-hold stamp)', stats, err);
+      throw new Error(
+        `[tenantCascade] stamping the scoped evidence-hold erasure failed for org=${orgId}; the erasure is rerunnable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   stats.durationMs = Date.now() - startedAtMs;
 
   // Write a completion audit event capturing per-table row counts.
@@ -2332,6 +2405,7 @@ async function cascadeDeleteOrgInternal(
         ? { foreignTopologyAlertsDeleted: stats.foreignTopologyAlertsDeleted }
         : {}),
       ...(stats.usersDetached > 0 ? { usersDetached: stats.usersDetached } : {}),
+      ...scopedDetails,
     },
     result: 'success',
   });
@@ -2499,9 +2573,10 @@ export async function cascadeDeletePartner(
 
   // Lookup child orgs under system context — organizations has partner-axis RLS;
   // bare breeze_app would silently return 0 rows.
-  // Held shells (org_evidence_holds) are skipped: each is erased by its
-  // survivor's cascadeDeleteOrg, which releases the hold first. Erasing one
-  // directly would be refused. Holds are partner-pinned, so the lineage's
+  // Held shells (org_evidence_holds) are skipped: each is erased in full by
+  // its survivor's cascadeDeleteOrg, which releases the hold first. Erasing
+  // one directly would only be scoped (it keeps the PAM evidence and the
+  // organizations row) and release nothing. Holds are partner-pinned, so the lineage's
   // root survivor (a live org) is always in this same list, and its cascade
   // reaches every shell behind it, transitively held ones included.
   const orgRows = (await dbModule.withSystemDbAccessContext(() =>

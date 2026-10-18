@@ -71,6 +71,7 @@ import { DeferredCacheFills } from '../../services/hotPathCache';
 import {
   buildSettingsDecisionFields,
   retainStateKillSwitchEnabled,
+  agentEchEnabled,
   type RemoteManagementDecision,
 } from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
@@ -96,7 +97,12 @@ import {
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
-import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
+import {
+  recordAgentHeartbeat,
+  recordAgentHeartbeatEch,
+  recordAgentFilterSignatureReport,
+  resolveResponseStatus,
+} from '../metrics';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
@@ -284,7 +290,11 @@ export function resetWatchdogRestartLogCacheForTests(): void {
 const IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS = 10 * 60 * 1000;
 let identitySyncNoSigningKeyWarned = false;
 let identityAssertionFailureReportedAt = 0;
-let identityDeviceMismatchReportedAt = 0;
+// #8623 — device-id mismatches are rate-limited per device, not fleet-wide:
+// one noisy agent must not hide another's copied agent.yaml. In-memory per API
+// instance like watchdogRestartLogCache, and bounded the same way.
+const IDENTITY_DEVICE_MISMATCH_LOG_CACHE_MAX = 10_000;
+const identityDeviceMismatchReportedAt = new Map<string, number>();
 
 function warnIdentitySyncWithoutSigningKey(): void {
   if (identitySyncNoSigningKeyWarned) return;
@@ -304,14 +314,47 @@ function reportIdentityAssertionFailure(agentId: string, err: unknown): void {
   captureException(err);
 }
 
+/**
+ * #8623 — whether a device-id mismatch on this device may be logged now, and
+ * if so records that it was. Keyed by the row the credential belongs to (the
+ * authenticated device), not by the reported id, which the agent chooses.
+ *
+ * Bounded: the map is kept in the order devices were last logged, so a full
+ * map first drops the entries older than the interval (they no longer hold
+ * anything back) and, if every entry is recent, the one logged longest ago.
+ * Either way the cost of being full is an extra warning, never a hidden one.
+ * Exported for unit tests.
+ */
+export function claimIdentityDeviceMismatchWarning(rowDeviceId: string, nowMs: number): boolean {
+  const last = identityDeviceMismatchReportedAt.get(rowDeviceId);
+  // An entry from the future (the clock stepped back) counts as stale, so a
+  // clock step cannot mute a device until the clock catches up.
+  if (
+    last !== undefined
+    && last <= nowMs
+    && nowMs - last < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS
+  ) return false;
+  identityDeviceMismatchReportedAt.delete(rowDeviceId);
+  if (identityDeviceMismatchReportedAt.size >= IDENTITY_DEVICE_MISMATCH_LOG_CACHE_MAX) {
+    for (const [deviceId, loggedAt] of identityDeviceMismatchReportedAt) {
+      if (loggedAt <= nowMs && nowMs - loggedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) break;
+      identityDeviceMismatchReportedAt.delete(deviceId);
+    }
+    if (identityDeviceMismatchReportedAt.size >= IDENTITY_DEVICE_MISMATCH_LOG_CACHE_MAX) {
+      const oldest = identityDeviceMismatchReportedAt.keys().next().value;
+      if (oldest !== undefined) identityDeviceMismatchReportedAt.delete(oldest);
+    }
+  }
+  identityDeviceMismatchReportedAt.set(rowDeviceId, nowMs);
+  return true;
+}
+
 // #8382 — the agent reported a device id other than the row its credential
 // belongs to. Never synced (a device id does not change through this path),
 // but not silent either: it can mean an agent.yaml copied from another device.
-// Rate-limited like the signing failures above.
+// Rate-limited per device (#8623).
 function warnIdentityDeviceMismatch(agentId: string, reportedDeviceId: string, rowDeviceId: string): void {
-  const now = Date.now();
-  if (now - identityDeviceMismatchReportedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) return;
-  identityDeviceMismatchReportedAt = now;
+  if (!claimIdentityDeviceMismatchWarning(rowDeviceId, Date.now())) return;
   console.warn(
     '[heartbeat] Agent reported a device id that is not the device its credential belongs to; no identity '
     + 'assertion is sent. A copied agent.yaml can cause this (#8382).',
@@ -322,7 +365,11 @@ function warnIdentityDeviceMismatch(agentId: string, reportedDeviceId: string, r
 export function resetIdentitySyncLogStateForTests(): void {
   identitySyncNoSigningKeyWarned = false;
   identityAssertionFailureReportedAt = 0;
-  identityDeviceMismatchReportedAt = 0;
+  identityDeviceMismatchReportedAt.clear();
+}
+
+export function identityDeviceMismatchLogSizeForTests(): number {
+  return identityDeviceMismatchReportedAt.size;
 }
 
 export function watchdogRestartLogCacheSizeForTests(): number {
@@ -1060,6 +1107,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
       data.securityCapabilities?.pamLifetimeProtocolVersion,
     ),
+    pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
     // Revocation-lease capability, same non-sticky contract: rewritten every
     // beat so an agent DOWNGRADE stops the dispatch gate trusting a stale claim
     // and desktop sessions are refused again until the agent is back.
@@ -1148,6 +1196,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.updateAttemptLastAt = null;
     deviceUpdates.updateAttemptCount = null;
   }
+
+  // #8869 — ECH telemetry: counters only (no persistence). Absent = not counted.
+  if (data.echActive !== undefined) recordAgentHeartbeatEch(data.echActive);
+  if (data.filterSignatureSeenAt !== undefined) recordAgentFilterSignatureReport();
 
   // #6925 — persist the agent's Breeze Assist install problem ("enabled but
   // not installed, no server offer", or an abandoned install) so it shows on
@@ -1870,6 +1922,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
         data.securityCapabilities?.pamLifetimeProtocolVersion,
       ),
+      pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
     },
   );
 
@@ -2119,6 +2172,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     backup_server_url: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim(),
   };
 
+  // #8869 — ECH kill switch, ALWAYS sent as true/false (an absent key means
+  // "no change" on the agent, so the explicit value is the only lever).
+  // Takes effect on the agent's next connection; never tears down live
+  // connections.
+  mergedConfigUpdate.ech_enabled = agentEchEnabled();
+
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //
   // An earlier revision omitted the key when unset/false, mirroring
@@ -2176,8 +2235,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // #8053: the heartbeat's own (longer) max age — the default 30 s is
     // shorter than the 60 s beat, so it never hit and every beat re-ran the
     // full effective-config resolution inside this org transaction.
+    // #8997: `savepoint` confines a failed policy read (e.g. a permission
+    // error) to a savepoint taken only on a cache miss. Otherwise the failure
+    // aborts the org transaction: this catch "recovers" but the commit
+    // re-throws and the whole heartbeat 500s. Cache hits add no statement.
     const remoteAccess = await resolveRemoteAccessForDevice(device.id, {
       maxAgeMs: HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS,
+      savepoint: true,
     });
     remoteManagement = { resolved: remoteAccess.resolved, value: remoteAccess.settings.vncRelay === true };
   } catch (err) {
@@ -2575,6 +2639,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         ? { orgId: beatHierarchy.orgId, partnerId: beatHierarchy.org.partnerId }
         : undefined;
       const probePartnerOpts = beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined;
+      // #8257: the device-keyed Redis policy caches are bound to the device's
+      // org. With a hierarchy it supplies the org (already checked equal to
+      // scoped.deviceOrgId above); without one this names it. No statement.
+      const cachedPolicyOpts = { ...policyOpts, orgId: scoped.deviceOrgId };
 
       // Helper. Redis first (no statement on a hit). With the set the helper
       // resolves in memory and only the legacy org flag can read (its own
@@ -2583,7 +2651,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // helperEnabled:false to a legacy beat (a retain-state beat retains it),
       // so its SQL error must not abort the context.
       try {
-        const cachedHelper = await readCachedHelperSettings(scoped.deviceId);
+        const cachedHelper = await readCachedHelperSettings(scoped.deviceId, scoped.deviceOrgId);
         if (cachedHelper) {
           helperSettings = cachedHelper;
         } else {
@@ -2623,14 +2691,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
       // Sentry on every feature: losing a policy silently is exactly #2930.
       try {
-        policyConfigs.eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, policyOpts);
+        policyConfigs.eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, cachedPolicyOpts);
       } catch (err) {
         console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        policyConfigs.hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, policyOpts);
+        policyConfigs.hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, cachedPolicyOpts);
       } catch (err) {
         console.error(`[agents] failed to build hardware monitoring config update for ${agentId}:`, err);
         captureException(err);
@@ -2638,7 +2706,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
       try {
         policyConfigs.pamSettings = await buildPamConfigUpdate(scoped.deviceId, {
-          ...policyOpts,
+          ...cachedPolicyOpts,
           // #8616: see the helper read above.
           skipCacheWrite: hierarchyOutcome !== 'loaded',
           loadOrgPamFallback: (orgId) =>
@@ -2700,7 +2768,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // "no policy applies" arrives as { watches: [] } and must be sent (#2949).
       // With the set, a device with no monitors link costs no statement.
       try {
-        policyConfigs.monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, policyOpts) as Record<string, unknown> | null;
+        policyConfigs.monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, cachedPolicyOpts) as Record<string, unknown> | null;
       } catch (err) {
         console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
         captureException(err);

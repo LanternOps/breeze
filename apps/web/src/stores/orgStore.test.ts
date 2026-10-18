@@ -6,7 +6,7 @@ vi.mock('./auth', () => ({
 }));
 
 import { fetchWithAuth } from './auth';
-import { getCurrentOrganization, useOrgStore } from './orgStore';
+import { getCurrentOrganization, MAX_RECENT_ORGS, useOrgStore } from './orgStore';
 import type { ServiceManagementMode } from './orgStore';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -38,7 +38,8 @@ describe('org store', () => {
       sites: [],
       isLoading: false,
       error: null,
-      serviceManagementMode: 'native'
+      serviceManagementMode: 'native',
+      recentOrgIds: []
     });
   });
 
@@ -388,6 +389,54 @@ describe('org store', () => {
       );
       useOrgStore.persist.rehydrate();
       expect(useOrgStore.getState().serviceManagementMode).toBe('off');
+    });
+  });
+
+  describe('recentOrgIds (UI flow W02)', () => {
+    it('recordRecentOrg keeps newest first, de-duplicates and caps at MAX_RECENT_ORGS', () => {
+      expect(MAX_RECENT_ORGS).toBe(3);
+      const { recordRecentOrg } = useOrgStore.getState();
+      for (const id of ['a', 'b', 'c', 'd']) recordRecentOrg(id);
+      expect(useOrgStore.getState().recentOrgIds).toEqual(['d', 'c', 'b']);
+      recordRecentOrg('c');
+      expect(useOrgStore.getState().recentOrgIds).toEqual(['c', 'd', 'b']);
+    });
+
+    it('recentOrgIds persist under breeze-org', () => {
+      useOrgStore.getState().recordRecentOrg('a');
+      expect(JSON.parse(localStorage.getItem('breeze-org')!).state.recentOrgIds).toEqual(['a']);
+    });
+
+    it('rehydrate merge sanitises a tampered recentOrgIds', () => {
+      localStorage.setItem('breeze-org', JSON.stringify({ state: { recentOrgIds: 'nope' }, version: 0 }));
+      useOrgStore.persist.rehydrate();
+      expect(useOrgStore.getState().recentOrgIds).toEqual([]);
+
+      localStorage.setItem(
+        'breeze-org',
+        JSON.stringify({ state: { recentOrgIds: ['a', 7, 'b', 'c', 'd'] }, version: 0 })
+      );
+      useOrgStore.persist.rehydrate();
+      expect(useOrgStore.getState().recentOrgIds).toEqual(['a', 'b', 'c']);
+
+      // Duplicates and empty ids would render duplicate keys / blank rows.
+      localStorage.setItem(
+        'breeze-org',
+        JSON.stringify({ state: { recentOrgIds: ['a', 'a', '', 'b'] }, version: 0 })
+      );
+      useOrgStore.persist.rehydrate();
+      expect(useOrgStore.getState().recentOrgIds).toEqual(['a', 'b']);
+    });
+
+    it('clearOrgContext and setPartner reset recentOrgIds', () => {
+      useOrgStore.getState().recordRecentOrg('a');
+      useOrgStore.getState().clearOrgContext();
+      expect(useOrgStore.getState().recentOrgIds).toEqual([]);
+
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ data: [] }));
+      useOrgStore.getState().recordRecentOrg('a');
+      useOrgStore.getState().setPartner('partner-2');
+      expect(useOrgStore.getState().recentOrgIds).toEqual([]);
     });
   });
 });

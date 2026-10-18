@@ -17,7 +17,7 @@ export type MigrationWindowSummary = {
 /**
  * Ticket migration windows (#8313; spec
  * docs/superpowers/specs/api-platform/2026-10-10-ticket-migration-windows-design.md
- * §3; migration 2026-12-23-110000). A window grants ONE keyless partner
+ * §3; migration 2026-12-25-120000). A window grants ONE keyless partner
  * service principal import mode, for one time box, on the organizations in
  * migration_window_orgs. Partner-axis (shape 3): RLS is
  * `system OR breeze_has_partner_access(partner_id)`, registered in

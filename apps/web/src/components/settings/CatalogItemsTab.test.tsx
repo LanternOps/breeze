@@ -42,7 +42,7 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
 // cell still reading the mirror fails loudly.
 const PARTNER_CURRENCY = 'EUR';
 const baseItem = {
-  partnerId: 'p1', description: null, billingType: 'one_time' as const,
+  partnerId: 'p1', description: null, billingType: 'one_time' as const, billingFrequency: null, commitmentTermMonths: null,
   markupPercent: null, unitOfMeasure: 'each', taxable: true, taxCategory: null,
   isActive: true, createdAt: '2026-01-01', updatedAt: '2026-01-01', costCurrency: 'EUR',
 };

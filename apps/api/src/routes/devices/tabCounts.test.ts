@@ -127,7 +127,7 @@ describe('GET /devices/:id/tab-counts', () => {
 
     const res = await app.request(`/devices/${device.id}/tab-counts`);
     expect((await res.json()).data.monitoring).toBe(1);
-    expect(resolveMonitoringConfigForDisplay).toHaveBeenCalledWith(device.id);
+    expect(resolveMonitoringConfigForDisplay).toHaveBeenCalledWith(device.id, device.orgId);
   });
 
   it('counts OPEN anomaly episodes, not raw metric_anomalies rows (#6650)', async () => {

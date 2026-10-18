@@ -175,7 +175,8 @@
     "securityScans": "IOC Scans",
     "devicesTime": "Time synchronization",
     "adminAiModels": "AI Models",
-    "billingAutopay": "Automatic payments"
+    "billingAutopay": "Automatic payments",
+    "endpointMessages": "Endpoint Messages"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",
@@ -183,6 +184,10 @@
   },
   "authShell": {
     "tagline": "The modern RMM platform built for speed, clarity, and scale."
+  },
+  "authFooter": {
+    "reportAbuse": "Report abuse",
+    "security": "Security"
   },
   "errorPage": {
     "notFoundBody": "The page you’re looking for doesn’t exist or may have been moved.",

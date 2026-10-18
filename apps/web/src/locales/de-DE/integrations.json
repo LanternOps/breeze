@@ -201,6 +201,34 @@
       "revoke": "Um den Zugriff später zu widerrufen, trennen Sie die Verbindung hier oder entfernen Sie die Breeze-Unternehmensanwendung in Microsoft Entra.",
       "continue": "Weiter zu Microsoft",
       "defaultTarget": "den Microsoft 365-Mandanten dieser Organisation"
+    },
+    "v2": {
+      "title": "Erneute Zustimmung für die Identitätsaktionen erforderlich",
+      "intro": "Dieser Mandant hat einem älteren Berechtigungssatz zugestimmt. Eine erneute Zustimmung behält alles bei, was heute funktioniert, und ergänzt die unten aufgeführten Berechtigungen. Für den Kunden ändert sich nichts, bis ein Administrator die neue Zustimmung erteilt.",
+      "keepsWorking": "Benutzer deaktivieren und Kennwort zurücksetzen funktionieren weiterhin mit der aktuellen Zustimmung.",
+      "upgradeAction": "Neue Berechtigungen prüfen und genehmigen",
+      "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden.",
+      "revokedGrant": "Microsoft 365 zeigt eine Berechtigung nicht mehr an, die diese Verbindung bereits hatte: {{grants}}. Testen Sie erneut und stimmen Sie erneut zu, falls sie weiterhin fehlt.",
+      "purpose": {
+        "userReadWrite": "Benutzerkonten lesen und ändern – zum Sperren der Anmeldung, Ändern von Lizenzen und Anlegen neuer Benutzer.",
+        "userPasswordProfile": "Kennwort eines Benutzers setzen – zum Ausstellen eines temporären Kennworts bei einer Zurücksetzung oder einem neuen Konto.",
+        "userRevokeSessions": "Einen Benutzer von allen Sitzungen abmelden – zum Widerrufen von Anmeldesitzungen, wenn ein Konto kompromittiert ist oder ein Mitarbeiter ausscheidet.",
+        "groupMember": "Gruppen lesen und deren Mitglieder ändern – zum Hinzufügen und Entfernen von Gruppenmitgliedschaften. Gruppen können damit weder erstellt noch gelöscht werden.",
+        "intunePrivileged": "Ein Intune-verwaltetes Gerät außer Betrieb nehmen – entfernt Firmendaten und hebt die Registrierung auf. Breeze führt niemals eine vollständige Löschung durch.",
+        "mailboxSettings": "Postfacheinstellungen lesen und setzen – zum Ein- und Ausschalten der automatischen Antwort und zur Bestätigung der Wirkung.",
+        "organizationRead": "Das Abonnementinventar des Mandanten lesen – zur Prüfung freier Lizenzplätze vor der Zuweisung.",
+        "unknown": "Wird von einer Aktion für Microsoft 365 in Breeze verwendet."
+      }
+    },
+    "staleManifest": {
+      "title": "Organisationen, die eine erneute Zustimmung für Microsoft 365 brauchen",
+      "description": "Diese Kunden verwenden noch einen älteren Berechtigungssatz. Öffnen Sie die Organisation, um die erneute Zustimmung zu starten.",
+      "empty": "Keine Organisation braucht eine erneute Zustimmung.",
+      "columnOrganization": "Organisation",
+      "columnTenant": "Mandant",
+      "columnVersion": "Berechtigungssatz",
+      "columnLastVerified": "Zuletzt geprüft",
+      "loadFailed": "Die Liste für die erneute Zustimmung konnte nicht geladen werden."
     }
   },
   "m365ConfirmTenant": {
@@ -295,30 +323,63 @@
     "saving": "Speichern...",
     "saveSettings": "Einstellungen speichern"
   },
-  "connectorStatusPanel": {
-    "healthy": "Gesund",
-    "degraded": "Degradiert",
-    "paused": "Angehalten",
-    "connectorStatus": "Connector-Status",
-    "trackIntegrationHealthAndRecentActivityAtA": "Verfolgen Sie den Integrationszustand und die letzten Aktivitäten auf einen Blick.",
-    "refreshAll": "Alles aktualisieren",
-    "integration": "Integration",
-    "health": "Zustand",
-    "lastActivity": "Letzte Aktivität",
-    "errors": "Fehler",
-    "syncNow": "Jetzt synchronisieren",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Überwachung",
-      "webhooks": "Webhooks",
-      "backup": "Sicherung"
+  "connectionHealthPanel": {
+    "title": "Verbindungsstatus",
+    "allHealthy": "Alle Verbindungen sind in Ordnung",
+    "loadError": "Der Verbindungsstatus konnte nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "since": "seit {{time}}",
+    "fix": "Beheben",
+    "truncated": "Die ersten {{count}} werden angezeigt",
+    "recentlyResolved": "Kürzlich behoben ({{count}})",
+    "resolution": {
+      "recovered": "Wiederhergestellt",
+      "retired": "Stillgelegt"
     },
-    "activity": {
-      "threeMinutesAgo": "Vor 3m",
-      "elevenMinutesAgo": "Vor 11m",
-      "fiveMinutesAgo": "Vor 5m",
-      "oneDayAgo": "Vor 1 Tag"
+    "condition": {
+      "sync_failed": "Synchronisierung fehlgeschlagen",
+      "reauth_required": "Erneute Autorisierung erforderlich",
+      "disconnected": "Getrennt",
+      "error": "Fehler",
+      "mailbox_error": "Postfachfehler",
+      "poll_failing": "Abfrage schlägt fehl",
+      "needs_consent": "Zustimmung erforderlich",
+      "degraded": "Eingeschränkt",
+      "suspended": "Ausgesetzt",
+      "grant_missing": "Berechtigung fehlt",
+      "grant_unexpected": "Unerwartete Berechtigung",
+      "manifest_stale": "Manifest veraltet",
+      "application_token_invalid": "Anwendungstoken ungültig",
+      "tenant_mismatch": "Mandant stimmt nicht überein",
+      "grant_reconciliation_unavailable": "Berechtigungsprüfung nicht verfügbar",
+      "grant_revoked_reuse": "Berechtigung widerrufen (Token-Wiederverwendung)",
+      "grant_revoked": "Berechtigung widerrufen",
+      "delivery_failed": "Zustellungen schlagen fehl",
+      "sync_stale": "Synchronisierung steht still",
+      "verification_failed": "Überprüfung fehlgeschlagen",
+      "unknown": "Erfordert Aufmerksamkeit"
     }
+  },
+  "connectionHealthSettings": {
+    "title": "Integritätsbenachrichtigungen",
+    "description": "Mitarbeitende des MSP, die eine fehlerhafte Verbindung reparieren können, erhalten immer deren In-App-Hinweis und die tägliche Zusammenfassung. Legen Sie fest, ob auch Administratoren der Kundenorganisationen von den Verbindungen ihrer eigenen Organisation erfahren.",
+    "partnerLabel": "Kundenadministratoren standardmäßig benachrichtigen",
+    "partnerDescription": "Gilt für jede Organisation ohne eigene Einstellung. Partnerweite Verbindungen erreichen Kundenadministratoren nie.",
+    "partnerReadOnly": "Nur Partneradministratoren mit Zugriff auf alle Organisationen können den Standard ändern.",
+    "orgLabel": "Diese Organisation",
+    "orgDescription": "Überschreibt den Standard für die oben ausgewählte Organisation.",
+    "selectOrg": "Wählen Sie eine Organisation aus, um den Standard für sie zu überschreiben.",
+    "inherit": "Übernehmen",
+    "inheritOn": "Übernehmen (ein, von {{from}})",
+    "inheritOff": "Übernehmen (aus, von {{from}})",
+    "fromPartner": "der Partnereinstellung",
+    "fromDefault": "dem integrierten Standard",
+    "on": "Ein",
+    "off": "Aus",
+    "loadFailed": "Die Einstellungen für Integritätsbenachrichtigungen konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "saved": "Einstellung für Integritätsbenachrichtigungen gespeichert",
+    "saveFailed": "Die Einstellung für Integritätsbenachrichtigungen konnte nicht gespeichert werden"
   },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Verbindung überprüft und gespeichert.",
@@ -1305,7 +1366,8 @@
     "accessUrlHintPath": "Die API-Adresse des Anbieters für Ihr Konto, einschließlich des Pfads {{path}}.",
     "detectionIntervalLabel": "Synchronisierungsintervall für Erkennungen (Minuten)",
     "inventoryIntervalLabel": "Synchronisierungsintervall für das Inventar (Minuten)",
-    "intervalHelp": "Leer lassen, um den Standardwert des Anbieters zu verwenden. Zulässiger Bereich: 1 bis 1440 Minuten.",
+    "intervalHelp": "Leer lassen, um den Standardwert des Anbieters zu verwenden. Zulässiger Bereich: 5 bis 1440 Minuten.",
+    "intervalInvalid": "Geben Sie eine ganze Zahl von 5 bis 1440 Minuten ein oder lassen Sie das Feld leer.",
     "noProviders": "Auf diesem Server sind keine EDR-Anbieter verfügbar.",
     "partnerOnly": "EDR-Anbieter werden auf Partnerebene verwaltet. Wechseln Sie zu einem Partnerkonto, um sie zu verwalten.",
     "readOnly": "Nur Partneradministratoren mit Zugriff auf alle Organisationen können EDR-Verbindungen ändern.",
@@ -1399,6 +1461,34 @@
       "degraded": "Eingeschränkt",
       "unhealthy": "Fehlerhaft",
       "unknown": "Unbekannt"
-    }
+    },
+    "actionsLabel": "Reaktionsaktionen zulassen",
+    "actionsHelp": "Erlaubt Technikern, Geräte zu isolieren und Scans über diese Verbindung auszuführen.",
+    "actionsConfirmTitle": "Reaktionsaktionen zulassen?",
+    "actionsConfirmMessage": "Techniker mit der Berechtigung zum Ausführen auf Geräten können über „{{name}}“ verwaltete Endpunkte isolieren, die Isolierung aufheben und Scans starten.",
+    "actionsConfirmLabel": "Zulassen",
+    "actionsOnToast": "Reaktionsaktionen zugelassen",
+    "actionsOffToast": "Reaktionsaktionen deaktiviert",
+    "actionsError": "Reaktionsaktionen konnten nicht aktualisiert werden.",
+    "pushLabel": "Push-Ereignisse",
+    "pushHelp": "{{provider}} benachrichtigt Breeze über neue Ereignisse und löst damit früher als im regulären Zeitplan eine Synchronisierung aus. Geplante Synchronisierungen laufen weiter.",
+    "pushOnToast": "Push-Ereignisse aktiviert",
+    "pushOffToast": "Push-Ereignisse deaktiviert",
+    "pushReplaceTitle": "Bestehendes Push-Ziel ersetzen?",
+    "pushReplaceMessage": "{{provider}} sendet Push-Ereignisse bereits an ein anderes Ziel (zum Beispiel ein SIEM). Wenn Breeze es ersetzt, endet dieser Datenstrom.",
+    "pushReplaceConfirm": "Ersetzen und aktivieren",
+    "pushError": "Push-Ereignisse konnten nicht geändert werden.",
+    "pushErrors": {
+      "public_url_unset": "Legen Sie die öffentliche Server-URL fest, bevor Sie Push-Ereignisse aktivieren.",
+      "public_url_not_https": "Push-Ereignisse erfordern eine öffentliche HTTPS-URL.",
+      "connection_inactive": "Aktivieren Sie die Verbindung, bevor Sie Push-Ereignisse aktivieren.",
+      "push_state_changed": "Die Push-Einstellungen haben sich beim Aktivieren geändert. Aktualisieren Sie die Seite und versuchen Sie es erneut."
+    },
+    "pushTest": "Testereignis senden",
+    "pushTestQueuedToast": "Testereignis angefordert",
+    "pushTestError": "Das Testereignis konnte nicht gesendet werden.",
+    "pushTestNote": "Das Testereignis kann einige Minuten brauchen, bis es eintrifft.",
+    "pushLast": "Letztes Push-Ereignis: {{relative}}",
+    "pushNone": "Noch keine Push-Ereignisse empfangen"
   }
 }

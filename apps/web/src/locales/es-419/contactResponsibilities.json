@@ -1,0 +1,24 @@
+{
+  "title": "Contactos responsables",
+  "subtitle": "Resuelto para este registro. Las asignaciones más específicas tienen prioridad.",
+  "loading": "Cargando contactos responsables…",
+  "loadFailed": "No se pudieron cargar los contactos responsables.",
+  "empty": "Aún no hay contactos responsables asignados.",
+  "primary": "Principal",
+  "roles": {
+    "billing": "Facturación",
+    "technical": "Técnico",
+    "escalation": "Escalamiento",
+    "admin": "Administración",
+    "site": "Contacto local",
+    "after_hours": "Fuera de horario",
+    "portal": "Portal"
+  },
+  "scope": {
+    "organization": "Toda la organización",
+    "site": "Este sitio",
+    "device_group": "Grupo de dispositivos"
+  },
+  "emptyCompact": "Sin contactos responsables",
+  "assign": "Asignar"
+}

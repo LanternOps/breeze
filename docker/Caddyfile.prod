@@ -31,6 +31,31 @@
 #                       Leave it EMPTY for any internet-reachable deployment,
 #                       including hosted production — an empty value expands to
 #                       a blank line and adapts to byte-identical JSON.
+#
+#   TUNNEL_SITE_ADDRESS Optional. Network Proxy tunnel wildcard(s) (spec
+#                       docs/superpowers/specs/monitoring/2026-10-06-network-proxy-tunnel-origin-design.md).
+#                       Behind Cloudflare Tunnel: `http://*.<region>.<tunnel-domain>, http://*.*.<region>.<tunnel-domain>`.
+#                       Unset = `http://tunnel-disabled.invalid` (matches nothing).
+#                       Must be a different registrable domain from CADDY_SITE_ADDRESS.
+#
+#   TUNNEL_TLS_DIRECTIVE Optional. Empty (default) or a full `tls <cert> <key>`
+#                       line for an Origin CA wildcard when Caddy terminates TLS
+#                       for the tunnel domain itself. Expands like CADDY_LOCAL_CERTS.
+#
+#   TUNNEL_HOST_SUFFIX  Optional (amended 2026-10-12b). The bare tunnel suffix
+#                       (`<region>.<tunnel-domain>`). Hosts at or under it that
+#                       miss the TUNNEL_SITE_ADDRESS wildcards (bare suffix, three
+#                       or more labels, trailing dot) would otherwise be served by
+#                       the app block; the app block answers them 421 instead.
+#                       Compose supplies `tunnel-disabled.invalid` (matches nothing)
+#                       when unset or empty. Never pass it empty: an empty suffix
+#                       turns the matcher into "any trailing-dot host".
+#
+#   FORCE_HTTPS note (amended 2026-10-12b): the API trusts X-Forwarded-Proto only
+#   from TRUSTED_PROXY_CIDRS. If Caddy's peer address is not in that list, the API
+#   resolves the scheme to http and, under FORCE_HTTPS, answers every tunnel-host
+#   request 400 FORCE_HTTPS_NON_CANONICAL_HOST (a tunnel host is never canonical to
+#   PUBLIC_API_URL; app hosts get a 308). Fail-closed by design: fix the CIDR.
 
 # --- Global options ---------------------------------------------------------
 # Production traffic chain for Cloudflare Tunnel deployments:
@@ -51,6 +76,60 @@
   servers {
     trusted_proxies static {$CADDY_TRUSTED_PROXIES:127.0.0.1/32 ::1/128}
     client_ip_headers {$CADDY_CLIENT_IP_HEADERS:CF-Connecting-IP X-Forwarded-For}
+  }
+
+  # Credential-header redaction for EVERY Caddy logger. Caddy's error loggers
+  # (`http.log.error`, and `http.handlers.reverse_proxy` "aborting with
+  # incomplete response") write the full request header map. Caddy already
+  # redacts Authorization, Proxy-Authorization, Cookie and Set-Cookie, but not
+  # application credential headers. This sits on the `default` logger rather
+  # than a site-level `log` directive because a site `log` only configures the
+  # access log; the error entries go through the default logger. If a site
+  # `log` (access log) is ever added, it gets its own encoder and needs the
+  # same filter — the default logger's filter does not apply to it.
+  #
+  # Field paths match case-sensitively against Go's canonical header spelling
+  # (`X-Api-Key`, not `X-API-Key`) — apps/api/src/config/caddyLogRedaction.test.ts
+  # enforces that. Add a line here whenever the API starts accepting a new
+  # credential-bearing header. `wrap json` keeps the existing JSON output.
+  log default {
+    format filter {
+      wrap json
+      request>headers>X-Api-Key replace REDACTED
+      request>headers>X-Agent-Enrollment-Secret replace REDACTED
+      request>headers>X-Agent-Reenrollment-Token replace REDACTED
+      request>headers>X-Breeze-Bootstrap-Token replace REDACTED
+      request>headers>X-Breeze-Native-Auth-Binding replace REDACTED
+      request>headers>X-Breeze-Storage-Session replace REDACTED
+      request>headers>X-Recovery-Token replace REDACTED
+      request>headers>X-Automation-Secret replace REDACTED
+      request>headers>X-Webhook-Secret replace REDACTED
+      request>headers>X-Breeze-Signature replace REDACTED
+      request>headers>X-Signature replace REDACTED
+      request>headers>X-Huntress-Signature replace REDACTED
+      request>headers>X-Xero-Signature replace REDACTED
+      request>headers>Stripe-Signature replace REDACTED
+      request>headers>Svix-Signature replace REDACTED
+      request>headers>Intuit-Signature replace REDACTED
+      request>headers>Mcp-Session-Id replace REDACTED
+      request>headers>Cf-Access-Jwt-Assertion replace REDACTED
+      resp_headers>X-Breeze-Native-Auth-Binding replace REDACTED
+      # Credential-bearing query parameters in the logged URI: WS/SSE and
+      # tunnel tickets (ticket, __bzt, t), emailed reset/verify/invite and
+      # SSE-fallback tokens (token), OAuth callback code/state, the rejected
+      # legacy webhook `secret`, and RFC 6750 access_token. Tokens carried in a
+      # PATH segment (e.g. /activate/<token>) are not covered by this filter.
+      request>uri query {
+        replace ticket REDACTED
+        replace __bzt REDACTED
+        replace t REDACTED
+        replace token REDACTED
+        replace access_token REDACTED
+        replace code REDACTED
+        replace state REDACTED
+        replace secret REDACTED
+      }
+    }
   }
 }
 
@@ -84,6 +163,31 @@
   # would be overwritten by the mapped value.
   request_header -X-Breeze-Client-Cert-Verified
   request_header -X-Breeze-Client-Cert-Serial
+
+  # Network Proxy: only the tunnel site block below may assert a tunnel
+  # host. Strip any client-supplied copy before every route (same reason
+  # as the mTLS strip above: header_up deletes run after sets).
+  request_header -X-Breeze-Tunnel-Site
+
+  # (amended 2026-10-12b, item 2) Tunnel-domain hosts that miss the tunnel
+  # wildcards land here. Refuse them before any route (W00 contradiction 3).
+  # Match the suffix itself and any depth under it; ignore a trailing dot,
+  # a port and case. Compose always supplies TUNNEL_HOST_SUFFIX (default
+  # `tunnel-disabled.invalid`, which matches nothing).
+  #
+  # A CEL expression rather than header_regexp on purpose: the suffix is
+  # plain text full of dots, and a regexp would treat each as a wildcard, so
+  # `usXbreezetunnel.test` would be refused for suffix `us.breezetunnel.test`.
+  # String comparison keeps the dots literal (verified against real caddy by
+  # scripts/check-tunnel-site-routing.sh). {http.request.host} carries no port.
+  # The `!= ""` term makes an explicitly empty suffix match nothing.
+  @tunnelDomainHost expression `"{$TUNNEL_HOST_SUFFIX:tunnel-disabled.invalid}" != "" && ({http.request.host}.lowerAscii() == "{$TUNNEL_HOST_SUFFIX:tunnel-disabled.invalid}".lowerAscii() || {http.request.host}.lowerAscii() == "{$TUNNEL_HOST_SUFFIX:tunnel-disabled.invalid}.".lowerAscii() || {http.request.host}.lowerAscii().endsWith(".{$TUNNEL_HOST_SUFFIX:tunnel-disabled.invalid}".lowerAscii()) || {http.request.host}.lowerAscii().endsWith(".{$TUNNEL_HOST_SUFFIX:tunnel-disabled.invalid}.".lowerAscii()))`
+
+  # First handle in the site: handles evaluate in written order and this must
+  # win over every app route below.
+  handle @tunnelDomainHost {
+    respond "Misdirected request" 421
+  }
 
   # --- SSE / streaming: no compression, no buffering ---
   @streaming {
@@ -365,6 +469,54 @@
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     X-Content-Type-Options "nosniff"
-    Referrer-Policy "strict-origin-when-cross-origin"
+    # `?` = default only: capability-URL responses (verify, public invoice) send no-referrer from the app
+    ?Referrer-Policy "strict-origin-when-cross-origin"
   }
+}
+
+# --- Network Proxy tunnel origin (host mode) ---------------------------------
+# Serves NOTHING but the API's tunnel-host handler: no web, portal, billing or
+# OAuth routes. The API rejects a tunnel Host without the assertion and an
+# app Host with it, and treats every host at or under the tunnel suffix as
+# tunnel surface (deeper labels 404 there). Keep WebSocket upgrade headers
+# intact (reverse_proxy default) for the future WebSocket wave.
+#
+# Logging: no site in this Caddyfile enables an access log. What this block
+# writes goes through the global `log default` filter above (query-value
+# redaction of t/__bzt/ticket/...): runtime and error entries, e.g. a
+# reverse_proxy abort that includes the request URI. Never add a site `log`
+# here without the same filter: it gets its own encoder and bypasses the
+# default logger's redaction.
+# X-Forwarded-Proto: reverse_proxy sets it from the global trusted_proxies
+# option exactly as in the app block; do not override it here.
+{$TUNNEL_SITE_ADDRESS:http://tunnel-disabled.invalid} {
+	{$TUNNEL_TLS_DIRECTIVE}
+	request_header -X-Breeze-Tunnel-Site
+	request_header -X-Breeze-Client-Cert-Verified
+	request_header -X-Breeze-Client-Cert-Serial
+
+	# Remote-access cutover barrier: same contract as `@remoteAccessClosed` in
+	# the app block. The tunnel consumes the same remote credentials (ticket
+	# exchange at /__bz/enter, cookie-authenticated proxying), so while the pool
+	# is being replaced EVERY tunnel-host request gets the same 503, before
+	# reverse_proxy. Explicit handles (barrier first, then catch-all) so
+	# directive ordering cannot let a request slip past it.
+	@remoteAccessClosed expression {env.REMOTE_ACCESS_ADMISSION_MODE} == "closed"
+	handle @remoteAccessClosed {
+		header Retry-After "60"
+		respond "{\"error\":\"remote access temporarily unavailable\"}" 503
+	}
+	handle {
+		reverse_proxy api:3001 {
+			header_up X-Breeze-Tunnel-Site 1
+			header_up -Cf-Client-Cert-Verified
+			header_up -Cf-Client-Cert-Serial
+			header_up -Cf-Client-Cert-Der-Base64
+			header_up -Cf-Client-Cert-Sha256
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
 }

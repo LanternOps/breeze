@@ -29,12 +29,21 @@ function newId(): string {
   return `snapshot-20261108T120000Z-${randomBytes(12).toString('hex')}`;
 }
 
-async function reservation(t: WriteTenant, opts: { state: string; horizon?: Date | null; sealedUntil?: Date | null; revoked?: boolean }) {
+async function reservation(t: WriteTenant, opts: {
+  state: string;
+  horizon?: Date | null;
+  sealedUntil?: Date | null;
+  revoked?: boolean;
+  /** #7081: the reservation's key root (legacy by default). */
+  keyPrefix?: string;
+}) {
   const id = newId();
   await getTestDb().execute(sql`
-    INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, device_id, config_id, storage_identity, source, state, current_job_id, sealed_until)
+    INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, device_id, config_id, storage_identity, source, state, current_job_id, sealed_until,
+      key_layout, key_prefix)
     VALUES (${id}, ${t.orgId}, ${t.deviceId}, ${t.configId}, ${WRITE_IDENTITY}, 'server_minted', ${opts.state}, ${t.jobId},
-            ${opts.sealedUntil ? opts.sealedUntil.toISOString() : null})
+            ${opts.sealedUntil ? opts.sealedUntil.toISOString() : null},
+            ${opts.keyPrefix ? 'prefixed_flat' : 'legacy_flat'}, ${opts.keyPrefix ?? null})
   `);
   const sessionId = randomUUID();
   await getTestDb().execute(sql`
@@ -144,5 +153,73 @@ describe('brokered write cleanup after a device move', () => {
     expect(await uploadStates(r.id)).toEqual(['aborted']);
     expect(s.abortMultipart).toHaveBeenCalledWith(expect.anything(), `${prefix}files/stray.bin`, 'u-stray');
     expect((await reservationRow(abandoned.id))?.uploads_swept_at).not.toBeNull();
+  });
+});
+
+// #7081 W02: the janitor composes every physical key from the reservation's
+// recorded key root and never falls back to the bucket root.
+describe('brokered write cleanup per key root', () => {
+  const PREFIX = 'msp/acme';
+
+  async function corruptRoot(snapshotId: string) {
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.execute(sql`UPDATE backup_snapshot_id_reservations SET key_layout = 'device_scoped', key_prefix = NULL WHERE snapshot_id = ${snapshotId}`);
+    });
+  }
+
+  runDb('aborts a recorded upload of a prefixed reservation at its physical key (rule 1)', async () => {
+    const t = await seedWriteTenant();
+    const r = await reservation(t, { state: 'reserved', revoked: true, keyPrefix: PREFIX });
+    await upload(t, r, 'open', 'u-p');
+    const s = storage();
+    await runBackupWriteSessionJanitor({ now: () => new Date(), storage: s });
+    expect(s.abortMultipart).toHaveBeenCalledTimes(1);
+    expect(s.abortMultipart).toHaveBeenCalledWith(expect.anything(), expect.stringMatching(new RegExp(`^${PREFIX}/snapshots/${r.id}/files/`)), 'u-p');
+    expect(await uploadStates(r.id)).toEqual(['aborted']);
+  });
+
+  runDb('sweeps a finished prefixed prefix under its root, sparing completed uploads (rule 2)', async () => {
+    const t = await seedWriteTenant();
+    const r = await reservation(t, { state: 'abandoned', revoked: true, keyPrefix: PREFIX });
+    await upload(t, r, 'completed', 'u-done-p');
+    const doneLogical = ((await getTestDb().execute(sql`
+      SELECT object_key FROM backup_storage_session_uploads WHERE upload_id = 'u-done-p'
+    `)) as unknown as Array<{ object_key: string }>)[0]!.object_key;
+    const physicalPrefix = `${PREFIX}/snapshots/${r.id}/`;
+    const s = storage({
+      [physicalPrefix]: [
+        { key: `${PREFIX}/${doneLogical}`, uploadId: 'u-done-p' },
+        { key: `${physicalPrefix}files/stray.bin`, uploadId: 'u-stray-p' },
+      ],
+    });
+    await runBackupWriteSessionJanitor({ now: () => new Date(), storage: s });
+    expect(s.listMultipart).toHaveBeenCalledWith(expect.anything(), physicalPrefix);
+    expect(s.listMultipart).not.toHaveBeenCalledWith(expect.anything(), `snapshots/${r.id}/`);
+    expect(s.abortMultipart).toHaveBeenCalledTimes(1);
+    expect(s.abortMultipart).toHaveBeenCalledWith(expect.anything(), `${physicalPrefix}files/stray.bin`, 'u-stray-p');
+    expect((await reservationRow(r.id))?.uploads_swept_at).not.toBeNull();
+  });
+
+  runDb('skips, and logs, a reservation whose recorded root is unreadable — never touching the bucket root', async () => {
+    const t = await seedWriteTenant();
+    const open = await reservation(t, { state: 'reserved', revoked: true });
+    await upload(t, open, 'open', 'u-bad');
+    const finished = await reservation(t, { state: 'abandoned', revoked: true });
+    await corruptRoot(open.id);
+    await corruptRoot(finished.id);
+    const s = storage({ [`snapshots/${finished.id}/`]: [{ key: `snapshots/${finished.id}/files/x.bin`, uploadId: 'u-x' }] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const summary = await runBackupWriteSessionJanitor({ now: () => new Date(), storage: s });
+      expect(s.abortMultipart).not.toHaveBeenCalled();
+      expect(s.listMultipart).not.toHaveBeenCalled();
+      expect(await uploadStates(open.id)).toEqual(['open']);
+      expect((await reservationRow(finished.id))?.uploads_swept_at).toBeNull();
+      expect(summary.failures).toBeGreaterThanOrEqual(2);
+      expect(warn.mock.calls.some(([msg]) => String(msg).includes('key root'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

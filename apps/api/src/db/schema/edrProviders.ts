@@ -94,6 +94,20 @@ export const edrConnections = pgTable('edr_connections', {
   lastSyncOpenDetections: integer('last_sync_open_detections'),
   /** The adapter's capability keys at the last successful test. */
   capabilitiesSnapshot: text('capabilities_snapshot').array().notNull().default(sql`'{}'::text[]`),
+  /** W03: response actions allowed through this console. Opt-in (partner admin + MFA); default OFF. */
+  actionsEnabled: boolean('actions_enabled').notNull().default(false),
+  /**
+   * W03 PR-B: vendor push events registered and accepted for this console. Flipped
+   * true only after the vendor registration call succeeds (routes/edr/connections.ts).
+   */
+  pushEnabled: boolean('push_enabled').notNull().default(false),
+  pushRegisteredAt: timestamp('push_registered_at', { withTimezone: true }),
+  /**
+   * W03 PR-B: durable "this connection has news" marker set by the push webhook.
+   * A hint only schedules a read sync; the detections run CAS-clears it after it
+   * commits (services/edrProviders/hints.ts).
+   */
+  pendingHintAt: timestamp('pending_hint_at', { withTimezone: true }),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -139,6 +153,14 @@ export const edrTenants = pgTable('edr_tenants', {
   lastDetectionSyncStatus: varchar('last_detection_sync_status', { length: 20 }).$type<EdrSyncStatus>(),
   lastDetectionSyncError: text('last_detection_sync_error'),
   detectionCursor: text('detection_cursor'),
+  /**
+   * W03: actions the vendor refused for this company on licence grounds, so
+   * dispatch refuses pre-insert and the UI shows the action disabled with a
+   * reason. Ignored once `unsupportedActionsAt` is older than 24 h, and cleared
+   * by the next inventory run after that.
+   */
+  unsupportedActions: text('unsupported_actions').array().notNull().default(sql`'{}'::text[]`).$type<EdrActionKey[]>(),
+  unsupportedActionsAt: timestamp('unsupported_actions_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
@@ -349,7 +371,7 @@ export const edrActions = pgTable('edr_actions', {
   action: varchar('action', { length: 40 }).notNull().$type<EdrActionKey>(),
   requestedBy: uuid('requested_by').references(() => users.id, { onDelete: 'set null' }),
   requestedVia: varchar('requested_via', { length: 20 }).notNull().$type<EdrActionRequestedVia>(),
-  /** No FK in W01 — W03 decides. */
+  /** Deliberately FK-less (W03): the ledger row outlives a pruned AI session / action intent. */
   aiSessionId: uuid('ai_session_id'),
   approvalId: uuid('approval_id'),
   status: varchar('status', { length: 20 }).notNull().default('queued').$type<EdrActionStatus>(),
@@ -373,6 +395,13 @@ export const edrActions = pgTable('edr_actions', {
   tenantIdx: index('edr_actions_tenant_idx').on(table.tenantId),
   endpointIdx: index('edr_actions_endpoint_idx').on(table.endpointId),
   detectionIdx: index('edr_actions_detection_idx').on(table.detectionId),
+  /** W03: one in-flight (queued/submitted) row per target + action; a 23505 here is a 409 `action_in_progress`. */
+  inflightEndpointUniq: uniqueIndex('edr_actions_inflight_endpoint_uniq')
+    .on(table.endpointId, table.action)
+    .where(sql`${table.status} IN ('queued', 'submitted') AND ${table.endpointId} IS NOT NULL`),
+  inflightDetectionUniq: uniqueIndex('edr_actions_inflight_detection_uniq')
+    .on(table.detectionId, table.action)
+    .where(sql`${table.status} IN ('queued', 'submitted') AND ${table.detectionId} IS NOT NULL`),
   connectionPartnerFk: foreignKey({
     columns: [table.connectionId, table.partnerId],
     foreignColumns: [edrConnections.id, edrConnections.partnerId],

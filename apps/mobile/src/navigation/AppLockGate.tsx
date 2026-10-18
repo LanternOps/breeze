@@ -12,6 +12,10 @@ import {
 import { LOCK_GRACE_MS } from '../services/appLockState';
 import { readAppLockState, writeAppLockState } from '../services/appLockStore';
 import {
+  isBiometricPromptActive,
+  subscribeBiometricPrompt,
+} from '../services/biometricPromptState';
+import {
   initialLockState,
   reduceLock,
   type AppLifecycle,
@@ -29,7 +33,9 @@ import { palette, radii, spacing, type } from '../theme';
  * mechanism:
  *
  *  1. **Privacy cover** — rendered whenever the app is not `active`, and while
- *     the cold-launch check is still running. iOS snapshots the UI on the way
+ *     the cold-launch check is still running. The exception is `inactive`
+ *     caused by our OWN biometric sheet (unlock, approve, approval signature —
+ *     see `services/biometricPromptState.ts`), which no longer flashes it. iOS snapshots the UI on the way
  *     out to `inactive` to build the app-switcher card, and writes that
  *     snapshot to disk. Covering on `inactive` (not just `background`) is what
  *     keeps fleet data and pending approvals out of both the switcher and that
@@ -152,6 +158,25 @@ export function AppLockGate({ children }: Props) {
       send({ type: 'lifecycle', prev, next: next as AppLifecycle, now: Date.now() });
     });
     return () => sub.remove();
+  }, [send]);
+
+  // Forward our own biometric prompts into the machine so it can leave the
+  // privacy cover down for the `inactive` the Face ID sheet causes. Not gated
+  // on the session: the flag writes nothing, and it must be accurate whenever
+  // the next lifecycle event arrives. The lifecycle at prompt end is read
+  // fresh, for the same staleness reason as the boot check above.
+  useEffect(() => {
+    if (isBiometricPromptActive()) send({ type: 'biometricPromptStarted' });
+    return subscribeBiometricPrompt((active) => {
+      send(
+        active
+          ? { type: 'biometricPromptStarted' }
+          : {
+              type: 'biometricPromptEnded',
+              lifecycle: (AppState.currentState ?? lifecycle.current) as AppLifecycle,
+            }
+      );
+    });
   }, [send]);
 
   const attemptUnlock = useCallback(async () => {

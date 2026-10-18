@@ -44,7 +44,7 @@ Since v0.117.0 an **Updates withheld** badge appears next to the version when th
 
 Above the list you can:
 
-- **Search** by display name or hostname.
+- **Search** by display name, hostname, IP address, serial number, asset tag, or last logged-in user. Typing a user's name (for example `harry`) finds the PC they last signed in to.
 - Build **structured filters** with the filter toolbar — status, OS, role, organization, site, group, hardware attributes, and more, combinable into saved filter conditions.
 - Switch the **class facet** between All, Agent (endpoints running the Breeze agent), Network (devices found by network discovery), and Manual (hand-entered assets — see [Manual Assets](#manual-assets)). The list opens on **Agent** by default and remembers the last facet you chose.
 - Filter by **VPN** when the VPN column is enabled (see below).
@@ -122,7 +122,9 @@ A removed device's **Actions** menu offers two choices in place of Remove:
 - **Restore** -- returns the device to the active fleet and cancels any still-pending agent uninstall. A restored device counts toward the partner's device limit again, so Restore is refused with **Device limit reached** when the partner is already at its limit, the same as enrolling a new device. Quick Support devices and devices waiting in the holding area never count, so restoring one of those is not limited.
 - **Delete permanently** -- deletes the device record and every record that references it (open tickets are kept but detached from the device). This cannot be undone.
 
-From v0.118.0, **Delete permanently** (and the automatic purge below) is refused while the device has a backup snapshot under legal hold or inside its immutability window. Release the hold, or wait for the window to end, then try again.
+From v0.118.0, **Delete permanently** (and the automatic purge below) is refused while the device has a backup snapshot under legal hold or inside its immutability window. From v0.122.1, a legal hold set on the device's backup policy or on a configuration policy's backup settings blocks it too. Release the hold, or wait for the window to end, then try again.
+
+From v0.122.1, deleting a device permanently no longer removes its backup files from storage, even those past retention, so purging a device does not reclaim backup storage.
 
 Selecting several removed devices at once in the device list adds bulk equivalents: **Restore Selected** applies immediately, while **Delete Permanently…** asks you to type the device count to confirm, then runs as a background job (up to 500 devices per run) with a progress indicator -- deleting a large batch touches too many records to finish inside a single request.
 
@@ -153,6 +155,11 @@ If the device's tickets carry unbilled time or parts in a currency other than th
 ### What happens after the move
 
 The agent is disconnected and reconnects under the new organization within its normal heartbeat interval. The device page refreshes to the new organization and site. Two audit events are written, one in each organization's trail (`device.move_org.source` and `device.move_org.target`).
+
+From v0.122.1 the agent also picks up its new organization and site itself, through a signed identity update. When it applies the update, the agent restarts after a random delay of 0–60 seconds, first letting commands that are already running finish (it waits at most 5 minutes). Two cases keep the agent on the organization and site it enrolled with (the device record still moves):
+
+- **No deployment signing key.** The identity update is signed with the server's agent deployment signing key. The server creates one the first time it signs anything: registering its own agent binaries (`BINARY_SOURCE=local`), issuing an agent rollback directive, or approving a diagnostic file access grant. Until then (the usual state on the default `BINARY_SOURCE=github`) no identity update is sent, as before this release, and the API logs a one-time warning.
+- **Environment overrides.** An agent with `BREEZE_ORG_ID` or `BREEZE_SITE_ID` set in its environment cannot take the new identity.
 
 <Aside type="note">
 Moving is refused while durable PAM lifecycle evidence exists for the device, and while any of its tickets is pinned to a service deliverable. Both refusals leave the device untouched.
@@ -300,9 +307,13 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
 
+The device's **Overview** tab also has a **Responsible contacts** card: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
+
+A device's physical placement (room, rack, rack unit and height) can be recorded through the API only, with `GET`/`PUT`/`DELETE /devices/:id/placement`; discovered network assets use `/discovery/assets/:id/placement`. The Info tab does not show it yet.
+
 ### System Restore tab
 
-Separately from the Info tab, Windows devices have a **System Restore** tab (`#system-restore`) that lists each time Breeze asked for a System Restore checkpoint: when it was requested, what triggered it (patch install, script run or software install) and the outcome. Until a device runs a future agent release that reports outcomes, entries read **Awaiting the device**. The list records requests and what the device reported; it does not mean a restore point exists. See [System Protection](/features/configuration-policies/#system-protection).
+Separately from the Info tab, Windows devices have a **System Restore** tab (`#system-restore`) that lists each time Breeze asked for a System Restore checkpoint: when it was requested, what triggered it (patch install, script run or software install) and the outcome. Until a device runs a future agent release that reports outcomes, entries read **Awaiting the device**. The list records requests and what the device reported; it does not mean a restore point exists. See [System Protection](/features/configuration-policies/#system-protection). Entries are kept for 90 days from the request (set `RESTORE_POINT_ATTEMPT_RETENTION_DAYS`, up to 365). An entry still awaiting the device is removed only once it is past that window and its command can no longer report back.
 
 ### Device function
 

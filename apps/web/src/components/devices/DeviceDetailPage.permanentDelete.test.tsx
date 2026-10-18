@@ -8,7 +8,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { permanentDeleteDevice } from '../../services/deviceActions';
 import { showToast } from '../shared/Toast';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../../hooks/useEventStream', () => ({ useEventStream: () => ({ subscribe: vi.fn() }) }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: () => vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));

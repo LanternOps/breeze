@@ -77,6 +77,13 @@ const WRITE_REFUSAL_MESSAGES: Record<string, string> = {
   encryption_plan_changed:
     'The backup destination encryption settings changed after this backup was queued. Start it again.',
   mint_failed: 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.',
+  invalid_destination_prefix:
+    "The backup destination's key prefix is invalid. Edit the destination and save a valid prefix.",
+  key_root_invalid:
+    'This backup was started under a storage location this server cannot read. Start the backup again.',
+  base_key_root_mismatch:
+    "The destination's key prefix changed after this backup was scheduled. The next scheduled run will take a full "
+    + 'backup under the new prefix.',
 };
 
 export function backupWriteRefusalMessage(reason: string): string {

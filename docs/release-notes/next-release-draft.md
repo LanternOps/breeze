@@ -8,23 +8,30 @@ Add an entry the moment you introduce something an operator or self-hoster would
 notice — a new env var, a new log line, a new metric, a changed default, a
 behaviour change. A commit subject weeks later will not carry it.
 
-Last release: **v0.122.1** (2026-10-12). v0.122.0 was tagged but never released.
+Last release: **v0.123.0** (2026-10-17).
 
 ---
 
 ## Release to-do (pre-cut gates — see `/release` Step 0.2)
 
+- Lab checks OWED before the tag (merged on Todd's instruction with checks outstanding): #8919 viewer on NVIDIA Linux, #8921 bcdboot failure path, #8935 caller-verify absolute deadline, #8912 Windows DHCP in-process read, #8878 WinRT toasts (Win11 real-helper check per PR body), #8755 macOS permission probe (checks per PR body).
+- YARA W02 (#9112) ships dark; Windows benchmark on the lab Windows Server VM is owed before the W03 sidecar decision, not a release blocker.
+- AI model registry W08b (#9130): take the DO backup / PITR point BEFORE deploy; after deploy run G3 (archive query in `deploy/upgrades.mdx` vs the G2 counts held by the features-work session, zero blocking rows on both regions 10-17).
+
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
-- **System Protection (#4609):** deploy the API and web first; there are no new environment variables. The migrations below run automatically on API start. Nothing changes on devices until an agent release that supports System Protection ships.
+- **AI model registry legacy drop (#9130)** — R2 of the two-step migration (W08a shipped in v0.123.0). Archives legacy AI model storage into `ai_model_registry_legacy_archive` and drops the old storage. Back up before upgrading. **Rollback caveat:** with the workspace extension enabled, the previous image's boot tripwire refuses to start while the archive table exists, so going back is a database restore, not an image rollback. A partner may now hold several Anthropic connections (cap removed).
+- **Connection-health notifications complete (#8844: W2 #8936, W3 #9011, W4 #9045, W5 #9047)** — customer-admin notices are OFF by default (partner default, org override) under the new mail purpose `customer.connection_health_digest`.
+
+- **Connection-health digest (#9011)** — on the first deploy that includes it, every admin/owner with an open connection incident receives a digest email at 08:00 partner-local time. Expected one-time burst, not a fault.
+- **AI device file read policy (#8866 W01 + #9010 W02)** — both waves ship together; W02 asserts the partner id in the resolver (W01 alone fails open).
+- **AI tool output retention (#9044)** — the first nightly run after deploy scrubs AI tool outputs older than 30 days for partners with no AI data policy row; affected chats lose resumable model context. Partners who want to keep history must set retention to blank ("keep forever") *before* upgrading.
+- **Connection-health W04 (#9045)** — new webhook and Google Workspace health sources seed silently, then begin real notices for stale syncs and dead webhooks. The Google probe makes one Directory API call per Google-connected org every 6 h, impersonating the org admin.
 
 ## Features / API
 
-- **Windows System Restore: policy-controlled System Protection and per-action reporting (#4609, #4751).** A new **System Protection** policy tab (also available on partner-wide "All orgs" policies) sets whether Breeze requests a System Restore checkpoint before patch installs, scripts and software installs. The server resolves the setting per device, records every request in a new per-device attempts ledger, and shows the outcome as a badge on patch history, script execution details and software deployments, plus a **System Restore** tab on Windows devices. **The agent side is not in this release.** Checkpoint creation and reporting by the agent roll out with a future agent release, so until devices run it every attempt reads **Awaiting the device** and no outcome is reported. Patch installs keep their existing best-effort behavior (a command with no System Protection setting is treated the legacy way: patch installs requested, scripts and software installs not). Turning patch checkpoints *off* cannot be enforced on a device until its agent reports support, and the policy tab says so. Scripts and software installs take no checkpoint until you opt in **and** an agent release that supports it is deployed. System Restore is not a backup. Separately, the native Windows call used for restore points had the wrong struct layout (the SDK header declares both structs under `#pragma pack(1)`); the corrected layout is in the agent code and takes effect with the agent release that includes it. Docs: Configuration Policies > System Protection (includes the support matrix; only Windows 11 25H2 and Server 2022 are verified so far, Windows 10 and Server 2025 are tracked in #8265).
-
-- **Mobile: arrival suggestions (#8209, W2).** With the partner's *Location suggestions* setting on (off by default) and the technician's own opt-in, the app suggests starting a timer when opened at a pinned client site. Foreground only; the phone's position is compared on the device and never sent. Adds the `expo-location` dependency and iOS/Android location permission strings, so it ships with the next **mobile app build** (not an API/web deploy). Technicians with the *Set site location* permission can pin a site from the phone. Docs: Mobile app > Arrival suggestions.
+- **Breeze AI: System Restore ledger read (#8584).** The read-only `list_device_restore_point_attempts` chat tool (devices:read) lists a device's System Protection checkpoint attempts, newest first, with trigger and status filters. No new env vars or migrations.
 
 ## Migrations
 
-- `2026-12-24-110000-system-protection-feature-type.sql` adds the `system_protection` value to the `config_feature_type` enum. Idempotent (re-running is a no-op), but Postgres cannot drop an enum value, so this one is effectively one-way.
-- `2026-12-24-160000-device-restore-point-attempts.sql` creates the `device_restore_point_attempts` table (RLS enabled and forced, org-cascade and export registered). Additive.
+- `2026-12-30-200000-ai-model-registry-legacy-drop.sql` (#9130) — archive + drop of legacy AI model storage; irreversible without PITR on hosted (see Self-Hosting note).

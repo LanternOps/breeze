@@ -16,6 +16,7 @@ import {
   Save,
   ScrollText,
   Shield,
+  ShieldCheck,
   SlidersHorizontal,
   Ticket,
   Wallet,
@@ -37,6 +38,7 @@ import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiApprovalsTab from './PartnerAiApprovalsTab';
 import PartnerAiModelsTab from './aiModels/PartnerAiModelsTab';
 import PartnerMlFeaturesCard from './PartnerMlFeaturesCard';
+import PartnerAiDataPolicyCard from './PartnerAiDataPolicyCard';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
@@ -44,6 +46,7 @@ import PartnerModulesCard, { type TopologyFeatureFlags } from './PartnerModulesC
 import type { ServiceManagementMode } from '@/stores/orgStore';
 import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
+import TrustTemplateSettings from '../trustCenter/TrustTemplateSettings';
 import type {
   PartnerSettings,
   SupportedLocale,
@@ -73,7 +76,10 @@ import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 import { useStableT } from '@/lib/i18n/useStableT';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
+// Scalar security limits the API unsets when sent as null (see PATCH /partners/me).
+const CLEARABLE_SECURITY_KEYS = ['minLength', 'complexity', 'expirationDays', 'sessionTimeout', 'maxSessions'] as const;
+
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules' | 'trustCenter';
 
 type Partner = {
   id: string;
@@ -147,6 +153,8 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
     tabs: [
       { key: 'branding', hash: 'branding', label: 'partnerSettingsPage.tabs.branding.label', description: 'partnerSettingsPage.tabs.branding.description', icon: Palette, enforced: true },
       { key: 'loginBranding', hash: 'login-branding', label: 'partnerSettingsPage.tabs.loginBranding.label', description: 'partnerSettingsPage.tabs.loginBranding.description', icon: LogIn, selfSaving: true },
+      // Trust Center W2 (#8770 W02g): the partner-wide default for customer trust pages (own load/save, MFA).
+      { key: 'trustCenter', hash: 'trust-center', label: 'partnerSettingsPage.tabs.trustCenter.label', description: 'partnerSettingsPage.tabs.trustCenter.description', icon: ShieldCheck, selfSaving: true },
     ],
   },
 ];
@@ -181,7 +189,7 @@ function getTabFromHash(): TabKey | null {
 // tabs (Ticketing, Email templates, Login Branding, AI Provider, Sender
 // Addresses, Modules) persist independently and are never "dirty" from this
 // page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules' | 'trustCenter'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -482,7 +490,14 @@ export default function PartnerSettingsPage() {
     };
 
     // Always include all categories so clearing all fields removes locks
-    settings.security = securityData;
+    // The API deep-merges `security`, so an omitted key keeps its stored value.
+    // A cleared scalar limit must go out as an explicit null to be unset (#8976).
+    settings.security = {
+      ...securityData,
+      ...Object.fromEntries(
+        CLEARABLE_SECURITY_KEYS.filter(key => securityData[key] === undefined).map(key => [key, null])
+      ),
+    };
     settings.notifications = notificationsData;
     settings.eventLogs = eventLogsData;
     settings.defaults = defaultsData;
@@ -742,6 +757,9 @@ export default function PartnerSettingsPage() {
               top-level "Save Settings" button does not apply here). */}
           {activeTab === 'loginBranding' && <LoginBrandingCard partnerSlug={partner?.slug} />}
 
+          {/* Trust Center defaults: self-contained form with its own load/save (MFA, revisioned). */}
+          {activeTab === 'trustCenter' && <TrustTemplateSettings />}
+
           {activeTab === 'aiBudgets' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
@@ -765,6 +783,7 @@ export default function PartnerSettingsPage() {
           {/* AI Features: self-contained card with its own autosave switches. */}
           {activeTab === 'aiFeatures' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
+              <PartnerAiDataPolicyCard />
               <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={() => void fetchPartner()} />
             </section>
           )}

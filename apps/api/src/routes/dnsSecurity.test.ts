@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { sql } from 'drizzle-orm';
 
 const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
   permissionGate: { deny: false, deniedPermission: null as string | null },
@@ -734,6 +735,183 @@ describe('dns security routes', () => {
 
       expect(res.status).toBe(404);
       expect(db.select).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ──────────────── #8329: policy owner org derived from the integration ────────────────
+  // DNS integrations are org-owned and a policy is created against one, so the
+  // route takes the owning org from the integration (after an access check)
+  // instead of requiring the client to send `orgId`. A partner user with 2+
+  // orgs used to get 400 "orgId is required for this scope".
+  describe('POST /policies — owner org from the integration (#8329)', () => {
+    const ORG_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const ORG_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const ORG_OTHER = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+    const INTEGRATION_ID = '22222222-2222-2222-2222-222222222222';
+    const POLICY_ID = '44444444-4444-4444-4444-444444444444';
+    // A sentinel scope clause, so the test can prove the route puts the
+    // caller's org scope into the integration lookup's WHERE.
+    const ORG_SCOPE = sql`org_scope_sentinel`;
+    const orgCondition = vi.fn(() => ORG_SCOPE);
+    let lookupWhere: unknown;
+
+    function containsChunk(node: unknown, target: unknown, seen = new Set<unknown>()): boolean {
+      if (node === target) return true;
+      if (!node || typeof node !== 'object' || seen.has(node)) return false;
+      seen.add(node);
+      const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+      return Array.isArray(chunks) && chunks.some((chunk) => containsChunk(chunk, target, seen));
+    }
+
+    function setPartnerAuth() {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          accessibleOrgIds: [ORG_A, ORG_B],
+          canAccessOrg: (orgId: string) => orgId === ORG_A || orgId === ORG_B,
+          orgCondition,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+    }
+
+    function mockIntegrationLookup(rows: Array<{ id: string; orgId: string }>) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation((clause: unknown) => {
+            lookupWhere = clause;
+            return { limit: vi.fn().mockResolvedValue(rows) };
+          })
+        })
+      } as any);
+    }
+
+    function mockPolicyInsert() {
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockImplementation(async () => [{
+          id: POLICY_ID,
+          orgId: values.mock.calls[0]![0].orgId,
+          integrationId: INTEGRATION_ID,
+          name: 'Block list',
+          type: 'blocklist'
+        }])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+      return values;
+    }
+
+    function post(body: Record<string, unknown>) {
+      return app.request('/dns-security/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          integrationId: INTEGRATION_ID,
+          name: 'Block list',
+          type: 'blocklist',
+          domains: [{ domain: 'example.com' }],
+          ...body
+        })
+      });
+    }
+
+    beforeEach(() => {
+      // clearAllMocks keeps queued mockReturnValueOnce values; drop any a
+      // failed earlier test left behind so each case sees only its own.
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.insert).mockReset();
+      orgCondition.mockClear();
+      lookupWhere = undefined;
+      setPartnerAuth();
+    });
+
+    it('creates the policy in the integration org for a partner with 2+ orgs and no body orgId', async () => {
+      mockIntegrationLookup([{ id: INTEGRATION_ID, orgId: ORG_B }]);
+      const values = mockPolicyInsert();
+
+      const res = await post({});
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledTimes(1);
+      expect(values.mock.calls[0]![0]).toMatchObject({ orgId: ORG_B, integrationId: INTEGRATION_ID });
+      expect((await res.json()).orgId).toBe(ORG_B);
+      // The lookup is scoped to the caller's accessible orgs.
+      expect(orgCondition).toHaveBeenCalledWith('orgId');
+      expect(containsChunk(lookupWhere, ORG_SCOPE)).toBe(true);
+    });
+
+    it('accepts an explicit body orgId that matches the integration org', async () => {
+      mockIntegrationLookup([{ id: INTEGRATION_ID, orgId: ORG_B }]);
+      const values = mockPolicyInsert();
+
+      const res = await post({ orgId: ORG_B });
+
+      expect(res.status).toBe(201);
+      expect(values.mock.calls[0]![0]).toMatchObject({ orgId: ORG_B });
+    });
+
+    it('returns 404 when the integration is not visible to the caller', async () => {
+      mockIntegrationLookup([]);
+
+      const res = await post({});
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('Integration not found');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the integration belongs to an org the caller cannot access', async () => {
+      // Defence in depth: even if the scoped lookup returned a row from a
+      // foreign org, the route re-checks canAccessOrg on the integration org.
+      mockIntegrationLookup([{ id: INTEGRATION_ID, orgId: ORG_OTHER }]);
+
+      const res = await post({});
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('Integration not found');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects an explicit body orgId that differs from the integration org with 400', async () => {
+      mockIntegrationLookup([{ id: INTEGRATION_ID, orgId: ORG_B }]);
+
+      const res = await post({ orgId: ORG_A });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/orgId/);
+      expect(body.error).toMatch(/integration/i);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('still rejects an explicit body orgId the caller cannot access with 403, before the lookup', async () => {
+      const res = await post({ orgId: ORG_OTHER });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for an org-scope caller whose integration belongs to another org', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          orgId: ORG_A,
+          accessibleOrgIds: [ORG_A],
+          canAccessOrg: (orgId: string) => orgId === ORG_A,
+          orgCondition,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+      mockIntegrationLookup([{ id: INTEGRATION_ID, orgId: ORG_B }]);
+
+      const res = await post({});
+
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 });

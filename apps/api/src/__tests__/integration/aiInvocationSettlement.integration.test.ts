@@ -932,8 +932,7 @@ describe.skipIf(!RUN)('an unbound BYOK refusal-fallback key at its own offering 
     const b = await seedRegistryPartner('byok');
     const binding = await bindingFor(b);
     const fbModel = `w7773-otherconn-${randomUUID()}`;
-    // One active anthropic_byok/catalog connection per partner
-    // (partner_ai_connections_compat_uq), so the partner's other connection is a gateway one.
+    // The partner's other connection is a gateway one.
     const [second] = await fixtureSql`
       INSERT INTO partner_ai_connections (partner_id, kind, name, base_url, status)
       VALUES (${b.partnerId}, 'openai_compatible', 'W7773 second', 'https://llm.example.test/v1', 'active')

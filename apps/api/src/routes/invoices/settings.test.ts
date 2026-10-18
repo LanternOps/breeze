@@ -150,7 +150,7 @@ describe('billing settings routes', () => {
       );
 
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'ACCESS_DENIED' });
       expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
     },
   );

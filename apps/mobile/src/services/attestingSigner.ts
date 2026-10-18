@@ -19,6 +19,8 @@
  * holding nothing — the fail-closed rule in `approverDevice.ts` depends on these
  * rejections being real.
  */
+import { withBiometricPrompt } from './biometricPromptState';
+
 /** Mirrors the native module's `AttestedKey`. */
 export interface AttestedKey {
   publicKeySpkiB64: string;
@@ -164,7 +166,10 @@ export function nativeAttestingSigner(native: NativeAttestationModule): Attestin
       return native.attestApp(transcriptB64);
     },
     signPayload(payload, reason) {
-      return native.signWithAttestedKey(payload, reason);
+      // Biometric-gated (`.biometryCurrentSet` / BiometricPrompt): shows the
+      // system sheet. Marked so the app lock's privacy cover does not flash
+      // for it (services/biometricPromptState).
+      return withBiometricPrompt(() => native.signWithAttestedKey(payload, reason));
     },
     deleteAttestedKey() {
       return native.deleteAttestedKey();

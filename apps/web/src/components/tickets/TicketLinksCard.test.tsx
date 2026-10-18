@@ -154,6 +154,17 @@ describe('TicketLinksCard — list', () => {
     expect(screen.queryByTestId('ticket-link-deleted-l1')).toBeNull();
   });
 
+  it('a trashed counterpart with its subject withheld shows the number and Deleted only (#8747)', async () => {
+    const gone = link({ id: 'l2' });
+    mockApi({ links: [{ ...gone, other: { ...gone.other, id: 't-gone', ticketNumber: 'T-77', subject: null, deleted: true } as unknown as Link['other'] }] });
+    render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite />);
+    const row = await screen.findByTestId('ticket-link-row-l2');
+    expect(row).toHaveTextContent('T-77');
+    expect(screen.getByTestId('ticket-link-deleted-l2')).toHaveTextContent('Deleted');
+    expect(screen.queryByTestId('ticket-link-deleted-subject-l2')).toBeNull();
+    expect(screen.getByTestId('ticket-link-remove-l2')).toBeInTheDocument();
+  });
+
   it('read-only users see no remove buttons', async () => {
     mockApi({ links: [link({ id: 'l1' })] });
     render(<TicketLinksCard ticketId="tk-1" orgId="org-1" canWrite={false} />);

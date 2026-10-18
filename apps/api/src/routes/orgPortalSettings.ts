@@ -3,11 +3,11 @@ import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, portalBranding } from '../db/schema';
+import { organizations, partners, portalBranding } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
-import { updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
+import { ERROR_CODES, updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
 import {
   PORTAL_VISIBILITY_FLAG_KEYS,
   onPortalFlagsChanged,
@@ -60,6 +60,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableHourBlock: false, // block hours (W04): fail-closed, never in "Enable all"
   enablePatchDetail: false, // visibility W05: sensitive, fail-closed, never in "Enable all"
   enableVulnerabilityDetail: false, // visibility W06: sensitive, fail-closed, never in "Enable all"
+  enableTrustPageEditing: false, // Trust Center W3d: permission flag, fail-closed, never in "Enable all"
   chromeAccent: null,
   supportEmail: null,
   supportPhone: null,
@@ -92,6 +93,7 @@ type PortalSettingsRow = {
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
   enableVulnerabilityDetail: boolean;
+  enableTrustPageEditing: boolean;
   chromeAccent: string | null;
   supportEmail: string | null;
   supportPhone: string | null;
@@ -132,6 +134,7 @@ const portalSettingsColumns = () => ({
   enableHourBlock: portalBranding.enableHourBlock,
   enablePatchDetail: portalBranding.enablePatchDetail,
   enableVulnerabilityDetail: portalBranding.enableVulnerabilityDetail,
+  enableTrustPageEditing: portalBranding.enableTrustPageEditing,
   chromeAccent: portalBranding.chromeAccent,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
@@ -167,6 +170,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableHourBlock: row.enableHourBlock,
     enablePatchDetail: row.enablePatchDetail,
     enableVulnerabilityDetail: row.enableVulnerabilityDetail,
+    enableTrustPageEditing: row.enableTrustPageEditing,
     chromeAccent: row.chromeAccent,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,
@@ -176,21 +180,21 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
   };
 }
 
-async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
+async function resolveAccessibleOrg(c: any): Promise<{ id: string; partnerId: string } | Response> {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   const orgRows = await db
-    .select({ id: organizations.id })
+    .select({ id: organizations.id, partnerId: organizations.partnerId })
     .from(organizations)
     .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
     .limit(1);
   if (!orgRows[0]) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
-  return { id };
+  return { id, partnerId: orgRows[0].partnerId };
 }
 
 export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
@@ -210,8 +214,22 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
         .from(portalBranding)
         .where(eq(portalBranding.orgId, org.id))
         .limit(1);
+      // #7510 (settings rule 4): `footerText` is the org override of the
+      // partner's document footer (resolveDocumentFooter, documentFooter.ts),
+      // so report the inherited partner value for the editor to show beside a
+      // blank field. Read-only: not in the PATCH schema, never written here.
+      // Read in the AMBIENT request context, like GET /organizations/:id's
+      // partnerDefaultTaxRate — this route requires `partner` or `system`
+      // scope, and `partners` RLS grants a partner-scoped actor its own row.
+      const [partnerRow] = await db
+        .select({ invoiceFooter: partners.invoiceFooter })
+        .from(partners)
+        .where(eq(partners.id, org.partnerId))
+        .limit(1);
       // No auto-insert on read: defaults are reported until the first PATCH.
-      return c.json({ data: toResponse(org.id, rows[0]) });
+      return c.json({
+        data: { ...toResponse(org.id, rows[0]), partnerInvoiceFooter: partnerRow?.invoiceFooter ?? null }
+      });
     }
   );
 
@@ -224,7 +242,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
     async (c) => {
       const body = c.req.valid('json');
       if (Object.keys(body).length === 0) {
-        return c.json({ error: 'No updates provided' }, 400);
+        return c.json({ error: 'No updates provided', code: ERROR_CODES.NO_UPDATES_PROVIDED }, 400);
       }
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;

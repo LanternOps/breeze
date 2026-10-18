@@ -157,7 +157,7 @@ describe('DeviceReliabilityPanel', () => {
     expect(await screen.findByText('Failed to load reliability score')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
 
-    await screen.findByText('No reliability snapshot available yet.');
+    await screen.findByText('No reliability data yet');
   });
 
   // sweep D15: no snapshot yet is an expected empty state, so the API now
@@ -169,7 +169,10 @@ describe('DeviceReliabilityPanel', () => {
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
-    await screen.findByText('No reliability snapshot available yet.');
+    // #9029: one muted line, not an empty card body with a heading.
+    const row = await screen.findByTestId('device-reliability-empty');
+    expect(row).toHaveTextContent('No reliability data yet');
+    expect(screen.queryByRole('heading')).toBeNull();
   });
 
   it('Ask AI button starts a device task seeded with the snapshot', async () => {
@@ -804,13 +807,13 @@ describe('DeviceReliabilityPanel', () => {
       await act(async () => {
         second.resolve(makeJsonResponse({ snapshot: null, history: [] }));
       });
-      await screen.findByText('No reliability snapshot available yet.');
+      await screen.findByText('No reliability data yet');
 
       await act(async () => {
         first.resolve(makeJsonResponse({ snapshot: baseSnapshot({ reliabilityScore: 44 }), history: [] }));
       });
       expect(screen.queryByText('44')).toBeNull();
-      expect(screen.getByText('No reliability snapshot available yet.')).toBeTruthy();
+      expect(screen.getByText('No reliability data yet')).toBeTruthy();
     });
 
     it('does not surface an aborted snapshot request as a load error', async () => {

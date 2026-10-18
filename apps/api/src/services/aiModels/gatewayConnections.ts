@@ -1,8 +1,9 @@
 /**
  * Gateway-kind connection writes and manual model entry (W06 #7604).
  *
- * Never goes through the /ai/provider compat facade (Anthropic-only, bound to
- * partner_ai_connections_compat_uq, whose predicate excludes gateway kinds).
+ * Separate from the Anthropic API connection writes
+ * (anthropicConnectionWrites.ts); a partner may hold any number of gateway
+ * connections.
  *
  * Every write follows the W04 model (offeringWrites.inPartnerRegistryWrite):
  * its own system transaction behind the partner registry try-lock (503

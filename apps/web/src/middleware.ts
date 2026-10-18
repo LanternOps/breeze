@@ -121,6 +121,12 @@ export function relaxExistingCsp(
   return directives.join('; ');
 }
 
+// Capability-URL pages (/verify/<token>) set `Referrer-Policy: no-referrer` themselves (#8964); the
+// app-wide value is only a default and must not overwrite a page-level choice.
+function setDefaultReferrerPolicy(headers: Headers): void {
+  if (!headers.has('Referrer-Policy')) headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+}
+
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export const onRequest = defineMiddleware(async (context, next) => {
@@ -150,7 +156,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // Use CSP_STRICT_DEV=1 when you explicitly want CSP enforcement in local dev.
   if (import.meta.env.DEV && !strictDevCsp) {
     headers.delete('Content-Security-Policy');
-    headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    setDefaultReferrerPolicy(headers);
     headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
     headers.set('X-Frame-Options', 'SAMEORIGIN');
     headers.set('X-Content-Type-Options', 'nosniff');
@@ -193,7 +199,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
         })
       );
     }
-    headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    setDefaultReferrerPolicy(headers);
     headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
     headers.set('X-Frame-Options', 'SAMEORIGIN');
     headers.set('X-Content-Type-Options', 'nosniff');
@@ -227,7 +233,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     }
     headers.set('Content-Security-Policy', patchedCsp);
   }
-  headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  setDefaultReferrerPolicy(headers);
   headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
   headers.set('X-Frame-Options', 'DENY');
   headers.set('X-Content-Type-Options', 'nosniff');

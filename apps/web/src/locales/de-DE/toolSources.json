@@ -1,9 +1,9 @@
 {
   "title": "Tool-Quellen",
-  "subtitle": "Verbinden Sie einen MCP-Server, damit seine Tools im KI-Chat verfügbar werden – mit Risikostufen und Genehmigungen pro Tool.",
+  "subtitle": "Verbinden Sie einen MCP-Server oder eine OpenAPI-(REST-)API, damit deren Tools im KI-Chat verfügbar werden – mit Risikostufen und Genehmigungen pro Tool.",
   "empty": {
     "title": "Noch keine Tool-Quellen",
-    "body": "Fügen Sie einen MCP-Server hinzu, damit der Assistent Lese- und Schreibzugriff auf die Systeme erhält, die Ihr Team bereits verwendet."
+    "body": "Fügen Sie einen MCP-Server oder eine OpenAPI-API hinzu, damit der Assistent Lese- und Schreibzugriff auf die Systeme erhält, die Ihr Team bereits verwendet."
   },
   "list": {
     "add": "Quelle hinzufügen",
@@ -24,9 +24,14 @@
     "slugHelp": "Wird jedem Tool dieser Quelle vorangestellt, zum Beispiel hudu__get_asset. Nur Kleinbuchstaben und Ziffern.",
     "kind": "Art",
     "kindMcp": "MCP-Server",
-    "kindOpenapiSoon": "OpenAPI (kommt in einer späteren Version)",
+    "kindOpenapi": "OpenAPI (REST-API)",
     "endpoint": "Endpunkt-URL",
+    "endpointMcp": "MCP-Server-URL",
+    "endpointOpenapi": "API-Basis-URL",
     "endpointHelp": "Verwenden Sie HTTPS oder HTTP, wenn private ausgehende Verbindungen auf einem selbst gehosteten Server aktiviert sind. Zugangsdaten werden nur an diesen Ursprung gesendet.",
+    "endpointHelpOpenapi": "Jede Operation wird gegen diese URL aufgerufen, und Zugangsdaten werden nur an ihren Ursprung gesendet. Im Dokument aufgeführte Server-URLs werden ignoriert.",
+    "specUrl": "URL des OpenAPI-Dokuments",
+    "specUrlHelp": "Hier liest Breeze die API-Beschreibung. Die Zugangsdaten werden bei dieser Anfrage nur gesendet, wenn das Dokument vom selben Ursprung wie die API-Basis-URL bereitgestellt wird.",
     "authKind": "Authentifizierung",
     "rateLimit": "Aufrufe pro Minute",
     "scope": "Verfügbarkeit",
@@ -62,9 +67,25 @@
     "deleteTitle": "Diese Tool-Quelle löschen?",
     "deleteConfirm": "Die erkannten Tools stehen dem KI-Chat sofort nicht mehr zur Verfügung, und die gespeicherten Anmeldedaten werden vernichtet. Dies kann nicht rückgängig gemacht werden.",
     "endpoint": "Endpunkt",
+    "specUrl": "OpenAPI-Dokument",
     "lastDiscovered": "Zuletzt erkannt",
     "discovering": "Tools werden erkannt …",
     "loadFailed": "Diese Tool-Quelle konnte nicht geladen werden.",
+    "skippedHeading": "Übersprungene Operationen",
+    "skippedBody": "Diese Operationen wurden nicht in Tools umgewandelt. Breeze überspringt, was es nicht sicher aufrufen kann, statt zu raten.",
+    "skippedShowing": "{{shown}} von {{total}} werden angezeigt",
+    "summaryAt": "Aus dem Ermittlungslauf vom {{at}}.",
+    "serverOriginWarning": "Das Dokument führt Server-URLs mit anderen Ursprüngen auf. Sie wurden ignoriert – Operationen werden nur an die API-Basis-URL gesendet.",
+    "skipReasons": {
+      "unsupported_method": "Nicht unterstützte HTTP-Methode (OPTIONS/TRACE)",
+      "unsupported_path": "Pfad kann nicht sicher aufgerufen werden",
+      "unsupported_param_style": "Nicht unterstützter Parameterstil oder -ort (Cookie, deepObject, …)",
+      "unsupported_request_body": "Anfragetext ist kein JSON",
+      "unsupported_security_location": "Benötigt Zugangsdaten im Query-String, in einem Cookie, OpenID Connect oder gegenseitiges TLS",
+      "schema_too_large": "Das erzeugte Eingabeschema ist größer als 64 KB",
+      "too_many_parameters": "Mehr als 100 Parameter",
+      "name_not_addressable": "Der Name passt nicht in das Limit von 64 Zeichen für Toolnamen"
+    },
     "status": {
       "active": "Aktiv",
       "error": "Fehler",
@@ -75,6 +96,8 @@
     "heading": "Erkannte Tools",
     "empty": "Noch keine Tools erkannt. Starten Sie eine Erkennung, um die Tool-Liste dieses Servers abzurufen.",
     "name": "Toolname",
+    "method": "Methode",
+    "path": "Pfad",
     "description": "Beschreibung",
     "proposedTier": "Vorgeschlagen",
     "tier": "Risikostufe",

@@ -28,6 +28,17 @@ Across the top, view tabs slice the queue:
 
 Below the tabs, a filter bar narrows any view by **organization**, **priority**, **category**, and **assignee**, and a search box matches against ticket subjects. Each row shows the ticket number, subject, status, priority, and an SLA chip when the clock is running low.
 
+### Ticket types
+
+Every ticket has a **type**: **Incident**, **Service request**, **Problem**, or **Change**. The type tells your team what kind of work a ticket is, separately from its category.
+
+- **Defaults.** New tickets are Incidents, whether they come from an alert, the portal, email, the API, the AI assistant, or a technician. Planned work -- tickets created for a service deliverable occurrence or a project task -- starts as a Service request. The **Create ticket** form defaults to Incident and lets you pick another type.
+- **In the queue.** Each row shows a type chip, and the filter bar has a **Filter by type** control. The Service Desk section of the sidebar has an entry per type -- **Incidents**, **Service Requests**, **Problems**, and **Changes** -- next to **Tickets**, which shows every type. The type filter is kept in the page URL, so a filtered view can be bookmarked.
+- **On a ticket.** Users with ticket edit permission change the type from the **Ticket type** selector in the workbench; read-only users see the chip. Changing the type is recorded in the ticket's activity as an internal note. It does not recalculate the SLA or re-run category rules.
+- **In the portal.** Customers see the type as a label next to the ticket number, but cannot choose it: tickets they submit get the default type.
+
+The AI assistant's ticket tool can filter by type, set the type when it creates a ticket, and change it on an existing one.
+
 ### Site-scoped technicians
 
 Organization users restricted to specific sites only see tickets whose device belongs to one of their sites. Tickets with no device attached (general, org-level requests) remain visible to every technician in the organization. Site-restricted users also can't create tickets against — or move tickets onto — devices outside their sites.
@@ -45,6 +56,36 @@ The workbench shows everything you need to resolve a ticket without leaving the 
 - **Properties rail** -- requester, source, created date, due date, the reason a ticket is waiting, the resolution note, a **linked device** that links straight to the device's page, and any **linked alerts** with one-click navigation to the alert itself.
 
 Click the expand icon (or press `Enter`) to open the ticket as a full page when you need more room.
+
+### Related tickets
+
+The **Related tickets** panel in the workbench links a ticket to other tickets in the same organization -- for example, several incidents to the problem behind them, or a change to the problem it resolves. Click **Link a ticket**, choose how this ticket relates to the other one, then search for it by number or subject:
+
+| Link | Shown on this ticket | Shown on the other ticket |
+|---|---|---|
+| **is related to** | Related | Related |
+| **was caused by** | Caused by | Causes |
+| **resolves** | Resolves | Resolved by |
+| **is a duplicate of** | Duplicate of | Duplicates |
+
+Each linked ticket shows its number, subject, status, and type, and opens in its full-page view. A link to a ticket that was later deleted stays in the list with a **Deleted** marker so you can remove it.
+
+Linking never changes either ticket's status, SLA, or assignee -- marking a ticket as a duplicate only records the relationship, so close the duplicate yourself. Adding or removing a link writes an internal note on both tickets and an entry in the audit log.
+
+The panel refuses a link that breaks these rules, and says why:
+
+- Both tickets must be in the **same organization**, and a ticket cannot link to itself.
+- **Caused by** and **resolves** links cannot form a loop (A caused by B caused by A).
+- Duplicates are one level deep: a ticket can be a duplicate of only one ticket, a ticket that already has duplicates cannot itself be marked as a duplicate, and you cannot mark a ticket as a duplicate of another duplicate -- link to the original instead.
+- A ticket can have at most **50 links**. Links to tickets you cannot see (for example, at a site outside your access) still count toward the cap and these rules.
+
+Viewing links needs ticket read permission; adding and removing them needs ticket edit permission. The AI assistant's ticket tool can list, add, and remove links under the same rules. Links are not shown in the customer portal, and moving a ticket to another organization removes its links.
+
+### Assignment notifications
+
+When a ticket is assigned to someone, Breeze emails the new assignee. The email carries a short facts table (ticket number, customer, priority, status, requester and, when there is one, the linked device), the first 1,200 characters of the message, and an **Open ticket** link to the ticket in the dashboard. Assignees can also get a mobile push (see [Mobile app](/features/mobile/)) and, if they save their own key, a [Pushover push](/features/notifications/#ticket-assignments-over-pushover).
+
+For a newly created ticket, the assignment notification is sent on the next notification pass after the ticket is saved, usually about 5 seconds later.
 
 ### Moving a ticket to another organization
 
@@ -253,7 +294,7 @@ An unassigned ticket sends no assignee notification, so staff can miss it. Pick 
 - Only **new** tickets are assigned. A reply that threads onto an existing ticket never changes who it's assigned to, and a ticket something else already assigned is left alone.
 - You can pick an **active** member of your team whose organization access isn't set to none and whose role can view tickets. Breeze checks this every time the card saves, and rejects a user from another partner, a disabled user, or someone without ticket access. If the person you picked later stops qualifying, the card shows them as unavailable and won't save other changes until you pick someone else or clear the setting.
 - Each ticket is checked again when it arrives. If the default assignee can no longer be assigned that ticket (for example, they were disabled, or their access doesn't include that customer's organization), the ticket is created **unassigned** and Breeze records why in its inbound email log. The email is never rejected because of this setting.
-- The assignment is recorded like any other: it appears in the ticket's activity and the audit log, and the assignee gets the usual assignment notification once the ticket has been saved.
+- The assignment is recorded like any other: it appears in the ticket's activity and the audit log, and the assignee gets the usual [assignment notification](#assignment-notifications) once the ticket has been saved.
 - The setting applies to every inbound path: the native inbound address and connected Microsoft 365 and Gmail mailboxes.
 
 ### Who the requester is
@@ -283,6 +324,8 @@ Instead of forwarding to your Breeze inbound address, you can connect a Microsof
 </Steps>
 
 Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
+
+A temporary Microsoft Graph problem -- throttling, a Microsoft server error, a network failure or a request that times out -- does not stop the mailbox: it stays **Connected** and Breeze retries on the next poll. Only an authorization failure asks you to reconnect.
 
 If a connection does not complete:
 
@@ -386,6 +429,22 @@ Click the stop icon in the header widget to open the stop popover, where you can
 
 Click **Log time** in the ticket's Time & Billing rail to open the quick-add form. Enter the number of minutes, an optional description, and whether the entry is billable, then click **Save**. The entry is back-dated so the end time is now and the start time is now minus the minutes you entered.
 
+### Deleting a time entry
+
+Each entry in the ticket's Time & Billing rail and on the **/timesheet** row has a **Delete** action with a confirm dialog. Deleting is permanent. It is offered on any entry that has not been invoiced to users with time-entry write access; the server then decides per entry, so you can delete your own unapproved entries, while deleting someone else's entry or an approved one needs an administrator who manages all time entries. A refusal is explained in the dialog. Deleting the entry of a running timer also clears the timer in the header.
+
+### Time without a ticket
+
+A time entry does not have to belong to a ticket. Through the API, `POST /time-entries/start` and `POST /time-entries` accept an optional `orgId` and `siteId` (plus `source`, which only the mobile app's arrival prompt sets), so time spent at a customer site can be recorded against the organization and site directly. A `siteId` needs an `orgId` or a `ticketId`. When a ticket is also given, the ticket's organization always wins: a different `orgId` is refused with `422 ORG_MISMATCH`, and a site outside the organization with `422 SITE_ORG_MISMATCH`. `GET /time-entries` returns each entry's `siteId` and can filter by it.
+
+### Location suggestions
+
+**Location suggestions** let the Breeze mobile app offer to start a timer when a technician arrives at a client site. Turn it on under **Settings → Ticketing → Time capture** with **Suggest a timer when a technician arrives at a client site**, and set a **Default arrival radius (m)** (default 150 m, 50--1000 m) for sites that have no radius of their own. The setting is partner-wide and **off by default**. Each technician must also allow location on their phone; location is checked on the phone and is never sent to Breeze. Only the site's own pinned coordinate is stored -- see [Site location](/reference/organizations-and-sites/#site-location) for how sites are pinned.
+
+<Aside type="note" title="Mobile prompt ships later">
+  v0.122.1 adds the setting, site pins and the API the mobile app reads (`GET /time-entries/location-sites`, which returns the setting, the default radius, whether the caller may pin sites, and the caller's sites, capped at 2,000 with a `truncated` flag). The arrival prompt itself ships in a later mobile app release, so turning the setting on changes nothing a technician sees yet.
+</Aside>
+
 ### Suggested time entries
 
 When a remote session ends, Breeze can offer it as a one-tap time entry: *"You ran a 38-minute desktop session on ACME-DC01 and closed T-2026-1041 -- log it?"* Nothing is ever written until you tap it.
@@ -394,10 +453,14 @@ When a remote session ends, Breeze can offer it as a one-tap time entry: *"You r
   The suggestion list, the one-tap confirm and the dismiss/restore control live in the **Breeze mobile app** and ship with it. In the web app this release adds only the partner setting described below and the provenance badge described at the end of this section -- there is no web suggestions panel. Turning the setting on changes nothing a technician sees on **/timesheet**.
 </Aside>
 
-**Turning it on.** Go to **Settings → Ticketing → Time Tracking** and enable **Suggest time entries from remote sessions**. The setting is off by default and applies partner-wide, to every technician in your organization. Two thresholds sit beside it:
+**Turning it on.** Go to **Settings → Ticketing → Time capture** and enable **Suggest time entries from remote sessions**. The setting is off by default and applies partner-wide, to every technician in your organization. Two thresholds sit beside it:
 
 - **Minimum session length** (default 120 seconds) -- sessions shorter than this are never suggested, so a mistyped connection does not become a billable line.
 - **Merge gap** (default 10 minutes) -- back-to-back sessions on the same device within this gap are combined into a single suggestion rather than offered separately.
+
+<Aside type="caution" title="Re-check this card if you saved it before v0.122.1">
+  Earlier versions always displayed **Suggest time entries from remote sessions** as off with default thresholds, and saving the card wrote those values back over your stored settings. From v0.122.1 the card loads and keeps the stored values. If you saved the Time Tracking card on an earlier version, open it and check the toggle and both thresholds.
+</Aside>
 
 **What gets suggested.** Ended remote sessions -- terminal, desktop and file transfer -- from the day you are looking at, attributed to the technician who ran them, with the session's recorded duration. Back-to-back sessions on one device inside the merge gap are combined into a single suggestion, and suggestions never overlap each other. Quick Support sessions appear with their attribution label and no organization until you attach a ticket.
 

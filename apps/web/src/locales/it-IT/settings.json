@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Dati e privacy dell'IA",
+    "orgDescription": "Cosa può leggere Breeze AI dai dispositivi di questa organizzazione e per quanto tempo vengono conservati gli output degli strumenti IA. Vuoto eredita il valore predefinito del partner; un'organizzazione può solo restringerlo.",
+    "partnerDescription": "Valori predefiniti per ogni organizzazione. Un'organizzazione può restringerli nella propria scheda IA, ma mai allentarli.",
+    "levelLabel": "Lettura dei file dei dispositivi da parte dell'IA",
+    "levels": {
+      "off": {
+        "label": "Disattivato",
+        "help": "L'IA non può leggere il contenuto dei file né sfogliare le cartelle sui dispositivi, e le richieste di accesso diagnostico vengono rifiutate. I riepiloghi sull'uso del disco e i tuoi script della libreria restano disponibili."
+      },
+      "no_user_profiles": {
+        "label": "Esclude le cartelle dei profili utente",
+        "help": "Percorsi di sistema e applicazioni con approvazione; Documenti, Desktop e cartelle home vengono rifiutati a meno che un amministratore approvi un accesso diagnostico a tempo."
+      },
+      "any_with_approval": {
+        "label": "Qualsiasi percorso, con approvazione",
+        "help": "Ogni lettura richiede comunque l'approvazione di un tecnico ed è sottoposta ad audit; gli archivi di credenziali restano bloccati."
+      }
+    },
+    "inherit": "Eredita: {{value}} ({{source}})",
+    "retentionLabel": "Conserva gli output degli strumenti IA per (giorni)",
+    "retentionInherit": "Eredita: {{value}} ({{source}})",
+    "retentionHelp": "Gli output più vecchi vengono sostituiti da un segnaposto durante l'esecuzione notturna. Vuoto eredita; un partner può scegliere di conservarli per sempre.",
+    "keepForever": "per sempre",
+    "sourceOrg": "questa organizzazione",
+    "sourcePartner": "predefinito del partner",
+    "sourceDefault": "predefinito di Breeze",
+    "abovePartnerCeiling": "Non disponibile: il valore predefinito del partner è più restrittivo.",
+    "aboveCeilingLevel": "Non disponibile: il valore predefinito del partner è più restrittivo.",
+    "retentionAboveCeiling": "Il tuo partner conserva gli output per al massimo {{days}} giorni.",
+    "saved": "Policy sui dati IA salvata",
+    "failedToSave": "Impossibile salvare la policy sui dati IA",
+    "partnerInheritDefault": "Predefinito di Breeze: {{value}}",
+    "readOnly": "Non hai l'autorizzazione per modificare questi valori predefiniti.",
+    "retentionKeepDays": "Conserva per (giorni)",
+    "retentionKeepForever": "Conserva per sempre",
+    "retentionBreezeDefault": "Predefinito di Breeze: {{days}} giorni",
+    "partnerRetentionHelp": "Scegli per quanto tempo conservare gli output degli strumenti IA, o conservali per sempre. Gli output più vecchi vengono sostituiti da un segnaposto durante l'esecuzione notturna."
+  },
   "partnerServicePrincipals": {
     "title": "Entità servizio",
     "description": "Gestisci le identità macchina con ambito partner e le relative chiavi di accesso.",
@@ -327,7 +366,6 @@
       "supportedGeos": "Supporta: {{geos}}",
       "refreshQueued": "Aggiornamento dei modelli in coda",
       "refreshFailed": "Impossibile mettere in coda l'aggiornamento dei modelli.",
-      "alreadyConnected": "Già connessa",
       "addKind": {
         "anthropic_byok": "Chiave API Anthropic",
         "openai_compatible": "Endpoint compatibile con OpenAI"
@@ -1011,6 +1049,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Centro di fiducia",
+        "description": "Valori predefiniti per le pagine di fiducia dei tuoi clienti"
+      },
       "company": {
         "label": "Azienda",
         "description": "Nome, indirizzo, contatti"
@@ -1544,6 +1586,7 @@
     },
     "scopeMailbox": "Limita l'ambito di questa cassetta postale (Application Access Policy)",
     "reauthRequired": "È richiesto un nuovo consenso dell'amministratore prima che il polling e le risposte Microsoft 365 riprendano.",
+    "pollFailing": "Gli ultimi {{failures}} controlli di questa casella di posta non sono riusciti per un errore temporaneo di Microsoft 365. Breeze continua a riprovare; i nuovi messaggi verranno recuperati quando Microsoft 365 tornerà a rispondere.",
     "retest": "Riesegui test",
     "reconnect": "Riconnetti",
     "disconnect": "Disconnetti",
@@ -1914,6 +1957,10 @@
       "title": "Funzioni portale",
       "description": "Controlla cosa può fare questo cliente nel proprio portale. Ogni organizzazione è indipendente.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Modifica della pagina di fiducia da parte del cliente",
+          "description": "I contatti amministratori del cliente con accesso al portale possono modificare la bozza della pagina di fiducia: contatto di sicurezza, sito web, controlli nascosti e ciò che la pagina mostra. La pubblicazione resta a te. Possono anche ritirare la pagina pubblicata."
+        },
         "enableTickets": {
           "label": "Invio ticket",
           "description": "I clienti possono aprire e seguire ticket di assistenza dal portale."
@@ -2035,7 +2082,9 @@
       "email": "email assistenza",
       "phone": "Telefono assistenza",
       "welcomeMessage": "Messaggio di benvenuto",
-      "footerText": "Testo footer"
+      "footerText": "Testo footer",
+      "footerTextHelp": "Mostrato in fondo al portale clienti e stampato su preventivi e fatture di questa organizzazione, al posto del piè di pagina dei documenti del partner. Lascia vuoto per stampare il piè di pagina del partner.",
+      "footerTextInheritedSource": "Piè di pagina dei documenti del partner"
     }
   },
   "orgPortalUsersEditor": {
@@ -3428,6 +3477,7 @@
         "delete_tenant": "Eliminare un'organizzazione",
         "detect_log_correlations": "Rilevare correlazioni tra i log",
         "disk_cleanup": "Pulizia disco",
+        "edr_endpoint_action": "EDR: isolare, rilasciare o analizzare un dispositivo",
         "execute_command": "Eseguire un comando di sistema",
         "execute_playbook": "Eseguire un playbook",
         "file_operations": "Operazioni sui file",
@@ -3515,6 +3565,7 @@
         "security_scan": "Scansione di sicurezza",
         "set_agent_log_level": "Impostare il livello di log dell'agente",
         "set_device_context": "Impostare il contesto del dispositivo",
+        "sync_edr_data": "Sincronizzare i dati EDR",
         "sync_huntress_data": "Sincronizzare i dati di Huntress",
         "system_cleanup": "Pulizia di sistema",
         "take_screenshot": "Acquisire uno screenshot"
@@ -4274,7 +4325,16 @@
     "partnerCurrencyUnavailable": "Impossibile caricare la valuta del partner.",
     "retry": "Riprova",
     "priceCouldNotBeSavedRetry": "Impossibile salvare il prezzo in {{currency}}. Riprova.",
-    "priceCouldNotBeRemovedRetry": "Impossibile rimuovere il prezzo in {{currency}}. Riprova."
+    "priceCouldNotBeRemovedRetry": "Impossibile rimuovere il prezzo in {{currency}}. Riprova.",
+    "billing": "Fatturazione",
+    "billingOneTime": "Una tantum",
+    "billingRecurring": "Ricorrente",
+    "billingFrequency": "Frequenza",
+    "frequencyMonthly": "Mensile",
+    "frequencyAnnual": "Annuale",
+    "commitmentTerm": "Durata dell'impegno (mesi)",
+    "commitmentTermPlaceholder": "ad es. 12",
+    "commitmentTermRange": "Durata dell'impegno: inserisci un numero intero da 1 a 120 mesi."
   },
   "catalogItemsTab": {
     "itemArchived": "Elemento archiviato",
@@ -4356,7 +4416,8 @@
     "reEnterYourNewPassword": "Reinserisci la nuova password",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Cambio password..."
+    "changingPassword": "Cambio password...",
+    "noPasswordNotice": "Questo account accede tramite il provider di identità della tua organizzazione e non ha una password, quindi qui non c'è nulla da modificare. Se la tua organizzazione non richiede il Single Sign-On, usa «Password dimenticata» nella pagina di accesso per impostarne una."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single sign-on connesso.",
@@ -4374,7 +4435,8 @@
     "sessionInvalid": "La sessione è cambiata prima del completamento del collegamento. Accedi di nuovo e riprova.",
     "providerInactive": "Quel provider single sign-on non è più attivo. Contatta l'amministratore.",
     "configChanged": "La configurazione single sign-on è cambiata durante la connessione. Riprova.",
-    "emailUnverified": "Il provider di identità non ha confermato che il tuo indirizzo email sia verificato. Contatta l'amministratore."
+    "emailUnverified": "Il provider di identità non ha confermato che il tuo indirizzo email sia verificato. Contatta l'amministratore.",
+    "idpVerifyFailed": "Breeze non è riuscito a verificare l'accesso restituito dal provider di identità. Riprova."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Caricamento app connesse…",
@@ -4575,6 +4637,7 @@
     "ssoReauthProviderInactive": "L'accesso Single Sign-On non è più disponibile per questo account. Rivolgiti all'amministratore e riprova.",
     "ssoReauthConfigChanged": "Le impostazioni di Single Sign-On sono cambiate durante la verifica. Avvia di nuovo la verifica.",
     "ssoReauthEmailUnverified": "Il tuo provider di identità segnala che il tuo indirizzo e-mail non è verificato. Verificalo lì, quindi riprova.",
+    "ssoReauthIdpVerifyFailed": "Breeze non è riuscito a verificare l'accesso restituito dal tuo provider di identità. Riprova. Se il problema persiste, chiedi all'amministratore di controllare i log del server.",
     "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'autenticazione a più fattori.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Questo account accede tramite un provider di identità e non ha una password. Esegui di nuovo la verifica presso il provider prima di aggiungere una passkey.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "La tua identità è stata verificata. Assegna un nome a questa passkey e continua.",
@@ -4607,6 +4670,11 @@
     "systemRoles": "Ruoli di sistema",
     "customRoles": "Ruoli personalizzati",
     "createRole": "Crea ruolo",
+    "ownerScope": "Ambito",
+    "ownerScopePartner": "Livello partner",
+    "ownerScopePartnerHelp": "Per il tuo personale. Assegnalo nella pagina Utenti.",
+    "ownerScopeOrganization": "Organizzazione",
+    "ownerScopeOrganizationHelp": "Per gli utenti di un'organizzazione e il suo ruolo SSO predefinito.",
     "name": "Nome",
     "type": "Tipo",
     "inheritsFrom": "Eredita da",
@@ -5664,6 +5732,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Questa organizzazione ha una pagina pubblica del Centro di fiducia. Se modifichi lo slug, cambia l’URL pubblico e il vecchio link smetterà di funzionare.",
     "actions": {
       "save": "Salva organizzazione"
     },
@@ -5912,7 +5981,8 @@
       "title": "Indirizzo"
     },
     "actions": {
-      "saveChanges": "Salva modifiche"
+      "saveChanges": "Salva modifiche",
+      "sendMessage": "Invia messaggio"
     },
     "policies": {
       "assignedTitle": "Criteri assegnati",
@@ -5978,6 +6048,8 @@
     },
     "columns": {
       "timezone": "Fuso orario",
+      "address": "Indirizzo",
+      "contact": "Contatto",
       "devices": "Dispositivi"
     },
     "empty": "Nessun sito trovato. Aggiungi un sito per iniziare."
@@ -6762,5 +6834,16 @@
     "invalidKey": "Una chiave utente Pushover è composta da 30 lettere o cifre.",
     "loadFailed": "Impossibile caricare l’impostazione Pushover.",
     "saveFailed": "Impossibile salvare l’impostazione Pushover."
+  },
+  "emailNotificationSettings": {
+    "title": "Notifiche via email",
+    "description": "Scegli quali email ti invia Breeze. Gli avvisi nell'app restano sempre attivi.",
+    "digestLabel": "Riepilogo giornaliero sullo stato delle connessioni",
+    "digestHelp": "Un riepilogo mattutino delle integrazioni e degli accessi che puoi correggere e di quelli ripristinati. Inviato al massimo una volta al giorno.",
+    "enabledToast": "Riepilogo sullo stato delle connessioni attivato",
+    "disabledToast": "Riepilogo sullo stato delle connessioni disattivato",
+    "loadFailed": "Impossibile caricare le preferenze email.",
+    "saveFailed": "Impossibile salvare le preferenze email.",
+    "retry": "Riprova"
   }
 }

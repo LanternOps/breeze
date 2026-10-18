@@ -231,6 +231,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/mssql/backup/'],
     ['POST', '/api/v1/backup/hyperv/backup'],
     ['POST', '/api/v1/backup/hyperv/backup/'],
+    // #8333 — the recovery-media catalog fetches the signed release manifest
+    // (safeFetch, 1-2 s) per arch; read-only, so it must not pin a connection.
+    ['GET', '/api/v1/backup/bmr/boot-media'],
+    ['GET', '/api/v1/backup/bmr/boot-media/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -440,6 +444,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/providers/connections//test', 'empty connection id must not match'],
     ['POST', '/api/v1/backup/providers/connections/conn-1/test/extra', 'extra segment must not match'],
     ['GET', '/api/v1/backup/providers/connections/conn-1/test', 'test is POST-only'],
+    ['GET', '/api/v1/backup/bmr/media', 'no outbound fetch (#8333 ruled it out)'],
+    ['POST', '/api/v1/backup/bmr/boot-media', 'only the GET catalog opts out'],
   ];
 
   const SNMP_MATCH: ReadonlyArray<[string, string]> = [
@@ -658,4 +664,23 @@ it('W05: the continuation route manages its own DB context (it makes a provider 
 it('only opts the network-bearing charge POST out of ambient context', () => {
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/invoices/abc/autopay/charge-now')).toBe(true);
   expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/invoices/abc/autopay')).toBe(false);
+});
+
+it('#8167 self-manages POST /edr/actions (commit before the vendor call) and no sibling EDR read', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/actions')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/actions/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/edr/actions')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/actions/abc-123')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/edr/endpoints')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/sync')).toBe(false);
+});
+
+it('#8167 PR-B self-manages the three push routes (vendor push-settings calls) and nothing nearby', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push')).toBe(true);
+  expect(isSelfManagedDbContextRoute('DELETE', '/api/v1/edr/connections/abc-123/push')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push/test')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/edr/connections/abc-123/push')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push/other')).toBe(false);
+  // The public webhook has no ambient auth transaction to opt out of.
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/webhooks/edr/abc-123')).toBe(false);
 });

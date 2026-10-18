@@ -49,6 +49,8 @@ If a manual backup request cannot be queued at all, Breeze now marks the job **F
 3. Verify storage credentials haven't expired or been rotated.
 4. Check that the agent has network access to the storage target.
 
+A backup is also stopped and marked failed if the device moves to another organization, or its backup configuration is edited, while the backup is being sent to the device. Run the backup again once the move or edit is done.
+
 ---
 
 ## Backup job fails with "backup helper exited unexpectedly"
@@ -78,6 +80,16 @@ If a manual backup request cannot be queued at all, Breeze now marks the job **F
 **Cause:** The snapshot's stored objects did not match its attestation when they were checked. Breeze will not read such a snapshot. See [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore).
 
 **Fix:** Restore from a different snapshot. Investigate the storage target for tampering or corruption. If the message instead says the file list `is being rebuilt from storage`, wait a few minutes and run the restore again.
+
+---
+
+## Restore refused: "Update the Breeze agent on this device"
+
+**Symptom:** Starting a file, SQL Server, Hyper-V, restore-as-VM, instant boot or bare-metal restore fails with **Update the Breeze agent on this device, then try again.** Or recovery media fails at the recovery code with **This recovery tool is too old to check backup integrity.**
+
+**Cause:** Restores that write, import or boot a backup need a backup helper that checks snapshot attestations (Breeze agent v0.120.0 or later). Recovery media and recovery tools older than v0.120.0 are refused too. Verification and test restore are not affected.
+
+**Fix:** Update the agent on the target device and start the restore again. For bare-metal recovery, download current recovery media or the current recovery tool and boot it again. See [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore).
 
 ---
 
@@ -213,7 +225,7 @@ Breeze does not create simulated verification records or silent pending restores
 
 **Symptom:** A bare-metal rebuild, bare-metal recovery, VM restore, or SQL Server restore is still "in progress" after an hour or more.
 
-**Cause:** These restores download and verify one object at a time, so real hardware and large disks commonly take one to several hours — that alone isn't a failure. Breeze allows up to **24 hours** before treating a whole-machine restore as stalled.
+**Cause:** These restores move a lot of data. For bare-metal rebuild and recovery a v0.122.1 or later agent downloads and verifies up to 8 files at a time (older agents one at a time). Real hardware and large disks still commonly take one to several hours — that alone isn't a failure. Breeze allows up to **24 hours** before treating a whole-machine restore as stalled.
 
 **Fix:** Let it continue; check the recovery's timeline (or the device's command history) for phase progress. If it's genuinely stuck, it's automatically marked failed once it exceeds 24 hours — investigate storage throughput or network connectivity to the target at that point.
 

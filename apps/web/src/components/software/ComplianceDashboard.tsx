@@ -31,6 +31,9 @@ type Policy = {
   // because client-side prefill drafts (not yet server rows) omit it.
   orgId?: string | null;
   partnerId?: string | null;
+  // Non-null = generated from a configuration policy's feature link; the API
+  // answers 409 managed_software_policy_read_only on PATCH/DELETE/remediate.
+  managedByLinkId?: string | null;
   mode: "allowlist" | "blocklist" | "audit";
   rules?: {
     software: Array<{
@@ -616,6 +619,21 @@ export default function ComplianceDashboard({
                           {i18n.t("policies:software.complianceDashboard.autoInstallArmed")}
                         </span>
                       )}
+                      {policy.managedByLinkId && (
+                        <a
+                          href="/configuration-policies"
+                          data-testid="software-policy-managed-badge"
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary hover:bg-primary/20"
+                          title={i18n.t(
+                            "policies:software.complianceDashboard.managedByConfigPolicyHint",
+                          )}
+                        >
+                          <Layers className="h-3 w-3" />
+                          {i18n.t(
+                            "policies:software.complianceDashboard.managedByConfigPolicy",
+                          )}
+                        </a>
+                      )}
                       {policy.orgId === null && (
                         <span
                           className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
@@ -668,7 +686,7 @@ export default function ComplianceDashboard({
                         de: "Prüfung", es: "auditoría") — audit mode means
                         report, never change.
                       */}
-                      {policy.mode !== "audit" && (
+                      {policy.mode !== "audit" && !policy.managedByLinkId && (
                         <button
                           type="button"
                           data-testid={`policy-remediate-${policy.id}`}
@@ -681,6 +699,8 @@ export default function ComplianceDashboard({
                           )}
                         </button>
                       )}
+                      {!policy.managedByLinkId && (
+                        <>
                       <button
                         type="button"
                         onClick={() => handleEdit(policy)}
@@ -699,6 +719,8 @@ export default function ComplianceDashboard({
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>

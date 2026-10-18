@@ -125,7 +125,8 @@ vi.mock('../../services/aiAgentSdkTools', () => ({
   createBreezeMcpServer: vi.fn(() => ({ type: 'sdk', name: 'breeze' })),
 }));
 
-vi.mock('../../services/aiInputSanitizer', () => ({
+vi.mock('../../services/aiInputSanitizer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/aiInputSanitizer')>()),
   sanitizeUserMessage: vi.fn(() => ({ sanitized: 'hello', flags: [] })),
 }));
 

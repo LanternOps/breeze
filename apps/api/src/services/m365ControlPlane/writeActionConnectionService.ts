@@ -22,6 +22,10 @@ const actionsConnectionService = createConnectionService({
     signingKid: config.executorSigningKid,
   }),
   retest: (client, request) => client.retestCustomerGraphActions(request),
+  // #8661: a Retest after a manifest bump that finds the new roles not yet
+  // granted must leave the row `manifest-stale` (upgrade-eligible) instead of
+  // promoting it into `grant_missing`, which dead-ended the connection.
+  retestPromotesManifestOnlyWhenSatisfied: true,
   // recordEvent/recordMetric intentionally omitted, mirroring the read instance:
   // consent telemetry is emitted at the route layer, not inside the service.
   // The actions metric siblings are consumed by the actions route (Task 10).
@@ -33,7 +37,9 @@ export type InitiateCustomerGraphActionsConsentInput = InitiateConsentInput;
 export type InitiatedCustomerGraphActionsConsent = InitiatedConsent<'customer-graph-actions'>;
 
 export const initiateCustomerGraphActionsConsent = actionsConnectionService.initiateConsent;
+export const initiateCustomerGraphActionsUpgradeConsent = actionsConnectionService.initiateUpgradeConsent;
 export const listCustomerGraphActionsConnections = actionsConnectionService.listConnections;
+export const listStaleManifestCustomerGraphActionsConnections = actionsConnectionService.listStaleManifestConnections;
 export const transitionIdentityToConsent = actionsConnectionService.transitionIdentityToConsent;
 export const readPendingCustomerGraphActionsTenantConfirmation = actionsConnectionService.readPendingTenantConfirmation;
 export const continueCustomerGraphActionsConsent = actionsConnectionService.continueToConsent;

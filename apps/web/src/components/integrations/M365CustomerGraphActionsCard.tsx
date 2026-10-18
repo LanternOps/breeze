@@ -18,7 +18,7 @@ import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "../../lib/authScope";
 import { usePermissions } from "../../lib/permissions";
 import { handleActionError, runAction } from "../../lib/runAction";
-import { navigateTo } from "@/lib/navigation";
+import { navigateTo, navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
 import { M365ConfirmTenantPanel, M365ConsentSteps } from "./M365ConfirmTenantPanel";
@@ -133,7 +133,7 @@ type Envelope = {
 };
 
 type LoadState = "unavailable" | "loading" | "ready" | "error";
-type ActionName = "consent" | "retest" | "disconnect";
+type ActionName = "consent" | "upgrade" | "retest" | "disconnect";
 type OrgGeneration = {
   orgId: string | null;
   generation: number;
@@ -188,6 +188,22 @@ function parseGrants(value: unknown): Grant[] | null {
 }
 
 const TRUSTED_PROFILE = M365_PERMISSION_PROFILES["customer-graph-actions"];
+
+// The two roles every connection held before the W05 write catalog (manifest
+// v2). A kept-stale row (manifest older than current) is still executing on
+// exactly these, so losing one of them is a revocation, not an expected gap.
+const PRE_W05_ROLE_VALUES = new Set(["User.ReadWrite.All", "User-PasswordProfile.ReadWrite.All"]);
+/** Role value -> i18n key suffix. Role values contain dots, which i18next
+ *  reads as key nesting, so they can never be used as keys directly. */
+const ROLE_PURPOSE_KEY: Record<string, string> = {
+  "User.ReadWrite.All": "userReadWrite",
+  "User-PasswordProfile.ReadWrite.All": "userPasswordProfile",
+  "User.RevokeSessions.All": "userRevokeSessions",
+  "GroupMember.ReadWrite.All": "groupMember",
+  "DeviceManagementManagedDevices.PrivilegedOperations.All": "intunePrivileged",
+  "MailboxSettings.ReadWrite": "mailboxSettings",
+  "Organization.Read.All": "organizationRead",
+};
 
 function grantTuple(grant: Grant): string {
   return `${grant.resourceApplicationId.toLowerCase()}:${grant.appRoleId.toLowerCase()}:${grant.value}`;
@@ -481,6 +497,36 @@ export default function M365CustomerGraphActionsCard({
     });
   }, [canWrite, data, isCurrent, orgId, perform, scope, scopedRequest, t]);
 
+  const startUpgradeConsent = useCallback(() => {
+    if (!orgId || !data?.connection || !canWrite || !data.onboardingEnabled) return;
+    const target = scope;
+    const connectionId = data.connection.id;
+    // Upgrade consent keeps the row active and executing on the grants it
+    // already holds; it does NOT use /connections/consent, which would move
+    // the row to pending-consent and stop writes until the admin returns.
+    void perform(target, "upgrade", async () => {
+      try {
+        const url = await runAction<string>({
+          request: () => scopedRequest(
+            target,
+            () => fetchWithAuth(
+              `/m365/customer-graph-actions/connections/${connectionId}/upgrade-consent?orgId=${target.orgId}`,
+              { method: "POST" },
+            ),
+            { adminConsentUrl: "https://login.microsoftonline.com/organizations/" },
+          ),
+          parseSuccess: parseConsentUrl,
+          errorFallback: t("m365CustomerGraphActions.v2.upgradeFailed"),
+        });
+        if (isCurrent(target)) navigateToMicrosoftLogin(url);
+      } catch (error) {
+        if (isCurrent(target)) {
+          handleActionError(error, t("m365CustomerGraphActions.v2.upgradeFailed"));
+        }
+      }
+    });
+  }, [canWrite, data, isCurrent, orgId, perform, scope, scopedRequest, t]);
+
   const retest = useCallback(() => {
     if (
       !orgId
@@ -582,7 +628,25 @@ export default function M365CustomerGraphActionsCard({
     || consentTarget
     || t("m365CustomerGraphActions.preflight.defaultTarget");
 
-  const displayedMissingGrants = connection?.missingGrants ?? [];
+  const manifestStale = !!connection && (
+    connection.grantHealth === "manifest-stale"
+    || connection.manifestVersion < connection.currentManifestVersion
+  );
+  const newRoleGrants = useMemo(
+    () => (data?.profile.requiredGrants ?? []).filter((grant) => !PRE_W05_ROLE_VALUES.has(grant.value ?? "")),
+    [data],
+  );
+  // While the manifest is stale the API reports every new role as missing.
+  // That is expected (the upgrade notice explains it), so only roles the row
+  // already had can be a genuine missing-grant error.
+  const displayedMissingGrants = (connection?.missingGrants ?? []).filter(
+    (grant) => !manifestStale || PRE_W05_ROLE_VALUES.has(grant.value ?? ""),
+  );
+  // A kept-stale row has lastErrorCode "manifest_stale", which can hide a
+  // revoked pre-existing role. Read it off the observed grants instead.
+  const revokedGrantValues = connection && manifestStale && connection.grantsVerifiedAt
+    ? [...PRE_W05_ROLE_VALUES].filter((value) => !connection.observedGrants.some((grant) => grant.value === value))
+    : [];
   const displayedUnexpectedGrants = connection?.unexpectedGrants ?? [];
   const unexpectedAlert = t("m365CustomerGraphActions.grants.unexpectedAlert");
   const canRetestConnection = connection?.status === "active" || connection?.status === "degraded";
@@ -706,6 +770,52 @@ export default function M365CustomerGraphActionsCard({
             <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-foreground">{errorCopy}</p>
           )}
 
+          {connection && manifestStale && (
+            <div
+              data-testid="m365-actions-upgrade-notice"
+              className="rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-foreground"
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                <div>
+                  <p className="font-semibold">{t("m365CustomerGraphActions.v2.title")}</p>
+                  <p className="mt-1">{t("m365CustomerGraphActions.v2.intro")}</p>
+                  <p className="mt-1">{t("m365CustomerGraphActions.v2.keepsWorking")}</p>
+                </div>
+              </div>
+              <ul className="mt-3 space-y-1.5">
+                {newRoleGrants.map((grant) => {
+                  const purposeKey = ROLE_PURPOSE_KEY[grant.value ?? ""] ?? "unknown";
+                  return (
+                    <li key={`${grant.resourceApplicationId}:${grant.appRoleId}`} data-testid="m365-actions-v2-purpose" className="flex items-start gap-2">
+                      <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      {t(/* i18n-dynamic */ `m365CustomerGraphActions.v2.purpose.${purposeKey}`)}
+                    </li>
+                  );
+                })}
+              </ul>
+              <button
+                type="button"
+                onClick={startUpgradeConsent}
+                disabled={!canWrite || !data.onboardingEnabled || action !== null}
+                className="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {action === "upgrade" && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
+                {t("m365CustomerGraphActions.v2.upgradeAction")}
+              </button>
+            </div>
+          )}
+
+          {revokedGrantValues.length > 0 && (
+            <p
+              role="alert"
+              data-testid="m365-actions-revoked-grant"
+              className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+            >
+              {t("m365CustomerGraphActions.v2.revokedGrant", { grants: revokedGrantValues.join(", ") })}
+            </p>
+          )}
+
           {connection && (
             <div className="border-t pt-5">
               <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -743,10 +853,12 @@ export default function M365CustomerGraphActionsCard({
 
           {connection && (displayedMissingGrants.length > 0 || displayedUnexpectedGrants.length > 0) && (
             <div className="grid gap-6 border-t pt-5 lg:grid-cols-2">
-              <div>
-                <h4 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphActions.grants.missing")}</h4>
-                <GrantList grants={displayedMissingGrants} />
-              </div>
+              {displayedMissingGrants.length > 0 && (
+                <div>
+                  <h4 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphActions.grants.missing")}</h4>
+                  <GrantList grants={displayedMissingGrants} />
+                </div>
+              )}
               {displayedUnexpectedGrants.length > 0 && (
                 <div role="alert" aria-label={unexpectedAlert} className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-destructive">
                   <div className="mb-3 flex items-center gap-2 font-semibold"><AlertTriangle aria-hidden="true" className="h-4 w-4" />{unexpectedAlert}</div>

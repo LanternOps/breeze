@@ -126,13 +126,13 @@ export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = 
 
 export function defaultSubject(
   id: EmailTemplateId,
-  ctx: { internalNumber?: string | null; ticketSubject?: string; vars?: Record<string, string>; variant?: string },
+  ctx: { ticketNumber?: string | null; ticketSubject?: string; vars?: Record<string, string>; variant?: string },
 ): string {
   const vars = { ...(ctx.vars ?? {}) };
   const ticketSubject = ctx.ticketSubject ?? vars.ticket_subject ?? '';
   // Autoresponse HTML uses "your request" when there is no number. That must
   // not leak into the subject as "[your request] …" — omit the prefix instead.
-  let ticketNumber = ctx.internalNumber ?? '';
+  let ticketNumber = ctx.ticketNumber ?? '';
   if (!ticketNumber && id !== 'ticket_autoresponse') {
     ticketNumber = vars.ticket_number ?? '';
   }
