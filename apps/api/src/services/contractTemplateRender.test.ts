@@ -18,6 +18,7 @@ import {
   resolveAutoVariables,
   resolveQuoteAutoVariables,
   renderContextFromQuote,
+  renderContextFromRequest,
   substituteVariables,
   findUnresolvedVariables,
   renderContractBlocksForClient,
@@ -247,6 +248,47 @@ describe('renderContextFromQuote + resolveAutoVariables(ctx)', () => {
     expect(map).not.toHaveProperty('totals.monthly');
     expect(map).not.toHaveProperty('dates.expiry');
     expect(map['dates.effective']).toBe('Oct 01, 2026');
+  });
+  it('renderContextFromRequest yields a 4-key map with quote-only keys absent (#8865 W1b)', () => {
+    const ctx = renderContextFromRequest(
+      {
+        clientNameSnapshot: 'Acme Co',
+        clientAddressSnapshot: { line1: '1 Main St', city: 'Springfield', country: 'US' },
+        sellerSnapshot: { name: 'MSP LLC' },
+        renderLocale: null, documentLocale: null, effectiveDate: null,
+      },
+      { effectiveDate: '2026-10-01', currencyCode: 'USD' },
+    );
+    expect(ctx.quote).toBeUndefined();
+    const map = resolveAutoVariables(ctx);
+    expect(Object.keys(map).sort()).toEqual(['client.address', 'client.name', 'dates.effective', 'seller.name']);
+    for (const k of ['quote.number', 'quote.title', 'totals.one_time', 'totals.monthly', 'totals.annual', 'totals.total', 'dates.expiry']) {
+      expect(map).not.toHaveProperty(k);
+    }
+    expect(map).toEqual({
+      'client.name': 'Acme Co',
+      'client.address': '1 Main St, Springfield, US',
+      'seller.name': 'MSP LLC',
+      'dates.effective': 'Oct 01, 2026',
+    });
+  });
+  it('renderContextFromRequest locale precedence: render_locale > document_locale > en', () => {
+    const base = { clientNameSnapshot: 'A', clientAddressSnapshot: null, sellerSnapshot: null, effectiveDate: null };
+    const opts = { effectiveDate: '2026-10-01', currencyCode: 'EUR' };
+    expect(renderContextFromRequest({ ...base, renderLocale: 'fr-FR', documentLocale: 'de-DE' }, opts).renderLocale).toBe('fr-FR');
+    expect(renderContextFromRequest({ ...base, renderLocale: null, documentLocale: 'de-DE' }, opts).renderLocale).toBe('de-DE');
+    expect(renderContextFromRequest({ ...base, renderLocale: null, documentLocale: null }, opts).renderLocale).toBe('en');
+    expect(renderContextFromRequest({ ...base, renderLocale: null, documentLocale: null }, opts).currencyCode).toBe('EUR');
+  });
+  it('renderContextFromRequest: null snapshots fall back to empty strings; a sender-set effective_date beats the sign date', () => {
+    const ctx = renderContextFromRequest(
+      { clientNameSnapshot: null, clientAddressSnapshot: null, sellerSnapshot: null, renderLocale: null, documentLocale: null, effectiveDate: '2026-11-15' },
+      { effectiveDate: '2026-10-01', currencyCode: 'USD' },
+    );
+    expect(ctx.clientName).toBe('');
+    expect(ctx.sellerName).toBe('');
+    expect(ctx.clientAddress).toBeNull();
+    expect(resolveAutoVariables(ctx)['dates.effective']).toBe('Nov 15, 2026');
   });
   it('pdf: true routes money through formatMoneyForPdf for a quote context only', () => {
     const q = fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' });

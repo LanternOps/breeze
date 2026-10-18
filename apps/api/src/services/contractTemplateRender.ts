@@ -25,6 +25,7 @@ import { formatMoney, type ContractVariable } from '@breeze/shared';
 import { formatMoneyForPdf } from './pdfMoney';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contractTemplates, contractTemplateVersions, quotes } from '../db/schema';
+import type { AgreementRequestRow } from '../db/schema/contractDocuments';
 import { sanitizeRichTextHtml } from './richTextSanitize';
 import { formatDate, contractUploadedMarker, type ContractPdfBlockData } from './quotePdf';
 import type { SellerSnapshot, BillToAddress } from './sellerSnapshot';
@@ -342,6 +343,33 @@ export function renderContextFromQuote(
         total: quote.total,
       },
     },
+  };
+}
+
+/** Build the render context for a standalone agreement request (#8865 W1b).
+ *  No `quote` member, so the resolved map carries only the four
+ *  request-applicable keys (client.name, client.address, seller.name,
+ *  dates.effective) — the quote-only keys are ABSENT and a template that
+ *  declares one is reported unresolved rather than filled with ''.
+ *
+ *  Inputs are the request's send-time snapshots, so a later org rename never
+ *  changes what was hashed. Locale: `render_locale` (pinned at sign time) >
+ *  `document_locale` (send-time stamp) > 'en'. `dates.effective`: a
+ *  sender-set `effective_date` wins; otherwise `opts.effectiveDate` (the sign
+ *  date). `currencyCode` is carried for type parity — a request has no totals. */
+export function renderContextFromRequest(
+  request: Pick<AgreementRequestRow,
+    'clientNameSnapshot' | 'clientAddressSnapshot' | 'sellerSnapshot' | 'renderLocale' | 'documentLocale' | 'effectiveDate'>,
+  opts: { effectiveDate: string | Date; currencyCode: string },
+): AgreementRenderContext {
+  const seller = (request.sellerSnapshot as SellerSnapshot | null) ?? null;
+  return {
+    clientName: request.clientNameSnapshot ?? '',
+    clientAddress: (request.clientAddressSnapshot as BillToAddress | null) ?? null,
+    sellerName: seller?.name ?? '',
+    currencyCode: opts.currencyCode,
+    renderLocale: request.renderLocale ?? request.documentLocale ?? 'en',
+    effectiveDate: request.effectiveDate ?? opts.effectiveDate,
   };
 }
 
