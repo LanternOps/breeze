@@ -627,4 +627,29 @@ describe('vpnPresenceIngestSchema', () => {
     });
     expect(r.success).toBe(false);
   });
+
+  // #8763: enterprise VPN / SSE clients the agent now names. Must match the
+  // provider consts in agent/internal/collectors/vpn.go.
+  it.each(['zscaler', 'globalprotect', 'cisco-secure-client', 'forticlient', 'netskope'])(
+    'accepts the %s provider (inactive, client running)',
+    (provider) => {
+      const r = vpnPresenceIngestSchema.safeParse({
+        provider,
+        active: false,
+        interfaceName: '',
+        detectionSource: 'service'
+      });
+      expect(r.success).toBe(true);
+    }
+  );
+
+  it('still rejects an unknown provider id', () => {
+    const r = vpnPresenceIngestSchema.safeParse({
+      provider: 'zscaler-connector',
+      active: false,
+      interfaceName: '',
+      detectionSource: 'process'
+    });
+    expect(r.success).toBe(false);
+  });
 });

@@ -433,6 +433,14 @@ export const vpnProviderSchema = z.enum([
   'zerotier',
   'openvpn',
   'cloudflare-warp',
+  // Enterprise VPN / SSE clients (#8763). Closed enum: an API older than the
+  // agent drops entries with a provider it doesn't know (per-entry salvage in
+  // routes/agents/inventory.ts), so ship the API before promoting the agent.
+  'zscaler',
+  'globalprotect',
+  'cisco-secure-client',
+  'forticlient',
+  'netskope',
   'generic'
 ]);
 

@@ -190,6 +190,11 @@ Agents on Windows, macOS, and Linux detect active VPN and overlay-network client
 - **ZeroTier**
 - **OpenVPN**
 - **Cloudflare WARP**
+- **Zscaler** (Zscaler Client Connector)
+- **GlobalProtect**
+- **Cisco Secure Client** (including AnyConnect)
+- **FortiClient**
+- **Netskope**
 - A generic **VPN** fallback for active tunnel interfaces that don't match a known provider
 
 Detection works purely from **local signals on the device** — tunnel interface names and addresses, corroborated by the provider's running service or process. It is read-only telemetry: Breeze does not read keys, peer lists, or any VPN configuration, and cannot manage the VPN. For Tailscale, the device's own DNS name is also reported.
@@ -206,6 +211,12 @@ A provider is only ever reported when the device gives a concrete signal for it 
 <Aside type="note">
   A VPN whose client is not running at all is not reported. "Disconnected" means the client is running with no tunnel up, which is the state operators usually care about; a stopped client is indistinguishable from an uninstalled one without scanning the filesystem, which the agent deliberately does not do.
 </Aside>
+
+### Clients without a tunnel adapter
+
+Some security-service clients do not create a network adapter of their own. **Zscaler Client Connector on Windows** steers traffic through a filter driver bound to the existing Ethernet and Wi-Fi adapters, so there is no tunnel interface for the agent to see. Breeze can confirm the client is running, but not whether its tunnel is up, so on Windows Zscaler is always shown as **Disconnected** (client running). Treat that state as "installed and running", not as proof the tunnel is down. Netskope can behave the same way.
+
+On macOS, Zscaler's tunnel is a plain `utun` with no network-extension owner, so it is named by the single-running-client rule described below.
 
 ### Naming tunnels on macOS
 

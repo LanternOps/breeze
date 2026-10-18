@@ -539,4 +539,310 @@ en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500 index 14
 			t.Errorf("expected no attributions, got %v", got)
 		}
 	})
+
+	t.Run("enterprise network-extension descriptions attribute their utun", func(t *testing.T) {
+		const enterprise = `utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1400 index 30
+	agent domain:NetworkExtension type:VPN flags:0x3 desc:"VPN: GlobalProtect"
+utun7: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1390 index 31
+	agent domain:NetworkExtension type:VPN flags:0x3 desc:"VPN: Cisco Secure Client"
+utun9: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1500 index 32
+`
+		got := parseIfconfigVPNAgents(enterprise)
+		want := map[string]string{"utun4": vpnGlobalProtect, "utun7": vpnCiscoSecureClient}
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for iface, provider := range want {
+			if got[iface] != provider {
+				t.Errorf("%s = %q, want %q", iface, got[iface], provider)
+			}
+		}
+	})
+}
+
+// Enterprise VPN / SSE clients (#8763). Interface-name rules are only ever a
+// bonus for these vendors — Zscaler on Windows exposes no NIC at all — so the
+// classifier must name their adapters when they exist and never steal another
+// vendor's adapter or a generic tunnel.
+func TestClassifyVPNInterfaceEnterpriseClients(t *testing.T) {
+	tests := []struct {
+		name         string
+		iface        string
+		wantProvider string
+		wantTunnel   bool
+	}{
+		{"zscaler named adapter", "Zscaler Network Adapter", vpnZscaler, true},
+		{"globalprotect windows adapter", "PANGP Virtual Ethernet Adapter", vpnGlobalProtect, true},
+		{"globalprotect gpd0 (macOS/Linux)", "gpd0", vpnGlobalProtect, true},
+		{"cisco anyconnect adapter", "Cisco AnyConnect Secure Mobility Client Connection", vpnCiscoSecureClient, true},
+		{"cisco secure client adapter", "Cisco Secure Client Virtual Miniport Adapter", vpnCiscoSecureClient, true},
+		{"cisco linux cscotun0", "cscotun0", vpnCiscoSecureClient, true},
+		{"fortinet ssl adapter", "Fortinet SSL VPN Virtual Ethernet Adapter", vpnFortiClient, true},
+		{"fortissl", "fortissl", vpnFortiClient, true},
+		{"netskope adapter", "Netskope Tunnel", vpnNetskope, true},
+		// Near misses: these must stay exactly what they were before.
+		{"wireguard adapter is not zscaler", "WireGuard Tunnel", vpnWireGuard, true},
+		{"plain utun stays generic", "utun5", vpnGeneric, true},
+		{"windows wi-fi direct is not a tunnel", "Local Area Connection* 2", "", false},
+		{"gpu-ish name is not globalprotect", "gpu0", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, isTunnel := classifyVPNInterface(tt.iface)
+			if isTunnel != tt.wantTunnel || provider != tt.wantProvider {
+				t.Fatalf("classifyVPNInterface(%q) = (%q,%v), want (%q,%v)", tt.iface, provider, isTunnel, tt.wantProvider, tt.wantTunnel)
+			}
+		})
+	}
+}
+
+func TestMatchVPNProcessName(t *testing.T) {
+	tests := []struct {
+		name    string
+		process string
+		want    []string
+	}{
+		// Zscaler Client Connector, Windows (field-captured on #8763).
+		{"zscaler ZSATunnel.exe", "ZSATunnel.exe", []string{vpnZscaler}},
+		{"zscaler ZSAService", "ZSAService.exe", []string{vpnZscaler}},
+		{"zscaler ZSATray (user process)", "ZSATray.exe", []string{vpnZscaler}},
+		{"zscaler ZSATrayManager", "ZSATrayManager.exe", []string{vpnZscaler}},
+		{"zscaler ZSAUpm", "ZSAUpm.exe", []string{vpnZscaler}},
+		// Zscaler Client Connector, macOS (field-captured on #8763).
+		{"zscaler mac tray", "Zscaler", []string{vpnZscaler}},
+		{"zscaler mac service", "ZscalerService", []string{vpnZscaler}},
+		{"zscaler mac TRPTunnel", "com.zscaler.zscaler.TRPTunnel", []string{vpnZscaler}},
+		{"zscaler mac TRPTunnel truncated to MAXCOMLEN", "com.zscaler.zsca", []string{vpnZscaler}},
+		{"zscaler mac UPMServiceController", "UPMServiceController", []string{vpnZscaler}},
+		// GlobalProtect.
+		{"globalprotect PanGPA", "PanGPA.exe", []string{vpnGlobalProtect}},
+		{"globalprotect PanGPS", "PanGPS.exe", []string{vpnGlobalProtect}},
+		{"globalprotect mac app", "GlobalProtect", []string{vpnGlobalProtect}},
+		// Cisco Secure Client / AnyConnect.
+		{"cisco vpnagent", "vpnagent.exe", []string{vpnCiscoSecureClient}},
+		{"cisco vpnagentd", "vpnagentd", []string{vpnCiscoSecureClient}},
+		{"cisco vpnui", "vpnui.exe", []string{vpnCiscoSecureClient}},
+		{"cisco csc_ui", "csc_ui.exe", []string{vpnCiscoSecureClient}},
+		{"cisco mac app", "Cisco Secure Client", []string{vpnCiscoSecureClient}},
+		{"anyconnect mac app", "Cisco AnyConnect Secure Mobility Client", []string{vpnCiscoSecureClient}},
+		// FortiClient.
+		{"forticlient", "FortiClient.exe", []string{vpnFortiClient}},
+		{"fortitray", "FortiTray.exe", []string{vpnFortiClient}},
+		{"fortisslvpndaemon", "FortiSSLVPNdaemon.exe", []string{vpnFortiClient}},
+		{"fcdblog", "FCDBLog.exe", []string{vpnFortiClient}},
+		// Netskope.
+		{"netskope stAgentSvc", "stAgentSvc.exe", []string{vpnNetskope}},
+		{"netskope stAgentUI", "stAgentUI.exe", []string{vpnNetskope}},
+		{"netskope mac app", "Netskope Client", []string{vpnNetskope}},
+		// Existing providers are unchanged.
+		{"tailscaled", "tailscaled", []string{vpnTailscale}},
+		{"openvpn", "openvpn.exe", []string{vpnOpenVPN}},
+		// Near misses — exact-name tokens must not substring-match.
+		{"zdp agent is not the zscaler tunnel", "zdpagent", nil},
+		{"zdpd", "zdpd", nil},
+		{"zdp communicator", "zdpcommunicator", nil},
+		{"bare zsa prefix", "zsa", nil},
+		{"zsa-prefixed unrelated", "zsamplerd", nil},
+		{"zscaler pre-login ui is not the client", "ZscalerPreLogin", nil},
+		{"vpnagent suffix in another vendor", "nordvpnagent.exe", nil},
+		{"vpnui suffix in another vendor", "myvpnui.exe", nil},
+		{"pangps prefix only", "pangpsx", nil},
+		{"stagent prefix only", "stagent", nil},
+		{"short name is not a truncation prefix match", "zscalerservic", nil},
+		{"empty", "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchVPNProcessName(tt.process)
+			if len(got) != len(tt.want) {
+				t.Fatalf("matchVPNProcessName(%q) = %v, want %v", tt.process, got, tt.want)
+			}
+			for _, p := range tt.want {
+				if !got[p] {
+					t.Errorf("matchVPNProcessName(%q) = %v, missing %q", tt.process, got, p)
+				}
+			}
+		})
+	}
+}
+
+func TestMatchVPNServiceTokensEnterpriseClients(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{
+			// Name<TAB>DisplayName, as vpn_windows.go emits it.
+			name: "windows zscaler services",
+			text: "ZSATunnel\tZSATunnel\nZSAService\tZSAService\nZSAUpm\tZSAUpm\nZSATrayManager\tZSATrayManager\n",
+			want: []string{vpnZscaler},
+		},
+		{
+			// The two Zscaler drivers only say "Zscaler" in the DisplayName.
+			name: "windows zscaler lightweight-filter driver display name alone",
+			text: "zapprd\t@oem42.inf,%zapprd.desc%;Zscaler LightWeight Filter\n",
+			want: []string{vpnZscaler},
+		},
+		{
+			name: "windows zscaler WFP driver display name alone",
+			text: "zsawdrv\tZscaler Filtering Platform (WFP)\n",
+			want: []string{vpnZscaler},
+		},
+		{
+			name: "darwin zscaler launchd labels",
+			text: "512\t0\tcom.zscaler.service\n-\t0\tcom.zscaler.tray\n",
+			want: []string{vpnZscaler},
+		},
+		{
+			name: "windows globalprotect",
+			text: "PanGPS\tPanGP Service\n",
+			want: []string{vpnGlobalProtect},
+		},
+		{
+			name: "windows cisco secure client",
+			text: "csc_vpnagent\tCisco Secure Client - AnyConnect VPN Agent\n",
+			want: []string{vpnCiscoSecureClient},
+		},
+		{
+			name: "darwin cisco launchd",
+			text: "301\t0\tcom.cisco.secureclient.vpnagentd\n",
+			want: []string{vpnCiscoSecureClient},
+		},
+		{
+			name: "windows forticlient",
+			text: "FA_Scheduler\tFortiClient Service Scheduler\n",
+			want: []string{vpnFortiClient},
+		},
+		{
+			name: "windows netskope",
+			text: "stAgentSvc\tNetskope Client\n",
+			want: []string{vpnNetskope},
+		},
+		{
+			// A Zscaler product that is not Client Connector (ZDP) must not
+			// claim the zscaler provider: there is no bare "zscaler" token.
+			name: "zscaler data protection is not the tunnel client",
+			text: "ZDPService\tZscaler Data Protection\n-\t0\tcom.zscaler.zdp.agent\n",
+			want: nil,
+		},
+		{
+			name: "generic vpnagent from another vendor is not cisco",
+			text: "ExampleVpnAgent\tExample VPN Agent\n",
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchVPNServiceTokens(tt.text)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for _, p := range tt.want {
+				if !got[p] {
+					t.Errorf("got %v, missing %q", got, p)
+				}
+			}
+		})
+	}
+}
+
+// Zscaler on Windows binds an NDIS filter to the existing adapters and creates
+// no NIC (#8763), so there is never an interface to prove the tunnel is up. A
+// running Zscaler service must surface as an inactive (client running) entry —
+// never as an active tunnel, and never by hijacking a WireGuard name match.
+func TestAssembleVPNsEnterpriseClients(t *testing.T) {
+	noDNS := func() string { return "" }
+	noAttr := func() map[string]string { return nil }
+	ethernet := psnet.InterfaceStat{Name: "Ethernet", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "192.168.1.20/24"}}}
+	wifiDirect := psnet.InterfaceStat{Name: "Local Area Connection* 1", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "169.254.10.1/16"}}}
+
+	tests := []struct {
+		name    string
+		ifaces  []psnet.InterfaceStat
+		signals map[string]string
+		attrs   map[string]string
+		want    []VpnPresence
+	}{
+		{
+			name:    "windows zscaler: service running, no NIC -> inactive only",
+			ifaces:  []psnet.InterfaceStat{ethernet, wifiDirect},
+			signals: map[string]string{vpnZscaler: vpnSourceService},
+			want: []VpnPresence{
+				{Provider: vpnZscaler, Active: false, DetectionSource: vpnSourceService},
+			},
+		},
+		{
+			name:    "windows zscaler alongside a connected tailscale",
+			ifaces:  []psnet.InterfaceStat{ethernet, {Name: "Tailscale", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.64.0.9/32"}}}},
+			signals: map[string]string{vpnZscaler: vpnSourceService, vpnTailscale: vpnSourceService},
+			want: []VpnPresence{
+				{Provider: vpnTailscale, Active: true, InterfaceName: "Tailscale", IPv4: "100.64.0.9", DetectionSource: vpnSourceService},
+				{Provider: vpnZscaler, Active: false, DetectionSource: vpnSourceService},
+			},
+		},
+		{
+			name:    "macOS zscaler: sole running client names the plain utun",
+			ifaces:  []psnet.InterfaceStat{{Name: "utun5", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.64.1.1/32"}}}},
+			signals: map[string]string{vpnZscaler: vpnSourceService},
+			want: []VpnPresence{
+				{Provider: vpnZscaler, Active: true, InterfaceName: "utun5", IPv4: "100.64.1.1", DetectionSource: vpnSourceService},
+			},
+		},
+		{
+			name: "macOS zscaler + tailscale: unattributed utun suppresses the inactive claim",
+			ifaces: []psnet.InterfaceStat{
+				{Name: "utun6", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.95.194.59/32"}}},
+				{Name: "utun5", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.64.1.1/32"}}},
+			},
+			signals: map[string]string{vpnZscaler: vpnSourceService, vpnTailscale: vpnSourceService},
+			attrs:   map[string]string{"utun6": vpnTailscale},
+			want: []VpnPresence{
+				{Provider: vpnTailscale, Active: true, InterfaceName: "utun6", IPv4: "100.95.194.59", DetectionSource: vpnSourceAdapter},
+				{Provider: vpnGeneric, Active: true, InterfaceName: "utun5", IPv4: "100.64.1.1", DetectionSource: vpnSourceInterface},
+			},
+		},
+		{
+			name:    "globalprotect connected on gpd0",
+			ifaces:  []psnet.InterfaceStat{{Name: "gpd0", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.30.0.7/32"}}}},
+			signals: map[string]string{vpnGlobalProtect: vpnSourceProcess},
+			want: []VpnPresence{
+				{Provider: vpnGlobalProtect, Active: true, InterfaceName: "gpd0", IPv4: "10.30.0.7", DetectionSource: vpnSourceProcess},
+			},
+		},
+		{
+			name:    "cisco running, cscotun0 down -> inactive",
+			ifaces:  []psnet.InterfaceStat{{Name: "cscotun0", Flags: []string{"pointtopoint"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.40.0.2/32"}}}},
+			signals: map[string]string{vpnCiscoSecureClient: vpnSourceService},
+			want: []VpnPresence{
+				{Provider: vpnCiscoSecureClient, Active: false, DetectionSource: vpnSourceService},
+			},
+		},
+		{
+			name:    "forticlient + netskope running, nothing up -> both inactive, sorted",
+			ifaces:  []psnet.InterfaceStat{ethernet},
+			signals: map[string]string{vpnNetskope: vpnSourceService, vpnFortiClient: vpnSourceProcess},
+			want: []VpnPresence{
+				{Provider: vpnFortiClient, Active: false, DetectionSource: vpnSourceProcess},
+				{Provider: vpnNetskope, Active: false, DetectionSource: vpnSourceService},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attrFn := noAttr
+			if tt.attrs != nil {
+				attrFn = func() map[string]string { return tt.attrs }
+			}
+			got := assembleVPNs(tt.ifaces, tt.signals, noDNS, attrFn)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d entries %+v, want %d %+v", len(got), got, len(tt.want), tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("entry %d = %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
 }
