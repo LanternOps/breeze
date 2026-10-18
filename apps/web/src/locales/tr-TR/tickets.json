@@ -521,7 +521,11 @@
     },
     "device": {
       "none": "Cihaz yok",
-      "unlink": "Bağlantıyı kaldır"
+      "unlink": "Bağlantıyı kaldır",
+      "link": "Cihaz bağla",
+      "change": "Cihazı değiştir",
+      "cancel": "İptal",
+      "assigneeWarning": "Cihazı değiştirmek atanan kişiyi yeniden doğrular. Yeni cihaza erişimi olmayan teknisyenin ataması kaldırılır."
     },
     "toast": {
       "statusUpdated": "Durum güncellendi",

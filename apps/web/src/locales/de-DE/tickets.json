@@ -521,7 +521,11 @@
     },
     "device": {
       "none": "Kein Gerät",
-      "unlink": "Verknüpfung aufheben"
+      "unlink": "Verknüpfung aufheben",
+      "link": "Gerät verknüpfen",
+      "change": "Gerät ändern",
+      "cancel": "Abbrechen",
+      "assigneeWarning": "Beim Ändern des Geräts wird der Bearbeiter neu geprüft. Ein Techniker ohne Zugriff auf das neue Gerät wird entfernt."
     },
     "toast": {
       "statusUpdated": "Status aktualisiert",

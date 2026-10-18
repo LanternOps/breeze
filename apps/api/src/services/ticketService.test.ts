@@ -2395,19 +2395,50 @@ describe('updateTicketFields', () => {
   });
 
   it('clearing deviceId (null) skips the device lookup and records the change', async () => {
-    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, deviceId: 'd-1' }]);
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, deviceId: 'd-1' }])
+      .mockResolvedValueOnce([{ id: 'd-1', orgId: 'o-1', hostname: 'DESK-OLD', displayName: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, deviceId: null }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 
     await updateTicketFields('t-1', { deviceId: null }, actor);
 
-    // Only ONE select consumed (the ticket lookup) — no device lookup for null
-    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1);
+    // Ticket lookup + the old device's name for the feed; no new-device lookup for null
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(2);
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
       type: 'ticket.updated',
       payload: { changed: ['deviceId'] }
     }));
-    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated device' }));
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated device (was DESK-OLD, now none)' }));
+  });
+
+  it('names the device in the feed entry when linking one to a ticket that has none (#8962)', async () => {
+    // selects in order: ticket, device (same org)
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([{ id: 'd-2', orgId: 'o-1', hostname: 'DESK-NEW', displayName: null }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, deviceId: 'd-2' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { deviceId: 'd-2' }, actor);
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated device (now DESK-NEW)' }));
+  });
+
+  it('names both devices in the feed entry when replacing a linked device (#8962)', async () => {
+    // selects in order: ticket, new device (same org), old device name
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, deviceId: 'd-1' }])
+      .mockResolvedValueOnce([{ id: 'd-2', orgId: 'o-1', hostname: 'DESK-NEW', displayName: null }])
+      .mockResolvedValueOnce([{ id: 'd-1', orgId: 'o-1', hostname: 'DESK-OLD', displayName: 'Front desk' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, deviceId: 'd-2' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { deviceId: 'd-2' }, actor);
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      content: 'Updated device (was Front desk, now DESK-NEW)',
+    }));
   });
 
   it('throws 404 when the ticket does not exist', async () => {
@@ -4917,7 +4948,8 @@ describe('assignee eligibility after ticket scope changes (#5551)', () => {
     const changed = { ...ticket, deviceId: 'd-new' };
     dbMocks.selectResult
       .mockResolvedValueOnce([ticket])
-      .mockResolvedValueOnce([{ id: 'd-new', orgId: ticket.orgId }])
+      .mockResolvedValueOnce([{ id: 'd-new', orgId: ticket.orgId, hostname: 'NEW' }])
+      .mockResolvedValueOnce([{ hostname: 'OLD', displayName: null }])
       .mockResolvedValueOnce([assignee]);
     dbMocks.updateReturning.mockResolvedValueOnce([changed]).mockResolvedValueOnce([{ ...changed, assignedTo: null }]);
     assigneeEligibleMock.mockResolvedValue(eligible);

@@ -521,7 +521,11 @@
     },
     "device": {
       "none": "No device",
-      "unlink": "Unlink"
+      "unlink": "Unlink",
+      "link": "Link device",
+      "change": "Change device",
+      "cancel": "Cancel",
+      "assigneeWarning": "Changing the device re-checks the assignee. A technician who cannot access the new device will be unassigned."
     },
     "toast": {
       "statusUpdated": "Status updated",

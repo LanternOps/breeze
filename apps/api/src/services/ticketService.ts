@@ -1923,9 +1923,10 @@ export async function updateTicketFields(
   // Cross-org guard: a deviceId reassignment must reference a device in the
   // ticket's org (mirrors the same-org device check in createTicket).
   // null clears the device and needs no lookup.
+  let newDeviceName: string | null = null;
   if (typeof fields.deviceId === 'string') {
     const deviceRows = await db
-      .select({ id: devices.id, orgId: devices.orgId })
+      .select({ id: devices.id, orgId: devices.orgId, hostname: devices.hostname, displayName: devices.displayName })
       .from(devices)
       .where(eq(devices.id, fields.deviceId))
       .limit(1);
@@ -1934,6 +1935,19 @@ export async function updateTicketFields(
     if (device.orgId !== ticket.orgId) {
       throw new TicketServiceError('Device must belong to the same organization as the ticket', 400);
     }
+    newDeviceName = device.displayName ?? device.hostname ?? null;
+  }
+
+  // #8962: name the device on the feed entry (internal, non-public system
+  // comment), not the bare "device". Read before the write.
+  let oldDeviceName: string | null = null;
+  if (fields.deviceId !== undefined && ticket.deviceId && fields.deviceId !== ticket.deviceId) {
+    const [oldDevice] = await db
+      .select({ hostname: devices.hostname, displayName: devices.displayName })
+      .from(devices)
+      .where(eq(devices.id, ticket.deviceId))
+      .limit(1);
+    oldDeviceName = oldDevice ? (oldDevice.displayName ?? oldDevice.hostname ?? null) : null;
   }
 
   // Kept for the SLA restamp below: a validated new category is the first link
@@ -2147,6 +2161,13 @@ export async function updateTicketFields(
 
   if (changed.includes('deviceId')) {
     updated[0] = await revalidateTicketAssignee(ticketId, actor, db, updated[0]);
+  }
+
+  if (changed.includes('deviceId')) {
+    const was = ticket.deviceId ? `was ${oldDeviceName ?? 'unknown device'}` : null;
+    const now = `now ${typeof fields.deviceId === 'string' ? (newDeviceName ?? 'unknown device') : 'none'}`;
+    const idx = changedLabels.indexOf('device');
+    if (idx >= 0) changedLabels[idx] = `device (${[was, now].filter(Boolean).join(', ')})`;
   }
 
   await db.insert(ticketComments).values({

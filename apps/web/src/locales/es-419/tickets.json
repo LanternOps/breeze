@@ -521,7 +521,11 @@
     },
     "device": {
       "none": "Sin dispositivo",
-      "unlink": "Desconectar"
+      "unlink": "Desconectar",
+      "link": "Vincular dispositivo",
+      "change": "Cambiar dispositivo",
+      "cancel": "Cancelar",
+      "assigneeWarning": "Al cambiar el dispositivo se vuelve a validar al responsable. Un técnico sin acceso al nuevo dispositivo quedará sin asignar."
     },
     "toast": {
       "statusUpdated": "Estado actualizado",

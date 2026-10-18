@@ -58,6 +58,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 import { EntityLink } from '@/components/shared/EntityLink';
+import { TicketDeviceEditor } from './TicketDeviceEditor';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
 
@@ -1856,17 +1857,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                       ) : (
                         <span>{t('ticketWorkbench.device.none')}</span>
                       )}
-                      {ticket.deviceId && (
-                        <button
-                          type="button"
-                          data-testid="ticket-workbench-device-unlink"
-                          className="hover:text-destructive"
-                          onClick={() => handleFieldSave({ deviceId: null })}
-                        >
-                          {t('ticketWorkbench.device.unlink')}
-                        </button>
-                      )}
                     </div>
+                    <TicketDeviceEditor
+                      orgId={ticket.orgId}
+                      hasDevice={!!ticket.deviceId}
+                      hasAssignee={!!ticket.assignedTo}
+                      onSelect={(deviceId) => handleFieldSave({ deviceId })}
+                      onUnlink={() => handleFieldSave({ deviceId: null })}
+                    />
                   </dd>
                 </div>
                 {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.waitingOn')}</dt><dd>{ticket.pendingReason}</dd></div>}

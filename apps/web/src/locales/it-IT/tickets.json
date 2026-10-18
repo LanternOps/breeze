@@ -521,7 +521,11 @@
     },
     "device": {
       "none": "Nessun dispositivo",
-      "unlink": "Scollega"
+      "unlink": "Scollega",
+      "link": "Collega dispositivo",
+      "change": "Cambia dispositivo",
+      "cancel": "Annulla",
+      "assigneeWarning": "Cambiando il dispositivo l'assegnatario viene riverificato. Un tecnico senza accesso al nuovo dispositivo verrà rimosso dall'assegnazione."
     },
     "toast": {
       "statusUpdated": "Stato aggiornato",
