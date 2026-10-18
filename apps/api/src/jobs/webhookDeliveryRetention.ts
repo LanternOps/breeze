@@ -9,13 +9,18 @@
  * `webhookDeliveryRecovery`, which re-queues them.
  *
  * The connection-health webhook source (services/connectionHealth/sources/
- * webhook.ts) only looks at failed rows in the last TERMINAL_FAILURE_WINDOW_MS
- * (1 h), so even the shortest configurable window (1 day) leaves it untouched.
+ * webhook.ts) has two reads: the broken scan (failed rows in the last
+ * TERMINAL_FAILURE_WINDOW_MS, 1 h; untouched by any window >= 1 day) and the
+ * tracked lookup, which takes a webhook's latest attempted failure of ANY age
+ * and reads its absence as "healthy". So a failed row is kept while it is the
+ * newest attempted failure of its webhook and the webhook has not succeeded
+ * since; otherwise an endpoint that died and receives no more events would
+ * auto-resolve (a false recovery) once its only evidence aged out.
  *
- * The failed rows ride `webhook_deliveries_failed_recent_idx`; delivered rows
- * have no supporting index, so each batch is a LIMITed ctid scan. Old rows sit
- * early in the heap and the sweep runs daily, so the LIMIT stops the scan
- * quickly after the first catch-up; an index would need a migration.
+ * Delivered rows have no supporting index, so each batch is a LIMITed ctid
+ * scan. Once caught up, the final short batch means a daily full scan of the
+ * table; acceptable for a once-a-day off-peak job. A partial (created_at)
+ * index on terminal statuses would need a migration.
  *
  * The table has no org_id (scoped via webhook_id), so this is one global sweep,
  * not a per-org fan-out. Each batch runs in its own system-context transaction
@@ -87,7 +92,18 @@ export async function runWebhookDeliveryRetention(
 
   const pruned = await pruneInCtidBatches({
     table: TABLE,
-    where: sql`status IN ('delivered', 'failed') AND created_at < ${cutoff}::timestamp`,
+    where: sql`status IN ('delivered', 'failed') AND created_at < ${cutoff}::timestamp AND (
+      status = 'delivered' OR attempts = 0
+      OR EXISTS (
+        SELECT 1 FROM webhook_deliveries n
+        WHERE n.webhook_id = webhook_deliveries.webhook_id AND n.status = 'failed'
+          AND n.attempts > 0 AND n.created_at > webhook_deliveries.created_at
+      )
+      OR EXISTS (
+        SELECT 1 FROM webhooks w
+        WHERE w.id = webhook_deliveries.webhook_id AND w.last_success_at > webhook_deliveries.created_at
+      )
+    )`,
     batchSize,
     maxBatches,
     label: 'webhookDeliveryRetention',

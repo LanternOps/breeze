@@ -35,7 +35,6 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-import { TERMINAL_FAILURE_WINDOW_MS } from '../services/connectionHealth/sources/webhook';
 import { jobSchedule } from './scheduleRegistry';
 import {
   __testOnly,
@@ -84,11 +83,14 @@ describe('webhook_deliveries retention (#9128)', () => {
     expect(__testOnly.BATCH_SIZE).toBe(1000);
   });
 
-  it('keeps retention far longer than the connection-health webhook source lookback', () => {
-    // The source reads failed rows inside TERMINAL_FAILURE_WINDOW_MS; even the
-    // shortest configurable window (1 day) must dwarf it.
-    expect(1 * DAY_MS).toBeGreaterThanOrEqual(TERMINAL_FAILURE_WINDOW_MS * 24);
-    expect(__testOnly.DEFAULT_RETENTION_DAYS * DAY_MS).toBeGreaterThan(TERMINAL_FAILURE_WINDOW_MS * 24);
+  it('keeps the latest unrecovered attempted failure the health source still tracks', async () => {
+    await runWebhookDeliveryRetention({ retentionDays: 30 });
+    const sqlText = flat(new PgDialect().sqlToQuery(pruneMock.mock.calls[0]![0].where as SQL).sql);
+    // A failed row is deletable only if: never attempted, a newer attempted failure
+    // exists for the webhook, or the webhook has succeeded since.
+    expect(sqlText).toContain(`status = 'delivered' OR attempts = 0`);
+    expect(sqlText).toContain("n.status = 'failed' AND n.attempts > 0 AND n.created_at > webhook_deliveries.created_at");
+    expect(sqlText).toContain('w.last_success_at > webhook_deliveries.created_at');
   });
 
   it('registers a daily cron slot', async () => {
