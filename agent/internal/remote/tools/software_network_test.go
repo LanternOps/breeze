@@ -84,10 +84,11 @@ func swPolicyReason(t *testing.T, err error, want string) {
 
 // installPayload builds a minimal, otherwise-valid software_install payload.
 func installPayload(downloadURL string, policy any) map[string]any {
+	fileType, fileName := hostInstaller("pkg")
 	p := map[string]any{
 		"downloadUrl":  downloadURL,
-		"fileName":     "pkg.exe",
-		"fileType":     "exe",
+		"fileName":     fileName,
+		"fileType":     fileType,
 		"softwareName": "Acme",
 		"version":      "1.0.0",
 	}

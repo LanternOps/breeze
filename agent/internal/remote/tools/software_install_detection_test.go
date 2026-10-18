@@ -110,12 +110,13 @@ func TestInstallSoftwareSkipsWhenAlreadyDetected(t *testing.T) {
 		t.Fatalf("write marker: %v", err)
 	}
 
+	fileType, fileName := hostInstaller("pkg")
 	payload := map[string]any{
 		// A syntactically valid URL that must never be fetched (the skip returns
 		// before validateDownloadURL/downloadFile).
 		"downloadUrl":  "https://example.invalid/never-fetched.exe",
-		"fileName":     "pkg.exe",
-		"fileType":     "exe",
+		"fileName":     fileName,
+		"fileType":     fileType,
 		"softwareName": "Acme",
 		"version":      "1.0.0",
 		"detectionRules": []any{
@@ -152,12 +153,13 @@ func TestInstallSoftwareForceReinstallBypassesSkip(t *testing.T) {
 		t.Fatalf("write marker: %v", err)
 	}
 
+	fileType, fileName := hostInstaller("pkg")
 	payload := map[string]any{
 		// localhost:0 is a guaranteed-unroutable target; the download attempt
 		// fails fast, proving we did not skip.
 		"downloadUrl":    "https://127.0.0.1:0/pkg.exe",
-		"fileName":       "pkg.exe",
-		"fileType":       "exe",
+		"fileName":       fileName,
+		"fileType":       fileType,
 		"softwareName":   "Acme",
 		"version":        "1.0.0",
 		"forceReinstall": true,
@@ -169,5 +171,10 @@ func TestInstallSoftwareForceReinstallBypassesSkip(t *testing.T) {
 	result := InstallSoftware(payload)
 	if result.Status != "failed" {
 		t.Fatalf("expected failed (download attempted, not skipped), got %q", result.Status)
+	}
+	// A wrong-OS fixture would also fail, but at the platform check (#9165),
+	// which proves nothing about the skip gate.
+	if strings.Contains(result.Error, "unsupported file type") {
+		t.Fatalf("failed at the platform check, not past the skip gate: %q", result.Error)
 	}
 }

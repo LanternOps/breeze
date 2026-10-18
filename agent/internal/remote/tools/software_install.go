@@ -146,6 +146,16 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
+	// #9165: an installer this OS cannot run is refused here, before the
+	// detection gate, the network policy and the download, rather than by
+	// executeInstaller after a full download + checksum. It is a property of
+	// the command, not of the device, so it is decided before any device state
+	// is read; and nothing has been fetched or checkpointed, so the deferred
+	// Report gives skipped_no_mutation for a stamped request.
+	if !installerSupportedOnPlatform(fileType, runtime.GOOS) {
+		return NewErrorResult(unsupportedInstallerError(fileType, runtime.GOOS), time.Since(startTime).Milliseconds())
+	}
+
 	// Detection rules (#2022): evaluated against the device's real state so the
 	// reported status reflects whether the app is actually present rather than
 	// just the installer exit code.
@@ -231,8 +241,9 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 	}
 
 	// #4609: after download AND checksum, immediately before the first
-	// mutation. The pre-install detection gate above returns earlier, so an
-	// already-installed package never consumes the day's one restore point.
+	// mutation. The platform check and the pre-install detection gate above
+	// return earlier, so neither a wrong-OS installer nor an already-installed
+	// package ever consumes the day's one restore point.
 	takeSoftwareCheckpoint(cp)
 
 	// Execute installer
@@ -666,13 +677,19 @@ func executeInstaller(localPath, fileType, silentInstallArgs string, successExit
 	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 	defer cancel()
 
+	if !installerSupportedOnPlatform(fileType, runtime.GOOS) {
+		return 1, "", false, unsupportedInstallerError(fileType, runtime.GOOS)
+	}
+
 	var cmd *exec.Cmd
 
-	switch {
-	case fileType == "msi" && runtime.GOOS == "windows":
+	// installerSupportedOnPlatform above has already matched fileType to this
+	// OS, so each case only has to say how to run it.
+	switch fileType {
+	case "msi":
 		cmd = exec.CommandContext(ctx, "msiexec", buildMSIExecArgs(localPath, silentInstallArgs)...)
 
-	case fileType == "exe" && runtime.GOOS == "windows":
+	case "exe":
 		if silentInstallArgs != "" {
 			args := strings.ReplaceAll(silentInstallArgs, "{file}", localPath)
 			parts := splitCommandLine(args)
@@ -681,21 +698,50 @@ func executeInstaller(localPath, fileType, silentInstallArgs string, successExit
 			cmd = exec.CommandContext(ctx, localPath)
 		}
 
-	case fileType == "deb" && runtime.GOOS == "linux":
+	case "deb":
 		cmd = exec.CommandContext(ctx, "dpkg", "-i", localPath)
 
-	case fileType == "pkg" && runtime.GOOS == "darwin":
+	case "pkg":
 		cmd = exec.CommandContext(ctx, "installer", "-pkg", localPath, "-target", "/")
 
-	case fileType == "dmg" && runtime.GOOS == "darwin":
+	case "dmg":
 		// Mount, find .app or .pkg, install, unmount
 		return installDMG(ctx, localPath, successExitCodes)
 
 	default:
-		return 1, "", false, fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
+		// Unreachable while installerPlatforms and the cases above agree.
+		return 1, "", false, unsupportedInstallerError(fileType, runtime.GOOS)
 	}
 
 	return runInstallerCommand(ctx, cmd, fileType, successExitCodes)
+}
+
+// installerPlatforms is the ONE table of which installer file type runs on
+// which OS. InstallSoftwareWithProgress checks it before downloading (#9165)
+// and executeInstaller checks it again before dispatching, so the two cannot
+// drift. Keys are matched exactly, as executeInstaller's dispatch always was:
+// validateInstallInputs accepts any case ("MSI"), but only the lowercase form
+// has ever been runnable.
+var installerPlatforms = map[string]string{
+	"msi": "windows",
+	"exe": "windows",
+	"deb": "linux",
+	"pkg": "darwin",
+	"dmg": "darwin",
+}
+
+// installerSupportedOnPlatform reports whether an installer of fileType can
+// run on goos (a runtime.GOOS value).
+func installerSupportedOnPlatform(fileType, goos string) bool {
+	want, ok := installerPlatforms[fileType]
+	return ok && want == goos
+}
+
+// unsupportedInstallerError is the refusal for a pairing installerPlatforms
+// does not allow. The text is unchanged from when executeInstaller produced it
+// after the download, so anything matching on it keeps working.
+func unsupportedInstallerError(fileType, goos string) error {
+	return fmt.Errorf("unsupported file type %q on %s", fileType, goos)
 }
 
 // lockedBuffer collects an installer's merged stdout+stderr. CombinedOutput's
