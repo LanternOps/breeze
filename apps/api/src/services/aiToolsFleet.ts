@@ -216,6 +216,19 @@ function getOrgId(auth: AuthContext): string | null {
 const BUSINESS_REPORT_SITE_RESTRICTED_MESSAGE =
   'Business report types are not available to site-restricted callers: tickets, time entries, invoices and AI usage have no site dimension.';
 
+/** #9222: the HTTP create/update routes require reports:export plus a fresh-MFA
+ *  session to set `config.emailRecipients` (a business report would mail MSP
+ *  financials off-platform on a timer). The AI tool cannot prove fresh MFA, so
+ *  it refuses recipients on a business type outright; set them in the web UI. */
+const BUSINESS_REPORT_RECIPIENTS_MESSAGE =
+  'Email recipients on a business report must be set in the web UI (requires the export permission and an MFA-verified session).';
+
+function configSetsEmailRecipients(config: unknown): boolean {
+  if (!config || typeof config !== 'object') return false;
+  const r = (config as Record<string, unknown>).emailRecipients;
+  return Array.isArray(r) ? r.length > 0 : Boolean(r);
+}
+
 /**
  * #9222. The HTTP routes' type gates for the business report types, for the AI
  * tool: msp_staff audience (ruling F1: an org-scope caller never runs one) and
@@ -3151,6 +3164,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const reportOrgId = resolvedReportOrg.orgId;
         const createRefusal = await businessReportTypeRefusal(input.reportType, auth);
         if (createRefusal) return JSON.stringify(createRefusal);
+        if (isBusinessReportType(input.reportType) && configSetsEmailRecipients(input.config)) {
+          return JSON.stringify({ error: BUSINESS_REPORT_RECIPIENTS_MESSAGE });
+        }
         const authority = await aiLiveReportAuthority(auth, reportOrgId, 'write');
         if (
           !authority
@@ -3187,6 +3203,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // Multi-org report series W02: a child's shared fields belong to its
         // series (spec §3.3 "Child writers").
         if (existing.seriesId) return JSON.stringify(seriesManagedRefusal(existing.seriesId));
+        if (isBusinessReportType(existing.type) && configSetsEmailRecipients(input.config)) {
+          return JSON.stringify({ error: BUSINESS_REPORT_RECIPIENTS_MESSAGE });
+        }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;

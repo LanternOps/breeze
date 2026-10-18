@@ -437,9 +437,52 @@ describe('generate_report accepts the business report types behind the route gat
 
   it.each(BUSINESS)('generate %s (ad hoc): a site-restricted caller is refused', async (type) => {
     reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue(restricted());
-    const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportType: type }, orgAuth()));
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportType: type }, partnerAuth()));
     expect(r.success).not.toBe(true);
-    expect(r.error).toBeDefined();
+    expect(r.error).toMatch(/site-restricted/i);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it.each(BUSINESS)('data %s: a site-restricted partner caller is refused; unrestricted passes the gate', async (type) => {
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue(restricted());
+    const refused = JSON.parse(await handlerFor('generate_report')({ action: 'data', reportType: type }, partnerAuth()));
+    expect(refused.error).toMatch(/site-restricted/i);
+    reportScopeMocks.resolveRequestReportAuthority.mockClear();
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue({
+      ok: true,
+      authority: {
+        principalKind: 'user', scope: { version: 1, kind: 'unrestricted', orgId: ORG_ID }, principalUserId: 'u1',
+        capturedAt: new Date(), fingerprint: 'f'.repeat(64),
+      },
+    });
+    const ok = JSON.parse(await handlerFor('generate_report')({ action: 'data', reportType: type }, partnerAuth()));
+    expect(ok.error).toBeUndefined();
+  });
+
+  it.each(BUSINESS)('generate %s (ad hoc): a partner caller with permissions and unrestricted scope is accepted', async (type) => {
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportType: type }, partnerAuth()));
+    expect(r.success).toBe(true);
+  });
+
+  it('create refuses email recipients on a business type (needs export + MFA in the routes); legacy unaffected', async () => {
+    const biz = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'ar_aging', orgId: ORG_ID, config: { emailRecipients: ['x@example.com'] } }, partnerAuth(),
+    ));
+    expect(biz.error).toMatch(/web UI/);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    const legacy = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'device_inventory', orgId: ORG_ID, config: { emailRecipients: ['x@example.com'] } }, partnerAuth(),
+    ));
+    expect(legacy.success).toBe(true);
+  });
+
+  it('update refuses email recipients on a stored business definition, no write', async () => {
+    selectReturning({ ...definition('ar_aging'), seriesId: null });
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'update', reportId: 'rep1', config: { emailRecipients: ['x@example.com'] } }, partnerAuth(),
+    ));
+    expect(r.error).toMatch(/web UI/);
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 
   it('generate by reportId: a site-restricted caller is refused for a stored business definition, no run row', async () => {
