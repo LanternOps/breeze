@@ -42,7 +42,6 @@ async function seed() {
   });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const read = (fn: (db: any) => Promise<any>): Promise<any[]> => withSystemDbAccessContext(() => fn(getTestDb() as any));
 
 describe('yara rule sets through org merge / erasure', () => {
