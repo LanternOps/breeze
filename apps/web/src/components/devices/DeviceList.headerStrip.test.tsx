@@ -41,11 +41,12 @@ describe('DeviceList — table header strip (#9035)', () => {
   afterEach(() => window.localStorage.clear());
 
   it('puts the count line, Columns and per-page in one strip inside the table card', () => {
-    render(<DeviceList devices={fleet(2)} />);
+    // 12 devices: above the smallest page size, so the per-page picker has a job (#9023).
+    render(<DeviceList devices={fleet(12)} />);
     const card = screen.getByTestId('device-list-table-card');
     const strip = within(card).getByTestId('device-list-header-strip');
     expect(card.querySelector('table')).not.toBeNull();
-    expect(within(strip).getByTestId('device-list-count')).toHaveTextContent('2 of 2 devices');
+    expect(within(strip).getByTestId('device-list-count')).toHaveTextContent('12 of 12 devices');
     expect(within(strip).getByTestId('column-chooser-trigger')).toBeInTheDocument();
     expect(within(strip).getByLabelText('Devices per page')).toBeInTheDocument();
   });

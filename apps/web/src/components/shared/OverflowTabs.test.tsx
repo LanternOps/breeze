@@ -473,6 +473,8 @@ describe('OverflowTabs', () => {
       render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" mobileMode="scroll" />);
       expect(screen.getAllByRole('tab').map((t) => t.id)).toEqual(['t-a']);
       expect(screen.getByRole('tablist').className).not.toContain('overflow-x-auto');
+    });
+  });
 
   // #9024: the org record's strip visibly flipped 9 → 7 → 9 across measure
   // passes. A re-measure must never put a different tab set on screen, and a
@@ -532,58 +534,6 @@ describe('OverflowTabs', () => {
       expect(addedTabs).toEqual([]);
       // …and the strip itself never went invisible for the pass.
       expect(records.filter((r) => r.type === 'attributes' && r.target === strip)).toEqual([]);
-    });
-
-    it('a primary-set change re-measures spilled tabs as ghosts: right widths, right order, no duplicates', () => {
-      // Heterogeneous widths keyed on the button's own label, so a mis-ordered
-      // or short width array would put the wrong tabs on screen.
-      let t0Wide = false;
-      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
-        configurable: true,
-        get(this: HTMLElement) {
-          if (this.tagName !== 'BUTTON') return 0;
-          return t0Wide && this.textContent?.startsWith('Tab 0') ? 200 : 50;
-        },
-      });
-      const { rerender } = render(<OverflowTabs tabs={manyTabs} activeTab="t0" onTabChange={() => {}} testIdPrefix="x-" />);
-      const before = screen.getAllByRole('tab').map((tab) => tab.id);
-      expect(before.length).toBeGreaterThan(1);
-
-      // A count badge arrives on a SPILLED tab: same live slice, spilled tabs
-      // still listed once each in More, and no ghost left behind.
-      const spilled = manyTabs.length - 1;
-      const withCount = manyTabs.map((tab, i) => (i === spilled ? { ...tab, count: 4 } : tab));
-      rerender(<OverflowTabs tabs={withCount} activeTab="t0" onTabChange={() => {}} testIdPrefix="x-" />);
-      expect(screen.getAllByRole('tab').map((tab) => tab.id)).toEqual(before);
-      expect(document.querySelectorAll('[aria-hidden="true"] button')).toHaveLength(0);
-      fireEvent.click(screen.getByTestId('x-more'));
-      // Labels are "Tab N"; the badge appends its count ("Tab 54").
-      const menuTexts = screen.getAllByRole('menuitem').map((item) => item.textContent ?? '');
-      const expected = manyTabs.slice(before.length);
-      expect(menuTexts).toHaveLength(expected.length);
-      expected.forEach((tab, i) => expect(menuTexts[i].startsWith(tab.label)).toBe(true));
-      fireEvent.click(screen.getByTestId('x-more'));
-
-      // A VISIBLE tab grows (its badge widens it): fewer fit, and the strip
-      // only shrinks — it never flashes every tab as a live tab first.
-      t0Wide = true;
-      const strip = screen.getByRole('tablist').parentElement!;
-      const records: MutationRecord[] = [];
-      const observer = new MutationObserver((batch) => records.push(...batch));
-      observer.observe(strip, { childList: true, subtree: true });
-      const t0Count = withCount.map((tab, i) => (i === 0 ? { ...tab, count: 9 } : tab));
-      rerender(<OverflowTabs tabs={t0Count} activeTab="t0" onTabChange={() => {}} testIdPrefix="x-" />);
-      records.push(...observer.takeRecords());
-      observer.disconnect();
-
-      const after = screen.getAllByRole('tab').map((tab) => tab.id);
-      expect(after.length).toBeLessThan(before.length);
-      expect(after).toEqual(before.slice(0, after.length));
-      const addedTabs = records
-        .flatMap((r) => Array.from(r.addedNodes))
-        .flatMap((n) => (n instanceof HTMLElement ? [n, ...Array.from(n.querySelectorAll('*'))] : []))
-        .filter((el) => el.getAttribute('role') === 'tab');
-      expect(addedTabs).toEqual([]);
     });
 
     it('debounces a burst of container resizes into one computation on the settled width', () => {

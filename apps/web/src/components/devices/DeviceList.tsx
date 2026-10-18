@@ -2908,7 +2908,10 @@ export default function DeviceList({
               onToggleCustomField={toggleCustomFieldColumn}
             />
             {headerActions}
-            {sortedDevices.length > 0 && (
+            {/* A per-page picker only earns its slot when some page size could
+                split the list; below the smallest option it is a dead control
+                (#9023, #9035). */}
+            {sortedDevices.length > PAGE_SIZE_OPTIONS[0] && (
               <div className="flex items-center gap-2">
                 <label
                   htmlFor="device-page-size"
