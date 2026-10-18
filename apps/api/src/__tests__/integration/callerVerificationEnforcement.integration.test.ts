@@ -33,6 +33,14 @@ vi.mock('../../services/m365ControlPlane/graphActionsExecutorClient', () => ({
   createGraphActionsExecutorClient: () => ({ executeWriteAction: outbound.executeWriteAction }),
   GraphActionsExecutorClientError: class GraphActionsExecutorClientError extends Error {},
 }));
+// Creation-time target resolution reaches Microsoft Graph through the read
+// executor; only that network lookup is replaced (the gate, the creation
+// transaction and the pin columns are real).
+const resolver = vi.hoisted(() => ({ resolveM365CallerTarget: vi.fn() }));
+vi.mock('../../services/aiToolsM365', async (original) => ({
+  ...await original<typeof import('../../services/aiToolsM365')>(),
+  resolveM365CallerTarget: resolver.resolveM365CallerTarget,
+}));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
@@ -55,6 +63,8 @@ import { withAdministrativeProof } from '../../services/callerVerification/admin
 import { callerVerificationAdministrativeDigest, mintStepUpGrant } from '../../services/mfaStepUpGrant';
 import { closeRedis } from '../../services/redis';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
+import { createActionIntent } from '../../services/actionIntents/intentService';
+import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import type { CallerVerificationActor } from '../../services/callerVerification/types';
 import {
   createOrganization, createPartner, createRole, createUser, assignUserToOrganization, grantRolePermissions,
@@ -170,6 +180,59 @@ async function approveForRelease(intentId = f.intent.id) {
     });
   });
 }
+
+describe('creation check', () => {
+  async function requesterAuth(): Promise<AuthContext> {
+    // A second technician who may decide approvals (the requester cannot self-approve).
+    const approverRole = await createRole({ scope: 'organization', orgId: f.org.id });
+    await grantRolePermissions(approverRole.id, [{ resource: 'approvals', action: 'decide' }]);
+    const approver = await createUser({ partnerId: f.partner.id, orgId: f.org.id, email: `approver-${randomUUID()}@caller.test` });
+    await assignUserToOrganization(approver.id, f.org.id, approverRole.id);
+    const { orgCondition, canAccessOrg } = buildOrgAccessClosures([f.org.id]);
+    return {
+      principal: { kind: 'user_session' },
+      user: { id: f.user.id, email: f.user.email, name: 'Tech', isPlatformAdmin: false },
+      token: { sub: f.user.id, email: f.user.email, roleId: f.role.id, orgId: f.org.id, partnerId: f.partner.id, scope: 'organization', type: 'access', mfa: true },
+      partnerId: f.partner.id, orgId: f.org.id, scope: 'organization', accessibleOrgIds: [f.org.id], orgCondition, canAccessOrg,
+    } as AuthContext;
+  }
+  const createInput = () => ({
+    toolName: 'm365_disable_user', source: 'chat' as const,
+    input: { userIdentifier: 'renamed-target@customer.test', reason: 'Approved account offboarding request' },
+  });
+  beforeEach(() => {
+    resolver.resolveM365CallerTarget.mockReset();
+    resolver.resolveM365CallerTarget.mockImplementation(async () => ({
+      backend: 'controlPlane', connectionId: f.connection.id, tenantId: f.tenant, orgId: f.org.id, entraOid: f.target.entraOid,
+    }));
+  });
+
+  it('refuses without a fresh verification and creates no intent or approval', async () => {
+    const auth = await requesterAuth();
+    await run(() => db.delete(callerVerifications).where(eq(callerVerifications.id, f.grant.id)));
+    await expect(createActionIntent(auth, createInput())).rejects.toMatchObject({
+      name: 'CallerVerificationRequiredError', payload: { action: 'disable_user', reason: 'no_fresh_verification' },
+    });
+    const rows = await run(() => db.select().from(actionIntents).where(eq(actionIntents.orgId, f.org.id)));
+    expect(rows.map((r) => r.id)).toEqual([f.intent.id]);
+    const approvals = await run(() => db.select().from(approvalRequests).where(eq(approvalRequests.userId, f.user.id)));
+    expect(approvals).toEqual([]);
+  });
+
+  it('pins the canonical target at insert, never consumes, and a replay does not re-resolve', async () => {
+    const auth = await requesterAuth();
+    const snapshot = await createActionIntent(auth, createInput());
+    expect(snapshot.status).toBe('pending_approval');
+    const row = await readIntent(snapshot.id);
+    expect(row).toMatchObject({
+      targetEntraTenantId: f.tenant, targetEntraOid: f.target.entraOid, targetConnectionRef: f.connection.id, dispatchStartedAt: null,
+    });
+    expect((await readGrant()).consumedAt).toBeNull();
+    const replay = await createActionIntent(auth, createInput());
+    expect(replay.id).toBe(snapshot.id);
+    expect(resolver.resolveM365CallerTarget).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('pinned target columns', () => {
   it('are immutable after insert while dispatch_started_at stays mutable', async () => {

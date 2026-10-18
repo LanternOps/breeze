@@ -30,3 +30,5 @@ Password resets and account disables require fresh, single-use verification for 
 Workstation verification is not part of this release: it ships dark behind `CALLER_VERIFICATION_WORKSTATION_ENABLED` (default `false`), and policies cannot require tier 3 until it is enabled. Establish Entra bindings and attest imported contact destinations. Existing unpinned intents must be recreated. Roll the OID-capable Graph actions executor before the API. `CALLER_VERIFICATION_ENABLED` now defaults to `true`; set and map it in the API service environment. Explicit false hides the workflow and refuses protected actions. A failed dispatch does not restore a consumed verification.
 
 ## Migrations
+
+- `2026-12-30-220000-action-intents-caller-target.sql` — adds `target_entra_tenant_id`, `target_entra_oid`, `target_connection_ref` (immutable after insert, all-or-none) and `dispatch_started_at` to `action_intents`. DDL only; no backfill.

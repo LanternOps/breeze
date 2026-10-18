@@ -244,6 +244,10 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### Unreleased — caller verification enforced
+
+**Caller verification is on and enforced.** `CALLER_VERIFICATION_ENABLED` defaults to `true`. Protected Microsoft 365 `m365_disable_user` and `m365_reset_password` actions now resolve their target to one Microsoft connection and an Entra object id, and require a fresh caller verification; with no connection or no verification they are refused. Setting `CALLER_VERIFICATION_ENABLED=false` hides the workflow and refuses these actions — it is not a bypass. The workstation tier stays off (`CALLER_VERIFICATION_WORKSTATION_ENABLED`, default `false`). **Deploy the Graph actions executor that accepts object-id-only actions before the API**; the API no longer sends a user principal name for these two actions. Disable and reset intents created before the upgrade are not pinned to a target and are refused at release; recreate them after the upgrade.
+
 ### v0.123.0 — agent ECH, ticket types, customer work approval, Update Ring app rules
 
 <Aside type="caution" title="The Update Ring backfill can add rings, and can stop the upgrade">

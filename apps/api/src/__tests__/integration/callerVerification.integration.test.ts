@@ -106,6 +106,7 @@ beforeEach(async () => {
 afterEach(() => {
   delete process.env.CALLER_VERIFICATION_ENABLED;
   delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------
@@ -445,6 +446,8 @@ async function liveDevice(f: LiveFamily) {
 }
 
 it('real device move revokes old workstation authorization but preserves consumed history', async () => {
+  // The workstation tier is dark by default; this test exercises it.
+  vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'true');
   const f = await liveFixture('partner', false);
   const own = f.families[0]!;
   const foreign = f.families[2]!;

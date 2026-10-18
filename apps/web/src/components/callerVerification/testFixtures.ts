@@ -21,7 +21,7 @@ export const row: VerificationDetails = {
   decidedAt: null, consumedAt: null, ticketRef: null, ticketNumber: null,
   destinationRedacted: '+1 •••• 12', deviceHostname: null, osUsername: null,
   createdAt: '2026-09-19T12:00:00Z', secrets: { matchValue: '42', decoyValues: ['13', '87'], reverseCode: '7319' },
-  remainingAttempts: 2, usableUntil: null, incidentId: null, consumedAction: null, undeliverableReason: null,
+  remainingAttempts: 2, usableUntil: null, incidentId: null, consumedAction: null, consumedIntentStatus: null, undeliverableReason: null,
 };
 
 export const policyValues: PolicyValues = {

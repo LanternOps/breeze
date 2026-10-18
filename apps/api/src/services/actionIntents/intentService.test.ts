@@ -330,6 +330,20 @@ vi.mock('drizzle-orm', () => ({
   })),
 }));
 
+// Caller verification W05 (#6354): the two protected M365 tools resolve their
+// canonical target (lazy `../aiToolsM365` import) and run the gate in `check`
+// mode before anything is minted. Both collaborators are mocked at the module
+// boundary; this suite pins the WIRING (what is passed, what is inserted, that
+// a refusal mints nothing). Defaults pass, so every pre-W05 test is unchanged.
+const callerState = vi.hoisted(() => ({
+  resolveM365CallerTarget: vi.fn(),
+  requireCallerVerification: vi.fn(async () => undefined),
+  getEffectivePolicy: vi.fn(async () => ({ requiredTierResetPassword: 3, requiredTierDisableUser: 2 })),
+}));
+vi.mock('../aiToolsM365', () => ({ resolveM365CallerTarget: callerState.resolveM365CallerTarget }));
+vi.mock('../callerVerification/gate', () => ({ requireCallerVerification: callerState.requireCallerVerification }));
+vi.mock('../callerVerification/policy', () => ({ getEffectivePolicy: callerState.getEffectivePolicy }));
+
 // ---------------------------------------------------------------------------
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
@@ -353,6 +367,7 @@ import { buildActionLabel } from './actionLabel';
 import { db, withDbAccessContext } from '../../db';
 import { computeEffectDigestOutcome } from './effectDigest';
 import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
+import { CallerVerificationRequiredError, CallerVerificationValidationError } from '../callerVerification/errors';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -369,6 +384,9 @@ const RUN_ID_2 = '88888888-8888-4888-8888-888888888888';
 const DEVICE_ID = '99999999-9999-4999-8999-999999999999';
 const SITE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const CALLER_CONN = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const CALLER_TENANT = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const CALLER_OID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 function makeAuth(overrides?: {
   partnerId?: string | null;
@@ -573,6 +591,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   aiToolsState.tools.clear();
   aiToolsState.resolveWritableToolOrgId.mockReturnValue({ orgId: ORG_ID });
+  callerState.resolveM365CallerTarget.mockReset();
+  callerState.resolveM365CallerTarget.mockResolvedValue({
+    backend: 'direct', connectionId: CALLER_CONN, tenantId: CALLER_TENANT, orgId: ORG_ID, entraOid: CALLER_OID,
+  });
+  callerState.requireCallerVerification.mockReset();
+  callerState.requireCallerVerification.mockResolvedValue(undefined);
   guardrailMock.checkGuardrails.mockReturnValue({
     tier: 3,
     allowed: true,
@@ -3116,5 +3140,195 @@ describe('createActionIntent org-wide governance site ceiling', () => {
     await createActionIntent(makeAuth({ allowedSiteIds: ['site-1'] }), baseInput());
 
     expect(dbState.insertedActionIntentValues).toHaveLength(1);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Caller verification W05 (#6354): protected M365 identity tools
+// ---------------------------------------------------------------------------
+describe('createActionIntent caller verification (#6354 W05)', () => {
+  const ZERO_INTENT = '00000000-0000-0000-0000-000000000000';
+  const protInput = (toolName = 'm365_disable_user', over: Partial<CreateActionIntentInput> = {}) => baseInput({
+    toolName,
+    input: { userIdentifier: 'jane@contoso.test', reason: 'offboarding' },
+    idempotencyKey: `key-${toolName}`,
+    ...over,
+  });
+  const arrangeApproval = () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3, allowed: true, requiresApproval: true, readOnly: false,
+      approvalScope: 'four_eyes', description: 'Identity change.',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+  };
+  const refusal = (reason = 'no_fresh_verification') => new CallerVerificationRequiredError({
+    orgId: ORG_ID, contactId: null, action: 'disable_user', requiredTier: 2, reason: reason as never, latest: null,
+  });
+  const expectNothingMinted = () => {
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+    expect(dbState.insertedOutboxValues).toHaveLength(0);
+    expect(intentApproversState.resolveIntentApprovers).not.toHaveBeenCalled();
+    expect(pushState.dispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+  };
+
+  beforeEach(() => { resetDbState(); });
+
+  it.each([
+    ['m365_disable_user', 'disable_user'],
+    ['m365_reset_password', 'reset_password'],
+  ])('%s: a passing check pins the exact tenant/oid/connection and calls the gate in check mode only', async (toolName, action) => {
+    arrangeApproval();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
+
+    await createActionIntent(makeAuth(), protInput(toolName, { m365SessionId: 'sess-9' }));
+
+    expect(callerState.resolveM365CallerTarget).toHaveBeenCalledTimes(1);
+    expect(callerState.resolveM365CallerTarget).toHaveBeenCalledWith(expect.anything(), ORG_ID, 'jane@contoso.test', 'sess-9');
+    expect(callerState.requireCallerVerification).toHaveBeenCalledTimes(1);
+    expect(callerState.requireCallerVerification).toHaveBeenCalledWith({
+      orgId: ORG_ID, action,
+      target: { entraTenantId: CALLER_TENANT, entraOid: CALLER_OID },
+      backendTenantId: CALLER_TENANT,
+      technicianUserId: REQUESTER_ID,
+      intentId: ZERO_INTENT,
+      mode: 'check',
+    });
+    for (const call of callerState.requireCallerVerification.mock.calls) {
+      expect((call as unknown[])[0]).not.toMatchObject({ mode: 'consume' });
+    }
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      actionName: toolName,
+      targetEntraTenantId: CALLER_TENANT,
+      targetEntraOid: CALLER_OID,
+      targetConnectionRef: CALLER_CONN,
+    });
+  });
+
+  it('resolves the target BEFORE the creation transaction (resolver and gate ran before any insert)', async () => {
+    arrangeApproval();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
+    await createActionIntent(makeAuth(), protInput());
+    const insertOrder = vi.mocked(db.insert).mock.invocationCallOrder[0]!;
+    expect(callerState.resolveM365CallerTarget.mock.invocationCallOrder[0]).toBeLessThan(insertOrder);
+    expect(callerState.requireCallerVerification.mock.invocationCallOrder[0]).toBeLessThan(insertOrder);
+  });
+
+  it('a caller refusal creates no intent, no approval rows and no fan-out', async () => {
+    arrangeApproval();
+    callerState.requireCallerVerification.mockRejectedValueOnce(refusal());
+    await expect(createActionIntent(makeAuth(), protInput())).rejects.toBeInstanceOf(CallerVerificationRequiredError);
+    expectNothingMinted();
+  });
+
+  it.each([
+    ['subject_unmatched'], ['subject_ambiguous'], ['tenant_mismatch'],
+  ])('a %s target validation error becomes a typed refusal with the policy tier and mints nothing', async (code) => {
+    arrangeApproval();
+    callerState.resolveM365CallerTarget.mockRejectedValueOnce(new CallerVerificationValidationError(code, 'x'));
+    callerState.resolveM365CallerTarget.mockRejectedValueOnce(new CallerVerificationValidationError(code, 'x'));
+    await expect(createActionIntent(makeAuth(), protInput('m365_disable_user')))
+      .rejects.toMatchObject({ name: 'CallerVerificationRequiredError', payload: { reason: code, action: 'disable_user', requiredTier: 2 } });
+    await expect(createActionIntent(makeAuth(), protInput('m365_reset_password')))
+      .rejects.toMatchObject({ payload: { reason: code, action: 'reset_password', requiredTier: 3 } });
+    expect(callerState.requireCallerVerification).not.toHaveBeenCalled();
+    expectNothingMinted();
+  });
+
+  it('connection_not_ready becomes ActionIntentError connection_unavailable and mints nothing', async () => {
+    arrangeApproval();
+    callerState.resolveM365CallerTarget.mockRejectedValueOnce(new CallerVerificationValidationError('connection_not_ready', 'x'));
+    await expect(createActionIntent(makeAuth(), protInput())).rejects.toMatchObject({
+      name: 'ActionIntentError', code: 'connection_unavailable',
+    });
+    expect(callerState.requireCallerVerification).not.toHaveBeenCalled();
+    expectNothingMinted();
+  });
+
+  it('an unexpected resolver error propagates untouched', async () => {
+    arrangeApproval();
+    callerState.resolveM365CallerTarget.mockRejectedValueOnce(new Error('graph down'));
+    await expect(createActionIntent(makeAuth(), protInput())).rejects.toThrow('graph down');
+    expectNothingMinted();
+  });
+
+  it('an ai_agent principal is refused technician_mismatch without resolving or checking', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3, allowed: true, requiresApproval: true, description: 'Identity change.', approvalScope: 'supervised',
+    });
+    queueAgentContext();
+    await expect(createActionIntent(
+      makeAgentAuth(),
+      agentInput({ toolName: 'm365_reset_password', input: { userIdentifier: 'jane@contoso.test', reason: 'r' } }),
+    )).rejects.toMatchObject({ name: 'CallerVerificationRequiredError', payload: { reason: 'technician_mismatch', action: 'reset_password' } });
+    expect(callerState.resolveM365CallerTarget).not.toHaveBeenCalled();
+    expect(callerState.requireCallerVerification).not.toHaveBeenCalled();
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+  });
+
+  describe('live replay', () => {
+    const replayRow = (over: Record<string, unknown> = {}) => {
+      const input = protInput();
+      return makeIntentRow({
+        id: 'intent-live',
+        actionName: 'm365_disable_user',
+        source: 'chat',
+        idempotencyKey: input.idempotencyKey,
+        arguments: input.input,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(input.input)),
+        requestedByUserId: REQUESTER_ID,
+        requestingAgentRunId: null,
+        ...over,
+      });
+    };
+
+    it('returns the existing snapshot without calling the resolver or the gate and inserts nothing', async () => {
+      arrangeApproval();
+      dbState.selectActionIntentsResults.push([replayRow()]);
+      dbState.selectApprovalRequestsResults.push([{ id: 'approval-live', userId: APPROVER_1 }]);
+      const snapshot = await createActionIntent(makeAuth(), protInput());
+      expect(snapshot.id).toBe('intent-live');
+      expect(callerState.resolveM365CallerTarget).not.toHaveBeenCalled();
+      expect(callerState.requireCallerVerification).not.toHaveBeenCalled();
+      expectNothingMinted();
+    });
+
+    it.each([
+      ['requester', { requestedByUserId: APPROVER_2 }],
+      ['agent run', { requestingAgentRunId: RUN_ID }],
+      ['action', { actionName: 'm365_reset_password' }],
+      ['source', { source: 'mcp' }],
+      ['digest', { argumentDigest: 'f'.repeat(64) }],
+    ])('a live row with a different %s is an idempotency_conflict (no resolve, no gate)', async (_label, over) => {
+      arrangeApproval();
+      dbState.selectActionIntentsResults.push([replayRow(over)]);
+      await expect(createActionIntent(makeAuth(), protInput())).rejects.toMatchObject({
+        name: 'ActionIntentError', code: 'idempotency_conflict',
+      });
+      expect(callerState.resolveM365CallerTarget).not.toHaveBeenCalled();
+      expect(callerState.requireCallerVerification).not.toHaveBeenCalled();
+      expectNothingMinted();
+    });
+  });
+
+  it('non-protected tools never resolve a caller target or call the gate, and pin nothing', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3, allowed: true, requiresApproval: true, description: 'Run a script.', approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
+    await createActionIntent(makeAuth(), baseInput());
+    expect(callerState.resolveM365CallerTarget).not.toHaveBeenCalled();
+    expect(callerState.requireCallerVerification).not.toHaveBeenCalled();
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      targetEntraTenantId: null, targetEntraOid: null, targetConnectionRef: null,
+    });
   });
 });

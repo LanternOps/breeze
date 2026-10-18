@@ -16,10 +16,12 @@ export const CALLER_VERIFICATION_REQUIRED_ERROR = 'Caller verification required'
 /** The release `error_code` for a typed refusal (worker, inline SDK, revalidation). */
 export const CALLER_VERIFICATION_REQUIRED_CODE = 'caller_verification_required';
 
-export interface CallerRefusal {
+// A type alias (not an interface) so it is assignable to the
+// `Record<string, unknown>` result column of an intent transition.
+export type CallerRefusal = {
   error: typeof CALLER_VERIFICATION_REQUIRED_ERROR;
   requiresCallerVerification: CallerRefusalPayload;
-}
+};
 
 export function callerRefusal(error: unknown): CallerRefusal | null {
   return error instanceof CallerVerificationRequiredError
