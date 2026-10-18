@@ -671,7 +671,15 @@
       "notLinked": "Non collegato",
       "rowSubtitle": "Accettato con il preventivo {{quoteNumber}} da {{signer}} il {{date}}",
       "rowSubtitleNoQuote": "Firmato da {{signer}} il {{date}}",
-      "evidenceUnavailable": "Accettato tramite preventivo — prova di accettazione non disponibile"
+      "evidenceUnavailable": "Accettato tramite preventivo — prova di accettazione non disponibile",
+      "recordSigned": "Registra accordo firmato",
+      "source": {
+        "quote": "tramite il preventivo {{number}}",
+        "recorded": "registrato dall'MSP — {{method}}"
+      },
+      "fileType": {
+        "image": "copia scansionata"
+      }
     },
     "templateEditor": {
       "usage": "Usato su {{quotes}} preventivi · {{signed}} accordi firmati",
@@ -686,6 +694,33 @@
     },
     "contractPill": {
       "under": "In base a {{template}} v{{n}}"
+    },
+    "recordSigned": {
+      "title": "Registra accordo firmato",
+      "organization": "Organizzazione",
+      "organizationPlaceholder": "Seleziona un'organizzazione",
+      "orgFallback": "questa organizzazione",
+      "template": "Modello di accordo",
+      "templatePlaceholder": "Seleziona un modello di accordo",
+      "templatesError": "Impossibile caricare i modelli di accordo.",
+      "contract": "Contratto (facoltativo)",
+      "contractNone": "Non collegato a un contratto",
+      "method": "Come è stato concordato",
+      "reference": "Riferimento",
+      "referenceHelp": "Dove un revisore troverebbe l'accordo firmato: un numero d'ordine, un'e-mail con data o un ticket.",
+      "signerName": "Chi ha dato l'assenso",
+      "signerEmail": "La sua e-mail (facoltativa)",
+      "signedAt": "Data di firma",
+      "file": "Copia firmata (facoltativa)",
+      "fileHelp": "PDF, PNG o JPEG, fino a 10 MB. Se alleghi una copia firmata, viene archiviato quel file.",
+      "fileTooLarge": "Il file supera i 10 MB.",
+      "fileWrongType": "Allega un file PDF, PNG o JPEG.",
+      "variables": "Dati dell'accordo",
+      "unresolved": "Indica un valore per: {{names}}",
+      "consequence": "Questo archivia un accordo firmato per {{org}}. In seguito non potrà essere eliminato.",
+      "submit": "Registra accordo firmato",
+      "success": "Accordo firmato registrato.",
+      "error": "Impossibile registrare l'accordo firmato."
     }
   },
   "quotes": {

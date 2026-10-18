@@ -671,7 +671,15 @@
       "notLinked": "Sem vínculo",
       "rowSubtitle": "Aceito com o orçamento {{quoteNumber}} por {{signer}} em {{date}}",
       "rowSubtitleNoQuote": "Assinado por {{signer}} em {{date}}",
-      "evidenceUnavailable": "Aceito por orçamento — evidência de aceite indisponível"
+      "evidenceUnavailable": "Aceito por orçamento — evidência de aceite indisponível",
+      "recordSigned": "Registrar acordo assinado",
+      "source": {
+        "quote": "via orçamento {{number}}",
+        "recorded": "registrado pelo MSP — {{method}}"
+      },
+      "fileType": {
+        "image": "cópia digitalizada"
+      }
     },
     "templateEditor": {
       "usage": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados",
@@ -686,6 +694,33 @@
     },
     "contractPill": {
       "under": "Sob {{template}} v{{n}}"
+    },
+    "recordSigned": {
+      "title": "Registrar acordo assinado",
+      "organization": "Organização",
+      "organizationPlaceholder": "Selecione uma organização",
+      "orgFallback": "esta organização",
+      "template": "Modelo de acordo",
+      "templatePlaceholder": "Selecione um modelo de acordo",
+      "templatesError": "Não foi possível carregar os modelos de acordo.",
+      "contract": "Contrato (opcional)",
+      "contractNone": "Não vinculado a um contrato",
+      "method": "Como foi acordado",
+      "reference": "Referência",
+      "referenceHelp": "Onde um revisor encontraria o acordo assinado — um número de ordem de compra, um e-mail com data, ou um chamado.",
+      "signerName": "Quem concordou",
+      "signerEmail": "E-mail dessa pessoa (opcional)",
+      "signedAt": "Data da assinatura",
+      "file": "Cópia assinada (opcional)",
+      "fileHelp": "PDF, PNG ou JPEG, até 10 MB. Com uma cópia assinada anexada, é esse arquivo que fica arquivado.",
+      "fileTooLarge": "Esse arquivo tem mais de 10 MB.",
+      "fileWrongType": "Anexe um arquivo PDF, PNG ou JPEG.",
+      "variables": "Dados do acordo",
+      "unresolved": "Informe um valor para: {{names}}",
+      "consequence": "Isso arquiva um acordo assinado para {{org}}. Ele não poderá ser excluído depois.",
+      "submit": "Registrar acordo assinado",
+      "success": "Acordo assinado registrado.",
+      "error": "Não foi possível registrar o acordo assinado."
     }
   },
   "quotes": {

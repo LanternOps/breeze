@@ -671,7 +671,15 @@
       "notLinked": "Not linked",
       "rowSubtitle": "Accepted with quote {{quoteNumber}} by {{signer}} on {{date}}",
       "rowSubtitleNoQuote": "Signed by {{signer}} on {{date}}",
-      "evidenceUnavailable": "Accepted via quote — acceptance evidence unavailable"
+      "evidenceUnavailable": "Accepted via quote — acceptance evidence unavailable",
+      "recordSigned": "Record signed agreement",
+      "source": {
+        "quote": "via quote {{number}}",
+        "recorded": "recorded by MSP — {{method}}"
+      },
+      "fileType": {
+        "image": "scanned copy"
+      }
     },
     "templateEditor": {
       "usage": "Used on {{quotes}} quotes · {{signed}} signed agreements",
@@ -686,6 +694,33 @@
     },
     "contractPill": {
       "under": "Under {{template}} v{{n}}"
+    },
+    "recordSigned": {
+      "title": "Record signed agreement",
+      "organization": "Organization",
+      "organizationPlaceholder": "Select an organization",
+      "orgFallback": "this organization",
+      "template": "Agreement template",
+      "templatePlaceholder": "Select an agreement template",
+      "templatesError": "Couldn't load agreement templates.",
+      "contract": "Contract (optional)",
+      "contractNone": "Not linked to a contract",
+      "method": "How it was agreed",
+      "reference": "Reference",
+      "referenceHelp": "Where a reviewer would find the signed agreement — a PO number, an email and date, or a ticket.",
+      "signerName": "Who agreed",
+      "signerEmail": "Their email (optional)",
+      "signedAt": "Date signed",
+      "file": "Signed copy (optional)",
+      "fileHelp": "PDF, PNG or JPEG, up to 10 MB. With a signed copy attached, that file is what gets filed.",
+      "fileTooLarge": "That file is larger than 10 MB.",
+      "fileWrongType": "Attach a PDF, PNG or JPEG file.",
+      "variables": "Agreement details",
+      "unresolved": "Provide a value for: {{names}}",
+      "consequence": "This files a signed agreement for {{org}}. It cannot be deleted afterwards.",
+      "submit": "Record signed agreement",
+      "success": "Signed agreement recorded.",
+      "error": "Couldn't record the signed agreement."
     }
   },
   "quotes": {

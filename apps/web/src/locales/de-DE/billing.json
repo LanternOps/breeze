@@ -671,7 +671,15 @@
       "notLinked": "Nicht zugeordnet",
       "rowSubtitle": "Mit Angebot {{quoteNumber}} angenommen von {{signer}} am {{date}}",
       "rowSubtitleNoQuote": "Unterzeichnet von {{signer}} am {{date}}",
-      "evidenceUnavailable": "Über Angebot angenommen — Annahmenachweis nicht verfügbar"
+      "evidenceUnavailable": "Über Angebot angenommen — Annahmenachweis nicht verfügbar",
+      "recordSigned": "Unterzeichnete Vereinbarung erfassen",
+      "source": {
+        "quote": "über Angebot {{number}}",
+        "recorded": "vom MSP erfasst — {{method}}"
+      },
+      "fileType": {
+        "image": "gescannte Kopie"
+      }
     },
     "templateEditor": {
       "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",
@@ -686,6 +694,33 @@
     },
     "contractPill": {
       "under": "Gemäß {{template}} v{{n}}"
+    },
+    "recordSigned": {
+      "title": "Unterzeichnete Vereinbarung erfassen",
+      "organization": "Organisation",
+      "organizationPlaceholder": "Organisation auswählen",
+      "orgFallback": "diese Organisation",
+      "template": "Vereinbarungsvorlage",
+      "templatePlaceholder": "Vereinbarungsvorlage auswählen",
+      "templatesError": "Vereinbarungsvorlagen konnten nicht geladen werden.",
+      "contract": "Vertrag (optional)",
+      "contractNone": "Keinem Vertrag zugeordnet",
+      "method": "Wie zugestimmt wurde",
+      "reference": "Referenz",
+      "referenceHelp": "Wo ein Prüfer die unterzeichnete Vereinbarung findet — eine Bestellnummer, eine E-Mail mit Datum oder ein Ticket.",
+      "signerName": "Wer zugestimmt hat",
+      "signerEmail": "E-Mail-Adresse (optional)",
+      "signedAt": "Unterzeichnet am",
+      "file": "Unterzeichnete Kopie (optional)",
+      "fileHelp": "PDF, PNG oder JPEG, bis 10 MB. Ist eine unterzeichnete Kopie angehängt, wird genau diese Datei abgelegt.",
+      "fileTooLarge": "Diese Datei ist größer als 10 MB.",
+      "fileWrongType": "Hängen Sie eine PDF-, PNG- oder JPEG-Datei an.",
+      "variables": "Angaben zur Vereinbarung",
+      "unresolved": "Geben Sie einen Wert an für: {{names}}",
+      "consequence": "Dies legt eine unterzeichnete Vereinbarung für {{org}} ab. Sie kann danach nicht gelöscht werden.",
+      "submit": "Unterzeichnete Vereinbarung erfassen",
+      "success": "Unterzeichnete Vereinbarung erfasst.",
+      "error": "Die unterzeichnete Vereinbarung konnte nicht erfasst werden."
     }
   },
   "quotes": {

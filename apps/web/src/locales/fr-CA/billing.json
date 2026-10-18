@@ -671,7 +671,15 @@
       "notLinked": "Non liée",
       "rowSubtitle": "Acceptée avec le devis {{quoteNumber}} par {{signer}} le {{date}}",
       "rowSubtitleNoQuote": "Signée par {{signer}} le {{date}}",
-      "evidenceUnavailable": "Acceptée par devis — preuve d’acceptation non disponible"
+      "evidenceUnavailable": "Acceptée par devis — preuve d’acceptation non disponible",
+      "recordSigned": "Enregistrer une entente signée",
+      "source": {
+        "quote": "via le devis {{number}}",
+        "recorded": "enregistrée par le MSP — {{method}}"
+      },
+      "fileType": {
+        "image": "copie numérisée"
+      }
     },
     "templateEditor": {
       "usage": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées",
@@ -686,6 +694,33 @@
     },
     "contractPill": {
       "under": "Sous {{template}} v{{n}}"
+    },
+    "recordSigned": {
+      "title": "Enregistrer une entente signée",
+      "organization": "Organisation",
+      "organizationPlaceholder": "Sélectionner une organisation",
+      "orgFallback": "cette organisation",
+      "template": "Modèle d'entente",
+      "templatePlaceholder": "Sélectionner un modèle d'entente",
+      "templatesError": "Impossible de charger les modèles d'entente.",
+      "contract": "Contrat (facultatif)",
+      "contractNone": "Non rattachée à un contrat",
+      "method": "Mode d'accord",
+      "reference": "Référence",
+      "referenceHelp": "Où un réviseur trouverait l'entente signée — un numéro de bon de commande, un courriel daté ou un billet.",
+      "signerName": "Qui a donné son accord",
+      "signerEmail": "Son courriel (facultatif)",
+      "signedAt": "Date de signature",
+      "file": "Copie signée (facultatif)",
+      "fileHelp": "PDF, PNG ou JPEG, jusqu'à 10 Mo. Si une copie signée est jointe, c'est ce fichier qui est versé au dossier.",
+      "fileTooLarge": "Ce fichier dépasse 10 Mo.",
+      "fileWrongType": "Joignez un fichier PDF, PNG ou JPEG.",
+      "variables": "Renseignements de l'entente",
+      "unresolved": "Indiquez une valeur pour : {{names}}",
+      "consequence": "Ceci verse au dossier une entente signée pour {{org}}. Elle ne pourra pas être supprimée par la suite.",
+      "submit": "Enregistrer l'entente signée",
+      "success": "Entente signée enregistrée.",
+      "error": "Impossible d'enregistrer l'entente signée."
     }
   },
   "quotes": {

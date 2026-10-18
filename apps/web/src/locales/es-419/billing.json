@@ -671,7 +671,15 @@
       "notLinked": "Sin vincular",
       "rowSubtitle": "Aceptado con la cotización {{quoteNumber}} por {{signer}} el {{date}}",
       "rowSubtitleNoQuote": "Firmado por {{signer}} el {{date}}",
-      "evidenceUnavailable": "Aceptado mediante cotización — evidencia de aceptación no disponible"
+      "evidenceUnavailable": "Aceptado mediante cotización — evidencia de aceptación no disponible",
+      "recordSigned": "Registrar acuerdo firmado",
+      "source": {
+        "quote": "mediante la cotización {{number}}",
+        "recorded": "registrado por el MSP — {{method}}"
+      },
+      "fileType": {
+        "image": "copia escaneada"
+      }
     },
     "templateEditor": {
       "usage": "Usada en {{quotes}} cotizaciones · {{signed}} acuerdos firmados",
@@ -686,6 +694,33 @@
     },
     "contractPill": {
       "under": "Bajo {{template}} v{{n}}"
+    },
+    "recordSigned": {
+      "title": "Registrar acuerdo firmado",
+      "organization": "Organización",
+      "organizationPlaceholder": "Selecciona una organización",
+      "orgFallback": "esta organización",
+      "template": "Plantilla de acuerdo",
+      "templatePlaceholder": "Selecciona una plantilla de acuerdo",
+      "templatesError": "No se pudieron cargar las plantillas de acuerdo.",
+      "contract": "Contrato (opcional)",
+      "contractNone": "Sin vincular a un contrato",
+      "method": "Cómo se dio la conformidad",
+      "reference": "Referencia",
+      "referenceHelp": "Dónde encontraría un revisor el acuerdo firmado: un número de orden de compra, un correo con fecha o un ticket.",
+      "signerName": "Quién dio la conformidad",
+      "signerEmail": "Su correo electrónico (opcional)",
+      "signedAt": "Fecha de firma",
+      "file": "Copia firmada (opcional)",
+      "fileHelp": "PDF, PNG o JPEG, de hasta 10 MB. Si adjuntas una copia firmada, ese archivo es el que se registra.",
+      "fileTooLarge": "Ese archivo supera los 10 MB.",
+      "fileWrongType": "Adjunta un archivo PDF, PNG o JPEG.",
+      "variables": "Datos del acuerdo",
+      "unresolved": "Indica un valor para: {{names}}",
+      "consequence": "Esto registra un acuerdo firmado para {{org}}. No se puede eliminar después.",
+      "submit": "Registrar acuerdo firmado",
+      "success": "Acuerdo firmado registrado.",
+      "error": "No se pudo registrar el acuerdo firmado."
     }
   },
   "quotes": {

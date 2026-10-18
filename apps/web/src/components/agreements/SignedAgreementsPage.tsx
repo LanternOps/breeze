@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText } from 'lucide-react';
+import { QUOTE_ACCEPT_ON_BEHALF_METHODS } from '@breeze/shared';
 import '@/lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
@@ -39,7 +40,10 @@ function DocumentDownloadButton({ doc }: { doc: ContractDocument }) {
       data-testid={`contract-document-download-${doc.id}`}
       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
     >
-      {downloading ? t('contracts.documentsTab.preparing') : t('contracts.documentsTab.download')}
+      {downloading
+        ? t('contracts.documentsTab.preparing')
+        // An externally signed scan downloads as a PNG/JPEG — don't promise a PDF.
+        : doc.mime?.startsWith('image/') ? t('common:actions.download') : t('contracts.documentsTab.download')}
     </button>
   );
 }
@@ -161,6 +165,26 @@ export default function SignedAgreementsPage({
         setContractsLoading(false);
       }
     })();
+  };
+
+  /** An MSP-recorded agreement is not the customer's own acceptance, so the row
+   *  must not read "Accepted with quote … by …". Method label reuses the
+   *  accept-on-behalf set (already translated); an unknown method is shown raw
+   *  rather than hidden. A PNG/JPEG upload is a photo or scan, not a PDF, so
+   *  say so. */
+  const onBehalfSubtitle = (doc: ContractDocument): string => {
+    const known = (QUOTE_ACCEPT_ON_BEHALF_METHODS as readonly string[]).includes(doc.acceptanceMethod ?? '');
+    const method = known
+      // i18n-dynamic: the key is built from the shared enum member.
+      ? t(/* i18n-dynamic */ `quotes.actions.acceptOnBehalf.method.${doc.acceptanceMethod}`)
+      : doc.acceptanceMethod ?? '—';
+    const parts = [t('agreements.signedPage.source.recorded', { method })];
+    if (doc.sourceKind === 'quote' && doc.quoteNumber) {
+      parts.push(t('agreements.signedPage.source.quote', { number: doc.quoteNumber }));
+    }
+    parts.push(doc.signerName ?? '—', doc.signedAt ? formatDate(doc.signedAt) : '—');
+    if (doc.mime?.startsWith('image/')) parts.push(t('agreements.signedPage.fileType.image'));
+    return parts.join(' · ');
   };
 
   const confirmLink = async () => {
@@ -288,6 +312,8 @@ export default function SignedAgreementsPage({
                     <div className="text-xs text-muted-foreground" data-testid="signed-agreement-subtitle">
                       {doc.evidenceAvailable === false
                         ? t('agreements.signedPage.evidenceUnavailable')
+                        : doc.acceptanceOrigin === 'on_behalf'
+                        ? onBehalfSubtitle(doc)
                         : doc.quoteNumber
                         ? t('agreements.signedPage.rowSubtitle', {
                             quoteNumber: doc.quoteNumber,

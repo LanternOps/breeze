@@ -194,6 +194,38 @@ describe('SignedAgreementsPage', () => {
     expect(subtitle.textContent).not.toMatch(/by — on —/);
   });
 
+  it('says "recorded by MSP" with the method and "scanned copy" for a request-sourced on-behalf image (#8865 W1c)', async () => {
+    docsApi.listContractDocuments.mockResolvedValue(resp({
+      data: [{
+        ...UNATTACHED_DOC, sourceKind: 'request', agreementRequestId: 'ar-1', quoteId: null, quoteNumber: null,
+        acceptanceOrigin: 'on_behalf', acceptanceMethod: 'purchase_order', mime: 'image/png',
+      }],
+    }));
+    render(<SignedAgreementsPage />);
+    const rows = await screen.findAllByTestId('contract-document-row');
+    const subtitle = within(rows[0]).getByTestId('signed-agreement-subtitle');
+    expect(subtitle).toHaveTextContent('recorded by MSP — Purchase order');
+    expect(subtitle).toHaveTextContent('Jane Doe');
+    expect(subtitle).toHaveTextContent('scanned copy');
+    // Not the customer-acceptance wording.
+    expect(subtitle).not.toHaveTextContent(/Accepted with quote/);
+    // A scan downloads as an image, so the button must not promise a PDF.
+    expect(within(rows[0]).getByTestId('contract-document-download-doc-1')).toHaveTextContent(/^Download$/);
+  });
+
+  it('keeps a PDF on-behalf row free of the scanned-copy suffix and names the quote', async () => {
+    docsApi.listContractDocuments.mockResolvedValue(resp({
+      data: [{ ...UNATTACHED_DOC, acceptanceOrigin: 'on_behalf', acceptanceMethod: 'verbal' }],
+    }));
+    render(<SignedAgreementsPage />);
+    const rows = await screen.findAllByTestId('contract-document-row');
+    const subtitle = within(rows[0]).getByTestId('signed-agreement-subtitle');
+    expect(subtitle).toHaveTextContent('recorded by MSP — Verbally / by phone');
+    expect(subtitle).toHaveTextContent('via quote Q-2026-0001');
+    expect(subtitle).not.toHaveTextContent('scanned copy');
+    expect(within(rows[0]).getByTestId('contract-document-download-doc-1')).toHaveTextContent('Download PDF');
+  });
+
   it('links a linked row to its contract', async () => {
     docsApi.listContractDocuments.mockResolvedValue(resp({ data: [{ ...UNATTACHED_DOC, contractId: 'ct-9' }] }));
     render(<SignedAgreementsPage />);
