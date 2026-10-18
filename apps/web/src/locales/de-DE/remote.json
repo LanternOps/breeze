@@ -321,11 +321,19 @@
   },
   "proxyTunnelPage": {
     "errors": {
+      "closeFailed": "Tunnel konnte nicht geschlossen werden",
+      "invalidProxyUrl": "Der Server hat eine ungültige Proxy-Adresse zurückgegeben.",
       "invalidTicket": "Dieser Link ist ungültig oder abgelaufen.",
       "obtainTicket": "Tunnel-Ticket konnte nicht abgerufen werden",
+      "popupBlocked": "Ihr Browser hat den neuen Tab blockiert. Erlauben Sie Pop-ups für diese Website und versuchen Sie es erneut.",
       "prepareConnection": "Proxy-Verbindung konnte nicht vorbereitet werden",
       "tlsUntrusted": "Dieses Gerät hat ein nicht vertrauenswürdiges oder selbstsigniertes Zertifikat vorgelegt.",
       "tunnelFailed": "Tunnel konnte nicht geöffnet werden"
+    },
+    "cookieBlocked": {
+      "title": "Dieser Browser hat die eingebettete Proxy-Sitzung blockiert.",
+      "body": "Öffnen Sie das Gerät in einem neuen Tab, um fortzufahren.",
+      "storageBody": "Er blockiert den Website-Speicher in eingebetteten Seiten, den die Geräteseite benötigt. Ein neuer Tab funktioniert."
     },
     "openInNewTab": "In neuem Tab öffnen",
     "preparingConnection": "Proxy-Verbindung wird vorbereitet…",

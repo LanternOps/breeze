@@ -321,11 +321,19 @@
   },
   "proxyTunnelPage": {
     "errors": {
+      "closeFailed": "Failed to close the tunnel",
+      "invalidProxyUrl": "The server returned an invalid proxy address.",
       "invalidTicket": "This link is invalid or has expired.",
       "obtainTicket": "Failed to obtain tunnel ticket",
+      "popupBlocked": "Your browser blocked the new tab. Allow pop-ups for this site and try again.",
       "prepareConnection": "Failed to prepare the proxy connection",
       "tlsUntrusted": "This device presented an untrusted or self-signed certificate.",
       "tunnelFailed": "Tunnel failed to open"
+    },
+    "cookieBlocked": {
+      "title": "This browser blocked the embedded proxy session.",
+      "body": "Open the device in a new tab to continue.",
+      "storageBody": "It blocks site storage in embedded pages, which the device page needs. A new tab works."
     },
     "openInNewTab": "Open In New Tab",
     "preparingConnection": "Preparing proxy connection…",

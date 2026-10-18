@@ -321,11 +321,19 @@
   },
   "proxyTunnelPage": {
     "errors": {
+      "closeFailed": "Não foi possível fechar o túnel",
+      "invalidProxyUrl": "O servidor retornou um endereço de proxy inválido.",
       "invalidTicket": "Este link é inválido ou expirou.",
       "obtainTicket": "Falha ao obter o tíquete do túnel",
+      "popupBlocked": "Seu navegador bloqueou a nova aba. Permita pop-ups para este site e tente novamente.",
       "prepareConnection": "Falha ao preparar a conexão do proxy",
       "tlsUntrusted": "Este dispositivo apresentou um certificado não confiável ou autoassinado.",
       "tunnelFailed": "O túnel não pôde ser aberto"
+    },
+    "cookieBlocked": {
+      "title": "Este navegador bloqueou a sessão de proxy incorporada.",
+      "body": "Abra o dispositivo em uma nova aba para continuar.",
+      "storageBody": "Ele bloqueia o armazenamento do site em páginas incorporadas, de que a página do dispositivo precisa. Uma nova aba funciona."
     },
     "openInNewTab": "Abrir em nova aba",
     "preparingConnection": "Preparando conexão...",

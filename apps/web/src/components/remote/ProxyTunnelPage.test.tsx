@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProxyTunnelPage from './ProxyTunnelPage';
@@ -118,7 +118,8 @@ describe('ProxyTunnelPage', () => {
     const mintSequence = (tickets: Array<string | null>) => {
       let mints = 0;
       fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
-        if (url === `/tunnels/${TUNNEL_ID}/http-ticket` && opts?.method === 'POST') {
+        // The iframe mints `/http-ticket`, the new tab `/http-ticket?mode=tab`.
+        if (url.startsWith(`/tunnels/${TUNNEL_ID}/http-ticket`) && opts?.method === 'POST') {
           const next = tickets[Math.min(mints++, tickets.length - 1)];
           return next
             ? makeResponse({ ticket: { ticket: next, expiresInSeconds: 300 } })
@@ -152,8 +153,8 @@ describe('ProxyTunnelPage', () => {
           expect.stringContaining(`/api/v1/tunnel-http/${TUNNEL_ID}/?__bzt=TKT-tab`),
         ),
       );
-      const mintCalls = fetchMock.mock.calls.filter(([url]) => url === `/tunnels/${TUNNEL_ID}/http-ticket`);
-      expect(mintCalls).toHaveLength(2);
+      const mintCalls = fetchMock.mock.calls.map(([url]) => url).filter((url) => url.startsWith(`/tunnels/${TUNNEL_ID}/http-ticket`));
+      expect(mintCalls).toEqual([`/tunnels/${TUNNEL_ID}/http-ticket`, `/tunnels/${TUNNEL_ID}/http-ticket?mode=tab`]);
       // The iframe keeps its own session.
       expect(screen.getByTestId('network-proxy-frame').getAttribute('src')).toContain('__bzt=TKT-iframe');
     });
@@ -186,7 +187,7 @@ describe('ProxyTunnelPage', () => {
 
       // No ticket is minted for a tab that never opened.
       await new Promise((r) => setTimeout(r, 0));
-      const mintCalls = fetchMock.mock.calls.filter(([url]) => url === `/tunnels/${TUNNEL_ID}/http-ticket`);
+      const mintCalls = fetchMock.mock.calls.filter(([url]) => url.startsWith(`/tunnels/${TUNNEL_ID}/http-ticket`));
       expect(mintCalls).toHaveLength(1);
     });
   });
@@ -373,5 +374,260 @@ describe('ProxyTunnelPage', () => {
     render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" />);
     const backLinkNoAsset = await screen.findByRole('link', { name: /back/i });
     expect(backLinkNoAsset.getAttribute('href')).toBe('/remote');
+  });
+});
+
+// ── Dedicated tunnel origin (#8155 W03) ───────────────────────────────────
+const HOST_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const HOST_ORIGIN = `https://${HOST_ID}.us.breezetunnel.test`;
+const HOST_URL = `${HOST_ORIGIN}/__bz/enter?t=TKT`;
+const HOST_TAB_URL = `${HOST_ORIGIN}/__bz/enter?t=TAB&mode=tab`;
+const HOST_SANDBOX =
+  'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads';
+const COOKIE_BLOCKED = 'breeze-tunnel-cookie-blocked';
+
+function hostModeFetch(overrides: Record<string, () => Response> = {}) {
+  fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+    const key = `${opts?.method ?? 'GET'} ${url}`;
+    if (overrides[key]) return overrides[key]!();
+    if (key === `POST /tunnels/${HOST_ID}/http-ticket`) {
+      return makeResponse({ ticket: { ticket: 'TKT', expiresInSeconds: 300 }, url: HOST_URL, mode: 'host' });
+    }
+    if (key === `POST /tunnels/${HOST_ID}/http-ticket?mode=tab`) {
+      return makeResponse({ ticket: { ticket: 'TAB', expiresInSeconds: 300 }, url: HOST_TAB_URL, mode: 'host' });
+    }
+    if (key === `GET /tunnels/${HOST_ID}`) return makeResponse({ status: 'active', idleSeconds: 0 });
+    return makeResponse({});
+  });
+}
+
+const pathModeTicket = () =>
+  makeResponse({
+    ticket: { ticket: 'P', expiresInSeconds: 300 },
+    url: `/api/v1/tunnel-http/${HOST_ID}/?__bzt=P`,
+    mode: 'path',
+  });
+
+const fakePopup = () => ({ opener: {} as unknown, close: vi.fn(), location: { replace: vi.fn() } });
+
+const postFromFrame = (
+  frame: HTMLElement,
+  data: unknown,
+  origin = HOST_ORIGIN,
+  source: MessageEventSource | null = (frame as HTMLIFrameElement).contentWindow,
+) => {
+  act(() => {
+    window.dispatchEvent(new MessageEvent('message', { origin, data, source }));
+  });
+};
+
+describe('ProxyTunnelPage host mode', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(showToast).mockClear();
+  });
+
+  it('renders the server URL with the host-mode sandbox', async () => {
+    hostModeFetch();
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    const frame = await screen.findByTestId('network-proxy-frame');
+    expect(frame.getAttribute('src')).toBe(HOST_URL);
+    expect(frame.getAttribute('data-proxy-mode')).toBe('host');
+    expect(frame.getAttribute('sandbox')).toBe(HOST_SANDBOX);
+  });
+
+  it('renders a server path-mode URL against the API base with the opaque-origin sandbox', async () => {
+    hostModeFetch({ [`POST /tunnels/${HOST_ID}/http-ticket`]: pathModeTicket });
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    const frame = await screen.findByTestId('network-proxy-frame');
+    expect(frame.getAttribute('src')).toBe(`http://localhost:3000/api/v1/tunnel-http/${HOST_ID}/?__bzt=P`);
+    expect(frame.getAttribute('data-proxy-mode')).toBe('path');
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups');
+  });
+
+  it.each([
+    ['the app origin', 'http://localhost:3000/__bz/enter?t=T'],
+    ['another tunnel', 'https://ffffffff-ffff-4fff-8fff-ffffffffffff.us.breezetunnel.test/__bz/enter?t=T'],
+    ['a tab URL in the iframe', `${HOST_ORIGIN}/__bz/enter?t=T&mode=tab`],
+    ['a non-string url', 42],
+  ])('refuses a server URL on %s and never renders a frame', async (_label, url) => {
+    hostModeFetch({
+      [`POST /tunnels/${HOST_ID}/http-ticket`]: () =>
+        makeResponse({ ticket: { ticket: 'T', expiresInSeconds: 300 }, url, mode: 'host' }),
+    });
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    expect(await screen.findByText('The server returned an invalid proxy address.')).toBeInTheDocument();
+    expect(screen.queryByTestId('network-proxy-frame')).toBeNull();
+  });
+
+  it('falls back to composing the path URL when an older API returns no url', async () => {
+    fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === `/tunnels/${TUNNEL_ID}/http-ticket` && opts?.method === 'POST') {
+        return makeResponse({ ticket: { ticket: 'TKT-abc', expiresInSeconds: 300 } });
+      }
+      return makeResponse({ status: 'connecting' });
+    });
+    render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" />);
+    const frame = await screen.findByTestId('network-proxy-frame');
+    expect(frame.getAttribute('data-proxy-mode')).toBe('path');
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups');
+  });
+
+  describe('cookie-blocked notice', () => {
+    it('ignores a message from another origin, another tunnel, another window or of another type', async () => {
+      hostModeFetch();
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      const frame = await screen.findByTestId('network-proxy-frame');
+      const msg = { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'cookie' };
+
+      postFromFrame(frame, msg, 'https://evil.test');
+      postFromFrame(frame, msg, 'http://localhost:3000');
+      postFromFrame(frame, { ...msg, tunnelId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' });
+      postFromFrame(frame, { ...msg, type: 'something-else' });
+      postFromFrame(frame, msg, HOST_ORIGIN, window);
+      postFromFrame(frame, COOKIE_BLOCKED);
+      expect(screen.queryByTestId('proxy-cookie-blocked-notice')).toBeNull();
+    });
+
+    it('shows the cookie notice for a cookie message from this tunnel frame', async () => {
+      hostModeFetch();
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      const frame = await screen.findByTestId('network-proxy-frame');
+      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'cookie' });
+      const notice = await screen.findByTestId('proxy-cookie-blocked-notice');
+      expect(notice).toHaveAttribute('data-reason', 'cookie');
+      expect(notice).toHaveTextContent('This browser blocked the embedded proxy session');
+      expect(notice).toHaveTextContent('Open the device in a new tab to continue.');
+    });
+
+    it('explains the storage case differently (amendment 2026-10-12b item 1)', async () => {
+      hostModeFetch();
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      const frame = await screen.findByTestId('network-proxy-frame');
+      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' });
+      const notice = await screen.findByTestId('proxy-cookie-blocked-notice');
+      expect(notice).toHaveAttribute('data-reason', 'storage');
+      expect(notice).toHaveTextContent('blocks site storage');
+      expect(notice).not.toHaveTextContent('Open the device in a new tab to continue.');
+    });
+
+    it('treats an unknown reason as the cookie case and matches the tunnel id case-insensitively', async () => {
+      hostModeFetch();
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      const frame = await screen.findByTestId('network-proxy-frame');
+      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID.toUpperCase(), reason: 'weird' });
+      expect(await screen.findByTestId('proxy-cookie-blocked-notice')).toHaveAttribute('data-reason', 'cookie');
+    });
+
+    it('offers Open in New Tab from the notice', async () => {
+      hostModeFetch();
+      const popup = fakePopup();
+      vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      const frame = await screen.findByTestId('network-proxy-frame');
+      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' });
+      fireEvent.click(await screen.findByTestId('proxy-cookie-blocked-open-new-tab'));
+      await waitFor(() => expect(popup.location.replace).toHaveBeenCalledWith(HOST_TAB_URL));
+    });
+
+    it('is never wired up in path mode', async () => {
+      hostModeFetch({ [`POST /tunnels/${HOST_ID}/http-ticket`]: pathModeTicket });
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      const frame = await screen.findByTestId('network-proxy-frame');
+      postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'cookie' }, 'http://localhost:3000');
+      expect(screen.queryByTestId('proxy-cookie-blocked-notice')).toBeNull();
+    });
+  });
+
+  describe('Close', () => {
+    it('shows "Disconnected" only after the DELETE succeeds', async () => {
+      let deleteOk = false;
+      hostModeFetch({
+        [`DELETE /tunnels/${HOST_ID}`]: () =>
+          deleteOk ? makeResponse({ closed: true }) : makeResponse({ error: 'boom' }, false),
+      });
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      await screen.findByTestId('network-proxy-frame');
+
+      fireEvent.click(screen.getByTestId('proxy-close'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/tunnels/${HOST_ID}`, { method: 'DELETE' }));
+      // runAction toasts the server's reason; the page stays live and Close stays usable.
+      await waitFor(() =>
+        expect(vi.mocked(showToast)).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'boom' })),
+      );
+      await waitFor(() => expect(screen.getByTestId('proxy-close')).not.toBeDisabled());
+      expect(screen.queryByTestId('proxy-session-expired-overlay')).toBeNull();
+      expect(screen.getByTestId('proxy-status')).not.toHaveTextContent('Disconnected');
+
+      deleteOk = true;
+      fireEvent.click(screen.getByTestId('proxy-close'));
+      expect(await screen.findByTestId('proxy-session-expired-overlay')).toBeInTheDocument();
+      expect(screen.getByTestId('proxy-close')).toBeDisabled();
+    });
+
+    it('toasts and stays live when the DELETE request itself throws', async () => {
+      hostModeFetch({
+        [`DELETE /tunnels/${HOST_ID}`]: () => {
+          throw new TypeError('Failed to fetch');
+        },
+      });
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      await screen.findByTestId('network-proxy-frame');
+      fireEvent.click(screen.getByTestId('proxy-close'));
+      await waitFor(() =>
+        expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: 'Failed to close the tunnel' }),
+        ),
+      );
+      expect(screen.queryByTestId('proxy-session-expired-overlay')).toBeNull();
+    });
+  });
+
+  describe('Open in New Tab', () => {
+    it('opens a blank tab synchronously, severs the opener, then navigates it to a fresh mode=tab ticket', async () => {
+      hostModeFetch();
+      const popup = fakePopup();
+      const openSpy = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      fireEvent.click(await screen.findByTestId('proxy-open-new-tab'));
+
+      expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank');
+      expect(popup.opener).toBeNull();
+      await waitFor(() => expect(popup.location.replace).toHaveBeenCalledWith(HOST_TAB_URL));
+      expect(fetchMock).toHaveBeenCalledWith(`/tunnels/${HOST_ID}/http-ticket?mode=tab`, { method: 'POST' });
+      // The iframe keeps its own frame ticket.
+      expect(screen.getByTestId('network-proxy-frame').getAttribute('src')).toBe(HOST_URL);
+    });
+
+    it('closes the blank tab and toasts when the server returns a URL that is not a tab URL', async () => {
+      hostModeFetch({
+        [`POST /tunnels/${HOST_ID}/http-ticket?mode=tab`]: () =>
+          makeResponse({ ticket: { ticket: 'TAB', expiresInSeconds: 300 }, url: HOST_URL, mode: 'host' }),
+      });
+      const popup = fakePopup();
+      vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      fireEvent.click(await screen.findByTestId('proxy-open-new-tab'));
+      await waitFor(() => expect(popup.close).toHaveBeenCalled());
+      expect(popup.location.replace).not.toHaveBeenCalled();
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'The server returned an invalid proxy address.' }),
+      );
+      expect(screen.getByTestId('network-proxy-frame')).toBeInTheDocument();
+    });
+
+    it('tells the user when the browser blocks the new tab, and mints nothing', async () => {
+      hostModeFetch();
+      vi.spyOn(window, 'open').mockReturnValue(null);
+      render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+      fireEvent.click(await screen.findByTestId('proxy-open-new-tab'));
+      await waitFor(() =>
+        expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: 'Your browser blocked the new tab. Allow pop-ups for this site and try again.' }),
+        ),
+      );
+      expect(fetchMock).not.toHaveBeenCalledWith(`/tunnels/${HOST_ID}/http-ticket?mode=tab`, { method: 'POST' });
+    });
   });
 });
