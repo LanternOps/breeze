@@ -30,6 +30,20 @@ vi.mock('./softwareDownloadPolicy', () => ({
 // to dispatchDeviceCommand.test.ts.
 vi.mock('./dispatchDeviceCommand', () => ({ dispatchDeviceCommand: dispatchDeviceCommandMock }));
 
+// #4756: Windows targets now resolve the System Restore checkpoint policy at
+// dispatch. This file's DB doubles do not model policies, so the resolver is
+// pinned to "no policy anywhere" -- the real chokepoint then returns null and
+// every payload below must stay exactly as it was before the feature. Stamping
+// is covered in softwareDeployment.restorePoint.test.ts.
+vi.mock('./featureConfigResolver', () => ({
+  resolveSystemProtectionForDevice: vi.fn(async () => ({
+    settings: { beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' },
+    policyRevision: null,
+    isPlatformDefault: true,
+    invalidStoredSettings: false,
+  })),
+}));
+
 vi.mock('../services/s3Storage', () => ({
   getPresignedUrl: vi.fn(async () => 'https://signed.example/pkg.exe'),
   isS3Configured: () => true,

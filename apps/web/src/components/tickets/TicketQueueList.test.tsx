@@ -1,5 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import TicketQueueList from './TicketQueueList';
 import type { TicketSummary } from './ticketConfig';
@@ -43,5 +45,76 @@ describe('TicketQueueList loading skeleton', () => {
     // A background refresh must not blank the list with the skeleton.
     expect(screen.queryByTestId('tickets-queue-loading')).toBeNull();
     expect(screen.getByTestId('ticket-row-tk-1')).toBeInTheDocument();
+  });
+});
+
+describe('TicketQueueList type chip (#7900)', () => {
+  it('shows the ticket type on each row', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-p', ticketType: 'problem' }),
+          makeTicket({ id: 'tk-c', ticketType: 'change' }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId('ticket-type-chip-tk-p')).toHaveTextContent('Problem');
+    expect(screen.getByTestId('ticket-type-chip-tk-p')).toHaveAttribute('data-ticket-type', 'problem');
+    expect(screen.getByTestId('ticket-type-chip-tk-c')).toHaveTextContent('Change');
+  });
+
+  it('reads a row without ticketType (older payload) as Incident', () => {
+    render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-old' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
+    );
+    expect(screen.getByTestId('ticket-type-chip-tk-old')).toHaveAttribute('data-ticket-type', 'incident');
+  });
+});
+
+describe('TicketQueueList org link and row activation (ui-flow W03)', () => {
+  it('links the org name to the org record without selecting the row', () => {
+    const onSelect = vi.fn();
+    render(<TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={onSelect} loading={false} />);
+    const link = screen.getByTestId('org-record-link');
+    expect(link).toHaveAttribute('href', '/organizations/org-1');
+    expect(link).toHaveTextContent('Acme');
+    fireEvent.click(link);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('selects on row click, Enter and Space', () => {
+    const onSelect = vi.fn();
+    const ticket = makeTicket({ id: 'tk-1' });
+    render(<TicketQueueList tickets={[ticket]} selectedId={null} onSelect={onSelect} loading={false} />);
+    const row = screen.getByTestId('ticket-row-tk-1');
+    expect(row).toHaveAttribute('role', 'option');
+    fireEvent.click(row);
+    row.focus();
+    fireEvent.keyDown(row, { key: 'Enter' });
+    fireEvent.keyDown(row, { key: ' ' });
+    expect(onSelect).toHaveBeenCalledTimes(3);
+    expect(onSelect).toHaveBeenCalledWith(ticket);
+  });
+
+  it('does not hijack Enter pressed on the org link inside the row', () => {
+    const onSelect = vi.fn();
+    render(<TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={onSelect} loading={false} />);
+    fireEvent.keyDown(screen.getByTestId('org-record-link'), { key: 'Enter' });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('renders no org link when hideOrg or orgName is null', () => {
+    const { unmount } = render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={vi.fn()} loading={false} hideOrg />
+    );
+    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    unmount();
+    render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-2', orgName: null })]} selectedId={null} onSelect={vi.fn()} loading={false} />
+    );
+    expect(screen.queryByTestId('org-record-link')).toBeNull();
   });
 });

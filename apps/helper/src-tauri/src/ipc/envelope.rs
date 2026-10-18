@@ -500,4 +500,33 @@ mod tests {
             Some(r#"{"token":"abc","v":1}"#)
         );
     }
+
+    // Endpoint messaging (#8293) adds only new `typ` strings; framing and HMAC
+    // are untouched. The helper's constants must equal the Go ones literally.
+    #[test]
+    fn message_typ_strings_match_the_go_constants() {
+        use crate::ipc::message::{
+            TYPE_MESSAGE_ACK, TYPE_MESSAGE_DISMISSED, TYPE_MESSAGE_PRESENTED,
+            TYPE_MESSAGE_RETRACT, TYPE_MESSAGE_SHOW,
+        };
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../agent/internal/ipc/message.go");
+        let go = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        for (name, value) in [
+            ("TypeMessageShow", TYPE_MESSAGE_SHOW),
+            ("TypeMessageRetract", TYPE_MESSAGE_RETRACT),
+            ("TypeMessagePresented", TYPE_MESSAGE_PRESENTED),
+            ("TypeMessageAck", TYPE_MESSAGE_ACK),
+            ("TypeMessageDismissed", TYPE_MESSAGE_DISMISSED),
+        ] {
+            let found = go.lines().any(|l| {
+                let mut it = l.split_whitespace();
+                it.next() == Some(name)
+                    && it.next() == Some("=")
+                    && it.next() == Some(&format!("\"{value}\""))
+            });
+            assert!(found, "agent message.go has no `{name} = \"{value}\"`");
+        }
+    }
 }

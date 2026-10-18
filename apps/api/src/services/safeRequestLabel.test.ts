@@ -1,13 +1,16 @@
 import type { Context } from 'hono';
 import { describe, expect, it } from 'vitest';
 import {
+  TUNNEL_HOST_ROUTE_LABEL,
   UNMATCHED_ROUTE_LABEL,
+  admissionRouteLabelOf,
   newRequestCorrelationId,
   safeMatchedRouteLabel,
 } from './safeRequestLabel';
 
 function contextWithRoutePath(routePath: unknown): Context {
   return {
+    get: () => undefined,
     req: {
       get routePath() {
         return routePath;
@@ -54,6 +57,40 @@ describe('safeMatchedRouteLabel', () => {
     expect(() =>
       safeMatchedRouteLabel(contextWithRoutePath('/quotes/:token')),
     ).not.toThrow();
+  });
+});
+
+describe('admission route label fallback (W08 #8147)', () => {
+  const ADMITTED = '/api/v1/agents/:id/heartbeat';
+
+  it('uses the admission label when the route did not match', () => {
+    const c = { ...contextWithRoutePath('*'), get: () => ADMITTED } as unknown as Context;
+    expect(safeMatchedRouteLabel(c)).toBe(ADMITTED);
+  });
+
+  // Error-path callers (captureException, the Sentry scrubber) hand in minimal
+  // contexts; a missing or throwing `get` must degrade to unmatched, not throw.
+  it.each([
+    ['missing', { req: { routePath: '*' } }],
+    ['not a function', { req: { routePath: '*' }, get: 'x' }],
+    ['throwing', { req: { routePath: '*' }, get: () => { throw new Error('boom'); } }],
+  ])('maps a context whose get is %s to unmatched without throwing', (_name, ctx) => {
+    const c = ctx as unknown as Context;
+    expect(() => admissionRouteLabelOf(c)).not.toThrow();
+    expect(admissionRouteLabelOf(c)).toBeNull();
+    expect(safeMatchedRouteLabel(c)).toBe(UNMATCHED_ROUTE_LABEL);
+  });
+});
+
+describe('tunnel-host route label override (#8158)', () => {
+  it('labels the whole tunnel surface with the fixed label, ahead of any route path', () => {
+    const c = { ...contextWithRoutePath('/api/v1/x'), get: (k: string) => (k === 'routeLabelOverride' ? TUNNEL_HOST_ROUTE_LABEL : undefined) } as unknown as Context;
+    expect(safeMatchedRouteLabel(c)).toBe('tunnel-host');
+  });
+
+  it('ignores any other override value (closed set, never request data)', () => {
+    const c = { ...contextWithRoutePath('*'), get: (k: string) => (k === 'routeLabelOverride' ? '/secret/device/path' : undefined) } as unknown as Context;
+    expect(safeMatchedRouteLabel(c)).toBe(UNMATCHED_ROUTE_LABEL);
   });
 });
 

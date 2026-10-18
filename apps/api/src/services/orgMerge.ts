@@ -58,9 +58,24 @@ import { getOrgMergePolicies, type OrgMergePolicy } from './orgMergeRegistry';
 import { captureLoserContacts, finishBindingMerge } from './callerVerification/merge';
 import { applyTicketChildLockOrder } from './ticketOrgMoveLockOrder';
 import { topologicalCascadeOrder } from './tenantCascade';
+import { EVIDENCE_HOLD_LINEAGE_DEPTH_CAP, heldLineageDepth, writeEvidenceHold } from './orgEvidenceHold';
+import {
+  armOwnershipChange,
+  PAM_MOVE_GUARD_CONSTRAINT,
+  PAM_MOVE_OPEN_ACTUATION_CONSTRAINT,
+  resolvePamEpochTransfer,
+} from './pamDeviceMoveGuard';
+import { pgErrorNode } from '../utils/pgErrors';
+import { MERGE_PRIOR_STATUS_KEY } from './orgSettingsInternalKeys';
 import { envInt } from '../utils/envInt';
 import { disconnectLiveAgentSocketsForOrgIds } from './tenantLifecycle';
 import { invalidateAgentTenantCache, isUsableOrgStatus } from './tenantStatus';
+import {
+  invalidateAgentOrgSettingsCaches,
+  invalidateOrgPamFallbackCache,
+  invalidateOrgPolicyProbeCache,
+} from './agentOrgSettingsCache';
+import { agentCollectorAbsenceCache } from './unifi/unifiCollectorService';
 import { prepareTopologyOrgMerge, finalizeTopologyOrgMerge } from './topology/tenantLifecycle';
 // Self-import so `executeOrgMerge` calls the exported bindings through the
 // module namespace, letting tests spy on `runPolicy` / `fenceLoser` — the same
@@ -99,6 +114,8 @@ export interface OrgMergePreview {
   warnings: string[];
   /** Non-empty iff verdict === 'blocked'; operator-facing refusal text. */
   blockers: string[];
+  /** Machine-readable reasons behind `blockers` (for localized UI copy). */
+  blockerCodes: MergeBlockerCode[];
 }
 
 export interface ExecuteOrgMergeInput {
@@ -128,6 +145,12 @@ export interface OrgMergeResult extends OrgMergeEventSummary {
   /** Alias of `tables`, kept because the task contract names this field `summary`. */
   summary: Record<string, OrgMergeCounts>;
   mergeEventId: string;
+  /**
+   * Set when Phase B kept the loser as an evidence-hold shell (PAM ownership
+   * epochs W5). Informational: Phase C re-reads the hold row itself rather
+   * than trusting this field. Absent/null means no hold was written.
+   */
+  evidenceHold?: 'pam_evidence' | 'transitive' | null;
 }
 
 /** Thrown for a refusal the caller can render as a 4xx — never for an engine bug. */
@@ -143,19 +166,57 @@ export interface MergeBlocker {
   loserRows: number;
 }
 
+/**
+ * Machine-readable refusal reasons, so a client can render localized copy
+ * (the `blockers` strings stay operator-facing English).
+ *  - `pam_open_actuation`: PAM transfer is on and a loser actuation is not
+ *    closed yet — wait for cleanup and retry.
+ *  - `pam_evidence`: PAM transfer is off and the loser has PAM history.
+ *  - `payment_in_flight`: an autopay collection is still in flight.
+ *  - `lineage_depth`: the held evidence lineage would get too deep.
+ */
+export type MergeBlockerCode = 'pam_open_actuation' | 'pam_evidence' | 'payment_in_flight' | 'lineage_depth';
+
+/** PAM-chain tables whose loser rows a merge leaves at their epoch (registry kind `epoch-frozen`). */
+function isPamEpochFrozenTable(table: string): boolean {
+  return getOrgMergePolicies().get(table)?.kind === 'epoch-frozen';
+}
+
+export function mergeBlockerCodes(
+  blockers: MergeBlocker[],
+  pamTransfer: boolean,
+  lineageBlocked = false,
+): MergeBlockerCode[] {
+  const codes = new Set<MergeBlockerCode>();
+  for (const b of blockers) {
+    if (b.table === 'invoice_collection_attempts') codes.add('payment_in_flight');
+    else if (isPamEpochFrozenTable(b.table)) codes.add(pamTransfer ? 'pam_open_actuation' : 'pam_evidence');
+  }
+  if (lineageBlocked) codes.add('lineage_depth');
+  return [...codes];
+}
+
 /** Operator-facing refusal text; also embedded in previews and audits. Precondition: `blockers` is non-empty — every caller only invokes this once a blocks-merge table has loser rows. */
-export function buildMergeBlockedMessage(blockers: MergeBlocker[]): string {
+export function buildMergeBlockedMessage(blockers: MergeBlocker[], pamTransfer = false): string {
   const paymentBlockers = blockers.filter((b) => b.table === 'invoice_collection_attempts');
   if (paymentBlockers.length > 0) {
     const count = paymentBlockers.reduce((n, b) => n + b.loserRows, 0);
     const paymentMessage = `merge blocked: ${count} payment collection attempt(s) are still in flight. Wait for settlement or cancellation before merging; changing organizations cannot cancel an in-flight bank debit.`;
     const otherBlockers = blockers.filter((b) => b.table !== 'invoice_collection_attempts');
     return otherBlockers.length > 0
-      ? `${paymentMessage} ${buildMergeBlockedMessage(otherBlockers)}`
+      ? `${paymentMessage} ${buildMergeBlockedMessage(otherBlockers, pamTransfer)}`
       : paymentMessage;
   }
 
   const counts = blockers.map((b) => `${b.loserRows} ${b.table} row(s)`).join(', ');
+  if (pamTransfer) {
+    return (
+      `merge blocked: the merged-away organization has privileged-access (PAM) actuations that are not closed yet (${counts}). `
+      + 'An open grant never crosses a tenant boundary: wait until each one has been cleaned up on its device '
+      + '(cleanup reported by the endpoint), then retry. Closed PAM evidence does not block a merge; it stays '
+      + 'with the merged-away organization under an evidence hold and remains readable from the surviving organization.'
+    );
+  }
   return (
     `merge blocked: the merged-away organization holds durable PAM lifecycle evidence (${counts}). `
     + 'Privileged-access evidence is never re-tenanted, destroyed, or bypassed by a merge. '
@@ -164,12 +225,87 @@ export function buildMergeBlockedMessage(blockers: MergeBlocker[]): string {
   );
 }
 
-/** Refusal for a loser org whose rows a `blocks-merge` policy protects — a 422 at the route, `org.merge.failed` from the engine. Never an engine bug. */
+/**
+ * Why a merge is refused:
+ * - `blocks_merge`: a `blocks-merge` policy protects loser rows (`blockers`).
+ * - `lineage_depth`: merging the loser away would push a held evidence
+ *   lineage past `EVIDENCE_HOLD_LINEAGE_DEPTH_CAP` hops, beyond which the
+ *   survivor's read branch can no longer reach it (PAM ownership epochs W5,
+ *   spec OD7). `blockers` is empty.
+ */
+export type OrgMergeBlockedReason = 'blocks_merge' | 'lineage_depth';
+
+export const LINEAGE_DEPTH_BLOCKED_MESSAGE =
+  `merge blocked: the merged-away organization already carries ${EVIDENCE_HOLD_LINEAGE_DEPTH_CAP} levels of merged-in `
+  + 'organizations whose privileged-access evidence is retained, and one more merge would put the oldest of it out of '
+  + "the surviving organization's reach. Merge into the organization that holds that history instead.";
+
+/** Refusal for a loser org whose rows a `blocks-merge` policy protects, or whose held evidence lineage is too deep — a 422 at the route, `org.merge.failed` from the engine. Never an engine bug. */
 export class OrgMergeBlockedError extends Error {
   readonly code = 'ORG_MERGE_BLOCKED';
-  constructor(readonly blockers: MergeBlocker[]) {
-    super(buildMergeBlockedMessage(blockers));
+  readonly reason: OrgMergeBlockedReason;
+  /** Machine-readable reasons (see MergeBlockerCode). */
+  readonly blockerCodes: MergeBlockerCode[];
+  constructor(
+    readonly blockers: MergeBlocker[],
+    reason: OrgMergeBlockedReason = 'blocks_merge',
+    pamTransfer = false,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      reason === 'lineage_depth' ? LINEAGE_DEPTH_BLOCKED_MESSAGE : buildMergeBlockedMessage(blockers, pamTransfer),
+      options,
+    );
     this.name = 'OrgMergeBlockedError';
+    this.reason = reason;
+    this.blockerCodes = reason === 'lineage_depth'
+      ? ['lineage_depth']
+      : mergeBlockerCodes(blockers, pamTransfer);
+  }
+}
+
+/**
+ * Maps the devices PAM move-guard trigger's 23514 (raised mid-walk when an
+ * actuation appeared after the Phase-B recheck) to the typed refusal. The
+ * constraint name says which mode refused it. Null for any other error.
+ */
+export function typedPamMergeRefusal(err: unknown): OrgMergeBlockedError | null {
+  const node = pgErrorNode(err);
+  // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by pgErrorNode.
+  if (node?.code !== '23514') return null;
+  const transfer = node.constraint_name === PAM_MOVE_OPEN_ACTUATION_CONSTRAINT
+    ? true
+    : node.constraint_name === PAM_MOVE_GUARD_CONSTRAINT ? false : null;
+  if (transfer === null) return null;
+  // The trigger refuses per device, so the row count is not known here: one
+  // refusing actuation is the floor. The original error stays as `cause`.
+  return new OrgMergeBlockedError([{ table: 'pam_actuations', loserRows: 1 }], 'blocks_merge', transfer, { cause: err });
+}
+
+/** Phase-B hold writer, exported so the engine calls it through `self` (spyable). */
+export async function writeMergeEvidenceHold(input: {
+  loserOrgId: string;
+  survivorOrgId: string;
+  partnerId: string;
+  mergeEventId: string;
+}): Promise<'pam_evidence' | 'transitive' | null> {
+  return writeEvidenceHold(input);
+}
+
+/**
+ * Refuses (`OrgMergeBlockedError`, reason `lineage_depth`) a merge that would
+ * make a held evidence lineage deeper than the read branch walks. Only held
+ * lineage counts: a loser with no held shells behind it can always merge.
+ * Runs on the ambient connection; the caller supplies a system context (the
+ * Phase-B transaction, or a short system context pre-fence and in preview).
+ * `survivorOrgId` is part of the contract for symmetry with the other pair
+ * checks; the survivor's own held lineage does not get deeper.
+ */
+export async function assertMergeLineageDepth(loserOrgId: string, survivorOrgId: string): Promise<void> {
+  void survivorOrgId;
+  const depth = await heldLineageDepth(loserOrgId);
+  if (depth > 0 && depth + 1 > EVIDENCE_HOLD_LINEAGE_DEPTH_CAP) {
+    throw new OrgMergeBlockedError([], 'lineage_depth');
   }
 }
 
@@ -182,17 +318,42 @@ export class OrgMergeBlockedError extends Error {
  * devices_pam_history_move_guard would RAISE a raw 23514 before the walk ever
  * reached pam_actuations — the typed refusal has to come first.
  */
-function mergeBlockerCount(table: string, loserOrgId: string): SQL {
-  return table === 'invoice_collection_attempts'
-    ? autopayMergeBlockerCount(loserOrgId)
-    : sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id=${uuid(loserOrgId)}`;
+function mergeBlockerCount(table: string, loserOrgId: string, pamTransfer = false): SQL {
+  if (table === 'invoice_collection_attempts') return autopayMergeBlockerCount(loserOrgId);
+  if (pamTransfer && isPamEpochFrozenTable(table)) {
+    // Transfer on (PAM ownership epochs W6, spec §5/§8): only an actuation
+    // that is not closed refuses; its results add nothing a refusal needs.
+    return table === 'pam_actuations'
+      ? sql`SELECT count(*)::int AS n FROM pam_actuations a
+             WHERE a.org_id=${uuid(loserOrgId)} AND NOT pam_actuation_is_closed(a)`
+      : sql`SELECT 0 AS n`;
+  }
+  return sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id=${uuid(loserOrgId)}`;
 }
 
-export async function collectMergeBlockers(loserOrgId: string): Promise<MergeBlocker[]> {
+/** Policy kinds that can refuse a merge in the pre-walk. */
+function isRefusingPolicy(policy: OrgMergePolicy): boolean {
+  return policy.kind === 'blocks-merge' || policy.kind === 'epoch-frozen';
+}
+
+/**
+ * PAM ownership transfer mode for a merge: env flag AND the database switch
+ * (`resolvePamEpochTransfer`). Runs on the ambient connection; callers supply
+ * a context (system context pre-fence/preview, the Phase-B transaction).
+ */
+export async function resolveMergePamTransfer(): Promise<boolean> {
+  return resolvePamEpochTransfer(dbModule.db);
+}
+
+export async function collectMergeBlockers(
+  loserOrgId: string,
+  pamTransfer?: boolean,
+): Promise<MergeBlocker[]> {
+  const transfer = pamTransfer ?? await self.resolveMergePamTransfer();
   const blockers: MergeBlocker[] = [];
   for (const [table, policy] of getOrgMergePolicies()) {
-    if (policy.kind !== 'blocks-merge') continue;
-    const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId));
+    if (!isRefusingPolicy(policy)) continue;
+    const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId, transfer));
     if (loserRows > 0) blockers.push({ table, loserRows });
   }
   return blockers.sort((a, b) => a.table.localeCompare(b.table));
@@ -262,7 +423,7 @@ const DEFAULT_MAX_ROWS = 500_000;
  * module's own `unfenceLoser` uses, instead of hand-duplicating the key
  * string.
  */
-export const MERGE_PRIOR_STATUS_KEY = 'mergePriorStatus';
+export { MERGE_PRIOR_STATUS_KEY }; // declared in orgSettingsInternalKeys.ts (a leaf module)
 
 /**
  * Drain window between fencing the loser and opening the merge transaction,
@@ -346,6 +507,30 @@ export function validateMergePair(loser: OrgMergeCandidate, survivor: OrgMergeCa
   return null;
 }
 
+export const DUAL_LIVE_HOUR_BLOCK_MESSAGE = 'Both organizations have a live block of hours; retire one first';
+
+/**
+ * #4547 W03 (index Open Decision 14). `contract_lines` merges by plain repoint and
+ * contract_lines_one_live_hour_block_per_org_uq is on (org_id): two orgs that each
+ * hold a live block would 23505 mid-walk, after the loser was fenced. A PAIR
+ * property (loser-only collectMergeBlockers cannot see it), so it joins the pair
+ * validators. One side live, or one side retired, is fine. Runs in a system
+ * context (contract_lines is org-axis; the caller wraps it or is already in the
+ * merge transaction).
+ */
+export async function assertNotBothHaveLiveHourBlock(loserOrgId: string, survivorOrgId: string): Promise<void> {
+  const result = (await dbModule.db.execute(sql`
+    SELECT DISTINCT org_id
+      FROM contract_lines
+     WHERE line_type = 'hour_block'
+       AND hour_block_retired_at IS NULL
+       AND org_id IN (${uuid(loserOrgId)}, ${uuid(survivorOrgId)})`)) as unknown;
+  // Fail CLOSED: a result shape we cannot read must never be taken as "no live blocks".
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown } | null | undefined)?.rows;
+  if (!Array.isArray(rows)) throw new Error('Unreadable result from the live hour-block check; refusing to merge');
+  if (rows.length >= 2) throw new MergeValidationError(DUAL_LIVE_HOUR_BLOCK_MESSAGE);
+}
+
 /** Load both orgs under a system context and validate the pair. Throws `MergeValidationError`. */
 export async function loadAndValidate(
   input: Pick<ExecuteOrgMergeInput, 'loserOrgId' | 'survivorOrgId' | 'partnerId'>,
@@ -380,6 +565,9 @@ export async function loadAndValidate(
 
   const reason = validateMergePair(loser, survivor);
   if (reason) throw new MergeValidationError(reason);
+  await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(() => assertNotBothHaveLiveHourBlock(loser.id, survivor.id)),
+  );
   return { loser, survivor };
 }
 
@@ -665,6 +853,7 @@ export async function assertPairStillMergeable(
   if (reason) {
     throw new MergeValidationError(`${reason} (re-checked inside the merge transaction)`);
   }
+  await assertNotBothHaveLiveHourBlock(loser.id, survivor.id);
 }
 
 async function exec(statement: SQL): Promise<number> {
@@ -805,6 +994,16 @@ export async function runPolicy(
       if (table === 'invoice_collection_attempts' && phase === 'move') {
         return CUSTOM_EXECUTORS.invoice_collection_attempts!(loserOrgId, survivorOrgId);
       }
+      return noOpOutcome();
+    }
+
+    case 'epoch-frozen': {
+      // Non-mutating: the rows stay at the loser's org and epoch (held shell).
+      // Re-check the refusal in the walk too — fail-closed, same predicate as
+      // the pre-walk (the transfer mode is re-read in this transaction).
+      const pamTransfer = await self.resolveMergePamTransfer();
+      const rows = await scalarCount(mergeBlockerCount(table, loserOrgId, pamTransfer));
+      if (rows > 0) throw new OrgMergeBlockedError([{ table, loserRows: rows }], 'blocks_merge', pamTransfer);
       return noOpOutcome();
     }
 
@@ -1034,6 +1233,24 @@ async function getOrgMergeWalkOrder(): Promise<string[]> {
 // Execute
 // ---------------------------------------------------------------------------
 
+/**
+ * W05 (#8144): drop both orgs' agent hot-path cache entries on every API
+ * instance. A merge re-points automation_policies (policy probe), devices and
+ * unifi_collectors from the loser to the survivor, and keeps the survivor's
+ * pam_org_config, so per-org values cached for either org can be wrong after
+ * it. Call INSIDE the merge transaction: `invalidateAroundCommit` drops locally
+ * now and publishes cluster-wide only once that transaction commits.
+ */
+export function invalidateMergedOrgHotPathCaches(loserId: string, survivorId: string): void {
+  for (const orgId of [loserId, survivorId]) {
+    invalidateAgentOrgSettingsCaches(orgId);
+    invalidateOrgPolicyProbeCache(orgId);
+    invalidateOrgPamFallbackCache(orgId);
+  }
+  // Keys are `${orgId}:${deviceId}`; the merge turns loser keys into survivor keys.
+  agentCollectorAbsenceCache.invalidateAroundCommit();
+}
+
 export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgMergeResult> {
   const { loser, survivor } = await self.loadAndValidate(input);
 
@@ -1047,11 +1264,28 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
   // here it runs on the bare `breeze_app` pool with `breeze_current_scope()
   // = 'none'`, which forces RLS on the pam tables and silently returns zero
   // rows — the refusal never fires.
-  const preFenceBlockers = await dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(() => self.collectMergeBlockers(loser.id)),
+  const { preFenceBlockers, preFencePamTransfer } = await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(async () => {
+      const transfer = await self.resolveMergePamTransfer();
+      return {
+        preFenceBlockers: await self.collectMergeBlockers(loser.id, transfer),
+        preFencePamTransfer: transfer,
+      };
+    }),
   );
-  if (preFenceBlockers.length > 0) {
-    const blocked = new OrgMergeBlockedError(preFenceBlockers);
+  // Held-lineage depth (PAM ownership epochs W5): refused pre-fence too, and
+  // re-checked inside Phase B below.
+  const preFenceDepthRefusal = preFenceBlockers.length > 0
+    ? null
+    : await dbModule.runOutsideDbContext(() =>
+      dbModule.withSystemDbAccessContext(() => self.assertMergeLineageDepth(loser.id, survivor.id)),
+    ).then(() => null, (err: unknown) => {
+      if (err instanceof OrgMergeBlockedError) return err;
+      throw err;
+    });
+  if (preFenceBlockers.length > 0 || preFenceDepthRefusal) {
+    const blocked = preFenceDepthRefusal
+      ?? new OrgMergeBlockedError(preFenceBlockers, 'blocks_merge', preFencePamTransfer);
     await self.writeMergeAudit(input, {
       action: 'org.merge.failed',
       result: 'failure',
@@ -1060,6 +1294,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         loserOrgName: loser.name,
         survivorOrgId: survivor.id,
         error: blocked.message,
+        reason: blocked.reason,
         blockers: preFenceBlockers,
       },
     });
@@ -1107,8 +1342,19 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // and BEFORE the walk — parents-first order repoints `devices` early,
         // and devices_pam_history_move_guard would abort mid-walk with a raw
         // 23514 instead of this typed refusal.
-        const txBlockers = await self.collectMergeBlockers(loser.id);
-        if (txBlockers.length > 0) throw new OrgMergeBlockedError(txBlockers);
+        //
+        // PAM ownership epochs W6 (#8208): the transfer mode is re-read here and
+        // armed as transaction-local GUCs before any devices row moves — the
+        // epoch cause (org_merge) labels each new survivor epoch and lets the
+        // devices restamp trigger carry un-actuated elevation requests; the
+        // transfer opt-in lets devices_pam_history_move_guard accept closed
+        // actuations. Armed always (cause) — with transfer off the guard keeps
+        // refusing any PAM history, which the recheck below already enforces.
+        const pamTransfer = await self.resolveMergePamTransfer();
+        await armOwnershipChange(dbModule.db, 'org_merge', pamTransfer);
+        const txBlockers = await self.collectMergeBlockers(loser.id, pamTransfer);
+        if (txBlockers.length > 0) throw new OrgMergeBlockedError(txBlockers, 'blocks_merge', pamTransfer);
+        await self.assertMergeLineageDepth(loser.id, survivor.id);
 
         const topologyMerge = await prepareTopologyOrgMerge(loser.id, survivor.id);
 
@@ -1191,10 +1437,38 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
           .returning({ id: orgMergeEvents.id });
         if (!event) throw new Error('[orgMerge] org_merge_events insert returned no row');
 
-        return { ...eventSummary, summary, mergeEventId: event.id };
+        // Evidence hold (PAM ownership epochs W5): AFTER the walk, so rows a
+        // policy repointed to the survivor do not count, and after the event
+        // insert, which the hold references. Same transaction: a merge that
+        // leaves PAM evidence behind can never commit without its hold.
+        const evidenceHold = await self.writeMergeEvidenceHold({
+          loserOrgId: loser.id,
+          survivorOrgId: survivor.id,
+          partnerId: input.partnerId,
+          mergeEventId: event.id,
+        });
+
+        // W05 (#8144): last, after every repoint. Inside this transaction, so
+        // each cache's cluster publish runs only if the merge commits.
+        self.invalidateMergedOrgHotPathCaches(loser.id, survivor.id);
+
+        return { ...eventSummary, summary, mergeEventId: event.id, evidenceHold };
       }),
     );
-  } catch (err) {
+  } catch (caught) {
+    // The device trigger is the TOCTOU backstop for the PAM refusal (spec §9):
+    // an actuation created after the in-transaction recheck makes the devices
+    // repoint raise 23514. Surface it as the typed refusal, never the raw
+    // constraint error.
+    const typed = typedPamMergeRefusal(caught);
+    if (typed) {
+      const node = pgErrorNode(caught);
+      console.warn(
+        `[orgMerge] PAM move guard refused the devices repoint of org ${loser.id} mid-walk (an actuation appeared after the recheck): `
+        + `${node?.message ?? 'no message'}${node?.detail ? ` — ${node.detail}` : ''}`,
+      );
+    }
+    const err = typed ?? caught;
     // Order matters: restore the org first (that is what unblocks the
     // partner), then record. Neither cleanup step may mask the original
     // failure, which is the thing the caller and the job must see.
@@ -1211,6 +1485,8 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         loserOrgName: loser.name,
         survivorOrgId: survivor.id,
         error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof OrgMergeBlockedError ? { reason: err.reason, blockerCodes: err.blockerCodes } : {}),
+        ...(typed ? { observedVia: 'device_trigger_backstop' } : {}),
       },
     });
     throw err;
@@ -1389,10 +1665,27 @@ export async function previewOrgMerge(
       let totalMovableRows = 0;
       let destroyedRows = 0;
       const mergeBlockers: MergeBlocker[] = [];
+      const pamTransfer = await self.resolveMergePamTransfer();
+      let heldPamRows = 0;
 
       for (const table of order) {
         const policy = policies.get(table);
         if (!policy) continue;
+
+        if (policy.kind === 'epoch-frozen') {
+          // PAM ownership epochs W6: never moved. Refusing rows (any row with
+          // transfer off, a not-closed actuation with it on) block; the rest
+          // are reported as staying with the merged-away org under a hold.
+          const totalRows = await scalarCount(
+            sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
+          );
+          if (totalRows === 0) continue;
+          tables.push({ table, policy: policy.kind, loserRows: totalRows, wouldDrop: 0 });
+          const refusing = await scalarCount(mergeBlockerCount(table, loserOrgId, pamTransfer));
+          if (refusing > 0) mergeBlockers.push({ table, loserRows: refusing });
+          else heldPamRows += totalRows;
+          continue;
+        }
 
         if (policy.kind === 'blocks-merge') {
           const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId));
@@ -1481,13 +1774,33 @@ export async function previewOrgMerge(
         notes,
       });
 
-      const verdict = self.computeMergeVerdict(mergeBlockers, totalMovableRows);
+      const lineageBlocked = await self.assertMergeLineageDepth(loserOrgId, survivorOrgId).then(
+        () => false,
+        (err: unknown) => {
+          if (err instanceof OrgMergeBlockedError) return true;
+          throw err;
+        },
+      );
+      if (heldPamRows > 0 && mergeBlockers.length === 0) {
+        warnings.push(
+          `the merged-away organization's closed privileged-access (PAM) evidence (${heldPamRows} row(s)) is never re-tenanted: `
+          + 'it stays under the merged-away organization, which is kept as an evidence-hold shell (everything else in it is '
+          + 'erased), and remains readable from the surviving organization until PAM evidence retention or erasure of the '
+          + 'surviving organization releases it',
+        );
+      }
+      const blockers = [
+        ...(mergeBlockers.length > 0 ? [buildMergeBlockedMessage(mergeBlockers, pamTransfer)] : []),
+        ...(lineageBlocked ? [LINEAGE_DEPTH_BLOCKED_MESSAGE] : []),
+      ];
+      const verdict = lineageBlocked ? 'blocked' : self.computeMergeVerdict(mergeBlockers, totalMovableRows);
       return {
         tables,
         totalMovableRows,
         verdict,
         warnings,
-        blockers: mergeBlockers.length > 0 ? [buildMergeBlockedMessage(mergeBlockers)] : [],
+        blockers,
+        blockerCodes: mergeBlockerCodes(mergeBlockers, pamTransfer, lineageBlocked),
       };
     }),
   );

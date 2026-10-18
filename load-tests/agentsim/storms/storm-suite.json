@@ -1,0 +1,44 @@
+{
+  "name": "storm-suite",
+  "description": "The four spec W0b faults plus the stall in one run, each with its own 60 s pre window and recovery: slow-loop (CPU throttle proxy), stall (frozen process), socket-drop (proxy restart), api-kill (SIGKILL), rolling-deploy (one-instance graceful stop, a downtime baseline). Planned end 28m from the window open; run with --duration 32m so a slow docker stop still fits.",
+  "events": [
+    {
+      "name": "slow-loop",
+      "at": "2m",
+      "hold": "3m",
+      "recovery": "3m",
+      "start": [{ "exec": ["docker", "update", "--cpus", "${STORM_CPUS}", "${STORM_API}"] }],
+      "end": [{ "exec": ["docker", "update", "--cpus", "0", "${STORM_API}"] }]
+    },
+    {
+      "name": "stall",
+      "at": "9m",
+      "hold": "20s",
+      "recovery": "3m",
+      "start": [{ "exec": ["docker", "pause", "${STORM_API}"] }],
+      "end": [{ "exec": ["docker", "unpause", "${STORM_API}"] }]
+    },
+    {
+      "name": "socket-drop",
+      "at": "14m30s",
+      "recovery": "3m",
+      "start": [{ "exec": ["docker", "restart", "${STORM_CADDY}"] }]
+    },
+    {
+      "name": "api-kill",
+      "at": "18m30s",
+      "hold": "5s",
+      "recovery": "4m",
+      "start": [{ "exec": ["docker", "kill", "--signal", "KILL", "${STORM_API}"] }],
+      "end": [{ "exec": ["docker", "start", "${STORM_API}"] }]
+    },
+    {
+      "name": "rolling-deploy",
+      "at": "24m",
+      "hold": "0s",
+      "recovery": "4m",
+      "start": [{ "exec": ["docker", "stop", "--time", "30", "${STORM_API}"] }],
+      "end": [{ "exec": ["docker", "start", "${STORM_API}"] }]
+    }
+  ]
+}

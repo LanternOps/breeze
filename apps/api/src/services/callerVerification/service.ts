@@ -14,14 +14,15 @@
  * hourly cap cannot be raced.
  */
 import { randomInt, randomBytes, createHash } from 'node:crypto';
-import { and, eq, desc, sql } from 'drizzle-orm';
+import { and, eq, desc, isNull, sql } from 'drizzle-orm';
 import { db, assertInTransaction, getCurrentDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { callerVerifications as v, callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
 import { tickets } from '../../db/schema/portal';
-import { devices } from '../../db/schema/devices';
+import { devices, deviceCommands } from '../../db/schema/devices';
 import { incidents } from '../../db/schema/incidentResponse';
 import { actionIntents } from '../../db/schema/actionIntents';
-import { callerVerificationEnabled } from '../../config/env';
+import { callerVerificationEnabled, callerVerificationWorkstationEnabled } from '../../config/env';
+import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import type {
   CallerVerificationAction, CallerVerificationActor, CallerVerificationMethod, CallerVerificationStatus,
   CallerVerificationActionScope, VerificationRow,
@@ -37,6 +38,8 @@ import { callerVerificationPorts as ports } from './ports';
 import { fencedUntil } from './gate';
 import { recordEffect } from './effects';
 import { handleRejection } from './rejection';
+import { deviceSuggestions } from './deviceSuggestions';
+import { administrativeProofFor } from './administrativeContext';
 
 // ---------------------------------------------------------------------------
 // Cross-wave contracts (fixed by the index plan)
@@ -94,6 +97,8 @@ export type VerificationDetails = VerificationView & {
   usableUntil: string | null;
   incidentId: string | null;
   consumedAction: CallerVerificationAction | null;
+  /** Status of the consumed action intent (org-pinned); null when not consumed or the intent is absent/out-of-org. */
+  consumedIntentStatus: typeof actionIntents.$inferSelect['status'] | null;
   undeliverableReason: 'no_session_for_user' | 'session_not_console' | 'helper_outdated' | 'sms_failed' | 'email_failed' | null;
 };
 
@@ -104,6 +109,7 @@ export type Decision =
   | { kind: 'undeliverable'; reason: string };
 
 const STARTABLE: Array<Exclude<CallerVerificationMethod, 'administrative_stepup'>> = ['workstation', 'sms', 'email', 'callback_attestation'];
+const PUBLIC_REJECTION_WINDOW_MS = 24 * 3600 * 1000;
 const UNDELIVERABLE_REASONS = ['no_session_for_user', 'session_not_console', 'helper_outdated', 'sms_failed', 'email_failed'] as const;
 
 // ---------------------------------------------------------------------------
@@ -133,6 +139,7 @@ export function view(r: VerificationRow, userId: string | null, targetContactId:
 export function verificationDetails(
   r: VerificationRow, userId: string | null, targetId: string | null,
   policy: Awaited<ReturnType<typeof getEffectivePolicy>>, attempts: number, incidentId: string | null, actionName: string | null,
+  intentStatus: typeof actionIntents.$inferSelect['status'] | null = null,
 ): VerificationDetails {
   const reason = UNDELIVERABLE_REASONS.find((value) => value === r.reason) ?? null;
   const proofAt = r.method === 'administrative_stepup' ? r.stepupVerifiedAt : r.decidedAt;
@@ -143,6 +150,7 @@ export function verificationDetails(
     incidentId,
     // Never inferred from actionScope='any': a deleted/moved intent yields null.
     consumedAction: !r.consumedAt ? null : actionName === 'm365_reset_password' ? 'reset_password' : actionName === 'm365_disable_user' ? 'disable_user' : null,
+    consumedIntentStatus: r.consumedAt ? intentStatus : null,
     undeliverableReason: r.status === 'undeliverable' ? reason : null,
   };
 }
@@ -154,10 +162,10 @@ export async function projectVerification(r: VerificationRow, userId: string | n
   const [incident] = await db.select({ id: incidents.id }).from(incidents)
     .where(and(eq(incidents.orgId, r.orgId), eq(incidents.sourceType, 'caller_verification'), eq(incidents.sourceRef, r.id))).limit(1);
   const [intent] = r.consumedAt && r.consumedIntentRef
-    ? await db.select({ actionName: actionIntents.actionName }).from(actionIntents)
+    ? await db.select({ actionName: actionIntents.actionName, status: actionIntents.status }).from(actionIntents)
       .where(and(eq(actionIntents.orgId, r.orgId), eq(actionIntents.id, r.consumedIntentRef))).limit(1)
     : [];
-  return verificationDetails(r, userId, targetId, policy, Number(attempts?.count ?? 0), incident?.id ?? null, intent?.actionName ?? null);
+  return verificationDetails(r, userId, targetId, policy, Number(attempts?.count ?? 0), incident?.id ?? null, intent?.actionName ?? null, intent?.status ?? null);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,10 +205,16 @@ export async function methodsForContact(
     const tier = computeTier({ method, boundPrincipal: bindings.some((r) => !!r.osPrincipal), destinationEstablished: !!destination && isEstablished(destination, p), policy: p });
     let unavailableReason: MethodAvailability['unavailableReason'];
     if (!callerVerificationEnabled()) unavailableReason = 'feature_disabled';
+    // Workstation tier is dark until it ships: checked before any device lookup.
+    else if (method === 'workstation' && !callerVerificationWorkstationEnabled()) unavailableReason = 'method_disabled';
     else if (!p.allowedMethods.includes(method)) unavailableReason = 'method_disabled';
     else if (actionScope !== 'any' && !bindings.some((r) => !!r.entraOid)) unavailableReason = 'no_binding';
     else if (kind && (!destination || !normalizeDestination(kind, contact[kind]))) unavailableReason = 'no_destination';
-    else if (method !== 'callback_attestation' && !(await ports.available(method, orgId))) unavailableReason = method === 'workstation' ? 'helper_outdated' : 'method_disabled';
+    // W02: workstation readiness is per device + OS user, so the contact-level
+    // answer aggregates the contact's device suggestions (any one ready).
+    // start() re-checks the device the technician actually selected.
+    else if (method === 'workstation' && !(await deviceSuggestions(actor, orgId, contactId)).some((d) => d.available)) unavailableReason = 'helper_outdated';
+    else if (method !== 'callback_attestation' && method !== 'workstation' && !(await ports.available(method, orgId))) unavailableReason = 'method_disabled';
     rows.push({ method, available: !unavailableReason, ...tier, ...(unavailableReason ? { unavailableReason } : {}) });
   }
   return rows;
@@ -244,7 +258,11 @@ export async function freshForTicket(
   const row = ticketRow ? await get(actor, orgId, ticketRow.id) : history.rows[0] ?? null;
   return {
     row,
-    isFresh: !!row && row.status === 'verified' && !history.fencedUntil && !!row.decidedAt && Date.parse(row.decidedAt) > Date.now() - p.verificationTtlMinutes * 60000,
+    // A workstation grant never authorizes while the workstation tier is dark
+    // (the gate refuses it), so the badge must not call it fresh either.
+    isFresh: !!row && row.status === 'verified' && !history.fencedUntil && !!row.decidedAt
+      && (row.method !== 'workstation' || callerVerificationWorkstationEnabled())
+      && Date.parse(row.decidedAt) > Date.now() - p.verificationTtlMinutes * 60000,
     isConsumed: !!row?.consumedAt,
   };
 }
@@ -255,6 +273,8 @@ export async function freshForTicket(
 
 export async function start(actor: CallerVerificationActor, input: StartInput): Promise<VerificationDetails> {
   if (!callerVerificationEnabled()) throw new Invalid('feature_disabled', 'Caller verification is disabled');
+  // Dark workstation tier: refuse before any DB work, even with a hand-picked device.
+  if (input.method === 'workstation' && !callerVerificationWorkstationEnabled()) throw new Invalid('method_disabled', 'Workstation verification is not available');
   assertInTransaction('startCallerVerification');
   const { orgId, contactId } = input;
   const requester = await reachableContact(actor, orgId, contactId);
@@ -268,7 +288,11 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
   }
   const methods = await methodsForContact(actor, orgId, contactId, input.actionScope);
   const method = methods.find((m) => m.method === input.method)!;
-  if (!method.available) throw new Invalid(method.unavailableReason!, 'Method unavailable');
+  // A technician may pick a workstation that is not among the suggestions;
+  // then the aggregate readiness does not apply and the workstation adapter
+  // (ports.prepare) checks that exact device + OS user instead.
+  const selectedWorkstation = input.method === 'workstation' && !!input.deviceId && method.unavailableReason === 'helper_outdated';
+  if (!method.available && !selectedWorkstation) throw new Invalid(method.unavailableReason!, 'Method unavailable');
 
   let ticket: typeof tickets.$inferSelect | undefined;
   if (p.requireTicket && !input.ticketId) throw new Invalid('ticket_required', 'A ticket is required');
@@ -330,21 +354,25 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
 }
 
 /**
- * W05 administrative factory: an interactive step-up proof (consumed through
- * the injected port) authorizes a disable_user grant without a caller
- * challenge. The contact lock, hourly count and cap-BEFORE-proof-consumption
- * are implemented invariants; only the proof adapter is a W05 seam.
+ * W05 administrative factory: an interactive step-up proof authorizes a
+ * disable_user grant without a caller challenge. The proof (sid + epochs) comes
+ * only from the request-local interactive context, never from the body or the
+ * actor. Order matters: the hourly attempt cap and the live eligibility check
+ * both run BEFORE the single-use Redis grant is consumed, so a refused request
+ * keeps its grant; the consume stamps `stepupVerifiedAt` afterwards.
  */
 export async function createAdministrative(
   actor: CallerVerificationActor,
   input: { orgId: string; targetContactId: string; reason: string; stepUpGrantId: string },
 ): Promise<VerificationDetails> {
   if (!callerVerificationEnabled()) throw new Invalid('feature_disabled', 'Caller verification is disabled');
-  if (input.reason.trim().length < 20) throw new Invalid('invalid_reason', 'Administrative reason must contain at least 20 characters');
+  const proof = administrativeProofFor(actor.userId);
+  const reason = input.reason.trim();
+  if (reason.length < 20 || reason.length > 2000) throw new Invalid('invalid_reason', 'Administrative reason must contain 20 to 2000 characters');
   const target = await reachableContact(actor, input.orgId, input.targetContactId);
   const p = await getEffectivePolicy(input.orgId);
   if (!p.allowAdministrativeDisable) throw new Invalid('administrative_disabled', 'Administrative disable is disabled');
-  const bindings = (await bindingsForContact(input.orgId, target.id)).filter((r) => r.entraOid && r.entraTenantId);
+  const bindings = (await bindingsForContact(input.orgId, target.id)).filter((r) => !r.revokedAt && r.entraOid && r.entraTenantId);
   if (bindings.length !== 1) throw new Invalid('subject_unmatched', 'Canonical target required');
   const binding = bindings[0]!;
   await lockContact(input.orgId, target.id);
@@ -356,16 +384,29 @@ export async function createAdministrative(
       .where(and(eq(v.orgId, input.orgId), eq(v.contactId, target.id), sql`${v.createdAt}>now()-interval '1 hour'`));
     const count = Number(attempts?.count ?? 0);
     if (count >= p.maxAttemptsPerHour) throw new Invalid('attempt_cap', 'Contact attempt limit reached');
-    const proof = await ports.consumeStepUp(actor, {
-      orgId: input.orgId, target: { entraTenantId: binding.entraTenantId!, entraOid: binding.entraOid! },
-      reason: input.reason.trim(), stepUpGrantId: input.stepUpGrantId,
-    });
+    // Lazy: administrative.ts pulls permissions/redis, which the readiness import must not load.
+    const { administrativeEligible } = await import('./administrative');
+    const { consumeStepUpGrant, callerVerificationAdministrativeDigest } = await import('../mfaStepUpGrant');
+    if (!await administrativeEligible({
+      orgId: input.orgId, userId: actor.userId, sid: proof.sid, authEpoch: proof.authEpoch, mfaEpoch: proof.mfaEpoch,
+      verifiedAt: new Date(), ttlMinutes: p.verificationTtlMinutes,
+    })) throw new Invalid('stepup_invalidated', 'Step-up session is no longer valid');
+    const bind = {
+      userId: actor.userId, operation: 'caller_verification_administrative_disable' as const,
+      sid: proof.sid, authEpoch: proof.authEpoch, mfaEpoch: proof.mfaEpoch,
+      resourceDigest: callerVerificationAdministrativeDigest({
+        orgId: input.orgId, entraTenantId: binding.entraTenantId!, entraOid: binding.entraOid!, reason,
+      }),
+    };
+    if (!await consumeStepUpGrant(input.stepUpGrantId, bind)) {
+      throw new Invalid('stepup_invalidated', 'Step-up grant is invalid or already used');
+    }
     const now = new Date();
     const [row] = await db.insert(v).values({
       orgId: input.orgId, contactId: target.id, requesterBindingId: null, targetBindingId: binding.id,
       targetEntraTenantId: binding.entraTenantId, targetEntraOid: binding.entraOid,
       initiatedByUserId: actor.userId, technicianLabel: actor.displayName, actionScope: 'disable_user',
-      targetLabel: binding.upnSnapshot ?? target.name, method: 'administrative_stepup', reason: input.reason.trim(),
+      targetLabel: binding.upnSnapshot ?? target.name, method: 'administrative_stepup', reason,
       stepupSessionId: proof.sid, stepupAuthEpoch: proof.authEpoch, stepupMfaEpoch: proof.mfaEpoch, stepupVerifiedAt: now,
       status: 'verified', tier: 3, tierReason: 'administrative', ...challengeSecrets(),
       attemptNo: count + 1, decidedAt: now, expiresAt: new Date(now.getTime() + p.verificationTtlMinutes * 60000),
@@ -396,6 +437,16 @@ export async function cancel(actor: CallerVerificationActor, orgId: string, id: 
   const [row] = await db.update(v).set({ status: 'cancelled', decidedAt: new Date() })
     .where(and(eq(v.orgId, orgId), eq(v.id, id), eq(v.status, 'pending'))).returning();
   if (row) await recordEffect(row, 'cancelled', actor.userId);
+  // W02: a cancelled workstation challenge must not still pop up on the
+  // user's screen. Withdraw its command if no agent has claimed it yet (a
+  // card already on screen expires on its own; its answer is a no-op).
+  if (row?.agentCommandId) {
+    await db.update(deviceCommands).set({
+      status: 'cancelled', completedAt: new Date(),
+      result: { status: 'cancelled', reason: 'caller_verification_cancelled' },
+      ...terminalPayloadErasureSet(),
+    }).where(and(eq(deviceCommands.id, row.agentCommandId), eq(deviceCommands.status, 'pending')));
+  }
   return get(actor, orgId, id);
 }
 
@@ -435,7 +486,18 @@ export async function applyDecision(input: {
     if (!row) throw new Invalid('not_found', 'Verification not found');
     await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-identity:${row.orgId}`}))`);
     if (input.decision.kind === 'not_me') {
+      // W03: a link-tier (sms/email) row accepts "This is not me" from any
+      // non-rejected state, but only within 24h of creation — the public link
+      // is a bearer token and must not stay a fence trigger forever.
+      if ((row.method === 'sms' || row.method === 'email') && row.createdAt.getTime() <= Date.now() - PUBLIC_REJECTION_WINDOW_MS) {
+        return view(row, null, await targetContact(row));
+      }
       await handleRejection(row.id);
+      // Record the first public decision's source; a replay never overwrites it.
+      if (input.fromIp && row.status !== 'rejected_by_user') {
+        await db.update(v).set({ decidedFromIp: input.fromIp })
+          .where(and(eq(v.id, row.id), eq(v.status, 'rejected_by_user'), isNull(v.decidedFromIp)));
+      }
       return view(await loadVerification(row.orgId, row.id), null, await targetContact(row));
     }
     const decision = input.decision;

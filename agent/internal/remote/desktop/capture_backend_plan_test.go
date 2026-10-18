@@ -119,14 +119,14 @@ func TestProbeCapture_ReportsBackendAndScreenCaptureKitCalls(t *testing.T) {
 		t.Fatalf("report = %+v, want granted via coregraphics after 1 SCK call", report)
 	}
 
-	// ProbeCaptureAccess is the permission-check entry point: it must ask
-	// for a plan without ScreenCaptureKit.
-	granted, err := ProbeCaptureAccess(DefaultConfig())
-	if err != nil || !granted {
-		t.Fatalf("ProbeCaptureAccess = %v, %v", granted, err)
+	// The CLI probe without --sck must ask for a plan without
+	// ScreenCaptureKit.
+	report, err = ProbeCapture(DefaultConfig(), CaptureProbeOptions{})
+	if err != nil || !report.Granted {
+		t.Fatalf("ProbeCapture = %+v, %v", report, err)
 	}
 	if len(gotOpts) != 2 || gotOpts[1].AllowScreenCaptureKit {
-		t.Fatalf("ProbeCaptureAccess requested options %+v, want AllowScreenCaptureKit=false", gotOpts)
+		t.Fatalf("default probe requested options %+v, want AllowScreenCaptureKit=false", gotOpts)
 	}
 	if sck.opened != 1 {
 		t.Fatalf("ScreenCaptureKit opened %d times in total, want 1 (only the explicit probe)", sck.opened)

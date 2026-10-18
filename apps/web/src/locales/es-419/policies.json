@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Mensajes al equipo",
+        "endpointMessagingHelp": "Permite a los técnicos enviar mensajes a la persona que usa el dispositivo.",
+        "allowUserReply": "Permitir respuestas del usuario",
+        "allowUserReplyHelp": "Permite que la persona del dispositivo responda en un chat iniciado por un técnico. Si está desactivado, los chats son unidireccionales."
       },
       "inlineEntityPicker": {
         "search": "Buscar...",
@@ -769,6 +773,7 @@
         "overridesLabel": "Anulaciones:",
         "failedToLoadMonitors": "Error al cargar los monitores",
         "createMonitor": "Crear monitor",
+        "notAttachable": "Este monitor no se puede asociar a esta política. Las políticas del partner solo pueden usar monitores a nivel de partner.",
         "monitorDeleted": "Monitor eliminado",
         "recommended": {
           "title": "Monitores recomendados",
@@ -791,25 +796,6 @@
         "approvalRulesLiveInThePAMConsole": "Las reglas de aprobación se encuentran en la consola PAM.",
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Esta política solo controla si los dispositivos capturan indicaciones de elevación. Los veredictos (aprobar automáticamente, denegar, requerir aprobación), la cola de solicitudes y el historial de auditoría se administran en el",
         "privilegedAccessConsole": "Consola de acceso privilegiado"
-      },
-      "patchAppRulesSection": {
-        "applicationRules": "Reglas de aplicación",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloquee aplicaciones específicas para que no se apliquen parches automatizados o fíjelas a una versión máxima.",
-        "blocked": "Bloqueado",
-        "pinned": "Fijado",
-        "maxVersion": "versión máxima",
-        "pinnedApplicationsNeedAVersion": "Las aplicaciones fijadas necesitan una versión.",
-        "addApplication": "Agregar aplicación",
-        "searchCatalogAndDetectedApplications": "Buscar catálogo y aplicaciones detectadas...",
-        "searching": "Buscando...",
-        "catalog": "catálogo",
-        "couldnTLoadApplicationsYouCanStill": "No se pudieron cargar las aplicaciones; aún puede agregarlas mediante el paquete ID a continuación.",
-        "noMatches": "Sin coincidencias.",
-        "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
-        "block": "bloquear",
-        "pin": "PIN",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Eliminar regla para {{application}}"
       },
       "patchTab": {
         "daily": "A diario",
@@ -868,6 +854,13 @@
         "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
         "rebootDeferralMinutes": "Postpone by (minutes)",
         "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
+        "rebootPromptText": "Restart prompt text",
+        "rebootPromptTextDescription": "Optional. Replaces the wording of the restart warnings users see, for example to show them in your users' language. Leave a field blank to keep the built-in English text.",
+        "rebootPromptTitle": "Title",
+        "rebootPromptButton": "Restart button label",
+        "rebootPromptBody": "Message",
+        "rebootPromptBodyDescription": "Plain text. {{placeholder}} is replaced with the time left until the restart. Windows shows fixed Yes/No buttons, so there the button label is named in the message instead.",
+        "rebootPromptInvalid": "Restart prompt text must be plain text (no < or >, no line breaks in the title or button label) and may use no placeholder other than {{placeholder}}.",
         "windowsUpdateSource": "Fuente de Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Administre la Windows Update exclusivamente a través de Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suprime el canal de instalación automática de Windows Update nativo del terminal para que las actualizaciones solo fluyan a través de los anillos de aprobación de Breeze, lo que evita reinicios inesperados y parches fuera de su programación. Windows-solo; La ruta de escaneo/aprobación/instalación propia de Breeze no se ve afectada. Se revierte limpiamente cuando está deshabilitado (una política de grupo de administrador preexistente no se modifica).",
@@ -889,7 +882,15 @@
         "text2xl": "2xl",
         "saveChanges": "Guardar cambios",
         "createRing": "Crear anillo",
-        "thirdPartyRingHint": "Las reglas de aprobación automática para actualizaciones de terceros se configuran en el anillo de actualización vinculado."
+        "thirdPartyRingHint": "Las reglas de aprobación automática para actualizaciones de terceros se configuran en el anillo de actualización vinculado.",
+        "ringOwnsApprovalHint": "La aprobación automática y las reglas de aplicación se configuran en el anillo de actualización vinculado.",
+        "noRingManualApprovalHint": "Ningún anillo vinculado: los parches se instalan solo después de la aprobación manual.",
+        "unavailableRingOption": "Anillo no disponible",
+        "ringInvalidTitle": "El anillo de actualización vinculado ya no está disponible.",
+        "ringInvalidBody": "Los parches de esta directiva quedan retenidos hasta que elija un anillo y guarde.",
+        "ringInvalidLegacyRules": "Esta directiva aún tiene reglas de aplicación de antes de que pasaran a los anillos ({{rules}}). El anillo que elija ya debe tener exactamente estas reglas: agréguelas primero a él.",
+        "approvalRulesMovedToRing": "La aprobación automática y las reglas de aplicación ahora se configuran en el anillo de actualización. Edítelas en el anillo vinculado. Si esta página estaba abierta antes de la actualización, recárguela y vuelva a guardar.",
+        "ringLacksPolicyAppRules": "El anillo de actualización que eligió no tiene las reglas de aplicación de esta directiva. Agregue primero exactamente estas reglas a ese anillo o elija un anillo que ya las tenga."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Política de enlace periférico",
@@ -1109,6 +1110,38 @@
         "thisPolicyOnlyControlsWhetherDevicesAre": "Esta política solo controla si los dispositivos se analizan. Los CVE detectados, las puntuaciones de riesgo y las acciones correctivas se gestionan en el",
         "vulnerabilitiesConsole": "Consola de vulnerabilidades"
       },
+      "systemProtectionTab": {
+        "title": "Protección del sistema",
+        "description": "Intentar un punto de restauración de Windows antes de parches, scripts e instalaciones de software",
+        "beforePatching": "Antes de instalar parches",
+        "beforePatchingHelp": "Intentar un punto de restauración antes de instalar actualizaciones del sistema operativo.",
+        "beforeScripts": "Antes de scripts",
+        "beforeScriptsHelp": "Intentar un punto de restauración antes de ejecutar un script en el dispositivo.",
+        "beforeSoftwareInstall": "Antes de instalar software",
+        "beforeSoftwareInstallHelp": "Intentar un punto de restauración antes de instalar o actualizar software.",
+        "labelPrefix": "Prefijo de la etiqueta",
+        "labelPrefixHelp": "Aparece al inicio de la descripción de cada punto de restauración en Windows. Hasta 64 caracteres.",
+        "platformDefaultNote": "No hay ninguna política asignada. Valor predeterminado de la plataforma: solo se intenta un punto de restauración antes de instalar parches.",
+        "legacyAgentWarning": "Desactivar esta opción solo tiene efecto en agentes que informan compatibilidad con Restaurar sistema. Los agentes anteriores seguirán intentando un punto de restauración antes de instalar parches.",
+        "aboutTitle": "Acerca de Restaurar sistema",
+        "aboutBody": "Solo se aplica a dispositivos Windows. Restaurar sistema abarca archivos del sistema, el registro, los programas instalados y la configuración. No es una copia de seguridad y no abarca archivos personales. De forma predeterminada, Windows limita la creación de puntos de restauración a uno cada 24 horas, y un punto creado puede ser eliminado más tarde por Windows o dejar de ser utilizable."
+      },
+      "securityAgentsTab": {
+        "title": "Agentes de seguridad",
+        "description": "Implementa y mantiene instalados agentes de seguridad administrados en los dispositivos",
+        "deployVendor": "Implementar {{vendor}}",
+        "comingSoon": "Próximamente",
+        "platformWindows": "Windows: se instala automáticamente.",
+        "platformMacos": "macOS: requiere aprobación de MDM, por lo que Breeze no lo instala automáticamente. Estos dispositivos se muestran como no aplicables.",
+        "platformLinux": "Linux: no es compatible.",
+        "keysNotice": "Las instalaciones usan las claves por cliente de la integración con Huntress. Las organizaciones que no están asignadas en esa integración se omiten y se muestran como no aplicables, sin implementaciones fallidas. Desactivar un proveedor detiene la aplicación, pero nunca desinstala el agente.",
+        "closerWarning": "Una política de configuración asignada más cerca del dispositivo (sitio, grupo o dispositivo, o una política secundaria que hereda) con su propia configuración de agentes de seguridad reemplaza por completo esta configuración para esos dispositivos. Un proveedor omitido allí no se aplica.",
+        "partnerWideBadge": "Se aplica a todas las organizaciones",
+        "noneEnabledNote": "Ningún proveedor está habilitado: los dispositivos alcanzados por esta política quedan excluidos de todos los agentes de seguridad.",
+        "catalogMissing": "Huntress aún no está configurado para este socio. Conecta primero la integración con Huntress y luego guarda de nuevo.",
+        "catalogMissingLink": "Conectar Huntress",
+        "executeRequired": "Activar las instalaciones requiere permiso para ejecutar comandos en dispositivos, con MFA. Pide a un administrador con ese permiso que guarde esta configuración."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Las alertas de garantía son voluntarias: los dispositivos sin una política de garantía asignada nunca alertan. Los umbrales a continuación se aplican únicamente a la cobertura de plazo fijo: las suscripciones activas de AppleCare se renuevan en lugar de caducar, por lo que sus alertas de vencimiento siempre se suprimen.",
         "enableWarrantyExpiryAlerts": "Habilitar alertas de vencimiento de garantía",
@@ -1327,7 +1360,9 @@
       "installSkippedNoCatalog": "Una regla obligatoria no tiene un elemento de catálogo vinculado, así que no hay nada que instalar. Agregue un vínculo de catálogo en el editor de políticas para solucionarlo.",
       "installSkippedCapOrPlatform": "No es un error: se alcanzó el límite de instalaciones por ciclo o la plataforma de este dispositivo no tiene un método de instalación para el software. Es posible que se intente de nuevo en el próximo ciclo.",
       "installAttempts": "{{count}} intento(s)",
-      "installLastAttempt": "Último intento de instalación: "
+      "installLastAttempt": "Último intento de instalación: ",
+      "managedByConfigPolicy": "Administrada por una política de configuración",
+      "managedByConfigPolicyHint": "Esta política se genera a partir de una política de configuración y es de solo lectura aquí. Cámbiala en Políticas de configuración."
     },
     "deploymentList": {
       "running": "En ejecución",

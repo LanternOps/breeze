@@ -1,18 +1,31 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ fetchWithAuth: vi.fn(), runAction: vi.fn(), handleActionError: vi.fn() }));
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: mocks.fetchWithAuth }));
+const mocks = vi.hoisted(() => ({
+  fetchWithAuth: vi.fn(), runAction: vi.fn(), handleActionError: vi.fn(),
+  currentUserId: '' as string,
+}));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: mocks.fetchWithAuth,
+  useAuthStore: (selector: (state: { user: { id: string } }) => unknown) => selector({ user: { id: mocks.currentUserId } }),
+}));
 vi.mock('../../lib/runAction', () => ({ runAction: mocks.runAction, handleActionError: mocks.handleActionError }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('@/lib/i18n', () => ({ default: {} }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { owner?: string }) => (options?.owner ? `${key}[${options.owner}]` : key),
+  }),
+}));
 
 import PartnerServicePrincipalsPage from './PartnerServicePrincipalsPage';
 import enSettings from '../../locales/en/settings.json';
 
 const PRINCIPAL_ID = '22222222-2222-4222-8222-222222222222';
 const KEY_ID = '33333333-3333-4333-8333-333333333333';
+const OWNER_ID = '66666666-6666-4666-8666-666666666666';
+const OTHER_USER_ID = '44444444-4444-4444-8444-444444444444';
+const OWNER = { id: OWNER_ID, name: 'Pat Owner' };
 
 function response(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as Response;
@@ -22,7 +35,7 @@ function principalListResponse() {
   return response({ data: [{
     id: PRINCIPAL_ID,
     name: 'Weavestream', description: null, status: 'active', scopes: ['devices:read'],
-    expiresAt: null, sourceCidrs: [],
+    expiresAt: null, sourceCidrs: [], owner: OWNER,
     keys: [{ id: KEY_ID, name: 'Production', keyPrefix: 'brz_sp_abc123', status: 'active', expiresAt: null, rateLimit: 600 }],
   }] });
 }
@@ -36,6 +49,7 @@ function deferred<T>() {
 describe('PartnerServicePrincipalsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.currentUserId = OWNER_ID;
     mocks.fetchWithAuth.mockResolvedValue(principalListResponse());
   });
 
@@ -67,7 +81,7 @@ describe('PartnerServicePrincipalsPage', () => {
     mocks.fetchWithAuth.mockResolvedValue(response({ data: [{
       id: PRINCIPAL_ID,
       name: 'Weavestream', description: null, status: 'active', scopes: [],
-      expiresAt: null, sourceCidrs: [], keys: [],
+      expiresAt: null, sourceCidrs: [], owner: OWNER, keys: [],
     }] }));
     render(<PartnerServicePrincipalsPage />);
     await screen.findByText('Weavestream');
@@ -218,7 +232,7 @@ describe('PartnerServicePrincipalsPage', () => {
       mocks.fetchWithAuth.mockResolvedValue(response({ data: [{
         id: PRINCIPAL_ID,
         name: 'Weavestream', description: null, status: 'active', scopes: ['devices:read'],
-        expiresAt: EXPIRES_AT, sourceCidrs: ['203.0.113.0/24'], keys: [],
+        expiresAt: EXPIRES_AT, sourceCidrs: ['203.0.113.0/24'], owner: OWNER, keys: [],
       }] }));
       mocks.runAction.mockImplementation(async ({ request }: { request: () => Promise<Response> }) => {
         await request();
@@ -267,6 +281,35 @@ describe('PartnerServicePrincipalsPage', () => {
       await waitFor(() => expect(patchBody()).toEqual({ expiresAt: '2026-12-02T14:00:00.000Z' }));
     });
 
+    describe('as a non-owner (#8368)', () => {
+      beforeEach(() => { mocks.currentUserId = OTHER_USER_ID; });
+
+      const expiryInput = () => screen.getByText('partnerServicePrincipals.expiresAt').querySelector('input')!;
+      const cidrInput = () => screen.getByText('partnerServicePrincipals.sourceCidrs').querySelector('textarea')!;
+
+      it.each([
+        ['extends the expiry', () => fireEvent.change(expiryInput(), { target: { value: '2027-01-01T10:30' } })],
+        ['clears the expiry', () => fireEvent.change(expiryInput(), { target: { value: '' } })],
+        ['clears the source CIDRs', () => fireEvent.change(cidrInput(), { target: { value: '' } })],
+        ['adds a source CIDR', () => fireEvent.change(cidrInput(), { target: { value: '203.0.113.0/24\n198.51.100.0/24' } })],
+      ])('blocks Save with an owner-only message when the edit %s', async (_label, edit) => {
+        await openEdit();
+        edit();
+        expect(screen.getByTestId('owner-only-widening')).toHaveTextContent('partnerServicePrincipals.ownerOnlyWidening[Pat Owner]');
+        expect(screen.getByTestId('save-principal')).toBeDisabled();
+        fireEvent.click(screen.getByTestId('save-principal'));
+        expect(patchBody()).toBeUndefined();
+      });
+
+      it('still lets a non-owner shorten the expiry', async () => {
+        await openEdit();
+        fireEvent.change(expiryInput(), { target: { value: '2026-11-30T10:30' } });
+        expect(screen.queryByTestId('owner-only-widening')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByTestId('save-principal'));
+        await waitFor(() => expect(patchBody()).toEqual({ expiresAt: '2026-11-30T15:30:00.000Z' }));
+      });
+    });
+
     it('saving without changes sends no request', async () => {
       await openEdit();
       fireEvent.click(screen.getByTestId('save-principal'));
@@ -276,4 +319,121 @@ describe('PartnerServicePrincipalsPage', () => {
       expect(patchBody()).toBeUndefined();
     });
   });
+
+  describe('owner-only actions (#8368)', () => {
+    it('names the owner on each principal row', async () => {
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      expect(screen.getByTestId(`principal-owner-${PRINCIPAL_ID}`)).toHaveTextContent('Pat Owner');
+    });
+
+    it('falls back to a placeholder when the owner name is not visible', async () => {
+      mocks.fetchWithAuth.mockResolvedValue(response({ data: [{
+        id: PRINCIPAL_ID, name: 'Weavestream', description: null, status: 'active', scopes: ['devices:read'],
+        expiresAt: null, sourceCidrs: [], owner: { id: OWNER_ID, name: null }, keys: [],
+      }] }));
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      expect(screen.getByTestId(`principal-owner-${PRINCIPAL_ID}`)).toHaveTextContent('partnerServicePrincipals.unknownOwner');
+    });
+
+    it('disables Issue key and Rotate for a non-owner and says who can use them', async () => {
+      mocks.currentUserId = OTHER_USER_ID;
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+
+      const issue = screen.getByTestId(`issue-key-${PRINCIPAL_ID}`);
+      const rotate = screen.getByTestId(`rotate-key-${KEY_ID}`);
+      expect(issue).toBeDisabled();
+      expect(rotate).toBeDisabled();
+      const tooltip = 'partnerServicePrincipals.ownerOnlyTooltip[Pat Owner]';
+      expect(issue.closest('[title]')).toHaveAttribute('title', tooltip);
+      expect(rotate.closest('[title]')).toHaveAttribute('title', tooltip);
+
+      fireEvent.click(issue);
+      fireEvent.click(rotate);
+      expect(screen.queryByTestId('confirm-issue-key')).not.toBeInTheDocument();
+      expect(mocks.runAction).not.toHaveBeenCalled();
+    });
+
+    it('keeps Revoke, Disable and Edit open to a non-owner', async () => {
+      mocks.currentUserId = OTHER_USER_ID;
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      expect(screen.getByTestId(`revoke-key-${KEY_ID}`)).toBeEnabled();
+      expect(screen.getByTestId(`disable-principal-${PRINCIPAL_ID}`)).toBeEnabled();
+      expect(screen.getByText('partnerServicePrincipals.edit')).toBeEnabled();
+    });
+
+    it('enables Issue key and Rotate for the owner', async () => {
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      expect(screen.getByTestId(`issue-key-${PRINCIPAL_ID}`)).toBeEnabled();
+      expect(screen.getByTestId(`rotate-key-${KEY_ID}`)).toBeEnabled();
+    });
+
+    it('lets a non-owner remove a scope in Edit but not add one', async () => {
+      mocks.currentUserId = OTHER_USER_ID;
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      fireEvent.click(screen.getByText('partnerServicePrincipals.edit'));
+
+      expect(screen.getByTestId('scope-checkbox-devices:read')).toBeEnabled();
+      const unheld = screen.getByTestId('scope-checkbox-tickets:read');
+      expect(unheld).toBeDisabled();
+      expect(unheld.closest('[title]')).toHaveAttribute('title', 'partnerServicePrincipals.ownerOnlyScopeTooltip[Pat Owner]');
+      expect(screen.getByTestId('owner-only-edit-notice')).toHaveTextContent('partnerServicePrincipals.ownerOnlyEditNotice[Pat Owner]');
+    });
+
+    it('lets the owner add a scope in Edit', async () => {
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      fireEvent.click(screen.getByText('partnerServicePrincipals.edit'));
+      expect(screen.getByTestId('scope-checkbox-tickets:read')).toBeEnabled();
+      expect(screen.queryByTestId('owner-only-edit-notice')).not.toBeInTheDocument();
+    });
+
+    it('treats a missing signed-in user as a non-owner', async () => {
+      mocks.currentUserId = '';
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      expect(screen.getByTestId(`issue-key-${PRINCIPAL_ID}`)).toBeDisabled();
+      expect(screen.getByTestId(`rotate-key-${KEY_ID}`)).toBeDisabled();
+    });
+
+    it('sends one rotate request when Rotate is clicked twice before the first answers', async () => {
+      const pending = deferred<{ key: string }>();
+      mocks.runAction.mockReturnValueOnce(pending.promise);
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+
+      fireEvent.click(screen.getByTestId(`rotate-key-${KEY_ID}`));
+      fireEvent.click(screen.getByTestId(`rotate-key-${KEY_ID}`));
+      expect(mocks.runAction).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId(`rotate-key-${KEY_ID}`)).toBeDisabled();
+
+      pending.resolve({ key: 'brz_sp_ROT_ONCE' });
+      expect(await screen.findByText('brz_sp_ROT_ONCE')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('close-key-reveal'));
+      await waitFor(() => expect(screen.getByTestId(`rotate-key-${KEY_ID}`)).toBeEnabled());
+    });
+
+    it('sends one issue request when Issue is clicked twice before the first answers', async () => {
+      const pending = deferred<{ key: string }>();
+      mocks.runAction.mockReturnValueOnce(pending.promise);
+      render(<PartnerServicePrincipalsPage />);
+      await screen.findByText('Weavestream');
+      fireEvent.click(screen.getByTestId(`issue-key-${PRINCIPAL_ID}`));
+      fireEvent.change(screen.getByLabelText('partnerServicePrincipals.keyName'), { target: { value: 'Secondary' } });
+
+      fireEvent.click(screen.getByTestId('confirm-issue-key'));
+      fireEvent.click(screen.getByTestId('confirm-issue-key'));
+      expect(mocks.runAction).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('confirm-issue-key')).toBeDisabled();
+
+      pending.resolve({ key: 'brz_sp_ONCE' });
+      expect(await screen.findByText('brz_sp_ONCE')).toBeInTheDocument();
+    });
+  });
+
 });

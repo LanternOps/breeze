@@ -38,12 +38,14 @@ const EXPECTED_WORKER_NAMES = [
   'topologyDiagnosticSweeper',
   // M3 Task 5 — interface sample partitions, retention and rollups.
   'topologyTelemetryMaintenance',
+  // Site location W2 — presence read-model evaluation.
+  'topologyPresenceWorker',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'aiArtifactSweeper', 'helperScreenshotRetentionWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'aiArtifactSweeper', 'helperScreenshotRetentionWorker', 'endpointMessageRetention', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention', 'aiTranscriptSweeper',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
-  'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker',
+  'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker', 'trustPageSnapshotWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'hardwareHealthRetention', 'timeSyncRetention', 'logCorrelationWorker', 'agentLogRetention',
   'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
@@ -52,13 +54,17 @@ const EXPECTED_WORKER_NAMES = [
   'serviceProcessCheckRetention', 'changeLogRetention',
   // Disk Cleanup v2 W03 (#6329) — daily sweep of the cleanup-run table.
   'filesystemCleanupRunRetention',
+  // #8581 — daily prune of device_restore_point_attempts.
+  'restorePointAttemptRetention',
   'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',
+  // Ticket migration windows (#8313) — the per-minute window sweep.
+  'migrationWindowSweep',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
   'quickSupportReaper', 'softwareUploadSessionCleanup',
-  'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
+  'softwareRemediationRequestCleanup', 'auditRetention', 'pamEvidenceRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   // #5291 W04 — dispatches `script` monitors' diagnostic probes.
@@ -84,9 +90,9 @@ const EXPECTED_WORKER_NAMES = [
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
-  'callerVerificationPublisher', 'ticketSlaWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
+  'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
-  'aiInvocationRetention',
+  'aiInvocationRetention', 'llmEgressRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.
   'aiChargebackWorker',
   'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
@@ -100,6 +106,8 @@ const EXPECTED_WORKER_NAMES = [
   // #5290 (Monitoring & automation unification, W03) — daily prune of closed
   // monitor_episodes rows past the 400-day retention window.
   'monitorEpisodeRetention',
+  // EDR provider framework W02 (#8164) — daily prune of terminal edr_detections.
+  'edrDetectionRetentionWorker',
   // #4248 W03 (AI Scorecard #5757) — narrative delivery reconciliation sweep.
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
@@ -111,6 +119,8 @@ const EXPECTED_WORKER_NAMES = [
   'fixOutcomeWorker',
   // AI model registry W01 (#7599).
   'aiModelDiscoveryWorker',
+  // Workload image currency W05 (#8194).
+  'imageCurrencyWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {
@@ -120,6 +130,13 @@ describe('workerRegistry: losslessness', () => {
 
   it('has exactly the expected number of entries', () => {
     expect(WORKER_REGISTRY.length).toBe(EXPECTED_WORKER_NAMES.length);
+  });
+
+  it('runs the SDK transcript sweeper on api and all roles only (#9050: transcripts live on API disks, not workers)', () => {
+    const has = (role: 'all' | 'api' | 'worker') => selectWorkers(role).some((w) => w.name === 'aiTranscriptSweeper');
+    expect(has('api')).toBe(true);
+    expect(has('all')).toBe(true);
+    expect(has('worker')).toBe(false);
   });
 
   it('registers the m365 sync retention worker as global placement', async () => {

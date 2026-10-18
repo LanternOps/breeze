@@ -109,7 +109,8 @@
       "waylandUnsupported": "Este es un escritorio Wayland — el escritorio remoto requiere un agente más reciente",
       "x11AuthFailed": "No se pudo autenticar en el servidor de pantalla (autoridad X)",
       "x11ConnectFailed": "No se pudo conectar al servidor de pantalla de este dispositivo"
-    }
+    },
+    "opensNewWindow": "(se abre en una ventana nueva)"
   },
   "connectVncButton": {
     "creatingTunnel": "Creando túnel...",
@@ -321,11 +322,19 @@
   },
   "proxyTunnelPage": {
     "errors": {
+      "closeFailed": "No se pudo cerrar el túnel",
+      "invalidProxyUrl": "El servidor devolvió una dirección de proxy no válida.",
       "invalidTicket": "Este enlace no es válido o ha vencido.",
       "obtainTicket": "No se pudo obtener el ticket del túnel",
+      "popupBlocked": "Su navegador bloqueó la pestaña nueva. Permita las ventanas emergentes para este sitio e inténtelo de nuevo.",
       "prepareConnection": "No se pudo preparar la conexión del proxy",
       "tlsUntrusted": "Este dispositivo presentó un certificado autofirmado o que no es de confianza.",
       "tunnelFailed": "El túnel no se pudo abrir"
+    },
+    "cookieBlocked": {
+      "title": "Este navegador bloqueó la sesión de proxy incrustada.",
+      "body": "Abra el dispositivo en una pestaña nueva para continuar.",
+      "storageBody": "Bloquea el almacenamiento del sitio en páginas incrustadas, que la página del dispositivo necesita. Una pestaña nueva funciona."
     },
     "openInNewTab": "Abrir en nueva pestaña",
     "preparingConnection": "Preparando conexión proxy…",

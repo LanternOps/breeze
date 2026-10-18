@@ -81,4 +81,31 @@ describe('passive topology routes', () => {
     mocks.evidence.mockRejectedValue(new GraphReadError('topology_subject_not_found', 404, 'Not found'));
     expect((await app().request(`${base}/relationships/${REL}/evidence`)).status).toBe(404);
   });
+  describe('POST /health (ids in the body, #8307)', () => {
+    const post = (body: unknown, query = '') => app().request(`${base}/health${query}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    it('reads node and relationship ids from the JSON body and passes them to the service', async () => {
+      const res = await post({ nodeIds: [NODE], relationshipIds: [REL], graphRevision: '7' });
+      expect(res.status).toBe(200);
+      expect(mocks.health).toHaveBeenCalledWith(expect.anything(), { nodeIds: [NODE], relationshipIds: [REL], graphRevision: '7' });
+      expect(res.headers.get('cache-control')).toContain('private');
+    });
+    it('accepts the ambient orgId query key and rejects a foreign one', async () => {
+      expect((await post({ nodeIds: [NODE] }, '?orgId=10000000-0000-4000-8000-000000000001')).status).toBe(200);
+      expect((await post({ nodeIds: [NODE] }, '?orgId=10000000-0000-4000-8000-000000000002')).status).toBe(400);
+    });
+    it.each([{ nodeIds: ['not-a-uuid'] }, { nodeIds: [NODE], extra: 1 }, { nodeIds: 'x' }, []])('rejects invalid body %j', async (body) => {
+      mocks.health.mockClear();
+      expect((await post(body)).status).toBe(400); expect(mocks.health).not.toHaveBeenCalled();
+    });
+    it('rejects a non-JSON body', async () => {
+      const res = await app().request(`${base}/health`, { method: 'POST', body: 'nope' });
+      expect(res.status).toBe(400); expect(mocks.health).not.toHaveBeenCalled();
+    });
+    it('is gated by the same capability check as the GET', async () => {
+      mocks.status = 403; expect((await post({ nodeIds: [NODE] })).status).toBe(403); expect(mocks.health).not.toHaveBeenCalled();
+    });
+    it('keeps the GET working for compatibility', async () => {
+      expect((await app().request(`${base}/health?nodeIds=${NODE}`)).status).toBe(200);
+    });
+  });
 });

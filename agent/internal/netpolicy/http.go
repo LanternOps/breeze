@@ -52,6 +52,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ech"
 )
 
 // Purpose selects the scheme rules for a client. It is not a trust level: every
@@ -185,6 +187,17 @@ func NewClient(policy Policy) (*http.Client, error) {
 		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
 		IdleConnTimeout:       defaultIdleConnTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
+	}
+	if policy.Purpose == ControlPlaneDownload {
+		// Behind an SNI filter the control plane is reachable only over
+		// Encrypted Client Hello (#8869), and the updater is how the agent updates
+		// itself, so its HTTPS dials share the process ECH dialer's per-host
+		// plain-first state. The TCP leg stays pd.DialContext: DialTLSVia
+		// hands it to the ECH dialer through the context and fails closed if
+		// a connection was opened any other way, so every address check
+		// above still runs. Proxy stays nil, and the TLS config is the one
+		// above (the ECH dialer clones it per dial, never mutates it).
+		base.DialTLSContext = ech.Shared().DialTLSVia(pd.DialContext, base.TLSClientConfig, ech.ControlPlaneNextProtos)
 	}
 
 	timeout := policy.RequestTimeout

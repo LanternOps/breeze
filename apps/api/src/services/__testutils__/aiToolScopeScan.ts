@@ -131,6 +131,48 @@ export function guardedLocalHelpers(src: string, namesAxis: (body: string) => bo
   return helpers;
 }
 
+/**
+ * The handler window of a tool definition: `src[handlerIdx, end)`, plus — when
+ * the definition registers `handler: <identifier>` rather than an inline
+ * function — the body of that identifier's same-file definition (a
+ * `function <id>(` declaration or a `const <id> = … =>` arrow).
+ *
+ * Load-bearing (#8600): `run_script` registers the module-level
+ * `runScriptHandler`, so a window that stops at the reference sees none of its
+ * per-device `verifyDeviceAccess` calls. Only the EXACT identifier is followed
+ * (word-bounded), so a guarded neighbour cannot clear an unguarded handler. A
+ * reference with no same-file definition (an import) adds nothing and stays
+ * the caller's problem to classify.
+ */
+export function handlerWindow(src: string, handlerIdx: number, end: number): string {
+  const window = src.slice(handlerIdx, end);
+  const ref = /^handler:\s*([A-Za-z_$][\w$]*)\s*(?:[,}\n]|$)/.exec(window);
+  if (!ref || ref[1] === 'async' || ref[1] === 'function') return window;
+  const id = ref[1]!;
+  const body = referencedFunctionBody(src, id);
+  return body === null ? window : `${window}\n${body}`;
+}
+
+function referencedFunctionBody(src: string, id: string): string | null {
+  const esc = id.replace(/\$/g, '\\$');
+  const decl = new RegExp(`(?:export )?(?:async )?function ${esc}\\s*\\(`).exec(src);
+  if (decl) return functionBody(src, decl.index, decl[0].length);
+  const arrow = new RegExp(`\\b(?:const|let) ${esc}\\b\\s*(?::[^=]*)?=\\s*`).exec(src);
+  if (!arrow) return null;
+  // `= async (params) => body` / `= (params): T => body`
+  let i = arrow.index + arrow[0].length;
+  if (src.startsWith('async', i)) i += 'async'.length;
+  while (i < src.length && /\s/.test(src[i]!)) i++;
+  if (src[i] !== '(') return null; // not an arrow function (a call, an alias, …)
+  i = matchClose(src, src.indexOf('(', i), '(', ')') + 1;
+  const arrowIdx = src.indexOf('=>', i);
+  if (arrowIdx < 0) return null;
+  i = arrowIdx + 2;
+  while (i < src.length && /\s/.test(src[i]!)) i++;
+  const stop = src[i] === '{' ? matchClose(src, i, '{', '}') + 1 : endOfStatement(src, i);
+  return src.slice(i, stop);
+}
+
 export function delegatesToGuardedHelper(window: string, helpers: readonly string[]): boolean {
   return helpers.some((h) => new RegExp(`\\b${h}\\s*\\(`).test(window));
 }

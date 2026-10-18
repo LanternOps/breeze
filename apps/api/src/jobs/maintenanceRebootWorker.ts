@@ -29,7 +29,7 @@ import { devices, deviceCommands } from '../db/schema';
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
-import { captureException } from '../services/sentry';
+import { captureException, captureMessage } from '../services/sentry';
 import {
   resolveMaintenanceConfigForDevice,
   isInMaintenanceWindow,
@@ -37,8 +37,10 @@ import {
 import { queueCommandForExecution } from '../services/commandQueue';
 import {
   computeRebootDeadline,
+  rebootPromptPayload,
   resolveRebootPlan,
   type RebootDeferralSettings,
+  type RebootPromptText,
 } from '../services/patchRebootHandler';
 import {
   REBOOT_PENDING_ALERT_THRESHOLD_DAYS,
@@ -88,6 +90,10 @@ type WindowsRebootPayload = {
   allowDeferral: boolean;
   maxDeferrals: number;
   deferralMinutes: number;
+  /** #8030. Present only when the patch policy sets them; see rebootPromptPayload. */
+  promptTitle?: string;
+  promptBody?: string;
+  promptButton?: string;
 };
 // `delay` is the on-the-wire payload key the agent reads
 // (tools.ShutdownDelayMinutes parses payload["delay"]), and its unit is MINUTES
@@ -142,12 +148,18 @@ export function decideRebootCommand(params: {
    */
   deferral: RebootDeferralSettings;
   /**
+   * Restart-prompt text resolved from the same patch policy (#8030). Required
+   * for the same reason `deferral` is: a forgotten argument would silently
+   * ship the built-in English prompt on a policy that had set its own text.
+   */
+  promptText: RebootPromptText;
+  /**
    * Close of the maintenance window this reboot is firing inside. Caps the
    * deadline so a postponement cannot run past the end of the window.
    */
   windowEndsAt?: Date | null;
 }): RebootDecision {
-  const { rebootIfPending, windowActive, osType, delayMinutes, deferral, windowEndsAt } = params;
+  const { rebootIfPending, windowActive, osType, delayMinutes, deferral, promptText, windowEndsAt } = params;
   if (!rebootWarranted({ rebootIfPending, windowActive, osType })) return null;
   if (osType === 'windows') {
     return {
@@ -160,6 +172,7 @@ export function decideRebootCommand(params: {
         allowDeferral: deferral.allowDeferral,
         maxDeferrals: deferral.maxDeferrals,
         deferralMinutes: deferral.deferralMinutes,
+        ...rebootPromptPayload(promptText),
       },
     };
   }
@@ -257,6 +270,7 @@ export async function processRebootCandidate(
     ...gate,
     delayMinutes: plan.delayMinutes,
     deferral: plan.deferral,
+    promptText: plan.promptText,
     windowEndsAt: windowStatus.windowEndsAt,
   });
   if (!decision) return { issued: false, reason: 'no-action' };
@@ -265,10 +279,20 @@ export async function processRebootCandidate(
     expectedOrgId: device.orgId,
   });
   if (result.error) {
-    console.warn(`[MaintenanceReboot] device ${device.id}: ${result.error}`);
-    captureException(
-      new Error(`[MaintenanceReboot] reboot dispatch failed for device ${device.id}: ${result.error}`),
+    // A refusal, not a throw: report it and let the sweep move on. The device
+    // stays a candidate and is re-evaluated on a later sweep. The device id and
+    // the free-text reason go to the console only: scrubEvent redacts every
+    // exception value and deletes the message, so the bounded tags below are
+    // all that reaches Sentry (#8022).
+    console.warn(
+      `[MaintenanceReboot] reboot dispatch refused for device ${device.id} `
+      + `(${result.refusal ?? 'unclassified'}): ${result.error}`,
     );
+    captureMessage('[MaintenanceReboot] reboot dispatch refused', {
+      eventCode: 'maintenance_reboot_dispatch_refused',
+      level: 'warning',
+      tags: { org_id: device.orgId, command_dispatch_refusal: result.refusal ?? 'unclassified' },
+    });
     return { issued: false, reason: result.error };
   }
   console.log(`[MaintenanceReboot] issued ${decision.type} to device ${device.id} (${device.osType})`);
@@ -318,8 +342,14 @@ export async function runMaintenanceRebootSweep(
       });
       if (res.issued) issued++;
     } catch (err) {
+      // One candidate's failure never stops the sweep: the catch is per
+      // candidate and the loop continues. Tagged so the report survives
+      // scrubEvent with more than a stack trace (#8022).
       console.error(`[MaintenanceReboot] error processing device ${device.id}:`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        worker: 'maintenanceRebootWorker',
+        org_id: device.orgId,
+      });
     }
   }
   console.log(`[MaintenanceReboot] sweep complete: ${issued} issued / ${candidates.length} candidate(s)`);

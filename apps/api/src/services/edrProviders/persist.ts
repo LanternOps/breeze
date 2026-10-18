@@ -198,6 +198,8 @@ async function loadTenantsByVendorId(tx: EdrSyncTx, connectionId: string) {
       id: edrTenants.id,
       vendorTenantId: edrTenants.vendorTenantId,
       orgId: edrTenants.orgId,
+      // NULL until the tenant's first successful detection sync (#8166 first-sync stamp).
+      lastDetectionSyncAt: edrTenants.lastDetectionSyncAt,
     })
     .from(edrTenants)
     .where(eq(edrTenants.connectionId, connectionId));
@@ -452,9 +454,18 @@ export async function persistDetections(
       byKey.set(`${detection.vendorKind}\u0000${detection.vendorDetectionId}`, detection);
     }
 
+    // First successful detection sync of this tenant (#8166, owner decision):
+    // the adapter back-fills its lookback window (GravityZone: 30 days), so
+    // every row INSERTED now is stamped notified at its own severity and the
+    // Phase 4 notifier never pages on history. Keyed on the tenant's
+    // last_detection_sync_at, not the cursor (an adapter may never return one).
+    // The ON CONFLICT set list omits notified_severity, so an existing row's
+    // notification state is never touched by a re-sync.
+    const firstSync = tenant.lastDetectionSyncAt === null;
     const values = [...byKey.values()].map((d) => {
       const endpoint = d.vendorEndpointId ? endpointByVendorId.get(d.vendorEndpointId) : undefined;
       return {
+        ...(firstSync ? { notifiedSeverity: d.severity } : {}),
         connectionId: conn.id,
         partnerId: conn.partnerId,
         orgId,
@@ -581,6 +592,30 @@ export async function pruneMissingTenantEndpoints(
     `);
   }
   return count;
+}
+
+/** A recorded licence denial is honoured this long (W03; mirrors EDR_TENANT_DENIAL_TTL_MS in actions.ts). */
+const TENANT_DENIAL_TTL_MS = 24 * 3600_000;
+
+/**
+ * W03 (#8167): an inventory run clears this connection's licence denials once
+ * they are older than 24 h, so the vendor is asked again at most once a day.
+ * Expiry is the ONLY clear: inventory says nothing about a licence re-grant.
+ */
+export async function clearExpiredTenantDenials(
+  tx: EdrSyncTx,
+  connectionId: string,
+  now: Date,
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - TENANT_DENIAL_TTL_MS);
+  const cleared = await tx.execute(sql`
+    UPDATE edr_tenants SET unsupported_actions = '{}', unsupported_actions_at = NULL, updated_at = now()
+    WHERE connection_id = ${connectionId}::uuid
+      AND unsupported_actions_at IS NOT NULL
+      AND unsupported_actions_at < ${cutoff.toISOString()}::timestamptz
+    RETURNING id
+  `);
+  return (cleared as unknown as unknown[]).length;
 }
 
 /**

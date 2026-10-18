@@ -3,7 +3,7 @@ import PortalLayout from '../../layouts/PortalLayout.astro';
 import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 import { redirectToLoginAfter401 } from '../../lib/session';
 import TicketDetails from '../../components/portal/TicketDetails';
-import { portalApi } from '../../lib/api';
+import { portalApi, type PortalApproval } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
 
 const { id } = Astro.params;
@@ -23,8 +23,23 @@ if (isPortalPageDisabled(response)) {
   // which is itself gated on Self-service (#4932 follow-up).
   return redirectToPortalHomeAfterDisabled(Astro);
 }
+
+// Customer work approval (#8200): surface a request on this ticket that the
+// viewer can decide. Best-effort: a failed read just means no banner.
+let pendingApproval: {
+  id: string;
+  approval: Pick<PortalApproval, 'trigger' | 'ticketNumber' | 'ask'>;
+} | null = null;
+if (response.data) {
+  const approvals = await portalApi.getApprovals(buildServerApiConfig(Astro.request), { pendingOnly: true });
+  if (approvals.statusCode === 200) {
+    const match = (approvals.data?.data ?? []).find((a) => a.ticketId === id && a.canDecide);
+    // Pass the raw ask: the island formats it client-side in the viewer's time zone.
+    if (match) pendingApproval = { id: match.id, approval: { trigger: match.trigger, ticketNumber: match.ticketNumber, ask: match.ask } };
+  }
+}
 ---
 
 <PortalLayout title="Ticket">
-  <TicketDetails client:load ticket={response.data ?? null} error={response.error} statusCode={response.statusCode} />
+  <TicketDetails client:load ticket={response.data ?? null} error={response.error} statusCode={response.statusCode} pendingApproval={pendingApproval} />
 </PortalLayout>

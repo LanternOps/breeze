@@ -6,10 +6,15 @@ vi.mock('../components/shared/Toast', () => ({ showToast: (a: unknown) => showTo
 // Force the translated path for the validation envelope: with i18n uninitialized
 // (as in the other runAction tests) exists() is false and the envelope no-ops,
 // so we stub it to assert the Step-4 behavior explicitly.
+// Stub of the en `errors:VALIDATION_FAILED` copy. #8369: it must not promise
+// highlighted fields — most forms never map field errors onto inputs.
+const { VALIDATION_HEADLINE } = vi.hoisted(() => ({
+  VALIDATION_HEADLINE: 'Fix the invalid values and try again',
+}));
 vi.mock('./i18n', () => ({
   i18n: {
     exists: (key: string) => key === 'errors:VALIDATION_FAILED',
-    t: (key: string) => (key === 'errors:VALIDATION_FAILED' ? 'Check the highlighted fields' : key),
+    t: (key: string) => (key === 'errors:VALIDATION_FAILED' ? VALIDATION_HEADLINE : key),
   },
 }));
 
@@ -325,7 +330,7 @@ describe('runAction', () => {
 
     expect(showToast).toHaveBeenCalledWith({
       message: specific,
-      detail: 'Check the highlighted fields',
+      detail: VALIDATION_HEADLINE,
       type: 'error',
     });
   });
@@ -348,7 +353,34 @@ describe('runAction', () => {
     ).rejects.toBeInstanceOf(ActionError);
 
     expect(showToast).toHaveBeenCalledWith({
-      message: 'Check the highlighted fields',
+      message: VALIDATION_HEADLINE,
+      type: 'error',
+    });
+  });
+
+  it('partner-settings AI budget 400: readable field label + headline detail (#8369)', async () => {
+    await expect(
+      runAction({
+        request: async () =>
+          res(
+            {
+              error: 'settings.aiBudgets.monthlyBudgetCents: Too small: expected number to be >=0',
+              details: {
+                formErrors: [],
+                fieldErrors: {
+                  'settings.aiBudgets.monthlyBudgetCents': ['Too small: expected number to be >=0'],
+                },
+              },
+            },
+            400
+          ),
+        errorFallback: 'fb',
+      })
+    ).rejects.toBeInstanceOf(ActionError);
+
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Monthly budget: Too small: expected number to be >=0',
+      detail: VALIDATION_HEADLINE,
       type: 'error',
     });
   });

@@ -8,9 +8,9 @@ import {
   type RetestRequest,
   type RetestResult,
 } from '@breeze/shared/m365';
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
+import { m365Connections, organizations, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import type { M365ConsentBrowserBinding } from './browserBinding';
 import {
@@ -150,6 +150,10 @@ function requiredGrants(
   return [...(manifest.applicationPermissionAssignments ?? [])];
 }
 
+// Per-app-role readiness (spec §4.1/§7.2). Lives in a leaf module so the write
+// ladder can use it without importing the connection lifecycle.
+export { m365RoleReadiness } from './grantReadiness';
+
 export function deriveGrantHealth(
   row: Pick<
     CustomerGraphReadConnectionSnapshot,
@@ -238,6 +242,16 @@ export interface ConnectionServiceDeps<
   /** Adapts a profile-specific executor client to the generic retest call. */
   retest: (client: Client, request: RetestRequest) => Promise<RetestResult>;
   /**
+   * When true, a Retest promotes the stored `permission_manifest_version` only
+   * when the observation satisfies the CURRENT manifest — the same predicate
+   * `applyUpgradeFinalizationResult` promotes on (reconciliation complete, no
+   * required grant missing, executor reports the current version). Any other
+   * verified Retest keeps the stored version, so a row a manifest bump left
+   * behind stays `manifest-stale` and upgrade consent stays available (#8661).
+   * Unset keeps the historical "Retest always promotes" behavior.
+   */
+  retestPromotesManifestOnlyWhenSatisfied?: boolean;
+  /**
    * Optional observability hooks. The connection lifecycle itself records
    * nothing today (metrics are emitted by the route handlers), so these are
    * unused by the read surface and reserved for callers that record inline.
@@ -319,10 +333,31 @@ export interface ConsentFinalization {
   result: RetestResult;
 }
 
+/** One connection still on an older permission manifest (partner re-consent view). */
+export interface StaleManifestConnection {
+  id: string;
+  orgId: string;
+  orgName: string;
+  displayName: string | null;
+  tenantId: string | null;
+  manifestVersion: number;
+  currentManifestVersion: number;
+  status: M365ConnectionStatus;
+  lastVerifiedAt: string | null;
+}
+
 export interface ConnectionService<P extends M365ConsentSessionProfile, Client> {
   initiateConsent(input: InitiateConsentInput): Promise<InitiatedConsent<P>>;
   initiateUpgradeConsent(input: InitiateUpgradeConsentInput): Promise<InitiatedConsent<P>>;
   listConnections(orgId: string): Promise<Array<M365ConnectionSnapshot<P> & { grantHealth: GrantHealth }>>;
+  /**
+   * Connections of this profile whose stored manifest is older than the
+   * current one, across every org the caller can see. Runs under the CALLER's
+   * RLS context (never a system context): a partner-scoped caller passes
+   * breeze_has_org_access for each org under its partner, and RLS stays the
+   * boundary. Capped at 500 rows.
+   */
+  listStaleManifestConnections(): Promise<StaleManifestConnection[]>;
   /**
    * Identity verified → continue to tenant-pinned admin consent. Mints the
    * post-identity session under a rotated state. Writes nothing to the
@@ -449,6 +484,28 @@ export function createConnectionService<
     };
   }
 
+  /**
+   * Whether a verified, tenant/application-matched Retest may promote the
+   * stored manifest version. Without the opt-in this is unconditionally true
+   * (historical behavior). With it, the predicate is the one
+   * applyUpgradeFinalizationResult promotes on: reconciliation complete, the
+   * executor reports the current manifest, and no required grant is missing.
+   * Unexpected extra grants alone do not block promotion (same as upgrade);
+   * they surface as `grant_unexpected` on the promoted row.
+   */
+  function retestPromotesManifest(result: Extract<RetestResult, { success: true }>): boolean {
+    if (!deps.retestPromotesManifestOnlyWhenSatisfied) return true;
+    if (result.grantReconciliation !== 'complete') return false;
+    if (result.manifestVersion !== deps.manifest.version) return false;
+    return deriveGrantHealth({
+      status: 'active',
+      permissionManifestVersion: deps.manifest.version,
+      observedGrants: result.observedGrants,
+      grantsVerifiedAt: new Date(result.grantsVerifiedAt),
+      lastErrorCode: null,
+    }, deps.manifest).missingGrants.length === 0;
+  }
+
   async function distinguishTenantConflict(
     input: M365ConsentAttemptSnapshot<P>,
     verifiedTenantId: string,
@@ -489,6 +546,43 @@ export function createConnectionService<
         grantHealth: deriveGrantHealth(value, deps.manifest),
       }] : [];
     });
+  }
+
+  async function listStaleManifestConnections(): Promise<StaleManifestConnection[]> {
+    const rows = await db
+      .select({
+        id: m365Connections.id,
+        orgId: m365Connections.orgId,
+        orgName: organizations.name,
+        displayName: m365Connections.displayName,
+        tenantId: m365Connections.tenantId,
+        manifestVersion: m365Connections.permissionManifestVersion,
+        status: m365Connections.status,
+        lastVerifiedAt: m365Connections.lastVerifiedAt,
+      })
+      .from(m365Connections)
+      .innerJoin(organizations, eq(organizations.id, m365Connections.orgId))
+      .where(and(
+        eq(m365Connections.profile, profile),
+        lt(m365Connections.permissionManifestVersion, deps.manifest.version),
+        // Only rows upgrade consent can act on (initiateUpgradeConsent's own
+        // predicate). A never-consented row sits at version 0 in
+        // pending-consent and is not "on an earlier permission set".
+        inArray(m365Connections.status, [...EXECUTABLE_STATUSES]),
+      ))
+      .orderBy(organizations.name)
+      .limit(500);
+    return rows.map((row) => ({
+      id: row.id,
+      orgId: row.orgId as string,
+      orgName: row.orgName,
+      displayName: row.displayName,
+      tenantId: row.tenantId,
+      manifestVersion: row.manifestVersion,
+      currentManifestVersion: deps.manifest.version,
+      status: row.status,
+      lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
+    }));
   }
 
   async function initiateConsent(input: InitiateConsentInput): Promise<InitiatedConsent<P>> {
@@ -1063,8 +1157,13 @@ export function createConnectionService<
 
       const verifiedAt = new Date(result.verifiedAt);
       const grantsVerifiedAt = new Date(result.grantsVerifiedAt);
+      // Start from `active`, as Retest's resultState does: this finalization
+      // carries a fresh tenant-matched application proof and a complete grant
+      // observation, so the grant health alone decides. Starting from the
+      // stored status made an earlier `degraded` sticky — a fully approved
+      // upgrade still finished degraded and needed one more Retest.
       const health = deriveGrantHealth({
-        status: current.status,
+        status: 'active',
         permissionManifestVersion: deps.manifest.version,
         observedGrants: result.observedGrants,
         grantsVerifiedAt,
@@ -1160,16 +1259,33 @@ export function createConnectionService<
       }
 
       const verifiedAt = new Date(result.verifiedAt);
+      // Which manifest version this Retest leaves on the row. See
+      // ConnectionServiceDeps.retestPromotesManifestOnlyWhenSatisfied: when
+      // set, a Retest that does not satisfy the current manifest keeps the
+      // stored version instead of promoting it.
+      const promoted = retestPromotesManifest(result);
+      const manifestVersion = promoted ? result.manifestVersion : input.permissionManifestVersion;
+      // A kept version that is still behind the code manifest is the state a
+      // manifest bump leaves: the row keeps executing on the grants it already
+      // had, and the upgrade-consent flow (not Retest) is what moves it
+      // forward. So it keeps its lifecycle status and records `manifest_stale`
+      // rather than being degraded to `grant_missing` for roles the customer
+      // has not been asked to approve yet (#8661). A row whose stored version
+      // is already current never takes this branch: revoked grants there still
+      // degrade to `grant_missing` exactly as before.
+      const keepsStaleManifest = !promoted && manifestVersion !== deps.manifest.version;
       const common = {
         displayName: result.organizationDisplayName,
-        permissionManifestVersion: result.manifestVersion,
+        permissionManifestVersion: manifestVersion,
         lastVerifiedAt: verifiedAt,
         updatedAt: new Date(),
       };
       const set = result.grantReconciliation === 'complete'
         ? (() => {
             const grantsVerifiedAt = new Date(result.grantsVerifiedAt);
-            const state = resultState('active', result.manifestVersion, result.observedGrants, grantsVerifiedAt);
+            const state = keepsStaleManifest
+              ? { status: input.status, errorCode: 'manifest_stale' }
+              : resultState('active', manifestVersion, result.observedGrants, grantsVerifiedAt);
             return {
               ...common,
               observedGrants: result.observedGrants,
@@ -1289,6 +1405,7 @@ export function createConnectionService<
     initiateConsent,
     initiateUpgradeConsent,
     listConnections,
+    listStaleManifestConnections,
     transitionIdentityToConsent,
     readPendingTenantConfirmation,
     continueToConsent,

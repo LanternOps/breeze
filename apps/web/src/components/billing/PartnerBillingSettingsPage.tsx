@@ -25,6 +25,8 @@ type BillingTab = (typeof BILLING_TABS)[number];
 interface PartnerBilling {
   currencyCode: string; defaultTaxRate: string | null; invoiceNumberPrefix: string; invoiceTermsDays: number;
   autoEmailInvoiceOnQuoteAccept: boolean; notifyCustomerOnBehalfAcceptance?: boolean; invoiceDeviceAppendix: boolean; invoiceFooter: string | null;
+  // #8604 labor line itemization defaults (absent on older APIs → defaults).
+  invoiceLineGrouping?: 'entry' | 'day'; invoiceLineShowDate?: boolean; invoiceLineShowNote?: boolean; invoiceLineShowWorkedTime?: boolean;
   documentTheme: 'classic' | 'condensed'; documentPageSize: 'letter' | 'a4';
   // partners.name — the seller name documents print when billingCompanyName is
   // blank (sellerSnapshot: nonBlank(billingCompanyName) ?? nonBlank(name)).
@@ -62,6 +64,10 @@ export default function PartnerBillingSettingsPage() {
   const [autoEmailInvoice, setAutoEmailInvoice] = useState(true);
   const [notifyOnBehalfAcceptance, setNotifyOnBehalfAcceptance] = useState(false);
   const [deviceAppendix, setDeviceAppendix] = useState(false);
+  const [lineShowDate, setLineShowDate] = useState(false);
+  const [lineShowNote, setLineShowNote] = useState(true);
+  const [lineShowWorkedTime, setLineShowWorkedTime] = useState(true);
+  const [lineGrouping, setLineGrouping] = useState<'entry' | 'day'>('entry');
   const [footer, setFooter] = useState('');
   const [documentTheme, setDocumentTheme] = useState<'classic' | 'condensed'>('classic');
   const [documentPageSize, setDocumentPageSize] = useState<'letter' | 'a4'>('letter');
@@ -100,6 +106,10 @@ export default function PartnerBillingSettingsPage() {
       // Default OFF (#6635): only an explicit true reads as on.
       setNotifyOnBehalfAcceptance(p.notifyCustomerOnBehalfAcceptance === true);
       setDeviceAppendix(p.invoiceDeviceAppendix === true);
+      setLineShowDate(p.invoiceLineShowDate === true);
+      setLineShowNote(p.invoiceLineShowNote !== false);
+      setLineShowWorkedTime(p.invoiceLineShowWorkedTime !== false);
+      setLineGrouping(p.invoiceLineGrouping === 'day' ? 'day' : 'entry');
       setFooter(p.invoiceFooter ?? '');
       setDocumentTheme(p.documentTheme ?? 'classic');
       setDocumentPageSize(p.documentPageSize ?? 'letter');
@@ -160,6 +170,10 @@ export default function PartnerBillingSettingsPage() {
             autoEmailInvoiceOnQuoteAccept: autoEmailInvoice,
             notifyCustomerOnBehalfAcceptance: notifyOnBehalfAcceptance,
             invoiceDeviceAppendix: deviceAppendix,
+            invoiceLineGrouping: lineGrouping,
+            invoiceLineShowDate: lineShowDate,
+            invoiceLineShowNote: lineShowNote,
+            invoiceLineShowWorkedTime: lineShowWorkedTime,
             invoiceFooter: footer.trim() === '' ? null : footer,
             documentTheme,
             documentPageSize,
@@ -199,7 +213,7 @@ export default function PartnerBillingSettingsPage() {
       setSaving(false);
     }
   }, [saving, websiteInvalid, defaultsInvalid, setActiveTab, canWrite, currencyCode, taxPercent, prefix, termsDays, autoEmailInvoice, notifyOnBehalfAcceptance, deviceAppendix,
-      footer, documentTheme, documentPageSize, companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load, t]);
+      lineGrouping, lineShowDate, lineShowNote, lineShowWorkedTime, footer, documentTheme, documentPageSize, companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
   // A 403 is a permission state, not a transient failure — no Retry.
@@ -271,6 +285,10 @@ export default function PartnerBillingSettingsPage() {
           autoEmailInvoice={autoEmailInvoice} setAutoEmailInvoice={setAutoEmailInvoice}
           notifyOnBehalfAcceptance={notifyOnBehalfAcceptance} setNotifyOnBehalfAcceptance={setNotifyOnBehalfAcceptance}
           deviceAppendix={deviceAppendix} setDeviceAppendix={setDeviceAppendix}
+          lineShowDate={lineShowDate} setLineShowDate={setLineShowDate}
+          lineShowNote={lineShowNote} setLineShowNote={setLineShowNote}
+          lineShowWorkedTime={lineShowWorkedTime} setLineShowWorkedTime={setLineShowWorkedTime}
+          lineGrouping={lineGrouping} setLineGrouping={setLineGrouping}
           footer={footer} setFooter={setFooter}
           documentTheme={documentTheme} setDocumentTheme={setDocumentTheme}
           documentPageSize={documentPageSize} setDocumentPageSize={setDocumentPageSize}

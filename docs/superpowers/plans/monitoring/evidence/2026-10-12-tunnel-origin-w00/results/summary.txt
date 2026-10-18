@@ -1,0 +1,180 @@
+### chrome-stable-3pc-blocked-http | chrome-stable-3pc-blocked 154.0.8037.58 | cdp:applied
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt] root=same-origin[__Host-bzt] home=same-origin[__Host-bzt,dev,jsdev,devsess] LS=throws:SecurityError jsW=true
+   same host top-level afterwards: cross-site[]
+ sandboxed boot: home root=same-origin[__Host-bzt] home=same-origin[__Host-bzt,dev,jsdev,devsess] LS=throws:SecurityError jsW=true
+ 302: home root=cross-site[__Host-bzt] home=same-origin[__Host-bzt,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-chromestable3pcblockedhttpmv4whofw s1 reload=cross-site[__Host-bzt,dev,jsdev,devsess,toss]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,dev,jsdev,devsess,toss]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,dev,jsdev,devsess,toss]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,dev,jsdev,devsess,toss]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,dev,jsdev,devsess,toss]
+### chrome-stable-3pc-blocked-https | chrome-stable-3pc-blocked 154.0.8037.58 | cdp:applied
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt] root=same-origin[__Host-bzt] home=same-origin[__Host-bzt,dev,jsdev,devsess] LS=throws:SecurityError jsW=true
+   same host top-level afterwards: cross-site[]
+ sandboxed boot: home root=same-origin[__Host-bzt] home=same-origin[__Host-bzt,dev,jsdev,devsess] LS=throws:SecurityError jsW=true
+ 302: home root=cross-site[__Host-bzt] home=same-origin[__Host-bzt,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-chromestable3pcblockedhttpsmv4wizjq s1 reload=cross-site[__Host-bzt,dev,jsdev,devsess,toss]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,dev,jsdev,devsess,toss]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,dev,jsdev,devsess,toss]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,dev,jsdev,devsess,toss]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,dev,jsdev,devsess,toss]
+### chrome-stable-http | chrome-stable 154.0.8037.58 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[ctl3p]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-chromestablehttpmv4whea0; tossnp=s2-chromestablehttpmv4whea0 s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### chrome-stable-https | chrome-stable 154.0.8037.58 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[ctl3p]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-chromestablehttpsmv4witjs; tossnp=s2-chromestablehttpsmv4witjs s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### chromium-3pc-blocked-http | chromium-3pc-blocked 151.0.7922.34 | cdp:applied
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[ctl3p]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-chromium3pcblockedhttpmv4wh98z; tossnp=s2-chromium3pcblockedhttpmv4wh98z s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### chromium-3pc-blocked-https | chromium-3pc-blocked 151.0.7922.34 | cdp:applied
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[ctl3p]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-chromium3pcblockedhttpsmv4wiobf; tossnp=s2-chromium3pcblockedhttpsmv4wiobf s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### chromium-http | chromium 151.0.7922.34 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[ctl3p]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-chromiumhttpmv4wh3w0; tossnp=s2-chromiumhttpmv4wh3w0 s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### chromium-https | chromium 151.0.7922.34 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[ctl3p]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-chromiumhttpsmv4wij6w; tossnp=s2-chromiumhttpsmv4wij6w s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### firefox-pw-default-http | firefox-pw-default 153.0 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-firefoxpwdefaulthttpmv4whtrm; tossnp=s2-firefoxpwdefaulthttpmv4whtrm s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### firefox-pw-default-https | firefox-pw-default 153.0 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-firefoxpwdefaulthttpsmv4wj55c; tossnp=s2-firefoxpwdefaulthttpsmv4wj55c s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### firefox-real-prefs-http | firefox-real-prefs 153.0 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-firefoxrealprefshttpmv4wi0pz; tossnp=s2-firefoxrealprefshttpmv4wi0pz s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### firefox-real-prefs-https | firefox-real-prefs 153.0 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-firefoxrealprefshttpsmv4wjeep; tossnp=s2-firefoxrealprefshttpsmv4wjeep s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### firefox-stock-http | firefox-stock Mozilla Firefox 157.0.1 | 
+ secprobe top: isc=true back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | frame: back=sp_plain,sp_secure,__Host-sp_host,sp_none,sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt,ctl3p] root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+   same host top-level afterwards: cross-site[]
+ sandboxed boot: home root=same-origin[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt,ctl3p] home=same-origin[__Host-bzt,ctl3p,dev,jsdev,devsess]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,jsdev,devsess] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-ffstockhttpmv4wjvb1; tossnp=s2-ffstockhttpmv4wjvb1 s1 reload=cross-site[__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /probe sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /xget sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 GET /reboot sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+   s2→s1 POST /formpost sfs=same-site bzt=true [__Host-bzt,ctl3p,dev,jsdev,devsess,toss,tossnp]
+### webkit-http | webkit 26.5 | 
+ secprobe top: isc=true back=sp_plain | frame: back= | any SFS header=true
+ boot: breeze-tunnel-cookie-blocked enter=cross-site[] ping=same-origin[] root=not requested home=not requested LS=undefined jsW=undefined
+   same host top-level afterwards: cross-site[]
+ sandboxed boot: breeze-tunnel-cookie-blocked root=not requested home=not requested LS=undefined jsW=undefined
+ 302: home root=cross-site[] home=same-origin[]
+ tab: timeout enter=cross-site[] root=not requested home=not requested LS=undefined jsW=undefined
+ sibling: s1=breeze-tunnel-cookie-blocked toss(doc.cookie in s2)= s1 reload=cross-site[]
+   s2→s1 POST /probe sfs=cross-site bzt=false []
+   s2→s1 GET /xget sfs=cross-site bzt=false []
+   s2→s1 GET /reboot sfs=cross-site bzt=false []
+   s2→s1 POST /formpost sfs=cross-site bzt=false []
+### webkit-https | webkit 26.5 | 
+ secprobe top: isc=true back=sp_part,__Host-sp_host,sp_none,sp_plain,sp_secure | frame: back=sp_part | any SFS header=true
+ boot: home enter=cross-site[] ping=same-origin[__Host-bzt] root=same-origin[__Host-bzt] home=same-origin[devsess,__Host-bzt,dev,jsdev] LS=true jsW=true
+   same host top-level afterwards: cross-site[]
+ sandboxed boot: home root=same-origin[__Host-bzt] home=same-origin[__Host-bzt,dev,devsess,jsdev] LS=true jsW=true
+ 302: home root=cross-site[__Host-bzt] home=same-origin[__Host-bzt,dev,devsess,jsdev]
+ tab: home enter=cross-site[] root=same-origin[__Host-bzt-top] home=same-origin[__Host-bzt-top,dev,devsess,jsdev] LS=true jsW=true
+ sibling: s1=home toss(doc.cookie in s2)=toss=s2-webkithttpsmv4wjmwy s1 reload=cross-site[toss,__Host-bzt,dev,devsess,jsdev]
+   s2→s1 POST /probe sfs=cross-site bzt=true [toss,__Host-bzt,dev,devsess,jsdev]
+   s2→s1 GET /xget sfs=cross-site bzt=true [toss,__Host-bzt,dev,devsess,jsdev]
+   s2→s1 GET /reboot sfs=cross-site bzt=true [toss,__Host-bzt,dev,devsess,jsdev]
+   s2→s1 POST /formpost sfs=cross-site bzt=true [toss,__Host-bzt,dev,devsess,jsdev]

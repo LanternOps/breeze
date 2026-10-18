@@ -1,0 +1,30 @@
+[
+  {
+    "Id": "sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "RepoTags": ["registry.example.com/mirror/nginx:1.27", "nginx:1.27"],
+    "RepoDigests": [
+      "registry.example.com/mirror/nginx@sha256:d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+      "nginx@sha256:d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+    ],
+    "Labels": {"org.example.image": "FIXTURE_IMAGE_LABEL"},
+    "Size": 192000000
+  },
+  {
+    "Id": "sha256:b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "RepoTags": ["redis:latest"],
+    "RepoDigests": ["redis@sha256:f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4"],
+    "Size": 117000000
+  },
+  {
+    "Id": "sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+    "RepoTags": ["myapp:dev"],
+    "RepoDigests": [],
+    "Size": 54000000
+  },
+  {
+    "Id": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "RepoTags": null,
+    "RepoDigests": ["ghcr.io/o/r@sha256:e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3"],
+    "Size": 9000000
+  }
+]

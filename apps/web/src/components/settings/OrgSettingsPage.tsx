@@ -33,8 +33,10 @@ import OrgDefaultsEditor from './OrgDefaultsEditor';
 import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinSelectors';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
+import { CallerVerificationPolicyForm } from '../callerVerification/CallerVerificationPolicyForm';
 import OrgAiProcessingToggle from './OrgAiProcessingToggle';
 import OrgMlFeaturesCard from './OrgMlFeaturesCard';
+import OrgAiDataPolicyCard from './OrgAiDataPolicyCard';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgModelDefaultsCard from './aiModels/OrgModelDefaultsCard';
@@ -496,6 +498,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         successMessage: t('orgSettingsPage.toasts.nameSaved'),
         errorFallback: t('orgSettingsPage.errors.saveName')
       });
+      // Header org switcher reads the global store; refresh so it shows the new name (#8371).
+      useOrgStore
+        .getState()
+        .fetchOrganizations()
+        .catch((storeErr: unknown) => console.warn('[OrgSettingsPage] org store refresh failed after rename', storeErr));
       await fetchOrgDetails();
     } catch (err) {
       // runAction already toasts non-401 ActionErrors; only surface unexpected errors.
@@ -670,6 +677,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                 onSaved={() => void fetchOrgDetails()}
               />
             </div>
+            {/* Caller verification (#6354): tighten-only override of the
+                partner baseline; self-saving, hidden unless the flag is on. */}
+            <div className="mt-4">
+              <CallerVerificationPolicyForm owner={{ ownerScope: 'organization', orgId: effectiveOrgId }} />
+            </div>
           </>
         );
       case 'approval-security':
@@ -701,6 +713,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               settings={(orgDetails?.settings ?? {}) as Record<string, unknown>}
               onSaved={() => void fetchOrgDetails()}
             />
+            <OrgAiDataPolicyCard orgId={effectiveOrgId} />
           </>
         );
       case 'event-logs':

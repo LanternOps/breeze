@@ -84,6 +84,15 @@ const C = CommandTypes;
  * synchronous answer, so an offline device is a hard `device_offline`.
  */
 const LIVE: readonly string[] = [
+  // Endpoint live chat (#8743): a chat line delivered hours later, to whoever
+  // is signed in by then, is worse than a refused send. The route refuses an
+  // offline device instead (`device_offline`).
+  C.CHAT_OPEN,
+  C.CHAT_MESSAGE,
+  C.CHAT_CLOSE,
+  // Caller verification (#6354 W02): a challenge with its own short deadline;
+  // delivering it after the caller hung up would prompt a user out of context.
+  C.CALLER_VERIFY,
   C.LIST_PROCESSES,
   C.GET_PROCESS,
   C.KILL_PROCESS,
@@ -278,6 +287,7 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.SOFTWARE_UNINSTALL,
   C.SOFTWARE_UPDATE,
   C.HOMEBREW_BOOTSTRAP,
+  C.PAM_RECONCILE_V2,
   C.CIS_BENCHMARK,
   C.APPLY_CIS_REMEDIATION,
   C.PATCH_SCAN,
@@ -295,6 +305,12 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.APPLY_AUDIT_POLICY_BASELINE,
   C.FILESYSTEM_ANALYSIS,
   C.SELF_UNINSTALL,
+  // Endpoint messages queue for an offline device; the send route caps each
+  // one at min(expiresAt, standard TTL) via an explicit deliverBy (#8293).
+  C.NOTIFY_USER,
+  // Its retraction lives as long as the message can: the retract route caps
+  // deliverBy at min(message expiresAt, standard TTL) (#8742).
+  C.RETRACT_MESSAGE,
   C.VAULT_SYNC,
   C.VAULT_CONFIGURE,
   C.COLLECT_EVIDENCE,

@@ -3,6 +3,8 @@ package httputil
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -56,6 +58,10 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 	// nextSleepOverride, if non-zero, replaces the exponential delay for the
 	// next attempt's pre-sleep. It's set when the server sends Retry-After.
 	var nextSleepOverride time.Duration
+	// lastAnswer is the most recent retryable status the server actually
+	// answered with, kept separately from lastErr so a later transport
+	// failure or context expiry cannot erase it (#8934).
+	var lastAnswer *RetryableStatusError
 
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -91,7 +97,7 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 			}
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, withServerAnswer(ctx.Err(), lastAnswer)
 			case <-time.After(sleepFor):
 			}
 
@@ -133,8 +139,10 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 			nextSleepOverride = ra
 		}
 		resp.Body.Close()
-		lastErr = &RetryableStatusError{StatusCode: resp.StatusCode, URL: url}
+		lastAnswer = &RetryableStatusError{StatusCode: resp.StatusCode, URL: url}
+		lastErr = lastAnswer
 	}
+	lastErr = withServerAnswer(lastErr, lastAnswer)
 
 	log.Warn("all retries exhausted",
 		"method", method,
@@ -143,6 +151,23 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 		"error", lastErr,
 	)
 	return nil, lastErr
+}
+
+// withServerAnswer returns err with the server's last retryable answer added to
+// its chain when err does not already carry it. A server that answers 503 with
+// a Retry-After longer than the caller's context used to surface as a bare
+// context.DeadlineExceeded, indistinguishable from a dead network; the
+// heartbeat needs to know the server answered (#8934). The context error stays
+// first in the chain, so errors.Is(err, context.DeadlineExceeded) still holds.
+func withServerAnswer(err error, answer *RetryableStatusError) error {
+	if err == nil || answer == nil {
+		return err
+	}
+	var already *RetryableStatusError
+	if errors.As(err, &already) {
+		return err
+	}
+	return fmt.Errorf("%w (server last answered %d: %w)", err, answer.StatusCode, answer)
 }
 
 // RetryableStatusError indicates the server returned a retryable HTTP status.

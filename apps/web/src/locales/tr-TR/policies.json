@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl'si"
+        "portalUrl": "portalUrl'si",
+        "endpointMessaging": "Uç nokta mesajları",
+        "endpointMessagingHelp": "Teknisyenlerin cihazdaki kişiye mesaj göndermesini sağlar.",
+        "allowUserReply": "Kullanıcının yanıtlarına izin ver",
+        "allowUserReplyHelp": "Cihazdaki kişinin, teknisyenin başlattığı bir sohbette yanıt vermesine izin verir. Kapalıyken sohbetler tek yönlüdür."
       },
       "inlineEntityPicker": {
         "search": "Ara...",
@@ -769,6 +773,7 @@
         "overridesLabel": "Geçersiz kılmalar:",
         "failedToLoadMonitors": "İzleyiciler yüklenemedi",
         "createMonitor": "Monitör oluştur",
+        "notAttachable": "Bu monitör bu ilkeye eklenemez. İş ortağına ait ilkeler yalnızca iş ortağı genelindeki monitörleri kullanabilir.",
         "monitorDeleted": "Monitör silindi",
         "recommended": {
           "title": "Önerilen monitörler",
@@ -791,25 +796,6 @@
         "approvalRulesLiveInThePAMConsole": "Onay kuralları PAM konsolunda mevcuttur",
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Bu politika yalnızca cihazların yükseltme istemlerini yakalayıp yakalamadığını kontrol eder. Kararlar (otomatik onaylama, reddetme, onay gerektir), istek kuyruğu ve denetim geçmişi,",
         "privilegedAccessConsole": "Ayrıcalıklı Erişim konsolu"
-      },
-      "patchAppRulesSection": {
-        "applicationRules": "Başvuru Kuralları",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Belirli uygulamaların otomatik yama uygulanmasını engelleyin veya bunları maksimum sürüme sabitleyin.",
-        "blocked": "Engellendi",
-        "pinned": "Sabitlendi",
-        "maxVersion": "Maksimum sürüm",
-        "pinnedApplicationsNeedAVersion": "Sabitlenen uygulamaların bir sürümü olması gerekir.",
-        "addApplication": "Uygulama ekle",
-        "searchCatalogAndDetectedApplications": "Katalogda ve algılanan uygulamalarda arama yapın...",
-        "searching": "Aranıyor...",
-        "catalog": "katalog",
-        "couldnTLoadApplicationsYouCanStill": "Uygulamalar yüklenemedi — hâlâ aşağıdaki paket kimliğine göre ekleyebilirsiniz.",
-        "noMatches": "Eşleşme yok.",
-        "orEnterAPackageIDManually": "Veya manuel olarak bir paket kimliği girin",
-        "block": "blok",
-        "pin": "pini",
-        "thirdParty": "third_party",
-        "removeRuleFor": "{{application}} kuralını kaldır"
       },
       "patchTab": {
         "daily": "Günlük",
@@ -868,6 +854,13 @@
         "rebootMaxDeferralsDescription": "Bir kullanıcının tek bir yeniden başlatmayı, işlem devam etmeden önce kaç kez erteleyebileceği.",
         "rebootDeferralMinutes": "Erteleme süresi (dakika)",
         "rebootDeferralMinutesDescription": "Her ertelemenin yeniden başlatmayı ne kadar ileri ötelediği.",
+        "rebootPromptText": "Yeniden başlatma uyarısı metni",
+        "rebootPromptTextDescription": "İsteğe bağlı. Kullanıcıların gördüğü yeniden başlatma uyarılarının metnini değiştirir; örneğin uyarıları kullanıcılarınızın dilinde göstermek için. Yerleşik İngilizce metni korumak için alanı boş bırakın.",
+        "rebootPromptTitle": "Başlık",
+        "rebootPromptButton": "Yeniden başlat düğmesi etiketi",
+        "rebootPromptBody": "Mesaj",
+        "rebootPromptBodyDescription": "Düz metin. {{placeholder}}, yeniden başlatmaya kalan süreyle değiştirilir. Windows sabit Evet/Hayır düğmeleri gösterir; bu nedenle orada düğme etiketi mesajın içinde belirtilir.",
+        "rebootPromptInvalid": "Yeniden başlatma uyarısı metni düz metin olmalıdır (< veya > yok, başlıkta veya düğme etiketinde satır sonu yok) ve {{placeholder}} dışında yer tutucu kullanamaz.",
         "windowsUpdateSource": "Windows Update Kaynak",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Windows Update'yi yalnızca Breeze aracılığıyla yönetin",
         "suppressesTheEndpointSNativeWindowsUpdate": "Uç noktanın yerel Windows Update otomatik yükleme kanalını bastırır, böylece güncellemelerin yalnızca Breeze onay halkaları üzerinden akmasını sağlayarak beklenmeyen yeniden başlatmaları ve programınızın dışında yamaları önler. Windows-yalnızca; Breeze'in kendi tarama/onaylama/yükleme yolu etkilenmez. Devre dışı bırakıldığında temiz bir şekilde geri döner (önceden var olan yönetici Grup İlkesi'ne dokunulmaz).",
@@ -889,7 +882,15 @@
         "text2xl": "2xl",
         "saveChanges": "Değişiklikleri Kaydet",
         "createRing": "Yüzük Oluştur",
-        "thirdPartyRingHint": "Üçüncü taraf güncellemeleri için otomatik onay kuralları, bağlantılı Güncelleme Halkasında yapılandırılır."
+        "thirdPartyRingHint": "Üçüncü taraf güncellemeleri için otomatik onay kuralları, bağlantılı Güncelleme Halkasında yapılandırılır.",
+        "ringOwnsApprovalHint": "Otomatik onay ve uygulama kuralları, bağlantılı Güncelleme Halkasında ayarlanır.",
+        "noRingManualApprovalHint": "Bağlı halka yok — yamalar yalnızca elle onaydan sonra kurulur.",
+        "unavailableRingOption": "Kullanılamayan halka",
+        "ringInvalidTitle": "Bağlantılı Güncelleme Halkası artık kullanılamıyor.",
+        "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir.",
+        "ringInvalidLegacyRules": "Bu ilke, kurallar halkalara taşınmadan önceki uygulama kurallarını hâlâ taşıyor ({{rules}}). Seçtiğiniz halkada bu kuralların tam olarak aynısı zaten bulunmalı — önce onları halkaya ekleyin.",
+        "approvalRulesMovedToRing": "Otomatik onay ve uygulama kuralları artık Güncelleme Halkasında ayarlanıyor. Bunları bağlantılı halkada düzenleyin. Bu sayfa güncellemeden önce açıksa yeniden yükleyip tekrar kaydedin.",
+        "ringLacksPolicyAppRules": "Seçtiğiniz Güncelleme Halkası bu ilkenin uygulama kurallarına sahip değil. Önce bu kuralların tam olarak aynısını o halkaya ekleyin veya bunlara zaten sahip bir halka seçin."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Bağlantı Çevre Birimi Politikası",
@@ -1109,6 +1110,38 @@
         "thisPolicyOnlyControlsWhetherDevicesAre": "Bu politika yalnızca cihazların taranıp taranmadığını kontrol eder. Tespit edilen CVE'ler, risk puanları ve iyileştirme eylemleri şu şekilde yönetilir:",
         "vulnerabilitiesConsole": "Güvenlik açıkları konsolu"
       },
+      "systemProtectionTab": {
+        "title": "Sistem Koruması",
+        "description": "Yama, betik ve yazılım yüklemelerinden önce bir Windows Sistem Geri Yükleme noktası oluşturmayı dene",
+        "beforePatching": "Yama yüklemelerinden önce",
+        "beforePatchingHelp": "İşletim sistemi güncellemelerini yüklemeden önce bir geri yükleme noktası oluşturmayı dene.",
+        "beforeScripts": "Betiklerden önce",
+        "beforeScriptsHelp": "Cihazda bir betik çalıştırmadan önce bir geri yükleme noktası oluşturmayı dene.",
+        "beforeSoftwareInstall": "Yazılım yüklemelerinden önce",
+        "beforeSoftwareInstallHelp": "Yazılım yüklemeden veya güncellemeden önce bir geri yükleme noktası oluşturmayı dene.",
+        "labelPrefix": "Etiket öneki",
+        "labelPrefixHelp": "Windows’ta her geri yükleme noktası açıklamasının başında gösterilir. En fazla 64 karakter.",
+        "platformDefaultNote": "Atanmış ilke yok. Platform varsayılanı: yalnızca yama yüklemelerinden önce bir geri yükleme noktası denenir.",
+        "legacyAgentWarning": "Bunu kapatmak yalnızca Sistem Geri Yükleme desteği bildiren aracılarda etkili olur. Eski aracılar yama yüklemelerinden önce geri yükleme noktası denemeye devam eder.",
+        "aboutTitle": "Sistem Geri Yükleme hakkında",
+        "aboutBody": "Yalnızca Windows cihazlar için geçerlidir. Sistem Geri Yükleme sistem dosyalarını, kayıt defterini, yüklü programları ve ayarları kapsar. Bir yedekleme değildir ve kişisel dosyaları kapsamaz. Windows varsayılan olarak 24 saatte en fazla bir geri yükleme noktası oluşturulmasına izin verir; oluşturulan bir nokta daha sonra Windows tarafından kaldırılabilir veya kullanılamaz hale gelebilir."
+      },
+      "securityAgentsTab": {
+        "title": "Güvenlik Aracıları",
+        "description": "Yönetilen güvenlik aracılarını cihazlara dağıtın ve yüklü tutun",
+        "deployVendor": "{{vendor}} dağıt",
+        "comingSoon": "Yakında",
+        "platformWindows": "Windows: otomatik olarak yüklenir.",
+        "platformMacos": "macOS: MDM onayı gerektirir, bu nedenle Breeze otomatik olarak yüklemez. Bu cihazlar uygulanamaz olarak gösterilir.",
+        "platformLinux": "Linux: desteklenmiyor.",
+        "keysNotice": "Yüklemeler, Huntress entegrasyonundaki müşteriye özel anahtarları kullanır. Bu entegrasyonda eşlenmemiş kuruluşlar atlanır ve başarısız dağıtım olmadan uygulanamaz olarak gösterilir. Bir sağlayıcıyı kapatmak uygulamayı durdurur ancak aracıyı asla kaldırmaz.",
+        "closerWarning": "Cihaza daha yakın atanmış (site, grup veya cihaz ya da miras alan alt politika) ve kendi Güvenlik Aracıları ayarlarına sahip bir yapılandırma politikası, bu cihazlar için bu ayarların yerine tamamen geçer. Orada atlanan bir sağlayıcı uygulanmaz.",
+        "partnerWideBadge": "Tüm kuruluşlara uygulanır",
+        "noneEnabledNote": "Hiçbir sağlayıcı etkin değil: bu politikanın eriştiği cihazlar tüm güvenlik aracılarının dışında tutulur.",
+        "catalogMissing": "Huntress bu iş ortağı için henüz kurulmadı. Önce Huntress entegrasyonunu bağlayın, ardından tekrar kaydedin.",
+        "catalogMissingLink": "Huntress’i bağla",
+        "executeRequired": "Yüklemeleri açmak için cihazlarda komut çalıştırma izni (MFA ile) gerekir. Bu izne sahip bir yöneticiden bu ayarı kaydetmesini isteyin."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Garanti uyarısı isteğe bağlıdır: herhangi bir garanti politikası atanmamış cihazlar asla uyarı vermez. Aşağıdaki eşikler yalnızca sabit vadeli kapsam için geçerlidir; aktif AppleCare abonelikler sona ermek yerine yenilenir, dolayısıyla sona erme uyarıları her zaman bastırılır.",
         "enableWarrantyExpiryAlerts": "Garanti sona erme uyarılarını etkinleştir",
@@ -1327,7 +1360,9 @@
       "installSkippedNoCatalog": "Gerekli bir kuralın bağlı bir katalog öğesi yok, bu yüzden yüklenecek bir şey yok. Bunu düzeltmek için politika düzenleyicisinde bir katalog bağlantısı ekleyin.",
       "installSkippedCapOrPlatform": "Bu bir hata değil — geçiş başına yükleme sınırına ulaşıldı ya da bu cihazın platformunda yazılım için bir yükleme yöntemi yok. Bir sonraki geçişte tekrar denenebilir.",
       "installAttempts": "{{count}} deneme",
-      "installLastAttempt": "Son yükleme denemesi: "
+      "installLastAttempt": "Son yükleme denemesi: ",
+      "managedByConfigPolicy": "Yapılandırma politikası tarafından yönetilir",
+      "managedByConfigPolicyHint": "Bu politika bir yapılandırma politikasından oluşturulmuştur ve burada salt okunurdur. Yapılandırma Politikaları bölümünden değiştirin."
     },
     "deploymentList": {
       "running": "Koşuyor",

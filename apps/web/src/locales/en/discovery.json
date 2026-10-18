@@ -269,11 +269,15 @@
       "time": "Time",
       "timeout": "Timeout (ms)",
       "timezone": "Timezone",
-      "username": "Username"
+      "username": "Username",
+      "scanAgent": "Scan agent"
     },
     "options": {
       "everyHours": "Every {{count}} hours",
-      "selectSite": "Select a site..."
+      "selectSite": "Select a site...",
+      "automaticAgent": "Automatic (prefer an agent on these subnets)",
+      "agentOffline": "{{name}} (offline)",
+      "pinnedAgentUnlisted": "Pinned agent (not in this site)"
     },
     "placeholders": {
       "profileName": "Headquarters scan",
@@ -313,7 +317,13 @@
       "moveAssets_one": "Also move the {{count}} network device this profile discovered to the new site",
       "moveAssets_other": "Also move the {{count}} network devices this profile discovered to the new site",
       "moveAssetsUnknown": "Also move the network devices this profile discovered to the new site"
-    }
+    },
+    "scanAgentHelp": {
+      "automatic": "An online agent in this site with an address in one of the subnets is preferred.",
+      "pinned": "Scans run only from this agent. If it is offline, the scan fails instead of using another agent.",
+      "loadError": "Could not load this site's agents. Automatic selection is still available."
+    },
+    "subnetTopologyNote": "Subnets here also identify this site's networks on the topology map."
   },
   "discoveryProfileList": {
     "actions": {
@@ -427,7 +437,8 @@
       "interval": "Scan interval must be between 1 and 168 hours.",
       "selectSite": "Select a site before saving."
     },
-    "configuredCount": "{{count}} baselines configured"
+    "configuredCount": "{{count}} baselines configured",
+    "subnetTopologyNote": "Subnets here also identify this site's networks on the topology map."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Acknowledge Event",

@@ -14,6 +14,7 @@ import {
   decryptCommandsForDelivery,
   hasSensitivePayload,
   TERMINAL_PAYLOAD_STRIP_KEYS,
+  TYPE_SCOPED_TERMINAL_STRIP_KEYS,
   terminalPayloadErasureSet,
   sealStorageCredentialsForPersistence,
 } from './sensitiveCommandPayload';
@@ -117,6 +118,47 @@ describe('terminal payload erasure', () => {
     // Keys travel as bound parameters, never interpolated into the SQL text.
     expect(query.params).toEqual(expect.arrayContaining([...TERMINAL_PAYLOAD_STRIP_KEYS]));
     expect(query.sql).not.toContain('secretEnvEnvelope');
+  });
+});
+
+describe('type-scoped terminal payload erasure (#8741 notify_user)', () => {
+  it('declares title/body as notify_user-only strip keys and keeps them out of the global set', () => {
+    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS).toMatchObject({ notify_user: ['title', 'body'] });
+    // Global: stripping title/body from every other command type would destroy
+    // forensics (e.g. script titles). They must not leak into the global list.
+    expect(TERMINAL_PAYLOAD_STRIP_KEYS).not.toContain('title');
+    expect(TERMINAL_PAYLOAD_STRIP_KEYS).not.toContain('body');
+    // And notify_user must NOT be a sensitive (encrypted) type.
+    expect(hasSensitivePayload('notify_user')).toBe(false);
+  });
+
+  it('emits a CASE keyed on type that removes title and body only for notify_user rows', () => {
+    const query = new PgDialect().sqlToQuery(terminalPayloadErasureSet().payload);
+    expect(query.sql).toContain('"device_commands"."type" =');
+    expect(query.params).toContain('notify_user');
+    const typeIdx = query.params.indexOf('notify_user');
+    const tail = query.params.slice(typeIdx + 1);
+    // title/body are subtracted in the notify_user branch, after the global keys.
+    expect(tail).toEqual(expect.arrayContaining(['title', 'body', ...TERMINAL_PAYLOAD_STRIP_KEYS]));
+    // The ELSE branch (every other type) carries the global keys only.
+    expect(query.params.filter((p) => p === 'title')).toHaveLength(1);
+    expect(query.params.filter((p) => p === 'body')).toHaveLength(1);
+    expect(query.sql.indexOf('ELSE')).toBeGreaterThan(query.sql.indexOf('WHEN'));
+  });
+});
+
+describe('type-scoped terminal payload erasure (#8743 endpoint chat)', () => {
+  it('strips the chat message object (body + sender) from chat_open/chat_message rows only', () => {
+    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS.chat_open).toEqual(['message']);
+    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS.chat_message).toEqual(['message']);
+    // `message` is an ordinary field name on other types: never global.
+    expect(TERMINAL_PAYLOAD_STRIP_KEYS).not.toContain('message');
+    expect(hasSensitivePayload('chat_open')).toBe(false);
+    expect(hasSensitivePayload('chat_message')).toBe(false);
+    const query = new PgDialect().sqlToQuery(terminalPayloadErasureSet().payload);
+    expect(query.params).toContain('chat_open');
+    expect(query.params).toContain('chat_message');
+    expect(query.params.filter((p) => p === 'message')).toHaveLength(2);
   });
 });
 

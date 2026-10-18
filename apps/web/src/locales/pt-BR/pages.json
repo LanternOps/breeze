@@ -94,6 +94,7 @@
     "policies": "Políticas",
     "policiesNew": "Nova política",
     "quick": "Suporte rápido",
+    "verify": "Confira uma solicitação de suporte",
     "registerPartner": "Cadastre sua empresa",
     "remoteFilesDevice": "Gerenciador de arquivos remoto",
     "remoteFiles": "Iniciar transferência de arquivos",
@@ -174,7 +175,8 @@
     "securityScans": "Varreduras de IOC",
     "devicesTime": "Sincronização de horário",
     "adminAiModels": "Modelos de IA",
-    "billingAutopay": "Automatic payments"
+    "billingAutopay": "Automatic payments",
+    "endpointMessages": "Mensagens para dispositivos"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",
@@ -182,6 +184,10 @@
   },
   "authShell": {
     "tagline": "A plataforma RMM moderna feita para velocidade, clareza e escala."
+  },
+  "authFooter": {
+    "reportAbuse": "Denunciar abuso",
+    "security": "Segurança"
   },
   "errorPage": {
     "notFoundBody": "A página que você está procurando não existe ou pode ter sido movida.",

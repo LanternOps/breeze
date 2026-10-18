@@ -37,8 +37,8 @@ beforeEach(() => {
 
 it('sends defaults when a link is removed and caches for 120 seconds', async () => {
   m.rows = [[device], [{ partnerId: id }], [], []];
-  expect(await buildHardwareMonitoringConfigUpdate(id)).toEqual({ enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 });
-  expect(m.set).toHaveBeenCalledWith(`hwmon:settings:device:${id}`, JSON.stringify({ enabled: true, pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60 }), 'EX', 120);
+  expect(await buildHardwareMonitoringConfigUpdate(id, { orgId: id })).toEqual({ enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 });
+  expect(m.set).toHaveBeenCalledWith(`hwmon:settings:v2:device:${id}`, JSON.stringify({ orgId: id, settings: { enabled: true, pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60 } }), 'EX', 120);
 });
 
 it('device assignment wins over partner and smaller priority wins ties', async () => {
@@ -64,9 +64,9 @@ it('reads in the caller\'s own scope: no partner-visibility GUC widening (#8142 
 });
 
 it('validates cached data and propagates resolver errors instead of resetting config', async () => {
-  m.get.mockResolvedValue(JSON.stringify({ enabled: false, pollIntervalMinutes: 30, diskHealthIntervalMinutes: 180 }));
-  expect(await buildHardwareMonitoringConfigUpdate(id)).toEqual({ enabled: false, poll_interval_minutes: 30, disk_health_interval_minutes: 180 });
+  m.get.mockResolvedValue(JSON.stringify({ orgId: id, settings: { enabled: false, pollIntervalMinutes: 30, diskHealthIntervalMinutes: 180 } }));
+  expect(await buildHardwareMonitoringConfigUpdate(id, { orgId: id })).toEqual({ enabled: false, poll_interval_minutes: 30, disk_health_interval_minutes: 180 });
   m.get.mockResolvedValue('{');
   m.rows = [[device], [{ partnerId: id }], [], [{ level: 'device', assignmentPriority: 0, roleFilter: null, osFilter: null, pollIntervalMinutes: 1 }]];
-  await expect(buildHardwareMonitoringConfigUpdate(id)).rejects.toThrow();
+  await expect(buildHardwareMonitoringConfigUpdate(id, { orgId: id })).rejects.toThrow();
 });

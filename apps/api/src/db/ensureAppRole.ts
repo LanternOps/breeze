@@ -220,6 +220,14 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='pam_ledger_retirements') THEN
           REVOKE INSERT, UPDATE, TRUNCATE ON TABLE pam_ledger_retirements FROM breeze_app;
         END IF;
+        -- PAM ownership-epoch transfer switch (#8208, migrations/2026-12-30-210000):
+        -- the authority the device-move guard trusts over the forgeable
+        -- breeze.* GUCs. The request role must hold NO privilege on it (it
+        -- can claim system scope, so RLS alone would not stop it); it is read
+        -- only through SECURITY DEFINER breeze_pam_epoch_transfer_enabled().
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='pam_epoch_transfer_config') THEN
+          REVOKE ALL ON TABLE pam_epoch_transfer_config FROM breeze_app;
+        END IF;
         -- Backup snapshot id tombstones: ids that may never be issued again.
         -- Only ever appended (by triggers on backup_snapshot_id_reservations
         -- and by storage reclaim); nothing may rewrite or remove one, or an
@@ -367,6 +375,14 @@ export async function ensureAppRole(): Promise<boolean> {
         -- (AUDIT_ADMIN_REQUIRED_TABLES); org merge leaves it in place.
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_operator_task_events') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE ai_operator_task_events FROM breeze_app;
+        END IF;
+        -- ai_operator_plan_approval_effects (Recipe Library E4, #6169,
+        -- 2026-12-23-190000): an approved effect set is evidence of what a
+        -- human authorized. UPDATE only — DELETE stays so the task cascade
+        -- and org erasure can reap it without an admin connection; a BEFORE
+        -- UPDATE trigger backs this up for every role.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_operator_plan_approval_effects') THEN
+          REVOKE UPDATE ON TABLE ai_operator_plan_approval_effects FROM breeze_app;
         END IF;
         -- ai_invocations (AI model registry W02, #7600, 2026-11-14-100300):
         -- append-only invocation ledger. Org erasure and retention delete it as

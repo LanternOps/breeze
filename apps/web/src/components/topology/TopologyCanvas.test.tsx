@@ -20,7 +20,7 @@ beforeAll(() => {
 afterEach(() => { cleanup(); created.length = 0; });
 
 const empty: TopologyRender = { nodes: [], edges: [], grouped: false, hiddenNetworkCount: 0, hiddenDeviceCount: 0,
-  site: {} as TopologyRender['site'] };
+  site: {} as TopologyRender['site'], roster: [], siteHasDeclarations: false };
 
 it('never runs Cytoscape\'s default grid layout: positions are always set by the canvas itself (#8113)', async () => {
   const { default: TopologyCanvas } = await import('./TopologyCanvas');
@@ -30,4 +30,16 @@ it('never runs Cytoscape\'s default grid layout: positions are always set by the
   // sizes itself from the container, and a container it cannot measure (NaN size, e.g. no longer in the document) throws
   // `Cannot read properties of undefined (reading 'h')` from GridLayout.run. The `null` layout reads no size.
   expect(created[0]).toMatchObject({ elements: [], layout: { name: 'null' } });
+});
+
+it('styles a visitor tile (site location W2): dashed border in the neutral muted/mutedBg tokens, never a health colour', async () => {
+  const { default: TopologyCanvas } = await import('./TopologyCanvas');
+  render(<TopologyCanvas render={empty} positions={[]} boxes={[]} editable={false} onSelect={() => {}} onMove={() => {}} fitRef={{ current: null }} fitKey="overview" />);
+  const rules = created[0]!.style as { selector: string; style: Record<string, unknown> }[];
+  const style = (selector: string) => rules.find((rule) => rule.selector === selector)!.style;
+  expect(style('node[?visiting]')).toMatchObject({ 'border-style': 'dashed' });
+  // Same palette tokens as the existing neutral tiles: muted (an outside-the-map diamond's text) and mutedBg (an unverified tile's fill).
+  expect(style('node[?visiting]')['border-color']).toBe(style('node[kind="outside"]').color);
+  expect(style('node[?visiting]')['background-color']).toBe(style('node[?unverified]')['background-color']);
+  expect(style('node[?visiting]')['border-color']).not.toBe(style('node[health="healthy"]')['border-color']);
 });

@@ -152,6 +152,7 @@ import { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
 import * as svc from './invoiceService';
+import { DEFAULT_INVOICE_LINE_DETAIL } from '@breeze/shared';
 import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError } from './catalogService';
@@ -501,6 +502,7 @@ describe('invoiceService guards', () => {
       'id',
       'invoiceNumber',
       'issueDate',
+      'lineGrouping',
       'notes',
       'sellerSnapshot',
       'status',
@@ -543,7 +545,7 @@ describe('invoiceService guards', () => {
       unitPrice: '100',
       taxable: false,
       lineTotal: '100',
-    })).toEqual({
+    }, DEFAULT_INVOICE_LINE_DETAIL)).toEqual({
       ticketNumber: 'T-100',
       ticketCategory: null,
       name: 'Support',
@@ -553,6 +555,36 @@ describe('invoiceService guards', () => {
       taxable: false,
       lineTotal: '100',
       workedMinutes: null,
+      workDate: null,
+    });
+  });
+
+  // #8604: the customer payload applies the frozen line-detail toggles itself,
+  // so a withheld note / worked time / date never leaves the server.
+  describe('toCustomerInvoiceLine — #8604 line detail', () => {
+    const te = {
+      ticketNumber: null, name: null, description: 'Diagnosed paper jam', quantity: '1.50', unitPrice: '100.00',
+      taxable: false, lineTotal: '150.00', workedMinutes: 110, sourceType: 'time_entry', workDate: '2026-09-16',
+    };
+    const D = { grouping: 'entry' as const, showDate: false, showNote: true, showWorkedTime: true };
+
+    it('defaults: note and worked minutes travel, the date does not', () => {
+      expect(svc.toCustomerInvoiceLine(te, DEFAULT_INVOICE_LINE_DETAIL)).toMatchObject({ name: null, description: 'Diagnosed paper jam', workedMinutes: 110, workDate: null });
+    });
+    it('date ON carries the work date', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showDate: true }).workDate).toBe('2026-09-16');
+    });
+    it('note OFF withholds a time-entry note and titles the line with the localised labor label', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showNote: false })).toMatchObject({ name: 'Labor', description: '' });
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showNote: false }, 'pt-BR')).toMatchObject({ name: 'Mão de obra', description: '' });
+      expect(svc.toCustomerInvoiceLine({ ...te, name: 'Remote support' }, { ...D, showNote: false })).toMatchObject({ name: 'Remote support', description: '' });
+    });
+    it('note OFF leaves non-time lines alone', () => {
+      expect(svc.toCustomerInvoiceLine({ ...te, sourceType: 'part', description: 'Fuser unit', workedMinutes: null }, { ...D, showNote: false }))
+        .toMatchObject({ name: null, description: 'Fuser unit' });
+    });
+    it('worked time OFF withholds workedMinutes', () => {
+      expect(svc.toCustomerInvoiceLine(te, { ...D, showWorkedTime: false }).workedMinutes).toBeNull();
     });
   });
 
@@ -569,7 +601,7 @@ describe('invoiceService guards', () => {
       taxable: false,
       lineTotal: '225.00',
       workedMinutes: 30,
-    })).toMatchObject({ workedMinutes: 30 });
+    }, DEFAULT_INVOICE_LINE_DETAIL)).toMatchObject({ workedMinutes: 30 });
   });
 
   it('joins tickets and scopes both sides to the invoice org', async () => {
@@ -623,7 +655,7 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
     expect(result.lines[0]).toEqual({
       ticketNumber: null,
@@ -636,7 +668,28 @@ describe('invoiceService guards', () => {
       taxable: true,
       lineTotal: '150.00',
       workedMinutes: null,
+      workDate: null,
     });
+  });
+
+  // #8604: the portal reads lines through getCustomerInvoice, so the frozen
+  // toggles on the issued invoice row must reach the serializer. A regression
+  // to default detail here would leak withheld notes / worked time.
+  it('getCustomerInvoice applies the issued invoice frozen line-detail toggles', async () => {
+    queueResult([{
+      id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1',
+      lineGrouping: 'entry', lineShowDate: true, lineShowNote: false, lineShowWorkedTime: false,
+    }]);
+    queueResult([{
+      id: 'l1', invoiceId: 'i1', orgId: 'org1', sourceType: 'time_entry', name: null,
+      description: 'Internal tech note', quantity: '1.50', unitPrice: '100.00', taxable: false,
+      lineTotal: '150.00', customerVisible: true, sortOrder: 0, workedMinutes: 110, workDate: '2026-09-16',
+    }]);
+
+    const result = await svc.getCustomerInvoice('i1', 'org1');
+
+    expect(result.lines[0]).toMatchObject({ name: 'Labor', description: '', workedMinutes: null, workDate: '2026-09-16' });
+    expect(JSON.stringify(result)).not.toContain('Internal tech note');
   });
 
   // #3319: the portal DTO used to collapse the pair as `description ?? name`,
@@ -668,7 +721,7 @@ describe('invoiceService guards', () => {
     });
     // Still no internal columns leaked alongside the new field.
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
   });
 
@@ -723,6 +776,21 @@ describe('invoiceService guards', () => {
     const returning = (db as unknown as { returning: { mock: { calls: unknown[][] } } }).returning;
     expect(Object.keys(returning.mock.calls.at(-1)![0] as object)).toContain('notifyCustomerOnBehalfAcceptance');
     expect(row.notifyCustomerOnBehalfAcceptance).toBe(true);
+  });
+
+  it('#8604: updatePartnerBillingSettings writes and returns the four line-detail defaults', async () => {
+    const detail = { invoiceLineGrouping: 'day' as const, invoiceLineShowDate: true, invoiceLineShowNote: false, invoiceLineShowWorkedTime: false };
+    queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, ...detail }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    const row = await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, ...detail },
+      actor,
+    );
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    expect(setMock.mock.calls.at(-1)![0]).toMatchObject(detail);
+    const returning = (db as unknown as { returning: { mock: { calls: unknown[][] } } }).returning;
+    expect(Object.keys(returning.mock.calls.at(-1)![0] as object)).toEqual(expect.arrayContaining(Object.keys(detail)));
+    expect(row).toMatchObject(detail);
   });
 
   it('updatePartnerBillingSettings persists a scale-5 tax rate and a 2-decimal markup', async () => {
@@ -1098,11 +1166,21 @@ describe('issueInvoice document_locale stamp', () => {
     expect(issueSet().terms).toBe('Powered by Acme Portal');
   });
 
-  it('prefers the partner footer over portal branding when both are set', async () => {
+  it('prefers the org (portal-branding) footer over the partner default when both are set (#7510)', async () => {
     queueIssuePath(
       draft(),
       { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: 'Partner footer' },
       [{ footerText: 'Portal footer' }],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBe('Portal footer');
+  });
+
+  it('stamps the partner footer when the org sets none', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: 'Partner footer' },
+      [{ footerText: null }],
     );
     await svc.issueInvoice('inv1', actor);
     expect(issueSet().terms).toBe('Partner footer');
@@ -1597,7 +1675,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   const spec = (lineTotal: string, sourceId = 'te1'): DraftLineSpec => ({
     sourceType: 'time_entry', sourceId, catalogItemId: null, ticketId: null, description: 'Work',
     quantity: '1.00', unitPrice: lineTotal, costBasis: null, taxable: false, customerVisible: true,
-    lineTotal, isUnapprovedTime: false, workedMinutes: null
+    lineTotal, isUnapprovedTime: false, workedMinutes: null, workDate: '2026-06-03'
   });
   const empty = () => ({ included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
   const gap = (sourceId: string, quantity = '1.50') => ({
@@ -1635,6 +1713,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(a) org: every gathered row blocked → ALL_BLOCKED_BY_CURRENCY 409 with a summary, transient draft deleted', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);   // org currency
     queueResult([draftRow('USD')]);            // draft insert returning
     queueResult([]);                           // delete transient draft
@@ -1654,6 +1733,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(b) org: nothing gathered at all → NOTHING_TO_INVOICE (no details)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueResult([]);
@@ -1666,6 +1746,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(c) org: currencyCode override stamps the draft and drives the gathers (old-currency draft path, spec §7)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);   // org is GBP now
     queueResult([draftRow('EUR')]);            // insert returning (header EUR)
     queueTail('EUR');
@@ -1674,13 +1755,14 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30', currencyCode: 'EUR' }, actor);
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'EUR', orgId: 'org1', status: 'draft' }));
-    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'EUR');
+    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'EUR', expect.any(Date), 'UTC');
     expect(gatherOrgParts).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'EUR');
     expect(out.blockedByCurrency).toEqual([]);
     expect(out.invoice.currencyCode).toBe('EUR');
   });
 
   it('(c\') org: no override → the org currency is the header', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
     queueTail('GBP');
@@ -1689,10 +1771,11 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'GBP' }));
-    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP');
+    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP', expect.any(Date), 'UTC');
   });
 
   it('(c\'\') org: AI usage charges (#7608) are gathered in the header currency through the range end and materialize with the rest', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueTail('USD');
@@ -1718,6 +1801,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(d) org: mixed → only included specs materialize; blocked groups come back summarized, never as lines', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueTail('USD');
@@ -1742,6 +1826,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(e) ticket: all blocked → ALL_BLOCKED_BY_CURRENCY with details, draft deleted', async () => {
     queueResult([{ orgId: 'org1' }]);          // ticket
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);    // org currency
     queueResult([draftRow('GBP')]);            // insert returning
     queueResult([]);                           // delete
@@ -1750,13 +1835,14 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
       code: 'ALL_BLOCKED_BY_CURRENCY', status: 409,
       details: { blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }] }
     });
-    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'GBP');
+    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'GBP', expect.any(Date), 'UTC');
     const deleteMock = (db as unknown as { delete: Mock }).delete;
     expect(deleteMock).toHaveBeenCalledTimes(1);
   });
 
   it('(f) ticket: currencyCode override stamps the draft and drives the gather', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('EUR')]);
     queueTail('EUR');
@@ -1764,11 +1850,12 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     const out = await svc.assembleDraftFromTicket('t1', actor, { currencyCode: 'EUR' });
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'EUR', orgId: 'org1' }));
-    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'EUR');
+    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'EUR', expect.any(Date), 'UTC');
     expect(out.blockedByCurrency).toEqual([]);
   });
 
   it('(h) org: only rate-less billable time → ALL_MISSING_RATE 409 listing the entries; nothing billed at zero, draft deleted (review #1)', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueResult([]);                           // delete transient draft
@@ -1788,6 +1875,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   });
 
   it('(i) org: rate-less time alongside an included row → response.missingRate lists it and it is never materialized', async () => {
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueTail('USD');
@@ -1805,6 +1893,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
 
   it('(j) ticket: blocked currency + rate-less time, nothing included → ALL_BLOCKED_BY_CURRENCY carries both groups', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
     queueResult([]);
@@ -1820,8 +1909,34 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     });
   });
 
+  it('(k) org: the partner timezone drives the gather and workDate is materialized (#8603)', async () => {
+    queueResult([{ timezone: 'America/New_York' }]);
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([draftRow('USD')]);
+    queueTail('USD');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
+    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'USD', expect.any(Date), 'America/New_York');
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    const lines = valuesMock.mock.calls[1]![0] as Array<{ sourceId: string; workDate: string | null }>;
+    expect(lines).toEqual([expect.objectContaining({ sourceId: 'te-usd', workDate: '2026-06-03' })]);
+  });
+
+  it('(k\') ticket: the partner timezone drives the gather; a missing partner row falls back to UTC (#8603)', async () => {
+    queueResult([{ orgId: 'org1' }]);
+    queueResult([]);                           // no partner row visible
+    queueResult([{ currencyCode: 'GBP' }]);
+    queueResult([draftRow('GBP')]);
+    queueResult([]);                           // delete
+    (gatherTicketBillables as Mock).mockResolvedValue(empty());
+    await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({ code: 'NOTHING_TO_INVOICE' });
+    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'GBP', expect.any(Date), 'UTC');
+  });
+
   it('(g) ticket: nothing gathered → NOTHING_TO_INVOICE', async () => {
     queueResult([{ orgId: 'org1' }]);
+    queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
     queueResult([]);

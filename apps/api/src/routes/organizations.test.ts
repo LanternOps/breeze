@@ -55,6 +55,7 @@ vi.mock('../services/monitors/builtInMonitors', () => ({
 vi.mock('../services/agentOrgSettingsCache', () => ({
   invalidateAgentOrgSettingsCaches: vi.fn(),
 }));
+vi.mock('../services/trustPage/servingSet', () => ({ scheduleServingRefreshForPartner: vi.fn() }));
 vi.mock('../db', () => {
   const db: Record<string, unknown> = {
     select: vi.fn(() => ({

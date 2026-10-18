@@ -134,6 +134,10 @@ export const oauthGrants = pgTable('oauth_grants', {
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   revokedByUserId: uuid('revoked_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   revokedReason: text('revoked_reason'),
+  // B-W02 (#6156): MCP tool domains for this grant, chosen at consent. NULL =
+  // unrestricted. A real column, not `payload`: oidc-provider owns the payload
+  // and drops unknown keys. Read per request by assertLiveOAuthUser.
+  mcpDomains: text('mcp_domains').array().$type<string[] | null>(),
 }, (table) => ({
   accountIdx: index('oauth_grants_account_idx').on(table.accountId),
   clientIdx: index('oauth_grants_client_idx').on(table.clientId),
@@ -144,6 +148,12 @@ export const oauthGrants = pgTable('oauth_grants', {
   accountClientActiveIdx: index('oauth_grants_account_client_active_idx')
     .on(table.accountId, table.clientId)
     .where(sql`${table.revokedAt} IS NULL`),
+  // Connection health OAuth source (spec 2026-10-15 §1.3, §3): grants revoked
+  // automatically for refresh-token reuse. Created in
+  // 2026-12-29-100100-connection-health-incidents.
+  autoRevokedIdx: index('oauth_grants_auto_revoked_idx')
+    .on(table.revokedAt)
+    .where(sql`${table.revokedReason} = 'refresh-token-reuse' AND ${table.revokedByUserId} IS NULL`),
 }));
 
 // oauth_client_blocks: org-wide block of an OAuth client (e.g. "no Cursor

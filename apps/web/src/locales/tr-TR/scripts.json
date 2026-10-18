@@ -3,7 +3,8 @@
     "errors": {
       "fetch": "Otomasyon getirilemedi",
       "generic": "Bir hata oluştu",
-      "save": "Otomasyon kaydedilemedi"
+      "save": "Otomasyon kaydedilemedi",
+      "invalidTarget": "Cihaz hedefi geçersiz: {{detail}}"
     },
     "loading": "Otomasyon yükleniyor...",
     "breadcrumb": {
@@ -210,7 +211,9 @@
     },
     "empty": {
       "noActions": "Tanımlanmış eylem yok. Bir tane oluşturmak için \"Eylem Ekle\"yi tıklayın."
-    }
+    },
+    "partnerGroupsNote": "Ortak geneli otomasyonlar belirli cihaz gruplarını veya cihazları hedefleyemez, çünkü her biri tek bir kuruluşa aittir. Tüm Cihazlar veya Gelişmiş Filtre kullanın.",
+    "partnerTargetBlocked": "Bu ortak geneli otomasyon belirli cihaz gruplarını veya cihazları hedefliyor; bu desteklenmez. Kaydetmeden önce hedefi Tüm Cihazlar veya Gelişmiş Filtre olarak değiştirin."
   },
   "automationList": {
     "elevated": "Yükseltilmiş yetkiler",
@@ -420,12 +423,17 @@
     "empty": {
       "noPolicies": "Hiçbir politika yapılandırılmadı",
       "allCompliant": "Tüm cihazlar uyumludur!",
+      "notEvaluated": "Henüz hiçbir cihaz değerlendirilmedi.",
+      "noViolationsPending_one": "İhlal bulunamadı; {{count}} cihazın değerlendirmesi hâlâ bekliyor.",
+      "noViolationsPending_other": "İhlal bulunamadı; {{count}} cihazın değerlendirmesi hâlâ bekliyor.",
       "noMatchingDevices": "Eşleşen cihaz bulunamadı."
     },
     "policyComplianceRatio": "{{compliant}} / {{total}} uyumlu",
     "searchDevices": "Cihazları arayın...",
-    "violationCount": "{{count}} ihlali",
-    "moreViolations": "+{{count}} daha fazla ihlal",
+    "violationCount_one": "{{count}} ihlal",
+    "violationCount_other": "{{count}} ihlal",
+    "moreViolations_one": "+{{count}} ihlal daha",
+    "moreViolations_other": "+{{count}} ihlal daha",
     "lastChecked": "Son kontrol: {{date}}",
     "pagination": {
       "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
@@ -979,6 +987,43 @@
     },
     "toasts": {
       "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır"
+    },
+    "targetMode": {
+      "label": "Çalıştırılacak yer",
+      "devices": "Cihazlar",
+      "groups": "Cihaz grupları"
+    },
+    "groups": {
+      "title": "Cihaz gruplarını seçin",
+      "searchPlaceholder": "Gruplarda ara",
+      "selectedCount": "{{count}} grup seçildi",
+      "dynamic": "Dinamik",
+      "deviceCount": "{{count}} cihaz",
+      "refusedReason": "Yürütme hedefi olarak kullanılamaz: bu grubun kuralları cihazın kendisinin bildirdiği alanlara dayanıyor ({{fields}}).",
+      "loading": "Cihaz grupları yükleniyor...",
+      "loadFailed": "Cihaz grupları yüklenemedi.",
+      "retry": "Yeniden dene",
+      "empty": "Cihaz grubu bulunamadı.",
+      "tooManyGroups": "Bir çalıştırma en fazla {{max}} grubu hedefleyebilir.",
+      "countingMembers": "Üyeler sayılıyor...",
+      "countFailed": "Seçilen grupların üyeleri sayılamadı. Sunucu, çalıştırma sırasında sınırı denetler.",
+      "summaryUnique": "Seçilen gruplarda {{count}} benzersiz cihaz",
+      "summaryCompatible": "{{count}} cihaz bu betiği çalıştırabilir (uyumlu işletim sistemi)",
+      "summaryOffline": "Bunlardan {{count}} tanesi çevrimdışı ve cihaz çevrimiçi olduğunda çalışacak",
+      "membershipNote": "Dinamik grup üyeliği son değerlendirmeye göredir ve çalıştırma başlarken yeniden okunur.",
+      "overCap": "Bu gruplar {{count}} benzersiz cihaz içeriyor; bu, çalıştırma başına {{max}} sınırını aşıyor. Bir grubun seçimini kaldırın veya çalıştırmayı bölün.",
+      "submitting": "{{count}} gruba gönderiliyor...",
+      "warningsTitle": "Sunucudan notlar",
+      "confirmDescription": "“{{name}}” betiğini {{groups}} cihaz grubunda {{runAs}} olarak çalıştırın. Betikler sıraya alınır ve hemen çalışmaya başlar.",
+      "confirmMembers": "Şu anda bu gruplarda {{count}} benzersiz cihaz var; üyelik onayladığınızda yeniden okunur.",
+      "confirmMembersUnknown": "Cihaz sayısı henüz bilinmiyor; üyelik onayladığınızda okunur.",
+      "errors": {
+        "selectGroup": "Lütfen en az bir cihaz grubu seçin",
+        "tooManyTargets": "Bu gruplar {{count}} cihaza karşılık geliyor; bu, çalıştırma başına {{max}} sınırını aşıyor. Bir grubun seçimini kaldırın veya çalıştırmayı bölün.",
+        "perGroup": "Grup başına cihazlar: {{groups}}.",
+        "groupNotFound": "Seçilen {{count}} grup artık mevcut değil veya erişilemiyor. Listeyi yeniden yükleyip tekrar deneyin.",
+        "noTargets": "Seçilen gruplar bu çalıştırmanın hedefleyebileceği hiçbir cihaz içermiyor; hiçbir şey çalıştırılmadı."
+      }
     }
   },
   "secretParameters": {

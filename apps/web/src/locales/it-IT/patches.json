@@ -83,8 +83,12 @@
       "pendingDevices": "{{count}} con patch in sospeso",
       "approved": "{{count}} approvate",
       "pendingApproval": "{{count}} in attesa di approvazione",
+      "failedInstalls_one": "{{count}} installazione non riuscita",
+      "failedInstalls_other": "{{count}} installazioni non riuscite",
       "critical": "{{count}} critiche",
-      "reboot": "{{count}} riavvii"
+      "reboot": "{{count}} riavvii",
+      "imagesNotChecked_one": "{{count}} immagine container non verificata",
+      "imagesNotChecked_other": "{{count}} immagini container non verificate"
     },
     "filters": {
       "allDevices": "Tutti i dispositivi ({{count}})",
@@ -109,6 +113,8 @@
       "approvedTitle": "Patch in sospeso approvate per l'installazione",
       "pendingApproval": "In attesa di approvazione",
       "pendingApprovalTitle": "Patch in sospeso ancora in attesa di approvazione",
+      "failed": "Non riuscite",
+      "failedTitle": "Patch in sospeso il cui ultimo tentativo di installazione non è riuscito",
       "osPatches": "Patch OS",
       "osPatchesTitle": "Aggiornamenti in sospeso da Windows Update, Apple o gestori di pacchetti Linux",
       "thirdParty": "Terze parti",
@@ -564,7 +570,26 @@
     "badges": {
       "manual": "Manuale",
       "os": "SO: {{severities}}",
-      "thirdParty": "App di terze parti"
+      "thirdParty": "App di terze parti",
+      "appRules_one": "{{count}} regola app",
+      "appRules_other": "{{count}} regole app"
     }
+  },
+  "ringAppRules": {
+    "applicationRules": "Regole applicazioni",
+    "blockSpecificApplicationsFromAutomatedPatchingOr": "Blocca applicazioni specifiche dalla gestione automatica delle patch oppure fissale a una versione massima.",
+    "blocked": "Bloccata",
+    "pinned": "Bloccata a versione",
+    "maxVersion": "Versione massima",
+    "pinnedApplicationsNeedAVersion": "Le applicazioni bloccate a versione richiedono una versione.",
+    "addApplication": "Aggiungi applicazione",
+    "searchCatalogAndDetectedApplications": "Cerca nel catalogo e tra le applicazioni rilevate...",
+    "searching": "Ricerca in corso...",
+    "catalog": "catalogo",
+    "couldnTLoadApplicationsYouCanStill": "Impossibile caricare le applicazioni: puoi comunque aggiungerle sotto tramite ID pacchetto.",
+    "noMatches": "Nessuna corrispondenza.",
+    "orEnterAPackageIDManually": "Oppure inserisci manualmente un ID pacchetto",
+    "removeRuleFor": "Rimuovi regola per {{application}}",
+    "scopeNote": "Queste regole si applicano a ogni dispositivo il cui criterio di configurazione è collegato a questo anello."
   }
 }

@@ -79,6 +79,9 @@ export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
   // the file, so it also lists this file's pam_actuations evidence keys
   // (generation, cleanupCause); both are scalar.
   'services/pamActuationLifecycle.ts': ['reason', 'source', 'generation', 'cleanupCause'],
+  // Raw SQL: OD4 'expired' row on an ownership change (#8208), same shape as
+  // the pamJobs TTL expiry (cause/prior_status, both scalar).
+  'services/pamDeviceMoveGuard.ts': ['cause', 'prior_status'],
 } as const satisfies Record<string, readonly string[]>;
 
 /**

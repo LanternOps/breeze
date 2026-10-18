@@ -88,11 +88,19 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
     ['s1_threat_action', 's1_threat_action:rollback', 's1_isolate_device'],
     'EXTERNAL: threat/isolation state lives in SentinelOne. `threatIds`/`deviceIds` are ARRAYS and may carry SentinelOne-native ids rather than Breeze UUIDs, so there is no single local row to address even for the mirrored `s1_threats` table.',
   ),
+  ...sharedReason(
+    ['edr_endpoint_action', 'edr_endpoint_action:unisolate'],
+    'EXTERNAL: isolation state lives in the EDR vendor console. The local rows are inventory mirrors (edr_endpoints is rewritten by every inventory sync; devices by every heartbeat), so pinning either would fail closed on routine syncs. Release re-resolves the device link under live RLS, org reach and the site rule, and refuses an action already applied (#8167).',
+  ),
   computer_control:
     'EXTERNAL: synchronous input injection against the live device via the Go agent. Nothing in our DB is the write target and there is no persisted state to hash.',
   ...sharedReason(
-    ['m365_disable_user', 'm365_reset_password'],
-    'EXTERNAL: the target is a Microsoft Graph user object. Pinning it would require a Graph round trip at intent creation, putting a third-party outage on the creation path.',
+    [
+      'm365_disable_user', 'm365_reset_password', 'm365_revoke_sessions', 'm365_remove_license',
+      'm365_assign_license', 'm365_remove_from_group', 'm365_add_to_group',
+      'm365_retire_intune_device', 'm365_create_user', 'm365_set_auto_reply',
+    ],
+    'EXTERNAL: the target is a Microsoft Graph user, group or Intune device object. Pinning it would require a Graph round trip at intent creation, putting a third-party outage on the creation path.',
   ),
   ...sharedReason(
     [

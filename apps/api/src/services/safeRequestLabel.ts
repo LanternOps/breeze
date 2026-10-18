@@ -7,16 +7,28 @@ declare module 'hono' {
     requestCorrelationId: string;
     /** Stable snake_case code set by a middleware that short-circuits a request before routing; logged by `requestPathLogger`. */
     rejectReason: string;
+    /** W08: route template of a request agent admission refused before routing (agentRouteClasses label). */
+    admissionRouteLabel: string;
+    /** Set by the tunnel-host classifier: the whole tunnel surface logs as one label (#8158). */
+    routeLabelOverride: typeof TUNNEL_HOST_ROUTE_LABEL;
   }
 }
 
 export const UNMATCHED_ROUTE_LABEL = 'unmatched';
 
+/**
+ * Network Proxy host mode: requests on a tunnel host are answered by a separate
+ * Hono app whose matched route is invisible to the outer context, and their
+ * paths are device paths that must never be logged. They all log as this one
+ * fixed label (plan amendment 2026-10-12b item 5).
+ */
+export const TUNNEL_HOST_ROUTE_LABEL = 'tunnel-host';
+
 const CANONICAL_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PERCENT_ENCODED_BYTE = /%[0-9a-f]{2}/i;
 
-export function safeMatchedRouteLabel(c: Context): string {
+function matchedRouteLabel(c: Context): string {
   let routePath: string | undefined;
   try {
     routePath = c.req.routePath;
@@ -38,6 +50,45 @@ export function safeMatchedRouteLabel(c: Context): string {
   }
 
   return routePath;
+}
+
+// Only templates agentRouteClasses can produce: a closed set, never request data.
+const ADMISSION_ROUTE_LABEL = /^\/api\/v1\/(?:agents|agent-ws)\/:id(?:\/[A-Za-z0-9:-]+)+$/;
+
+/**
+ * W08: the route template of a request agent admission refused before routing, or null.
+ *
+ * Never throws: this runs on error-reporting paths (captureException, and the
+ * Sentry scrubber, which validates a route_template tag through a request-less
+ * `{ req }` context), and an error reporter must not crash. A context without a
+ * working `get` simply has no admission label.
+ */
+export function admissionRouteLabelOf(c: Context): string | null {
+  let label: unknown;
+  try {
+    label = typeof c.get === 'function' ? c.get('admissionRouteLabel') : undefined;
+  } catch {
+    return null;
+  }
+  return typeof label === 'string' && label.length <= 200 && ADMISSION_ROUTE_LABEL.test(label) ? label : null;
+}
+
+function routeLabelOverrideOf(c: Context): string | null {
+  let label: unknown;
+  try {
+    label = typeof c.get === 'function' ? c.get('routeLabelOverride') : undefined;
+  } catch {
+    return null;
+  }
+  // A closed set: never a request-derived value.
+  return label === TUNNEL_HOST_ROUTE_LABEL ? label : null;
+}
+
+export function safeMatchedRouteLabel(c: Context): string {
+  const override = routeLabelOverrideOf(c);
+  if (override) return override;
+  const matched = matchedRouteLabel(c);
+  return matched === UNMATCHED_ROUTE_LABEL ? (admissionRouteLabelOf(c) ?? UNMATCHED_ROUTE_LABEL) : matched;
 }
 
 export function newRequestCorrelationId(inbound: string | undefined): string {

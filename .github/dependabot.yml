@@ -20,6 +20,19 @@ updates:
     # 2026-08-17 through 2026-09-07, so anything sorted past the limit
     # was starved indefinitely.
     open-pull-requests-limit: 15
+    # An Expo SDK major is a coordinated move (expo, every expo-* native
+    # module, react-native, gesture-handler) done by hand with
+    # `npx expo install --fix`. Dependabot's expo-sdk group bumped `expo`
+    # 57→58 while ~15 expo-* modules stayed on 57 and react-native stayed
+    # below SDK 58's pin (#8687), so majors are ignored and the group only
+    # carries in-SDK patches/minors.
+    ignore:
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "expo-*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@expo/*"
+        update-types: ["version-update:semver-major"]
     groups:
       # Expo SDK packages must move together: a solo expo major bump
       # (55→56 on 2026-06-09) left expo-* native modules behind on SDK 55.

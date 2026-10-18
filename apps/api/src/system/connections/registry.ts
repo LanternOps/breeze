@@ -57,6 +57,8 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     vars: [
       { name: 'PUBLIC_APP_URL', secret: false, required: true },
       { name: 'PUBLIC_API_URL', secret: false, required: true },
+      { name: 'TUNNEL_ORIGIN_TEMPLATE', secret: false },
+      { name: 'TUNNEL_FRAME_ANCESTOR', secret: false },
       { name: 'DASHBOARD_URL', secret: false },
       { name: 'PUBLIC_URL', secret: false },
       { name: 'PUBLIC_PORTAL_URL', secret: false },

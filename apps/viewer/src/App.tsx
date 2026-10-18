@@ -1,10 +1,12 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Monitor, AlertTriangle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
 import UpdateIndicator from './components/UpdateIndicator';
+import { QuitConfirm } from './components/QuitConfirm';
 import { parseDeepLink, type ConnectionParams } from './lib/protocol';
+import { createDeepLinkGate, deepLinkKey } from './lib/deepLinkGate';
 
 /**
  * Main window: hidden, serves as process anchor (Tauri requires at least one window).
@@ -16,7 +18,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   // Why URL-scheme registration failed, if it did — surfaced on the idle card.
   const [schemeError, setSchemeError] = useState<string | null>(null);
-  const lastDeepLinkRef = useRef<{ key: string; at: number } | null>(null);
+  // Which deep link is current, so re-deliveries of it never restart the
+  // connect flow (#8947). Released on error/disconnect.
+  const [deepLinkGate] = useState(createDeepLinkGate);
 
   // Detect window role on mount
   useEffect(() => {
@@ -44,18 +48,12 @@ export default function App() {
     const parsed = parseDeepLink(url);
     if (!parsed) return;
 
-    const key = parsed.mode === 'desktop'
-      ? `${parsed.sessionId}|${parsed.connectCode}|${parsed.apiUrl}`
-      : `${parsed.tunnelId}|${parsed.code}|${parsed.apiUrl}`;
-    const now = Date.now();
-    const last = lastDeepLinkRef.current;
-    if (last && last.key === key && now - last.at < 2000) return;
+    if (!deepLinkGate.admit(deepLinkKey(parsed))) return;
 
-    lastDeepLinkRef.current = { key, at: now };
     invoke('clear_pending_deep_link').catch(() => {});
     setParams(parsed);
     setError(null);
-  }, []);
+  }, [deepLinkGate]);
 
   useEffect(() => {
     if (windowLabel === 'main') return;
@@ -91,17 +89,17 @@ export default function App() {
   }, [windowLabel, applyDeepLink]);
 
   const handleDisconnect = useCallback(() => {
-    lastDeepLinkRef.current = null;
+    deepLinkGate.release();
     getCurrentWebviewWindow().close().catch(() => {
       // If Tauri close fails, clear state to unmount the viewer
       setParams(null);
     });
-  }, []);
+  }, [deepLinkGate]);
 
   const handleError = useCallback((msg: string) => {
-    lastDeepLinkRef.current = null;
+    deepLinkGate.release();
     setError(msg);
-  }, []);
+  }, [deepLinkGate]);
 
   // ── Main window: idle card ──────────────────────────────────────────
   // Normally hidden (it is just the process anchor), but Rust shows it when the
@@ -155,6 +153,7 @@ export default function App() {
     return (
       <>
         <UpdateIndicator />
+        <QuitConfirm />
         <DesktopViewer
           params={params}
           onDisconnect={handleDisconnect}
@@ -168,6 +167,7 @@ export default function App() {
   return (
     <>
       <UpdateIndicator />
+      <QuitConfirm />
       <div className="flex items-center justify-center h-screen bg-gray-900">
         <div className="text-center">
           <div className="w-6 h-6 border-2 border-accent-soft border-t-transparent rounded-full animate-spin mx-auto mb-3" />

@@ -115,7 +115,7 @@ function ticketRow(overrides: Record<string, unknown> = {}) {
   return {
     id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID, ticketNumber: 'ABC123', internalNumber: 'T-2026-0001',
     subject: 'Printer offline', description: null, category: null,
-    status: 'new', statusId: null, priority: 'normal', source: 'api', workKind: 'support',
+    status: 'new', statusId: null, priority: 'normal', source: 'api', workKind: 'support', ticketType: 'incident',
     categoryId: null, assignedTo: null, deviceId: null,
     requesterContactId: null, submittedBy: null, submitterName: null, submitterEmail: null,
     tags: [], customFields: null, externalTicketId: null, externalTicketUrl: null,
@@ -351,6 +351,9 @@ describe('partner tickets write surface', () => {
     expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { assigneeId: USER_ID })).status).toBe(400);
     expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { responseSlaMinutes: 5 })).status).toBe(400);
     expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { submittedBy: USER_ID })).status).toBe(400);
+    // #4617: a ticket budget is a staff decision on the customer's spend ceiling — not a PSA field.
+    expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { budgetMinutes: 60 })).status).toBe(400);
+    expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { budgetAmount: '100.00' })).status).toBe(400);
 
     selectResults = [[foundRow()]];
     const ok = await send(`/tickets/${TICKET_ID}`, 'PATCH', { subject: 'Renamed', tags: ['a'] });
@@ -501,4 +504,38 @@ describe('partner tickets write surface', () => {
     expect(body.blocked).toEqual([expect.objectContaining({ id: TICKET_ID, resource: 'tickets' })]);
     expect(JSON.stringify(body)).not.toContain('AKIAIOSFODNN7EXAMPLE');
   });
+
+  // #7900 / #8592 W01: ticketType is an additive field on the write surface.
+  it('POST /tickets forwards an explicit ticketType, echoes it, and rejects an unknown one', async () => {
+    mocks.createTicket.mockResolvedValueOnce(ticketRow({ ticketType: 'change' }));
+    const res = await send('/tickets', 'POST', { ...createBody, ticketType: 'change' });
+    expect(res.status, await res.clone().text()).toBe(201);
+    expect(mocks.createTicket.mock.calls[0]![0]).toMatchObject({ ticketType: 'change', source: 'api' });
+    expect(partnerTicketWriteResponseSchema.parse(await res.json()).data?.ticketType).toBe('change');
+
+    mocks.createTicket.mockClear();
+    expect((await send('/tickets', 'POST', { ...createBody, ticketType: 'outage' })).status).toBe(400);
+    expect(mocks.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('POST /tickets without ticketType sends none (the service defaults it) and the record still carries one', async () => {
+    const res = await send('/tickets', 'POST', createBody);
+    expect(res.status).toBe(201);
+    expect(mocks.createTicket.mock.calls[0]![0]).not.toHaveProperty('ticketType');
+    expect(partnerTicketWriteResponseSchema.parse(await res.json()).data?.ticketType).toBe('incident');
+  });
+
+  it('PATCH /tickets/:id reclassifies through updateTicketFields; an unknown type is a 400', async () => {
+    selectResults = [[foundRow()]];
+    mocks.updateTicketFields.mockResolvedValueOnce(ticketRow({ ticketType: 'problem' }));
+    const ok = await send(`/tickets/${TICKET_ID}`, 'PATCH', { ticketType: 'problem' });
+    expect(ok.status, await ok.clone().text()).toBe(200);
+    expect(mocks.updateTicketFields).toHaveBeenCalledWith(TICKET_ID, { ticketType: 'problem' }, ACTOR);
+    expect(partnerTicketWriteResponseSchema.parse(await ok.json()).data?.ticketType).toBe('problem');
+
+    mocks.updateTicketFields.mockClear();
+    expect((await send(`/tickets/${TICKET_ID}`, 'PATCH', { ticketType: 'outage' })).status).toBe(400);
+    expect(mocks.updateTicketFields).not.toHaveBeenCalled();
+  });
 });
+

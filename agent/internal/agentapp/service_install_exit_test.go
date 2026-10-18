@@ -12,9 +12,10 @@ import (
 // all (the RunE body needs root, /etc, and a live init system). They are
 // parsed as SOURCE here instead, which works on every platform and covers both
 // files from a single untagged test.
-var installCommandSources = map[string]string{
-	"linux":  "service_cmd_linux.go",
-	"darwin": "service_cmd_darwin.go",
+var installCommandSources = map[string]struct{ file, agentErr string }{
+	"linux":   {"service_cmd_linux.go", "startErr"},
+	"darwin":  {"service_cmd_darwin.go", "startErr"},
+	"windows": {"service_cmd_windows.go", "installErr"},
 }
 
 // TestServiceInstallReturnsTheStartError is the guard for the fail-closed half
@@ -26,8 +27,13 @@ var installCommandSources = map[string]string{
 // offline. The fix is one line: the install RunE ends in `return startErr`
 // rather than `return nil`. Nothing else in the suite can catch a refactor
 // that reverts it, because nothing calls RunE.
+//
+// Since #8621 the tail is `return installExitError(<agent error>, watchdogExit)`
+// so --strict-watchdog can exit 78. The agent error must stay the FIRST
+// argument: installExitError makes it win over the watchdog outcome.
 func TestServiceInstallReturnsTheStartError(t *testing.T) {
-	for platform, file := range installCommandSources {
+	for platform, src := range installCommandSources {
+		file := src.file
 		t.Run(platform, func(t *testing.T) {
 			body := installRunEBody(t, file)
 			if len(body.List) == 0 {
@@ -40,15 +46,71 @@ func TestServiceInstallReturnsTheStartError(t *testing.T) {
 			if len(last.Results) != 1 {
 				t.Fatalf("%s: serviceInstallCmd RunE returns %d values, want 1", file, len(last.Results))
 			}
-			ident, ok := last.Results[0].(*ast.Ident)
-			if !ok || ident.Name != "startErr" {
-				t.Errorf("%s: serviceInstallCmd RunE ends in `return %s`, want `return startErr`. "+
+			call, ok := last.Results[0].(*ast.CallExpr)
+			if !ok || callName(call) != "installExitError" || len(call.Args) != 2 {
+				t.Fatalf("%s: serviceInstallCmd RunE ends in `return %s`, want `return installExitError(%s, ...)`. "+
 					"Returning nil makes an install that stopped the service and could not start it "+
 					"again exit 0 — the silent success that stranded a remote host in #5252.",
-					file, exprText(last.Results[0]))
+					file, exprText(last.Results[0]), src.agentErr)
 			}
+			if arg, ok := call.Args[0].(*ast.Ident); !ok || arg.Name != src.agentErr {
+				t.Errorf("%s: installExitError's first argument is %s, want %s — the agent "+
+					"start/install failure must win over the watchdog outcome (#5252)",
+					file, exprText(call.Args[0]), src.agentErr)
+			}
+			if arg, ok := call.Args[1].(*ast.Ident); !ok || arg.Name != "watchdogExit" {
+				t.Errorf("%s: installExitError's second argument is %s, want watchdogExit — "+
+					"otherwise --strict-watchdog can never exit 78", file, exprText(call.Args[1]))
+			}
+			assertWatchdogReportWiring(t, file, body)
 		})
 	}
+}
+
+// assertWatchdogReportWiring pins `watchdogExit = reportWatchdogBootstrap(err,
+// strictWatchdog, os.Stdout)` inside the `if !skipWatchdog` block, so a
+// refactor cannot silently drop strict mode or move the marker to stderr.
+func assertWatchdogReportWiring(t *testing.T, file string, body *ast.BlockStmt) {
+	t.Helper()
+	found := 0
+	for _, stmt := range body.List {
+		ifs, ok := stmt.(*ast.IfStmt)
+		if !ok {
+			continue
+		}
+		if u, ok := ifs.Cond.(*ast.UnaryExpr); !ok || exprText(u.X) != "skipWatchdog" {
+			continue
+		}
+		ast.Inspect(ifs.Body, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 || exprText(as.Lhs[0]) != "watchdogExit" {
+				return true
+			}
+			call, ok := as.Rhs[0].(*ast.CallExpr)
+			if !ok || callName(call) != "reportWatchdogBootstrap" || len(call.Args) != 3 {
+				return true
+			}
+			found++
+			if exprText(call.Args[1]) != "strictWatchdog" {
+				t.Errorf("%s: reportWatchdogBootstrap strict argument is %s, want strictWatchdog", file, exprText(call.Args[1]))
+			}
+			sel, ok := call.Args[2].(*ast.SelectorExpr)
+			if !ok || exprText(sel.X) != "os" || sel.Sel.Name != "Stdout" {
+				t.Errorf("%s: the BREEZE_WATCHDOG_INSTALL marker must go to os.Stdout", file)
+			}
+			return true
+		})
+	}
+	if found != 1 {
+		t.Errorf("%s: want exactly one `watchdogExit = reportWatchdogBootstrap(...)` inside `if !skipWatchdog`, found %d", file, found)
+	}
+}
+
+func callName(call *ast.CallExpr) string {
+	if id, ok := call.Fun.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
 }
 
 // installRunEBody parses file and returns the body of the RunE function

@@ -73,7 +73,11 @@ type digestReportingProvider struct {
 }
 
 func (p *digestReportingProvider) UploadWithDigest(_ context.Context, localPath, remotePath string) (providers.UploadDigest, error) {
+	// Under p.mu: the snapshot's upload pool calls this from several
+	// workers at once.
+	p.mu.Lock()
 	p.digestCalls++
+	p.mu.Unlock()
 	if p.digestErr != nil {
 		return providers.UploadDigest{}, p.digestErr
 	}

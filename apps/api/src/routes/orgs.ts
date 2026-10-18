@@ -10,6 +10,7 @@ import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
+import { scheduleServingRefreshForPartner } from '../services/trustPage/servingSet';
 import { db, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolveAuditOrgIdForPartner } from '../services/auditOrgResolver';
 import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
@@ -28,6 +29,11 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, requirePar
 import { markPermissionGate } from '../middleware/permissionGate';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import {
+  clampSessionTimeoutInSettings,
+  sessionTimeoutMinutesSchema,
+  sessionTimeoutSettingsError,
+} from '../services/sessionTimeoutLimits';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
 import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
@@ -76,7 +82,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
@@ -101,6 +107,7 @@ import { writeOrgImportAudits } from '../services/orgImport/audit';
 import { commitImportRowSchema, importRowSchema } from '../services/orgImport/schemas';
 import { resolveImportPartnerId } from './importScope';
 import { registerOrgContactsRoutes } from './orgContacts';
+import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibilities';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
@@ -243,7 +250,9 @@ const createPartnerSchema = z.object({
   // plan and maxDevices are managed by the billing service (via direct DB writes).
   // They are intentionally excluded from the API schema to prevent self-service changes.
   maxOrganizations: z.number().int().nullable().optional(),
-  settings: z.any().optional(),
+  settings: z.any().optional().refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
+  }),
   billingEmail: z.string().email().optional()
 });
 
@@ -266,8 +275,13 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
   // Operator-only per-partner AI for Office entitlement. Settable here (system
   // scope) but NOT on /partners/me (partner scope) — partners can't self-enable.
   aiForOfficeEnabled: z.boolean().optional(),
+  // Operator-only: remove the "Powered by Breeze" attribution from this partner's
+  // public trust pages. Settable here (system scope), NOT on /partners/me.
+  trustPageUnbranded: z.boolean().optional(),
   settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
     message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
+  }).refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
   }),
 });
 
@@ -303,7 +317,9 @@ export const createOrganizationSchema = z.object({
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
   // maxDevices is managed by the billing service — excluded from API schema
-  settings: z.any().optional(),
+  settings: z.any().optional().refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
+  }),
   contractStart: z.string().nullable().optional(),
   contractEnd: z.string().nullable().optional(),
   billingContact: z.any().optional()
@@ -564,8 +580,13 @@ const partnerPublicColumns = () => ({
   defaultMarkupPercent: partners.defaultMarkupPercent,
   autoTaxHardware: partners.autoTaxHardware,
   invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
+  invoiceLineGrouping: partners.invoiceLineGrouping,
+  invoiceLineShowDate: partners.invoiceLineShowDate,
+  invoiceLineShowNote: partners.invoiceLineShowNote,
+  invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
   catalogAiStyle: partners.catalogAiStyle,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
+  trustPageUnbranded: partners.trustPageUnbranded,
   serviceManagementMode: partners.serviceManagementMode,
   serviceManagementPsaConnectionId: partners.serviceManagementPsaConnectionId,
   createdAt: partners.createdAt,
@@ -711,19 +732,6 @@ const supportedLocales = SUPPORTED_LOCALES;
  * the web form and the billing-settings schema enforce the identical rule.
  */
 
-/**
- * The partner settings editor echoes a saved notification destination back as
- * the masked marker ("keep the stored value" — settingsSecretMasking.ts; a
- * list entry carries a key naming the stored entry, `********:<key>`), which
- * the URL validator would otherwise reject. Accept the marker alongside a
- * valid URL; a typed replacement is still validated.
- */
-const maskedSettingsSecretMarker = z.string().regex(/^\*+(?::[0-9a-f]+)?$/);
-
-function keptSecretOrHttpUrl(label: string) {
-  return z.union([maskedSettingsSecretMarker, httpUrlValue(label)]);
-}
-
 export const mlSettingsSchema = z.object({
   anomalies: z.object({
     enabled: z.boolean().optional(),
@@ -763,9 +771,12 @@ const partnerSettingsSchema = z.object({
     country: z.string().length(2).optional().or(z.literal('')),
   }).optional(),
   security: z.object({
-    minLength: z.number().int().min(6).max(128).optional(),
-    complexity: z.enum(['standard', 'strict', 'passphrase']).optional(),
-    expirationDays: z.number().int().min(0).optional(),
+    // The scalar limits below accept an explicit `null` meaning "clear back to
+    // the inherited default" (#8976). The handler deep-merges `security`, so an
+    // omitted key keeps the stored value; `null` is the only way to unset one.
+    minLength: z.number().int().min(6).max(128).nullable().optional(),
+    complexity: z.enum(['standard', 'strict', 'passphrase']).nullable().optional(),
+    expirationDays: z.number().int().min(0).nullable().optional(),
     requireMfa: z.boolean().optional(),
     // #5306 — how long a user whose ROLE forces MFA (roles.force_mfa) may keep
     // working before enrolment is enforced. Optional on purpose: a PATCH that
@@ -785,8 +796,8 @@ const partnerSettingsSchema = z.object({
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
     // persisted as a second source of truth.
     allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
-    sessionTimeout: z.number().int().min(1).optional(),
-    maxSessions: z.number().int().min(1).optional(),
+    sessionTimeout: sessionTimeoutMinutesSchema.nullable().optional(),
+    maxSessions: z.number().int().min(1).nullable().optional(),
     ipAllowlist: z
       .array(z.string())
       .optional()
@@ -805,11 +816,15 @@ const partnerSettingsSchema = z.object({
     smtpEncryption: z.enum(['tls', 'ssl', 'none']).optional(),
     // Server dials this outbound; `file://`/internal targets are SSRF.
     // Stored sealed and returned masked; the marker keeps the stored value.
-    slackWebhookUrl: keptSecretOrHttpUrl('Slack webhook URL').optional(),
+    // keptSecretOrHttpUrlValue accepts that marker (`********`, or
+    // `********:<key>` for a list entry — settingsSecretMasking.ts) or a typed
+    // http(s) URL; a rejection carries the human message, never the marker
+    // regex (#8369).
+    slackWebhookUrl: keptSecretOrHttpUrlValue('Slack webhook URL').optional(),
     slackChannel: z.string().optional(),
     // Each saved entry comes back as a keyed marker; sending it keeps that
     // entry, leaving it out removes it, and a typed URL is added.
-    webhooks: z.array(keptSecretOrHttpUrl('Webhook URL')).optional(),
+    webhooks: z.array(keptSecretOrHttpUrlValue('Webhook URL')).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
     pushoverAppToken: z.string().max(30).optional(),
     pushoverDefaultUser: z.string().max(30).optional(),
@@ -982,7 +997,20 @@ const partnerSettingsSchema = z.object({
   // only the feature block it owns (`ml.anomalies`, `ml.remediation_suggestions`)
   // and must send that block COMPLETE.
   ml: mlSettingsSchema.optional(),
+  // Network Proxy transport (#8155). Partner-only: no org override, since
+  // it chooses how every session of this partner is served. Read by
+  // services/tunnelOriginOptIn.ts. Replaced wholesale (one field).
+  networkProxy: z.object({ dedicatedTunnelOrigin: z.boolean().optional() }).strict().optional(),
 });
+
+// Scalar security limits a partner can clear back to "inherit" by sending null.
+const PARTNER_SECURITY_CLEARABLE_KEYS = [
+  'minLength',
+  'complexity',
+  'expirationDays',
+  'sessionTimeout',
+  'maxSessions',
+] as const;
 
 const updatePartnerSettingsSchema = z.object({
   settings: partnerSettingsSchema.optional(),
@@ -1022,7 +1050,8 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
     return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  return c.json(withMaskedSettings(partner));
+  // #6111 — a session timeout stored above the 720-minute ceiling reads back clamped.
+  return c.json(withMaskedSettings({ ...partner, settings: clampSessionTimeoutInSettings(partner.settings) }));
 });
 
 // Candidates for the Inbound email card's default-assignee picker. Gated like
@@ -1126,10 +1155,16 @@ orgRoutes.patch(
   // explicit `ipAllowlist: []` still clears the list deliberately.
   if (body.settings?.security) {
     foldAllowedMfaMethodsAlias(body.settings); // canonicalize before deep-merge
-    newSettings.security = {
+    const mergedSecurity: Record<string, unknown> = {
       ...((currentSettings.security as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.security,
     };
+    // An explicit null unsets the key (#8976) so it falls back to the inherited
+    // default instead of persisting a literal null that readers must special-case.
+    for (const key of PARTNER_SECURITY_CLEARABLE_KEYS) {
+      if (mergedSecurity[key] === null) delete mergedSecurity[key];
+    }
+    newSettings.security = mergedSecurity;
   }
 
   // Deep-merge the `ticketing` sub-object one level for the same reason: today it
@@ -1542,6 +1577,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
+  // Trust Center (Ruling 26): a slug/status change can publish or hide this partner's trust pages.
+  if (data.slug !== undefined || data.status !== undefined) scheduleServingRefreshForPartner(partner.id, 'partner.update');
+
   // Invalidate the OAuth scope-policy cache (settings may have changed).
   clearPartnerScopePolicyCache(partner.id);
   // Settings writes can change security.ipAllowlist — drop the 30s cache so
@@ -1612,6 +1650,7 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
   }
 
   await revokePartnerTenantAccess(partner.id);
+  scheduleServingRefreshForPartner(partner.id, 'partner.delete');
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
   writeAuditEvent(c, {
@@ -2301,19 +2340,23 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   // partner row, so `readWithPartnerAxisVisibility` would buy nothing here.
   // #6229 adds the partner's payment terms the same way, for the org's
   // payment-terms InheritedField (org `invoiceTermsDays` NULL = inherit this).
+  // #7510 adds the partner currency — NOT an inherited value (org
+  // `currency_code` is NOT NULL, stamped at creation); the org Billing tab
+  // names it only to say the partner default applies to new organizations.
   const [partnerRow] = await db
-    .select({ defaultTaxRate: partners.defaultTaxRate, invoiceTermsDays: partners.invoiceTermsDays })
+    .select({ defaultTaxRate: partners.defaultTaxRate, invoiceTermsDays: partners.invoiceTermsDays, currencyCode: partners.currencyCode })
     .from(partners)
     .where(eq(partners.id, organization.partnerId))
     .limit(1);
   const partnerDefaultTaxRate = partnerRow?.defaultTaxRate ?? null;
   const partnerDefaultInvoiceTermsDays = partnerRow?.invoiceTermsDays ?? null;
+  const partnerDefaultCurrencyCode = partnerRow?.currencyCode ?? null;
 
   if (isArchiveLifecycleRow(organization)) {
-    return c.json({ ...withMaskedSettings(organization), archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
+    return c.json({ ...withMaskedSettings(organization), archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays, partnerDefaultCurrencyCode });
   }
 
-  return c.json({ ...withMaskedSettings(organization), partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
+  return c.json({ ...withMaskedSettings(organization), partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays, partnerDefaultCurrencyCode });
 });
 
 orgRoutes.get('/organizations/:id/effective-settings',
@@ -2585,6 +2628,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       }
     }
 
+    // #6111 — security.sessionTimeout ceiling (the org settings blob is z.any()).
+    const sessionTimeoutError = sessionTimeoutSettingsError(settingsObj);
+    if (sessionTimeoutError) {
+      return c.json({ error: sessionTimeoutError }, 400);
+    }
+
     // Enforce partner locks on settings categories (after auth check).
     for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
       if (settingsObj[category] && typeof settingsObj[category] === 'object') {
@@ -2834,6 +2883,10 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   // The org's agent update policy and topology flags are served to its agents
   // from a per-org heartbeat cache (#8053).
   invalidateAgentOrgSettingsCaches(organization.id);
+  // Trust Center (Ruling 26): a slug/status change can publish or hide this org's trust page.
+  if ((data.slug !== undefined || data.status !== undefined) && organization.partnerId) {
+    scheduleServingRefreshForPartner(organization.partnerId, 'organization.update');
+  }
 
   if (data.status === 'offboarding') {
     // #2774 — terminal-intent drain: users/API keys/OAuth out now, agents kept
@@ -2884,6 +2937,8 @@ registerOrgBillingProfileRoutes(orgRoutes);
 registerOrgAuditRetentionSettingsRoutes(orgRoutes);
 // First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts
 registerOrgContactsRoutes(orgRoutes);
+// Read-only who-to-contact resolution (Site / Device) — see routes/orgContactResponsibilities.ts
+registerOrgContactResponsibilitiesRoutes(orgRoutes);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;
@@ -2921,6 +2976,7 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
   }
 
   await revokeOrganizationTenantAccess(organization.id);
+  if (organization.partnerId) scheduleServingRefreshForPartner(organization.partnerId, 'organization.delete');
 
   writeRouteAudit(c, {
     orgId: organization.id,

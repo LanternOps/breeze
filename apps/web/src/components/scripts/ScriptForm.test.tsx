@@ -139,8 +139,11 @@ describe('ScriptForm Monaco lifecycle (issue #1186)', () => {
   // import landing in the route <head> so it survives View-Transition swaps. That's
   // invisible to jsdom (CSS imports are no-ops in vitest), so nothing else here would
   // catch someone "cleaning up an unused import" and silently regressing the fix.
-  it('keeps the static Monaco editor.main.css import (headline #1186 cure)', () => {
-    expect(scriptFormSource).toMatch(/import\s+['"]monaco-editor\/min\/vs\/editor\/editor\.main\.css['"]/);
+  // The import now lives in lib/monacoLoader.ts (shared with the approvals
+  // script-proposal card, which regressed the same way); this pins ScriptForm to
+  // that module, and lib/monacoEditorCss.test.ts pins the CSS import to it.
+  it('reaches the static Monaco editor.main.css import via lib/monacoLoader (headline #1186 cure)', () => {
+    expect(scriptFormSource).toMatch(/from\s+['"]@\/lib\/monacoLoader['"]/);
   });
 });
 
@@ -352,6 +355,26 @@ describe('ScriptForm unknown-variable notice', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /save script/i }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  });
+
+  it('submits exitCodeSeverityMapping: null after every severity row is removed (#8590)', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <ScriptForm
+        onSubmit={onSubmit}
+        defaultValues={{
+          ...draft,
+          content: 'exit 1',
+          exitCodeSeverityMapping: [{ exitCode: '1', severity: 'high' }],
+        }}
+      />
+    );
+
+    fireEvent.click(await screen.findByTitle(/remove/i));
+    fireEvent.click(screen.getByRole('button', { name: /save (script|changes)/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toHaveProperty('exitCodeSeverityMapping', null);
   });
 
   it('does not warn on ${{var.x}} or on a {{org.name}} token from another namespace', async () => {

@@ -12,8 +12,9 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
 
+const storeFetchOrganizations = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: vi.fn()
+  useOrgStore: Object.assign(vi.fn(), { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) })
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -315,6 +316,35 @@ describe('OrgSettingsPage general tab — name editing', () => {
         expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ name: 'Acme IT' }) })
       );
     });
+  });
+
+  it('refreshes the global org store (header switcher) after a successful rename (#8371)', async () => {
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({ ...orgDetails, name: 'Acme IT' }));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+    render(<OrgSettingsPage orgId="org-1" />);
+    const input = (await screen.findByTestId('org-name-input')) as HTMLInputElement;
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Acme IT');
+    await userEvent.click(screen.getByTestId('org-name-save'));
+    await waitFor(() => expect(storeFetchOrganizations).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not refresh the org store when the rename fails (#8371)', async () => {
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({ error: 'nope' }, false, 500));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+    render(<OrgSettingsPage orgId="org-1" />);
+    const input = (await screen.findByTestId('org-name-input')) as HTMLInputElement;
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Acme IT');
+    await userEvent.click(screen.getByTestId('org-name-save'));
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([, i]) => i?.method === 'PATCH')).toBe(true));
+    expect(storeFetchOrganizations).not.toHaveBeenCalled();
   });
 
   it('re-fetches and reflects the server-returned name after a successful save', async () => {

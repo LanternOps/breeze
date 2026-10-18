@@ -948,6 +948,130 @@ describe('user routes', () => {
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
+
+    it('staff invite email carries the partner name and saved staff_invite override (#7468)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: '22222222-2222-2222-2222-222222222222',
+                scope: 'partner',
+                name: 'Admin',
+                description: null,
+                isSystem: true,
+                partnerId: null,
+                orgId: null
+              }
+            ])
+          })
+        })
+      } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ parentRoleId: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // Partner-org ownership probe for the selected list (Finding 2).
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: '33333333-3333-3333-3333-333333333333' }])
+          })
+        } as any)
+        // Tombstone pre-flight lookup: same row shape the sibling test's queue hands it.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'unused', settings: {} }]) })
+          })
+        } as any)
+        // Post-commit partner lookup for the invite email (name + template overrides).
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                name: 'Fix-It MSP',
+                settings: { emailTemplates: { staff_invite: { subject: 'Einladung', heading: null, buttonLabel: null, html: null } } },
+              }])
+            })
+          })
+        } as any);
+
+      const txSelect = vi
+        .fn()
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        });
+
+      const txInsert = vi
+        .fn()
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                email: 'invitee@example.com',
+                name: 'Invitee',
+                status: 'invited'
+              }
+            ])
+          })
+        })
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
+          })
+        });
+
+      vi.mocked(db.transaction).mockImplementation(async (fn) => {
+        return fn({ select: txSelect, insert: txInsert } as any);
+      });
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'invitee@example.com',
+          name: 'Invitee',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'selected',
+          orgIds: ['33333333-3333-3333-3333-333333333333']
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.email).toBe('invitee@example.com');
+      expect(body.status).toBe('invited');
+      // partners is forced-RLS: the branding read must escalate to system context
+      // (an org-scoped inviter has no accessible partners).
+      expect(withSystemDbAccessContext).toHaveBeenCalled();
+      expect(sendInviteMock).toHaveBeenCalledWith(expect.objectContaining({
+        expiresDays: 7,
+        partnerName: 'Fix-It MSP',
+        custom: expect.objectContaining({ subject: 'Einladung' }),
+      }));
+    });
+
     // The response for an address claimed by a DIFFERENT
     // tenant (invisible to the caller's own ambient RLS context) must be
     // indistinguishable from a genuine new invite — no insert, no distinct
@@ -4118,5 +4242,102 @@ describe('/me/ticket-pushover', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ userKeySet: false });
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ pushoverUserKeyEncrypted: null }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connection health W3 (#8847): /me/email-preferences (My Account digest toggle)
+// ---------------------------------------------------------------------------
+
+const emailOptoutMocks = vi.hoisted(() => ({
+  isOptedOut: vi.fn(),
+  setEmailOptOut: vi.fn(),
+  clearEmailOptOut: vi.fn(),
+}));
+vi.mock('../services/emailOptouts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/emailOptouts')>()),
+  isOptedOut: (...a: unknown[]) => emailOptoutMocks.isOptedOut(...a),
+  setEmailOptOut: (...a: unknown[]) => emailOptoutMocks.setEmailOptOut(...a),
+  clearEmailOptOut: (...a: unknown[]) => emailOptoutMocks.clearEmailOptOut(...a),
+}));
+
+describe('/me/email-preferences', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authAsDefaultPartner();
+    emailOptoutMocks.isOptedOut.mockResolvedValue(false);
+    emailOptoutMocks.setEmailOptOut.mockResolvedValue({ userExists: true });
+    emailOptoutMocks.clearEmailOptOut.mockResolvedValue(undefined);
+  });
+
+  const app = () => new Hono().route('/users', userRoutes);
+  const patch = (body: unknown) => app().request('/users/me/email-preferences', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  it('GET reports subscribed by default, for auth.user.id', async () => {
+    const res = await app().request('/users/me/email-preferences');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connectionHealthDigest: true });
+    expect(emailOptoutMocks.isOptedOut).toHaveBeenCalledWith('user-123', 'connection_health_digest');
+  });
+
+  it('GET reports unsubscribed when an opt-out exists', async () => {
+    emailOptoutMocks.isOptedOut.mockResolvedValue(true);
+    const res = await app().request('/users/me/email-preferences');
+    expect(await res.json()).toEqual({ connectionHealthDigest: false });
+  });
+
+  it('PATCH false records a settings opt-out and audits', async () => {
+    const res = await patch({ connectionHealthDigest: false });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connectionHealthDigest: false });
+    expect(emailOptoutMocks.setEmailOptOut).toHaveBeenCalledWith('user-123', 'connection_health_digest', 'settings');
+    expect(emailOptoutMocks.clearEmailOptOut).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'user.email_preferences.update', resourceType: 'user', resourceId: 'user-123',
+      details: { connectionHealthDigest: false },
+    }));
+  });
+
+  it('PATCH false is a 500, not a false success, when nothing could be written', async () => {
+    emailOptoutMocks.setEmailOptOut.mockResolvedValue({ userExists: false });
+    const res = await patch({ connectionHealthDigest: false });
+    expect(res.status).toBe(500);
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH true re-subscribes (clears the opt-out)', async () => {
+    const res = await patch({ connectionHealthDigest: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connectionHealthDigest: true });
+    expect(emailOptoutMocks.clearEmailOptOut).toHaveBeenCalledWith('user-123', 'connection_health_digest');
+    expect(emailOptoutMocks.setEmailOptOut).not.toHaveBeenCalled();
+  });
+
+  it('400 on empty body, a non-boolean, or a smuggled userId (strict)', async () => {
+    expect((await patch({})).status).toBe(400);
+    expect((await patch({ connectionHealthDigest: 'no' })).status).toBe(400);
+    expect((await patch({ connectionHealthDigest: false, userId: 'someone-else' })).status).toBe(400);
+    expect(emailOptoutMocks.setEmailOptOut).not.toHaveBeenCalled();
+  });
+
+  it("is exempt from the partner-wide management gate for a 'selected' partner user", async () => {
+    // The gate's first select is the membership lookup; if the route were not
+    // exempt, a 'selected' membership would 403 here.
+    const gateLimit = vi.fn(() => Promise.resolve([{ orgAccess: 'selected' }]));
+    vi.mocked(db.select).mockReset().mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: gateLimit })) })),
+    } as never);
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner', partnerId: 'partner-123', orgId: null, accessibleOrgIds: [],
+        user: { id: 'user-123', email: 'test@example.com' },
+      });
+      return next();
+    });
+    expect((await app().request('/users/me/email-preferences')).status).toBe(200);
+    expect((await patch({ connectionHealthDigest: false })).status).toBe(200);
+    expect(gateLimit).not.toHaveBeenCalled();
   });
 });

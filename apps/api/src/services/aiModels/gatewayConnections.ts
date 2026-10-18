@@ -1,8 +1,9 @@
 /**
  * Gateway-kind connection writes and manual model entry (W06 #7604).
  *
- * Never goes through the /ai/provider compat facade (Anthropic-only, bound to
- * partner_ai_connections_compat_uq, whose predicate excludes gateway kinds).
+ * Separate from the Anthropic API connection writes
+ * (anthropicConnectionWrites.ts); a partner may hold any number of gateway
+ * connections.
  *
  * Every write follows the W04 model (offeringWrites.inPartnerRegistryWrite):
  * its own system transaction behind the partner registry try-lock (503
@@ -36,7 +37,14 @@
  *   verifier (offeringVerification.ts) writes a verification record.
  */
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
-import { BYO_MODEL_ID_PATTERN, isGatewayConnectionKind, type AiSurface, type ModelRates } from '@breeze/shared';
+import {
+  BYO_MODEL_ID_PATTERN,
+  envManagementState,
+  isGatewayConnectionKind,
+  type AiSurface,
+  type EnvManagementState,
+  type ModelRates,
+} from '@breeze/shared';
 import { db, runOutsideDbContext } from '../../db';
 import { aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
 import {
@@ -97,20 +105,8 @@ const KEY_REQUIRED = 'Enter the key for the new URL (or remove the key).';
 const STALE = 'This connection changed since you opened it. Reload and try again.';
 const MAX_DISPLAY_NAME = 120;
 
-/**
- * Env-bootstrap ownership of a gateway connection (provider_config):
- *  - 'managed': kept in sync with MCP_LLM_* (managedBy = 'env');
- *  - 'released': the variables were unset (envReleasedAt set). It still holds
- *    the operator's endpoint and key, so it stays read-only for the partner —
- *    who may only disconnect it — until the bootstrap re-adopts it.
- */
-export type EnvManagementState = 'managed' | 'released' | null;
-
-export function envManagementState(providerConfig: Record<string, unknown> | null | undefined): EnvManagementState {
-  const cfg = providerConfig as { managedBy?: unknown; envReleasedAt?: unknown } | null | undefined;
-  if (cfg?.managedBy !== 'env') return null;
-  return typeof cfg.envReleasedAt === 'string' ? 'released' : 'managed';
-}
+// Env-state derivation lives in @breeze/shared so the DTO fields and this gate cannot drift (#7779).
+export { envManagementState, type EnvManagementState };
 
 /** Hand-entered models per connection, counted under the registry lock. */
 export const MAX_MANUAL_OFFERINGS_PER_CONNECTION = 200;

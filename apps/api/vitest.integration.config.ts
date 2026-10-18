@@ -44,6 +44,8 @@ export default defineConfig({
       'src/services/hardwareHealth/**/*.integration.test.ts',
       'src/services/timeSync/**/*.integration.test.ts',
       'src/services/workloads/**/*.integration.test.ts',
+      // Workload image currency (W05 #8194): the pass under real RLS + the system-only cache.
+      'src/services/imageCurrency/**/*.integration.test.ts',
       // Hardware & RAID monitoring (W05 BMC in-band): real-DB migration/enum
       // proof and BMC discovery-worker/topology-publish suites. Import
       // `__tests__/integration/setup` (real postgres pool + autoMigrate).
@@ -226,6 +228,9 @@ export default defineConfig({
       // (real Redis; no Postgres fixtures used). Belongs to
       // vitest.integration.config.ts, not the no-Redis unit runner.
       'src/services/mfaStepUpGrant.integration.test.ts',
+      // Real-Redis test of the per-org script-review concurrency slot Lua
+      // scripts (#5637): cap, release, TTL self-heal, idempotent release.
+      'src/services/scriptProposals/reviewConcurrency.integration.test.ts',
       // Co-located real-DB integration test for the nightly enrollment-key
       // purge sweep: the #2775 live-bootstrap-token exemption (proving
       // Postgres itself evaluates the correlated NOT EXISTS subquery per row,

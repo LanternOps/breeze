@@ -1,0 +1,134 @@
+import type { SecurityAgentPlatform, SecurityAgentVendorKey } from '@breeze/shared/validators';
+
+/**
+ * Code-level registry of the third-party security agents the `security_agents`
+ * config-policy feature type can manage (#6960).
+ *
+ * It holds only what the EDR provider framework (`services/edrProviders`) does
+ * not: DNS-filter vendors that key on a tenant variable, per-platform support,
+ * and presence descriptors. Credentials are NOT here and never will be: they
+ * stay in the integration/mapping tables (EDR vendors) or tenant variables (DNS
+ * vendors) and are substituted at dispatch.
+ *
+ * `enableable` gates the link-write path: a link may list a vendor with
+ * `enabled: true` only when the vendor's install path is wired end to end.
+ * Huntress is; the others are listed but cannot be switched on yet
+ * (`vendor_not_enableable`).
+ */
+
+export type VendorKey = SecurityAgentVendorKey;
+export type PlatformSupport = 'supported' | 'requires_mdm' | 'unsupported';
+
+export interface SecurityAgentVendor {
+  key: VendorKey;
+  label: string;
+  /** Built-in catalog package (EDR vendors) or catalog slug (DNS vendors) the generated policy installs. */
+  catalogRef: string;
+  /** Where the per-org install keys come from. */
+  orgSource: 'edr_mapping' | 'tenant_var';
+  /**
+   * `software_catalog.integration_provider` of the built-in package (EDR
+   * vendors), or null. This is how a generated rule's `catalogId` is mapped
+   * back to its vendor: rule JSON cannot carry the vendor (the normalizer drops
+   * unknown keys).
+   */
+  integrationProvider: 'huntress' | 'sentinelone' | null;
+  /**
+   * Software-policy rule name the generated policy matches against inventory
+   * (a case-insensitive glob over the Add/Remove Programs display name). Its
+   * miss is what makes the device a `missing` install candidate.
+   */
+  detectionRuleName: string;
+  /** Web path where the vendor's integration is connected (deep link when its catalog row is missing). */
+  setupPath: string;
+  /** Tenant variables that must be set on the device's org (tenant_var vendors only). */
+  requiredVars?: readonly string[];
+  platforms: Readonly<Record<SecurityAgentPlatform, PlatformSupport>>;
+  /**
+   * Presence descriptors for the `service_running` detection rule. Populated in
+   * the wave that wires presence, once the rule type exists (#6958); empty
+   * means "no presence check yet", never "absent".
+   */
+  presence: Readonly<{ windowsService?: string; macProcess?: string; linuxUnit?: string }>;
+  enableable: boolean;
+}
+
+function freezeVendor(vendor: SecurityAgentVendor): SecurityAgentVendor {
+  Object.freeze(vendor.platforms);
+  Object.freeze(vendor.presence);
+  if (vendor.requiredVars) Object.freeze(vendor.requiredVars);
+  return Object.freeze(vendor);
+}
+
+const VENDORS: Readonly<Record<VendorKey, SecurityAgentVendor>> = Object.freeze({
+  huntress: freezeVendor({
+    key: 'huntress',
+    label: 'Huntress',
+    catalogRef: 'builtin:huntress',
+    orgSource: 'edr_mapping',
+    integrationProvider: 'huntress',
+    detectionRuleName: 'Huntress Agent*',
+    setupPath: '/integrations#huntress',
+    platforms: { windows: 'supported', macos: 'requires_mdm', linux: 'unsupported' },
+    presence: {},
+    // W02: generator, readiness preflight, compliance/dispatch checks and the
+    // authoring tab are wired.
+    enableable: true,
+  }),
+  sentinelone: freezeVendor({
+    key: 'sentinelone',
+    label: 'SentinelOne',
+    catalogRef: 'builtin:sentinelone',
+    orgSource: 'edr_mapping',
+    integrationProvider: 'sentinelone',
+    detectionRuleName: 'Sentinel Agent*',
+    setupPath: '/integrations#sentinelone',
+    platforms: { windows: 'supported', macos: 'unsupported', linux: 'unsupported' },
+    presence: {},
+    enableable: false,
+  }),
+  controld: freezeVendor({
+    key: 'controld',
+    label: 'Control D',
+    catalogRef: 'catalog:controld',
+    orgSource: 'tenant_var',
+    integrationProvider: null,
+    detectionRuleName: 'Control D*',
+    setupPath: '/software',
+    requiredVars: ['controld_provisioning_code'],
+    platforms: { windows: 'supported', macos: 'unsupported', linux: 'unsupported' },
+    presence: {},
+    enableable: false,
+  }),
+  nextdns: freezeVendor({
+    key: 'nextdns',
+    label: 'NextDNS',
+    catalogRef: 'catalog:nextdns',
+    orgSource: 'tenant_var',
+    integrationProvider: null,
+    detectionRuleName: 'NextDNS*',
+    setupPath: '/software',
+    requiredVars: ['nextdns_profile_id'],
+    platforms: { windows: 'supported', macos: 'unsupported', linux: 'unsupported' },
+    presence: {},
+    enableable: false,
+  }),
+});
+
+const VENDOR_LIST: readonly SecurityAgentVendor[] = Object.freeze(Object.values(VENDORS));
+
+export function getVendor(key: VendorKey): SecurityAgentVendor {
+  const vendor = Object.prototype.hasOwnProperty.call(VENDORS, key) ? VENDORS[key] : undefined;
+  if (!vendor) throw new Error(`Unknown security agent vendor: ${String(key)}`);
+  return vendor;
+}
+
+export function listVendors(): readonly SecurityAgentVendor[] {
+  return VENDOR_LIST;
+}
+
+/** The vendor whose built-in catalog package carries this integration provider, or null. */
+export function vendorForIntegrationProvider(provider: string | null | undefined): VendorKey | null {
+  if (!provider) return null;
+  return VENDOR_LIST.find((vendor) => vendor.integrationProvider === provider)?.key ?? null;
+}

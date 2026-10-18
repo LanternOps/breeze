@@ -24,7 +24,8 @@
         "perDeviceRole": "Pro Geräterolle",
         "perDeviceGroup": "Pro Gerätegruppe",
         "perSeat": "Pro Sitzplatz",
-        "manual": "Manuelle Menge"
+        "manual": "Manuelle Menge",
+        "hourBlock": "Stundenkontingent"
       },
       "dynamicGroup": "dynamisch",
       "deletedGroup": "{{name}} (gelöschte Gruppe)",
@@ -588,6 +589,62 @@
       "warnings": {
         "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Vereinbarungstexte unterstützen Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
       }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Enthaltene Stunden pro Zeitraum",
+        "extraRate": "Preis pro zusätzlicher Stunde",
+        "rolloverMode": "Ungenutzte Stunden am Zeitraumende",
+        "rolloverExpire": "Verfallen",
+        "rolloverCarry": "Übertragen",
+        "carryCap": "Übertragslimit in Stunden (leer für unbegrenzt)",
+        "alertPct": "Warnung bei % des Kontingents (optional)",
+        "required": "Geben Sie die enthaltenen Stunden und den Preis pro zusätzlicher Stunde ein.",
+        "firstPeriod": "Die Stunden zählen ab dem ersten Abrechnungszeitraum, der noch nicht abgerechnet wurde; bei einem Entwurf wird er bei der Aktivierung festgelegt. Frühere Zeit wird wie gewohnt abgerechnet.",
+        "midPeriodEdit": "Änderungen gelten für den laufenden Zeitraum ({{start}} – {{end}}) bei dessen Abschluss.",
+        "midPeriodEditNoDates": "Änderungen gelten für den laufenden Zeitraum bei dessen Abschluss.",
+        "onlyOne": "Diese Organisation hat bereits ein aktives Kontingent. Beenden Sie es, bevor Sie ein weiteres hinzufügen."
+      },
+      "row": {
+        "perPeriod": "{{hours}} Stunden pro Zeitraum",
+        "retiredBadge": "Beendet",
+        "startsOn": "Zählt ab {{date}}"
+      },
+      "errors": {
+        "exists": "Diese Organisation hat bereits eine aktive Stundenkontingent-Position. Beenden Sie sie zuerst und fügen Sie dann die neue hinzu.",
+        "locked": "Dieses Feld kann bei einer Stundenkontingent-Position nicht geändert werden."
+      },
+      "retire": {
+        "title": "Stundenkontingent beenden",
+        "message": "„{{description}}“ hat eine Abrechnungshistorie und wird daher beendet statt gelöscht. Keine neuen Zeiträume; bereits abgerechnete Zeiträume werden weiterhin abgeschlossen. Abgeschlossene Zeiträume bleiben im Vertrag.",
+        "confirm": "Kontingent beenden",
+        "toast": "Stundenkontingent beendet"
+      },
+      "detail": {
+        "title": "Stundenkontingent",
+        "usage": "{{used}} von {{included}} Stunden verbraucht · {{remaining}} verbleibend · Zeitraum endet am {{end}}",
+        "carried": "Enthält {{hours}} übertragene Stunden.",
+        "unapproved": "{{hours}} Stunden dieser Zeit sind noch nicht genehmigt.",
+        "foreign": "{{hours}} Stunden wurden in einer anderen Währung erfasst; sie verbrauchen das Kontingent trotzdem.",
+        "over": "{{hours}} Stunden über dem Kontingent → {{amount}} bei Zeitraumabschluss",
+        "advanceNote": "Mehrstunden werden auf der folgenden Rechnung abgerechnet.",
+        "arrearsNote": "Mehrstunden werden auf der Rechnung für diesen Zeitraum abgerechnet.",
+        "lateEntry": "{{hours}} Stunden wurden nach Abschluss ihres Zeitraums erfasst und werden separat abgerechnet.",
+        "startsLater": "Das Kontingent beginnt am {{date}}.",
+        "extraRate": "Zusätzliche Stunden: je {{rate}}",
+        "loadFailed": "Die Kontingentnutzung konnte nicht geladen werden."
+      },
+      "history": {
+        "title": "Abgeschlossene Kontingentzeiträume",
+        "empty": "Noch kein Kontingentzeitraum abgeschlossen.",
+        "included": "Enthalten",
+        "carriedIn": "Übertrag Eingang",
+        "used": "Verbraucht",
+        "over": "Darüber",
+        "carriedOut": "Übertrag Ausgang",
+        "loadMore": "Mehr laden",
+        "invoiceRemoved": "Mehrstunden-Rechnung entfernt – Stunden nicht abgerechnet"
+      }
     }
   },
   "agreements": {
@@ -1001,8 +1058,8 @@
         "title": "Fußzeile (jede Seite)",
         "helper": "Eine kurze Zeile, die unten auf jeder Seite gedruckt wird – z. B. Gültigkeitsdaten. Leer lassen, um die Standard-Fußzeile zu verwenden. Kleingedrucktes gehört in die Allgemeinen Geschäftsbedingungen, nicht hierher.",
         "placeholder": "Leer = Standard-Fußzeile verwenden",
-        "inheritedPartner": "Verwendet die Partner-Rechnungsfußzeile aus den Einstellungen: „{{text}}“",
-        "inheritedBrand": "Verwendet den Fußzeilentext des Markenkits: „{{text}}“",
+        "inheritedPartner": "Verwendet die Partner-Dokumentfußzeile aus den Abrechnungseinstellungen: „{{text}}“",
+        "inheritedBrand": "Verwendet den Fußzeilentext dieser Organisation aus ihren Portaleinstellungen: „{{text}}“",
         "inheritedNone": "In den Einstellungen ist keine Standard-Fußzeile festgelegt – die Seitenfußzeile bleibt leer.",
         "counter": "{{count}} / {{max}}"
       },
@@ -1714,7 +1771,8 @@
       "saveNotes": "Notizen konnten nicht gespeichert werden.",
       "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
       "updateLine": "Position konnte nicht aktualisiert werden.",
-      "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position."
+      "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
+      "saveLineDetail": "Die Darstellung der Zeiteinträge konnte nicht aktualisiert werden"
     },
     "fields": {
       "descriptionOptional": "Beschreibung (optional)",
@@ -1781,6 +1839,35 @@
     "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten",
     "unsavedField": {
       "lines": "Positionen"
+    },
+    "lineDetail": {
+      "default": "Abrechnungsvorgabe",
+      "grouping": "Darstellung",
+      "groupingDay": "Nach Tag gruppieren",
+      "groupingEntry": "Eine Zeile pro Eintrag",
+      "help": "Überschreibt Ihre Abrechnungsvorgabe nur für diesen Entwurf.",
+      "hide": "Ausblenden",
+      "show": "Anzeigen",
+      "showDate": "Arbeitsdatum",
+      "showNote": "Notiz des Technikers",
+      "showWorkedTime": "Geleistete vs. abgerechnete Zeit",
+      "title": "Zeiteintragszeilen"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} Zeilen blockieren die Ausstellung: Ihre Zeiteinträge wurden auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "billedElsewhere_one": "{{count}} Zeile blockiert die Ausstellung: Ihr Zeiteintrag wurde auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "billedElsewhere_other": "{{count}} Zeilen blockieren die Ausstellung: Ihre Zeiteinträge wurden auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "button": "Aus Zeiteinträgen aktualisieren",
+      "drifted": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "drifted_one": "{{count}} Zeile unverändert: Die abgerechnete Zeit des Zeiteintrags passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "drifted_other": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "error": "Aktualisierung aus Zeiteinträgen fehlgeschlagen",
+      "help": "Übernimmt Notizen, Arbeitsdatum und Freigabe aus den Zeiteinträgen. Mengen, Preise und von Hand bearbeitete Beschreibungen ändern sich nie.",
+      "running": "Wird aktualisiert…",
+      "skipped": "{{count}} Zeilen übersprungen: Die Zeiteinträge wurden anderweitig abgerechnet, entfernt oder sind für diesen Entwurf nicht mehr abrechenbar.",
+      "skipped_one": "{{count}} Zeile übersprungen: Der Zeiteintrag wurde anderweitig abgerechnet, entfernt oder ist für diesen Entwurf nicht mehr abrechenbar.",
+      "skipped_other": "{{count}} Zeilen übersprungen: Die Zeiteinträge wurden anderweitig abgerechnet, entfernt oder sind für diesen Entwurf nicht mehr abrechenbar.",
+      "summary": "Aktualisiert: {{refreshed}} · Bereits aktuell: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -1963,7 +2050,10 @@
       "syncingToProvider": "Wird synchronisiert…",
       "providerSyncFailed": "{{provider}}-Synchronisierung fehlgeschlagen",
       "reverseInProviderToo": "Stornieren Sie diese Zahlung auch in {{provider}}",
-      "overpayment": "Der Betrag übersteigt den offenen Saldo ({{balance}})."
+      "overpayment": "Der Betrag übersteigt den offenen Saldo ({{balance}}).",
+      "fillLabel": "Betrag übernehmen",
+      "fillDeposit": "Anzahlung ({{amount}})",
+      "fillBalance": "Gesamter Restbetrag ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Rechnung verschickt",
@@ -1978,7 +2068,8 @@
       "paid": "Bezahlt",
       "subtotal": "Zwischensumme",
       "tax": "Steuer",
-      "total": "Insgesamt"
+      "total": "Insgesamt",
+      "depositDueNow": "Jetzt fällige Anzahlung"
     },
     "terms": "Allgemeine Geschäftsbedingungen",
     "void": {
@@ -2028,6 +2119,7 @@
     "empty": "Diese Rechnung enthält noch keine Einzelposten.",
     "fallbackTitle": "Rechnung",
     "issued": "Ausgestellt",
+    "laborLine": "Arbeitszeit",
     "preview": {
       "description": "Das sieht Ihr Kunde auf seiner Rechnung.",
       "downloadError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
@@ -2124,7 +2216,9 @@
       "sourceAria": "Rechnungsquelle",
       "title": "Neue Rechnung",
       "to": "Zu",
-      "working": "Arbeiten…"
+      "working": "Arbeiten…",
+      "heldForHourBlock_one": "{{count}} Zeiteintrag ({{hours}} Stunden) wird für das Stundenkontingent dieser Organisation zurückgehalten und abgerechnet, sobald der Kontingentzeitraum abgeschlossen ist.",
+      "heldForHourBlock_other": "{{count}} Zeiteinträge ({{hours}} Stunden) werden für das Stundenkontingent dieser Organisation zurückgehalten und abgerechnet, sobald der Kontingentzeitraum abgeschlossen ist."
     },
     "empty": {
       "description": "Fassen Sie nicht abgerechnete Zeit und Teile in einem Entwurf zusammen oder erstellen Sie eine leere Rechnung.",
@@ -2191,6 +2285,7 @@
       "title": "Währung",
       "description": "Neue Angebote, Rechnungen, Verträge, Zeiteinträge und Teile dieser Organisation werden mit dieser Währung gestempelt. Bereits Vorhandenes wird nicht geändert.",
       "label": "Abrechnungswährung",
+      "partnerDefault": "Nicht geerbt: Jede Organisation behält ihre eigene Abrechnungswährung. Der Partnerstandard ({{currency}}) gilt nur für Organisationen, die ab jetzt angelegt werden.",
       "loading": "Auswirkungen einer Änderung auf {{currency}} werden geprüft…",
       "error": "Die Zusammenfassung der Währungsänderung konnte nicht geladen werden.",
       "panelTitle": "Abrechnungswährung auf {{currency}} ändern?",
@@ -2275,10 +2370,11 @@
       "autoEmailInvoiceHelp": "Wenn ein Kunde ein Angebot annimmt, wird die erstellte Rechnung sofort mit einem sicheren Ansichts- und Zahlungslink per E-Mail versendet — ohne Anmeldung.",
       "notifyOnBehalfAcceptance": "Kunden per E-Mail benachrichtigen, wenn Sie eine Annahme in seinem Namen erfassen",
       "notifyOnBehalfAcceptanceHelp": "Wenn jemand aus Ihrem Team ein Angebot für einen Kunden annimmt, erhält der Kunde eine kurze Nachricht, wer die Annahme wann erfasst hat — mit der Rechnungsnummer, falls eine erstellt wurde. Ist etwas falsch, kann er darauf antworten. Standardmäßig deaktiviert.",
-      "currencyCode": "Währungscode",
+      "currencyCode": "Standardwährung für neue Organisationen",
+      "currencyHelp": "Neue Organisationen starten in dieser Währung. Bestehende Organisationen behalten ihre eigene – ändern Sie sie im Tab „Abrechnung“ der jeweiligen Organisation.",
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",
-      "description": "Währung, Steuern, Nummerierung und Bedingungen, die auf neue Angebote und Rechnungen Ihrer Kunden angewendet werden.",
+      "description": "Standardwerte für Angebote und Rechnungen Ihrer Kunden. Eine Organisation kann ihren eigenen Steuersatz und ihre Zahlungsbedingungen festlegen. Ihre Währung startet mit der hier festgelegten Standardwährung und wird im Tab „Abrechnung“ der Organisation geändert.",
       "deviceAppendix": "Anhang mit abgerechneten Geräten in Rechnungs-PDFs aufnehmen",
       "deviceAppendixHelp": "Fügt eine Seite mit allen Geräten hinzu, die auf jeder Rechnungsposition gezählt wurden. Standardmäßig deaktiviert; die Auswahl wird bei Rechnungsstellung eingefroren.",
       "documentPageSize": "Seitengröße",
@@ -2287,7 +2383,8 @@
       "documentTheme": "Dokumentschriften",
       "documentThemeClassic": "Helvetica",
       "documentThemeCondensed": "Barlow Condensed + DM Sans",
-      "invoiceFooter": "Fußzeile der Rechnung",
+      "invoiceFooter": "Dokumentfußzeile",
+      "invoiceFooterHelp": "Wird unten auf jeder Seite Ihrer Angebote und Rechnungen gedruckt. Der eigene Fußzeilentext einer Organisation (in ihren Portaleinstellungen) ersetzt sie für diese Organisation, und die eigene Fußzeile eines Angebots ersetzt beide.",
       "invoiceFooterPlaceholder": "Zahlungsanweisungen, Dankesschreiben usw.",
       "invoiceNumberPrefix": "Präfix der Rechnungsnummer",
       "markupHelp": "Standardaufschlag auf die Vertriebskosten, der zum Vorabfüllen des Verkaufspreises beim Importieren von Katalogartikeln verwendet wird. Die resultierende Bruttomarge wird beim Import angezeigt.",
@@ -2295,7 +2392,15 @@
       "prefixInvalid": "Geben Sie ein Präfix mit 1 bis 12 Zeichen ein.",
       "taxRateInvalid": "Geben Sie einen Steuersatz von 0 bis 100 ein.",
       "termsDaysInvalid": "Geben Sie eine ganze Zahl von 0 bis 365 Tagen ein.",
-      "title": "Abrechnungsvorgaben"
+      "title": "Abrechnungsvorgaben",
+      "lineDetailTitle": "Zeiteintragszeilen auf Rechnungen",
+      "lineDetailHelp": "Legen Sie fest, was Kunden bei Zeiteinträgen sehen. Ein Rechnungsentwurf kann dies überschreiben; die Auswahl wird bei der Ausstellung der Rechnung festgeschrieben.",
+      "lineShowDate": "Arbeitsdatum anzeigen",
+      "lineShowNote": "Notiz des Technikers anzeigen",
+      "lineShowWorkedTime": "Geleistete und abgerechnete Zeit anzeigen",
+      "lineGrouping": "Darstellung",
+      "lineGroupingEntry": "Eine Zeile pro Eintrag",
+      "lineGroupingDay": "Nach Tag gruppieren"
     },
     "loadError": "Die Abrechnungseinstellungen konnten nicht geladen werden.",
     "loading": "Abrechnungseinstellungen werden geladen…",

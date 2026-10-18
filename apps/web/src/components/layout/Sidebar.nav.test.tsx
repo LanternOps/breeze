@@ -104,7 +104,15 @@ describe('navSections structure (#1321, #1324)', () => {
       // nav entry under Billing.
       '/settings/deliverable-templates',
     ]);
-    expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
+    expect(hrefsOf('service-desk')).toEqual([
+      '/tickets',
+      // #7900 W3 — one entry per ticket type (filtered via the hash).
+      '/tickets#type=incident',
+      '/tickets#type=service_request',
+      '/tickets#type=problem',
+      '/tickets#type=change',
+      '/timesheet',
+    ]);
     expect(hrefsOf('fleet-management')).toEqual([
       '/devices/groups',
       // Parked devices awaiting assignment (full partner admins only).
@@ -116,6 +124,7 @@ describe('navSections structure (#1321, #1324)', () => {
       '/monitoring',
       '/discovery',
       '/onedrive',
+      '/endpoint-messages',
     ]);
   });
 
@@ -220,6 +229,16 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(item?.name).toBe('Deliverable Templates');
     expect(item?.labelKey).toBe('nav.deliverableTemplates');
     expect(item?.partnerScopeOnly).toBe(true);
+  });
+});
+
+describe('endpoint messages nav entry', () => {
+  it('lives in Fleet Management, once, gated on endpoint_messages:read', () => {
+    const hits = [...topLevelNav, ...navSections.flatMap((s) => s.items)].filter((i) => i.href === '/endpoint-messages');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.labelKey).toBe('nav.endpointMessages');
+    expect(hits[0]!.requiredPermission).toEqual({ resource: 'endpoint_messages', action: 'read' });
+    expect(section('fleet-management').items).toContain(hits[0]);
   });
 });
 

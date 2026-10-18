@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Globe, Library, Building2 } from 'lucide-react';
-import { getRouteScope, isSingleDocumentRoute } from '../../lib/routeScope';
+import { getRouteScope, isScopeInHeadingRoute, isSingleDocumentRoute } from '../../lib/routeScope';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { useTranslation } from 'react-i18next';
@@ -16,7 +16,8 @@ import { useTranslation } from 'react-i18next';
  *   fleet view, org-required→ "This page shows one organization at a time"
  *
  * Org view on an org page renders nothing (the trigger already says it), as do
- * partner-settings and device/self surfaces.
+ * partner-settings and device/self surfaces, and pages whose own heading states
+ * the scope (isScopeInHeadingRoute — the devices list, #9035).
  */
 export default function ContextScopeLine() {
   const { t } = useTranslation('common');
@@ -36,6 +37,8 @@ export default function ContextScopeLine() {
   // is the only scroll-away content above their pinned header chrome — see
   // isSingleDocumentRoute.
   if (isSingleDocumentRoute(pathname)) return null;
+  // The devices list states its scope in its own heading (#9035).
+  if (isScopeInHeadingRoute(pathname)) return null;
   const kind = getRouteScope(pathname);
   // The organization record names its own org in its header (and chips a
   // switcher pointing elsewhere), so a scope line here adds nothing — and

@@ -16,9 +16,18 @@ vi.mock('./unassignedPool/deliveryEligibility', async (importOriginal) => {
   };
 });
 
-const dbState = vi.hoisted(() => ({ inContext: false, deferred: [] as Array<() => unknown> }));
+const dbState = vi.hoisted(() => ({ inContext: false, deferred: [] as Array<() => unknown>, savepointDepth: 0, savepointsOpened: 0 }));
 vi.mock('../db', () => ({
   db: { execute: vi.fn() },
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    dbState.savepointDepth += 1;
+    dbState.savepointsOpened += 1;
+    try {
+      return await fn();
+    } finally {
+      dbState.savepointDepth -= 1;
+    }
+  },
   // Outside a context the real helper runs deferred work at once; inside one it
   // waits for the transaction to settle — tests flush `deferred` to model COMMIT.
   runAfterDbContextExit: (_label: string, work: () => unknown) => {
@@ -58,6 +67,40 @@ describe('remote access baseline defaults (single source of truth)', () => {
   });
 });
 
+describe('resolveRemoteAccessForDevice savepoint option (#8997)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invalidateRemoteAccessCache();
+  });
+
+  const effective = (deviceId: string) => ({ deviceId, features: {}, inheritanceChain: [] }) as never;
+
+  it('runs the cache-miss read inside a savepoint when asked', async () => {
+    const deviceId = `test-device-sp-${Date.now()}`;
+    let depth = -1;
+    vi.mocked(resolveEffectiveConfig).mockImplementationOnce(async () => {
+      depth = dbState.savepointDepth;
+      return effective(deviceId);
+    });
+    await resolveRemoteAccessForDevice(deviceId, { savepoint: true });
+    expect(depth).toBe(1);
+  });
+
+  it('takes no savepoint without the option, or on a cache hit', async () => {
+    const deviceId = `test-device-sp2-${Date.now()}`;
+    let depth = -1;
+    vi.mocked(resolveEffectiveConfig).mockImplementationOnce(async () => {
+      depth = dbState.savepointDepth;
+      return effective(deviceId);
+    });
+    await resolveRemoteAccessForDevice(deviceId);
+    expect(depth).toBe(0);
+    const before = dbState.savepointsOpened;
+    await resolveRemoteAccessForDevice(deviceId, { savepoint: true });
+    expect(dbState.savepointsOpened).toBe(before);
+  });
+});
+
 describe('resolveRemoteAccessForDevice no-policy fallback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -79,6 +122,28 @@ describe('resolveRemoteAccessForDevice no-policy fallback', () => {
     expect(result.settings.remoteTools).toBe(true);
     expect(result.policyName).toBeNull();
     expect(result.policyId).toBeNull();
+  });
+
+  it('reports resolved:true when an effective config was found (no policy is a decision), from a miss and from the cache (#8616)', async () => {
+    const deviceId = `test-device-resolved-${Date.now()}`;
+    vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce({ deviceId, features: {}, inheritanceChain: [] });
+
+    expect((await resolveRemoteAccessForDevice(deviceId)).resolved).toBe(true);
+    const cached = await resolveRemoteAccessForDevice(deviceId);
+    expect(cached.resolved).toBe(true);
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports resolved:false with the defaults when no effective config was found, and does not cache it (#8616)', async () => {
+    const deviceId = `test-device-unresolved-${Date.now()}`;
+    vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce(null as never).mockResolvedValueOnce(null as never);
+
+    const result = await resolveRemoteAccessForDevice(deviceId);
+    expect(result.resolved).toBe(false);
+    // The defaults are still returned for the existing callers (unchanged).
+    expect(result.settings.vncRelay).toBe(true);
+    expect((await resolveRemoteAccessForDevice(deviceId)).resolved).toBe(false);
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(2);
   });
 
   it('bypasses a stale allowed cache entry for live continuation checks', async () => {

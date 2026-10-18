@@ -29,6 +29,7 @@ function group(overrides: Partial<SoftwareGroup> = {}): SoftwareGroup {
     patchReadyFindingCount: 12,
     patchReadyDeviceCount: 12,
     tickets: [],
+    targetVersion: null,
     ...overrides,
   };
 }
@@ -67,6 +68,21 @@ describe('SoftwareGroupTable', () => {
     expect(cell).toHaveTextContent('404 CVEs');
     const cards = within(screen.getByTestId('responsive-table-cards'));
     expect(cards.getByText('14 devices')).toBeInTheDocument();
+  });
+
+  it('shows the version that clears the group (#7071)', async () => {
+    vi.mocked(api.fetchSoftwareGroups).mockResolvedValue({ items: [group({ targetVersion: '126.0.6478.127' })], hasMore: false });
+    render(<SoftwareGroupTable filters={FILTERS} refreshKey={0} emptyVariant="filtered" onSelectGroup={() => {}} onClearFilters={() => {}} />);
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId('software-group-target-sw:google chrome|google llc')).toHaveTextContent('Update to 126.0.6478.127');
+    const cards = within(screen.getByTestId('responsive-table-cards'));
+    expect(cards.getByText('Update to 126.0.6478.127')).toBeInTheDocument();
+  });
+
+  it('says "update to latest" when the group has no single known fix version (#7071)', async () => {
+    render(<SoftwareGroupTable filters={FILTERS} refreshKey={0} emptyVariant="filtered" onSelectGroup={() => {}} onClearFilters={() => {}} />);
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId('software-group-target-sw:google chrome|google llc')).toHaveTextContent('Update to latest');
   });
 
   it('invokes onSelectGroup with the groupKey on row click', async () => {

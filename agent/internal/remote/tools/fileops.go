@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 const (
@@ -49,7 +50,7 @@ func readTrashMetadata(metaPath string) (*TrashMetadata, error) {
 		return nil, err
 	}
 	if info.Size() > maxTrashMetadataSize {
-		return nil, fmt.Errorf("trash metadata exceeds maximum size of %d bytes", maxTrashMetadataSize)
+		return nil, errorCodef(wire.ErrCodeTrashMetadataTooLarge, "trash metadata exceeds maximum size of %d bytes", maxTrashMetadataSize)
 	}
 	metaBytes, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -478,11 +479,11 @@ func resolvedConfigDir(configDir string) (string, bool) {
 // next reader does not mistake the symlink handling for complete link coverage.
 func EnforcePathContainment(verb, cleanPath string) error {
 	if isSensitiveReadPath(cleanPath) {
-		return fmt.Errorf("%s denied on sensitive path: %s", verb, cleanPath)
+		return errorCodef(wire.ErrCodeSensitivePathDenied, "%s denied on sensitive path: %s", verb, cleanPath)
 	}
 	if resolved, ok := resolveForContainment(cleanPath); ok && resolved != cleanPath {
 		if isSensitiveReadPath(resolved) {
-			return fmt.Errorf("%s denied on sensitive path (via symlink): %s", verb, cleanPath)
+			return errorCodef(wire.ErrCodeSensitivePathDenied, "%s denied on sensitive path (via symlink): %s", verb, cleanPath)
 		}
 	}
 	return nil
@@ -495,6 +496,10 @@ type containmentDeniedError struct{ msg string }
 
 func (e *containmentDeniedError) Error() string { return e.msg }
 
+// Deliberately untagged: a containment denial is either a deny-list hit (the
+// caller wraps those in withErrorCode(wire.ErrCodeSensitivePathDenied, ...)) or
+// a fail-closed "cannot determine where X resolves" I/O fault, which today's
+// prose classifier answers as a 500 and must keep answering as one (#4026).
 func containmentDeniedf(format string, args ...any) error {
 	return &containmentDeniedError{msg: fmt.Sprintf(format, args...)}
 }
@@ -541,7 +546,7 @@ func checkOpenedForContainment(verb, displayPath string, f *os.File) error {
 		return nil
 	}
 	if isSensitiveReadPath(final) {
-		return containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, displayPath)
+		return withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, displayPath))
 	}
 	return nil
 }
@@ -596,7 +601,7 @@ func createExclusiveChecked(verb, cleanPath string, perm os.FileMode) (*os.File,
 			return nil, containmentDeniedf("%s denied: cannot determine where %s resolves: %v", verb, parent, ferr)
 		}
 	} else if isSensitiveReadPath(filepath.Join(final, name)) {
-		return nil, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, cleanPath)
+		return nil, withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, cleanPath))
 	}
 	return root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 }
@@ -642,7 +647,7 @@ func enforceTreeContainment(verb, root string) error {
 		}
 		entries++
 		if entries > maxContainmentWalkEntries {
-			return fmt.Errorf("directory too large to clear for %s (over %d entries)", verb, maxContainmentWalkEntries)
+			return errorCodef(wire.ErrCodeDirectoryTooLarge, "directory too large to clear for %s (over %d entries)", verb, maxContainmentWalkEntries)
 		}
 		if sensitive(path) {
 			offender = path
@@ -651,10 +656,10 @@ func enforceTreeContainment(verb, root string) error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("%s denied: cannot verify directory contents: %w", verb, err)
+		return errorCodef(wire.ErrCodeContentsUnverifiable, "%s denied: cannot verify directory contents: %w", verb, err)
 	}
 	if offender != "" {
-		return fmt.Errorf("%s denied on sensitive path: %s (inside %s)", verb, offender, root)
+		return errorCodef(wire.ErrCodeSensitivePathDenied, "%s denied on sensitive path: %s (inside %s)", verb, offender, root)
 	}
 	return nil
 }
@@ -825,11 +830,11 @@ func ReadFile(payload map[string]any) CommandResult {
 
 	path := GetPayloadString(payload, "path", "")
 	if path == "" {
-		return NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "path is required"), time.Since(start).Milliseconds())
 	}
 	encoding := strings.ToLower(GetPayloadString(payload, "encoding", "text"))
 	if encoding != "text" && encoding != "base64" {
-		return NewErrorResult(fmt.Errorf("unsupported encoding: %s", encoding), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeUnsupportedEncoding, "unsupported encoding: %s", encoding), time.Since(start).Milliseconds())
 	}
 
 	// Normalize path separators
@@ -869,12 +874,12 @@ func ReadFile(payload map[string]any) CommandResult {
 	}
 
 	if info.IsDir() {
-		return NewErrorResult(fmt.Errorf("path is a directory, not a file"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodePathIsDirectory, "path is a directory, not a file"), time.Since(start).Milliseconds())
 	}
 
 	// Check file size
 	if info.Size() > maxFileReadSize {
-		return NewErrorResult(fmt.Errorf("file too large: %d bytes (max %d bytes)", info.Size(), maxFileReadSize), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeFileTooLarge, "file too large: %d bytes (max %d bytes)", info.Size(), maxFileReadSize), time.Since(start).Milliseconds())
 	}
 
 	// Read file contents; the limit also catches a file that grew after the stat.
@@ -883,7 +888,7 @@ func ReadFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("failed to read file: %w", err), time.Since(start).Milliseconds())
 	}
 	if len(content) > maxFileReadSize {
-		return NewErrorResult(fmt.Errorf("file too large: more than %d bytes", maxFileReadSize), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeFileTooLarge, "file too large: more than %d bytes", maxFileReadSize), time.Since(start).Milliseconds())
 	}
 
 	contentValue := string(content)
@@ -906,7 +911,7 @@ func WriteFile(payload map[string]any) CommandResult {
 
 	path := GetPayloadString(payload, "path", "")
 	if path == "" {
-		return NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "path is required"), time.Since(start).Milliseconds())
 	}
 
 	content := GetPayloadString(payload, "content", "")
@@ -917,7 +922,7 @@ func WriteFile(payload map[string]any) CommandResult {
 
 	// Check against denied system paths
 	if isDeniedSystemPath(cleanPath) {
-		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
 	// Containment (#3397): the direct write primitive. Gating CopyFile's and
@@ -938,7 +943,7 @@ func WriteFile(payload map[string]any) CommandResult {
 	var data []byte
 	if encoding == "base64" {
 		if len(content) > base64.StdEncoding.EncodedLen(MaxFileWriteSize) {
-			return NewErrorResult(fmt.Errorf("file write payload too large (max %d bytes decoded)", MaxFileWriteSize), time.Since(start).Milliseconds())
+			return NewErrorResult(errorCodef(wire.ErrCodePayloadTooLarge, "file write payload too large (max %d bytes decoded)", MaxFileWriteSize), time.Since(start).Milliseconds())
 		}
 		var err error
 		data, err = base64.StdEncoding.DecodeString(content)
@@ -949,7 +954,7 @@ func WriteFile(payload map[string]any) CommandResult {
 		data = []byte(content)
 	}
 	if len(data) > MaxFileWriteSize {
-		return NewErrorResult(fmt.Errorf("file write payload too large: %d bytes (max %d bytes)", len(data), MaxFileWriteSize), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodePayloadTooLarge, "file write payload too large: %d bytes (max %d bytes)", len(data), MaxFileWriteSize), time.Since(start).Milliseconds())
 	}
 
 	// Write file through a handle whose final location has been cleared.
@@ -1321,7 +1326,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 
 	path := GetPayloadString(payload, "path", "")
 	if path == "" {
-		return NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "path is required"), time.Since(start).Milliseconds())
 	}
 
 	recursive := GetPayloadBool(payload, "recursive", false)
@@ -1359,7 +1364,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 
 	// Check against denied system paths
 	if isDeniedSystemPath(cleanPath) {
-		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
 	// Containment (#3397). Applied to BOTH the trash and permanent branches:
@@ -1383,7 +1388,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 	// semantics and why a plain slash-separated component count was wrong on
 	// Windows (#3932).
 	if recursive && isRecursiveDeleteBoundary(cleanPath) {
-		return NewErrorResult(fmt.Errorf("recursive delete denied on top-level path: %s", cleanPath), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeTopLevelDeleteDenied, "recursive delete denied on top-level path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
 	// The cleanup path never addresses a file by pathname. Every other caller
@@ -1400,7 +1405,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 		info, err = target.root.Lstat(target.rel)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+				return NewErrorResult(errorCodef(wire.ErrCodePathNotFound, "path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
 			}
 			// openCleanupTarget already refused a symlink or reparse point at
 			// every component, so anything left here is I/O (EACCES, EIO) and
@@ -1417,7 +1422,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 		info, err = os.Stat(cleanPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+				return NewErrorResult(errorCodef(wire.ErrCodePathNotFound, "path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
 			}
 			return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
 		}
@@ -1666,7 +1671,7 @@ func TrashRestore(payload map[string]any) CommandResult {
 
 	trashID := GetPayloadString(payload, "trashId", "")
 	if trashID == "" {
-		return NewErrorResult(fmt.Errorf("trashId is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "trashId is required"), time.Since(start).Milliseconds())
 	}
 
 	trashDir, err := getTrashDirFunc()
@@ -1681,7 +1686,7 @@ func TrashRestore(payload map[string]any) CommandResult {
 
 	meta, err := readTrashMetadata(metaPath)
 	if err != nil {
-		return NewErrorResult(fmt.Errorf("trash item not found: %s", safeTrashID), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodePathNotFound, "trash item not found: %s", safeTrashID), time.Since(start).Milliseconds())
 	}
 
 	contentPath := filepath.Join(trashItemDir, "content")
@@ -1702,7 +1707,7 @@ func TrashRestore(payload map[string]any) CommandResult {
 	// silent overwrite. Lstat, so a dangling link there counts as occupied
 	// rather than as a place to write through.
 	if _, existErr := os.Lstat(cleanOriginal); existErr == nil {
-		return NewErrorResult(fmt.Errorf("cannot restore: path already exists: %s", cleanOriginal), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodePathExists, "cannot restore: path already exists: %s", cleanOriginal), time.Since(start).Milliseconds())
 	}
 
 	// Ensure the parent directory of the original path exists
@@ -1862,7 +1867,7 @@ func MakeDirectory(payload map[string]any) CommandResult {
 
 	path := GetPayloadString(payload, "path", "")
 	if path == "" {
-		return NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "path is required"), time.Since(start).Milliseconds())
 	}
 
 	// Normalize path separators
@@ -1870,7 +1875,7 @@ func MakeDirectory(payload map[string]any) CommandResult {
 
 	// Check against denied system paths
 	if isDeniedSystemPath(cleanPath) {
-		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
 	// Create directory and any necessary parents
@@ -1890,12 +1895,12 @@ func RenameFile(payload map[string]any) CommandResult {
 
 	oldPath := GetPayloadString(payload, "oldPath", "")
 	if oldPath == "" {
-		return NewErrorResult(fmt.Errorf("oldPath is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "oldPath is required"), time.Since(start).Milliseconds())
 	}
 
 	newPath := GetPayloadString(payload, "newPath", "")
 	if newPath == "" {
-		return NewErrorResult(fmt.Errorf("newPath is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "newPath is required"), time.Since(start).Milliseconds())
 	}
 
 	// Normalize path separators
@@ -1904,10 +1909,10 @@ func RenameFile(payload map[string]any) CommandResult {
 
 	// Check against denied system paths
 	if isDeniedSystemPath(cleanOldPath) {
-		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanOldPath), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanOldPath), time.Since(start).Milliseconds())
 	}
 	if isDeniedSystemPath(cleanNewPath) {
-		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanNewPath), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanNewPath), time.Since(start).Milliseconds())
 	}
 
 	// Containment (#3397): rename is the cheapest laundering primitive there is
@@ -1927,7 +1932,7 @@ func RenameFile(payload map[string]any) CommandResult {
 	oldInfo, err := os.Stat(cleanOldPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return NewErrorResult(fmt.Errorf("source path does not exist: %s", cleanOldPath), time.Since(start).Milliseconds())
+			return NewErrorResult(errorCodef(wire.ErrCodePathNotFound, "source path does not exist: %s", cleanOldPath), time.Since(start).Milliseconds())
 		}
 		return NewErrorResult(fmt.Errorf("failed to stat source: %w", err), time.Since(start).Milliseconds())
 	}
@@ -1979,12 +1984,12 @@ func CopyFile(payload map[string]any) CommandResult {
 
 	sourcePath := GetPayloadString(payload, "sourcePath", "")
 	if sourcePath == "" {
-		return NewErrorResult(fmt.Errorf("sourcePath is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "sourcePath is required"), time.Since(start).Milliseconds())
 	}
 
 	destPath := GetPayloadString(payload, "destPath", "")
 	if destPath == "" {
-		return NewErrorResult(fmt.Errorf("destPath is required"), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeInvalidArgument, "destPath is required"), time.Since(start).Milliseconds())
 	}
 
 	// Normalize path separators
@@ -1993,10 +1998,10 @@ func CopyFile(payload map[string]any) CommandResult {
 
 	// Check against denied system paths
 	if isDeniedSystemPath(cleanSrc) {
-		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanSrc), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanSrc), time.Since(start).Milliseconds())
 	}
 	if isDeniedSystemPath(cleanDst) {
-		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanDst), time.Since(start).Milliseconds())
+		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanDst), time.Since(start).Milliseconds())
 	}
 
 	// Containment (#3397): a copy is a content-disclosing read — copy-then-read
@@ -2013,7 +2018,7 @@ func CopyFile(payload map[string]any) CommandResult {
 	info, err := os.Stat(cleanSrc)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return NewErrorResult(fmt.Errorf("source path does not exist: %s", cleanSrc), time.Since(start).Milliseconds())
+			return NewErrorResult(errorCodef(wire.ErrCodePathNotFound, "source path does not exist: %s", cleanSrc), time.Since(start).Milliseconds())
 		}
 		return NewErrorResult(fmt.Errorf("failed to stat source: %w", err), time.Since(start).Milliseconds())
 	}
@@ -2021,7 +2026,7 @@ func CopyFile(payload map[string]any) CommandResult {
 	if info.IsDir() {
 		// Prevent copying a directory into itself (infinite recursion via filepath.Walk)
 		if strings.HasPrefix(cleanDst, cleanSrc+string(filepath.Separator)) || cleanDst == cleanSrc {
-			return NewErrorResult(fmt.Errorf("cannot copy directory into itself: %s -> %s", cleanSrc, cleanDst), time.Since(start).Milliseconds())
+			return NewErrorResult(errorCodef(wire.ErrCodeCopyIntoSelf, "cannot copy directory into itself: %s -> %s", cleanSrc, cleanDst), time.Since(start).Milliseconds())
 		}
 		if err := copyDir(cleanSrc, cleanDst, copyOperator); err != nil {
 			return NewErrorResult(fmt.Errorf("failed to copy directory: %w", err), time.Since(start).Milliseconds())

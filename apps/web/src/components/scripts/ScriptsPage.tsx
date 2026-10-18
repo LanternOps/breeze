@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { postScriptExecute, isGroupTarget, type ScriptExecuteResult, type ScriptRunTarget } from '@/lib/scriptExecute';
 import { useTranslation } from 'react-i18next';
-import { extractApiError } from '@/lib/apiError';
 import { Plus, Download, Search, Upload, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
 import ScriptList, { type Script, type ScriptLanguage, type OSType } from './ScriptList';
 import { ScriptBundleExportModal, ScriptBundleImportModal } from './ScriptBundleImport';
@@ -21,7 +21,6 @@ import { asList } from '@/lib/asList';
 import { runAction, handleActionError } from '@/lib/runAction';
 import { cloneScript } from '@/lib/api/scripts';
 import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
-import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -187,24 +186,19 @@ export default function ScriptsPage() {
 
   const handleExecute = async (
     scriptId: string,
-    deviceIds: string[],
+    target: ScriptRunTarget,
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
-  ) => {
-    const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
-      method: 'POST',
-      body: JSON.stringify({ deviceIds, parameters, runAs })
-    });
-
-    const data = await response.json().catch(() => ({})) as ScriptAdmissionResult & { error?: string };
-
-    if (!response.ok) {
-      throw new Error(extractApiError(data, t('scriptsPage.errors.execute')));
-    }
+  ): Promise<ScriptExecuteResult> => {
+    // Failures throw an ActionError to the modal, which renders them inline
+    // (including the device-group target codes) — see postScriptExecute.
+    const data = await postScriptExecute(scriptId, target, parameters, runAs, t('scriptsPage.errors.execute'));
 
     const admittedTargets = data.targets.filter(target => target.admission === 'admitted');
     if (admittedTargets.length > 0) {
-      await fetchScripts();
+      // silent: a loading swap would remount the execution modal and discard
+      // its per-device admission result (#8670 sweep, same failure as #6005).
+      await fetchScripts({ silent: true });
       // #4886 — a library run left the operator stranded on this (now stale)
       // list with no way to see the result land. A single-device run goes to
       // that device's Scripts tab (same hash-highlight convention DeviceDetails
@@ -213,9 +207,11 @@ export default function ScriptsPage() {
       // script's execution-history list instead.
       // Keep partial admission results visible so the operator can inspect
       // blocked or suppressed targets before leaving the execute flow.
-      if (admittedTargets.length !== data.targets.length) return data;
-      if (deviceIds.length === 1) {
-        void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
+      // Same for group-run warnings (e.g. a refused group): navigating would
+      // tear the modal down before the operator ever sees them.
+      if (admittedTargets.length !== data.targets.length || (data.warnings?.length ?? 0) > 0) return data;
+      if (!isGroupTarget(target) && target.length === 1) {
+        void navigateTo(deviceScriptsHref(target[0]!, admittedTargets[0]?.executionId));
       } else {
         void navigateTo(scriptExecutionsHref(scriptId));
       }
@@ -296,7 +292,8 @@ export default function ScriptsPage() {
           ? t('scriptsPage.library.partnerPermission') : undefined,
       });
       setCompletedImports(prev => new Set(prev).add(`${targetKey}:${systemScript.name}`));
-      await fetchScripts();
+      // silent: the library modal stays open for further imports.
+      await fetchScripts({ silent: true });
     } catch (err) {
       handleActionError(err, t('scriptsPage.errors.import'));
     } finally {

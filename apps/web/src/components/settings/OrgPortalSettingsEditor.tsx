@@ -11,6 +11,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
+import InheritedField from '../shared/InheritedField';
 
 type PortalSettings = {
   enableTickets: boolean;
@@ -31,15 +32,23 @@ type PortalSettings = {
   enablePerformanceMetrics: boolean;
   enableSoftwareInventory: boolean;
   enableNetworkVisibility: boolean;
+  enableEdrVisibility: boolean;
   enableNetworkAlerts: boolean;
+  enableHourBlock: boolean;
+  enablePatchDetail: boolean;
+  enableVulnerabilityDetail: boolean;
+  enableTrustPageEditing: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
   footerText: string | null;
   chromeAccent: PortalChromeAccent;
+  /** Read-only (#7510): the partner's document footer, which quotes and
+   *  invoices print when `footerText` is blank. Never sent back on save. */
+  partnerInvoiceFooter?: string | null;
 };
 
-type ToggleKey = 'enableTickets' | 'enableAssetCheckout' | 'enableSelfService' | 'enablePasswordReset';
+type ToggleKey = 'enableTickets' | 'enableAssetCheckout' | 'enableSelfService' | 'enablePasswordReset' | 'enableTrustPageEditing';
 
 const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string }> = [
   {
@@ -62,6 +71,13 @@ const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string 
     labelKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.label',
     descriptionKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.description',
   },
+  // Trust Center W3d: a permission flag (PORTAL_PERMISSION_FLAG_KEYS), not a
+  // visibility tier, so it lives with the features and "Enable all" never sets it.
+  {
+    key: 'enableTrustPageEditing',
+    labelKey: 'orgPortalSettingsEditor.features.toggles.enableTrustPageEditing.label',
+    descriptionKey: 'orgPortalSettingsEditor.features.toggles.enableTrustPageEditing.description',
+  },
 ];
 
 type VisibilityToggleKey =
@@ -79,12 +95,17 @@ type VisibilityToggleKey =
   | 'enablePerformanceMetrics'
   | 'enableSoftwareInventory'
   | 'enableNetworkVisibility'
-  | 'enableNetworkAlerts';
+  | 'enableEdrVisibility'
+  | 'enableNetworkAlerts'
+  | 'enableHourBlock'
+  | 'enablePatchDetail'
+  | 'enableVulnerabilityDetail';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
   labelKey: string;
   descriptionKey: string;
+  requires?: VisibilityToggleKey;
 }> = [
   {
     key: 'enableDevices',
@@ -156,6 +177,11 @@ const VISIBILITY_TOGGLES: Array<{
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.description',
   },
+  {
+    key: 'enableEdrVisibility',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableEdrVisibility.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableEdrVisibility.description',
+  },
   // Distinct sensitivity tier from asset inventory (enableNetworkVisibility
   // above), gated by its own flag -- listed here so an org admin can toggle
   // it individually, but deliberately left out of enableAllVisibility()
@@ -164,6 +190,32 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableNetworkAlerts',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkAlerts.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkAlerts.description',
+  },
+  // Billing-sensitive (a prepaid-hours balance) and only meaningful inside the
+  // Support usage section, so it has its own fail-closed flag and is
+  // deliberately left out of enableAllVisibility() below (block hours W04,
+  // #8179; same pattern as enableNetworkAlerts above).
+  {
+    key: 'enableHourBlock',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableHourBlock.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableHourBlock.description',
+    requires: 'enableSupportUsage',
+  },
+  // Sensitive (visibility W05, #7735): shows every portal login of the org which
+  // devices are missing patches. Deliberately left out of enableAllVisibility()
+  // below; listed in PORTAL_SENSITIVE_FLAG_KEYS so the Enable-all test guards it.
+  {
+    key: 'enablePatchDetail',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enablePatchDetail.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enablePatchDetail.description',
+  },
+  // Sensitive (visibility W06, #7736): shows every portal login of the org which
+  // devices have which CVEs. Deliberately left out of enableAllVisibility(); listed
+  // in PORTAL_SENSITIVE_FLAG_KEYS so the Enable-all test guards it.
+  {
+    key: 'enableVulnerabilityDetail',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail.description',
   },
 ];
 
@@ -231,6 +283,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     enablePerformanceMetrics: true,
     // Opt in individually until the customer-facing software page ships.
     enableNetworkVisibility: true,
+    enableEdrVisibility: true,
   });
 
   const save = useCallback(async () => {
@@ -259,7 +312,12 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enablePerformanceMetrics: draft.enablePerformanceMetrics,
             enableSoftwareInventory: draft.enableSoftwareInventory,
             enableNetworkVisibility: draft.enableNetworkVisibility,
+            enableEdrVisibility: draft.enableEdrVisibility,
             enableNetworkAlerts: draft.enableNetworkAlerts,
+            enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
+            enablePatchDetail: draft.enablePatchDetail,
+            enableVulnerabilityDetail: draft.enableVulnerabilityDetail,
+            enableTrustPageEditing: draft.enableTrustPageEditing,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,
@@ -348,6 +406,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             key,
             labelKey,
             descriptionKey,
+            requires,
           }) => (
             <label
               key={key}
@@ -356,8 +415,11 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
               <input
                 type="checkbox"
                 checked={draft[key]}
+                disabled={requires !== undefined && !draft[requires]}
                 onChange={(e) => update({
                   [key]: e.target.checked,
+                  // Turning Support usage off also turns off what lives inside it.
+                  ...(key === 'enableSupportUsage' && !e.target.checked ? { enableHourBlock: false } : {}),
                 } as Partial<PortalSettings>)}
                 className="mt-0.5"
                 data-testid={`org-portal-toggle-${key}`}
@@ -453,15 +515,24 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
               data-testid="org-portal-welcome"
             />
           </div>
+          {/* #7510 (settings rules 3 + 4): this is the ORG level of the one
+              document-footer chain (resolveDocumentFooter) — it overrides the
+              partner document footer on this org's quotes and invoices, and
+              while blank shows the inherited partner value and its source. */}
           <div className="sm:col-span-2">
-            <label className="text-sm font-medium" htmlFor="portal-footer">{t('orgPortalSettingsEditor.support.footerText')}</label>
-            <input
+            <InheritedField
               id="portal-footer"
+              label={t('orgPortalSettingsEditor.support.footerText')}
               value={draft.footerText ?? ''}
-              onChange={(e) => update({ footerText: e.target.value })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              onChange={(value) => update({ footerText: value })}
+              inheritedValue={draft.partnerInvoiceFooter ?? null}
+              inheritedSource={t('orgPortalSettingsEditor.support.footerTextInheritedSource')}
+              ariaDescribedBy="portal-footer-help"
               data-testid="org-portal-footer"
             />
+            <p id="portal-footer-help" data-testid="org-portal-footer-help" className="mt-1 text-xs text-muted-foreground">
+              {t('orgPortalSettingsEditor.support.footerTextHelp')}
+            </p>
           </div>
         </div>
       </section>

@@ -11,6 +11,12 @@ import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 import { moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
 import { withHostTimeZone } from '../testUtils/hostTimeZone';
+import {
+  findLinkPlacementConflict,
+  PlacementConcurrentUpdateError,
+  PlacementLinkConflictError,
+  reconcilePlacementOnLinkOrThrow,
+} from '../services/assetPlacement';
 
 // W01 (spec §4.4): the route now derives `reachability` through the batched
 // loader. The derivation is pinned by services/assetReachability.test.ts; this
@@ -63,7 +69,10 @@ vi.mock('../jobs/discoveryWorker', () => ({
 vi.mock('../services/assetPlacement', () => ({
   findLinkPlacementConflict: vi.fn(async () => null),
   reconcilePlacementOnLinkOrThrow: vi.fn(async () => 'noop'),
-  PlacementLinkConflictError: class PlacementLinkConflictError extends Error {},
+  PlacementLinkConflictError: class PlacementLinkConflictError extends Error {
+    constructor(public conflict: unknown = null) { super('placement_link_conflict'); }
+  },
+  PlacementConcurrentUpdateError: class PlacementConcurrentUpdateError extends Error {},
 }));
 
 vi.mock('../services/discoveryJobCreation', () => ({
@@ -2181,6 +2190,93 @@ describe('discovery routes', () => {
         });
       });
 
+      describe('placement authority on link (#8359)', () => {
+        const linkReq = () => app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+        function arrangeLinkWrite() {
+          setSiteRestrictedAuth([SITE_IN]);
+          mockAssetThenDevice(
+            { id: ASSET_IN, orgId: ORG, siteId: SITE_IN },
+            { id: DEVICE_ID, orgId: ORG, siteId: SITE_IN }
+          );
+          vi.mocked(db.update).mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, linkedDeviceId: DEVICE_ID }])
+              })
+            })
+          } as any);
+        }
+
+        it('409 PLACEMENT_CONFLICT from the pre-check, before any write', async () => {
+          setSiteRestrictedAuth([SITE_IN]);
+          mockAssetThenDevice(
+            { id: ASSET_IN, orgId: ORG, siteId: SITE_IN },
+            { id: DEVICE_ID, orgId: ORG, siteId: SITE_IN }
+          );
+          const conflict = { device: { room: 'A' }, discovered: { room: 'B' } };
+          vi.mocked(findLinkPlacementConflict).mockResolvedValueOnce(conflict as any);
+
+          const res = await linkReq();
+          expect(res.status).toBe(409);
+          expect(await res.json()).toMatchObject({ code: 'PLACEMENT_CONFLICT', conflict });
+          expect(db.transaction).not.toHaveBeenCalled();
+          expect(db.update).not.toHaveBeenCalled();
+          expect(writeRouteAudit).not.toHaveBeenCalled();
+        });
+
+        it('409 and no link audit when a conflict appears after the pre-check (rollback path)', async () => {
+          arrangeLinkWrite();
+          const conflict = { device: { room: 'A' }, discovered: { room: 'B' } };
+          vi.mocked(reconcilePlacementOnLinkOrThrow).mockRejectedValueOnce(new PlacementLinkConflictError(conflict as any));
+
+          const res = await linkReq();
+          expect(res.status).toBe(409);
+          expect(await res.json()).toMatchObject({ code: 'PLACEMENT_CONFLICT', conflict });
+          expect(writeRouteAudit).not.toHaveBeenCalled();
+        });
+
+        it('409 PLACEMENT_CONCURRENT_UPDATE (not 500) when a concurrent placement write wins the unique index', async () => {
+          arrangeLinkWrite();
+          vi.mocked(reconcilePlacementOnLinkOrThrow).mockRejectedValueOnce(new PlacementConcurrentUpdateError());
+
+          const res = await linkReq();
+          expect(res.status).toBe(409);
+          expect(await res.json()).toMatchObject({ code: 'PLACEMENT_CONCURRENT_UPDATE' });
+          expect(writeRouteAudit).not.toHaveBeenCalled();
+        });
+
+        it('unlink never reconciles or clones placement back onto the asset', async () => {
+          setSiteRestrictedAuth([SITE_IN]);
+          vi.mocked(db.select).mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: ASSET_IN, orgId: ORG, siteId: SITE_IN, linkedDeviceId: DEVICE_ID, linkSource: 'manual'
+                }]),
+              }),
+            }),
+          } as any);
+          vi.mocked(db.update).mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, linkedDeviceId: null }])
+              })
+            })
+          } as any);
+
+          const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer token' }
+          });
+          expect(res.status).toBe(200);
+          expect(reconcilePlacementOnLinkOrThrow).not.toHaveBeenCalled();
+        });
+      });
+
       it('does not gate when the caller is unrestricted (no allowedSiteIds)', async () => {
         setSiteRestrictedAuth(undefined);
         mockAssetThenDevice(
@@ -3363,6 +3459,210 @@ describe('discovery routes', () => {
 
       expect(res.status).toBe(200);
       expect(setSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('pinned scan agent (#7969)', () => {
+    const ORG = '00000000-0000-0000-0000-000000000000';
+    const OTHER_ORG = '00000000-0000-0000-0000-0000000000ff';
+    const PROFILE_ID = '00000000-0000-0000-0000-000000000020';
+    const SITE = '00000000-0000-0000-0000-0000000000a1';
+    const SITE_TO = '00000000-0000-0000-0000-0000000000a2';
+    const DEVICE = '00000000-0000-0000-0000-0000000000d1';
+    const pinnable = { id: DEVICE, orgId: ORG, siteId: SITE, agentId: 'agent-1', isEphemeral: false };
+    const existingProfile = {
+      id: PROFILE_ID, orgId: ORG, siteId: SITE, subnets: ['10.0.0.0/24'], excludeIps: [],
+      snmpCommunities: [], snmpCredentials: null, deepScan: false, pinnedDeviceId: null,
+    };
+
+    const limitSelect = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as any);
+
+    beforeEach(() => {
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.update).mockReset();
+      vi.mocked(db.insert).mockClear();
+    });
+
+    const post = (extra: Record<string, unknown>) => app.request('/discovery/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'Pinned', siteId: SITE, subnets: ['10.0.0.0/24'], methods: ['ping'],
+        schedule: { type: 'interval', intervalMinutes: 30 }, ...extra,
+      }),
+    });
+
+    const patch = (body: unknown) => app.request(`/discovery/profiles/${PROFILE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+    function mockProfileUpdate(updatedRow: any) {
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([updatedRow]) }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+      return setSpy;
+    }
+
+    it('creates a profile pinned to a device in its own org and site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ id: SITE }]))
+        .mockReturnValueOnce(limitSelect([pinnable]));
+      const values = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: PROFILE_ID, orgId: ORG, pinnedDeviceId: DEVICE }])) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await post({ pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ pinnedDeviceId: DEVICE }));
+    });
+
+    it('cross-org forge: rejects pinning a device from another organization without writing', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ id: SITE }]))
+        .mockReturnValueOnce(limitSelect([{ ...pinnable, orgId: OTHER_ORG }]));
+
+      const res = await post({ pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/organization/i);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a device that is not visible (RLS-hidden / unknown), in another site, ephemeral, or agentless', async () => {
+      for (const row of [null, { ...pinnable, siteId: SITE_TO }, { ...pinnable, isEphemeral: true }, { ...pinnable, agentId: null }]) {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(limitSelect([{ id: SITE }]))
+          .mockReturnValueOnce(limitSelect(row ? [row] : []));
+        const res = await post({ pinnedDeviceId: DEVICE });
+        expect(res.status).toBe(400);
+      }
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed pinnedDeviceId at the schema', async () => {
+      const res = await post({ pinnedDeviceId: 'agent-1' });
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('PATCH pins, and null clears the pin without a device lookup', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([existingProfile]))
+        .mockReturnValueOnce(limitSelect([pinnable]));
+      const pinSpy = mockProfileUpdate({ ...existingProfile, pinnedDeviceId: DEVICE });
+      const pinned = await patch({ pinnedDeviceId: DEVICE });
+      expect(pinned.status).toBe(200);
+      expect(pinSpy).toHaveBeenCalledWith(expect.objectContaining({ pinnedDeviceId: DEVICE }));
+
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]));
+      const clearSpy = mockProfileUpdate({ ...existingProfile, pinnedDeviceId: null });
+      const cleared = await patch({ pinnedDeviceId: null });
+      expect(cleared.status).toBe(200);
+      expect(clearSpy).toHaveBeenCalledWith(expect.objectContaining({ pinnedDeviceId: null }));
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    it('PATCH cross-org forge: rejects pinning another org\'s device without writing', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([existingProfile]))
+        .mockReturnValueOnce(limitSelect([{ ...pinnable, orgId: OTHER_ORG }]));
+
+      const res = await patch({ pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH site move re-validates a stored pin against the NEW site instead of carrying it silently', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))
+        .mockReturnValueOnce(limitSelect([{ id: SITE_TO }]))
+        .mockReturnValueOnce(limitSelect([pinnable]));
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/site/i);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH: an unrelated edit that re-sends an unchanged (now stale) pin saves without re-validating it', async () => {
+      // The form always re-sends the current pin. A pin whose device has since
+      // moved site must not lock renames/schedule edits; the scan fails at run time.
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]));
+      const setSpy = mockProfileUpdate({ ...existingProfile, name: 'Renamed', pinnedDeviceId: DEVICE });
+
+      const res = await patch({ name: 'Renamed', pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(1); // no device lookup
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'Renamed' }));
+    });
+
+    it('PATCH site move carries a stored pin that is valid in the new site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))
+        .mockReturnValueOnce(limitSelect([{ id: SITE_TO }]))
+        .mockReturnValueOnce(limitSelect([{ ...pinnable, siteId: SITE_TO }]));
+      mockProfileUpdate({ ...existingProfile, siteId: SITE_TO, pinnedDeviceId: DEVICE });
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    it('PATCH site move with pinnedDeviceId null clears the pin without a device lookup', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))
+        .mockReturnValueOnce(limitSelect([{ id: SITE_TO }]));
+      const setSpy = mockProfileUpdate({ ...existingProfile, siteId: SITE_TO, pinnedDeviceId: null });
+
+      const res = await patch({ siteId: SITE_TO, pinnedDeviceId: null });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ siteId: SITE_TO, pinnedDeviceId: null }));
+    });
+
+    it('GET /profiles projects pinnedDeviceId (a dropped field would make the form save null and silently unpin)', async () => {
+      const now = new Date();
+      const base = {
+        orgId: ORG, siteId: SITE, name: 'p', description: null, enabled: true, subnets: [], methods: [],
+        schedule: null, deepScan: false, resolveHostnames: false, alertSettings: null, createdAt: now, updatedAt: now,
+      };
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ orderBy: () => Promise.resolve([
+          { profile: { ...base, id: 'p-pinned', pinnedDeviceId: DEVICE }, lastRunAt: null },
+          { profile: { ...base, id: 'p-auto', pinnedDeviceId: null }, lastRunAt: null },
+        ]) }) }),
+      });
+
+      const res = await app.request('/discovery/profiles', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((p: any) => [p.id, p.pinnedDeviceId])).toEqual([['p-pinned', DEVICE], ['p-auto', null]]);
+    });
+
+    it('PATCH site move with an explicit pin in the new site validates the NEW pin against the new site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, pinnedDeviceId: DEVICE }]))
+        .mockReturnValueOnce(limitSelect([{ id: SITE_TO }]))
+        .mockReturnValueOnce(limitSelect([{ ...pinnable, siteId: SITE_TO }]));
+      const setSpy = mockProfileUpdate({ ...existingProfile, siteId: SITE_TO, pinnedDeviceId: DEVICE });
+
+      const res = await patch({ siteId: SITE_TO, pinnedDeviceId: DEVICE });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ siteId: SITE_TO, pinnedDeviceId: DEVICE }));
     });
   });
 });

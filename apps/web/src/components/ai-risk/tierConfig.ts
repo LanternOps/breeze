@@ -64,11 +64,14 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_devices', description: 'Search and filter devices', category: 'Devices & Hardware' },
       { name: 'get_device_details', description: 'Get comprehensive device info', category: 'Devices & Hardware' },
       { name: 'get_device_hardware_health', description: 'Get RAID, disk and hardware collector health', category: 'Devices & Hardware' },
+      { name: 'query_device_workloads', description: 'List containers and VMs hosted on a device (Docker, Podman, Hyper-V, Proxmox)', category: 'Devices & Hardware' },
       { name: 'get_device_time_status', description: 'Get Windows time sync health and expected timezone', category: 'Devices & Hardware' },
+      { name: 'list_device_restore_point_attempts', description: 'List System Restore checkpoints requested before patches, scripts and installs', category: 'Devices & Hardware' },
       { name: 'list_time_sync_issues', description: 'List observed time synchronization findings', category: 'Devices & Hardware' },
       { name: 'analyze_metrics', description: 'Time-series metrics analysis', category: 'Devices & Hardware' },
       { name: 'get_active_users', description: 'Active user sessions', category: 'Devices & Hardware' },
       { name: 'get_user_experience_metrics', description: 'Login performance and session trends', category: 'Devices & Hardware' },
+      { name: 'get_fleet_device_stats', description: 'Exact fleet-wide device counts by status', category: 'Devices & Hardware' },
       { name: 'get_fleet_health', description: 'Fleet health overview and aggregates', category: 'Devices & Hardware' },
       { name: 'get_fleet_findings', description: 'Deduplicated fleet hygiene findings', category: 'Devices & Hardware' },
       { name: 'analyze_fleet_metrics', description: 'Fleet-wide metric aggregation from rollups', category: 'Devices & Hardware' },
@@ -91,6 +94,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_dns_security', description: 'DNS security analysis', category: 'Network & DNS' },
       // Security & Compliance
       { name: 'get_security_posture', description: 'Security posture scores', category: 'Security & Compliance' },
+      { name: 'get_trust_page_status', description: 'Public trust page status', category: 'Security & Compliance' },
       { name: 'security_scan (vulnerabilities)', description: 'Query vulnerability data', category: 'Security & Compliance' },
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
@@ -197,6 +201,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_time_entries', description: 'List tracked time entries', category: 'Ticketing' },
       { name: 'get_running_timer', description: 'Get the current running timer', category: 'Ticketing' },
       { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
+      { name: 'get_ticket_approval_status', description: 'View a ticket\'s budget and customer-approval status', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (list/list_templates/get_template)', description: 'View ticket checklist steps and checklist templates', category: 'Ticketing' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
@@ -207,6 +212,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
       { name: 'manage_saved_filters (list/get)', description: 'List and view saved filters', category: 'Other' },
+      // Endpoint messaging (#8742 W02)
+      { name: 'send_endpoint_message (list/get)', description: 'List sent end-user messages and their delivery status', category: 'Ticketing' },
     ],
   },
   {
@@ -219,6 +226,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
     badgeBg: 'bg-blue-500/15',
     badgeText: 'text-blue-700',
     tools: [
+      // Security & Compliance — EDR provider framework (#8167 W03)
+      { name: 'edr_endpoint_action (scan)', description: 'EDR scan of a device through its linked vendor', category: 'Security & Compliance' },
+      { name: 'sync_edr_data', description: 'Queue an immediate EDR vendor sync', category: 'Security & Compliance' },
       // Alerts & Notifications
       { name: 'manage_alerts (acknowledge)', description: 'Acknowledge alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (resolve)', description: 'Resolve alerts', category: 'Alerts & Notifications' },
@@ -271,6 +281,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Ticketing (P2-4, #4191) — pre-existing gap, manage_tickets had zero
       // entries here before. move_org is listed separately under Tier 3.
       { name: 'manage_tickets (create/comment/assign/update_status/update_fields/link_alert/unlink_alert/create_from_alert/edit_comment/delete_comment)', description: 'Create and update support tickets', category: 'Ticketing' },
+      { name: 'manage_tickets (link_ticket/unlink_ticket)', description: 'Link related tickets in one organization, or remove a link', category: 'Ticketing' },
       { name: 'manage_tickets (log_time_entry/start_timer/stop_timer)', description: 'Track time against tickets', category: 'Ticketing' },
       { name: 'manage_tickets (link_device/draft)', description: 'AI ticket triage: link a device or store a reply/resolution-note draft', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (add_item/update_item/delete_item/reorder/apply_template)', description: 'Edit ticket checklist steps (ticking a step done stays human-only)', category: 'Ticketing' },
@@ -304,6 +315,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'analyze_screen', description: 'Analyze captured screenshot', category: 'Remote Access & Control' },
       // Security & Compliance
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
+      { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
       { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
@@ -329,6 +341,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'test_webhook', description: 'Test webhook delivery — sends a real outbound POST; route requires MFA', category: 'Integrations' },
       { name: 'trigger_agent_upgrade', description: 'Queue agent upgrade', category: 'Integrations' },
       { name: 'trigger_agent_restart', description: 'Restart a wedged/silent agent via the watchdog', category: 'Integrations' },
+      // Microsoft 365 identity writes (Operator Recipe Library M1) — Tier 3, four-eyes
+      { name: 'm365_revoke_sessions', description: 'Revoke all Microsoft 365 sessions for a user', category: 'Integrations' },
+      { name: 'm365_remove_license', description: 'Remove Microsoft 365 licenses from a user', category: 'Integrations' },
+      { name: 'm365_assign_license', description: 'Assign Microsoft 365 licenses to a user', category: 'Integrations' },
+      { name: 'm365_remove_from_group', description: 'Remove a user from a Microsoft 365 group', category: 'Integrations' },
+      { name: 'm365_add_to_group', description: 'Add a user to a Microsoft 365 group', category: 'Integrations' },
+      { name: 'm365_retire_intune_device', description: 'Retire an Intune device (removes company data; not a full wipe)', category: 'Integrations' },
+      { name: 'm365_create_user', description: 'Create a Microsoft 365 user with a one-time temporary password', category: 'Integrations' },
+      { name: 'm365_set_auto_reply', description: 'Set or clear a Microsoft 365 mailbox automatic reply', category: 'Integrations' },
       // Configuration Policies
       { name: 'manage_configuration_policy (create/update/delete)', description: 'Create, update, or delete config policies', category: 'Configuration Policies' },
       // Fleet Operations
@@ -338,8 +359,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
+      // Endpoint messaging (#8742 W02): customer-visible text, always approved.
+      { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
       { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
+      { name: 'operator_plan', description: 'Approve an AI Operator plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
     ],
   },
   {
@@ -450,12 +474,15 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'apply_cis_remediation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'get_cis_compliance', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
   { toolName: 'get_cis_device_report', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
+  { toolName: 'get_trust_page_status', tier: 1, permission: 'organizations.read', category: 'Security & Compliance' },
   { toolName: 'assign_security_training', tier: 2, permission: 'users.write', category: 'Security & Compliance' },
   { toolName: 'collect_evidence', tier: 2, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'execute_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
+  { toolName: 'edr_endpoint_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'sync_edr_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
   { toolName: 'remediate_software_violation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
@@ -483,8 +510,11 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_delivery', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
   // AI Governance
   { toolName: 'manage_ai_agents', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
+  { toolName: 'operator_plan', tier: 3, permission: 'organizations.write', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
+  // Endpoint messaging (#8742 W02)
+  { toolName: 'send_endpoint_message', tier: 3, permission: 'endpoint_messages.send', category: 'Ticketing' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -495,10 +525,13 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_device_details: 'devices.read',
   get_device_hardware_health: 'devices.read',
   get_device_time_status: 'devices.read',
+  list_device_restore_point_attempts: 'devices.read',
+  query_device_workloads: 'devices.read',
   list_time_sync_issues: 'devices.read',
   analyze_metrics: 'devices.read',
   get_active_users: 'devices.read',
   get_user_experience_metrics: 'devices.read',
+  get_fleet_device_stats: 'devices.read',
   get_fleet_health: 'devices.read',
   get_fleet_findings: 'devices.read',
   analyze_fleet_metrics: 'devices.read',
@@ -546,6 +579,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
   get_security_posture: 'devices.read',
+  get_trust_page_status: 'organizations.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
   system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },

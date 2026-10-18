@@ -6,6 +6,12 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import type { Site } from './SiteList';
 
+// Site address/contact are untyped jsonb on the wire. Strings prefill the form;
+// finite numbers (e.g. an API-written postal code) are kept as text so saving the
+// form does not blank them; anything else prefills empty.
+const str = (value: unknown): string =>
+  typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+
 /**
  * Site CRUD state + handlers, extracted verbatim from `OrganizationsPage`
  * (#5075 W02) so the organization record's Sites tab (`OrgSitesTab`) can share
@@ -85,9 +91,7 @@ export interface UseSiteCrud {
   close: () => void;
   submit: (values: Record<string, unknown>) => Promise<void>;
   confirmDelete: () => Promise<void>;
-  getSiteFormDefaults: (
-    site: Site & { address?: Record<string, string>; contact?: Record<string, string> },
-  ) => SiteFormDefaults;
+  getSiteFormDefaults: (site: Site) => SiteFormDefaults;
 }
 
 export interface UseSiteCrudOptions {
@@ -244,18 +248,18 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
   }, [selectedSite, orgId, refresh, close, onUnauthorized, t, surfaceUnexpectedError]);
 
   const getSiteFormDefaults = useCallback(
-    (site: Site & { address?: Record<string, string>; contact?: Record<string, string> }): SiteFormDefaults => ({
+    (site: Site): SiteFormDefaults => ({
       name: site.name,
       timezone: site.timezone,
-      addressLine1: site.address?.line1 ?? '',
-      addressLine2: site.address?.line2 ?? '',
-      city: site.address?.city ?? '',
-      state: site.address?.state ?? '',
-      postalCode: site.address?.postalCode ?? '',
-      country: site.address?.country ?? '',
-      contactName: site.contact?.name ?? '',
-      contactEmail: site.contact?.email ?? '',
-      contactPhone: site.contact?.phone ?? '',
+      addressLine1: str(site.address?.line1),
+      addressLine2: str(site.address?.line2),
+      city: str(site.address?.city),
+      state: str(site.address?.state),
+      postalCode: str(site.address?.postalCode),
+      country: str(site.address?.country),
+      contactName: str(site.contact?.name),
+      contactEmail: str(site.contact?.email),
+      contactPhone: str(site.contact?.phone),
     }),
     [],
   );

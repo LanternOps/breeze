@@ -37,6 +37,12 @@ git -C ~/breeze log --oneline $PREV..HEAD                  # everything that wil
 - **Full release of everything on main** (the normal case): tag off `main` HEAD.
 - **True surgical hotfix**: branch + tag off `$PREV`, cherry-pick *only* the fix. Do **not** tag off main HEAD if you don't intend to ship all of main.
 
+**Candidate / hotfix prerelease tags (commit not on main): register first, then tag.** The Release workflow's Validate Release Lineage step reads `.github/release-provenance/candidate-tags.tsv` from `origin/main`, so the row must be on main before the tag build runs:
+
+1. Open a PR adding the row `<tag>\t<exact candidate commit SHA>\t<integration ref>\t<note>`. A row whose tag does not exist yet is skipped by both CI's Check Migrations and other candidates' Validate Release Lineage (#8132), so it does not block anything while pending.
+2. Merge it.
+3. Push the tag at exactly that SHA. Once the tag exists, both scripts check the row whenever they read the registry: a tag that peels to a different commit fails with `candidate registry SHA mismatch`. If a candidate is abandoned before tagging, remove its row.
+
 If migrations are listed, you're committing prod to those migrations the moment the new API boots. Read them; confirm there are no large-table rewrites/backfills before you proceed (call those out in the upgrade notes if present).
 
 **Smoke-test privileged migrations as a NON-SUPERUSER role (learned the hard way, v0.95.0→v0.95.1).** CI and the local docker-compose test DB both migrate as the Postgres **superuser** (`POSTGRES_USER=breeze`), which silently passes statements a least-privilege role would be *denied*. Prod is DO-managed **`doadmin` — NOT a superuser**, so a migration that only a superuser can run passes every test and then **crash-loops the API on deploy** (this is exactly what took EU down on v0.95.0: `ALTER FUNCTION ... OWNER TO <role>` requires the *new owner* to hold `CREATE` on the schema; a superuser bypasses that check, doadmin does not → `permission denied for schema public`). So: any migration in the range that does `CREATE ROLE`, `ALTER ... OWNER TO`, `GRANT`/`REVOKE` on a schema, `CREATE EXTENSION`, or a `SECURITY DEFINER` function — **run it against a non-superuser role before tagging.** Two ways: pipe the migration to a real managed DB (or a droplet's `doadmin`) inside `BEGIN; ...; ROLLBACK;` with `ON_ERROR_STOP=1`, or `SET ROLE <nosuperuser-createrole-role>` on a local DB that already has the full schema. If it only works as a superuser, fix it forward (grant the owning role the privilege for the one statement, then revoke) **before** it reaches prod.
@@ -48,6 +54,29 @@ If migrations are listed, you're committing prod to those migrations the moment 
 1. Read the newest `docs/testing/release-sweeps/*.md` and its **"Before the release cut"** list, plus `docs/release-notes/next-release-draft.md` → "Release to-do". Any sweep fix PR named there merges before the tag.
 2. **Rows a sweep left `BLOCKED` / `PARTIAL` for want of a live agent are run on the SSH lab rigs before tagging — not deferred to after the cut, and not left for a reporter to find.** Use the non-prod rigs (the second Windows Server VM and the lab-hyperv-host `lab-ubuntu-src` VM are lab-enrolled against a local stack; the first Windows VM and the Ubuntu KVM rig are prod-enrolled — leave those alone unless the row is about prod upgrade behaviour). Recipe: `pnpm wt-stack up` at the commit to be tagged → cross-compile the agent family from that commit (`GOOS=… CGO_ENABLED=0 go build -ldflags "-X main.version=<v>"`) → back up the rig's agent config → re-point `server_url` at the Mac's Tailscale/LAN address and re-enroll → run the rows → restore the config. Record results in the sweep doc.
 3. A row that still cannot be run (no hardware for it) is carried into the release body's known-gaps note with the exact prerequisite, by name.
+
+## Step 0.3 — Dynamic security gates, at the exact commit you will tag
+
+Unit tests and static analysis read the code. These gates exercise it running. All three are run against the SHA you are about to tag, not "main around now". Results and any findings go in the **private** release register in `~/breeze-security`, never in the release body, a PR, or an issue.
+
+Both workflow gates are dispatched at the SHA and watched to the end. `gh run list -L1` right after `gh workflow run` often returns the PREVIOUS run, and a dispatch run's head SHA is the workflow's branch, not your `ref`, so pick the run created after your dispatch. Each run's summary records the commit it actually tested; check it says your SHA.
+
+```bash
+SHA=$(git -C ~/breeze rev-parse HEAD)
+dispatch_and_watch() {   # $1 = repo, $2 = workflow file
+  local since run; since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  gh workflow run "$2" -R "$1" -f ref="$SHA" || return 1
+  until run=$(gh run list -R "$1" -w "$2" -e workflow_dispatch -L5 --json databaseId,createdAt \
+      --jq "[.[] | select(.createdAt >= \"$since\")] | last | .databaseId // empty") && [ -n "$run" ]; do sleep 5; done
+  gh run watch "$run" -R "$1" --exit-status
+}
+```
+
+1. **Extended fuzzing (private).** The agent's fuzz targets (`agent/**/*_fuzz_test.go`) run time-boxed in the private security repo so a crashing input never appears in public logs: `dispatch_and_watch LanternOps/breeze-security agent-fuzz.yml`. Green is required. A red run means a crasher: it blocks the cut until it is triaged privately (fixed, or written up as not exploitable with Todd's sign-off). Do not re-run to get green.
+2. **Tenant isolation through the browser.** `e2e-tests/tests/tenant-isolation.spec.ts` signs in as one tenant and probes a second tenant's pages and API resources, with a positive control for every probe. It runs nightly on `main`, but the nightly run is not the gate: dispatch it at the SHA with `dispatch_and_watch LanternOps/breeze tenant-isolation-e2e.yml`. To run it locally instead: `pnpm wt-stack up`, then `pnpm wt-stack test -- tests/tenant-isolation.spec.ts`.
+3. **Pentest playbook on a running lab, for what this release touched.** Against a `wt-stack` or lab rig at this SHA, run the private playbook's per-release quick set, plus the chapters that `~/breeze-security/pentest/release-gate-map.md` selects for this release's changed paths (Step 0's `git diff --name-only $PREV..HEAD`). Any change to tenancy/RLS, auth/sessions/MFA, roles and permissions, agent enrollment, install or update, IPC, remote access, or AI tools always includes the cross-tenant quick leg. Record date, SHA, chapters run and results in the private release register. A finding of Medium or higher blocks the cut until fixed or explicitly accepted by Todd.
+
+If a gate cannot run (lab down, no hardware), the cut waits or Todd explicitly waives that gate for this release in the private register. A waiver is never implied.
 
 ## Step 0.4 — Author the in-app "What's New" entry (BEFORE tagging)
 
@@ -148,6 +177,31 @@ git -C ~/breeze log --format="%B" -1 <SHA>   # expand a squash-merge body
 
 Skip from user-facing notes: `chore(deps):`, `chore:`, `ci:`/`fix(ci):`, internal `refactor:`, internal `docs:`/`test:`. Keep anything a self-hoster or operator would notice.
 
+### Feature-coverage check (do this before writing a single bullet)
+
+Big features are the ones most likely to fall out of the headline bullets, because
+they land as five or ten wave PRs with titles like `feat(x): W02 — …` and no single
+commit says "feature X shipped". v0.123.0 shipped Trust Center (three wave PRs) and
+the body listed it under Added only; the Summary, the marketing notes and the Discord
+post all missed it until the owner noticed. So enumerate features first, commits second:
+
+```bash
+# Every wave PR in the range, grouped by its feature parent (the issue in parentheses)
+git -C ~/breeze log --format='%s' $PREV..$NEW | grep -E '^feat' | grep -E ' W[0-9]+[ A-Za-z0-9-]* — | wave ' \
+  | sed -E 's/.*\(#([0-9]+)\) \(#([0-9]+)\)$/\1 \2 &/' | sort -n
+# Feature parents whose waves closed in the range (GitHub is the source of truth, not the plan doc)
+gh issue list -R lanternops/breeze --label feature --state all --search "closed:>=<PREV release date>" --json number,title,state
+```
+
+For every feature parent with at least one wave merged in the range, decide
+explicitly: **Summary bullet** (a buyer or technician would notice it, even if only
+the first wave shipped: say "first release" and what is still to come), **Added /
+Improved only** (plumbing a technician sees but would not buy), or **omit** (internal).
+Write the decision down in the release scratchpad; the same list drives the What's New
+entry (Step 0.4), the marketing notes (Step 3) and the Discord post (Step 5), so a
+feature cannot appear in one and vanish from the others. A feature that is in the
+Summary is in all four.
+
 ## Step 2 — Write the GitHub Release body
 
 The GitHub Release is the **operator/self-hoster source of truth**. Model the body on the most recent release for structure and tone:
@@ -191,7 +245,7 @@ Self-hosters run their own droplets and read this section to decide whether an u
    Link the [Upgrade Guide](https://docs.breezermm.com/deploy/upgrades/#docker-compose-upgrade). **Never write "set `BREEZE_VERSION`, then pull" as the only upgrade line.** On a digest-pinned install that re-pulls the images already running, so nothing upgrades. Until v0.118.2, `/health` also reported the edited version because Compose copied `BREEZE_VERSION` into `APP_VERSION` (#7024), so operators believed they had upgraded. Only the web footer showed the real version. Every release note from v0.112.0 to v0.118.2 gave that line, and self-hosters were stranded on 0.115→0.116 and 0.117→0.118.2. Keep `portal` in the tag-form pull list: it is a separate container and was left behind for 11 days (stuck on 0.94.0 while api/web ran 0.98.1) when the line pulled only `api web`.
 
 2. **Database / migrations.** State the count and that they're idempotent and auto-apply on boot via `autoMigrate` (unless `AUTO_MIGRATE=false`). **Explicitly flag any large-table rewrite or backfill** — that's the difference between a 2-second upgrade and a stalled boot. If nothing: "**Database — nothing required.**"
-3. **New required environment variables.** Anything the config validator now refuses to boot without (e.g. past examples: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, `IS_HOSTED`). A new required env var must *also* be mapped in the `api`/`web` `environment:` block of their compose, not just `.env` — say so. If none: "**No new required environment variables.**"
+3. **New required environment variables.** Anything the config validator now refuses to boot without (e.g. past examples: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, `IS_HOSTED`). A new required env var must *also* be mapped in the `api`/`web` `environment:` block of their compose, not just `.env` — say so. If none: "**No new required environment variables.**" Then list notable *optional* ones in one line each with what they unlock (e.g. v0.123.0: `PUBLIC_ABUSE_CONTACT` / `PUBLIC_SECURITY_CONTACT` / `PUBLIC_SECURITY_POLICY_URL` → login-page abuse/security footer + `/.well-known/security.txt`, #8872) — self-hosters only learn about opt-in surfaces from here.
 4. **Behavior changes & feature flags.** Anything whose default changed (call out grandfathering of existing orgs), and any feature gated behind a flag (e.g. `PUBLIC_ENABLE_EDR_INTEGRATIONS`) — name the flag and its default.
 
 End with the compare link: `**Full Changelog:** https://github.com/LanternOps/breeze/compare/$PREV...$NEW`
@@ -249,6 +303,10 @@ Tone: operator-to-operator, not corporate. Lead with what people can do now. If 
 The tag built images and registered binaries; it does **not** deploy prod or update the agent fleet on its own. The intent **is** for cutting a release to flow straight into rollout — but **always confirm with Todd before touching prod**, then proceed. Three parts, per region: **back up the DB → deploy the droplet → (later) promote the agent fleet**.
 
 **Read `internal/ops/release-infra.md` now** (main checkout: `~/breeze/internal/ops/release-infra.md`) for the real droplet IPs (`$EU_IP`/`$US_IP`), firewall IDs (`$EU_FW`/`$US_FW`), and jump-host name (`$JUMP`) used below.
+
+### New env vars since the previous release — carry into the droplet compose before deploy
+
+- `AGENT_ECH_ENABLED` (api service; default `true`; added in the release after v0.122.1). `false` makes every agent dial plain on its next connection. It is the kill switch for the ECH rollout (#8869) and never tears down live sockets. Leave unset to ship ECH on. Warning: turning it off strands every device that currently depends on ECH (it dials plain on its next reconnect, goes offline, and turning the switch back on cannot reach it until it is on an unfiltered network).
 
 ### Prerequisite — get SSH access to the droplets
 
@@ -333,6 +391,13 @@ ssh root@<droplet> "docker logs breeze-api 2>&1 | grep -aE 'auto-migrate' | tail
 **Two droplet-local overrides the line above handles** (both added 2026-10-07):
 - **Worker split.** A droplet running the optional `worker` container (`COMPOSE_PROFILES=worker-split` in `.env`, see `apps/docs/src/content/docs/deploy/worker-split.mdx`) must roll it with the API, or it keeps running the old image's job code against the new schema. `W` adds it to the pull/up only where the profile is on.
 - **API hotfix pin.** `BREEZE_API_IMAGE_TAG` in `.env` pins the API (and worker) image to a hotfix tag independently of `BREEZE_VERSION`. A full release must drop it, or the API stays on the hotfix image while `/health` reports the new version (compose sets `APP_VERSION` from `BREEZE_VERSION`); only the parity check below shows it, as SKEW. The `sed` deletes it.
+
+**New compose env passthroughs the droplets don't carry — diff before you deploy.** The droplets run a *hand-copied* `docker-compose.yml` that has drifted from the repo's `deploy/docker-compose.prod.yml` (381 vs 1049 lines as of 2026-10-13). A release that adds a variable to a service's `environment:` block in the repo does **nothing** on the droplet until the same line is added to `/opt/breeze/docker-compose.yml` by hand — setting it in `.env` alone is a silent no-op (the `envComposeParity` contract test guards the repo, not the droplets). Before deploying, list what the range added:
+```bash
+git diff v$PREV..v$NEW -- deploy/docker-compose.prod.yml | grep -E '^\+\s+[A-Z_]+:' 
+```
+and port each line into the droplet's compose for the right service, then set the value in `.env`. Per-release ledger of the ones that need an operator decision (append as releases add them):
+- **v0.123.0 — operator abuse/security contacts (#8872, `web` service):** `PUBLIC_ABUSE_CONTACT`, `PUBLIC_SECURITY_CONTACT`, `PUBLIC_SECURITY_POLICY_URL` render the login-page "Report abuse / Security" footer and `/.well-known/security.txt`; unset = nothing published (self-hoster default). Hosted values: `security@breezermm.com` (exists), `abuse@breezermm.com` (**reserved alias in Google Workspace** — it can't be created as a user/alias; Google accepts the mail and it is read only if an admin *subscribes* to it: Admin console → Apps → Google Workspace → Gmail → "abuse and postmaster" subscription. Do that before publishing the address, or reports vanish), policy URL = the trust center page once live, else leave unset (Security then falls back to the mailto). Verify after `up -d web`: `curl -s https://<region>.2breeze.app/.well-known/security.txt` returns the Contact lines, and `/login` shows the footer. Reason this exists: the hosted domain was listed as Malicious by reputation feeds and hijacked by ISP gateway filters on 2026-10-15; a visible abuse channel is one of the signals reviewers check (#8868).
 
 **Then assert version parity across EVERY first-party container — `/health` does NOT cover this.**
 
@@ -442,6 +507,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
 - [ ] **Pre-cut gates** (Step 0.2): newest sweep doc's "Before the release cut" list cleared, sweep fix PR merged, live-agent rows run on the lab rigs (not deferred)
+- [ ] **Dynamic security gates** (Step 0.3) at the tag SHA: private extended fuzz green, Tenant Isolation E2E green, touched-area pentest playbook entries run on the lab and recorded privately
 - [ ] In-app What's New entry added to `WHATS_NEW_ENTRIES` (`apps/web/src/lib/whatsNew.ts`) and **merged to main BEFORE the tag** — version = bare semver of this release (or deliberately skipped for an internal-only release)
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
 - [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked
@@ -456,6 +522,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
 - [ ] Agent fleet promoted via slot-aware DB row change (both DBs) — only with Todd's go-ahead
 - [ ] Firewall exception removed (if the doctl fallback was used)
+- [ ] CVE requested for each advisory the private disclosure policy says gets one (request from the draft; it stays private until publish)
 - [ ] GHSA published *after* rollout (security releases only) — **and its row in `internal/security-advisory-queue.md` moved to Published.** If rollout finishes after this session ends, the queue row is what carries the debt forward; the next release's pre-flight gate will block on it.
 
 ## Notes & gotchas

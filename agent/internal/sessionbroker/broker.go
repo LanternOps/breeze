@@ -1148,6 +1148,36 @@ func (b *Broker) SessionInConsoleSession(s *Session) bool {
 	return s.WinSessionID == b.ConsoleSessionID()
 }
 
+// SessionMayDrawMessageCards reports whether s sits where an endpoint message
+// card (#8741) may be drawn: the active console session of a WINDOWS host.
+// Unlike SessionInConsoleSession it is false on every other OS — the card is a
+// Windows-only surface in W1, and macOS/Linux users get the native toast. An
+// unknown console ("" / the "0" sentinel) or helper session never matches.
+func (b *Broker) SessionMayDrawMessageCards(s *Session) bool {
+	if s == nil || b.effectiveGOOS() != "windows" {
+		return false
+	}
+	console := b.ConsoleSessionID()
+	return console != "" && s.WinSessionID == console
+}
+
+// PreferredSessionWithScopeMatching returns the best connected session that
+// holds scope AND satisfies keep, so a caller with a placement rule (e.g. the
+// console-only message card) never settles on a newer session that fails it.
+// keep runs outside the broker lock.
+func (b *Broker) PreferredSessionWithScopeMatching(scope string, keep func(*Session) bool) *Session {
+	var best *Session
+	for _, s := range b.SessionsWithScope(scope) {
+		if keep != nil && !keep(s) {
+			continue
+		}
+		if betterSession(s, best) {
+			best = s
+		}
+	}
+	return best
+}
+
 // PreferredRunAsUserSession returns the run_as_user helper to target for the
 // current host. On Windows it is constrained to the active console session so a
 // co-logged-in user's helper can never intercept a run_as_user script meant for
@@ -2431,6 +2461,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// roles retain the legacy fallback when no kernel session is available.
 	if verifiedWinSession != "" {
 		session.WinSessionID = verifiedWinSession
+		session.WinSessionVerified = true
 		if verifiedWinSession != claimedWinSession {
 			log.Warn("WinSessionID mismatch — using kernel-verified value",
 				"reported", authReq.WinSessionID,
@@ -2740,8 +2771,12 @@ func roleIdentityRejection(role ipc.HelperRole, sid string, uid uint32, peerWinS
 	// Unix: watchdog and system-role helpers must run as root. The macOS
 	// desktop helper runs in the GUI user/loginwindow session, so it must
 	// authenticate as user-role and receives only desktop scope. The assist
-	// helper is Windows-only; on Unix it would receive only the inert "assist"
-	// scope, so no identity gate is required here.
+	// helper (Breeze Assist) also runs on macOS/Linux as the console user and
+	// receives assist + consent_ui there, which caller verification (#6354 W02)
+	// relies on. No role gate is needed for it here: it is unprivileged, and
+	// caller_verify binds the answer to the helper's kernel-verified peer UID
+	// against the console user at selection time (caller_verify.go), not to
+	// anything the helper claims.
 	switch {
 	case role == ipc.HelperRoleWatchdog && uid != 0:
 		return "watchdog role requires root identity", true
@@ -2781,14 +2816,24 @@ func (b *Broker) scopesForRole(role ipc.HelperRole, binaryKind, goos, peerPath s
 
 // grantScopes computes the final AllowedScopes for an authenticated helper:
 // the role's base scopes plus consent_ui_fallback when a user-role helper
-// advertised native consent support. Always returns a fresh slice — the
+// advertised native consent support, and messaging when an assist-role helper
+// advertised message-card support. Always returns a fresh slice — the
 // role-scope vars are shared package state and must not be appended to.
 func (b *Broker) grantScopes(role ipc.HelperRole, authReq ipc.AuthRequest, goos, peerPath string) []string {
 	base := b.scopesForRole(role, authReq.BinaryKind, goos, peerPath)
-	scopes := make([]string, len(base), len(base)+1)
+	scopes := make([]string, len(base), len(base)+3)
 	copy(scopes, base)
 	if role == ipc.HelperRoleUser && authReq.SupportsConsentUI {
 		scopes = append(scopes, ipc.ScopeConsentUIFallback)
+	}
+	// Endpoint messaging (#8293): per session, only for an Assist helper that
+	// advertised it — never part of the static assistHelperScopes.
+	if role == ipc.HelperRoleAssist && authReq.SupportsMessaging {
+		scopes = append(scopes, ipc.ScopeMessaging)
+	}
+	// Endpoint live chat (#8743): same shape, its own advertisement.
+	if role == ipc.HelperRoleAssist && authReq.SupportsChat {
+		scopes = append(scopes, ipc.ScopeChat)
 	}
 	return scopes
 }
@@ -3172,6 +3217,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"canCapture", sanitized.CanCapture,
 				"canClipboard", sanitized.CanClipboard,
 				"displayServer", sanitized.DisplayServer,
+				"callerVerify", sanitized.CallerVerify,
 			)
 		}
 	case ipc.TypeTCCStatus:
@@ -3189,6 +3235,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 			log.Info("TCC permissions received",
 				"uid", s.UID,
 				"screenRecording", sanitized.ScreenRecording,
+				"screenRecordingState", sanitized.ScreenRecordingState,
 				"accessibility", sanitized.Accessibility,
 				"fullDiskAccess", sanitized.FullDiskAccess,
 				"remoteDesktop", sanitized.RemoteDesktop,
@@ -3248,6 +3295,30 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		ipc.TypeDesktopClipboardSummary, ipc.TypeDesktopLeaseRenew, ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult:
 		if !shouldForwardUnsolicitedHelperMessage(s, env) {
 			log.Warn("dropping unsolicited or unauthorized helper message",
+				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
+			return
+		}
+		if b.onMessage != nil {
+			b.onMessage(s, env)
+		}
+	case ipc.TypeChatReply, ipc.TypeChatPresented:
+		// Endpoint live chat (#8743). A chat_presented answering a live
+		// chat_open/chat_message is matched to its waiter before dispatch;
+		// reaching here means a replay or a user reply.
+		if !shouldForwardUnsolicitedHelperMessage(s, env) {
+			log.Warn("dropping chat event from a session without chat scope",
+				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
+			return
+		}
+		if b.onMessage != nil {
+			b.onMessage(s, env)
+		}
+	case ipc.TypeMessagePresented, ipc.TypeMessageAck, ipc.TypeMessageDismissed:
+		// Endpoint messaging (#8293). A message_presented that answers a live
+		// message_show is matched to its waiter before dispatch; reaching here
+		// means a replayed card or a later user action.
+		if !shouldForwardUnsolicitedHelperMessage(s, env) {
+			log.Warn("dropping message event from a session without messaging scope",
 				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
 			return
 		}
@@ -3445,6 +3516,10 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 		return session.HasScope("desktop")
 	case ipc.TypeWatchdogCommandResult:
 		return session.HasScope("watchdog")
+	case ipc.TypeMessagePresented, ipc.TypeMessageAck, ipc.TypeMessageDismissed:
+		return session.HasScope(ipc.ScopeMessaging)
+	case ipc.TypeChatReply, ipc.TypeChatPresented:
+		return session.HasScope(ipc.ScopeChat)
 	case ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult:
 		return false
 	default:
@@ -3472,6 +3547,11 @@ func sanitizeCapabilitiesForSession(session *Session, caps *ipc.Capabilities) *i
 	}
 	if !session.HasScope("clipboard") {
 		sanitized.CanClipboard = false
+	}
+	// Caller verification (#6354 W02) is rendered only by the Assist helper
+	// that also owns the consent prompt; a native helper never qualifies.
+	if session.HelperRole != ipc.HelperRoleAssist || !session.HasScope(ipc.ScopeConsentUI) {
+		sanitized.CallerVerify = false
 	}
 	return &sanitized
 }

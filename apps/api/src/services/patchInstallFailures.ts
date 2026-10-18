@@ -47,7 +47,7 @@ export type PatchInstallAttempt = {
   at: Date;
 };
 
-type Scope = { orgId?: string; deviceId?: string };
+type Scope = { orgId?: string; deviceId?: string; deviceIds?: readonly string[] };
 
 /**
  * How far back a per-device `install_patches` command is still read as an
@@ -87,6 +87,36 @@ export async function loadPatchInstallFailures(
   scope: Scope = {},
 ): Promise<Map<string, PatchInstallFailure>> {
   return summarizeInstallFailures(await loadLatestAttempts(patchIds, scope, { allJobAttempts: false }));
+}
+
+/**
+ * The (device, patch) pairs, among `deviceIds`, whose patch is still outstanding
+ * and whose LATEST install attempt failed (#7214). The /patches Compliance
+ * view uses it to count failed installs as failed rather than as "pending
+ * approval". Same "latest attempt wins" semantics as loadPatchInstallFailures.
+ */
+export async function loadFailedInstallPairs(
+  deviceIds: readonly string[],
+): Promise<Array<{ deviceId: string; patchId: string }>> {
+  if (deviceIds.length === 0) return [];
+  const rows = await db
+    .selectDistinct({ patchId: devicePatches.patchId })
+    .from(devicePatches)
+    .where(
+      and(
+        inArray(devicePatches.deviceId, [...deviceIds]),
+        inArray(devicePatches.status, [...OUTSTANDING_DEVICE_PATCH_STATUSES]),
+      ),
+    );
+  const attempts = await loadLatestAttempts(
+    rows.map((r) => r.patchId),
+    { deviceIds },
+    { allJobAttempts: false },
+  );
+  const wanted = new Set(deviceIds);
+  return attempts
+    .filter((a) => a.outcome === 'failed' && wanted.has(a.deviceId))
+    .map((a) => ({ deviceId: a.deviceId, patchId: a.patchId }));
 }
 
 /**
@@ -177,6 +207,7 @@ async function loadJobAttempts(
 ): Promise<PatchInstallAttempt[]> {
   const conditions: SQL[] = [inArray(patchJobResults.patchId, [...patchIds])];
   if (scope.deviceId) conditions.push(eq(patchJobResults.deviceId, scope.deviceId));
+  if (scope.deviceIds) conditions.push(inArray(patchJobResults.deviceId, [...scope.deviceIds]));
   if (scope.orgId) conditions.push(eq(devices.orgId, scope.orgId));
 
   const latest = db
@@ -257,6 +288,7 @@ async function loadDeviceCommandAttempts(
     or(isNull(deviceCommands.submittedOrgId), eq(deviceCommands.submittedOrgId, devices.orgId))!,
   ];
   if (scope.deviceId) conditions.push(eq(deviceCommands.deviceId, scope.deviceId));
+  if (scope.deviceIds) conditions.push(inArray(deviceCommands.deviceId, [...scope.deviceIds]));
   if (scope.orgId) conditions.push(eq(devices.orgId, scope.orgId));
 
   const rows = await db

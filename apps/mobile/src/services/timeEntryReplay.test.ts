@@ -91,6 +91,46 @@ describe('the replay can never call a server-stamped timer verb', () => {
   });
 });
 
+describe('makeReplaySender — location provenance (#8211)', () => {
+  it('replays orgId / siteId / source on a create so an offline site visit is not org-less', async () => {
+    const deps = senders();
+    await makeReplaySender(deps)(
+      write({
+        kind: 'create',
+        payload: {
+          startedAt: '2026-08-30T09:00:00.000Z',
+          endedAt: '2026-08-30T09:40:00.000Z',
+          orgId: 'o1',
+          siteId: 's1',
+          source: 'location',
+        },
+      })
+    );
+    expect(deps.createTimeEntry).toHaveBeenCalledWith({
+      startedAt: '2026-08-30T09:00:00.000Z',
+      endedAt: '2026-08-30T09:40:00.000Z',
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    });
+  });
+
+  it('never replays a source other than location', async () => {
+    const deps = senders();
+    await makeReplaySender(deps)(
+      write({
+        kind: 'create',
+        payload: {
+          startedAt: '2026-08-30T09:00:00.000Z',
+          endedAt: '2026-08-30T09:40:00.000Z',
+          source: 'remote_session',
+        },
+      })
+    );
+    expect(deps.createTimeEntry.mock.calls[0][0]).not.toHaveProperty('source');
+  });
+});
+
 describe('makeReplaySender', () => {
   it('posts a create with the stored bounds when they are already in the past', async () => {
     const deps = senders();

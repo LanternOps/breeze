@@ -21,16 +21,61 @@ function reconcile(observedGrants: readonly CanonicalAppRoleAssignment[] | null)
 }
 
 describe('reconcileCustomerGraphActions', () => {
-  it('has exactly the two customer-graph-actions grants in its fixed manifest', () => {
-    expect(expected).toHaveLength(2);
+  const OLD_GRANTS: CanonicalAppRoleAssignment[] = [
+    { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '741f803b-c850-494e-b5df-cde7c675a1ca', value: null },
+    { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: 'cc117bb9-00cf-4eb8-b580-ea2a878fe8f7', value: null },
+  ];
+  const isOld = (grant: CanonicalAppRoleAssignment) => OLD_GRANTS.some((old) => old.appRoleId === grant.appRoleId);
+  const key = (grant: CanonicalAppRoleAssignment) => `${grant.resourceApplicationId}/${grant.appRoleId}`;
+  const sortedByKey = (grants: readonly CanonicalAppRoleAssignment[]) => [...grants].sort((a, b) => key(a).localeCompare(key(b)));
+
+  it('has exactly the seven customer-graph-actions grants (profile v3) in its fixed manifest', () => {
+    expect(expected).toHaveLength(7);
   });
 
-  it('returns observed=2/missing=0/unexpected=0 for exactly the two actions grants', () => {
+  it('an observation holding only the two v2 grants reconciles to missing the five new roles (manifest v3)', () => {
+    const result = reconcile(OLD_GRANTS);
+
+    expect(result.outcome).toBe('missing');
+    expect(result.manifestVersion).toBe(3);
+    expect(result.unexpectedGrants).toEqual([]);
+    expect(result.missingGrants!.map((grant) => grant.value).sort()).toEqual([
+      'DeviceManagementManagedDevices.PrivilegedOperations.All',
+      'GroupMember.ReadWrite.All',
+      'MailboxSettings.ReadWrite',
+      'Organization.Read.All',
+      'User.RevokeSessions.All',
+    ]);
+  });
+
+  it('reconciles to active for the real application appRoleAssignments Graph returns (#8648)', () => {
+    const result = reconcile([
+      ...OLD_GRANTS,
+      ...expected.filter((grant) => !isOld(grant)).map((grant) => ({ ...grant, value: null })),
+    ]);
+
+    expect(result.outcome).toBe('active');
+    expect(result.missingGrants).toEqual([]);
+    expect(result.unexpectedGrants).toEqual([]);
+  });
+
+  it('does not treat the delegated scope IDs as the required grants (#8648)', () => {
+    const result = reconcile([
+      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4', value: null },
+      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '56760768-b641-451f-8906-e1b8ab31bca7', value: null },
+    ]);
+
+    expect(result.outcome).toBe('missing_and_unexpected');
+    expect(result.missingGrants).toHaveLength(expected.length);
+    expect(result.unexpectedGrants).toHaveLength(2);
+  });
+
+  it('returns observed=all/missing=0/unexpected=0 for exactly the profile grants', () => {
     const result = reconcile(expected);
 
     expect(result.outcome).toBe('active');
     expect(result.grantReconciliation).toBe('complete');
-    expect(result.observedGrants).toHaveLength(2);
+    expect(result.observedGrants).toHaveLength(expected.length);
     expect(result.missingGrants).toEqual([]);
     expect(result.unexpectedGrants).toEqual([]);
   });
@@ -83,7 +128,7 @@ describe('reconcileCustomerGraphActions', () => {
     const result = reconcile([expected[0]!, unknownResource]);
 
     expect(result.outcome).toBe('missing_and_unexpected');
-    expect(result.missingGrants).toEqual([expected[1]]);
+    expect(result.missingGrants).toEqual(sortedByKey(expected.slice(1)));
     expect(result.unexpectedGrants).toEqual([unknownResource]);
   });
 
@@ -93,7 +138,7 @@ describe('reconcileCustomerGraphActions', () => {
       appRoleId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       value: expected[0]!.value,
     };
-    const result = reconcile([expected[1]!, sameDisplayWrongRole]);
+    const result = reconcile([...expected.slice(1), sameDisplayWrongRole]);
 
     expect(result.outcome).toBe('missing_and_unexpected');
     expect(result.missingGrants).toEqual([expected[0]]);
@@ -103,7 +148,7 @@ describe('reconcileCustomerGraphActions', () => {
   it('returns verified-but-degraded proof with no partial set or grant timestamp when reconciliation is unavailable', () => {
     expect(reconcile(null)).toEqual({
       ...PROOF,
-      manifestVersion: 1,
+      manifestVersion: 3,
       verifiedAt: VERIFIED_AT.toISOString(),
       outcome: 'grant_reconciliation_unavailable',
       grantReconciliation: 'unavailable',

@@ -2,13 +2,30 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { writeEnvStack, readStackEnvValue, setStackEnvValues, pinWebAuthnForStack } from './env';
+import { writeEnvStack, readStackEnvValue, setStackEnvValues, pinWebAuthnForStack, caddyPortPin } from './env';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'wt-')); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe('writeEnvStack', () => {
+  // #8155 W03 — e2e-tests/helpers/tunnelOriginStack.ts turns Network Proxy host
+  // mode on after `up` (the template carries caddy's published port). A re-up
+  // must keep it, or the next `up` silently drops the stack back to path mode.
+  it('keeps the tunnel-origin runtime keys across a re-up', () => {
+    writeFileSync(path.join(dir, '.env'), '');
+    const values = {
+      TUNNEL_ORIGIN_TEMPLATE: 'http://{id}.tunnel.localhost:5',
+      TUNNEL_FRAME_ANCESTOR: 'http://app.localhost:5',
+      TUNNEL_SITE_ADDRESS: 'http://*.tunnel.localhost, http://*.*.tunnel.localhost',
+      TUNNEL_HOST_SUFFIX: 'tunnel.localhost',
+      PUBLIC_PORTAL_URL: 'http://app.localhost:5/portal',
+    };
+    setStackEnvValues(dir, values);
+    writeEnvStack(dir, { arch: 'x64' });
+    for (const [k, v] of Object.entries(values)) expect(readStackEnvValue(dir, k)).toBe(v);
+  });
+
   it('writes all secrets the API config validator requires to boot', () => {
     const p = writeEnvStack(dir);
     const env = readFileSync(p, 'utf8');
@@ -42,6 +59,45 @@ describe('writeEnvStack', () => {
   it('disables the rate limiters that a parallel Playwright run trips', () => {
     const env = readFileSync(writeEnvStack(dir), 'utf8');
     expect(env).toContain('E2E_MODE=true');
+  });
+});
+
+// #8718 — `docker restart` re-allocates a random published port, so a storm run
+// that restarts caddy needs a fixed host port. Opt-in via BREEZE_WT_CADDY_PORT.
+describe('caddyPortPin (#8718)', () => {
+  it('is null when unset or empty (random port, unchanged behaviour)', () => {
+    expect(caddyPortPin({})).toBeNull();
+    expect(caddyPortPin({ BREEZE_WT_CADDY_PORT: '' })).toBeNull();
+  });
+  it('parses a valid port', () => {
+    expect(caddyPortPin({ BREEZE_WT_CADDY_PORT: '18080' })).toBe(18080);
+  });
+  it.each(['abc', '0', '70000', '80.5', '-1'])('rejects %s', (v) => {
+    expect(() => caddyPortPin({ BREEZE_WT_CADDY_PORT: v })).toThrow(/BREEZE_WT_CADDY_PORT/);
+  });
+});
+
+describe('worktree override caddy publish (#8718)', () => {
+  it('publishes caddy as ${BREEZE_WT_CADDY_PORT:-0}:80 (the :-0 keeps the random-port default)', () => {
+    const override = readFileSync(path.resolve(__dirname, '../../../docker-compose.override.yml.worktree'), 'utf8');
+    expect(override).toMatch(/^\s*-\s*"\$\{BREEZE_WT_CADDY_PORT:-0\}:80"\s*$/m);
+  });
+});
+
+describe('writeEnvStack caddy pin (#8718)', () => {
+  const prev = process.env.BREEZE_WT_CADDY_PORT;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.BREEZE_WT_CADDY_PORT; else process.env.BREEZE_WT_CADDY_PORT = prev;
+  });
+  it('writes BREEZE_WT_CADDY_PORT when pinned', () => {
+    process.env.BREEZE_WT_CADDY_PORT = '18080';
+    expect(readFileSync(writeEnvStack(dir), 'utf8')).toMatch(/^BREEZE_WT_CADDY_PORT=18080$/m);
+  });
+  it('omits it when unset, and drops a stale pin on re-up', () => {
+    process.env.BREEZE_WT_CADDY_PORT = '18080';
+    writeEnvStack(dir);
+    delete process.env.BREEZE_WT_CADDY_PORT;
+    expect(readFileSync(writeEnvStack(dir), 'utf8')).not.toContain('BREEZE_WT_CADDY_PORT');
   });
 });
 

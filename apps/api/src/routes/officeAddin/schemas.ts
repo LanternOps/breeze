@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ticketTypeSchema } from '@breeze/shared';
 
 /**
  * A `z.coerce.date()` field that reports a plain "<field> is required" when
@@ -98,6 +99,7 @@ export const fromEmailSchema = z.object({
     z.object({ kind: z.literal('raw') }), // submitter_email/name only
   ]),
   followUpOf: z.object({ ticketId: z.string().uuid() }).nullish(), // closed-ticket continuation: carries thread key + prior number
+  ticketType: ticketTypeSchema.optional(), // #7900: omitted -> incident
 });
 
 /** Body of POST /office-addin/tickets/:id/link-email (spec §3.3, Task 17). */
@@ -131,6 +133,12 @@ export const addinStartTimerSchema = z.object({
    * the add-in offers a work type or the default, never "explicitly none".
    */
   workTypeId: z.string().uuid().optional(),
+  /**
+   * #8196 W05: the "log as non-billable" retry after a 409 APPROVAL_REQUIRED
+   * (the customer-approval gate refuses only billable timer STARTs). Omit for
+   * the server default.
+   */
+  isBillable: z.boolean().optional(),
 });
 
 /** Body of POST /office-addin/time/stop (Task 18). Same shape as the web `stopTimerSchema`. */

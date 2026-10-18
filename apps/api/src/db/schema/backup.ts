@@ -417,10 +417,13 @@ export const backupSnapshots = pgTable(
     // — the W02 sweep self-heals a NULL row from the storage listing; there
     // is no follow-up NOT NULL migration.
     storageIdentity: text('storage_identity'),
-    // Object-key layout the snapshot was written with. Every writer produces
-    // 'legacy_flat' (snapshots/<snapshotId>/...); readers refuse any other
-    // value (services/backupKeyLayout.ts).
+    // Key root the snapshot's objects live under (#7081): 'legacy_flat' +
+    // NULL prefix (snapshots/<snapshotId>/...) or 'prefixed_flat' + the
+    // normalized destination prefix (<prefix>/snapshots/<snapshotId>/...).
+    // Copied from the id's reservation at publish and immutable (DB
+    // triggers). Readers refuse any other value (services/backupKeyLayout.ts).
     keyLayout: text('key_layout').notNull().default('legacy_flat'),
+    keyPrefix: text('key_prefix'),
     // Bare-metal recovery (W01): disk layout captured at run time and the
     // guard verdict. NULL verdict = not assessed (file-only run / old agent).
     layoutManifest: jsonb('layout_manifest'),
@@ -558,6 +561,9 @@ export const backupSnapshotRetirements = pgTable(
     // Set by the GC sweep (W02) once the prefix is confirmed empty. NULL =
     // not yet swept. Rows are pruned 30d after this is set.
     sweptAt: timestamp('swept_at', { withTimezone: true }),
+    // Key root of the retired snapshot's objects (#7081); immutable.
+    keyLayout: text('key_layout').notNull().default('legacy_flat'),
+    keyPrefix: text('key_prefix'),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshot_retirements_org_id_idx').on(table.orgId),

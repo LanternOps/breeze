@@ -524,6 +524,8 @@ describe('partner desired-configuration material watermarks', () => {
       // canonical export is a hand-enumerated jsonb_build_object, so it is the
       // only structural coverage the export has.
       rebootAllowDeferral: false, rebootMaxDeferrals: 3, rebootDeferralMinutes: 60,
+      // #8030: unset restart-prompt text exports as null.
+      rebootPromptTitle: null, rebootPromptBody: null, rebootPromptButton: null,
       exclusiveWindowsUpdate: false,
     });
     expect(settings.maintenance).toEqual({

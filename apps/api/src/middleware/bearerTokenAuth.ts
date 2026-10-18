@@ -1,5 +1,6 @@
 import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { buildBearerChallenge } from '../services/mcpAuthChallenge';
 import * as Sentry from '@sentry/node';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
 import { and, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
@@ -32,6 +33,9 @@ interface OAuthApiKeyContext {
   createdBy: string;
   oauthGrantId?: string;
   oauthClientId?: string;
+  // B-W02 (#6156): the Grant's mcp_domains, read in the live-user query.
+  // Only ever set for a live grant; `undefined` would fail closed.
+  mcpDomains: readonly string[] | null | undefined;
 }
 
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -49,6 +53,14 @@ export type LiveOAuthUserResult =
        * single system-context round-trip.
        */
       grantActive: boolean | null;
+      /**
+       * B-W02 (#6156): the live Grant's `mcp_domains`, from the SAME joined
+       * row. `null` = unrestricted. `undefined` when no grant was asked about
+       * or the Grant is not live — never `null`, so a caller that forgot to
+       * check `grantActive` gets core-only (parseStoredMcpDomains), not
+       * everything. The middleware 401s on a dead grant before using it.
+       */
+      grantMcpDomains: string[] | null | undefined;
     }
   | {
       ok: false;
@@ -98,7 +110,13 @@ export async function assertLiveOAuthUser(
   // are in the same system context anyway. The LEFT JOIN keeps a missing or
   // revoked Grant as a row with a NULL join side rather than no row at all, so
   // "user gone" stays distinguishable from "grant dead".
-  let liveUser: { id: string; status: string; authEpoch: number; grantActive: boolean } | undefined;
+  let liveUser: {
+    id: string;
+    status: string;
+    authEpoch: number;
+    grantActive: boolean;
+    mcpDomains: string[] | null;
+  } | undefined;
   try {
     [liveUser] = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
@@ -108,6 +126,7 @@ export async function assertLiveOAuthUser(
             status: users.status,
             authEpoch: users.authEpoch,
             grantActive: sql<boolean>`${oauthGrants.id} IS NOT NULL`,
+            mcpDomains: oauthGrants.mcpDomains,
           })
           .from(users)
           .leftJoin(
@@ -143,6 +162,7 @@ export async function assertLiveOAuthUser(
       authEpoch: liveUser.authEpoch,
       legacyClaim: true,
       grantActive: grantId ? liveUser.grantActive : null,
+      grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : undefined,
     };
   }
 
@@ -160,6 +180,7 @@ export async function assertLiveOAuthUser(
     authEpoch: liveUser.authEpoch,
     legacyClaim: false,
     grantActive: grantId ? liveUser.grantActive : null,
+    grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : undefined,
   };
 }
 
@@ -367,13 +388,25 @@ async function filterBlockedOAuthClientOrgIds(orgIds: string[], clientId: string
   });
 }
 
+/**
+ * B-W02 (#6156, D-B7): every bearer-path 401 carries the Bearer challenge so a
+ * client holding an expired or revoked token learns where to re-authorize.
+ * Set on the context BEFORE the throw: `app.onError` rebuilds the response
+ * with `c.json(...)` and ignores an HTTPException's own `res`/headers, but
+ * keeps headers already on the context.
+ */
+function unauthorized(c: Context, opts: { message: string }): HTTPException {
+  c.header('WWW-Authenticate', buildBearerChallenge({ error: 'invalid_token' }));
+  return new HTTPException(401, opts);
+}
+
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (!OAUTH_ISSUER || !OAUTH_RESOURCE_URL) {
     throw new HTTPException(500, { message: 'OAuth not configured: OAUTH_ISSUER and OAUTH_RESOURCE_URL must be set' });
   }
 
   const auth = c.req.header('Authorization') ?? '';
-  if (!auth.startsWith('Bearer ')) throw new HTTPException(401, { message: 'missing bearer token' });
+  if (!auth.startsWith('Bearer ')) throw unauthorized(c, { message: 'missing bearer token' });
 
   const token = auth.slice(7);
   let payload: JWTPayload & {
@@ -404,12 +437,12 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
       console.error('[oauth] jwt verification failed for non-token reason (jwks fetch?)', e);
       throw new HTTPException(503, { message: 'oauth verification temporarily unavailable' });
     }
-    throw new HTTPException(401, { message: `invalid token: ${code ?? (e as Error).message}` });
+    throw unauthorized(c, { message: `invalid token: ${code ?? (e as Error).message}` });
   }
 
   if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
     recordLiveOAuthAuthorization('user_missing', payload.auth_epoch === undefined);
-    throw new HTTPException(401, { message: 'token missing required claims' });
+    throw unauthorized(c, { message: 'token missing required claims' });
   }
 
   // Read the claim now (not to reject on it yet — rejection order below is
@@ -423,28 +456,28 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     const message = liveUser.status === 503
       ? `oauth live authorization temporarily unavailable: ${liveUser.reason}`
       : `oauth live authorization denied: ${liveUser.reason}`;
-    throw new HTTPException(liveUser.status, { message });
+    throw liveUser.status === 401 ? unauthorized(c, { message }) : new HTTPException(liveUser.status, { message });
   }
   recordLiveOAuthAuthorization('authorized', liveUser.legacyClaim);
 
   if (typeof payload.jti === 'string' && await isJtiRevoked(payload.jti)) {
-    throw new HTTPException(401, { message: 'token revoked' });
+    throw unauthorized(c, { message: 'token revoked' });
   }
   // Grant-wide revocation: when a refresh token is revoked or a connected app
   // is deleted, every access JWT minted from the same Grant must die. The
   // grant_id claim is set by buildExtraTokenClaims (see oauth/provider.ts).
   if (!grantIdClaim) {
-    throw new HTTPException(401, { message: 'token missing required claims' });
+    throw unauthorized(c, { message: 'token missing required claims' });
   }
   // Redis first (eager, cheap, covers the window before a durable sweep
   // lands), then the durable answer already fetched alongside the user. A DB
   // failure never reaches here as "active": assertLiveOAuthUser has already
   // returned 503 for it, so uncertainty is fail-closed on both halves.
   if (await isGrantRevoked(grantIdClaim)) {
-    throw new HTTPException(401, { message: 'token revoked' });
+    throw unauthorized(c, { message: 'token revoked' });
   }
   if (!liveUser.grantActive) {
-    throw new HTTPException(401, { message: 'token revoked' });
+    throw unauthorized(c, { message: 'token revoked' });
   }
   const clientIdClaim = typeof (payload as { client_id?: unknown }).client_id === 'string'
     ? (payload as { client_id?: string }).client_id
@@ -464,7 +497,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     }
   }
   if (!payload.partner_id) {
-    throw new HTTPException(401, { message: 'token missing required claims' });
+    throw unauthorized(c, { message: 'token missing required claims' });
   }
   try {
     // OAuth bearers run with `strictForOauth: true` — pending/suspended/churned
@@ -485,7 +518,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     );
   } catch (err) {
     if (err instanceof TenantInactiveError) {
-      throw new HTTPException(401, { message: 'tenant inactive' });
+      throw unauthorized(c, { message: 'tenant inactive' });
     }
     throw err;
   }
@@ -504,6 +537,9 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     createdBy: payload.sub,
     ...(typeof payload.grant_id === 'string' ? { oauthGrantId: payload.grant_id } : {}),
     ...(clientIdClaim ? { oauthClientId: clientIdClaim } : {}),
+    // B-W02 (#6156): live per request, so a domain edit or revocation needs
+    // no token re-mint. Reached only with grantActive === true (401 above).
+    mcpDomains: liveUser.grantMcpDomains,
   });
   if (payload.org_id) c.set('apiKeyOrgId', payload.org_id);
 

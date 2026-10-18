@@ -15,7 +15,26 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-type windowsManager struct{}
+type windowsManager struct {
+	cleanupOps *windowsAccountCleanupOps
+}
+
+// Instance-scoped probes let Windows cleanup tests exercise the native manager
+// without modifying SAM or replacing process-wide function variables.
+type windowsAccountCleanupOps struct {
+	setPassword              func(string, string) error
+	removeFromAdministrators func(string) error
+	setUserFlags             func(string, uint32) error
+	accountEnabled           func(string) (bool, error)
+	accountInAdministrators  func(string) (bool, error)
+}
+
+func (m *windowsManager) accountCleanupOps() windowsAccountCleanupOps {
+	if m.cleanupOps != nil {
+		return *m.cleanupOps
+	}
+	return windowsAccountCleanupOps{setPassword, removeFromAdministrators, setUserFlags, accountEnabled, accountInAdministrators}
+}
 
 func newManager() AccountManager { return &windowsManager{} }
 
@@ -147,7 +166,7 @@ func (*windowsManager) Demote(ctx context.Context) error {
 	return err
 }
 
-func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error) {
+func (m *windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error) {
 	if err := ctx.Err(); err != nil {
 		return AccountEvidence{}, err
 	}
@@ -155,34 +174,36 @@ func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error)
 	if err != nil {
 		return AccountEvidence{}, err
 	}
-	if err := setPassword(AccountName, password); err != nil {
+	ops := m.accountCleanupOps()
+	if err := ops.setPassword(AccountName, password); err != nil {
 		return cleanIfAbsent(err)
 	}
 	if err := ctx.Err(); err != nil {
 		return AccountEvidence{}, err
 	}
 	// removeFromAdministrators already maps an absent account to nil.
-	if err := removeFromAdministrators(AccountName); err != nil {
+	if err := ops.removeFromAdministrators(AccountName); err != nil {
 		return AccountEvidence{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return AccountEvidence{}, err
 	}
-	if err := setUserFlags(AccountName, accountDisabledFlags); err != nil {
+	if err := ops.setUserFlags(AccountName, accountDisabledFlags); err != nil {
 		return cleanIfAbsent(err)
 	}
-	return (&windowsManager{}).VerifyClean(ctx)
+	return m.VerifyClean(ctx)
 }
 
-func (*windowsManager) VerifyClean(ctx context.Context) (AccountEvidence, error) {
+func (m *windowsManager) VerifyClean(ctx context.Context) (AccountEvidence, error) {
 	if err := ctx.Err(); err != nil {
 		return AccountEvidence{}, err
 	}
-	enabled, err := accountEnabled(AccountName)
+	ops := m.accountCleanupOps()
+	enabled, err := ops.accountEnabled(AccountName)
 	if err != nil {
 		return cleanIfAbsent(err)
 	}
-	inAdministrators, err := accountInAdministrators(AccountName)
+	inAdministrators, err := ops.accountInAdministrators(AccountName)
 	return evidenceAfterAdminProbe(enabled, inAdministrators, err)
 }
 

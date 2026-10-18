@@ -26,7 +26,15 @@ vi.mock('../../db', () => {
   return { db: chain };
 });
 
-import { createPortalFeatureGateAny, createPortalFeatureGateStrict } from './featureFlags';
+const { decideMock } = vi.hoisted(() => ({ decideMock: vi.fn() }));
+vi.mock('../../services/portal/trustPageEditor', () => ({ decidePortalTrustPageEditor: decideMock }));
+
+import {
+  createPortalFeatureGateAny,
+  createPortalFeatureGateStrict,
+  requirePortalTrustPageEditor,
+  resolvePortalCapabilities,
+} from './featureFlags';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -71,6 +79,10 @@ describe('createPortalFeatureGateStrict', () => {
     ['enableHardwareInventory', 'PORTAL_HARDWARE_INVENTORY_DISABLED'],
     ['enablePerformanceMetrics', 'PORTAL_PERFORMANCE_METRICS_DISABLED'],
     ['enableSoftwareInventory', 'PORTAL_SOFTWARE_INVENTORY_DISABLED'],
+    ['enableHourBlock', 'PORTAL_HOUR_BLOCK_DISABLED'],
+    ['enablePatchDetail', 'PORTAL_PATCH_DETAIL_DISABLED'],
+    ['enableVulnerabilityDetail', 'PORTAL_VULNERABILITY_DETAIL_DISABLED'],
+    ['enableEdrVisibility', 'PORTAL_EDR_VISIBILITY_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {
@@ -104,6 +116,51 @@ describe('createPortalFeatureGateStrict', () => {
   it('continues when enablePerformanceMetrics is explicitly true', async () => {
     dbState.rows = [{ enablePerformanceMetrics: true }];
     expect((await createTestApp('enablePerformanceMetrics').request('/protected')).status).toBe(200);
+  });
+
+  it('enablePatchDetail: continues only when the flag is strictly true', async () => {
+    dbState.rows = [{ enablePatchDetail: true }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(200);
+    dbState.rows = [{ enablePatchDetail: 'true' }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(403);
+    dbState.rows = [{ enablePatchDetail: null }];
+    expect((await createTestApp('enablePatchDetail').request('/protected')).status).toBe(403);
+  });
+
+  it('enableVulnerabilityDetail: continues only when the flag is strictly true', async () => {
+    dbState.rows = [{ enableVulnerabilityDetail: true }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(200);
+    dbState.rows = [{ enableVulnerabilityDetail: 'true' }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(403);
+    dbState.rows = [{ enableVulnerabilityDetail: null }];
+    expect((await createTestApp('enableVulnerabilityDetail').request('/protected')).status).toBe(403);
+  });
+
+  it('enableHourBlock: continues only when the flag is strictly true', async () => {
+    dbState.rows = [{ enableHourBlock: true }];
+    const ok = await createTestApp('enableHourBlock').request('/protected');
+    expect(ok.status).toBe(200);
+
+    dbState.rows = [{ enableHourBlock: false }];
+    const off = await createTestApp('enableHourBlock').request('/protected');
+    expect(off.status).toBe(403);
+    expect(await off.json()).toEqual({
+      error: 'Support hours are not enabled for this portal',
+      code: 'PORTAL_HOUR_BLOCK_DISABLED',
+    });
+  });
+
+  it('enableHourBlock: a truthy non-boolean is not enabled', async () => {
+    dbState.rows = [{ enableHourBlock: 'true' }];
+    const response = await createTestApp('enableHourBlock').request('/protected');
+    expect(response.status).toBe(403);
+  });
+
+  it('enableHourBlock: rejects an unauthenticated request before reading the row', async () => {
+    dbState.rows = [{ enableHourBlock: true }];
+    const response = await createTestApp('enableHourBlock', false).request('/protected');
+    expect(response.status).toBe(401);
+    expect(dbState.where).toBeUndefined();
   });
 
   it.each([
@@ -184,5 +241,63 @@ describe('createPortalFeatureGateAny', () => {
     const response = await anyApp(false).request('/protected');
     expect(response.status).toBe(401);
     expect(dbState.where).toBeUndefined();
+  });
+});
+
+describe('requirePortalTrustPageEditor (Trust Center W3d)', () => {
+  function gatedApp(withAuth = true) {
+    const a = new Hono();
+    if (withAuth) {
+      a.use('*', async (c, next) => {
+        c.set('portalAuth', {
+          user: { id: 'pu1', orgId: ORG_ID, email: 'c@example.test', name: 'Cust', contactId: 'ct1', receiveNotifications: true, status: 'active' },
+          token: 't',
+          authMethod: 'bearer',
+          timezone: 'UTC',
+        });
+        await next();
+      });
+    }
+    a.use('/trust', requirePortalTrustPageEditor);
+    a.get('/trust', (c) => c.json({ ok: true }));
+    return a;
+  }
+
+  beforeEach(() => { decideMock.mockReset(); });
+
+  it('401 without portal auth, before any lookup', async () => {
+    const res = await gatedApp(false).request('/trust');
+    expect(res.status).toBe(401);
+    expect(decideMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['PORTAL_TRUST_EDITING_DISABLED'],
+    ['PORTAL_TRUST_EDITOR_REQUIRED'],
+  ] as const)('403 %s with no-store', async (code) => {
+    decideMock.mockResolvedValue({ allowed: false, code });
+    const res = await gatedApp().request('/trust');
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe(code);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('continues for an editor, checking the session user', async () => {
+    decideMock.mockResolvedValue({ allowed: true, contactId: 'ct1' });
+    const res = await gatedApp().request('/trust');
+    expect(res.status).toBe(200);
+    expect(decideMock).toHaveBeenCalledWith({ id: 'pu1', orgId: ORG_ID });
+  });
+});
+
+describe('resolvePortalCapabilities (feature-flags field canEditTrustPage, Trust Center W3d)', () => {
+  beforeEach(() => { decideMock.mockReset(); });
+
+  it('carries canEditTrustPage from the editor gate, read fresh each call', async () => {
+    decideMock.mockResolvedValueOnce({ allowed: true, contactId: 'ct1' });
+    decideMock.mockResolvedValueOnce({ allowed: false, code: 'PORTAL_TRUST_EDITOR_REQUIRED' });
+    expect(await resolvePortalCapabilities({ id: 'pu1', orgId: ORG_ID })).toEqual({ canEditTrustPage: true });
+    expect(await resolvePortalCapabilities({ id: 'pu1', orgId: ORG_ID })).toEqual({ canEditTrustPage: false });
+    expect(decideMock).toHaveBeenCalledTimes(2);
   });
 });

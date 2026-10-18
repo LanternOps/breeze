@@ -94,6 +94,7 @@
     "policies": "Politikalar",
     "policiesNew": "Yeni Politika",
     "quick": "Hızlı Destek",
+    "verify": "Destek isteğini inceleyin",
     "registerPartner": "Şirketinizi Kaydedin",
     "remoteFilesDevice": "Uzak Dosya Yöneticisi",
     "remoteFiles": "Dosya Aktarımı Başlat",
@@ -174,7 +175,8 @@
     "securityScans": "IOC Taramaları",
     "devicesTime": "Saat eşitleme",
     "adminAiModels": "Yapay zeka modelleri",
-    "billingAutopay": "Automatic payments"
+    "billingAutopay": "Automatic payments",
+    "endpointMessages": "Uç Nokta Mesajları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -182,6 +184,10 @@
   },
   "authShell": {
     "tagline": "Hız, netlik ve ölçek için tasarlanmış modern RMM platformu."
+  },
+  "authFooter": {
+    "reportAbuse": "Kötüye kullanımı bildir",
+    "security": "Güvenlik"
   },
   "errorPage": {
     "notFoundBody": "Aradığınız sayfa mevcut değil veya taşınmış olabilir.",

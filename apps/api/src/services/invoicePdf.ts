@@ -30,12 +30,17 @@ import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 import type { BillToAddress } from './sellerSnapshot';
 import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
-import { computeChargeNow, formatMoney, isSupportedLocale } from '@breeze/shared';
+import {
+  computeChargeNow, formatMoney, isSupportedLocale,
+  formatWorkDate, groupLinesByDay, invoiceLineText, lineWorkDateToShow, lineWorkedVsBilled, resolveInvoiceLineDetail,
+  type InvoiceLineDetail,
+} from '@breeze/shared';
 import { formatMoneyForPdf } from './pdfMoney';
 import { fitFontSize } from './pdfFitText';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter } from './documentFooter';
 import { tApi } from '../i18n';
+import { pdfPageSize, resolvePageSize, type DocumentPageSize } from './documentThemes';
 
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect & {
@@ -64,6 +69,9 @@ export interface InvoiceBranding {
    *  and a fallback name/email were resolved. Never set for an issued
    *  invoice, so this is a no-op there. */
   billToEmailFallback?: string | null;
+  /** Partner document page-size default, used only when the invoice carries no
+   *  frozen `document_page_size` (drafts/legacy). Unset → A4. */
+  pageSize?: DocumentPageSize | null;
 }
 
 export const APPENDIX_ROW_CAP = 2000;
@@ -112,27 +120,35 @@ function lineTax(lineTotal: string | number | null | undefined, taxable: boolean
   return Math.round(cents * rate) / 100;
 }
 
-// Title falls back to description for legacy lines created before the
-// name/description split; the blurb only renders when a distinct name exists.
-function lineTitle(l: { name: string | null; description: string | null }): string {
-  return (l.name ?? l.description ?? '').trim() || '—';
-}
-function lineBlurb(l: { name: string | null; description: string | null }): string {
-  return l.name ? (l.description ?? '').trim() : '';
+const apiLocale = (locale: string) => (isSupportedLocale(locale) ? locale : 'en');
+
+/** Title + blurb under the #8604 note toggle (shared `invoiceLineText`). The
+ *  title falls back to description for lines with no name (every assembled
+ *  time-entry line); the blurb only renders when a distinct name exists. With
+ *  the note OFF a time-entry line prints the localised generic labor label. */
+function lineText(
+  l: { sourceType: string; name: string | null; description: string | null },
+  detail: InvoiceLineDetail, locale: string,
+): { title: string; blurb: string } {
+  const t = invoiceLineText(l, detail);
+  return { title: t.title ?? tApi(apiLocale(locale), 'pdf:invoice.laborLine'), blurb: t.blurb };
 }
 
 /** #6467: worked-vs-billed disclosure (§3.5), rendered from structured data
  *  (never from `description`, which a customer-visible line's editor can
  *  freely change) in the document's render locale. Empty when the line isn't
- *  a time_entry line, or when the worked and billed quantities agree —
- *  mirroring the old description-suffix condition exactly. */
-function lineNote(l: { quantity: string; workedMinutes: number | null }, locale: string): string {
-  if (l.workedMinutes == null) return '';
-  const worked = (l.workedMinutes / 60).toFixed(2);
-  const billed = Number(l.quantity).toFixed(2);
-  if (worked === billed) return '';
-  const safeLocale = isSupportedLocale(locale) ? locale : 'en';
-  return tApi(safeLocale, 'pdf:invoice.billedVsWorked', { worked, billed });
+ *  a time_entry line, when the worked and billed quantities agree, or when
+ *  the #8604 worked-time toggle is off. */
+function lineNote(l: { quantity: string; workedMinutes: number | null }, detail: InvoiceLineDetail, locale: string): string {
+  if (!detail.showWorkedTime) return '';
+  const wb = lineWorkedVsBilled(l);
+  return wb ? tApi(apiLocale(locale), 'pdf:invoice.billedVsWorked', wb) : '';
+}
+
+/** #8604: the work date printed under a line ('' = none). */
+function lineDate(l: { workDate?: string | null }, detail: InvoiceLineDetail, locale: string): string {
+  const d = lineWorkDateToShow(l, detail);
+  return d ? formatWorkDate(d, locale) : '';
 }
 
 function addressLines(addr: BillToAddress | null | undefined): string[] {
@@ -182,7 +198,13 @@ function groupVisibleLinesByTicket(lines: InvoiceLineRow[]): RenderGroup[] {
 // PURE: customer-view HTML (email + portal)
 // ---------------------------------------------------------------------------
 
-export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], branding: InvoiceBranding): string {
+export function renderInvoiceHtml(
+  invoice: InvoiceRow,
+  lines: InvoiceLineRow[],
+  branding: InvoiceBranding,
+  // #8604: omitted → the invoice's own columns (frozen once issued).
+  lineDetail: InvoiceLineDetail = resolveInvoiceLineDetail(invoice, null),
+): string {
   const currency = invoice.currencyCode ?? branding.currencyCode ?? 'USD';
   const locale = resolveRenderLocale(invoice, branding);
   const primary = branding.primaryColor && /^#?[0-9a-fA-F]{3,8}$/.test(branding.primaryColor)
@@ -209,22 +231,34 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
       const catBadge = g.ticketCategory ? ` <span style="font-size:11px;font-weight:normal;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px;margin-left:6px;">${escapeHtml(g.ticketCategory)}</span>` : '';
       header = `<tr><td colspan="${showTax ? 5 : 4}" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#374151;border-top:1px solid #e5e7eb;background-color:#f9fafb;">${ticketNum}${subject}${catBadge}</td></tr>`;
     }
-    const lineRows = g.lines.map((l) => {
+    const lineRow = (l: InvoiceLineRow) => {
       const t = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
       const taxCell = showTax
         ? `<td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">${t === null ? '&mdash;' : escapeHtml(formatMoney(t, currency, locale))}</td>`
         : '';
-      const note = lineNote(l, locale);
+      const { title, blurb } = lineText(l, lineDetail, locale);
+      const date = lineDate(l, lineDetail, locale);
+      const note = lineNote(l, lineDetail, locale);
       return `
       <tr>
-        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(lineTitle(l))}${lineBlurb(l) ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(lineBlurb(l))}</div>` : ''}${note ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(note)}</div>` : ''}</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(title)}${date ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(date)}</div>` : ''}${blurb ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(blurb)}</div>` : ''}${note ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(note)}</div>` : ''}</td>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(l.quantity)))}</td>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.unitPrice, currency, locale))}</td>
         ${taxCell}
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.lineTotal, currency, locale))}</td>
       </tr>`;
+    };
+    if (lineDetail.grouping !== 'day') return header + g.lines.map(lineRow).join('');
+    // #8604 per-day: a sub-header per work date (ascending) carrying the day's
+    // billed hours and amount; undated lines (parts, manual, overage) follow
+    // with no header. Presentation only — every line keeps its own row.
+    const dayRows = groupLinesByDay(g.lines).map((day) => {
+      const dayHeader = day.workDate
+        ? `<tr data-day="${escapeHtml(day.workDate)}"><td style="padding:8px 8px 2px;font-size:12px;font-weight:600;color:#4b5563;">${escapeHtml(formatWorkDate(day.workDate, locale))}</td><td style="padding:8px 8px 2px;font-size:12px;color:#4b5563;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(day.hours)))}</td><td></td>${showTax ? '<td></td>' : ''}<td style="padding:8px 8px 2px;font-size:12px;font-weight:600;color:#4b5563;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(day.total, currency, locale))}</td></tr>`
+        : '';
+      return dayHeader + day.lines.map(lineRow).join('');
     }).join('');
-    return header + lineRows;
+    return header + dayRows;
   }).join('');
 
   return `<!DOCTYPE html>
@@ -379,6 +413,8 @@ export function renderInvoicePdfBuffer(
   lines: InvoiceLineRow[],
   branding: InvoiceBranding,
   appendix?: InvoiceDeviceAppendix | null,
+  // #8604: omitted → the invoice's own columns (frozen once issued).
+  lineDetail: InvoiceLineDetail = resolveInvoiceLineDetail(invoice, null),
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
@@ -388,7 +424,12 @@ export function renderInvoicePdfBuffer(
       // Per-line Tax column only when this invoice carries tax (mirrors the header).
       const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
       const showTax = Number(invoice.taxTotal ?? 0) > 0;
-      const doc = new PDFDocument({ size: 'A4', margin: 50 });
+      const doc = new PDFDocument({
+        // #8969: the page size frozen at Issue wins; drafts/legacy follow the
+        // partner default; last resort A4 (resolvePageSize).
+        size: pdfPageSize(resolvePageSize(invoice.documentPageSize ?? branding.pageSize)),
+        margin: 50,
+      });
       const chunks: Buffer[] = [];
       doc.on('data', (d: Buffer) => chunks.push(d));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -463,23 +504,44 @@ export function renderInvoicePdfBuffer(
             y += hHead + 4;
           }
         }
-        for (const l of group.lines) {
+        const drawLine = (l: InvoiceLineRow) => {
           if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
           doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
-          const title = lineTitle(l);
-          const blurb = lineBlurb(l);
-          const note = lineNote(l, locale);
-          const titleHeight = doc.heightOfString(title, { width: colDescW });
+          const { title, blurb } = lineText(l, lineDetail, locale);
+          const date = lineDate(l, lineDetail, locale);
+          const note = lineNote(l, lineDetail, locale);
+          // The title is drawn in bold but was always measured regular. A bold
+          // title wraps sooner, so when the bold measure needs MORE LINES (not
+          // just the fraction-of-a-point line-gap difference every title has)
+          // use it — measured regular, a long one overprinted the next row.
+          // Single-line titles keep the regular measure, so existing documents
+          // lay out to the same coordinates. Sub-lines are measured at 10pt
+          // though drawn at 8.5pt — a deliberate overestimate.
+          const regularTitleHeight = doc.heightOfString(title, { width: colDescW });
+          doc.font('Helvetica-Bold');
+          const boldTitleHeight = doc.heightOfString(title, { width: colDescW });
+          doc.font('Helvetica');
+          const titleHeight = boldTitleHeight > regularTitleHeight + 1 ? boldTitleHeight : regularTitleHeight;
+          const dateHeight = date ? doc.heightOfString(date, { width: colDescW }) + 2 : 0;
           const blurbHeight = blurb ? doc.heightOfString(blurb, { width: colDescW }) + 2 : 0;
           const noteHeight = note ? doc.heightOfString(note, { width: colDescW }) + 2 : 0;
-          const descHeight = titleHeight + blurbHeight + noteHeight;
+          const descHeight = titleHeight + dateHeight + blurbHeight + noteHeight;
+          // #8604: break BEFORE drawing any cell when the whole row will not
+          // fit, so a tall row's numbers never stay behind on the previous
+          // page. A row taller than a page is the one allowed overflow.
+          const pageBottom = doc.page.height - doc.page.margins.bottom;
+          if (y > 50 && y + Math.max(descHeight, 12) > pageBottom) { doc.addPage(); y = 50; }
           doc.font('Helvetica-Bold').text(title, left, y, { width: colDescW });
+          if (date) {
+            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(date, left, y + titleHeight + 2, { width: colDescW });
+            doc.fillColor('#1f2937').fontSize(10);
+          }
           if (blurb) {
-            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, left, y + titleHeight + 2, { width: colDescW });
+            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, left, y + titleHeight + dateHeight + 2, { width: colDescW });
             doc.fillColor('#1f2937').fontSize(10);
           }
           if (note) {
-            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(note, left, y + titleHeight + blurbHeight + 2, { width: colDescW });
+            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(note, left, y + titleHeight + dateHeight + blurbHeight + 2, { width: colDescW });
             doc.fillColor('#1f2937').fontSize(10);
           }
           doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
@@ -502,6 +564,27 @@ export function renderInvoicePdfBuffer(
           doc.text(amountText, colAmtX, y, { width: colNumW, align: 'right', lineBreak: false });
           doc.fontSize(10);
           y += Math.max(descHeight, 12) + 6;
+        };
+        if (lineDetail.grouping !== 'day') {
+          for (const l of group.lines) drawLine(l);
+          continue;
+        }
+        // #8604 per-day sub-headers: date | day hours (QTY) | day amount
+        // (AMOUNT). Same page-break guard as the ticket header. Undated lines
+        // (parts, manual, the aggregated overage line) follow with no header.
+        for (const day of groupLinesByDay(group.lines)) {
+          if (day.workDate) {
+            if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
+            doc.fillColor('#4b5563').fontSize(9).font('Helvetica-Bold')
+              .text(formatWorkDate(day.workDate, locale), left, y, { width: colDescW, lineBreak: false });
+            doc.font('Helvetica').text(String(Number(day.hours)), colQtyX, y, { width: colNumW, align: 'right', lineBreak: false });
+            const dayTotal = formatMoneyForPdf(day.total, currency, locale);
+            fitFontSize(doc, dayTotal, colNumW, 9);
+            doc.font('Helvetica-Bold').text(dayTotal, colAmtX, y, { width: colNumW, align: 'right', lineBreak: false });
+            doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
+            y += 15;
+          }
+          for (const l of day.lines) drawLine(l);
         }
       }
 
@@ -738,6 +821,9 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
   lines: InvoiceLineRow[];
   branding: InvoiceBranding;
   appendix: InvoiceDeviceAppendix | null;
+  /** #8604 line itemization: a draft previews override ?? partner default;
+   *  anything issued reads ONLY its frozen invoices.line_* columns. */
+  lineDetail: InvoiceLineDetail;
 } | null> {
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) return null;
@@ -765,6 +851,9 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
     ? (invoice.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false)
     : invoice.deviceAppendix === true;
   const appendix = includeDeviceAppendix ? await loadDeviceAppendix(invoiceId) : null;
+  // #8604: same two-branch rule as the appendix, inside the shared resolver —
+  // the partner row is consulted for a draft only.
+  const lineDetail = resolveInvoiceLineDetail(invoice, partner ?? null);
   const [branding] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, invoice.orgId)).limit(1);
   // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
   // the From block still renders (issued docs use the frozen column).
@@ -792,6 +881,7 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
     invoice,
     lines,
     appendix,
+    lineDetail,
     branding: {
       // Seller-snapshot fallback before the document-type literal (#2151), so
       // the invoice PDF degrades the same way the quote side does
@@ -816,6 +906,8 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
       // partner's current language.
       locale: invoice.documentLocale ?? resolvePartnerDocumentLocale(partner),
       billToEmailFallback,
+      // Draft/legacy fallback only; the renderer prefers invoice.documentPageSize.
+      pageSize: resolvePageSize(partner?.documentPageSize),
     },
   };
 }
@@ -859,7 +951,7 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
       console.error(`[invoicePdf] could not mint public link for PDF of invoice ${invoiceId} — rendering without the pay-online line`, err);
     }
   }
-  const pdf = await renderInvoicePdfBuffer(loaded.invoice, loaded.lines, loaded.branding, loaded.appendix);
+  const pdf = await renderInvoicePdfBuffer(loaded.invoice, loaded.lines, loaded.branding, loaded.appendix, loaded.lineDetail);
   const sha256 = createHash('sha256').update(pdf).digest('hex');
 
   // Preview-only for a draft: render bytes but never persist a stale artifact or

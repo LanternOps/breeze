@@ -710,8 +710,14 @@ func setRenameInformation(handle, parent windows.Handle, name string, class uint
 	copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&info.FileName[0]))[:nameLen/2:nameLen/2], nameUTF16)
 
 	var iosb windows.IO_STATUS_BLOCK
-	return windows.NtSetInformationFile(handle, &iosb, &buf[0], uint32(len(buf)), class)
+	return ntSetRenameInformation(handle, &iosb, &buf[0], uint32(len(buf)), class)
 }
+
+// ntSetRenameInformation is the rename syscall itself. It is a variable only so
+// the concurrent-replacement test can record exactly when the kernel was
+// executing a rename, and with which class (#8491); production never replaces
+// it.
+var ntSetRenameInformation = windows.NtSetInformationFile
 
 func deleteRelative(parent windows.Handle, name string) error {
 	handle, err := openRelativeComponent(parent, name, windows.DELETE, shareFile, windows.FILE_OPEN, ntFileOptions, nil)

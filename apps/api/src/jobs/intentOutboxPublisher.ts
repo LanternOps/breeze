@@ -7,6 +7,15 @@ import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
+import { linkCallerIntentTerminal } from '../services/callerVerification/incidentLinks';
+
+const INTENT_TERMINAL_EVENTS: ReadonlySet<string> = new Set([
+  'intent_completed',
+  'intent_failed',
+  'intent_cancelled',
+  'intent_expired',
+  'intent_rejected',
+]);
 
 /**
  * Drains the `intent_outbox` transactional outbox (spec
@@ -27,7 +36,10 @@ import { attachWorkerObservability } from './workerObservability';
  *     before step 3 starts.
  *  3. For each claimed row, enqueue an `action-intents` job with a
  *     hyphen-only, dedupe-stable jobId (`intent-<eventType>-<intentId>` — see
- *     BullMQ jobId rule: colons collide with BullMQ's own key delimiter).
+ *     BullMQ jobId rule: colons collide with BullMQ's own key delimiter),
+ *     carrying the delivery retry policy (ACTION_INTENT_JOB_ATTEMPTS with
+ *     exponential backoff, #4156) so a consumer-side transient failure is
+ *     redelivered rather than left failed.
  *     This step runs explicitly OUTSIDE any DB access context
  *     (`runOutsideDbContext`) so a Redis round-trip per row never pins a
  *     pooled DB connection idle-in-transaction (#1105) — `queue.add()` is
@@ -61,6 +73,25 @@ const MAX_PUBLISH_PER_RUN = 200;
 // intentOutboxRetention.ts's prune cutoff stays in sync with this threshold
 // instead of duplicating the magic number (#4210).
 export const MAX_PUBLISH_ATTEMPTS = 5;
+
+// #4156 — DELIVERY retry policy for `action-intents` jobs (distinct from
+// MAX_PUBLISH_ATTEMPTS above, which bounds outbox → Redis publishing). The
+// consumer (intentReleaseWorker.processIntentReleaseJob) rethrows transient
+// failures — `PolicyDecisionTransientError` from the `intent_created` branch,
+// a DB fault before the release claim — and relies on BullMQ redelivering
+// them; with BullMQ's default `attempts: 1` nothing ever did (for
+// `intent_created` that stranded the intent `unattempted` until the expiry
+// reaper cancelled it; for the others, a missed release or outcome
+// notification). Safe because every consumer
+// branch is idempotent: the release path's single-use `approved -> executing`
+// CAS, attemptPolicyDecision's `policy_decision_state = 'unattempted'` CAS,
+// and outcome notifications' `(user_id, dedupe_key)` ON CONFLICT DO NOTHING.
+// Exponential: retries wait 5s, 10s, 20s, 40s — 75s in total, well inside the
+// shortest window a retry must land in (5 min supervised chat approval window,
+// 10 min RELEASE_LEASE_MS). Past either deadline the release claim refuses
+// and policy-decide degrades to human review, so a late retry cannot act.
+export const ACTION_INTENT_JOB_ATTEMPTS = 5;
+export const ACTION_INTENT_JOB_BACKOFF_MS = 5 * 1000;
 
 type PublisherJobData = { type: 'publish-intent-outbox'; queuedAt: string };
 
@@ -221,11 +252,31 @@ async function enqueueClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
           },
         );
       } else if (row.intent_id) {
+        // Caller verification W05 (#6354): reflect a terminal outcome on any
+        // rejection incident already tracking this intent. Runs in its own
+        // short system context (closed before the Redis add). A failure
+        // throws into the catch below, leaving the row unpublished for retry.
+        if (INTENT_TERMINAL_EVENTS.has(row.event_type)) {
+          // Informational only (caller-verification incident timeline): a
+          // failure here must never block delivery of the terminal event
+          // itself, so it is reported and the publish continues.
+          try {
+            await linkCallerIntentTerminal(row.intent_id);
+          } catch (linkError) {
+            console.error('[IntentOutboxPublisher] caller-verification incident link failed; publishing anyway', {
+              intentId: row.intent_id, eventType: row.event_type,
+              error: linkError instanceof Error ? linkError.message : String(linkError),
+            });
+            captureException(linkError instanceof Error ? linkError : new Error(String(linkError)));
+          }
+        }
         await getActionIntentsQueue().add(
           row.event_type,
           { intentId: row.intent_id, eventType: row.event_type },
           {
             jobId: `intent-${row.event_type}-${row.intent_id}`,
+            attempts: ACTION_INTENT_JOB_ATTEMPTS,
+            backoff: { type: 'exponential', delay: ACTION_INTENT_JOB_BACKOFF_MS },
             removeOnComplete: { count: 500 },
             removeOnFail: { count: 500 },
           },

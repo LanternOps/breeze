@@ -110,7 +110,12 @@
     "timeSync": "Sincronização de horário",
     "aiModels": "Modelos de IA",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Incidentes",
+    "ticketsServiceRequests": "Solicitações de serviço",
+    "ticketsProblems": "Problemas",
+    "ticketsChanges": "Mudanças",
+    "endpointMessages": "Mensagens"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -311,6 +316,17 @@
       "target": "Destino",
       "time": "Hora"
     },
+    "recentlyViewed": {
+      "title": "Continue de onde parou",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organização",
+        "ticket": "Chamado",
+        "alert": "Alerta",
+        "site": "Site",
+        "page": "Página"
+      }
+    },
     "alerts": {
       "title": "Alertas recentes",
       "viewAll": "Ver todos",
@@ -408,7 +424,9 @@
       "unratedPending": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
       "unratedPending_one": "{{count}} patch não avaliado pendente (não será aprovado automaticamente)",
       "unratedPending_other": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
-      "empty": "Ainda sem dados de patches"
+      "empty": "Ainda sem dados de patches",
+      "imagesNotChecked_one": "{{count}} imagem de contêiner não verificada",
+      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas"
     },
     "vuln": {
       "title": "Vulnerabilidades",
@@ -476,7 +494,10 @@
       "createFirst": "Crie seu primeiro filtro",
       "created": "Criado em {{date}}",
       "deleteConfirm": "Excluir este filtro?",
-      "duplicate": "Duplicar"
+      "duplicate": "Duplicar",
+      "saveFailed": "Não foi possível salvar o filtro",
+      "deleteFailed": "Não foi possível excluir o filtro",
+      "ownerOrgHint": "Os filtros salvos pertencem a uma organização. Escolha a qual organização este filtro pertence."
     },
     "targets": {
       "modes": {
@@ -494,7 +515,9 @@
       "noGroups": "Nenhum grupo de dispositivos disponível",
       "deviceCount": "{{count}} dispositivos",
       "loadSaved": "Carregar filtro salvo:",
-      "select": "Selecionar"
+      "select": "Selecionar",
+      "dynamic": "Dinâmico",
+      "refusedGroup": "Indisponível como alvo: as regras deste grupo usam campos que o próprio dispositivo informa ({{fields}})."
     },
     "preview": {
       "title": "Dispositivos correspondentes",
@@ -680,7 +703,23 @@
       "noSelection": "Selecionar organização",
       "searchOrganizations": "Buscar organizações…",
       "noMatches": "Nenhuma organização corresponde",
-      "legacyFilterNotice": "A filtragem por organização agora segue o seletor do cabeçalho."
+      "legacyFilterNotice": "A filtragem por organização agora segue o seletor do cabeçalho.",
+      "recent": "Recentes",
+      "pane": {
+        "destinations": {
+          "overview": "Visão geral",
+          "devices": "Dispositivos",
+          "tickets": "Chamados",
+          "alerts": "Alertas",
+          "sites": "Locais",
+          "billing": "Faturamento"
+        },
+        "offlineCount": "{{count}} sem conexão",
+        "openCount": "{{count}} abertos",
+        "criticalCount": "{{count}} críticos",
+        "noCritical": "nenhum",
+        "hint": "Clique em um nome para trocar · clique em uma página para trocar e ir até ela"
+      }
     },
     "header": {
       "menu": "Menu",
@@ -797,9 +836,9 @@
       "expand": "Expandir barra lateral",
       "collapseSections": "Recolher todas as seções",
       "closeMenu": "Fechar menu",
-      "recentDevices": "Dispositivos recentes",
-      "hideRecentDevices": "Ocultar dispositivos recentes",
-      "showRecentDevices": "Mostrar dispositivos recentes"
+      "recent": "Recentes",
+      "hideRecent": "Ocultar recentes",
+      "showRecent": "Mostrar recentes"
     },
     "orgRequired": {
       "title": "Selecione uma organização",
@@ -1323,6 +1362,18 @@
           "ticketAssigned": {
             "description": "Acionado quando um ticket é atribuído ou desatribuído.",
             "label": "Ticket atribuído"
+          },
+          "migrationWindowClosed": {
+            "description": "Acionado uma vez por organização quando uma janela de migração de tickets é encerrada, com as contagens importadas.",
+            "label": "Janela de migração encerrada"
+          },
+          "integrationHealthOpened": {
+            "description": "Acionado quando um incidente de integridade é aberto na conexão de uma organização.",
+            "label": "Incidente de integridade da conexão aberto"
+          },
+          "integrationHealthResolved": {
+            "description": "Acionado quando um incidente de integridade de uma conexão é resolvido.",
+            "label": "Incidente de integridade da conexão resolvido"
           }
         },
         "fields": {
@@ -1705,7 +1756,8 @@
         "deleteEntry": "Excluir entrada {{id}}",
         "deleteConfirmTitle": "Excluir entrada de tempo?",
         "deleteConfirmMessage": "Isso remove permanentemente a entrada de {{duration}} do ticket {{ticket}}. Não é possível desfazer.",
-        "deleteConfirmMessageNoTicket": "Isso remove permanentemente a entrada de {{duration}}. Não é possível desfazer."
+        "deleteConfirmMessageNoTicket": "Isso remove permanentemente a entrada de {{duration}}. Não é possível desfazer.",
+        "noteInvoiceCue": "Os clientes veem esta observação na fatura, a menos que suas configurações de faturamento ocultem observações."
       },
       "sourceBadge": {
         "timer": "Cronômetro",
@@ -2192,7 +2244,8 @@
         "viewInSource": "Ver em {{source}}",
         "promoteFromEdr": "Promover a partir da visualização de EDR",
         "pagination": "Página {{page}} de {{totalPages}} ({{total}} no total)",
-        "previous": "Anterior"
+        "previous": "Anterior",
+        "genericEdrProvider": "Provedor de EDR"
       },
       "IncidentDetailPage": {
         "errors": {
@@ -2591,6 +2644,34 @@
         "sending": "Enviando…",
         "send": "Enviar"
       }
+    },
+    "mcpDomains": {
+      "legend": "Acesso a ferramentas",
+      "allLabel": "Todas as ferramentas (incluindo áreas adicionadas depois)",
+      "selectedLabel": "Somente estas áreas",
+      "coreLabel": "Núcleo (sempre incluído)",
+      "error": "Selecione pelo menos uma área ou escolha Todas as ferramentas.",
+      "allEquivalentNote": "Todas as áreas estão selecionadas, então isso equivale a Todas as ferramentas, incluindo áreas adicionadas depois.",
+      "reconnectNote": "Vale para esta conexão. Para restringir uma conexão existente, revogue-a em Aplicativos conectados e conecte novamente.",
+      "apiKeyHint": "Escolha quais áreas de ferramentas esta chave pode usar pela interface de IA/MCP.",
+      "allTools": "Todas as ferramentas",
+      "areaCount_one": "{{count}} área",
+      "areaCount_other": "{{count}} áreas",
+      "labels": {
+        "devices": "Dispositivos",
+        "scripts": "Scripts e automação",
+        "patching": "Patches e software",
+        "monitoring": "Monitoramento e alertas",
+        "network": "Rede",
+        "security": "Segurança e conformidade",
+        "backup": "Backup e recuperação",
+        "tickets": "Chamados e tempo",
+        "billing": "Faturamento",
+        "accounts": "Contas",
+        "integrations": "Integrações",
+        "admin": "Administração",
+        "ai": "Agentes de IA"
+      }
     }
   },
   "whatsNew": {
@@ -2614,7 +2695,8 @@
     "dismiss": "Dispensar lembrete de autenticação de dois fatores"
   },
   "mfaPolicyOffBanner": {
-    "message": "A autenticação multifator não é obrigatória para a sua equipe. Sessões apenas com senha podem executar scripts, mover dispositivos e alterar políticas.",
+    "label": "Lembrete de MFA",
+    "message": "A MFA não é obrigatória para sua equipe. Sessões só com senha podem executar scripts.",
     "cta": "Exigir MFA",
     "dismiss": "Dispensar o lembrete da política de MFA por hoje"
   },
@@ -2684,5 +2766,10 @@
     "errors": {
       "loadFailed": "Não foi possível carregar a memória de correções."
     }
+  },
+  "islandError": {
+    "title": "Esta seção falhou",
+    "description": "Um erro de renderização impediu a exibição desta página. Tente novamente e, se continuar acontecendo, inclua a mensagem abaixo ao relatar o problema.",
+    "retry": "Tentar novamente"
   }
 }

@@ -187,7 +187,18 @@ export const M365_PERMISSION_PROFILES = {
   },
   'customer-graph-actions': {
     id: 'customer-graph-actions',
-    version: 1,
+    // v2 (#8648): v1 pinned delegated scope IDs, not application role IDs.
+    // v3 (Operator Recipe Library M1, #6170): the whole identity write catalog
+    // in ONE bump, so a customer re-consents once rather than once per action
+    // (spec §7.2). A row on v2 keeps executing disable/reset_password on the
+    // grants it holds; Retest keeps its stored version, and the existing
+    // upgrade-consent flow moves it to v3. Least privilege (spec §7.1):
+    // GroupMember.ReadWrite.All, never Group.ReadWrite.All (it cannot create,
+    // delete or edit a group); Intune PrivilegedOperations is used for RETIRE
+    // only — the executor has no wipe path. Organization.Read.All backs the
+    // /subscribedSkus seat pre-read; User.RevokeSessions.All is the only
+    // application permission Microsoft accepts for revokeSignInSessions.
+    version: 3,
     ownerAxis: 'organization',
     authMode: 'application-certificate',
     credentialDomain: 'customer-graph-actions',
@@ -196,22 +207,52 @@ export const M365_PERMISSION_PROFILES = {
     applicationPermissions: [
       'User.ReadWrite.All',
       'User-PasswordProfile.ReadWrite.All',
-      // roadmap (each future action needs a manifest version bump + customer re-consent):
-      //   'Group.ReadWrite.All',
-      //   'DeviceManagementManagedDevices.PrivilegedOperations.All',
-      //   'DeviceManagementConfiguration.ReadWrite.All',
-      //   'Sites.ReadWrite.All',
+      'User.RevokeSessions.All',
+      'GroupMember.ReadWrite.All',
+      'DeviceManagementManagedDevices.PrivilegedOperations.All',
+      'MailboxSettings.ReadWrite',
+      'Organization.Read.All',
     ],
+    // Application role ids verified against
+    // https://learn.microsoft.com/en-us/graph/permissions-reference
+    // (Application column) on 2026-10-16.
     applicationPermissionAssignments: [
       {
         resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
-        appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4',
+        appRoleId: '741f803b-c850-494e-b5df-cde7c675a1ca',
         value: 'User.ReadWrite.All',
       },
       {
         resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
-        appRoleId: '56760768-b641-451f-8906-e1b8ab31bca7',
+        appRoleId: 'cc117bb9-00cf-4eb8-b580-ea2a878fe8f7',
         value: 'User-PasswordProfile.ReadWrite.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '77f3a031-c388-4f99-b373-dc68676a979e',
+        value: 'User.RevokeSessions.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        // Not 62a82d76-… (that is Group.ReadWrite.All).
+        appRoleId: 'dbaae8cf-10b5-4b86-a4a1-f871c94c6695',
+        value: 'GroupMember.ReadWrite.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '5b07b0dd-2377-4e44-a38d-703f09a0dc3c',
+        value: 'DeviceManagementManagedDevices.PrivilegedOperations.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '6931bccd-447a-43d1-b442-00a195474933',
+        value: 'MailboxSettings.ReadWrite',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        // Same id as the customer-graph-read manifest above.
+        appRoleId: '498476ce-e0fe-48b0-b801-37ba7e2685c6',
+        value: 'Organization.Read.All',
       },
     ],
   },

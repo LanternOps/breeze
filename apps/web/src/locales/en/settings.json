@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "AI data & privacy",
+    "orgDescription": "What Breeze AI may read from this organization's devices, and how long AI tool outputs are kept. Blank inherits the partner default; an organization can only tighten it.",
+    "partnerDescription": "Defaults for every organization. An organization can tighten these on its own AI tab but never loosen them.",
+    "levelLabel": "AI device file reads",
+    "levels": {
+      "off": {
+        "label": "Off",
+        "help": "The AI cannot read file contents or browse folders on devices, and diagnostic access requests are refused. Disk-usage summaries and your own library scripts stay available."
+      },
+      "no_user_profiles": {
+        "label": "Excludes user profile folders",
+        "help": "System and application paths with approval; Documents, Desktop and home folders are refused unless an administrator approves a time-boxed diagnostic grant."
+      },
+      "any_with_approval": {
+        "label": "Any path, with approval",
+        "help": "Every read still needs a technician's approval and is audited; credential stores stay blocked."
+      }
+    },
+    "inherit": "Inherit: {{value}} ({{source}})",
+    "retentionLabel": "Keep AI tool outputs for (days)",
+    "retentionInherit": "Inherit: {{value}} ({{source}})",
+    "retentionHelp": "Outputs older than this are replaced with a marker during the nightly run. Blank inherits; a partner can choose to keep outputs forever.",
+    "keepForever": "forever",
+    "sourceOrg": "this organization",
+    "sourcePartner": "partner default",
+    "sourceDefault": "Breeze default",
+    "abovePartnerCeiling": "Not available: the partner default is stricter.",
+    "aboveCeilingLevel": "Not available: the partner default is stricter.",
+    "retentionAboveCeiling": "Your partner keeps outputs for at most {{days}} days.",
+    "saved": "AI data policy saved",
+    "failedToSave": "Failed to save AI data policy",
+    "partnerInheritDefault": "Breeze default: {{value}}",
+    "readOnly": "You do not have permission to change these defaults.",
+    "retentionKeepDays": "Keep for (days)",
+    "retentionKeepForever": "Keep forever",
+    "retentionBreezeDefault": "Breeze default: {{days}} days",
+    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run."
+  },
   "partnerServicePrincipals": {
     "title": "Service principals",
     "description": "Manage partner-scoped machine identities and their access keys.",
@@ -123,7 +162,62 @@
     "copy": "Copy",
     "copied": "Copied",
     "oneTimeWarning": "This plaintext key is shown once and cannot be retrieved later.",
-    "done": "Done"
+    "done": "Done",
+    "owner": "Owner",
+    "unknownOwner": "Unknown user",
+    "ownerOnlyTooltip": "Only {{owner}} can issue or rotate keys",
+    "ownerOnlyScopeTooltip": "Only {{owner}} can add scopes",
+    "ownerOnlyEditNotice": "You can rename, narrow or shorten this principal. Only {{owner}} can add scopes, extend its expiry or loosen its source IPs.",
+    "ownerOnlyWidening": "Only {{owner}} can extend the expiry or loosen the source IPs. Undo those changes to save.",
+    "presetsHint": "Start from a preset, then adjust the scopes below. Presets only fill in the checkboxes.",
+    "presets": {
+      "docs-sync": {
+        "label": "Read-only documentation / asset sync",
+        "description": "Read access to organizations, sites, devices, inventory, configuration, scripts, backup configuration and custom fields."
+      },
+      "provisioning": {
+        "label": "Tenant provisioning",
+        "description": "The read set plus creating organizations and sites and minting enrollment keys. Enrollment keys require an expiry and source IPs."
+      },
+      "alert-feed": {
+        "label": "Alert feed",
+        "description": "Read organizations and alerts."
+      },
+      "ticketing": {
+        "label": "Ticketing integration",
+        "description": "Read organizations, and read and write tickets."
+      },
+      "ai-mcp": {
+        "label": "AI / MCP client",
+        "description": "MCP access with ai:read. Add ai:write or ai:execute only if the client needs them."
+      },
+      "custom": {
+        "label": "Custom",
+        "description": "Clear the selection and choose each scope yourself."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Organization names, slugs and types across every org the principal can reach.",
+      "sites_read": "Sites (locations) and their details.",
+      "devices_read": "Device records: hostname, OS, hardware and group membership.",
+      "inventory_read": "Hardware and software inventory collected from devices.",
+      "configuration_read": "Configuration policies and their assignments.",
+      "scripts_read": "Script library entries, including script contents.",
+      "backup-configuration_read": "Backup configuration and schedules (not backup data).",
+      "custom-fields_read": "Custom field definitions and the values set on devices.",
+      "alerts_read": "Alert titles and messages across every org the principal can reach.",
+      "tickets_read": "Ticket subjects, descriptions and comments, which are customer-authored, across every org the principal can reach.",
+      "device-status_read": "Live heartbeat state: online/offline, last-seen time and agent version. Not implied by devices:read.",
+      "organizations_write": "Create organizations. Cannot update or delete.",
+      "sites_write": "Create sites. Cannot update or delete.",
+      "enrollment-keys_write": "Mint device enrollment keys. Requires an expiry and at least one source IP or CIDR.",
+      "contracts_write": "Read, create and edit contracts and contract lines, and remove lines. Cannot activate, pause or cancel.",
+      "tickets_write": "Create, update, assign, change status of and comment on tickets. Cannot delete or move tickets.",
+      "ai_read": "Connect to the MCP endpoint and use read-only tools. Required by every other ai:* scope.",
+      "ai_write": "MCP tools that change data.",
+      "ai_execute": "MCP tools that run actions on devices.",
+      "ai_execute_admin": "MCP tools that run administrative actions. Grant only to a client you fully trust."
+    }
   },
   "language": {
     "title": "Language",
@@ -272,7 +366,6 @@
       "supportedGeos": "Supports: {{geos}}",
       "refreshQueued": "Model refresh queued",
       "refreshFailed": "Couldn't queue a model refresh.",
-      "alreadyConnected": "Already connected",
       "addKind": {
         "anthropic_byok": "Anthropic API key",
         "openai_compatible": "OpenAI-compatible endpoint"
@@ -375,7 +468,8 @@
       "duplicate_model": "That model id is already on this connection.",
       "geo_not_supported": "This kind of connection cannot set an inference region.",
       "key_required_for_new_endpoint": "Enter the key for the new URL (or remove the key).",
-      "too_many_models": "This connection already has the maximum number of hand-entered models."
+      "too_many_models": "This connection already has the maximum number of hand-entered models.",
+      "not_removable": "Only models added by hand can be removed. Disable this one instead."
     },
     "org": {
       "title": "Model defaults",
@@ -512,7 +606,12 @@
       "verify": "Verify",
       "verifyQueued": "Model check queued",
       "verifyFailed": "Couldn't queue the model check.",
-      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens)."
+      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens).",
+      "remove": "Remove model",
+      "removeTitle": "Remove this model?",
+      "removeMessage": "“{{model}}” will be deleted from this connection. Past usage and cost history is kept. You can add it again later.",
+      "removed": "Model removed",
+      "removeFailed": "Couldn’t remove the model. Try again."
     },
     "defaults": {
       "title": "Defaults by feature",
@@ -921,6 +1020,11 @@
       "schemeRequired": "URL template must start with a scheme followed by a colon (e.g. rustdesk:, https:)",
       "schemeBlocked": "That URL scheme is not permitted — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: and filesystem: are blocked.",
       "idRequired": "URL template must include the {id} placeholder for the per-device value."
+    },
+    "networkProxy": {
+      "title": "Network Proxy",
+      "label": "Serve Network Proxy from a dedicated origin",
+      "help": "Applies to all organizations; organizations cannot override it. Takes effect only where your region offers a dedicated origin, and improves compatibility with device web UIs."
     }
   },
   "partnerSettingsPage": {
@@ -950,6 +1054,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Trust Center",
+        "description": "Defaults for your customers' trust pages"
+      },
       "company": {
         "label": "Company",
         "description": "Name, address, contacts"
@@ -1342,6 +1450,9 @@
       "invoice_number": "Invoice number",
       "due_date": "Due date",
       "invite_url": "Invite URL",
+      "name": "Recipient name",
+      "inviter_name": "Inviter name",
+      "expires_days": "Days until the invite expires",
       "cta_button": "Button",
       "client_name": "Client name",
       "setup_link": "Automatic payments setup link",
@@ -1367,7 +1478,11 @@
       "days_overdue": "Days overdue",
       "pay_link": "Payment link",
       "charge_total": "Total charge",
-      "attempted_amount": "Attempted payment amount"
+      "attempted_amount": "Attempted payment amount",
+      "approval_ask": "Approval ask",
+      "approval_snapshot": "Approval figures",
+      "approval_expires": "Approval deadline",
+      "approval_status": "Approval status"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1379,7 +1494,10 @@
       "autopay_resumed": "Automatic payments resumed",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Online payment receipt",
-      "payment_failed": "Payment could not be completed"
+      "payment_failed": "Payment could not be completed",
+      "ticket_approval_requested_approver": "Work approval request (approver)",
+      "ticket_approval_requested_notify": "Work approval request (for information)",
+      "ticket_approval_decided": "Work approval decision"
     }
   },
   "inboundEmail": {
@@ -1473,6 +1591,7 @@
     },
     "scopeMailbox": "Scope this mailbox (Application Access Policy)",
     "reauthRequired": "Administrator re-consent is required before Microsoft 365 polling and replies resume.",
+    "pollFailing": "The last {{failures}} checks of this mailbox failed with a temporary Microsoft 365 error. Breeze keeps retrying; new mail is picked up once Microsoft 365 responds again.",
     "retest": "Re-test",
     "reconnect": "Reconnect",
     "disconnect": "Disconnect",
@@ -1843,6 +1962,10 @@
       "title": "Portal features",
       "description": "Control what this customer can do in their portal. Each organization is independent.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Customer trust page editing",
+          "description": "Customers' admin contacts with a portal login can edit the trust page draft: security contact, website, hidden controls and what the page shows. You still publish their changes. They can also withdraw the published page."
+        },
         "enableTickets": {
           "label": "Ticket submission",
           "description": "Customers can open and track support tickets from the portal."
@@ -1922,9 +2045,25 @@
           "label": "Network visibility",
           "description": "Show read-only network health and discovered assets in the customer portal."
         },
+        "enableEdrVisibility": {
+          "label": "Endpoint protection (EDR)",
+          "description": "Show customers a generic “Managed endpoint protection” status and threat counts from connected EDR providers. Vendor names are never shown in the portal."
+        },
         "enableNetworkAlerts": {
           "label": "Network alerts",
           "description": "Show active alert counts and linked open tickets on network assets in the customer portal."
+        },
+        "enablePatchDetail": {
+          "label": "Patch detail",
+          "description": "Show every portal login of this organization each device's pending, installed and failed patches (title, severity, version, KB link). This reveals which machines are missing patches. Not turned on by Enable all visibility."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Vulnerability detail",
+          "description": "Show every portal login of this organization each device's CVE findings and their severity (CVE ID, description, severity, CVSS score, patch availability, status). This reveals which machines are vulnerable. Not turned on by Enable all visibility."
+        },
+        "enableHourBlock": {
+          "label": "Support hours",
+          "description": "Show prepaid block hours used and remaining inside the customer's Support usage section. Requires Support usage. Not turned on by Enable all visibility."
         }
       }
     },
@@ -1948,7 +2087,9 @@
       "email": "Support email",
       "phone": "Support phone",
       "welcomeMessage": "Welcome message",
-      "footerText": "Footer text"
+      "footerText": "Footer text",
+      "footerTextHelp": "Shown at the bottom of the customer portal and printed on this organization's quotes and invoices, replacing the partner document footer. Leave blank to print the partner footer.",
+      "footerTextInheritedSource": "Partner document footer"
     }
   },
   "orgPortalUsersEditor": {
@@ -2809,6 +2950,7 @@
           "blocked_by_app_rule": "Blocked by an app rule",
           "awaiting_manual_approval": "Awaiting manual approval",
           "no_ring_resolved": "The device has no update ring",
+          "ring_reference_invalid": "Policy's update ring is invalid",
           "device_not_in_org": "Device not in this organization"
         },
         "failureClasses": {
@@ -3340,6 +3482,7 @@
         "delete_tenant": "Delete an organization",
         "detect_log_correlations": "Detect log correlations",
         "disk_cleanup": "Disk cleanup",
+        "edr_endpoint_action": "EDR: isolate, release or scan a device",
         "execute_command": "Run a system command",
         "execute_playbook": "Run a playbook",
         "file_operations": "File operations",
@@ -3427,6 +3570,7 @@
         "security_scan": "Security scan",
         "set_agent_log_level": "Set agent log level",
         "set_device_context": "Set device context",
+        "sync_edr_data": "Sync EDR data",
         "sync_huntress_data": "Sync Huntress data",
         "system_cleanup": "System cleanup",
         "take_screenshot": "Take a screenshot"
@@ -4191,7 +4335,16 @@
     "partnerCurrencyUnavailable": "Could not load your partner currency.",
     "retry": "Retry",
     "priceCouldNotBeSavedRetry": "The {{currency}} price could not be saved. Retry.",
-    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry."
+    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry.",
+    "billing": "Billing",
+    "billingOneTime": "One-time",
+    "billingRecurring": "Recurring",
+    "billingFrequency": "Frequency",
+    "frequencyMonthly": "Monthly",
+    "frequencyAnnual": "Annual",
+    "commitmentTerm": "Commitment term (months)",
+    "commitmentTermPlaceholder": "e.g. 12",
+    "commitmentTermRange": "Commitment term: enter a whole number from 1–120 months."
   },
   "catalogItemsTab": {
     "itemArchived": "Item archived",
@@ -4273,7 +4426,8 @@
     "reEnterYourNewPassword": "Re-enter your new password",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Changing password..."
+    "changingPassword": "Changing password...",
+    "noPasswordNotice": "This account signs in through your organization's identity provider and has no password, so there is nothing to change here. If your organization does not require single sign-on, use Forgot password on the sign-in page to set one."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single sign-on connected.",
@@ -4291,7 +4445,8 @@
     "sessionInvalid": "Your session changed before linking could finish. Please sign in again and retry.",
     "providerInactive": "That single sign-on provider is no longer active. Contact your administrator.",
     "configChanged": "The single sign-on configuration changed while you were connecting. Please try again.",
-    "emailUnverified": "Your identity provider did not confirm that your email address is verified. Contact your administrator."
+    "emailUnverified": "Your identity provider did not confirm that your email address is verified. Contact your administrator.",
+    "idpVerifyFailed": "Breeze could not verify the sign-in your identity provider returned. Please try again."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Loading connected apps…",
@@ -4492,6 +4647,7 @@
     "ssoReauthProviderInactive": "Single sign-on is no longer available for this account. Ask your administrator, then try again.",
     "ssoReauthConfigChanged": "Your single sign-on settings changed while you were verifying. Start the verification again.",
     "ssoReauthEmailUnverified": "Your identity provider reports that your email address is not verified. Verify it there, then try again.",
+    "ssoReauthIdpVerifyFailed": "Breeze could not verify the sign-in your identity provider returned. Try again. If it keeps failing, ask your administrator to check the server logs.",
     "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up multi-factor authentication.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "This account signs in through an identity provider and has no password. Re-verify with your provider before adding a passkey.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Your identity is verified. Name this passkey and continue.",
@@ -4524,6 +4680,11 @@
     "systemRoles": "System roles",
     "customRoles": "Custom roles",
     "createRole": "Create Role",
+    "ownerScope": "Scope",
+    "ownerScopePartner": "Partner",
+    "ownerScopePartnerHelp": "For your own staff. Assign it on the Users page.",
+    "ownerScopeOrganization": "Organization",
+    "ownerScopeOrganizationHelp": "For one organization's users and its SSO default role.",
     "name": "Name",
     "type": "Type",
     "inheritsFrom": "Inherits From",
@@ -5524,7 +5685,8 @@
     "loading": "Loading ticket settings…",
     "errors": {
       "load": "Ticket settings failed to load.",
-      "save": "Failed to save ticket settings"
+      "save": "Failed to save ticket settings",
+      "savedApprovalFailed": "Ticket settings saved, but the customer approval policy failed to save"
     },
     "toasts": {
       "saved": "Ticket settings saved"
@@ -5550,9 +5712,32 @@
       "inherit": "Inherit",
       "billableOption": "Billable",
       "nonBillableOption": "Non-billable"
+    },
+    "approval": {
+      "title": "Customer work approval",
+      "description": "Override the partner default for this organization. Choose Inherit to use the partner default.",
+      "enabled": "Require customer approval",
+      "budgetTrigger": "Ask when a ticket budget would be exceeded",
+      "afterHoursTrigger": "Ask for after-hours work",
+      "enforcement": "Enforcement",
+      "enforcementSoft": "Soft (warn, allow logging)",
+      "enforcementHard": "Hard (block until approved)",
+      "ttl": "Approval request expires after (hours)",
+      "ttlRange": "Expiry must be between {{min}} and {{max}} hours",
+      "on": "On",
+      "off": "Off",
+      "inherit": "Inherit",
+      "inheritValue": "Inherit ({{value}})",
+      "clear": "Clear override (inherit)",
+      "pendingInherit": "Will inherit the default after saving",
+      "loadFailed": "Could not load the customer approval settings.",
+      "sourceOrg": "Organization override",
+      "sourcePartner": "Partner default",
+      "sourceDefault": "Built-in default"
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "This organization has a published trust page. Changing the slug changes its public URL, and the old link will stop working.",
     "actions": {
       "save": "Save organization"
     },
@@ -5725,6 +5910,12 @@
         "merge": "Failed to start the merge",
         "missingResult": "The merge finished but returned no result data. Try again.",
         "mfaRequired": "Merging organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
+      },
+      "blockers": {
+        "pam_open_actuation": "The organization being merged away has privileged-access (PAM) sessions that have not finished cleanup. Wait for them to close, then try the merge again.",
+        "pam_evidence": "The organization being merged away has privileged-access (PAM) history, and moving PAM history between organizations is not enabled on this deployment. Merge in the opposite direction, or do not merge these organizations.",
+        "payment_in_flight": "A payment for the organization being merged away is still in flight. Wait for it to settle, then try the merge again.",
+        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth."
       }
     },
     "archive": {
@@ -5801,7 +5992,8 @@
       "title": "Address"
     },
     "actions": {
-      "saveChanges": "Save changes"
+      "saveChanges": "Save changes",
+      "sendMessage": "Send message"
     },
     "policies": {
       "assignedTitle": "Assigned Policies",
@@ -5867,6 +6059,8 @@
     },
     "columns": {
       "timezone": "Timezone",
+      "address": "Address",
+      "contact": "Contact",
       "devices": "Devices"
     },
     "empty": "No sites found. Add a site to get started."
@@ -6100,6 +6294,7 @@
     "accessDenied": "You don't have permission to view users.",
     "title": "Users",
     "description": "Manage user access, roles, and permissions.",
+    "sessionTimeoutPointer": "Session idle timeout is configured under Security",
     "never": "Never",
     "actions": {
       "tryAgain": "Try again",
@@ -6250,7 +6445,27 @@
     "locationEnabledLabel": "Suggest a timer when a technician arrives at a client site",
     "locationHelp": "Each technician must also allow location on their phone. Location is checked on the phone and is never sent to Breeze.",
     "radiusLabel": "Default arrival radius (m)",
-    "radiusRange": "Arrival radius must be between {{min}} and {{max}} meters"
+    "radiusRange": "Arrival radius must be between {{min}} and {{max}} meters",
+    "approval": {
+      "heading": "Customer work approval",
+      "description": "Ask the customer to approve work before it is logged against their budget or outside business hours. This is the partner default; organizations can override it.",
+      "enabledLabel": "Require customer approval for work",
+      "budgetTriggerLabel": "Ask when a ticket budget would be exceeded",
+      "afterHoursTriggerLabel": "Ask for after-hours work",
+      "enforcementLabel": "Enforcement",
+      "enforcementSoft": "Soft (warn, allow logging)",
+      "enforcementHard": "Hard (block until approved)",
+      "ttlLabel": "Approval request expires after (hours)",
+      "ttlRange": "Expiry must be between {{min}} and {{max}} hours",
+      "readOnly": "You need partner-wide settings rights to change this policy. Showing the current values.",
+      "loadFailed": "Could not load the customer approval settings.",
+      "source": {
+        "org": "Organization",
+        "partner": "Partner",
+        "default": "Default"
+      }
+    },
+    "savedApprovalFailed": "Time settings saved, but the customer approval policy failed to save"
   },
   "contactImportPreview": {
     "selectAll": "Select all new and linked rows",
@@ -6538,7 +6753,8 @@
     "nameTaken": "A work type with this name already exists.",
     "rename": "Rename",
     "loadError": "Could not load work types.",
-    "empty": "No work types yet. Add your first work type above."
+    "empty": "No work types yet. Add your first work type above.",
+    "afterHours": "After-hours (requires customer approval when enabled)"
   },
   "ticketCategories": {
     "defaultWorkType": "Default work type",
@@ -6629,5 +6845,16 @@
     "invalidKey": "A Pushover user key is 30 letters or digits.",
     "loadFailed": "Could not load your Pushover setting.",
     "saveFailed": "Could not save your Pushover setting."
+  },
+  "emailNotificationSettings": {
+    "title": "Email notifications",
+    "description": "Choose which emails Breeze sends you. In-app notices always stay on.",
+    "digestLabel": "Daily connection health digest",
+    "digestHelp": "A morning summary of broken integrations and sign-ins you can fix, and the ones that recovered. Sent at most once a day.",
+    "enabledToast": "Connection health digest turned on",
+    "disabledToast": "Connection health digest turned off",
+    "loadFailed": "Could not load email preferences.",
+    "saveFailed": "Could not save email preferences.",
+    "retry": "Retry"
   }
 }

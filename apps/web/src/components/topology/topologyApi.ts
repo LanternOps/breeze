@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { graphNodeSchema, graphRelationshipSchema, graphResponseSchema, relationshipDetailResponseSchema, relationshipEvidenceResponseSchema, topologyViewSchema } from '@breeze/shared/validators/topology';
 import { topologyInterfaceHistoryResponseSchema, topologyLinkHealthResponseSchema } from '@breeze/shared/validators/topologyTelemetry';
 import type { TopologyInterfaceHistoryQuery } from '@breeze/shared';
+import { presenceResponseSchema } from '@breeze/shared/validators/topologyPresence';
 import { fetchWithAuth } from '../../stores/auth';
 const capability = z.object({ available: z.boolean(), reason: z.string().nullable() });
 export const topologySettingsSchema = z.object({
@@ -18,14 +19,15 @@ export type TopologySettings = z.infer<typeof topologySettingsSchema>;
 export class TopologyReadError extends Error {
   constructor(message: string, public status: number, public code?: string) { super(message); }
 }
-export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
-  const response = await fetchWithAuth(path, { signal });
+/** `body` turns the read into a POST with a JSON body, for reads whose ids would overflow a URL (#8307). Still a read: nothing is mutated. */
+export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal, body?: unknown): Promise<T> {
+  const response = await fetchWithAuth(path, body === undefined ? { signal } : { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
+    const errorBody = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
     const message = response.status === 403 ? 'Access to this topology is denied'
-      : typeof body?.code === 'string' && body.code === 'target_not_configured' ? 'Target not configured'
-      : typeof body?.error === 'string' ? body.error : 'Unable to load topology';
-    throw new TopologyReadError(message, response.status, typeof body?.code === 'string' ? body.code : undefined);
+      : typeof errorBody?.code === 'string' && errorBody.code === 'target_not_configured' ? 'Target not configured'
+      : typeof errorBody?.error === 'string' ? errorBody.error : 'Unable to load topology';
+    throw new TopologyReadError(message, response.status, typeof errorBody?.code === 'string' ? errorBody.code : undefined);
   }
   return schema.parse(await response.json());
 }
@@ -66,6 +68,8 @@ export const topologyApi = {
   exclusions: (siteId: string, view: string, cursor?: string, signal?: AbortSignal) =>
     topologyRead(`${site(siteId)}/exclusions?${new URLSearchParams({ view, limit: '100', ...(cursor ? { cursor } : {}) })}`, topologyExclusionListSchema, signal),
   graph: (siteId: string, query: URLSearchParams, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/graph?${query}`, graphResponseSchema, signal),
+  /** Cross-site presence of this site's assigned devices and its visitors (site location W2). Optional enrichment: callers must not fail the map on an error. */
+  presence: (siteId: string, signal?: AbortSignal) => topologyRead(`${site(siteId)}/presence`, presenceResponseSchema, signal),
   settings: (siteId: string, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/settings`, topologySettingsSchema, signal),
   /** Which organization owns a site (GET /orgs/sites/:id, org-access checked server-side): resolves a deep link to another org's site (#7880). */
   siteOwner: (siteId: string, signal?: AbortSignal) => topologyRead(`/orgs/sites/${encodeURIComponent(siteId)}`, siteOwnerSchema, signal),

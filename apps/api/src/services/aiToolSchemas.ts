@@ -10,11 +10,12 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
+import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
   ringAutoApproveSchema,
+  ringAppRulesSchema,
   scriptVerificationClaimSchema,
   JOURNAL_VACUUM_MAX_BYTES,
   JOURNAL_VACUUM_MIN_BYTES,
@@ -26,12 +27,17 @@ import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
+import { messagingToolSchemas } from './aiToolSchemasMessaging';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
   peripheralEventTypeEnum
 } from '../db/schema/peripheralControl';
+import {
+  RESTORE_POINT_ATTEMPT_STATUSES,
+  RESTORE_POINT_ATTEMPT_TRIGGERS,
+} from '../db/schema/deviceRestorePointAttempts';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { aiPathRefusal } from './aiPathRestriction';
 import { CONTACT_ROLES } from './contacts/types';
@@ -191,13 +197,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     from: z.string().optional(),
     to: z.string().optional(),
     running: z.boolean().optional(),
-    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract']).optional(),
+    billingStatus: z.enum(['not_billed', 'billed', 'no_charge', 'contract', 'awaiting_approval']).optional(),
     approved: z.boolean().optional(),
     limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).optional(),
   }),
   get_running_timer: z.object({}),
   get_timesheet: z.object({ weekStart: z.string(), userId: uuid.optional() }),
+  get_ticket_approval_status: z.object({ ticketId: uuid }),
 
   query_devices: z.object({
     status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
@@ -213,6 +220,19 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_device_time_status: z.object({ deviceId: uuid }),
+  // #8584 — System Restore ledger read (aiToolsRestorePoints.ts).
+  list_device_restore_point_attempts: z.object({
+    deviceId: uuid,
+    trigger: z.enum(RESTORE_POINT_ATTEMPT_TRIGGERS).optional(),
+    status: z.enum(RESTORE_POINT_ATTEMPT_STATUSES).optional(),
+    ...pageZodShape(20, 50),
+  }),
+  query_device_workloads: z.object({
+    deviceId: uuid,
+    runtime: z.enum(WORKLOAD_RUNTIMES).optional(),
+    state: z.enum(WORKLOAD_STATES).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
   list_time_sync_issues: fleetTimeFiltersSchema,
   get_device_hardware_health: z.object({
     deviceId: uuid,
@@ -290,6 +310,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
   // Topology AI tools (M3-D12 + M4 #6000) — strict, extracted to aiToolSchemasTopology.ts
   ...topologyToolSchemas,
+  ...messagingToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -376,6 +397,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'log_time_entry',
       'start_timer',
       'stop_timer',
+      'update_time_entry',
       'update_fields',
       'link_alert',
       'unlink_alert',
@@ -386,8 +408,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       // P2-4 (#4191) ticket-triage executors.
       'link_device',
       'draft',
+      // #8596 ticket-to-ticket links.
+      'list_links',
+      'link_ticket',
+      'unlink_ticket',
     ]),
     ticketId: uuid.optional(),
+    // create: the type; list: one type or several (#8596).
+    ticketType: z.union([ticketTypeSchema, z.array(ticketTypeSchema).min(1)]).optional(),
+    targetTicketId: uuid.optional(),
+    targetTicketNumber: z.string().min(1).max(64).optional(),
+    linkType: ticketLinkTypeSchema.optional(),
+    linkId: uuid.optional(),
     alertId: uuid.optional(),
     commentId: uuid.optional(),
     expectedTicketId: uuid.optional(),
@@ -412,11 +444,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     // here. Keep the two in sync if either changes.
     hostname: z.string().min(1).max(255).optional(),
     serial: z.string().min(1).max(100).optional(),
-    ...pageZodShape(20, 100),
+    ...pageZodShape(18, 100),
     // draft (P2-4): which ticket_drafts kind this proposal is.
     kind: z.enum(['reply', 'resolution_note']).optional(),
     isPublic: z.boolean().optional(),
     pendingReason: z.string().max(500).optional(),
+    timeEntryId: uuid.optional(),
     startedAt: z.string().datetime().optional(),
     endedAt: z.string().datetime().optional(),
     isBillable: z.boolean().optional(),
@@ -436,6 +469,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       submittedBy: uuid.nullable().optional(),
       submitterName: z.string().max(255).nullable().optional(),
       submitterEmail: z.string().email().max(255).nullable().optional(),
+      ticketType: ticketTypeSchema.optional(),
     }).optional(),
     overrides: z.object({
       subject: z.string().min(1).max(255).optional(),
@@ -460,7 +494,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum([
       'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
       'update_line', 'remove_line', 'update_header', 'delete_draft',
-      'assemble_from_org', 'assemble_from_ticket',
+      'assemble_from_org', 'assemble_from_ticket', 'refresh_time_lines',
       'issue', 'void', 'record_payment', 'void_payment', 'create_pay_link',
     ]),
     orgId: uuid.optional(),
@@ -591,6 +625,24 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     kind: z.enum(AI_AGENT_ACTING_KINDS),
     opKey: z.string().min(3).max(120),
     orgId: uuid,
+  }),
+
+  // operator_plan (Recipe Library spec 6.4): never model-callable; the schema
+  // bounds what the coordinator mints. Effect bounds mirror the CHECKs on
+  // ai_operator_plan_approval_effects.
+  operator_plan: z.object({
+    taskId: uuid,
+    planRevision: z.number().int().min(0),
+    effectSetDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    effects: z.array(z.object({
+      ordinal: z.number().int().min(0),
+      provider: z.enum(['breeze', 'm365', 'google']),
+      toolName: z.string().min(1).max(100),
+      targetLabel: z.string().min(1).max(200),
+      principalLabel: z.string().max(320).nullable().optional(),
+      rendering: z.string().min(1).max(500),
+    })).max(64),
+    reason: z.string().max(500).optional(),
   }),
 
   manage_organizations: z.object({
@@ -844,6 +896,33 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(500).optional(),
   }),
 
+  get_edr_status: z.object({
+    orgId: uuid.optional(),
+  }),
+
+  list_edr_detections: z.object({
+    orgId: uuid.optional(),
+    deviceId: uuid.optional(),
+    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+    status: z.enum(['open', 'all']).optional(),
+    provider: z.string().max(30).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  // #8167 W03. Only actions an adapter implements are offered to the model.
+  edr_endpoint_action: z.object({
+    deviceId: uuid,
+    action: z.enum(['isolate', 'unisolate', 'scan']),
+    connectionId: uuid.optional(),
+    reason: z.string().max(500).optional(),
+  }),
+
+  // #8167 W03 PR-B. Tier-2 "sync now".
+  sync_edr_data: z.object({
+    connectionId: uuid.optional(),
+    orgId: uuid.optional(),
+  }),
+
   s1_isolate_device: z.object({
     orgId: uuid.optional(),
     deviceId: uuid.optional(),
@@ -1011,11 +1090,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   run_script: z.object({
     // EXACTLY ONE of these (AI script authoring, spec §4.2). Both optional at
-    // the field level so the refinement below owns the message; the JSON
-    // schema's `required: ['deviceIds']` says the same thing to the model.
+    // the field level so the refinement below owns the message.
     scriptId: uuid.optional(),
     proposalId: uuid.optional(),
-    deviceIds: z.array(uuid).min(1).max(10),
+    // EXACTLY ONE of these too (#8600). `groupId` is a saved device group,
+    // resolved to concrete `deviceIds` when the action intent is created
+    // (actionIntents/runScriptGroupTarget.ts), so the approval pins the
+    // resolved list. A group resolving above 10 devices is refused there.
+    deviceIds: z.array(uuid).min(1).max(10).optional(),
+    groupId: uuid.optional(),
     parameters: z.record(z.string(), z.unknown()).optional(),
     // Optional content pin for a library script: lowercase-hex sha256 of the
     // content in scriptVersions.sha256Content form (the `contentSha256`
@@ -1036,6 +1119,13 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
         code: z.ZodIssueCode.custom,
         path: ['scriptId'],
         message: 'run_script takes exactly one of scriptId or proposalId',
+      });
+    }
+    if ((data.deviceIds !== undefined) === (data.groupId !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['deviceIds'],
+        message: 'run_script takes exactly one of deviceIds or groupId',
       });
     }
     // A proposal's content is literal and its digest pins that literal content;
@@ -1161,6 +1251,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     tenant_id: uuid,
     confirmation_phrase: z.string().min(1).max(500),
   }),
+
+  get_fleet_device_stats: z.object({ orgId: uuid.optional() }),
 
   get_fleet_health: z.object({
     orgId: uuid.optional(),
@@ -1335,7 +1427,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     subnet: z.string().max(50).regex(
       /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/,
       'Invalid CIDR notation'
-    ).optional(),
+    ),
     scanType: z.enum(['ping', 'arp', 'full']).optional(),
   }),
 
@@ -1558,6 +1650,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     handle: uuid,
     offset: z.number().int().min(0).optional(),
     maxChars: z.number().int().min(1).max(6000).optional(),
+  }),
+
+  // Trust Center W2 (Ruling 15): read-only page status.
+  get_trust_page_status: z.object({
+    orgId: uuid,
   }),
 
   export_dataset: z.object({
@@ -1969,6 +2066,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     categories: z.array(z.string().max(100)).max(50).optional(),
     excludeCategories: z.array(z.string().max(100)).max(50).optional(),
     autoApprove: ringAutoApproveSchema.optional(),
+    appRules: ringAppRulesSchema.optional(),
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),

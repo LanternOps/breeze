@@ -228,13 +228,44 @@ describe('ConsentForm', () => {
         '/oauth/interaction/uid-1/consent',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ partner_id: 'p1', approve: true }),
+          body: JSON.stringify({ partner_id: 'p1', approve: true, mcp_domains: null }),
         }),
       );
     });
     await waitFor(() => {
       expect(window.location.href).toBe('https://client.example/cb?code=abc');
     });
+  });
+
+  it('posts mcp_domains null by default', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactionFixture()));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ redirectTo: 'https://client.example/cb?code=abc' }));
+
+    render(<ConsentForm uid="uid-1" />);
+    expect((await screen.findByTestId('mcp-domains-all') as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByTestId('mcp-domains-reconnect-note')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Approve/ }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const body = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect(body).toEqual({ partner_id: 'p1', approve: true, mcp_domains: null });
+  });
+
+  it('posts the selected list', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactionFixture()));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ redirectTo: 'https://client.example/cb?code=abc' }));
+
+    render(<ConsentForm uid="uid-1" />);
+    fireEvent.click(await screen.findByTestId('mcp-domains-selected'));
+    // Zero boxes ticked: the picker is invalid, so Approve is disabled.
+    expect((screen.getByRole('button', { name: /Approve/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('mcp-domain-tickets'));
+    fireEvent.click(screen.getByTestId('mcp-domain-devices'));
+    fireEvent.click(screen.getByRole('button', { name: /Approve/ }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const body = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect(body).toEqual({ partner_id: 'p1', approve: true, mcp_domains: ['devices', 'tickets'] });
   });
 
   it('posts approve=false on Deny', async () => {
@@ -248,7 +279,7 @@ describe('ConsentForm', () => {
       expect(fetchMock).toHaveBeenLastCalledWith(
         '/oauth/interaction/uid-1/consent',
         expect.objectContaining({
-          body: JSON.stringify({ partner_id: 'p1', approve: false }),
+          body: JSON.stringify({ partner_id: 'p1', approve: false, mcp_domains: null }),
         }),
       );
     });

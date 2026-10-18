@@ -412,6 +412,18 @@ export const actionIntents = pgTable(
     // execution start when approval->execution lags.
     executionStartedAt: timestamp('execution_started_at', { withTimezone: true }),
     executedAt: timestamp('executed_at', { withTimezone: true }),
+    // Caller verification W05 (#6354): the canonical Entra subject and the
+    // Microsoft connection a protected M365 identity action (m365_disable_user,
+    // m365_reset_password) was resolved through at creation. Immutable after
+    // INSERT (action_intents_caller_target_immutable) and all-or-none.
+    // `targetConnectionRef` is a snapshot WITHOUT an FK. Migration:
+    // 2026-12-30-220000-action-intents-caller-target.sql.
+    targetEntraTenantId: varchar('target_entra_tenant_id', { length: 64 }),
+    targetEntraOid: varchar('target_entra_oid', { length: 64 }),
+    targetConnectionRef: uuid('target_connection_ref'),
+    // Committed under the requester+target subject locks immediately before
+    // the outbound mutation (prepareCallerDispatch). Mutable lifecycle marker.
+    dispatchStartedAt: timestamp('dispatch_started_at', { withTimezone: true }),
     result: jsonb('result').$type<Record<string, unknown> | null>(),
     errorCode: text('error_code'),
 

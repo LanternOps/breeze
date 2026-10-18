@@ -34,6 +34,7 @@ import { extractEntities } from '../content/entities';
 import { deriveDeclaredProject } from '../content/projects';
 import { applyDlpToText, type DlpFinding } from '../content/dlp';
 import { getOrgSettings } from './orgSettingsService';
+import { visibleSourcePredicateSql } from './visibility';
 import { TransientIngestError, isTransientIngestError } from './ingestErrors';
 
 export interface IngestError {
@@ -118,8 +119,7 @@ const eligibleFilesSql = (orgId: string) => sql`
     AND fi.deleted_at IS NULL
     AND fi.is_dir = false
     AND s.kind = 'smb_share'
-    AND s.status = 'active'
-    AND s.visibility_group_ids = '[]'::jsonb
+    AND ${visibleSourcePredicateSql(sql, [])}
 `;
 
 const pendingPredicateSql = sql`
@@ -171,8 +171,7 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
         AND fi.deleted_at IS NULL
         AND fi.is_dir = false
         AND s.kind = 'smb_share'
-        AND s.status = 'active'
-        AND s.visibility_group_ids = '[]'::jsonb
+        AND ${visibleSourcePredicateSql(sql, [])}
         ${unvisitedArm}
     `);
     return Number((res as unknown as Array<{ n: number }>)[0]?.n ?? 0);
@@ -295,8 +294,7 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
           AND fi.deleted_at IS NULL
           AND fi.is_dir = false
           AND s.kind = 'smb_share'
-          AND s.status = 'active'
-          AND s.visibility_group_ids = '[]'::jsonb
+          AND ${visibleSourcePredicateSql(sql, [])}
           ${pendingArm}
         ORDER BY fi.rel_path
         LIMIT ${batch}

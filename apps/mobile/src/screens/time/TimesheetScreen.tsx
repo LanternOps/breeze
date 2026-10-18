@@ -28,6 +28,8 @@ import { formatMinutes } from '../../lib/timeFormat';
 import { isLongEntry } from './timesheetLongEntry';
 import { reportInternalError } from '../../lib/errorReporting';
 import { ticketRef } from '../tickets/ticketCopy';
+import { SitePinButton } from './SitePinButton';
+import { LocationExplainerCard } from '../settings/LocationExplainerCard';
 
 import { dayLabel, daysOfWeek, shiftWeek, weekRangeLabel, weekStartFor } from './timesheetWeek';
 import { entryLock } from './entryLock';
@@ -305,6 +307,8 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
           {lock.badge !== null ? ` · ${lock.badge}` : ''}
         </Text>
 
+        {isEditing && entry.orgId ? <SitePinButton orgId={entry.orgId} /> : null}
+
         {isEditing ? (
           <>
             <TextInput
@@ -439,6 +443,8 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          {/* #8211: first-run explainer; renders nothing unless the partner enabled the feature. */}
+          <LocationExplainerCard />
           {boundaryIncomplete ? (
             // The overlap fetch is what re-files entries that the server filed
             // under the neighbouring UTC week. Without it the week is missing

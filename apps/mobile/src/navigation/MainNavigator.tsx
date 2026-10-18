@@ -25,6 +25,8 @@ import { flushPendingNavigation } from './navigationRef';
 import type { CommentMode } from '../screens/tickets/commentMode';
 import { HomeIcon, SystemsIcon, TicketsIcon, TimeIcon } from '../components/TabIcons';
 import { TimerBar } from '../components/TimerBar';
+import { ArrivalPromptHost } from '../screens/time/ArrivalPromptHost';
+import { isArrivalTab, requestArrivalCheck } from '../screens/time/arrivalTrigger';
 import { palette, fontFamily } from '../theme';
 import type { Alert, Device } from '../services/api';
 
@@ -265,8 +267,18 @@ export function MainNavigator() {
   }, []);
 
   return (
+    <>
+    <ArrivalPromptHost />
     <Tab.Navigator
       tabBar={(props: BottomTabBarProps) => <TabBarWithTimer {...props} />}
+      // #8211: focusing Home or Tickets is one of the three moments the
+      // foreground arrival check may run (the others: app returning to the
+      // foreground, and Tickets pull-to-refresh). It is debounced downstream.
+      screenListeners={({ route }) => ({
+        focus: () => {
+          if (isArrivalTab(route.name)) requestArrivalCheck(false);
+        },
+      })}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: palette.brand.base,
@@ -323,5 +335,6 @@ export function MainNavigator() {
         }}
       />
     </Tab.Navigator>
+    </>
   );
 }

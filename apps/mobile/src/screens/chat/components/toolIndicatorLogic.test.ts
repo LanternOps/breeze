@@ -197,3 +197,15 @@ describe('aiToolLabel (mobile mirror of packages/shared)', () => {
     expect(aiToolLabel('manage_services', 'completed', { action: 'status' })).toBe('Checked services');
   });
 });
+
+describe('retention tombstone (#8855)', () => {
+  const tombstone = { _retention: 'scrubbed', at: '2026-10-01T00:00:00.000Z' };
+  it('reads a scrubbed output as expired, whatever isError says', () => {
+    expect(toolRowStatus({ isError: false, output: tombstone })).toBe('expired');
+    expect(toolRowStatus({ isError: true, output: tombstone })).toBe('expired');
+    expect(toolRowSuffix('expired')).toBe('OUTPUT EXPIRED');
+  });
+  it('shows no error text for a tombstone', () => {
+    expect(toolRowErrorText(tombstone)).toBeNull();
+  });
+});

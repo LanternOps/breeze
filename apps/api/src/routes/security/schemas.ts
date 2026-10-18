@@ -14,7 +14,12 @@ export const providerCatalog = {
   emsisoft: { id: 'emsisoft', name: 'Emsisoft', vendor: 'Emsisoft' },
   webroot: { id: 'webroot', name: 'Webroot SecureAnywhere', vendor: 'OpenText' },
   withsecure: { id: 'withsecure', name: 'WithSecure Elements', vendor: 'WithSecure' },
-  other: { id: 'other', name: 'Other', vendor: 'Other' }
+  other: { id: 'other', name: 'Other', vendor: 'Other' },
+  // Failed / not-collected provider (#8538). The web client localizes this
+  // bucket by id; `name` is the English fallback.
+  unknown: { id: 'unknown', name: 'Unknown', vendor: 'Unknown' },
+  // Breeze's own IOC scanner (#6263 W02).
+  breeze: { id: 'breeze', name: 'Breeze IOC scan', vendor: 'Breeze' }
 } as const;
 
 export type ProviderKey = keyof typeof providerCatalog;

@@ -10,6 +10,7 @@ import {
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import type { RingAppRule } from './RingAppRulesSection';
 
 export type UpdateRingStatus = 'active' | 'disabled';
 
@@ -51,6 +52,8 @@ export type UpdateRingItem = {
   gracePeriodHours: number;
   autoApprove?: RingAutoApprove;
   categoryRules?: CategoryRule[];
+  /** Per-app block / pin rules the ring enforces (#8187). */
+  appRules?: RingAppRule[];
   compliancePercent?: number;
   deviceCount?: number;
   updatedAt?: string;
@@ -99,8 +102,24 @@ function AutoApproveBadges({ ring, t }: { ring: UpdateRingItem; t: TFunction<'pa
   const aa = ring.autoApprove;
   const osOn = !!aa?.enabled && aa.severities.length > 0;
   const tpOn = !!aa?.enabled && !!aa.thirdPartyApps;
+  const appRuleCount = ring.appRules?.length ?? 0;
+  // Block / pin rules are independent of auto-approval: a manual ring can
+  // still hold or pin specific applications.
+  const appRulesBadge = appRuleCount > 0 && (
+    <span
+      className="inline-flex items-center rounded-full border bg-muted/40 px-2 py-0.5 text-xs"
+      data-testid="ring-app-rules-badge"
+    >
+      {t('updateRingList.badges.appRules', { count: appRuleCount })}
+    </span>
+  );
   if (!osOn && !tpOn) {
-    return <span className="text-muted-foreground">{t('updateRingList.badges.manual')}</span>;
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-muted-foreground">{t('updateRingList.badges.manual')}</span>
+        {appRulesBadge}
+      </div>
+    );
   }
   return (
     <div className="flex flex-wrap gap-1">
@@ -122,6 +141,7 @@ function AutoApproveBadges({ ring, t }: { ring: UpdateRingItem; t: TFunction<'pa
           {t('updateRingList.badges.thirdParty')}
         </span>
       )}
+      {appRulesBadge}
     </div>
   );
 }

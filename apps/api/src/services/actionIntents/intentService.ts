@@ -82,6 +82,19 @@ import {
   reserveOperation,
 } from '../aiOperator/operationService';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
+import {
+  checkPlanEffectMembershipSystem,
+  checkToolCeiling,
+  loadTaskAgentToolAllowlists,
+  type PlanMembershipResult,
+} from '../aiOperator/planApproval';
+import { isSecretBearingTool } from './secretBearingTools';
+import { callerAction, type CallerBackend } from './callerTarget';
+import { requireCallerVerification } from '../callerVerification/gate';
+import { getEffectivePolicy as getCallerVerificationPolicy } from '../callerVerification/policy';
+import {
+  CallerVerificationRequiredError, CallerVerificationValidationError,
+} from '../callerVerification/errors';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -207,6 +220,14 @@ export interface CreateActionIntentInput {
    */
   binding?: { connectionId: string; tenantId: string };
   /**
+   * Caller verification W05 (#6354): the AI session whose selected Delegant
+   * connection the protected M365 identity tools (`m365_disable_user`,
+   * `m365_reset_password`) would act through. Internal plumbing set by the SDK
+   * pre-tool path only — never a tool argument. Used solely to choose the
+   * backend whose canonical target (tenant + object id) is pinned at creation.
+   */
+  m365SessionId?: string;
+  /**
    * P2-2: explicit target device for an intent minted by a DEVICE-LESS run
    * (sweeps). Agent principal only. Becomes `scope_kind='device'`/
    * `scope_device_id`; every downstream reader resolves the target through
@@ -274,6 +295,17 @@ export interface CreateActionIntentInput {
    * own `ai_agent_runs.task_id` matches.
    */
   task?: ActionIntentTaskContext;
+  /**
+   * Recipe Library E4 (#6169, spec §6.4): present ONLY on a child effect
+   * minted under an already-APPROVED plan (`services/aiOperator/planApproval.ts`).
+   * It is what lets a non-agent principal carry `task` context: the
+   * run-linkage proof an agent intent gets is replaced by a stronger,
+   * row-backed one — plan membership at the task's live revision, the
+   * operation identity derived from the approved slot, the allowlist ceiling,
+   * and the minting user being the plan's approver. Requires `task`.
+   * TRUSTED, INTERNAL-ONLY, like `task`.
+   */
+  planApproval?: { approvalId: string; ordinal: number };
   /**
    * AI script authoring (spec §4.5): the proposal's reviewed risk tier, when
    * the caller has already loaded it. Absent, `createActionIntent` loads it
@@ -1185,7 +1217,10 @@ export async function createActionIntent(
   // intent that a task it does not own is then obliged to reconcile.
   let taskContext: ActionIntentTaskContext | null = null;
   if (input.task !== undefined) {
-    if (auth.principal.kind !== 'ai_agent') {
+    // E4 (#6169): a human principal may carry task context ONLY together with
+    // a plan approval, whose checks below are strictly stronger than the
+    // run-linkage check an agent intent gets (plan D-E4-2).
+    if (auth.principal.kind !== 'ai_agent' && !input.planApproval) {
       throw new ActionIntentError(
         `task context is only valid for the ai_agent principal (got principal '${auth.principal.kind}')`,
         'task_context_not_allowed',
@@ -1347,6 +1382,40 @@ export async function createActionIntent(
       orgId: prepared.orgId,
       reason: prepared.label,
       actionLabel: prepared.label,
+    };
+  }
+
+  // #8600 (device-group targets W03): `run_script { groupId }` is resolved
+  // to concrete device ids HERE, so the approved set is the executed set. It
+  // must run before everything below that reads `input.input`: the guardrail
+  // check, the agent-policy re-check and scope assertion, the argument digest
+  // and idempotency key, the effect digest and the approver resolution. The
+  // stored arguments hold `deviceIds` only. The group id, count and a short
+  // hash of the ids are display material for the approver (reason, label and
+  // target summary), never arguments. Every intent path funnels through this
+  // function, so chat, the agent run loop and the promote route all get it.
+  // Loaded on demand (like the topology block above): the resolver's schema
+  // imports are irrelevant to every other intent.
+  let runScriptGroupNote: string | null = null;
+  if (!externalTool && input.toolName === 'run_script' && input.input.groupId !== undefined && input.input.groupId !== null) {
+    const { normalizeRunScriptGroupTarget, RunScriptGroupTargetError } = await import('./runScriptGroupTarget');
+    const groupOrg = resolveWritableToolOrgId(auth, input.orgId);
+    if (!groupOrg.orgId) {
+      throw new ActionIntentError(groupOrg.error ?? 'Organization context required', 'org_resolution_failed');
+    }
+    let normalized: Awaited<ReturnType<typeof normalizeRunScriptGroupTarget>>;
+    try {
+      normalized = await normalizeRunScriptGroupTarget(auth, input.input, groupOrg.orgId);
+    } catch (err) {
+      if (err instanceof RunScriptGroupTargetError) throw new ActionIntentError(err.message, err.code);
+      throw err;
+    }
+    runScriptGroupNote = `group ${normalized.group.groupId} -> ${normalized.group.count} device(s), ids sha256 ${normalized.group.idsHash}`;
+    input = {
+      ...input,
+      input: normalized.args,
+      reason: input.reason ? `${input.reason}. ${normalized.note}` : normalized.note,
+      ...(input.actionLabel ? { actionLabel: `${input.actionLabel}. ${normalized.note}` } : {}),
     };
   }
 
@@ -1694,6 +1763,68 @@ export async function createActionIntent(
 
   const canonical = canonicalizeArguments(input.input);
   const argumentDigest = computeArgumentDigest(canonical);
+
+  // -------------------------------------------------------------------------
+  // Recipe Library E4 (#6169) — PLAN APPROVAL and the AGENT TOOL-ALLOWLIST
+  // CEILING (spec §6.4; risk §11 "Plan approval becomes a four-eyes
+  // bypass"). Fail-fast at mint, before anything is written; the release path
+  // (revalidateRelease.ts) re-runs the same predicate and ceiling, because a
+  // gate checked in one place cannot revoke.
+  // -------------------------------------------------------------------------
+  let planApprovalDecision: Extract<PlanMembershipResult, { ok: true }> | null = null;
+  if (input.planApproval !== undefined) {
+    if (!taskContext || auth.principal.kind === 'ai_agent') {
+      throw new ActionIntentError(
+        'planApproval requires task context and a human principal (the plan\'s approver)',
+        'plan_approval_invalid',
+      );
+    }
+    // Spec §6.4: secret-bearing effects never ride a plan in this wave.
+    if (isSecretBearingTool(input.toolName)) {
+      throw new ActionIntentError(
+        `${input.toolName} mints a credential and cannot be dispatched under a plan approval`,
+        'plan_approval_invalid',
+      );
+    }
+    const membership = await checkPlanEffectMembershipSystem({
+      orgId,
+      taskId: taskContext.taskId,
+      ordinal: input.planApproval.ordinal,
+      toolName: input.toolName,
+      argumentDigest,
+      taskStepKey: taskContext.taskStepKey,
+      operationKey: taskContext.operationKey,
+      approvalId: input.planApproval.approvalId,
+    });
+    if (!membership.ok) {
+      throw new ActionIntentError(
+        `plan approval does not authorize this effect: ${membership.refusal} (${membership.detail})`,
+        'plan_approval_invalid',
+      );
+    }
+    // The child executes under the APPROVER's live authority (D-E4-2); it may
+    // only be minted AS them, so the release-time actor rebuild, RBAC re-check
+    // and site ceiling land on the person who signed the plan.
+    if (membership.approverUserId !== requesterId) {
+      throw new ActionIntentError(
+        'a plan-approved effect must be minted as the plan\'s approver',
+        'plan_approval_invalid',
+      );
+    }
+    const ceiling = checkToolCeiling(
+      await loadTaskAgentToolAllowlists(orgId, taskContext.taskId),
+      input.toolName,
+      input.input,
+    );
+    if (!ceiling.ok) {
+      throw new ActionIntentError(
+        `${input.toolName} is outside the admitting agent's tool allowlist for this task: ${ceiling.detail}`,
+        'tool_not_in_agent_allowlist',
+      );
+    }
+    planApprovalDecision = membership;
+  }
+  const planGranted = planApprovalDecision !== null;
   // Agent default key is RUN-scoped (run id, not the synthetic agent user
   // id): two runs of the same agent proposing identical arguments must
   // yield DISTINCT intents — an intent is immutably attributed to one run,
@@ -1730,7 +1861,9 @@ export async function createActionIntent(
   // argument keys it carries (values are on the card's argument JSON).
   const targetSummary = externalTool
     ? `${input.toolName} (external tool from ${externalTool.sourceName})`
-    : buildTargetSummary(input.toolName, input.input);
+    : runScriptGroupNote
+      ? `${buildTargetSummary(input.toolName, input.input)} [${runScriptGroupNote}]`
+      : buildTargetSummary(input.toolName, input.input);
   const impactSummary = externalTool
     ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
         Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
@@ -1785,6 +1918,80 @@ export async function createActionIntent(
     accessibleOrgIds: [orgId],
     userId: requesterId,
   };
+
+  // -------------------------------------------------------------------------
+  // Caller verification W05 (#6354): `m365_reset_password` / `m365_disable_user`
+  // require a fresh, unused caller verification for the CANONICAL target
+  // before an intent (and its approval fan-out) may exist. The target is
+  // resolved once, through one selected Microsoft connection, and pinned
+  // immutably on the insert below. `check` never consumes: the grant is spent
+  // only at release, after the executing claim.
+  //
+  // A live replay of the same request returns the existing intent without
+  // resolving the UPN again or re-checking (its pin is already fixed); a key
+  // owned by a different requester/request is an idempotency conflict.
+  // -------------------------------------------------------------------------
+  const protectedCallerAction = callerAction(input.toolName);
+  let callerTarget: (CallerBackend & { entraOid: string }) | null = null;
+  if (protectedCallerAction) {
+    const [callerReplay] = await withDbAccessContext(dbContext, () => db.select().from(actionIntents).where(and(
+      eq(actionIntents.orgId, orgId),
+      eq(actionIntents.idempotencyKey, idempotencyKey),
+      inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+    )).limit(1));
+    if (callerReplay) {
+      if (callerReplay.requestedByUserId !== requesterId || callerReplay.requestingAgentRunId
+        || callerReplay.actionName !== input.toolName || callerReplay.source !== input.source
+        || callerReplay.argumentDigest !== argumentDigest) {
+        throw new ActionIntentError('Idempotency key already belongs to a different live request', 'idempotency_conflict');
+      }
+      return withDbAccessContext(dbContext, async () => {
+        const rows = await db.select({ id: approvalRequests.id, userId: approvalRequests.userId })
+          .from(approvalRequests).where(eq(approvalRequests.intentId, callerReplay.id));
+        return toSnapshot(callerReplay, rows.map((row) => row.id),
+          rows.find((row) => row.userId === requesterId)?.id ?? null, []);
+      });
+    }
+    const refuseCaller = async (
+      reason: 'technician_mismatch' | 'subject_unmatched' | 'subject_ambiguous' | 'tenant_mismatch',
+    ): Promise<never> => {
+      // Escape any ambient org-scoped context: partner-level policy rows must be visible.
+      const policy = await runOutsideDbContext(() => withSystemDbAccessContext(
+        () => getCallerVerificationPolicy(orgId), 'callerVerification.create.policy'));
+      throw new CallerVerificationRequiredError({
+        orgId, contactId: null, action: protectedCallerAction,
+        requiredTier: protectedCallerAction === 'reset_password' ? policy.requiredTierResetPassword : policy.requiredTierDisableUser,
+        reason, latest: null,
+      });
+    };
+    // A verified caller authorizes a HUMAN technician's request, never an agent run.
+    if (agentRun || auth.principal.kind === 'ai_agent') await refuseCaller('technician_mismatch');
+    try {
+      const { resolveM365CallerTarget } = await import('../aiToolsM365');
+      callerTarget = await withDbAccessContext(dbContext, () => resolveM365CallerTarget(
+        auth, orgId, typeof input.input.userIdentifier === 'string' ? input.input.userIdentifier : '', input.m365SessionId,
+      ));
+    } catch (error) {
+      if (error instanceof CallerVerificationValidationError) {
+        if (error.code === 'subject_unmatched' || error.code === 'subject_ambiguous' || error.code === 'tenant_mismatch') {
+          await refuseCaller(error.code);
+        }
+        if (error.code === 'connection_not_ready') {
+          throw new ActionIntentError('No usable Microsoft 365 connection for this organization', 'connection_unavailable');
+        }
+      }
+      throw error;
+    }
+    await requireCallerVerification({
+      orgId, action: protectedCallerAction,
+      target: { entraTenantId: callerTarget!.tenantId, entraOid: callerTarget!.entraOid },
+      backendTenantId: callerTarget!.tenantId,
+      technicianUserId: requesterId,
+      // Not consumed by `check`; the id only orders same-intent candidates.
+      intentId: '00000000-0000-0000-0000-000000000000',
+      mode: 'check',
+    });
+  }
 
   // Resolve eligible approvers (org + partner axis, filtered by
   // approvals:decide, excluding the requester — spec §4 step 4 / CRITICAL-2)
@@ -2011,7 +2218,7 @@ export async function createActionIntent(
         ? (input.input as { proposalId?: unknown }).proposalId
         : undefined;
       let scriptLaneDecision: ScriptReviewerDecision | null = null;
-      if (!autonomyGranted && typeof proposalIdArg === 'string') {
+      if (!autonomyGranted && !planGranted && typeof proposalIdArg === 'string') {
         const proposal = await loadProposalForRelease(db, proposalIdArg, orgId);
         const review = proposal ? await latestCompletedReview(db, proposal.id) : null;
         scriptLaneDecision = proposal
@@ -2051,6 +2258,11 @@ export async function createActionIntent(
           triggerKey: trigger?.key ?? null,
           orgId,
           partnerId: auth.partnerId ?? null,
+          // Caller verification W05: the canonical target pinned at INSERT
+          // (immutable afterwards — action_intents_caller_target_immutable).
+          targetEntraTenantId: callerTarget?.tenantId ?? null,
+          targetEntraOid: callerTarget?.entraOid ?? null,
+          targetConnectionRef: callerTarget?.connectionId ?? null,
           // Agent intents are requester-less by design (wave 3b): the run is
           // the attribution record, never the agent's synthetic user id.
           requestedByUserId: agentRun ? null : requesterId,
@@ -2146,6 +2358,21 @@ export async function createActionIntent(
               decidedByUserId: null,
               releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
               scriptReviewerEvidence: scriptLaneDecision.evidence,
+            }
+            : {}),
+          // E4 (#6169): the plan WAS the approval. Approved at creation like
+          // the two lanes above, but decided BY a human — the plan's approver
+          // — whose decision is carried by the operator_plan intent. The
+          // release path admits it only while plan membership still holds
+          // (`decided_via` alone authorizes nothing).
+          ...(planApprovalDecision
+            ? {
+              status: 'approved' as const,
+              decidedVia: 'plan_approval',
+              decidedAt: new Date(),
+              decidedByUserId: planApprovalDecision.approverUserId,
+              decidedAssuranceLevel: planApprovalDecision.approvedAssuranceLevel as never,
+              releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
             }
             : {}),
           result: autonomyResult ?? scriptLaneRefusalResult,
@@ -2333,7 +2560,7 @@ export async function createActionIntent(
       // human fan-out entirely, same as the (not-yet-reachable-here)
       // policy-authorized case would — no approval_requests rows, no
       // approver notification.
-      if (!autonomyGranted && !scriptLaneGranted && decisionState === 'human_required') {
+      if (!autonomyGranted && !scriptLaneGranted && !planGranted && decisionState === 'human_required') {
         ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent } =
           await runHumanFanout({
             db,
@@ -2386,7 +2613,7 @@ export async function createActionIntent(
       // above (`consumeProposalForIntent`), which throws — rolling this whole
       // transaction back — on a lost race, so an approved lane intent can
       // never commit without owning its proposal.
-      if (autonomyGranted || scriptLaneGranted) {
+      if (autonomyGranted || scriptLaneGranted || planGranted) {
         await db.insert(intentOutbox).values({
           intentId: inserted.id,
           eventType: 'intent_approved',

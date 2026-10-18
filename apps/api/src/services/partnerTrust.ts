@@ -1,13 +1,15 @@
 import type { MiddlewareHandler } from 'hono';
 import { partnerTrustMode, type PartnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
+import { runAfterDbContextExit } from '../db';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { createAuditLog } from './auditService';
 import { partnerForDevice, partnerForOrg, readTrust, writeTrust } from './partnerTrust.repo';
 import { getRedis } from './redis';
+import { sendTrustApprovedEmail } from './partnerTrustPartnerMail';
 import { tryAutoPromote } from './partnerTrustPromotion';
 
-export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll' | 'custom_sending_domain';
+export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll' | 'custom_sending_domain' | 'trust_page_publish';
 export type TrustDenyCode = 'TRUST_PROBATION' | 'TRUST_RESTRICTED';
 export type GateDecision =
   | { allow: true; shadowDenied?: { code: TrustDenyCode; reason: string } }
@@ -31,6 +33,8 @@ export const LIFECYCLE_COMMAND_TYPES = [
   'backup_list',
   'backup_stop',
   'cancel_reboot',
+  // Endpoint live chat W03 (#8743): carries only a conversation id and a reason.
+  'chat_close',
   'collect_software',
   'desktop_stream_stop',
   'get_reboot_status',
@@ -39,6 +43,8 @@ export const LIFECYCLE_COMMAND_TYPES = [
   'patch_scan',
   'refresh_inventory',
   'restart_agent',
+  // Endpoint messaging W02 (#8742): carries only a message id, no content.
+  'retract_message',
   'script_cancel',
   'script_list_running',
   'security_collect_status',
@@ -56,6 +62,9 @@ export const LIFECYCLE_COMMAND_TYPES = [
  * documented and checked by the allowlist test; runtime fails closed. */
 export const GATED_COMMAND_TYPES = [
   'actuate_elevation',
+  // Endpoint live chat W03 (#8743): operator-authored chat text.
+  'chat_message',
+  'chat_open',
   'apply_browser_policy',
   'apply_audit_policy_baseline',
   'apply_cis_remediation',
@@ -66,6 +75,9 @@ export const GATED_COMMAND_TYPES = [
   'backup_verify',
   'bare_metal_rebuild',
   'bmr_recover',
+  // Caller verification (#6354 W02): renders a confirmation card in the
+  // console user's Assist helper. Operator-initiated, so trust-gated.
+  'caller_verify',
   'capture_pprof',
   'cis_benchmark',
   'collect_audit_policy',
@@ -128,6 +140,7 @@ export const GATED_COMMAND_TYPES = [
   'network_tcp_check',
   'notify_user',
   'pam_apply_v2',
+  'pam_reconcile_v2',
   'peripheral_policy_sync',
   'peripheral_policy_sync_v2',
   'quarantine_file',
@@ -443,6 +456,15 @@ export async function setTrustState(
   } catch (error) {
     console.warn('[partnerTrust] Failed to publish trust-state change:', error);
   }
+  // Trust Center (spec §9 "Trust and entitlement"): restricting a partner hides every page it
+  // publishes within the second via the live predicate; the serving-set is an admission filter
+  // and is refreshed here so misses stay DB-free.
+  try {
+    const { scheduleServingRefreshForPartner } = await import('./trustPage/servingSet');
+    scheduleServingRefreshForPartner(partnerId, 'partner.trust');
+  } catch (error) {
+    console.warn('[partnerTrust] trust page serving-set refresh failed:', error);
+  }
   await createAuditLog({
     orgId: null,
     actorType: actorUserId ? 'user' : 'system',
@@ -457,5 +479,22 @@ export async function setTrustState(
     result: 'success',
     details: { from: before?.trustState ?? null, to: next, reason, ...evidence },
   });
+  // Partner-facing approval notice (#8713): only the probation → trusted
+  // transition, keyed off the same `before` the audit row used so the two
+  // never disagree. Every promotion path (auto CAS, admin route, evidence-card
+  // link) lands here. Deferred to context EXIT, not commit: `writeTrust`
+  // already committed on its own connection, so there is nothing left to
+  // roll back — the send just must not run on a request's open connection.
+  // The sender is inert outside `enforce` mode and never throws; the catch
+  // keeps the trust write's contract independent of that.
+  if (before?.trustState === 'probation' && next === 'trusted') {
+    runAfterDbContextExit('partnerTrust.approvedEmail', async () => {
+      try {
+        await sendTrustApprovedEmail({ partnerId });
+      } catch (error) {
+        console.warn('[partnerTrust] Failed to send approval email:', error);
+      }
+    });
+  }
   return true;
 }

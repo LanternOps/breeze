@@ -110,7 +110,12 @@
     "timeSync": "Synchronisation de l’heure",
     "aiModels": "Modèles d'IA",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Incidents",
+    "ticketsServiceRequests": "Demandes de service",
+    "ticketsProblems": "Problèmes",
+    "ticketsChanges": "Changements",
+    "endpointMessages": "Messagerie"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -311,6 +316,17 @@
       "target": "Cible",
       "time": "Temps"
     },
+    "recentlyViewed": {
+      "title": "Reprenez où vous en étiez",
+      "kind": {
+        "device": "Appareil",
+        "org": "Organisation",
+        "ticket": "Demande",
+        "alert": "Alerte",
+        "site": "Emplacement",
+        "page": "Écran"
+      }
+    },
     "alerts": {
       "title": "Alertes récentes",
       "viewAll": "Voir tout",
@@ -408,7 +424,9 @@
       "unratedPending": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
       "unratedPending_one": "{{count}} correctif non évalué en attente (ne sera pas approuvé automatiquement)",
       "unratedPending_other": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
-      "empty": "Pas encore de données de correctifs"
+      "empty": "Pas encore de données de correctifs",
+      "imagesNotChecked_one": "{{count}} image de conteneur non vérifiée",
+      "imagesNotChecked_other": "{{count}} images de conteneur non vérifiées"
     },
     "vuln": {
       "title": "Vulnérabilités",
@@ -476,7 +494,10 @@
       "createFirst": "Créez votre premier filtre",
       "created": "Créé {{date}}",
       "deleteConfirm": "Supprimer ce filtre ?",
-      "duplicate": "Duplique"
+      "duplicate": "Duplique",
+      "saveFailed": "Impossible d'enregistrer le filtre",
+      "deleteFailed": "Impossible de supprimer le filtre",
+      "ownerOrgHint": "Les filtres enregistrés appartiennent à une organisation. Choisissez celle à laquelle ce filtre appartient."
     },
     "targets": {
       "modes": {
@@ -494,7 +515,9 @@
       "noGroups": "Aucun groupe d’appareils disponible",
       "deviceCount": "{{count}} appareils",
       "loadSaved": "Charger le filtre enregistré :",
-      "select": "Sélectionner"
+      "select": "Sélectionner",
+      "dynamic": "Dynamique",
+      "refusedGroup": "Indisponible comme cible : les règles de ce groupe reposent sur des champs que l'appareil signale lui-même ({{fields}})."
     },
     "preview": {
       "title": "Dispositifs de correspondance",
@@ -680,7 +703,23 @@
       "noSelection": "Sélectionner une organisation",
       "searchOrganizations": "Rechercher des organisations…",
       "noMatches": "Aucune organisation ne correspond",
-      "legacyFilterNotice": "Le filtrage par organisation suit désormais le sélecteur d’en-tête."
+      "legacyFilterNotice": "Le filtrage par organisation suit désormais le sélecteur d’en-tête.",
+      "recent": "Récents",
+      "pane": {
+        "destinations": {
+          "overview": "Aperçu",
+          "devices": "Appareils",
+          "tickets": "Demandes",
+          "alerts": "Alertes",
+          "sites": "Emplacements",
+          "billing": "Facturation"
+        },
+        "offlineCount": "{{count}} hors ligne",
+        "openCount": "{{count}} ouverts",
+        "criticalCount": "{{count}} critiques",
+        "noCritical": "aucune",
+        "hint": "Cliquez sur un nom pour changer · cliquez sur une page pour changer et y aller"
+      }
     },
     "header": {
       "menu": "Menu",
@@ -797,9 +836,9 @@
       "expand": "Agrandir la barre latérale",
       "collapseSections": "Réduire toutes les sections",
       "closeMenu": "Fermer le menu",
-      "recentDevices": "Dispositifs récents",
-      "hideRecentDevices": "Masquer les dispositifs récents",
-      "showRecentDevices": "Afficher les dispositifs récents"
+      "recent": "Récents",
+      "hideRecent": "Masquer les récents",
+      "showRecent": "Afficher les récents"
     },
     "orgRequired": {
       "title": "Sélectionnez une organisation",
@@ -1323,6 +1362,18 @@
           "ticketAssigned": {
             "description": "Déclenché lorsqu’un ticket est attribué ou désattribué.",
             "label": "Ticket attribué"
+          },
+          "migrationWindowClosed": {
+            "description": "Déclenché une fois par organisation à la fermeture d'une fenêtre de migration de tickets, avec les nombres importés.",
+            "label": "Fenêtre de migration fermée"
+          },
+          "integrationHealthOpened": {
+            "description": "Se déclenche lorsqu'un incident d'état est ouvert sur la connexion d'une organisation.",
+            "label": "Incident d'état de connexion ouvert"
+          },
+          "integrationHealthResolved": {
+            "description": "Se déclenche lorsqu'un incident d'état de connexion est résolu.",
+            "label": "Incident d'état de connexion résolu"
           }
         },
         "fields": {
@@ -1705,7 +1756,8 @@
         "deleteEntry": "Supprimer l’entrée {{id}}",
         "deleteConfirmTitle": "Supprimer l’entrée de temps ?",
         "deleteConfirmMessage": "Cette action supprime définitivement l’entrée de {{duration}} du ticket {{ticket}}. Elle est irréversible.",
-        "deleteConfirmMessageNoTicket": "Cette action supprime définitivement l’entrée de {{duration}}. Elle est irréversible."
+        "deleteConfirmMessageNoTicket": "Cette action supprime définitivement l’entrée de {{duration}}. Elle est irréversible.",
+        "noteInvoiceCue": "Les clients voient cette note sur leur facture, sauf si vos paramètres de facturation masquent les notes."
       },
       "sourceBadge": {
         "timer": "Minuteur",
@@ -2192,7 +2244,8 @@
         "viewInSource": "Vue en {{source}}",
         "promoteFromEdr": "Promouvoir du point de vue EDR",
         "pagination": "Page {{page}} de {{totalPages}} ({{total}} total)",
-        "previous": "Précédent"
+        "previous": "Précédent",
+        "genericEdrProvider": "Fournisseur EDR"
       },
       "IncidentDetailPage": {
         "errors": {
@@ -2591,6 +2644,34 @@
         "sending": "Envoi…",
         "send": "Envoyer"
       }
+    },
+    "mcpDomains": {
+      "legend": "Accès aux outils",
+      "allLabel": "Tous les outils (y compris les domaines ajoutés ultérieurement)",
+      "selectedLabel": "Uniquement ces domaines",
+      "coreLabel": "Noyau (toujours inclus)",
+      "error": "Sélectionnez au moins un domaine ou choisissez Tous les outils.",
+      "allEquivalentNote": "Tous les domaines sont sélectionnés : cela équivaut à Tous les outils, y compris les domaines ajoutés ultérieurement.",
+      "reconnectNote": "S’applique à cette connexion. Pour restreindre une connexion existante, révoquez-la dans Applications connectées, puis reconnectez-vous.",
+      "apiKeyHint": "Choisissez les domaines d’outils que cette clé peut utiliser via l’interface IA/MCP.",
+      "allTools": "Tous les outils",
+      "areaCount_one": "{{count}} domaine",
+      "areaCount_other": "{{count}} domaines",
+      "labels": {
+        "devices": "Appareils",
+        "scripts": "Scripts et automatisation",
+        "patching": "Correctifs et logiciels",
+        "monitoring": "Supervision et alertes",
+        "network": "Réseau",
+        "security": "Sécurité et conformité",
+        "backup": "Sauvegarde et restauration",
+        "tickets": "Tickets et temps",
+        "billing": "Facturation",
+        "accounts": "Comptes",
+        "integrations": "Intégrations",
+        "admin": "Gestion administrative",
+        "ai": "Agents IA"
+      }
     }
   },
   "whatsNew": {
@@ -2614,7 +2695,8 @@
     "dismiss": "Ignorer le rappel d’authentification à deux facteurs"
   },
   "mfaPolicyOffBanner": {
-    "message": "L'authentification multifacteur n'est pas obligatoire pour votre équipe. Les sessions avec mot de passe seul peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
+    "label": "Rappel MFA",
+    "message": "MFA non obligatoire pour votre équipe : un mot de passe seul permet de lancer des scripts.",
     "cta": "Exiger la MFA",
     "dismiss": "Masquer le rappel de politique MFA pour aujourd'hui"
   },
@@ -2684,5 +2766,10 @@
     "errors": {
       "loadFailed": "Impossible de charger la mémoire des correctifs."
     }
+  },
+  "islandError": {
+    "title": "Cette section a planté",
+    "description": "Une erreur d’affichage a empêché cette page de s’afficher. Réessayez et, si le problème persiste, incluez le message ci-dessous dans votre signalement.",
+    "retry": "Réessayer"
   }
 }

@@ -37,6 +37,7 @@ vi.mock('./aiToolsM365', () => ({
 }));
 
 import { withDbAccessContext } from '../db';
+import { CallerVerificationRequiredError } from './callerVerification/errors';
 import { __test__, type PostToolUseCallback } from './aiAgentSdkTools';
 
 const { makeSessionAwareHandler } = __test__;
@@ -150,8 +151,9 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
 
     expect(onPreToolUse).toHaveBeenCalledTimes(1);
     expect(sessionHandler).toHaveBeenCalledTimes(1);
-    // sessionHandler receives (args, auth, sessionId) — sessionId from active session.
-    expect(sessionHandler).toHaveBeenCalledWith({ userIdentifier: 'jane@x.com' }, fakeAuth, 'sess-123');
+    // sessionHandler receives (args, auth, sessionId, context) — sessionId from
+    // the active session; no intent was minted, so no context rides along.
+    expect(sessionHandler).toHaveBeenCalledWith({ userIdentifier: 'jane@x.com' }, fakeAuth, 'sess-123', undefined);
     expect(res.isError).toBeUndefined();
     expect(firstText(res)).toBe(JSON.stringify({ data: { display: 'Jane' } }));
   });
@@ -194,6 +196,67 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
       }),
       expect.any(Function),
     );
+  });
+
+  // #6354 W05: the protected M365 handlers' backend dispatch guard needs the
+  // action-intent id, and the pre-tool check is the only place that knows it.
+  it('passes { actionIntentId } as the 4th handler arg when pre-tool returned an intentId', async () => {
+    onPreToolUse.mockResolvedValueOnce({ allowed: true, intentId: 'intent-42' });
+    const handler = makeSessionAwareHandler(
+      'm365_disable_user', getAuth, getActiveSession, sessionHandler, onPreToolUse, onPostToolUse,
+    );
+    await handler({ userIdentifier: 'jane@x.com', reason: 'r' });
+    expect(sessionHandler).toHaveBeenCalledTimes(1);
+    expect(sessionHandler.mock.calls[0][3]).toEqual({ actionIntentId: 'intent-42' });
+    // Same, single DB context (no second nested withDbAccessContext).
+    expect(withDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes undefined as the 4th handler arg when pre-tool returned no intentId', async () => {
+    const handler = makeSessionAwareHandler(
+      'm365_lookup_user', getAuth, getActiveSession, sessionHandler, onPreToolUse, onPostToolUse,
+    );
+    await handler({ userIdentifier: 'jane@x.com' });
+    expect(sessionHandler.mock.calls[0]).toHaveLength(4);
+    expect(sessionHandler.mock.calls[0][3]).toBeUndefined();
+  });
+
+  it('emits a handler-thrown caller refusal intact (isError, no sanitised message) and posts the same text', async () => {
+    const payload = {
+      orgId: 'org-1', contactId: null, action: 'disable_user' as const,
+      requiredTier: 2, reason: 'no_fresh_verification' as const, latest: null,
+    };
+    sessionHandler.mockRejectedValueOnce(new CallerVerificationRequiredError(payload));
+    const handler = makeSessionAwareHandler(
+      'm365_disable_user', getAuth, getActiveSession, sessionHandler, onPreToolUse, onPostToolUse,
+    );
+    const res = (await handler({ userIdentifier: 'jane@x.com', reason: 'r' })) as ToolResult;
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(firstText(res))).toEqual({
+      error: 'Caller verification required',
+      requiresCallerVerification: payload,
+    });
+    expect(onPostToolUse).toHaveBeenCalledWith(
+      'm365_disable_user', expect.any(Object), firstText(res), true, expect.any(Number),
+      undefined, undefined, undefined,
+    );
+  });
+
+  it('carries requiresCallerVerification in a pre-tool denial body', async () => {
+    const payload = {
+      orgId: 'org-1', contactId: null, action: 'reset_password' as const,
+      requiredTier: 2, reason: 'contact_fenced' as const, latest: null,
+    };
+    onPreToolUse.mockResolvedValueOnce({
+      allowed: false, error: 'Caller verification required', requiresCallerVerification: payload,
+    });
+    const handler = makeSessionAwareHandler(
+      'm365_reset_password', getAuth, getActiveSession, sessionHandler, onPreToolUse, onPostToolUse,
+    );
+    const res = (await handler({ userIdentifier: 'u@x.com', reason: 'r' })) as ToolResult;
+    expect(res.isError).toBe(true);
+    expect(sessionHandler).not.toHaveBeenCalled();
+    expect(JSON.parse(firstText(res)).requiresCallerVerification).toEqual(payload);
   });
 
   // (4) No active session -> no_active_session error, handler & enforcement skipped.

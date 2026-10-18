@@ -18,6 +18,7 @@ const ALLOWED_PREFIXES = [
   '/quotes',
   '/invoices',
   '/tickets',
+  '/approvals',
   '/devices',
   '/assets',
   '/profile',

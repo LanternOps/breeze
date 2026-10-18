@@ -3,7 +3,8 @@
     "errors": {
       "fetch": "Die Automatisierung konnte nicht abgerufen werden",
       "generic": "Es ist ein Fehler aufgetreten",
-      "save": "Die Automatisierung konnte nicht gespeichert werden"
+      "save": "Die Automatisierung konnte nicht gespeichert werden",
+      "invalidTarget": "Das Geräteziel ist ungültig: {{detail}}"
     },
     "loading": "Automatisierung wird geladen...",
     "breadcrumb": {
@@ -210,7 +211,9 @@
     },
     "empty": {
       "noActions": "Keine Aktionen definiert. Klicken Sie auf „Aktion hinzufügen“, um eine zu erstellen."
-    }
+    },
+    "partnerGroupsNote": "Partnerweite Automatisierungen können keine bestimmten Gerätegruppen oder Geräte als Ziel haben, da jedes zu genau einer Organisation gehört. Verwenden Sie Alle Geräte oder einen erweiterten Filter.",
+    "partnerTargetBlocked": "Diese partnerweite Automatisierung zielt auf bestimmte Gerätegruppen oder Geräte, was nicht unterstützt wird. Ändern Sie das Ziel vor dem Speichern auf Alle Geräte oder einen erweiterten Filter."
   },
   "automationList": {
     "elevated": "Erhöhte Rechte",
@@ -420,12 +423,17 @@
     "empty": {
       "noPolicies": "Keine Richtlinien konfiguriert",
       "allCompliant": "Alle Geräte sind konform!",
+      "notEvaluated": "Es wurden noch keine Geräte ausgewertet.",
+      "noViolationsPending_one": "Keine Verstöße gefunden; {{count}} Gerät wird noch ausgewertet.",
+      "noViolationsPending_other": "Keine Verstöße gefunden; {{count}} Geräte werden noch ausgewertet.",
       "noMatchingDevices": "Keine passenden Geräte gefunden."
     },
     "policyComplianceRatio": "{{compliant}} / {{total}} konform",
     "searchDevices": "Geräte suchen...",
-    "violationCount": "{{count}} Verstoß",
-    "moreViolations": "+{{count}} weitere Verstöße",
+    "violationCount_one": "{{count}} Verstoß",
+    "violationCount_other": "{{count}} Verstöße",
+    "moreViolations_one": "+{{count}} weiterer Verstoß",
+    "moreViolations_other": "+{{count}} weitere Verstöße",
     "lastChecked": "Zuletzt geprüft: {{date}}",
     "pagination": {
       "showing": "Zeigt {{start}} bis {{end}} von {{total}}",
@@ -979,6 +987,43 @@
     },
     "toasts": {
       "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist"
+    },
+    "targetMode": {
+      "label": "Ausführen auf",
+      "devices": "Geräte",
+      "groups": "Gerätegruppen"
+    },
+    "groups": {
+      "title": "Gerätegruppen auswählen",
+      "searchPlaceholder": "Gruppen suchen",
+      "selectedCount": "{{count}} Gruppe(n) ausgewählt",
+      "dynamic": "Dynamisch",
+      "deviceCount": "{{count}} Gerät(e)",
+      "refusedReason": "Als Ausführungsziel nicht verfügbar: Die Regeln dieser Gruppe beruhen auf Feldern, die ein Gerät selbst meldet ({{fields}}).",
+      "loading": "Gerätegruppen werden geladen...",
+      "loadFailed": "Gerätegruppen konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "empty": "Keine Gerätegruppen gefunden.",
+      "tooManyGroups": "Ein Lauf kann höchstens {{max}} Gruppen als Ziel haben.",
+      "countingMembers": "Mitglieder werden gezählt...",
+      "countFailed": "Die Mitglieder der ausgewählten Gruppen konnten nicht gezählt werden. Der Server prüft das Limit beim Ausführen.",
+      "summaryUnique": "{{count}} eindeutige(s) Gerät(e) in den ausgewählten Gruppen",
+      "summaryCompatible": "{{count}} können dieses Skript ausführen (passendes Betriebssystem)",
+      "summaryOffline": "{{count}} davon sind offline und laufen, sobald das Gerät online ist",
+      "membershipNote": "Die Mitgliedschaft dynamischer Gruppen entspricht der letzten Auswertung und wird beim Start des Laufs erneut gelesen.",
+      "overCap": "Diese Gruppen enthalten {{count}} eindeutige Geräte und überschreiten das Limit von {{max}} pro Lauf. Entfernen Sie eine Gruppe oder teilen Sie den Lauf auf.",
+      "submitting": "Wird an {{count}} Gruppe(n) gesendet...",
+      "warningsTitle": "Hinweise vom Server",
+      "confirmDescription": "„{{name}}“ auf {{groups}} Gerätegruppe(n) als {{runAs}} ausführen. Skripte werden in die Warteschlange gestellt und sofort ausgeführt.",
+      "confirmMembers": "Derzeit gehören {{count}} eindeutige Geräte zu diesen Gruppen; die Mitgliedschaft wird beim Bestätigen erneut gelesen.",
+      "confirmMembersUnknown": "Die Anzahl der Geräte ist noch nicht bekannt; die Mitgliedschaft wird beim Bestätigen gelesen.",
+      "errors": {
+        "selectGroup": "Bitte wählen Sie mindestens eine Gerätegruppe aus",
+        "tooManyTargets": "Diese Gruppen ergeben {{count}} Geräte und überschreiten das Limit von {{max}} pro Lauf. Entfernen Sie eine Gruppe oder teilen Sie den Lauf auf.",
+        "perGroup": "Geräte pro Gruppe: {{groups}}.",
+        "groupNotFound": "{{count}} ausgewählte Gruppe(n) existieren nicht mehr oder sind nicht zugänglich. Laden Sie die Liste neu und versuchen Sie es erneut.",
+        "noTargets": "Die ausgewählten Gruppen enthalten keine Geräte, auf die dieser Lauf zielen kann; es wurde nichts ausgeführt."
+      }
     }
   },
   "secretParameters": {

@@ -93,6 +93,7 @@ export const DECOMMISSION_BLOCKED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'shutdown',
   'lock',
   'run-script',
+  'send-message',
   'decommission',
 ]);
 
@@ -279,3 +280,33 @@ export function actionGateHint(
     ? t('devices:deviceActions.gateHint.liveSessionOnly', { reason })
     : t('devices:deviceActions.gateHint.allCommands', { reason });
 }
+
+/**
+ * Bulk actions that fire immediately against the selected agents and therefore
+ * need an explicit confirm (#9032): one misclick on select-all would otherwise
+ * reboot, lock or wake a customer's whole fleet with only a post-hoc toast.
+ *
+ * Not listed, because they already have their own step before anything is sent:
+ * run-script (picker, then scope-naming confirm), maintenance-on (reason
+ * dialog), deploy-software (wizard), decommission / delete-manual /
+ * permanent-delete (their own dialogs).
+ *
+ * The first four queue for offline devices, so their confirm splits the count
+ * into "online now" and "queued for next check-in". wake and maintenance-off
+ * have no queue semantics, so they get the count + scope only.
+ */
+export const CONFIRM_REQUIRED_BULK_COMMANDS: ReadonlySet<string> = new Set([
+  'reboot',
+  'reboot_safe_mode',
+  'shutdown',
+  'lock',
+  'wake',
+  'maintenance-off',
+]);
+
+export const QUEUEING_BULK_COMMANDS: ReadonlySet<string> = new Set([
+  'reboot',
+  'reboot_safe_mode',
+  'shutdown',
+  'lock',
+]);

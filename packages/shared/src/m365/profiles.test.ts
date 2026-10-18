@@ -3,7 +3,9 @@ import {
   M365_PERMISSION_PROFILES,
   canonicalGrantKey,
   connectionNeedsConsentReconciliation,
+  getM365PermissionProfile,
 } from './profiles';
+import { M365_WRITE_ACTION_REQUIRED_ROLES } from './writeActions';
 
 const MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID = '00000003-0000-0000-c000-000000000000';
 
@@ -198,20 +200,56 @@ describe('shared M365 permission profiles', () => {
 describe('customer-graph-actions manifest (least privilege)', () => {
   const p = M365_PERMISSION_PROFILES['customer-graph-actions'];
 
-  it('requests exactly the two in-use application scopes', () => {
-    expect([...p.applicationPermissions].sort()).toEqual(
-      ['User-PasswordProfile.ReadWrite.All', 'User.ReadWrite.All'],
-    );
+  it('requests exactly the M1 identity-catalog application roles', () => {
+    expect([...p.applicationPermissions].sort()).toEqual([
+      'DeviceManagementManagedDevices.PrivilegedOperations.All',
+      'GroupMember.ReadWrite.All',
+      'MailboxSettings.ReadWrite',
+      'Organization.Read.All',
+      'User-PasswordProfile.ReadWrite.All',
+      'User.ReadWrite.All',
+      'User.RevokeSessions.All',
+    ]);
   });
 
   it('declares the matching app-role assignments with verified Graph GUIDs', () => {
     const byValue = Object.fromEntries(
       (p.applicationPermissionAssignments ?? []).map((g) => [g.value, g]),
     );
-    expect(byValue['User.ReadWrite.All']?.appRoleId).toBe('204e0828-b5ca-4ad8-b9f3-f32a958e7cc4');
-    expect(byValue['User-PasswordProfile.ReadWrite.All']?.appRoleId).toBe('56760768-b641-451f-8906-e1b8ab31bca7');
+    // APPLICATION role IDs (appRoleAssignments), not the delegated oauth2PermissionScope IDs (#8648).
+    // Each verified against https://learn.microsoft.com/en-us/graph/permissions-reference (Application column).
+    expect(byValue['User.ReadWrite.All']?.appRoleId).toBe('741f803b-c850-494e-b5df-cde7c675a1ca');
+    expect(byValue['User-PasswordProfile.ReadWrite.All']?.appRoleId).toBe('cc117bb9-00cf-4eb8-b580-ea2a878fe8f7');
+    expect(byValue['User.RevokeSessions.All']?.appRoleId).toBe('77f3a031-c388-4f99-b373-dc68676a979e');
+    // NOT 62a82d76-… — that is Group.ReadWrite.All, which this profile must never request.
+    expect(byValue['GroupMember.ReadWrite.All']?.appRoleId).toBe('dbaae8cf-10b5-4b86-a4a1-f871c94c6695');
+    expect(byValue['DeviceManagementManagedDevices.PrivilegedOperations.All']?.appRoleId)
+      .toBe('5b07b0dd-2377-4e44-a38d-703f09a0dc3c');
+    expect(byValue['MailboxSettings.ReadWrite']?.appRoleId).toBe('6931bccd-447a-43d1-b442-00a195474933');
+    expect(byValue['Organization.Read.All']?.appRoleId).toBe('498476ce-e0fe-48b0-b801-37ba7e2685c6');
     for (const g of p.applicationPermissionAssignments ?? []) {
       expect(g.resourceApplicationId).toBe('00000003-0000-0000-c000-000000000000');
+    }
+    const ids = (p.applicationPermissionAssignments ?? []).map((g) => g.appRoleId);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('is manifest version 3: one bump for the whole M1 identity catalog', () => {
+    expect(p.version).toBe(3);
+    expect(connectionNeedsConsentReconciliation('customer-graph-actions', 2)).toBe(true);
+    expect(connectionNeedsConsentReconciliation('customer-graph-actions', 3)).toBe(false);
+  });
+
+  it('never requests Group.ReadWrite.All (least privilege, spec §7.1)', () => {
+    expect(p.applicationPermissions).not.toContain('Group.ReadWrite.All');
+    expect((p.applicationPermissionAssignments ?? []).map((g) => g.appRoleId))
+      .not.toContain('62a82d76-70ea-41e2-9197-370581804d09');
+  });
+
+  it('holds every role M365_WRITE_ACTION_REQUIRED_ROLES names', () => {
+    const held = new Set(getM365PermissionProfile('customer-graph-actions').applicationPermissions);
+    for (const roles of Object.values(M365_WRITE_ACTION_REQUIRED_ROLES)) {
+      for (const role of roles) expect(held.has(role)).toBe(true);
     }
   });
 

@@ -110,7 +110,12 @@
     "timeSync": "Time Sync",
     "aiModels": "AI Models",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Incidents",
+    "ticketsServiceRequests": "Service Requests",
+    "ticketsProblems": "Problems",
+    "ticketsChanges": "Changes",
+    "endpointMessages": "Messages"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -311,6 +316,17 @@
       "target": "Target",
       "time": "Time"
     },
+    "recentlyViewed": {
+      "title": "Pick up where you left off",
+      "kind": {
+        "device": "Device",
+        "org": "Organization",
+        "ticket": "Ticket",
+        "alert": "Alert",
+        "site": "Site",
+        "page": "Page"
+      }
+    },
     "alerts": {
       "title": "Recent Alerts",
       "viewAll": "View all",
@@ -408,7 +424,9 @@
       "unratedPending": "{{count}} unrated patches pending (won't auto-approve)",
       "unratedPending_one": "{{count}} unrated patch pending (won't auto-approve)",
       "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
-      "empty": "No patch data yet"
+      "empty": "No patch data yet",
+      "imagesNotChecked_one": "{{count}} container image not checked",
+      "imagesNotChecked_other": "{{count}} container images not checked"
     },
     "vuln": {
       "title": "Vulnerabilities",
@@ -476,7 +494,10 @@
       "createFirst": "Create your first filter",
       "created": "Created {{date}}",
       "deleteConfirm": "Delete this filter?",
-      "duplicate": "Duplicate"
+      "duplicate": "Duplicate",
+      "saveFailed": "Couldn't save the filter",
+      "deleteFailed": "Couldn't delete the filter",
+      "ownerOrgHint": "Saved filters belong to one organization. Choose which one owns this filter."
     },
     "targets": {
       "modes": {
@@ -494,7 +515,9 @@
       "noGroups": "No device groups available",
       "deviceCount": "{{count}} devices",
       "loadSaved": "Load saved filter:",
-      "select": "Select"
+      "select": "Select",
+      "dynamic": "Dynamic",
+      "refusedGroup": "Unavailable as a target: this group's rules match on fields a device reports about itself ({{fields}})."
     },
     "preview": {
       "title": "Matching Devices",
@@ -680,7 +703,23 @@
       "noSelection": "Select organization",
       "searchOrganizations": "Search organizations…",
       "noMatches": "No organizations match",
-      "legacyFilterNotice": "Organization filtering now follows the header selector."
+      "legacyFilterNotice": "Organization filtering now follows the header selector.",
+      "recent": "Recent",
+      "pane": {
+        "destinations": {
+          "overview": "Overview",
+          "devices": "Devices",
+          "tickets": "Tickets",
+          "alerts": "Alerts",
+          "sites": "Sites",
+          "billing": "Billing"
+        },
+        "offlineCount": "{{count}} offline",
+        "openCount": "{{count}} open",
+        "criticalCount": "{{count}} critical",
+        "noCritical": "none",
+        "hint": "Click a name to switch · click a page to switch and go there"
+      }
     },
     "header": {
       "menu": "Menu",
@@ -797,9 +836,9 @@
       "expand": "Expand sidebar",
       "collapseSections": "Collapse all sections",
       "closeMenu": "Close menu",
-      "recentDevices": "Recent devices",
-      "hideRecentDevices": "Hide recent devices",
-      "showRecentDevices": "Show recent devices"
+      "recent": "Recent",
+      "hideRecent": "Hide recent",
+      "showRecent": "Show recent"
     },
     "orgRequired": {
       "title": "Select an organization",
@@ -1323,6 +1362,18 @@
           "ticketAssigned": {
             "description": "Triggered when a ticket is assigned or unassigned.",
             "label": "Ticket Assigned"
+          },
+          "migrationWindowClosed": {
+            "description": "Triggered once per organization when a ticket migration window closes, with the counts it imported.",
+            "label": "Migration Window Closed"
+          },
+          "integrationHealthOpened": {
+            "description": "Triggered when a health incident is opened for an organization's connection.",
+            "label": "Connection health incident opened"
+          },
+          "integrationHealthResolved": {
+            "description": "Triggered when a connection health incident is resolved.",
+            "label": "Connection health incident resolved"
           }
         },
         "fields": {
@@ -1705,7 +1756,8 @@
         "deleteEntry": "Delete entry {{id}}",
         "deleteConfirmTitle": "Delete time entry?",
         "deleteConfirmMessage": "This permanently removes the {{duration}} entry on ticket {{ticket}}. It can't be undone.",
-        "deleteConfirmMessageNoTicket": "This permanently removes the {{duration}} entry. It can't be undone."
+        "deleteConfirmMessageNoTicket": "This permanently removes the {{duration}} entry. It can't be undone.",
+        "noteInvoiceCue": "Customers see this note on their invoice unless your billing settings hide notes."
       },
       "sourceBadge": {
         "timer": "Timer",
@@ -2192,7 +2244,8 @@
         "viewInSource": "View in {{source}}",
         "promoteFromEdr": "Promote from the EDR view",
         "pagination": "Page {{page}} of {{totalPages}} ({{total}} total)",
-        "previous": "Previous"
+        "previous": "Previous",
+        "genericEdrProvider": "EDR provider"
       },
       "IncidentDetailPage": {
         "errors": {
@@ -2591,6 +2644,34 @@
         "sending": "Sending…",
         "send": "Send"
       }
+    },
+    "mcpDomains": {
+      "legend": "Tool access",
+      "allLabel": "All tools (including areas added later)",
+      "selectedLabel": "Only these areas",
+      "coreLabel": "Core (always included)",
+      "error": "Select at least one area, or choose All tools.",
+      "allEquivalentNote": "Every area is selected, so this is the same as All tools, including areas added later.",
+      "reconnectNote": "Applies to this connection. To narrow an existing connection, revoke it under Connected apps, then reconnect.",
+      "apiKeyHint": "Choose which tool areas this key can use through the AI/MCP interface.",
+      "allTools": "All tools",
+      "areaCount_one": "{{count}} area",
+      "areaCount_other": "{{count}} areas",
+      "labels": {
+        "devices": "Devices",
+        "scripts": "Scripts & automation",
+        "patching": "Patching & software",
+        "monitoring": "Monitoring & alerts",
+        "network": "Network",
+        "security": "Security & compliance",
+        "backup": "Backup & recovery",
+        "tickets": "Tickets & time",
+        "billing": "Billing",
+        "accounts": "Accounts",
+        "integrations": "Integrations",
+        "admin": "Administration",
+        "ai": "AI agents"
+      }
     }
   },
   "whatsNew": {
@@ -2614,7 +2695,8 @@
     "dismiss": "Dismiss two-factor authentication reminder"
   },
   "mfaPolicyOffBanner": {
-    "message": "Multi-factor authentication is not required for your team. Password-only sessions can run scripts, move devices and change policies.",
+    "label": "MFA reminder",
+    "message": "MFA isn't required for your team. Password-only sessions can run scripts.",
     "cta": "Require MFA",
     "dismiss": "Dismiss the MFA policy reminder for today"
   },
@@ -2684,5 +2766,10 @@
     "errors": {
       "loadFailed": "Could not load fix memory."
     }
+  },
+  "islandError": {
+    "title": "This section crashed",
+    "description": "A rendering error stopped this page from displaying. Try again, and if it keeps happening, include the message below when you report it.",
+    "retry": "Try again"
   }
 }

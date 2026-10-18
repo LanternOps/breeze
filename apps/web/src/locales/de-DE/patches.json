@@ -83,8 +83,12 @@
       "pendingDevices": "Bei {{count}} Geräten stehen Patches aus",
       "approved": "{{count}} freigegeben",
       "pendingApproval": "{{count}} Freigaben ausstehend",
+      "failedInstalls_one": "{{count}} fehlgeschlagene Installation",
+      "failedInstalls_other": "{{count}} fehlgeschlagene Installationen",
       "critical": "{{count}} kritisch",
-      "reboot": "{{count}} mit ausstehendem Neustart"
+      "reboot": "{{count}} mit ausstehendem Neustart",
+      "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft"
     },
     "filters": {
       "allDevices": "Alle Geräte ({{count}})",
@@ -109,6 +113,8 @@
       "approvedTitle": "Ausstehende Patches, die zur Installation freigegeben sind",
       "pendingApproval": "Freigabe ausstehend",
       "pendingApprovalTitle": "Ausstehende Patches, deren Freigabe noch aussteht",
+      "failed": "Fehlgeschlagen",
+      "failedTitle": "Ausstehende Patches, deren letzter Installationsversuch fehlgeschlagen ist",
       "osPatches": "OS-Patches",
       "osPatchesTitle": "Ausstehende Updates von Windows Update, Apple oder Linux-Paketmanagern",
       "thirdParty": "Drittanbieter",
@@ -564,7 +570,26 @@
     "badges": {
       "manual": "Manuell",
       "os": "OS: {{severities}}",
-      "thirdParty": "Drittanbieter-Apps"
+      "thirdParty": "Drittanbieter-Apps",
+      "appRules_one": "{{count}} App-Regel",
+      "appRules_other": "{{count}} App-Regeln"
     }
+  },
+  "ringAppRules": {
+    "applicationRules": "Anwendungsregeln",
+    "blockSpecificApplicationsFromAutomatedPatchingOr": "Blockieren Sie bestimmte Anwendungen vom automatischen Patchen oder heften Sie sie an eine maximale Version.",
+    "blocked": "Blockiert",
+    "pinned": "Angepinnt",
+    "maxVersion": "Max-Version",
+    "pinnedApplicationsNeedAVersion": "Angepinnte Anwendungen benötigen eine Version.",
+    "addApplication": "Anwendung hinzufügen",
+    "searchCatalogAndDetectedApplications": "Katalog und erkannte Anwendungen durchsuchen...",
+    "searching": "Suche...",
+    "catalog": "Katalog",
+    "couldnTLoadApplicationsYouCanStill": "Anwendungen konnten nicht geladen werden. Sie können sie trotzdem über die Paket-ID unten hinzufügen.",
+    "noMatches": "Keine Übereinstimmungen.",
+    "orEnterAPackageIDManually": "Oder geben Sie manuell eine Paket-ID ein",
+    "removeRuleFor": "Regel für {{application}} entfernen",
+    "scopeNote": "Diese Regeln gelten für jedes Gerät, dessen Konfigurationsrichtlinie mit diesem Ring verknüpft ist."
   }
 }

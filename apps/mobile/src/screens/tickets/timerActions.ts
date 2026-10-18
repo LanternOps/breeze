@@ -26,7 +26,7 @@ export type StartOutcome =
   | { ok: 'local'; timer: LocalTimer }
   | {
       ok: false;
-      reason: 'already-running' | 'denied' | 'unknown';
+      reason: 'already-running' | 'denied' | 'forbidden' | 'approval-required' | 'unknown';
       message: string;
       denial?: TimeEntryDenial;
     };
@@ -49,11 +49,24 @@ export interface Stamp {
 }
 
 export interface StartDeps {
-  startTimer: (input: { ticketId?: string; workTypeId?: string | null }) => Promise<TimeEntry>;
+  startTimer: (input: {
+    ticketId?: string;
+    workTypeId?: string | null;
+    isBillable?: boolean;
+    orgId?: string;
+    siteId?: string;
+    source?: 'timer' | 'location';
+  }) => Promise<TimeEntry>;
   writeLocalTimer: (timer: LocalTimer) => Promise<void>;
   clearLocalTimer: () => Promise<void>;
   isConnected: () => boolean;
   stamp: () => Stamp;
+  /**
+   * #8211 — called when the server refuses a site start (org or site no longer
+   * reachable), so a stale cached site list stops re-prompting on every
+   * foreground. Optional: ticket starts never need it.
+   */
+  invalidateLocationSites?: () => Promise<void>;
 }
 
 export interface StopDeps {
@@ -115,9 +128,54 @@ export async function startForTicket(
   // category's default work type. `null` = the technician chose none. The
   // choice rides on the local timer so an offline start still carries it into
   // the `create` its stop queues.
+  options: { workTypeId?: string | null; isBillable?: false } = {}
+): Promise<StartOutcome> {
+  return startWith({ ticketId }, deps, options);
+}
+
+/**
+ * #8211 — start from an arrival prompt: a site visit, optionally against a
+ * ticket. Same persist-before-network ordering as a ticket start; the
+ * org / site / `source:'location'` provenance rides on the local timer so an
+ * offline start still reaches the `create` its stop queues.
+ */
+export async function startForSite(
+  target: { orgId: string; siteId: string; ticketId: string | null },
+  deps: StartDeps,
   options: { workTypeId?: string | null } = {}
 ): Promise<StartOutcome> {
+  return startWith(
+    { ticketId: target.ticketId, orgId: target.orgId, siteId: target.siteId, source: 'location' },
+    deps,
+    options
+  );
+}
+
+/** The server's verdicts that the org or site is gone / not ours: a cached site list is stale. */
+const SITE_REFUSAL_CODES = new Set(['ORG_DENIED', 'SITE_DENIED', 'SITE_ORG_MISMATCH', 'ORG_MISMATCH']);
+export const APPROVAL_REQUIRED_PROMPT = 'Approval required. Log as non-billable?';
+const SITE_REFUSED =
+  'That site is no longer available to you. The list of sites will refresh.';
+
+async function startWith(
+  target: {
+    ticketId: string | null;
+    orgId?: string;
+    siteId?: string;
+    source?: 'location';
+  },
+  deps: StartDeps,
+  options: { workTypeId?: string | null; isBillable?: false }
+): Promise<StartOutcome> {
+  const { ticketId } = target;
+  // Only ever `false`: the retry after the approval gate refused a billable start.
+  const billable = options.isBillable === false ? { isBillable: false as const } : {};
   const workType = options.workTypeId !== undefined ? { workTypeId: options.workTypeId } : {};
+  const provenance = {
+    ...(target.orgId !== undefined ? { orgId: target.orgId } : {}),
+    ...(target.siteId !== undefined ? { siteId: target.siteId } : {}),
+    ...(target.source !== undefined ? { source: target.source } : {}),
+  };
   const stamp = deps.stamp();
   const timer: LocalTimer = {
     localId: stamp.localId,
@@ -130,6 +188,7 @@ export async function startForTicket(
     startConfirmed: false,
     description: null,
     ...workType,
+    ...provenance,
   };
 
   // Persisted BEFORE any network call. If the app is killed between the tap and
@@ -153,7 +212,12 @@ export async function startForTicket(
   }
 
   try {
-    const entry = await deps.startTimer({ ticketId, ...workType });
+    const entry = await deps.startTimer({
+      ...(ticketId === null ? {} : { ticketId }),
+      ...workType,
+      ...billable,
+      ...provenance,
+    });
     // The server's stamp is authoritative from here on.
     const owned: LocalTimer = {
       ...timer,
@@ -185,7 +249,19 @@ export async function startForTicket(
       };
     }
 
+    if (code === 'APPROVAL_REQUIRED' && getStatus(error) === 409) {
+      // The gate refuses only a billable START (#8196). Nothing was created, so
+      // nothing may keep ticking locally; the screen offers the non-billable retry.
+      await deps.clearLocalTimer().catch(() => undefined);
+      return { ok: false, reason: 'approval-required', message: APPROVAL_REQUIRED_PROMPT };
+    }
+
     const status = getStatus(error);
+    if (code !== undefined && SITE_REFUSAL_CODES.has(code) && (status === 403 || status === 422)) {
+      await deps.clearLocalTimer().catch(() => undefined);
+      await deps.invalidateLocationSites?.().catch(() => undefined);
+      return { ok: false, reason: 'forbidden', message: SITE_REFUSED };
+    }
     if (status === undefined) {
       // The request may or may not have reached the server. The timer keeps
       // ticking locally with `startConfirmed: false`, and the reconciler
@@ -256,6 +332,16 @@ async function closeLocalTimer(
   // Tri-state carried from the start (see LocalTimer.workTypeId).
   const workType =
     local !== null && local.workTypeId !== undefined ? { workTypeId: local.workTypeId } : {};
+  // #8211: a location visit keeps its org + site + provenance through the queue.
+  // Falls back to the store's copy when the local record is gone or unreadable.
+  const orgId = local?.orgId ?? input.running?.orgId;
+  const siteId = local?.siteId ?? input.running?.siteId;
+  const source = local?.source ?? input.running?.source;
+  const provenance = {
+    ...(orgId ? { orgId } : {}),
+    ...(siteId ? { siteId } : {}),
+    ...(source === 'location' ? { source: 'location' } : {}),
+  };
 
   if ('unusable' in span) {
     // Inventing a duration would be inventing a bill. Park the record so the
@@ -270,6 +356,7 @@ async function closeLocalTimer(
             ...(ticketId === null ? {} : { ticketId }),
             ...(description === undefined ? {} : { description }),
             ...workType,
+            ...provenance,
           },
           queuedAt: new Date(stamp.wallMs).toISOString(),
           attempts: 0,
@@ -298,6 +385,7 @@ async function closeLocalTimer(
         ...(description === undefined ? {} : { description }),
         ...(input.isBillable === undefined ? {} : { isBillable: input.isBillable }),
         ...workType,
+        ...provenance,
         // The reconciler needs to know a start request may have landed before
         // it posts what could be a second entry for the same work.
         ...(local !== null && !local.startConfirmed ? { unconfirmedStart: true } : {}),

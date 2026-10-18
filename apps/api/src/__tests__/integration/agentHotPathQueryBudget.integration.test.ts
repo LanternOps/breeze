@@ -133,6 +133,8 @@ import {
   enrollmentKeys,
   m365Connections,
   onedriveDeviceState,
+  unifiCollectors,
+  unifiIntegrations,
 } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { loadDeviceHierarchy } from '../../services/deviceHierarchy';
@@ -175,8 +177,13 @@ const ROUTE_ONLY_STEADY_HEARTBEAT_TX = 2;
 // misses the workload settings cache includes #8190's one workload-inventory
 // policy read (bucket workloadInventoryPolicy), re-measured after the rebase
 // onto #8221: cold 47 -> 48, caches-miss 20 -> 21, configured 21 -> 22.
+// #7970: cold 48 -> 50 — the UniFi collector presence probe (SAVEPOINT +
+// one LIMIT 1 select) on a negative-cache miss; warm and steady unchanged.
 const COLD_TX = 7;
-const COLD_STATEMENTS = 48;
+// #8997: cold 50 -> 51 — the remote-access policy read now takes a SAVEPOINT on
+// a cache miss only (so a failed read cannot abort the org transaction); warm
+// and steady-state beats hit the cache and are unchanged.
+const COLD_STATEMENTS = 51;
 const CACHES_MISS_STATEMENTS = 21;
 const CONFIGURED_STEADY_STATEMENTS = 22;
 
@@ -1085,6 +1092,40 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(nextPoll.statements).toBe(0);
   });
 
+  runDb('#7970: the heartbeat hint fills the unifi-collectors negative cache from its org-scoped context, so the next poll is free', async () => {
+    const org = await seedOrg('unifi-hint-none');
+    const device = await enrollDevice(org, 'no-collector');
+    const beat = await heartbeat(device);
+    expect(beat.status).toBe(200);
+    expect(((await beat.json()) as { configUpdate: Record<string, unknown> }).configUpdate.unifi_collectors_assigned).toBe(false);
+
+    const poll = await measure(() => pollCollectors(device));
+    expect(poll.status).toBe(200);
+    expect(poll.transactions).toBe(0);
+    expect(poll.statements).toBe(0);
+  });
+
+  runDb('#7970: a device that is a UniFi collector gets unifi_collectors_assigned=true under the org-scoped RLS context', async () => {
+    const org = await seedOrg('unifi-hint-present');
+    const device = await enrollDevice(org, 'collector');
+    const raw = getTestDb();
+    const [integration] = await raw.insert(unifiIntegrations)
+      .values({ partnerId: org.partnerId, apiKeyEncrypted: 'test-cloud-key' })
+      .returning({ id: unifiIntegrations.id });
+    await raw.insert(unifiCollectors).values({
+      integrationId: integration!.id, orgId: org.orgId, siteId: org.siteId,
+      unifiHostId: `host-${org.suffix}`, collectorDeviceId: device.deviceId,
+      controllerUrl: `https://unifi-${org.suffix}.example`, localApiKeyEncrypted: 'test-local-key',
+    });
+
+    for (let i = 0; i < 2; i++) {
+      const beat = await heartbeat(device);
+      expect(beat.status).toBe(200);
+      expect(((await beat.json()) as { configUpdate: Record<string, unknown> }).configUpdate.unifi_collectors_assigned).toBe(true);
+      advanceClock(NEXT_BEAT_MS);
+    }
+  });
+
   it('W0d: the budget table pins exactly the simulator routes and the auth-only cases', () => {
     const expected = [...HOT_ROUTES.map((r) => r.key), ...W0D_EXTRA_KEYS, AUTH_ONLY_SELF_MANAGED, AUTH_ONLY_WRAPPED].sort();
     expect(Object.keys(HOT_ROUTE_BUDGETS).sort()).toEqual(expected);
@@ -1179,8 +1220,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     try {
       expect(await redis.exists(presenceKey), 'onOpen took the presence lease').toBe(1);
       await frame({ type: 'pong', timestamp: Date.now() }); // the first frame after open is not steady state
-      // Steady state: the agent answers the server's ping every 30 s, well
-      // past AGENT_CREDENTIAL_RECHECK_TTL_MS (5 s), so each pong re-checks.
+      // Steady state: the agent answers the server's ping every 30 s, at or
+      // past AGENT_CREDENTIAL_RECHECK_TTL_MS (30 s), so each pong re-checks.
       advanceClock(WS_PING_INTERVAL_MS);
       // Shorten the lease (just before measuring) so the pong's refresh is
       // observable: a pong the handler silently dropped would otherwise

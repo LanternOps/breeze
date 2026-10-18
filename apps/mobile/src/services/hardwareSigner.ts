@@ -20,6 +20,8 @@
  * and builds that have no attested path.
  */
 
+import { withBiometricPrompt } from './biometricPromptState';
+
 export interface HardwareSigner {
   /** Whether a hardware keystore + enrolled biometrics are available. */
   isAvailable(): Promise<boolean>;
@@ -120,11 +122,15 @@ export function reactNativeBiometricsSigner(rnBiometrics: RNBiometricsInstance):
       return { publicKey };
     },
     async sign(payload: string, reason: string) {
-      const result = await rnBiometrics.createSignature({
-        promptMessage: reason,
-        payload,
-        cancelButtonText: 'Cancel',
-      });
+      // Biometric-gated: shows the system sheet. Marked so the app lock's
+      // privacy cover does not flash for it (services/biometricPromptState).
+      const result = await withBiometricPrompt(() =>
+        rnBiometrics.createSignature({
+          promptMessage: reason,
+          payload,
+          cancelButtonText: 'Cancel',
+        })
+      );
       if (!result.success || !result.signature) {
         // User cancelled the biometric prompt or signing failed — never return
         // a bogus signature.

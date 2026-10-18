@@ -42,6 +42,8 @@ export const INLINE_SETTINGS_EXAMPLES: Readonly<Partial<Record<ConfigFeatureType
     suppressPatching: true,
   },
   warranty: { enabled: true, warnDays: 90, criticalDays: 30 },
+  system_protection: { beforePatching: true, beforeScripts: true, beforeSoftwareInstall: false, labelPrefix: 'Breeze' },
+  security_agents: { version: 1, agents: [{ vendor: 'huntress', enabled: false, platforms: ['windows'] }] },
   onedrive_helper: {
     silentAccountConfig: true,
     filesOnDemand: true,

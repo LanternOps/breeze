@@ -33,6 +33,14 @@ export interface Organization {
    *  the partner/system-scope list (full row); the org-scoped projection of
    *  GET /orgs/organizations omits it, hence optional. */
   currencyCode?: string;
+  /** Billing address — present on the partner/system-scope list only, like
+   *  `currencyCode`. Read by the org switcher's pane via `formatAddress`. */
+  billingAddressLine1?: string | null;
+  billingAddressLine2?: string | null;
+  billingAddressCity?: string | null;
+  billingAddressRegion?: string | null;
+  billingAddressPostalCode?: string | null;
+  billingAddressCountry?: string | null;
   createdAt: string;
 }
 
@@ -54,6 +62,9 @@ export interface Site {
  * re-exports this type rather than declaring a second copy that could drift.
  */
 export type ServiceManagementMode = 'native' | 'external' | 'off';
+
+/** How many switched-to orgs the switcher's Recent group remembers. */
+export const MAX_RECENT_ORGS = 3;
 
 /** Mirrors the CHECK constraint. Used to sanitise a persisted value on rehydrate. */
 export const SERVICE_MANAGEMENT_MODES: readonly ServiceManagementMode[] = ['native', 'external', 'off'];
@@ -136,6 +147,9 @@ interface OrgState {
   clearOrgContext: () => void;
   /** Adopt the partner's stored Service Management mode (Sidebar's /orgs/partners/me fetch). */
   setServiceManagementMode: (mode: ServiceManagementMode) => void;
+  /** Last switched-to orgs, newest first (max MAX_RECENT_ORGS). Written only by `applyOrgSwitch`. */
+  recentOrgIds: string[];
+  recordRecentOrg: (orgId: string) => void;
 }
 
 export const useOrgStore = create<OrgState>()(
@@ -153,6 +167,7 @@ export const useOrgStore = create<OrgState>()(
       error: null,
       organizationsLoaded: false,
       serviceManagementMode: 'native',
+      recentOrgIds: [],
 
       setPartner: (partnerId) => {
         set({
@@ -166,7 +181,8 @@ export const useOrgStore = create<OrgState>()(
           // "loading" shape until the refetch below resolves.
           organizationsLoaded: false,
           sites: [],
-          enrollmentDefaults: null
+          enrollmentDefaults: null,
+          recentOrgIds: []
         });
         // Fetch organizations for the new partner
         get().fetchOrganizations();
@@ -386,12 +402,19 @@ export const useOrgStore = create<OrgState>()(
           // are reset: a logout→login as a DIFFERENT partner would otherwise
           // inherit the prior partner's module choice until the Sidebar's
           // /orgs/partners/me fetch resolves.
-          serviceManagementMode: 'native'
+          serviceManagementMode: 'native',
+          recentOrgIds: []
         });
       },
 
       setServiceManagementMode: (mode) => {
         set({ serviceManagementMode: mode });
+      },
+
+      recordRecentOrg: (orgId) => {
+        set((state) => ({
+          recentOrgIds: [orgId, ...state.recentOrgIds.filter((id) => id !== orgId)].slice(0, MAX_RECENT_ORGS)
+        }));
       }
     }),
     {
@@ -406,7 +429,8 @@ export const useOrgStore = create<OrgState>()(
         currentOrgId: state.currentOrgId,
         allOrgs: state.allOrgs,
         lastOrgId: state.lastOrgId,
-        serviceManagementMode: state.serviceManagementMode
+        serviceManagementMode: state.serviceManagementMode,
+        recentOrgIds: state.recentOrgIds
       }),
       // Normalize a contradictory persisted pair on rehydrate. A concrete org
       // selection wins over a stale allOrgs flag (an older schema or tampered
@@ -422,6 +446,10 @@ export const useOrgStore = create<OrgState>()(
         if (!SERVICE_MANAGEMENT_MODES.includes(merged.serviceManagementMode)) {
           merged.serviceManagementMode = 'native';
         }
+        // Tampered / legacy value: coerce to a clean, capped array of strings.
+        merged.recentOrgIds = Array.isArray(merged.recentOrgIds)
+          ? [...new Set(merged.recentOrgIds.filter((x): x is string => typeof x === 'string' && x !== ''))].slice(0, MAX_RECENT_ORGS)
+          : [];
         return merged;
       }
     }

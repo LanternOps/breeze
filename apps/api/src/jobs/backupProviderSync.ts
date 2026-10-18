@@ -12,6 +12,7 @@ import { ProviderRequestError } from '../services/backupProviders/types';
 import { persistVendorSnapshot } from '../services/backupProviders/persist';
 import { evaluateProviderAlerts } from '../services/backupProviders/alerts';
 import { attachWorkerObservability } from './workerObservability';
+import { isFinalSyncAttempt, reportTerminalSyncFailure } from './syncAttempt';
 
 /**
  * External backup provider sync (#6008).
@@ -338,6 +339,8 @@ export async function syncConnectionById(
     // BullMQ backs off. A rejected credential is terminal at any attempt.
     if (isFinalAttempt || reauth) {
       await recordSyncFailure(connectionId, message, reauth);
+      // Connection health (W4): observe this kind soon instead of at its next poll.
+      reportTerminalSyncFailure('backup_provider');
     }
     if (reauth) {
       throw error instanceof UnrecoverableError ? error : new UnrecoverableError(
@@ -376,14 +379,13 @@ export async function syncConnectionById(
   }
 }
 
-async function processSyncConnection(
+/** Exported for the real-Job final-attempt regression test (#8351). */
+export async function processSyncConnection(
   data: { connectionId: string },
   job: Job<BackupProviderSyncJobData>,
 ): Promise<void> {
-  // BullMQ increments attemptsMade on move-to-active, so inside the processor it
-  // is 1-based: the final attempt is `attemptsMade >= attempts`
-  // (huntressSync.ts:1002-1007).
-  const isFinalAttempt = job.attemptsMade >= (job.opts.attempts ?? 1);
+  // attemptsMade is 0-based inside the processor (see isFinalSyncAttempt).
+  const isFinalAttempt = isFinalSyncAttempt(job);
   await syncConnectionById(data.connectionId, { isFinalAttempt });
 }
 

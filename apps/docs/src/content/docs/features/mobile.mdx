@@ -121,6 +121,40 @@ Time tracking keeps working without a signal: a timer started offline is held on
 
 The app can also suggest time entries from remote sessions you have just finished -- a partner setting that is off by default, and the one place that feature appears. See [Suggested time entries](/features/ticketing/#suggested-time-entries).
 
+### Arrival suggestions
+
+When you open the app at a client site, Breeze can suggest starting a timer: *"Looks like you're at Acme Corp -- Main Office."* One tap starts an ordinary time entry for that organization and site. Nothing is started or stopped without your tap.
+
+**Two opt-ins are required.** Neither one alone does anything:
+
+1. **Your partner turns it on** under **Settings > Ticketing > Time Tracking** (off by default), and can set a default arrival radius.
+2. **You turn it on** on your phone. The first time, the Time tab shows a short explanation and a **Turn on** button; only that tap raises the system location prompt. **Not now** hides the card for 30 days, and you can change your mind later in the app's **Settings > Location suggestions** row.
+
+**What is and is not sent.** The app compares your position with the saved site locations *on the phone* and discards it. Your position is never sent to Breeze, and is never part of analytics or logs. The one exception is deliberate: when you tap **Save my current location as \<site\>** (below), that single reading becomes the site's saved location.
+
+**When it prompts.** Only while the app is open -- when you return to it, open Home or Tickets, or pull to refresh on Tickets. It checks at most every 5 minutes (a pull to refresh checks right away). It stays quiet when:
+
+- a timer is already running,
+- the phone's location is not precise enough to tell sites apart (worse than about 500 m),
+- you dismissed that site in the last 4 hours, or stopped a timer there in the last 30 minutes.
+
+If more than one site is in range, you pick from a list sorted by distance -- Breeze never picks for you. With open tickets assigned to you at that organization you can start against one, or choose **Site visit -- no ticket**. A timer started offline still records the organization and site when it syncs.
+
+**Still at the site?** For a timer that an arrival suggestion started, the app can later ask *"Still at Acme Corp? Timer has been running 2h 28m."* after two readings, at least 5 minutes apart, show you well away from the site. **Stop** stops the timer as of your tap; **Keep running** leaves it alone. This also only happens while the app is open.
+
+**Saving a site's location from the phone.** If your role has the **Set site location** permission, a **Save my current location as \<site\>** button appears on a ticket (and when editing a timesheet entry) for organizations that have sites without a saved location. Stand at the site first: the reading must be accurate to within 100 m or the app asks you to try again somewhere with a clearer view of the sky.
+
+| Phone state | What the app does |
+|---|---|
+| Never asked | Time tab explainer; **Turn on** raises the system prompt |
+| Allowed while using the app (precise) | Suggestions work |
+| Allow once / only this time | Works until the app is closed; turn it on again from **Settings > Location suggestions** |
+| Approximate location only | No suggestions; the settings row says *Precise location is off -- suggestions need it* |
+| Denied | The app never asks again; the settings row opens the phone's Settings |
+| Location services off | No suggestions; the settings row opens the phone's Settings |
+
+The app asks for foreground ("While Using") access only. Background location is not requested.
+
 ### Remote Actions
 
 The device detail screen exposes quick-action buttons that dispatch commands to agents through the command queue:

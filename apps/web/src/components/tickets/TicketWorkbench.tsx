@@ -12,13 +12,21 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
 import TicketFeed from './TicketFeed';
 import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
+import TicketApprovalRail from './TicketApprovalRail';
+import { approvalFriendly } from '../../lib/ticketApproval';
 import TicketPartsCard from './TicketPartsCard';
 import TicketChecklistCard from './TicketChecklistCard';
+import TicketLinksCard from './TicketLinksCard';
+import TicketTypeChip from './TicketTypeChip';
+import { TICKET_TYPE_ORDER, isTicketType, ticketTypeLabelKey } from './ticketType';
+import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
+import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
@@ -33,7 +41,7 @@ interface MissingRateEntry { timeEntryId: string; ticketId: string | null; descr
  *  are non-empty on a PARTIAL success: the draft exists but those rows were
  *  left out of it (review #3). */
 interface AssembleInvoiceResponse {
-  data: { invoice: { id: string }; blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[] };
+  data: { invoice: { id: string }; blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[]; heldForHourBlock?: { count: number; hours: number } };
 }
 /** Mirrors MoveCurrencyGuardDetails (ticketMoveCurrencyGuard.ts, #3776). */
 interface MoveBlockedDetails {
@@ -49,6 +57,7 @@ import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import { EntityLink } from '@/components/shared/EntityLink';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
 
@@ -160,6 +169,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
+  // Bumped when the caller-verification modal reports a change so the header
+  // badge re-reads the server's ticket freshness projection.
+  const [callerRevision, setCallerRevision] = useState(0);
   // Only the full-page /tickets/[id] view names the page: the /tickets split
   // pane embeds this too, and naming there would relabel the list itself.
   usePageItemName(expanded && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
@@ -204,6 +216,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
+  // #7900: type edits and link add/remove need tickets:write (UX only; the API re-checks).
+  const canWrite = can('tickets', 'write');
   // GET /orgs/organizations returns the full org row for partner/system scope,
   // which carries currency_code (wave 1); the parts card needs it for catalog
   // prefill (#3775). Org-scoped callers get a name-only projection → undefined.
@@ -640,6 +654,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       const newId = result?.data?.invoice?.id;
       const blocked = result?.data?.blockedByCurrency ?? [];
       const missing = result?.data?.missingRate ?? [];
+      // Entries inside a block-hours window are held until the block period closes (#4547).
+      const held = result?.data?.heldForHourBlock;
+      if (held && held.count > 0) {
+        showToast({ type: 'warning', message: t('ticketWorkbench.invoice.heldForHourBlock', { count: held.count, hours: Number(Number(held.hours).toFixed(2)) }) });
+      }
       if (blocked.length === 0 && missing.length === 0) {
         if (newId) void navigateTo(`/billing/invoices/${newId}`);
         return;
@@ -661,6 +680,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         setInvoiceBlocked(details?.blockedByCurrency ?? []);
         setInvoiceMissingRate(details?.missingRate ?? []);
       }
+      if (err.code === 'NOTHING_TO_INVOICE') {
+        // runAction already toasted the server's message; add WHY when the work is merely held for a block.
+        const held = (err.body as { details?: { heldForHourBlock?: { count: number; hours: number } } } | undefined)?.details?.heldForHourBlock;
+        if (held && held.count > 0) {
+          showToast({ type: 'warning', message: t('ticketWorkbench.invoice.heldForHourBlock', { count: held.count, hours: Number(Number(held.hours).toFixed(2)) }) });
+        }
+      }
     } finally {
       setCreatingInvoice(false);
     }
@@ -681,6 +707,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           body: JSON.stringify({ orgId: targetOrgId, ...(opts.acceptCurrencyMismatch ? { acceptCurrencyMismatch: true } : {}) })
         }),
         errorFallback: t('ticketWorkbench.move.failed'),
+        // APPROVAL_REQUEST_PENDING: a request is waiting on the customer (#8196).
+        friendly: approvalFriendly(t),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setMoveBlocked(null);
@@ -1119,13 +1147,29 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           )}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <a href={`/organizations/${encodeURIComponent(ticket.orgId)}`} data-testid="org-record-link" className="hover:text-foreground hover:underline">
-            {ticket.orgName}
-          </a>
+          <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName ?? ''} tone="muted" />
           {ticket.deviceHostname && (
             <>
               <span>·</span>
-              <a className="hover:text-foreground hover:underline" href={`/devices?device=${ticket.deviceId}`}>{ticket.deviceHostname}</a>
+              <EntityLink kind="device" id={ticket.deviceId ?? ''} name={ticket.deviceHostname} tone="muted" />
+            </>
+          )}
+          {ticket.requesterContactId && (
+            // Both render nothing (and fetch nothing) unless the server's
+            // caller-verification flag is on.
+            <>
+              <TicketVerificationBadge orgId={ticket.orgId} ticketId={ticket.id} revision={callerRevision} />
+              <CallerVerificationEntry
+                orgId={ticket.orgId}
+                initialContactId={ticket.requesterContactId}
+                lockContact
+                ticketId={ticket.id}
+                // Deep-linkable on the full page only: in the /tickets split
+                // pane the queue owns the hash (selected ticket, sort, type),
+                // and writing ours there made it jump to the first row.
+                hash={expanded ? 'caller-verification' : undefined}
+                onChanged={() => { setCallerRevision((r) => r + 1); void load({ background: true }); }}
+              />
             </>
           )}
           {slaState(ticket).kind !== 'none' && (
@@ -1168,6 +1212,29 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             >
               {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{t(/* i18n-dynamic */ `ticketWorkbench.status.${s}`)}</option>)}
             </select>
+          )}
+          {canWrite ? (
+            <select
+              value={ticket.ticketType ?? 'incident'}
+              onChange={(e) => {
+                const ticketType = e.target.value;
+                if (!isTicketType(ticketType) || ticketType === (ticket.ticketType ?? 'incident')) return;
+                void runAction({
+                  request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ ticketType }) }),
+                  errorFallback: t('ticketWorkbench.toast.typeUpdateFailed'),
+                  onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+                }).then(() => afterMutation({ ticketType })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+              }}
+              className="rounded-md border bg-background px-2 py-1 text-xs font-medium text-foreground"
+              data-testid="ticket-workbench-type"
+              aria-label={t('ticketWorkbench.typeLabel')}
+            >
+              {TICKET_TYPE_ORDER.map((type) => (
+                <option key={type} value={type}>{t(/* i18n-dynamic */ ticketTypeLabelKey(type))}</option>
+              ))}
+            </select>
+          ) : (
+            <TicketTypeChip type={ticket.ticketType} testId="ticket-workbench-type-chip" />
           )}
           <select
             value={ticket.priority}
@@ -1645,6 +1712,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               )}
             </div>
             <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} />
+            <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
             <TicketFeed
               ticketId={ticket.id}
               comments={ticket.comments}
@@ -1667,6 +1735,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
               <TicketTimeBilling ticketId={ticket.id} />
+              <TicketApprovalRail ticketId={ticket.id} />
               <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} />
               <dl className="space-y-3">
                 <div>

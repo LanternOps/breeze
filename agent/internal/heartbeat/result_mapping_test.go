@@ -71,6 +71,33 @@ func TestToWSCommandResultErrorSuppressesResult(t *testing.T) {
 	}
 }
 
+// TestToWSCommandResultCarriesErrorCode is the #4026 guard for the WebSocket
+// leg — the primary result channel. toWSCommandResult copies fields by name,
+// so a missed field is silent: the typed code would only ever reach the server
+// on the HTTP fallback and the API would keep classifying by prose.
+func TestToWSCommandResultCarriesErrorCode(t *testing.T) {
+	got := toWSCommandResult("cmd-code", tools.CommandResult{
+		Status:    "failed",
+		ExitCode:  1,
+		Error:     "path does not exist: /nope",
+		ErrorCode: "path_not_found",
+	})
+	if got.ErrorCode != "path_not_found" {
+		t.Fatalf("ErrorCode = %q, want %q", got.ErrorCode, "path_not_found")
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var onWire map[string]any
+	if err := json.Unmarshal(raw, &onWire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if onWire["errorCode"] != "path_not_found" {
+		t.Fatalf("wire errorCode = %#v, want \"path_not_found\" (raw: %s)", onWire["errorCode"], raw)
+	}
+}
+
 // TestToWSCommandResultExitZeroIsWireVisible proves a successful command (exit
 // 0) serializes an explicit "exitCode":0. If exitCode were omitempty the
 // server would coalesce it to NULL for every completed row — the exact symptom

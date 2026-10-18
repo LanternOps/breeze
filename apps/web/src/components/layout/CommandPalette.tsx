@@ -17,7 +17,11 @@ import {
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { useFeaturesStore } from '../../stores/featuresStore';
+import { getJwtClaims } from '../../lib/authScope';
+import { searchSettingsCatalog } from '../../lib/settingsSearch';
 import { useUiStore } from '../../stores/uiStore';
 import { useRecentsStore } from '../../stores/recentsStore';
 
@@ -214,7 +218,7 @@ const buildResultHref = (result: SearchResult): string => {
 };
 
 export default function CommandPalette() {
-  const { t } = useTranslation('common');
+  const { t } = useTranslation(['common', 'pages', 'settings']);
   // Open state lives in the ui store so the "/" shortcut (useGlobalShortcuts)
   // and any other island can open the same palette.
   const open = useUiStore((s) => s.isCommandPaletteOpen);
@@ -224,6 +228,13 @@ export default function CommandPalette() {
   const openShortcutsHelp = useUiStore((s) => s.openShortcutsHelp);
   const recentDevices = useRecentsStore((s) => s.devices);
   const recentPages = useRecentsStore((s) => s.pages);
+  const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
+  const permissions = useAuthStore((s) => s.user?.permissions);
+  const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
+  // Read-only: the palette mounts on every page, so it must not trigger the
+  // /config or autopay fetches the gate hooks fire. An unknown gate hides the
+  // entry (the nav's own default), and the sidebar loads /config anyway.
+  const toolSourcesEnabled = useFeaturesStore((s) => s.features.toolSources);
   const [modifierLabel, setModifierLabel] = useState('');
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -391,6 +402,32 @@ export default function CommandPalette() {
     return [...recentDeviceItems.filter(matches), ...recentPageItems.filter(matches)];
   }, [recentDeviceItems, recentPageItems, trimmedQuery]);
 
+  // Settings results are the web's settings catalogue (#8365), gated like the
+  // nav and matched instantly, so they never wait on (or depend on) the server.
+  const settingsItems = useMemo<CommandItem[]>(() => {
+    if (!trimmedQuery) return [];
+    return searchSettingsCatalog(
+      trimmedQuery,
+      {
+        isPlatformAdmin,
+        permissions,
+        getScope: () => getJwtClaims().scope,
+        toolSourcesEnabled,
+        aiForOfficeEnabled: false,
+        serviceManagementMode,
+      },
+      (key, fallback) => t(/* i18n-dynamic */ key, { defaultValue: fallback }) as string
+    ).map((hit) => ({
+      key: `result:settings:${hit.id}`,
+      title: hit.title,
+      description: hit.description || undefined,
+      href: hit.href,
+      icon: CATEGORY_CONFIG.settings.icon,
+      kind: 'result',
+      category: 'settings'
+    }));
+  }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, serviceManagementMode, t]);
+
   const resultItemsByCategory = useMemo(() => {
     const grouped = CATEGORY_ORDER.reduce((acc, category) => {
       acc[category] = [];
@@ -398,6 +435,8 @@ export default function CommandPalette() {
     }, {} as Record<SearchCategory, CommandItem[]>);
 
     results.forEach((result, index) => {
+      // The server no longer owns settings results; ignore any from an older API.
+      if (result.type === 'settings') return;
       const key = `result:${result.type}:${result.id ?? `${result.title}-${index}`}`;
       grouped[result.type].push({
         key,
@@ -410,8 +449,9 @@ export default function CommandPalette() {
       });
     });
 
+    grouped.settings = settingsItems;
     return grouped;
-  }, [results]);
+  }, [results, settingsItems]);
 
   const { sections, selectableItems, indexByKey } = useMemo(() => {
     const builtSections: Section[] = [];
@@ -569,7 +609,7 @@ export default function CommandPalette() {
       >
         <Search className="h-4 w-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">{t('layout.search.prompt')}</span>
-        <span className="shrink-0 rounded border bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+        <span className="shrink-0 rounded border bg-muted px-1.5 py-0.5 text-[11px] font-semibold uppercase text-foreground/70">
           {modifierLabel ? `${modifierLabel}+K` : 'K'}
         </span>
       </button>
@@ -595,7 +635,7 @@ export default function CommandPalette() {
                 placeholder={t('layout.search.placeholder')}
                 className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden"
               />
-              <span className="rounded border px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+              <span className="rounded border px-2 py-0.5 text-[11px] font-semibold uppercase text-foreground/70">
                 Esc
               </span>
             </div>
@@ -676,10 +716,10 @@ export default function CommandPalette() {
                                 aria-hidden="true"
                                 data-testid="palette-item-number"
                                 className={cn(
-                                  'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold',
+                                  'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[11px] font-semibold',
                                   isActive
                                     ? 'border-primary-foreground/40 text-primary-foreground/90'
-                                    : 'bg-muted text-muted-foreground'
+                                    : 'bg-muted text-foreground/70'
                                 )}
                               >
                                 {itemIndex + 1}
@@ -692,7 +732,7 @@ export default function CommandPalette() {
                   </div>
                 ))}
 
-              {showResults && !isLoading && results.length === 0 && !errorMessage && (
+              {showResults && !isLoading && sections.length === 0 && !errorMessage && (
                 <div className="px-4 py-6 text-sm text-muted-foreground">
                   {t('layout.search.noResults')}
                 </div>

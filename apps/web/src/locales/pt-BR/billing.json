@@ -24,7 +24,8 @@
         "perDeviceRole": "Por função do dispositivo",
         "perDeviceGroup": "Por grupo de dispositivos",
         "perSeat": "Por assento",
-        "manual": "Quantidade manual"
+        "manual": "Quantidade manual",
+        "hourBlock": "Banco de horas"
       },
       "dynamicGroup": "dinâmico",
       "deletedGroup": "{{name}} (grupo excluído)",
@@ -588,6 +589,62 @@
       "warnings": {
         "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos acordos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Horas incluídas por período",
+        "extraRate": "Preço por hora extra",
+        "rolloverMode": "Horas não usadas no fim do período",
+        "rolloverExpire": "Expiram",
+        "rolloverCarry": "Acumulam",
+        "carryCap": "Limite de horas acumuláveis (vazio para sem limite)",
+        "alertPct": "Alertar ao usar este % do banco (opcional)",
+        "required": "Informe as horas incluídas e o preço por hora extra.",
+        "firstPeriod": "As horas contam a partir do primeiro período de cobrança ainda não faturado; em um contrato em rascunho isso é definido na ativação. O tempo anterior é cobrado normalmente.",
+        "midPeriodEdit": "As alterações valem para o período aberto atual ({{start}} – {{end}}) quando ele for encerrado.",
+        "midPeriodEditNoDates": "As alterações valem para o período aberto atual quando ele for encerrado.",
+        "onlyOne": "Esta organização já tem um banco ativo. Desative-o antes de adicionar outro."
+      },
+      "row": {
+        "perPeriod": "{{hours}} horas por período",
+        "retiredBadge": "Desativado",
+        "startsOn": "Conta a partir de {{date}}"
+      },
+      "errors": {
+        "exists": "Esta organização já tem uma linha de banco de horas ativa. Desative-a primeiro e depois adicione a nova.",
+        "locked": "Esse campo não pode ser alterado em uma linha de banco de horas."
+      },
+      "retire": {
+        "title": "Desativar banco de horas",
+        "message": "\"{{description}}\" tem histórico de cobrança, por isso é desativado em vez de excluído. Sem novos períodos; os períodos já faturados ainda são liquidados. Os períodos encerrados permanecem no contrato.",
+        "confirm": "Desativar banco",
+        "toast": "Banco de horas desativado"
+      },
+      "detail": {
+        "title": "Banco de horas",
+        "usage": "{{used}} de {{included}} horas usadas · {{remaining}} restantes · o período termina em {{end}}",
+        "carried": "Inclui {{hours}} horas acumuladas.",
+        "unapproved": "{{hours}} horas deste tempo ainda não foram aprovadas.",
+        "foreign": "{{hours}} horas foram registradas em outra moeda; elas ainda consomem o banco.",
+        "over": "{{hours}} horas acima do banco → {{amount}} no fechamento do período",
+        "advanceNote": "O excedente é cobrado na fatura seguinte.",
+        "arrearsNote": "O excedente é cobrado na fatura deste período.",
+        "lateEntry": "{{hours}} horas foram lançadas depois do fechamento do período e são cobradas separadamente.",
+        "startsLater": "O banco começa em {{date}}.",
+        "extraRate": "Horas extras: {{rate}} cada",
+        "loadFailed": "Não foi possível carregar o uso do banco."
+      },
+      "history": {
+        "title": "Períodos do banco encerrados",
+        "empty": "Nenhum período do banco foi encerrado ainda.",
+        "included": "Incluídas",
+        "carriedIn": "Acumuladas na entrada",
+        "used": "Usadas",
+        "over": "Excedente",
+        "carriedOut": "Acumuladas na saída",
+        "loadMore": "Carregar mais",
+        "invoiceRemoved": "Fatura do excedente removida — horas não cobradas"
+      }
     }
   },
   "agreements": {
@@ -1001,8 +1058,8 @@
         "title": "Linha de rodapé (todas as páginas)",
         "helper": "Uma linha curta impressa na parte inferior de cada página — por exemplo, datas de validade. Deixe em branco para usar o rodapé padrão. Letras miúdas vão em Termos e Condições, não aqui.",
         "placeholder": "Em branco = usar o rodapé padrão",
-        "inheritedPartner": "Usando o rodapé de fatura do parceiro das Configurações: “{{text}}”",
-        "inheritedBrand": "Usando o texto de rodapé do kit de marca: “{{text}}”",
+        "inheritedPartner": "Usando o rodapé dos documentos do parceiro das configurações de faturamento: “{{text}}”",
+        "inheritedBrand": "Usando o texto de rodapé desta organização das configurações do portal dela: “{{text}}”",
         "inheritedNone": "Nenhum rodapé padrão definido nas Configurações — o rodapé da página ficará vazio.",
         "counter": "{{count}} / {{max}}"
       },
@@ -1714,7 +1771,8 @@
       "saveNotes": "Não foi possível salvar as observações.",
       "saveTerms": "Não foi possível salvar os termos.",
       "updateLine": "Não foi possível atualizar a linha.",
-      "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual."
+      "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
+      "saveLineDetail": "Não foi possível atualizar como os apontamentos são impressos"
     },
     "fields": {
       "descriptionOptional": "Descrição (opcional)",
@@ -1781,6 +1839,35 @@
     "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas",
     "unsavedField": {
       "lines": "Itens"
+    },
+    "lineDetail": {
+      "default": "Padrão de faturamento",
+      "grouping": "Disposição",
+      "groupingDay": "Agrupar por dia",
+      "groupingEntry": "Uma linha por apontamento",
+      "help": "Substitui o padrão de faturamento somente neste rascunho.",
+      "hide": "Ocultar",
+      "show": "Mostrar",
+      "showDate": "Data trabalhada",
+      "showNote": "Observação do técnico",
+      "showWorkedTime": "Tempo trabalhado vs. faturado",
+      "title": "Linhas de apontamento de horas"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} linhas vão bloquear a emissão: os apontamentos foram faturados em outra fatura. Remova-as antes de emitir:",
+      "billedElsewhere_one": "{{count}} linha vai bloquear a emissão: o apontamento foi faturado em outra fatura. Remova-a antes de emitir:",
+      "billedElsewhere_other": "{{count}} linhas vão bloquear a emissão: os apontamentos foram faturados em outra fatura. Remova-as antes de emitir:",
+      "button": "Atualizar a partir dos apontamentos",
+      "drifted": "{{count}} linhas mantidas: o tempo faturado dos apontamentos não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "drifted_one": "{{count}} linha mantida: o tempo faturado do apontamento não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "drifted_other": "{{count}} linhas mantidas: o tempo faturado dos apontamentos não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "error": "Não foi possível atualizar a partir dos apontamentos",
+      "help": "Atualiza notas, datas trabalhadas e aprovação a partir dos apontamentos de horas. Quantidades, preços e descrições editadas à mão nunca mudam.",
+      "running": "Atualizando…",
+      "skipped": "{{count}} linhas ignoradas: os apontamentos foram faturados em outra fatura, removidos ou não são mais faturáveis neste rascunho.",
+      "skipped_one": "{{count}} linha ignorada: o apontamento foi faturado em outra fatura, removido ou não é mais faturável neste rascunho.",
+      "skipped_other": "{{count}} linhas ignoradas: os apontamentos foram faturados em outra fatura, removidos ou não são mais faturáveis neste rascunho.",
+      "summary": "Atualizadas: {{refreshed}} · Já atualizadas: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -1963,7 +2050,10 @@
       "syncingToProvider": "Sincronizando…",
       "providerSyncFailed": "Falha na sincronização com o {{provider}}",
       "reverseInProviderToo": "Estorne este pagamento também no {{provider}}",
-      "overpayment": "O valor é maior que o saldo devido ({{balance}})."
+      "overpayment": "O valor é maior que o saldo devido ({{balance}}).",
+      "fillLabel": "Preencher valor",
+      "fillDeposit": "Entrada ({{amount}})",
+      "fillBalance": "Saldo total ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fatura enviada",
@@ -1978,7 +2068,8 @@
       "paid": "Paga",
       "subtotal": "Subtotal",
       "tax": "Imposto",
-      "total": "Total"
+      "total": "Total",
+      "depositDueNow": "Entrada devida agora"
     },
     "terms": "Termos e condições",
     "void": {
@@ -2028,6 +2119,7 @@
     "empty": "Esta fatura ainda não tem itens.",
     "fallbackTitle": "Fatura",
     "issued": "Emitida",
+    "laborLine": "Mão de obra",
     "preview": {
       "description": "Isto é o que o cliente vê na fatura.",
       "downloadError": "Não foi possível baixar o PDF da fatura.",
@@ -2124,7 +2216,9 @@
       "sourceAria": "Origem da fatura",
       "title": "Nova fatura",
       "to": "Até",
-      "working": "Processando…"
+      "working": "Processando…",
+      "heldForHourBlock_one": "{{count}} lançamento de tempo ({{hours}} horas) está retido para o banco de horas desta organização e será cobrado quando o período do banco for encerrado.",
+      "heldForHourBlock_other": "{{count}} lançamentos de tempo ({{hours}} horas) estão retidos para o banco de horas desta organização e serão cobrados quando o período do banco for encerrado."
     },
     "empty": {
       "description": "Monte horas e peças não faturadas em um rascunho ou inicie uma fatura em branco.",
@@ -2191,6 +2285,7 @@
       "title": "Moeda",
       "description": "Novos orçamentos, faturas, contratos, apontamentos de tempo e peças desta organização são carimbados com esta moeda. Nada do que já existe é alterado.",
       "label": "Moeda de faturamento",
+      "partnerDefault": "Não herdada: cada organização mantém sua própria moeda de faturamento. O padrão do parceiro ({{currency}}) só se aplica às organizações criadas daqui em diante.",
       "loading": "Verificando o que uma mudança para {{currency}} afetaria…",
       "error": "Não foi possível carregar o resumo da mudança de moeda.",
       "panelTitle": "Alterar a moeda de faturamento para {{currency}}?",
@@ -2275,10 +2370,11 @@
       "autoEmailInvoiceHelp": "Quando um cliente aceita uma proposta, a fatura emitida é enviada imediatamente por e-mail com um link seguro para ver e pagar — sem login.",
       "notifyOnBehalfAcceptance": "Avisar o cliente por e-mail quando você registrar um aceite em nome dele",
       "notifyOnBehalfAcceptanceHelp": "Quando alguém da sua equipe aceita um orçamento por um cliente, o cliente recebe uma nota curta dizendo quem registrou e quando, com o número da fatura se uma tiver sido emitida. Ele pode responder se algo estiver errado. Desativado por padrão.",
-      "currencyCode": "Código da moeda",
+      "currencyCode": "Moeda padrão para novas organizações",
+      "currencyHelp": "Novas organizações começam nesta moeda. As organizações existentes mantêm a sua — altere-a na aba Faturamento de cada organização.",
       "defaultMarkup": "Margem padrão (%)",
       "defaultTaxRate": "Alíquota de imposto padrão (%)",
-      "description": "Moeda, impostos, numeração e termos aplicados a novas cotações e faturas de todos os clientes.",
+      "description": "Padrões para cotações e faturas dos seus clientes. Uma organização pode definir sua própria alíquota de imposto e seus termos de pagamento. A moeda parte da moeda padrão definida aqui e é alterada na aba Faturamento da organização.",
       "deviceAppendix": "Incluir o apêndice de dispositivos faturados nos PDFs das faturas",
       "deviceAppendixHelp": "Adiciona uma página listando cada dispositivo contado em cada linha da fatura. Desativado por padrão; a escolha é congelada na emissão.",
       "documentPageSize": "Tamanho da página",
@@ -2287,7 +2383,8 @@
       "documentTheme": "Fontes do documento",
       "documentThemeClassic": "Helvetica",
       "documentThemeCondensed": "Barlow Condensed + DM Sans",
-      "invoiceFooter": "Rodapé da fatura",
+      "invoiceFooter": "Rodapé dos documentos",
+      "invoiceFooterHelp": "Impresso no fim de cada página das suas cotações e faturas. O texto de rodapé próprio de uma organização (nas configurações do portal dela) o substitui para essa organização, e o rodapé próprio de uma cotação substitui ambos.",
       "invoiceFooterPlaceholder": "Instruções de pagamento, agradecimento etc.",
       "invoiceNumberPrefix": "Prefixo do número da fatura",
       "markupHelp": "Margem padrão sobre o custo do distribuidor, usada para preencher o preço de venda ao importar itens do catálogo. A margem bruta resultante é exibida durante a importação.",
@@ -2295,7 +2392,15 @@
       "prefixInvalid": "Informe um prefixo de 1 a 12 caracteres.",
       "taxRateInvalid": "Informe uma alíquota de imposto de 0 a 100.",
       "termsDaysInvalid": "Informe um número inteiro de dias de 0 a 365.",
-      "title": "Padrões de cobrança"
+      "title": "Padrões de cobrança",
+      "lineDetailTitle": "Linhas de apontamento de horas nas faturas",
+      "lineDetailHelp": "Escolha o que os clientes veem nos apontamentos de horas. Um rascunho de fatura pode substituir esta opção; ela é congelada quando a fatura é emitida.",
+      "lineShowDate": "Mostrar a data trabalhada",
+      "lineShowNote": "Mostrar a observação do técnico",
+      "lineShowWorkedTime": "Mostrar tempo trabalhado vs. faturado",
+      "lineGrouping": "Disposição",
+      "lineGroupingEntry": "Uma linha por apontamento",
+      "lineGroupingDay": "Agrupar por dia"
     },
     "loadError": "Falha ao carregar as configurações de cobrança.",
     "loading": "Carregando configurações de cobrança…",

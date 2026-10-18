@@ -75,6 +75,7 @@ vi.mock('../../services/aiModels/offeringWrites', () => ({
   setOfferingEnabled: vi.fn(),
   updateOfferingDetails: vi.fn(),
   listOfferingDefaultUses: vi.fn(),
+  removeOffering: vi.fn(),
 }));
 vi.mock('../../services/aiModels/assignmentWrites', () => ({
   putPartnerAssignments: vi.fn(),
@@ -95,7 +96,6 @@ vi.mock('../../services/aiModels/connectionProbe', () => {
   return { ConnectionCheckError };
 });
 vi.mock('../../services/aiModels/anthropicConnectionWrites', () => ({
-  hasAnthropicConnection: vi.fn(),
   createAnthropicKeyConnection: vi.fn(),
   rotateAnthropicKey: vi.fn(),
   changeAnthropicEndpoint: vi.fn(),
@@ -114,14 +114,13 @@ import { createGatewayConnection, createManualOffering, deleteGatewayConnection,
 import { ByoEndpointRejected } from '../../services/aiModels/gateway/byoEndpointPolicy';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
 import { clearConnectionCooldowns } from '../../services/aiModels/offeringHealth';
-import { ensurePlatformOffering, listOfferingDefaultUses, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
+import { ensurePlatformOffering, listOfferingDefaultUses, removeOffering, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { putPartnerAssignments } from '../../services/aiModels/assignmentWrites';
 import { previewResidencyImpact, setResidencyRequired } from '../../services/aiModels/residency';
 import {
   changeAnthropicEndpoint,
   createAnthropicKeyConnection,
   deleteAnthropicConnection,
-  hasAnthropicConnection,
   rotateAnthropicKey,
 } from '../../services/aiModels/anthropicConnectionWrites';
 import { ConnectionCheckError } from '../../services/aiModels/connectionProbe';
@@ -151,6 +150,7 @@ const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
   ['POST', `/offerings/${A}/enabled`, { enabled: true }],
   ['PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' }],
   ['POST', `/offerings/${A}/verify`],
+  ['DELETE', `/offerings/${A}`],
   ['PUT', '/assignments', { assignments: [chatRow] }],
   ['PUT', '/residency', { required: false }],
   // W06 (#7604) gateway arms.
@@ -165,7 +165,7 @@ const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
 
 const ALL_WRITE_SERVICE_MOCKS = [
   createAnthropicKeyConnection, rotateAnthropicKey, changeAnthropicEndpoint, deleteAnthropicConnection, updateConnectionSettings,
-  ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails, putPartnerAssignments, setResidencyRequired,
+  ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails, removeOffering, putPartnerAssignments, setResidencyRequired,
   enqueueConnectionSync, enqueueOfferingVerification,
   createGatewayConnection, updateGatewayConnection, deleteGatewayConnection, createManualOffering,
 ].map((m) => vi.mocked(m));
@@ -190,8 +190,7 @@ beforeEach(() => {
   vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 10, resetAt: new Date(Date.now() + 60_000) });
   vi.mocked(buildPartnerModelsSnapshot).mockResolvedValue({ connections: [] } as any);
   // The partner already has its Anthropic connection C (getConnection below
-  // resolves it, live): creating another is the R1-cap 409.
-  vi.mocked(hasAnthropicConnection).mockResolvedValue(true);
+  // resolves it, live); W08b (#7606) lets it create another.
   vi.mocked(createAnthropicKeyConnection).mockResolvedValue({ connectionId: C, last4: 'xxxx', configVersion: 1 });
   vi.mocked(rotateAnthropicKey).mockResolvedValue({ last4: 'xxxx', configVersion: 2 });
   vi.mocked(changeAnthropicEndpoint).mockResolvedValue({ connectionId: C, catalogEntryId: null, configVersion: 3, slug: null, revision: null });
@@ -200,6 +199,7 @@ beforeEach(() => {
   vi.mocked(ensurePlatformOffering).mockResolvedValue(offeringRow as any);
   vi.mocked(setOfferingEnabled).mockResolvedValue({ offering: offeringRow as any, inUse: [] });
   vi.mocked(updateOfferingDetails).mockResolvedValue(offeringRow as any);
+  vi.mocked(removeOffering).mockResolvedValue(offeringRow as any);
   vi.mocked(listOfferingDefaultUses).mockResolvedValue([]);
   vi.mocked(getOffering).mockImplementation(async (id: string) => (id === GO
     ? { id: GO, partnerId: P, connectionId: G, modelId: 'qwen2.5-coder:7b', source: 'discovered' }
@@ -220,8 +220,6 @@ beforeEach(() => {
 
 describe('/ai/models partner routes — authz matrix', () => {
   it.each(WRITE_ROUTES)('%s %s succeeds for a full partner admin with MFA (control)', async (method, path, body) => {
-    // POST /connections is a 409 when an Anthropic connection already exists.
-    if (path === '/connections' && (body as { kind?: string }).kind === 'anthropic_byok') vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     const res = await call(method, path, body);
     expect(res.status).toBeLessThan(300);
   });
@@ -341,23 +339,20 @@ describe('/ai/models partner routes — behaviour', () => {
     expect((await call('PATCH', `/connections/${C}`, { name: 'x' })).status).toBe(404);
     expect(updateConnectionSettings).not.toHaveBeenCalled();
   });
-  it('409s creating a second Anthropic connection', async () => {
+  it('201s creating a second Anthropic connection while one exists (W08b: compat_uq dropped, #7606)', async () => {
     const res = await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY });
-    expect([res.status, (await res.json()).code]).toEqual([409, 'conflict']);
-    expect(createAnthropicKeyConnection).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(createAnthropicKeyConnection).toHaveBeenCalledWith({ partnerId: P, apiKey: KEY, userId: baseAuth().user.id });
   });
   it('creates the first connection with the partner id from auth, then applies name/geo', async () => {
-    vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     const res = await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY, name: 'Ours', inferenceGeo: 'us' });
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ id: C });
-    expect(hasAnthropicConnection).toHaveBeenCalledWith(P);
     expect(createAnthropicKeyConnection).toHaveBeenCalledWith({ partnerId: P, apiKey: KEY, userId: baseAuth().user.id });
     expect(updateConnectionSettings).toHaveBeenCalledWith({ partnerId: P, connectionId: C, patch: { name: 'Ours', inferenceGeo: 'us' } });
     expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain(KEY);
   });
   it('does not call updateConnectionSettings when create carries no name/geo', async () => {
-    vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     expect((await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY })).status).toBe(201);
     expect(updateConnectionSettings).not.toHaveBeenCalled();
   });
@@ -376,6 +371,30 @@ describe('/ai/models partner routes — behaviour', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'in use', code: 'offering_in_use', details: { inUse: [{ surface: 'chat', level: 'partner', orgId: null }] } });
     expect(captureException).not.toHaveBeenCalled();
+  });
+  it('DELETE /offerings/:id removes the model, audits it, and returns deleted:true', async () => {
+    vi.mocked(removeOffering).mockResolvedValue({ ...offeringRow, source: 'manual', connectionId: G, modelId: 'qwen' } as any);
+    const res = await call('DELETE', `/offerings/${A}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: true, id: A });
+    expect(removeOffering).toHaveBeenCalledWith({ partnerId: P, offeringId: A });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ai_models.offering.removed',
+      details: expect.objectContaining({ offeringId: A, connectionId: G, modelId: 'qwen' }),
+    }));
+  });
+  it('DELETE /offerings/:id surfaces not_removable / offering_in_use / not_found from the service', async () => {
+    vi.mocked(removeOffering).mockRejectedValueOnce(new RegistryWriteError('x', 'not_removable', 409));
+    const nr = await call('DELETE', `/offerings/${A}`);
+    expect(nr.status).toBe(409);
+    expect(await nr.json()).toMatchObject({ code: 'not_removable' });
+    vi.mocked(removeOffering).mockRejectedValueOnce(new RegistryWriteError('x', 'offering_in_use', 409, { inUse: [] }));
+    const res = await call('DELETE', `/offerings/${A}`);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'offering_in_use' });
+    vi.mocked(removeOffering).mockRejectedValueOnce(new RegistryWriteError('x', 'not_found', 404));
+    expect((await call('DELETE', `/offerings/${A}`)).status).toBe(404);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
   it('a busy partner registry lock is a 503 registry_busy, not reported to Sentry (expected contention)', async () => {
     vi.mocked(putPartnerAssignments).mockRejectedValue(
@@ -694,8 +713,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(createGatewayConnection).toHaveBeenCalledWith(expect.objectContaining({ apiKey: undefined }));
       expect(audits()[0]!.details).toMatchObject({ hasKey: false });
     });
-    it('is allowed while an Anthropic connection exists (the R1-cap 409 belongs to the anthropic_byok arm only)', async () => {
-      vi.mocked(hasAnthropicConnection).mockResolvedValue(true);
+    it('is allowed while an Anthropic connection exists', async () => {
       expect((await call('POST', '/connections', BYO_BODY)).status).toBe(201);
       expect(createGatewayConnection).toHaveBeenCalled();
     });

@@ -156,3 +156,114 @@ it.each(['/autopay/example-token', '/autopay/example-token/stop', '/autopay/retu
     } finally { vi.unstubAllGlobals(); }
   },
 );
+
+it('/trust/<p>/<o> is public-cacheable only for a loaded 200; 404s, degraded shells and previews are no-store', async () => {
+  const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  const runWith = async (path: string, response: Response, trustCacheable: boolean) => {
+    const context = contextFor(path, { signedIn: false });
+    if (trustCacheable) (context.locals as { trustCacheable?: boolean }).trustCacheable = true;
+    const out = await onRequest(context as never, () => Promise.resolve(response));
+    if (!(out instanceof Response)) throw new Error('no Response');
+    return out;
+  };
+  const html = () => new Response('<html>page</html>', { headers: { 'Content-Type': 'text/html' } });
+  try {
+    const page = await runWith('/trust/nw/acme', html(), true);
+    expect(page.status).toBe(200);
+    expect(page.headers.get('Cache-Control')).toBe('public, max-age=300, stale-while-revalidate=600');
+    expect(page.headers.get('X-Frame-Options')).toBe('DENY');
+    const notFound = await runWith('/trust/nw/acme', new Response('Not Found', { status: 404 }), true);
+    expect(notFound.headers.get('Cache-Control')).toBe('no-store');
+    const degraded = await runWith('/trust/nw/acme', html(), false);
+    expect(degraded.headers.get('Cache-Control')).toBe('no-store');
+    const preview = await run(contextFor('/trust/preview/abc', { signedIn: false }));
+    expect(preview.headers.get('Cache-Control')).toBe('no-store');
+    expect(preview.headers.get('X-Robots-Tag')).toBe('noindex, nofollow, noarchive');
+    expect(preview.headers.get('Referrer-Policy')).toBe('no-referrer');
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('W2: /trust/access/* token pages are never cached, never indexed and send no referrer, even on a loaded 200', async () => {
+  const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  try {
+    for (const path of ['/trust/access/verify', '/trust/access/download']) {
+      const context = contextFor(path, { signedIn: false });
+      (context.locals as { trustCacheable?: boolean }).trustCacheable = true;
+      const out = await onRequest(context as never, () => Promise.resolve(new Response('<html>ok</html>', { headers: { 'Content-Type': 'text/html' } })));
+      if (!(out instanceof Response)) throw new Error('no Response');
+      expect(out.headers.get('Cache-Control'), path).toBe('no-store');
+      expect(out.headers.get('X-Robots-Tag'), path).toBe('noindex, nofollow, noarchive');
+      expect(out.headers.get('Referrer-Policy'), path).toBe('no-referrer');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+describe('W03a: /trust/embed/* framing carve-out', () => {
+  const ORIGINS = ['https://example.com', 'https://www.example.org'];
+  const html = () => new Response('<html>card</html>', { headers: { 'Content-Type': 'text/html' } });
+  const runEmbed = async (path: string, response: Response, origins?: string[]) => {
+    const context = contextFor(path, { signedIn: false });
+    if (origins) (context.locals as { trustEmbedOrigins?: string[] }).trustEmbedOrigins = origins;
+    const out = await onRequest(context as never, () => Promise.resolve(response));
+    if (!(out instanceof Response)) throw new Error('no Response');
+    return out;
+  };
+  const frameAncestors = (r: Response) => /(?:^|;)\s*frame-ancestors\s+([^;]*)/i.exec(r.headers.get('Content-Security-Policy') ?? '')?.[1]?.trim();
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+
+  it('embed 200 with origins → CSP frame-ancestors lists them, no X-Frame-Options, no-store, noindex', async () => {
+    vi.stubEnv('CSP_STRICT_DEV', '1');
+    const out = await runEmbed('/trust/embed/nw/acme', html(), ORIGINS);
+    expect(out.status).toBe(200);
+    expect(frameAncestors(out)).toBe('https://example.com https://www.example.org');
+    expect(out.headers.get('X-Frame-Options')).toBeNull();
+    expect(out.headers.get('Cache-Control')).toBe('no-store');
+    expect(out.headers.get('X-Robots-Tag')).toBe('noindex');
+  });
+  it('partner-home embed (/trust/embed/<p>) gets the same carve-out', async () => {
+    vi.stubEnv('CSP_STRICT_DEV', '1');
+    const out = await runEmbed('/trust/embed/nw', html(), ORIGINS);
+    expect(frameAncestors(out)).toBe('https://example.com https://www.example.org');
+    expect(out.headers.get('X-Frame-Options')).toBeNull();
+  });
+  it('embed 200 with origins but CSP deleted (dev without CSP_STRICT_DEV) → X-Frame-Options DENY kept', async () => {
+    const out = await runEmbed('/trust/embed/nw/acme', html(), ORIGINS);
+    expect(out.headers.get('Content-Security-Policy')).toBeNull();
+    expect(out.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(out.headers.get('Cache-Control')).toBe('no-store');
+  });
+  it("embed 200 with no origins → frame-ancestors 'none' + XFO DENY + no-store", async () => {
+    vi.stubEnv('CSP_STRICT_DEV', '1');
+    for (const origins of [undefined, []]) {
+      const out = await runEmbed('/trust/embed/nw/acme', html(), origins);
+      expect(frameAncestors(out)).toBe("'none'");
+      expect(out.headers.get('X-Frame-Options')).toBe('DENY');
+      expect(out.headers.get('Cache-Control')).toBe('no-store');
+    }
+  });
+  it("embed 404 → 'none' + DENY + no-store, even if origins were set", async () => {
+    vi.stubEnv('CSP_STRICT_DEV', '1');
+    const out = await runEmbed('/trust/embed/nw/acme', new Response('Not Found', { status: 404 }), ORIGINS);
+    expect(frameAncestors(out)).toBe("'none'");
+    expect(out.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(out.headers.get('Cache-Control')).toBe('no-store');
+  });
+  it("an origin that is not a normalized https origin fails closed ('none' + DENY)", async () => {
+    vi.stubEnv('CSP_STRICT_DEV', '1');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const out = await runEmbed('/trust/embed/nw/acme', html(), ["https://example.com; script-src *"]);
+    expect(frameAncestors(out)).toBe("'none'");
+    expect(out.headers.get('X-Frame-Options')).toBe('DENY');
+  });
+  it('the full page and the preview stay DENY even when origins leak into locals', async () => {
+    vi.stubEnv('CSP_STRICT_DEV', '1');
+    for (const path of ['/trust/nw/acme', '/trust/nw', '/trust/preview/abc']) {
+      const out = await runEmbed(path, html(), ORIGINS);
+      expect(out.headers.get('X-Frame-Options'), path).toBe('DENY');
+      expect(frameAncestors(out), path).toBe("'none'");
+    }
+  });
+});
+

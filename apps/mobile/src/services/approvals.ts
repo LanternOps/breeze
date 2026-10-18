@@ -33,10 +33,15 @@ export interface ApprovalRequest {
   riskSummary: string;
   /**
    * Customer tenant (M365) this action targets, e.g. "Example Dental".
-   * Server-derived for M365 mutation approvals (m365_reset_password /
-   * m365_disable_user) by resolving the linked AI session's Delegant M365
+   * Server-derived for M365 mutation approvals (m365_reset_password,
+   * m365_disable_user and the other M365 identity write tools) by resolving the linked AI session's Delegant M365
    * connection. Null for all other approvals. Surfaced prominently on the
    * card so a technician sees the blast radius before deciding.
+   *
+   * `operator_plan` approvals do NOT populate this: a plan is
+   * provider-neutral and may span several tenants at once, so the per-effect
+   * frozen labels in `actionArguments.effects` are the blast-radius surface
+   * instead. Do not wire operator_plan into the M365 mutation tool set.
    */
   customerTenant: string | null;
   status: ApprovalStatus;
@@ -57,6 +62,38 @@ export interface ApprovalRequest {
    */
   isRecursive: boolean;
   createdAt: string;
+}
+
+export type OperatorPlanProvider = 'breeze' | 'm365' | 'google';
+
+/** One frozen effect of an `operator_plan` approval, in dispatch order. */
+export interface OperatorPlanEffect {
+  ordinal: number;
+  provider: OperatorPlanProvider;
+  toolName: string;
+  targetLabel: string;
+  principalLabel: string | null;
+  rendering: string;
+}
+
+/**
+ * `actionArguments` of an `operator_plan` approval (max 64 effects). The
+ * server-issued shape; screens must still parse defensively
+ * (see screens/approvals/operatorPlanCopy.ts).
+ */
+export interface OperatorPlanArguments {
+  taskId: string;
+  planRevision: number;
+  effectSetDigest: string;
+  effects: OperatorPlanEffect[];
+}
+
+export const OPERATOR_PLAN_TOOL = 'operator_plan';
+
+export function isOperatorPlanApproval(
+  a: Pick<ApprovalRequest, 'actionToolName'>,
+): boolean {
+  return a.actionToolName === OPERATOR_PLAN_TOOL;
 }
 
 async function authedFetch(

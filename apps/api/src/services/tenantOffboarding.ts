@@ -5,10 +5,9 @@ import {
   devices,
   organizations,
   partners,
-  partnerUsers,
-  roles,
   users,
 } from '../db/schema';
+import { listActivePartnerAdmins } from './partnerAdminRecipients';
 import { ANONYMOUS_ACTOR_ID, requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { captureException } from './sentry';
 import {
@@ -33,6 +32,17 @@ import { envInt } from '../utils/envInt';
 import { enqueueTenantErasure } from '../jobs/tenantErasure';
 import { getOrgMergeQueue } from '../jobs/orgMerge';
 import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
+import {
+  ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+  ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+  ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+} from './orgSettingsInternalKeys';
+import {
+  EVIDENCE_HOLD_RELEASED_ACTION,
+  EVIDENCE_HOLD_SCOPED_ERASURE_KEY,
+  findEvidenceHold,
+  releaseEmptyEvidenceHolds,
+} from './orgEvidenceHold';
 import { getEmailService } from './email';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { escapeHtml, renderLayout } from './emailLayout';
@@ -145,8 +155,8 @@ function inCallerOrSystemDbContext<T>(
  */
 const DB_NOW = sql`now()`;
 
-export const ARCHIVE_PURGE_WARN_14_SENT_AT_KEY = 'archivePurgeWarn14SentAt';
-export const ARCHIVE_PURGE_WARN_1_SENT_AT_KEY = 'archivePurgeWarn1SentAt';
+// Declared in orgSettingsInternalKeys.ts (a leaf module); re-exported here.
+export { ARCHIVE_PURGE_WARN_14_SENT_AT_KEY, ARCHIVE_PURGE_WARN_1_SENT_AT_KEY };
 export type ArchivePurgeWarningMarker =
   | typeof ARCHIVE_PURGE_WARN_14_SENT_AT_KEY
   | typeof ARCHIVE_PURGE_WARN_1_SENT_AT_KEY;
@@ -168,7 +178,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * unit test injecting rows straight past the WHERE clause can't tell a
  * 15-minute floor apart from no floor at all.
  */
-export const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY = 'purgingRecoveryAttempts';
+export { ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY }; // declared in orgSettingsInternalKeys.ts (a leaf module)
 
 /**
  * How many times the backstop will re-run the erasure handoff for one `purging`
@@ -1428,6 +1438,7 @@ export async function sweepOffboardingTenants(
   mergeErasureReenqueued: number;
   mergeUnfenced: number;
   mergeShellsStamped: number;
+  evidenceHoldsReleased: number;
   archivePurgesEnqueued: number;
   purgingRecoveryReenqueued: number;
   purgingRecoveryExhausted: number;
@@ -1439,6 +1450,7 @@ export async function sweepOffboardingTenants(
   let mergeErasureReenqueued = 0;
   let mergeUnfenced = 0;
   let mergeShellsStamped = 0;
+  let evidenceHoldsReleased = 0;
   let archivePurgesEnqueued = 0;
   let purgingRecoveryReenqueued = 0;
   let purgingRecoveryExhausted = 0;
@@ -1470,6 +1482,15 @@ export async function sweepOffboardingTenants(
         // stamps `deleted_at`), so the 1h grace window is purely "give the
         // job a chance to finish" — this never fires for a merge whose job is
         // simply still running.
+        //
+        // Held shells (PAM ownership epochs, org_evidence_holds) are erased
+        // SCOPED (#8746) and keep their organizations row, so they would match
+        // this case forever. They are picked up only until their scoped
+        // erasure has completed (cascadeDeleteOrg stamps
+        // settings.<EVIDENCE_HOLD_SCOPED_ERASURE_KEY>), filtered here in SQL
+        // rather than per row: a hold can stand for the whole audit-retention
+        // period. Release, and the full erasure that follows it, is the
+        // evidence-hold pass below.
         const mergeErasurePending = await db
           .select({ id: organizations.id })
           .from(organizations)
@@ -1477,7 +1498,9 @@ export async function sweepOffboardingTenants(
             and(
               eq(organizations.status, 'merging'),
               isNotNull(organizations.deletedAt),
-              sql`${organizations.updatedAt} < now() - interval '1 hour'`
+              sql`${organizations.updatedAt} < now() - interval '1 hour'`,
+              sql`(NOT EXISTS (SELECT 1 FROM org_evidence_holds h WHERE h.loser_org_id = ${organizations.id})
+                   OR NOT (COALESCE(${organizations.settings}, '{}'::jsonb) ? ${EVIDENCE_HOLD_SCOPED_ERASURE_KEY}::text))`
             )
           );
         // Task 4, case 2: Phase A fenced the loser (`status='merging'`,
@@ -1808,6 +1831,13 @@ export async function sweepOffboardingTenants(
       )) as unknown as Array<{ id: string }>;
       if (stamped.length === 0) continue;
 
+      // A held shell is stamped and handed to erasure like any other; the
+      // erasure keeps its evidence (cascadeDeleteOrg scopes it, #8746). The
+      // hold is read only to word the audit.
+      const hold = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => findEvidenceHold(org.id))
+      );
+
       // Same idempotent handoff case 1 uses: jobId `tenant-erasure-<orgId>`
       // collapses a duplicate, and ANONYMOUS_ACTOR_ID is a real uuid because
       // it lands in the erasure worker's own `actor_id` column.
@@ -1823,7 +1853,10 @@ export async function sweepOffboardingTenants(
         result: 'success',
         details: {
           partnerId: org.partnerId,
-          note: 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and handed to tenant erasure',
+          note: hold
+            ? 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and handed to tenant erasure, which keeps the privileged-access evidence under its evidence hold'
+            : 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and handed to tenant erasure',
+          ...(hold ? { evidenceHold: { survivorOrgId: hold.survivorOrgId, reason: hold.reason } } : {}),
         },
       });
     } catch (err) {
@@ -1831,6 +1864,48 @@ export async function sweepOffboardingTenants(
       console.error(`[tenantOffboarding] Failed to stamp merged-away org ${org.id}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
+  }
+
+  // --- Evidence-hold release (PAM ownership epochs W5, spec §7.2) ----------
+  // Retention expiry: once audit-admin retention has deleted every PAM-chain
+  // row a held shell owned, nothing is left to protect. The release (one
+  // DELETE that re-checks emptiness and that no hold names the shell as its
+  // survivor) and the erasure handoff are separate steps on purpose: if the
+  // enqueue fails, the now-unheld shell is a plain case-1 shell and the next
+  // pass re-enqueues it.
+  try {
+    const released = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => releaseEmptyEvidenceHolds())
+    );
+    for (const hold of released) {
+      evidenceHoldsReleased++;
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: null,
+        action: EVIDENCE_HOLD_RELEASED_ACTION,
+        resourceType: 'organization',
+        resourceId: hold.loserOrgId,
+        actorType: 'system',
+        actorId: null,
+        result: 'success',
+        details: {
+          trigger: 'chain_empty',
+          survivorOrgId: hold.survivorOrgId,
+          mergeEventId: hold.mergeEventId,
+          holdReason: hold.reason,
+        },
+      });
+      try {
+        await enqueueTenantErasure({ orgId: hold.loserOrgId, performedBy: ANONYMOUS_ACTOR_ID });
+      } catch (err) {
+        failures++;
+        console.error(`[tenantOffboarding] Failed to enqueue erasure for released evidence-hold shell ${hold.loserOrgId}:`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  } catch (err) {
+    failures++;
+    console.error('[tenantOffboarding] Failed to release emptied evidence holds:', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   // --- Archive purge: claim archived -> purging, then hand off to erasure --
@@ -1983,23 +2058,8 @@ export async function sweepOffboardingTenants(
           continue;
         }
 
-        const recipients = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() =>
-            db
-              .select({ email: users.email })
-              .from(partnerUsers)
-              .innerJoin(users, eq(partnerUsers.userId, users.id))
-              .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
-              .where(
-                and(
-                  eq(partnerUsers.partnerId, org.partnerId),
-                  eq(roles.name, 'Partner Admin'),
-                  eq(users.status, 'active')
-                )
-              )
-          )
-        );
-        const emails = [...new Set(recipients.map((recipient) => recipient.email).filter(Boolean))];
+        const recipients = await listActivePartnerAdmins(org.partnerId);
+        const emails = recipients.map((recipient) => recipient.email);
         if (emails.length === 0) {
           console.warn(
             `[tenantOffboarding] no active Partner Admin recipients for org ${org.id}; `
@@ -2102,6 +2162,7 @@ export async function sweepOffboardingTenants(
     mergeErasureReenqueued,
     mergeUnfenced,
     mergeShellsStamped,
+    evidenceHoldsReleased,
     archivePurgesEnqueued,
     purgingRecoveryReenqueued,
     purgingRecoveryExhausted,

@@ -776,3 +776,60 @@ describe('orphan network/gateway nodes and decommissioned devices (#7879)', () =
     expect(hidden(nodes).map((node) => node.group!.basis)).toEqual(['decommissioned']);
   });
 });
+
+describe('site declarations (site location W1)', () => {
+  it('marks a lan card declared only on exact prefix match', () => {
+    const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }, { n: 2, prefix: '10.1.5.0/24', gateway: '10.1.5.1' }]);
+    input.declarations = [{ prefix: '10.1.2.0/24', sources: ['discovery_profile'] }, { prefix: '10.1.0.0/16', sources: ['network_baseline'] }];
+    const cards = networks(build(input).nodes);
+    const byPrefix = Object.fromEntries(cards.map((c) => [c.group!.prefix, c.group!]));
+    expect(byPrefix['10.1.2.0/24']!.declaration).toEqual({ state: 'declared', sources: ['discovery_profile'] });
+    expect(byPrefix['10.1.5.0/24']!.declaration).toEqual({ state: 'undeclared', sources: [] }); // the /16 supernet claims nothing
+    // The supernet is its own (empty) declared card; it never absorbs the /24 observers.
+    expect(byPrefix['10.1.0.0/16']).toMatchObject({ basis: 'declared_site_network', members: [] });
+  });
+  it('matches an observed prefix whose text differs only in normalization', () => {
+    const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }]);
+    input.networks[0]!.prefix = ' 10.1.2.0/24 ';
+    input.declarations = [{ prefix: '10.1.2.0/24', sources: ['discovery_profile', 'network_baseline'] }];
+    expect(networks(build(input).nodes).map((c) => c.group!.declaration)).toEqual([{ state: 'declared', sources: ['discovery_profile', 'network_baseline'] }]);
+  });
+  it('emits an empty declared card for a declared prefix no observer reports', () => {
+    const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }]);
+    input.declarations = [{ prefix: '10.1.9.0/24', sources: ['network_baseline'] }];
+    const empty = build(input).nodes.find((n) => n.group?.prefix === '10.1.9.0/24');
+    expect(empty?.group).toMatchObject({ kind: 'network', basis: 'declared_site_network', networkClass: 'lan', members: [], canonicalNodeIds: [],
+      gatewayAddresses: [], observerCount: 0, conflict: false, declaration: { state: 'declared', sources: ['network_baseline'] } });
+    expect(empty?.memberCount).toBe(0);
+    expect(presentationNodeSchema.parse(empty)).toBeTruthy();
+    // Its expansion ref resolves to an empty group (not "changed"), and it is emitted on a page that lists none of the site's networks.
+    expect(presentationGroupMembers(input, refOf(empty!.frontierToken))).toEqual([]);
+    expect(build(input, { visible: [E(1)] }).nodes.some((n) => n.group?.basis === 'declared_site_network')).toBe(true);
+  });
+  it('orders declared cards before undeclared ones', () => {
+    const input = lan([{ n: 1, prefix: '10.1.5.0/24', gateway: '10.1.5.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }]);
+    input.declarations = [{ prefix: '10.1.5.0/24', sources: ['discovery_profile'] }, { prefix: '10.1.9.0/24', sources: ['network_baseline'] }];
+    expect(networks(build(input).nodes).map((c) => [c.group!.prefix, c.group!.declaration?.state])).toEqual([
+      ['10.1.5.0/24', 'declared'], ['10.1.9.0/24', 'declared'], ['10.1.2.0/24', 'undeclared'],
+    ]);
+  });
+  it('never marks non-lan cards (overlay) or IPv6 lan cards, and leaves cards unmarked when declarations are absent', () => {
+    const input = lan([{ n: 1, prefix: '100.64.0.0/10' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }, { n: 3, prefix: '2001:db8:1::/64', gateway: '2001:db8:1::1' }]);
+    expect(build(input).nodes.every((n) => n.group?.declaration === undefined)).toBe(true);
+    input.declarations = [{ prefix: '100.64.0.0/10', sources: ['discovery_profile'] }];
+    const nodes = build(input).nodes;
+    expect(nodes.find((n) => n.group?.prefix === '100.64.0.0/10')?.group?.declaration).toBeUndefined();
+    expect(nodes.find((n) => n.group?.prefix === '2001:db8:1::/64')?.group?.declaration).toBeUndefined(); // v1 is IPv4 only (S§3 D10)
+    expect(nodes.find((n) => n.group?.prefix === '10.1.2.0/24')?.group?.declaration).toEqual({ state: 'undeclared', sources: [] });
+    // A declared prefix reported as a non-lan network gets no empty declared card: it is reported, just not as a LAN.
+    expect(nodes.filter((n) => n.group?.basis === 'declared_site_network')).toEqual([]);
+  });
+  it('a declared prefix reported only by a retired agent still gets its (empty) declared card', () => {
+    const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }, { n: 2, prefix: '10.1.9.0/24', gateway: '10.1.9.1' }]);
+    input.retired = [E(2)]; input.decommissioned = [E(2)];
+    input.declarations = [{ prefix: '10.1.9.0/24', sources: ['discovery_profile'] }];
+    const cards = networks(build(input).nodes).filter((c) => c.group!.prefix === '10.1.9.0/24');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.group).toMatchObject({ basis: 'declared_site_network', members: [] });
+  });
+});

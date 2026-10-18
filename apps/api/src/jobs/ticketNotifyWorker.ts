@@ -7,6 +7,8 @@
  *   - ticket.commented (isPublic) → email to requester
  *   - ticket.status_changed → resolved → email to requester
  *   - ticket.sla_breached → in-app + email to assignee
+ *   - ticket.approval_requested / ticket.approval_decided → customer approver /
+ *     notify emails + staff in-app (ticketApprovalNotify.ts, #4617)
  *
  * Pre-commit emission contract: ticketService emits events while the request
  * transaction is still open (see emitTicketEvent usage in ticketService.ts).
@@ -41,6 +43,14 @@ import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
 import { attachWorkerObservability } from './workerObservability';
 import { createNotification } from '../services/userNotifications';
+import {
+  admitApprovalMail,
+  releaseApprovalMail,
+  collectApprovalDecided,
+  collectApprovalRequested,
+  type ApprovalCollected,
+  type ApprovalMail,
+} from './ticketApprovalNotify';
 import { buildTicketPush, dispatchPushToTokens } from '../services/expoPush';
 import { sendPushoverNotification, validatePushoverConfig, type PushoverConfig, type PushoverNotificationPayload } from '../services/notificationSenders';
 import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from '../services/partnerPushoverDefaults';
@@ -279,7 +289,7 @@ async function composeLaidOutRequesterMail(
     id,
     custom: asPartnerEmailCustom(partner.emailTemplates?.[id]),
     vars: {
-      ticket_number: ticket.internalNumber ?? '',
+      ticket_number: ticket.ticketNumber ?? '',
       ticket_subject: ticket.subject ?? '',
       requester_name: ticket.submitterName ?? '',
       requester_email: ticket.submitterEmail ?? '',
@@ -291,7 +301,7 @@ async function composeLaidOutRequesterMail(
     },
     ctaUrl: href || undefined,
     brandName: partner.name,
-    internalNumber: ticket.internalNumber,
+    ticketNumber: ticket.ticketNumber,
     ticketSubject: ticket.subject,
   });
   return {
@@ -669,7 +679,7 @@ async function collectAutoresponse(
       body: partner.inbound?.autoresponseBody ?? null,
     },
     vars: {
-      ticket_number: ticket.internalNumber ?? '',
+      ticket_number: ticket.ticketNumber ?? '',
       ticket_subject: ticket.subject ?? event.payload.subject,
       requester_name: ticket.submitterName ?? '',
       requester_email: event.payload.to,
@@ -677,7 +687,7 @@ async function collectAutoresponse(
       partner_name: partner.name,
     },
     brandName: partner.name,
-    internalNumber: event.payload.internalNumber,
+    ticketNumber: ticket.ticketNumber,
     ticketSubject: event.payload.subject,
   });
 
@@ -811,6 +821,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
   let emailPayloads: EmailPayload[] = [];
   let pending: PendingPush[] = [];
   let pushover: Collected['pushover'];
+  let approvalThrottle: ApprovalCollected['throttle'] = null;
 
   await runWithSystemDbAccess(async () => {
     switch (event.type) {
@@ -849,9 +860,12 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         }
         return;
       }
-      case 'ticket.updated': {
-        // Plain field edits (subject, priority, …) notify no one in Phase 1 —
-        // explicit no-op case so the exhaustiveness default stays meaningful.
+      case 'ticket.updated':
+      case 'ticket.link_added':
+      case 'ticket.link_removed': {
+        // Plain field edits (subject, priority, …) and ticket-to-ticket link
+        // changes (#7900 W02) notify no one in Phase 1 — explicit no-op case
+        // so the exhaustiveness default stays meaningful.
         return;
       }
       case 'ticket.autoresponse': {
@@ -895,6 +909,17 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         }
         return;
       }
+      case 'ticket.approval_requested':
+      case 'ticket.approval_decided': {
+        // #4617 W04: customer approver / notify emails + staff in-app rows.
+        // Re-validated against the committed request row (ticketApprovalNotify.ts).
+        const collected = event.type === 'ticket.approval_requested'
+          ? await collectApprovalRequested(event)
+          : await collectApprovalDecided(event);
+        emailPayloads = collected.emails.map(approvalMailPayload);
+        approvalThrottle = collected.throttle;
+        return;
+      }
       default: {
         const _exhaustive: never = event as never;
         console.warn('[TicketNotify] Unhandled event type:', (_exhaustive as TicketEvent).type);
@@ -921,8 +946,30 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
     }
   }
 
+  // Approval re-notification throttle: claimed in Redis with no DB context
+  // open, only when there is mail to send (in-app rows were already written).
+  if (approvalThrottle && emailPayloads.length > 0 && !(await admitApprovalMail(approvalThrottle, eventId))) {
+    emailPayloads = [];
+  }
+
   // Send emails OUTSIDE the DB context to avoid idle-in-transaction pool poison (#1105).
-  await sendEmailPayloads(emailPayloads);
+  const delivery = await sendEmailPayloads(emailPayloads);
+
+  // Approval mail is best-effort per recipient, so a failure would otherwise
+  // be swallowed while the throttle claim stays held — and the approver would
+  // never hear of the request (or, for a decision, the 7-day dedupe key would
+  // suppress it for good). When NOTHING was delivered, release this event's
+  // claim and throw so BullMQ retries; no recipient got a copy, so a retry
+  // duplicates nothing. A partial failure keeps the claim and is reported.
+  if (approvalThrottle && delivery.attempted > 0) {
+    if (delivery.delivered === 0) {
+      await releaseApprovalMail(approvalThrottle, eventId);
+      throw new Error(`[TicketNotify] every approval email failed (${event.type}, requestId=${event.type === 'ticket.approval_requested' || event.type === 'ticket.approval_decided' ? event.payload.requestId : ''})`);
+    }
+    if (delivery.delivered < delivery.attempted) {
+      captureException(new Error(`[TicketNotify] ${delivery.attempted - delivery.delivered} of ${delivery.attempted} approval emails failed (${event.type})`));
+    }
+  }
 
   // Pushover after email, best-effort: a slow or failing Pushover call never
   // delays or suppresses the email, and never fails the job.
@@ -939,15 +986,34 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
   }
 }
 
-async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
-  if (emailPayloads.length === 0) return;
+/**
+ * Customer approval mail: partner lane, one recipient per message, best effort
+ * — a BullMQ retry would re-send to every recipient, so one bad address must
+ * not fail the job.
+ */
+function approvalMailPayload(m: ApprovalMail): EmailPayload {
+  return {
+    to: m.to,
+    subject: stripHeaderBreaks(m.subject),
+    html: m.html,
+    bestEffort: true,
+    purpose: 'ticket.customer_notification',
+    partnerId: m.partnerId,
+    partnerName: m.partnerName,
+  };
+}
+
+/** `delivered` counts payloads handed to a transport; a missing transport or a swallowed best-effort error is not delivered. */
+async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<{ attempted: number; delivered: number }> {
+  if (emailPayloads.length === 0) return { attempted: 0, delivered: 0 };
+  let delivered = 0;
   // getEmailService() may be null (no platform transport configured). Graph payloads
   // must still send in that case, so the null-guard moved inside the loop's EmailService
   // branch rather than short-circuiting the whole send phase.
   const email = getEmailService();
 
   for (const payload of emailPayloads) {
-    const send = async () => {
+    const send = async (): Promise<boolean> => {
       // Customer-facing reply via the partner's connected M365 mailbox (Graph).
       if (payload.graphMailbox) {
         const { tenantId, mailbox, originalMessageId } = payload.graphMailbox;
@@ -956,11 +1022,11 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
         } else {
           await sendNewMail({ tenantId, mailbox }, payload.to, payload.subject, payload.html);
         }
-        return;
+        return true;
       }
       // Platform EmailService path (tech/assignee notifications + customers on partners
       // with no connected mailbox). Skip silently if no transport is configured.
-      if (!email) return;
+      if (!email) return false;
       // Branch rather than spread: `purpose` is the discriminant of
       // SendEmailParams, so a union-typed value would not narrow.
       if (payload.purpose === 'ticket.customer_notification') {
@@ -974,7 +1040,7 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
           partnerId: payload.partnerId,
           partnerName: payload.partnerName,
         });
-        return;
+        return true;
       }
       await email.sendEmail({
         to: payload.to,
@@ -984,19 +1050,21 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
         headers: payload.headers,
         purpose: 'ticket.staff_notification'
       });
+      return true;
     };
 
     if (payload.bestEffort) {
       try {
-        await send();
+        if (await send()) delivered += 1;
       } catch (err) {
         console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
       }
     } else {
       // Non-best-effort: let throw bubble up so BullMQ can retry.
-      await send();
+      if (await send()) delivered += 1;
     }
   }
+  return { attempted: emailPayloads.length, delivered };
 }
 
 let worker: Worker<TicketEvent> | null = null;

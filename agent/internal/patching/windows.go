@@ -3,6 +3,7 @@
 package patching
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-ole/go-ole/oleutil"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/systemrestore"
 )
 
 // `var log` moved to the untagged log.go in #3197 — reboot_manager.go is
@@ -107,11 +109,20 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 			}
 		}
 
-		// Create restore point before install (best-effort, skip for definitions)
+		// Create restore point before install (best-effort, skip for definitions).
+		//
+		// Still PER UPDATE and still best-effort: #4609 W07 moves the
+		// checkpoint up to one per install_patches command, where the server's
+		// policy decision is available. This wave only changes which package
+		// makes the call.
 		category := w.mapCategory(update)
 		if category != "definitions" {
-			if rpErr := CreateRestorePoint("Before install: " + title); rpErr != nil {
-				log.Debug("restore point creation failed (non-fatal)", "error", rpErr)
+			out := systemrestore.Create(context.Background(), systemrestore.Request{
+				Label: "Before install: " + title,
+			})
+			if out.Status != systemrestore.StatusCreated {
+				log.Debug("restore point not created (non-fatal)",
+					"status", string(out.Status), "message", out.Message)
 			}
 		}
 

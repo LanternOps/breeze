@@ -62,7 +62,9 @@ export function logOauthError(args: {
   // eslint-disable-next-line no-console
   console.error(`[oauth] ${errorId} ${message}`, {
     ...(context ?? {}),
-    error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err,
+    ...(err !== undefined
+      ? { error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err }
+      : {}),
   });
   if (isSentryEnabled()) {
     const captured = err instanceof Error ? err : new Error(message);
@@ -107,7 +109,9 @@ export function logOauthWarn(args: {
   // eslint-disable-next-line no-console
   console.warn(`[oauth] ${errorId} ${message}`, {
     ...(context ?? {}),
-    error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err,
+    ...(err !== undefined
+      ? { error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err }
+      : {}),
   });
   if (isSentryEnabled()) {
     const captured = err instanceof Error ? err : new Error(message);

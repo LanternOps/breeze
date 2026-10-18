@@ -24,7 +24,8 @@
         "perDeviceRole": "Par rôle d'appareil",
         "perDeviceGroup": "Par groupe d'appareils",
         "perSeat": "Par utilisateur",
-        "manual": "Quantité manuelle"
+        "manual": "Quantité manuelle",
+        "hourBlock": "Banque d'heures"
       },
       "dynamicGroup": "dynamique",
       "deletedGroup": "{{name}} (groupe supprimé)",
@@ -588,6 +589,62 @@
       "warnings": {
         "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des ententes prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
       }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Heures incluses par période",
+        "extraRate": "Prix par heure supplémentaire",
+        "rolloverMode": "Heures inutilisées à la fin de la période",
+        "rolloverExpire": "Expirent",
+        "rolloverCarry": "Reportées",
+        "carryCap": "Plafond de report en heures (vide pour aucune limite)",
+        "alertPct": "Alerter à ce % de la banque utilisé (facultatif)",
+        "required": "Saisissez les heures incluses et le prix par heure supplémentaire.",
+        "firstPeriod": "Les heures comptent à partir de la première période de facturation encore à facturer; pour un contrat brouillon, elle est fixée à l'activation. Le temps antérieur est facturé comme d'habitude.",
+        "midPeriodEdit": "Les modifications s'appliquent à la période en cours ({{start}} – {{end}}) à sa clôture.",
+        "midPeriodEditNoDates": "Les modifications s'appliquent à la période en cours à sa clôture.",
+        "onlyOne": "Cette organisation a déjà une banque active. Retirez-la avant d'en ajouter une autre."
+      },
+      "row": {
+        "perPeriod": "{{hours}} heures par période",
+        "retiredBadge": "Retirée",
+        "startsOn": "Compte à partir du {{date}}"
+      },
+      "errors": {
+        "exists": "Cette organisation a déjà une ligne de banque d'heures active. Retirez-la d'abord, puis ajoutez la nouvelle.",
+        "locked": "Ce champ ne peut pas être modifié sur une ligne de banque d'heures."
+      },
+      "retire": {
+        "title": "Retirer la banque d'heures",
+        "message": "« {{description}} » a un historique de facturation; elle est donc retirée plutôt que supprimée. Plus de nouvelles périodes; les périodes déjà facturées sont tout de même réglées. Les périodes clôturées restent au contrat.",
+        "confirm": "Retirer la banque",
+        "toast": "Banque d'heures retirée"
+      },
+      "detail": {
+        "title": "Banque d'heures",
+        "usage": "{{used}} heures utilisées sur {{included}} · {{remaining}} restantes · la période se termine le {{end}}",
+        "carried": "Comprend {{hours}} heures reportées.",
+        "unapproved": "{{hours}} heures de ce temps ne sont pas encore approuvées.",
+        "foreign": "{{hours}} heures ont été saisies dans une autre devise; elles réduisent quand même la banque.",
+        "over": "{{hours}} heures au-delà de la banque → {{amount}} à la clôture de la période",
+        "advanceNote": "Le dépassement est facturé sur la facture suivante.",
+        "arrearsNote": "Le dépassement est facturé sur la facture de cette période.",
+        "lateEntry": "{{hours}} heures ont été saisies après la clôture de leur période et sont facturées séparément.",
+        "startsLater": "La banque commence le {{date}}.",
+        "extraRate": "Heures supplémentaires : {{rate}} chacune",
+        "loadFailed": "Impossible de charger l'utilisation de la banque."
+      },
+      "history": {
+        "title": "Périodes de banque clôturées",
+        "empty": "Aucune période de banque n'a encore été clôturée.",
+        "included": "Incluses",
+        "carriedIn": "Reportées en entrée",
+        "used": "Utilisées",
+        "over": "Dépassement",
+        "carriedOut": "Reportées en sortie",
+        "loadMore": "Charger plus",
+        "invoiceRemoved": "Facture du dépassement supprimée — heures non facturées"
+      }
     }
   },
   "agreements": {
@@ -972,8 +1029,8 @@
         "title": "Ligne de pied de page (chaque page)",
         "helper": "Une courte ligne imprimée en bas de chaque page — par exemple, des dates de validité. Laissez vide pour utiliser le pied de page par défaut. Les mentions légales vont dans Conditions générales, pas ici.",
         "placeholder": "Vide = utiliser le pied de page par défaut",
-        "inheritedPartner": "Utilise le pied de page de facture du partenaire depuis les Paramètres : « {{text}} »",
-        "inheritedBrand": "Utilise le texte de pied de page de la trousse de marque : « {{text}} »",
+        "inheritedPartner": "Utilise le pied de page des documents du partenaire depuis les paramètres de facturation : « {{text}} »",
+        "inheritedBrand": "Utilise le texte de pied de page de cette organisation depuis ses paramètres du portail : « {{text}} »",
         "inheritedNone": "Aucun pied de page par défaut n'est défini dans les Paramètres — le pied de page de la page sera vide.",
         "counter": "{{count}} / {{max}}"
       },
@@ -1714,7 +1771,8 @@
       "saveNotes": "Impossible d'enregistrer les notes.",
       "saveTerms": "Impossible d'enregistrer les conditions.",
       "updateLine": "Impossible de mettre à jour la ligne.",
-      "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle."
+      "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle.",
+      "saveLineDetail": "Impossible de mettre à jour l’impression des saisies de temps"
     },
     "fields": {
       "descriptionOptional": "Description (facultatif)",
@@ -1781,6 +1839,35 @@
     "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes",
     "unsavedField": {
       "lines": "Lignes"
+    },
+    "lineDetail": {
+      "default": "Valeur par défaut de la facturation",
+      "grouping": "Présentation",
+      "groupingDay": "Regrouper par jour",
+      "groupingEntry": "Une ligne par saisie",
+      "help": "Remplace votre valeur de facturation par défaut pour ce brouillon seulement.",
+      "hide": "Masquer",
+      "show": "Afficher",
+      "showDate": "Date du travail",
+      "showNote": "Note du technicien",
+      "showWorkedTime": "Temps travaillé et facturé",
+      "title": "Lignes de saisie de temps"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} lignes bloqueront l'émission : leurs entrées de temps ont été facturées sur une autre facture. Supprimez-les avant d'émettre :",
+      "billedElsewhere_one": "{{count}} ligne bloquera l'émission : son entrée de temps a été facturée sur une autre facture. Supprimez-la avant d'émettre :",
+      "billedElsewhere_other": "{{count}} lignes bloqueront l'émission : leurs entrées de temps ont été facturées sur une autre facture. Supprimez-les avant d'émettre :",
+      "button": "Actualiser à partir des entrées de temps",
+      "drifted": "{{count}} lignes inchangées : le temps facturé de leurs entrées ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "drifted_one": "{{count}} ligne inchangée : le temps facturé de son entrée ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "drifted_other": "{{count}} lignes inchangées : le temps facturé de leurs entrées ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "error": "Impossible d'actualiser à partir des entrées de temps",
+      "help": "Met à jour les notes, les dates travaillées et l'approbation à partir des entrées de temps. Les quantités, les prix et les descriptions modifiées à la main ne changent jamais.",
+      "running": "Actualisation…",
+      "skipped": "{{count}} lignes ignorées : leurs entrées de temps ont été facturées ailleurs, supprimées ou ne sont plus facturables sur ce brouillon.",
+      "skipped_one": "{{count}} ligne ignorée : son entrée de temps a été facturée ailleurs, supprimée ou n'est plus facturable sur ce brouillon.",
+      "skipped_other": "{{count}} lignes ignorées : leurs entrées de temps ont été facturées ailleurs, supprimées ou ne sont plus facturables sur ce brouillon.",
+      "summary": "Actualisées : {{refreshed}} · Déjà à jour : {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -1963,7 +2050,10 @@
       "syncingToProvider": "Synchronisation…",
       "providerSyncFailed": "Échec de la synchronisation {{provider}}",
       "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}",
-      "overpayment": "Le montant dépasse le solde dû ({{balance}})."
+      "overpayment": "Le montant dépasse le solde dû ({{balance}}).",
+      "fillLabel": "Remplir le montant",
+      "fillDeposit": "Acompte ({{amount}})",
+      "fillBalance": "Solde total ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Facture envoyée",
@@ -1978,7 +2068,8 @@
       "paid": "Payé",
       "subtotal": "Sous-total",
       "tax": "Taxe",
-      "total": "Total"
+      "total": "Total",
+      "depositDueNow": "Acompte dû maintenant"
     },
     "terms": "Conditions générales",
     "void": {
@@ -2028,6 +2119,7 @@
     "empty": "Cette facture ne contient encore aucune ligne.",
     "fallbackTitle": "Facture",
     "issued": "Émise",
+    "laborLine": "Main-d’œuvre",
     "preview": {
       "description": "Voici ce que votre client voit sur sa facture.",
       "downloadError": "Impossible de télécharger le PDF de la facture.",
@@ -2124,7 +2216,9 @@
       "sourceAria": "Source de facture",
       "title": "Nouvelle facture",
       "to": "À",
-      "working": "Traitement…"
+      "working": "Traitement…",
+      "heldForHourBlock_one": "{{count}} saisie de temps ({{hours}} heures) est retenue pour la banque d'heures de cette organisation et sera facturée à la clôture de la période de la banque.",
+      "heldForHourBlock_other": "{{count}} saisies de temps ({{hours}} heures) sont retenues pour la banque d'heures de cette organisation et seront facturées à la clôture de la période de la banque."
     },
     "empty": {
       "description": "Assemblez le temps et les pièces non facturés dans un brouillon ou démarrez une facture vierge.",
@@ -2191,6 +2285,7 @@
       "title": "Devise",
       "description": "Les nouveaux devis, factures, contrats, saisies de temps et pièces de cette organisation sont horodatés dans cette devise. Rien de ce qui existe déjà n'est modifié.",
       "label": "Devise de facturation",
+      "partnerDefault": "Non hérité : chaque organisation conserve sa propre devise de facturation. La valeur par défaut du partenaire ({{currency}}) s'applique seulement aux organisations créées à partir de maintenant.",
       "loading": "Vérification de l'impact d'un passage à {{currency}}…",
       "error": "Le résumé du changement de devise n'a pas pu être chargé.",
       "panelTitle": "Changer la devise de facturation pour {{currency}} ?",
@@ -2275,10 +2370,11 @@
       "autoEmailInvoiceHelp": "Lorsqu'un client accepte une proposition, la facture émise est envoyée immédiatement par courriel avec un lien sécurisé pour consulter et payer — sans connexion.",
       "notifyOnBehalfAcceptance": "Aviser le client par courriel lorsque vous enregistrez une acceptation en son nom",
       "notifyOnBehalfAcceptanceHelp": "Lorsqu'un membre de votre équipe accepte une soumission pour un client, celui-ci reçoit une courte note indiquant qui l'a enregistrée et quand, avec le numéro de facture si une facture a été émise. Il peut répondre en cas d'erreur. Désactivé par défaut.",
-      "currencyCode": "Code devise",
+      "currencyCode": "Devise par défaut des nouvelles organisations",
+      "currencyHelp": "Les nouvelles organisations démarrent dans cette devise. Les organisations existantes conservent la leur — modifiez-la dans l'onglet Facturation de chaque organisation.",
       "defaultMarkup": "Marge par défaut (%)",
       "defaultTaxRate": "Taux de taxe par défaut (%)",
-      "description": "Devise, taxe, numérotation et conditions appliquées aux nouveaux devis et factures de tous vos clients.",
+      "description": "Valeurs par défaut des devis et factures de vos clients. Une organisation peut définir son propre taux de taxe et ses propres conditions de paiement. Sa devise part de la devise par défaut définie ici et se modifie dans l'onglet Facturation de cette organisation.",
       "deviceAppendix": "Inclure l'annexe des appareils facturés dans les PDF de factures",
       "deviceAppendixHelp": "Ajoute une page listant chaque appareil compté sur chaque ligne de facture. Désactivé par défaut ; le choix est figé à l'émission de la facture.",
       "documentPageSize": "Format de page",
@@ -2287,7 +2383,8 @@
       "documentTheme": "Polices des documents",
       "documentThemeClassic": "Helvetica",
       "documentThemeCondensed": "Barlow Condensed + DM Sans",
-      "invoiceFooter": "Pied de facture",
+      "invoiceFooter": "Pied de page des documents",
+      "invoiceFooterHelp": "Imprimé au bas de chaque page de vos devis et factures. Le texte de pied de page propre à une organisation (dans ses paramètres du portail) le remplace pour cette organisation, et la ligne de pied de page propre à un devis remplace les deux.",
       "invoiceFooterPlaceholder": "Instructions de paiement, message de remerciement, etc.",
       "invoiceNumberPrefix": "Préfixe de numéro de facture",
       "markupHelp": "Marge par défaut sur le coût distributeur, utilisée pour préremplir le prix de vente lors de l'import d'articles du catalogue. La marge brute résultante est affichée pendant l'import.",
@@ -2295,7 +2392,15 @@
       "prefixInvalid": "Saisissez un préfixe de 1 à 12 caractères.",
       "taxRateInvalid": "Saisissez un taux de taxe de 0 à 100.",
       "termsDaysInvalid": "Saisissez un nombre entier de jours de 0 à 365.",
-      "title": "Valeurs par défaut de facturation"
+      "title": "Valeurs par défaut de facturation",
+      "lineDetailTitle": "Lignes de saisie de temps sur les factures",
+      "lineDetailHelp": "Choisissez ce que les clients voient pour les saisies de temps. Un brouillon de facture peut remplacer ce choix; il est figé à l’émission de la facture.",
+      "lineShowDate": "Afficher la date du travail",
+      "lineShowNote": "Afficher la note du technicien",
+      "lineShowWorkedTime": "Afficher le temps travaillé et le temps facturé",
+      "lineGrouping": "Présentation",
+      "lineGroupingEntry": "Une ligne par saisie",
+      "lineGroupingDay": "Regrouper par jour"
     },
     "loadError": "Échec du chargement des paramètres de facturation.",
     "loading": "Chargement des paramètres de facturation…",

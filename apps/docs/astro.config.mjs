@@ -92,6 +92,7 @@ export default defineConfig({
                 { slug: 'features/browser-security' },
                 { slug: 'features/dns-security' },
                 { slug: 'features/edr-integrations' },
+                { slug: 'features/edr-provider-framework' },
                 { slug: 'features/incident-response' },
                 { slug: 'features/sensitive-data' },
                 { slug: 'features/peripheral-control' },
@@ -103,7 +104,7 @@ export default defineConfig({
             },
             {
               label: 'Service Desk',
-              items: [{ slug: 'features/ticketing' }],
+              items: [{ slug: 'features/ticketing' }, { slug: 'features/ticket-customer-approval' }],
             },
             {
               label: 'Billing & Invoicing',
@@ -128,6 +129,7 @@ export default defineConfig({
                 { slug: 'features/monitors' },
                 { slug: 'features/network-monitors' },
                 { slug: 'features/hardware-monitoring' },
+                { slug: 'features/workload-inventory' },
                 { slug: 'features/time-sync' },
                 { slug: 'features/performance-metrics' },
                 { slug: 'features/network-connections' },

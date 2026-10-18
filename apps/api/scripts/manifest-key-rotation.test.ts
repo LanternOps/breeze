@@ -15,6 +15,7 @@ vi.mock('../src/services/secretCrypto', () => ({
 }));
 
 import {
+  notifyRunningApiInstances,
   parseRotationArgs,
   runPrepare,
   runActivate,
@@ -485,5 +486,28 @@ describe('runActivate', () => {
       'deploy-2026-05-09-aaaaaaaa',
     );
     expect(state.delegations[0]!.activatedAt).toBeNull();
+  });
+});
+
+describe('notifyRunningApiInstances (W05 #8144)', () => {
+  it('is silent when both caches were announced', async () => {
+    const log = vi.fn();
+    await expect(notifyRunningApiInstances(async () => ['published', 'published'], log)).resolves.toBe(true);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('says how long running instances wait when Redis could not be reached, without failing the rotation', async () => {
+    const log = vi.fn();
+    await expect(notifyRunningApiInstances(async () => ['published', 'unavailable'], log)).resolves.toBe(false);
+    expect(log).toHaveBeenCalledWith(
+      '[manifest-key-rotation] Could not notify running API instances (Redis unavailable); they pick up the new key within 60 s',
+    );
+  });
+
+  it('treats a throwing notifier as failed rather than failing the rotation', async () => {
+    const log = vi.fn();
+    await expect(notifyRunningApiInstances(async () => { throw new Error('boom'); }, log)).resolves.toBe(false);
+    expect(log.mock.calls[0]![0]).toContain('notify step threw: boom');
+    expect(log.mock.calls[1]![0]).toContain('(Redis failed)');
   });
 });

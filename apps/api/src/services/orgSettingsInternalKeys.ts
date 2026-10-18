@@ -16,22 +16,34 @@
  * is the other half: the engine's keys are stripped from anything a client
  * supplies, so they can only ever be written by the engine itself.
  *
- * Keys are imported from their owning modules rather than re-declared, so a
- * rename reddens this list instead of silently un-protecting a key.
+ * Each key is declared exactly once — here — and its owning module
+ * (orgArchive, orgMerge, tenantOffboarding) imports and re-exports it, so the
+ * engine and this list can never disagree on a spelling.
+ *
+ * This file must stay a LEAF (no import that reaches the lifecycle services):
+ * tenantCascade reads the list for the evidence-hold scrub, and the
+ * `global`-placement tenantErasure worker's import closure must not reach the
+ * agent-socket graph that orgArchive/orgMerge/tenantOffboarding pull in
+ * through tenantLifecycle (workerEntrypointClosure.contract.test.ts).
  */
-import { ARCHIVE_PRIOR_STATUS_KEY } from './orgArchive';
-import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
-import {
-  ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
-  ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
-  ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
-} from './tenantOffboarding';
+import { EVIDENCE_HOLD_SCOPED_ERASURE_KEY } from './orgEvidenceHold';
+
+/** orgArchive: the pre-archive status a restore hands back. */
+export const ARCHIVE_PRIOR_STATUS_KEY = 'archivePriorStatus';
+/** orgMerge: the pre-fence status an unfence hands back. */
+export const MERGE_PRIOR_STATUS_KEY = 'mergePriorStatus';
+/** tenantOffboarding: archive purge-warning claim markers. */
+export const ARCHIVE_PURGE_WARN_14_SENT_AT_KEY = 'archivePurgeWarn14SentAt';
+export const ARCHIVE_PURGE_WARN_1_SENT_AT_KEY = 'archivePurgeWarn1SentAt';
+/** tenantOffboarding: purging-recovery attempt counter (the sweep casts it to int). */
+export const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY = 'purgingRecoveryAttempts';
 
 export const ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS: readonly string[] = [
   ARCHIVE_PRIOR_STATUS_KEY,
   ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
   ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
   ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+  EVIDENCE_HOLD_SCOPED_ERASURE_KEY,
   MERGE_PRIOR_STATUS_KEY,
 ];
 

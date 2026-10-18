@@ -66,6 +66,7 @@ vi.mock('./filesystemAnalysis', () => ({
     }
   }),
   setFilesystemScanGeneration: vi.fn(),
+  findInFlightFilesystemScan: vi.fn(async () => null),
   saveFilesystemSnapshot: vi.fn(async () => ({ id: 'snap-1' })),
   safeCleanupCategories: ['temp_files'],
 }));

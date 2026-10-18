@@ -139,15 +139,17 @@ type Config struct {
 	// relay TURN, disconnect timeout, etc.) ship regardless.
 	DesktopDebug bool `mapstructure:"desktop_debug"`
 
-	// PAMEnabled gates privileged access management features, including the
-	// dormant local elevation account. Default false.
+	// PAMEnabled opts into dormant elevation-account provisioning at startup.
+	// Default false. After reconciliation, organization PAM policy is authoritative:
+	// an enabled policy provisions the account even when this flag is false.
+	// This flag is not a local opt-out from organization policy.
 	PAMEnabled bool `mapstructure:"pam_enabled"`
 
 	// PAMActuatorStrategy selects the Windows elevation actuator: "sendinput"
 	// (Path A — inject credentials into consent.exe) or "token_launch" (Path B —
 	// suppress consent.exe and launch the target elevated via CreateProcessAsUser
 	// as ~breeze_elev). Default "sendinput". Path B ships dark; flip per-device
-	// via agent.yaml. Ignored when PAMEnabled is false.
+	// via agent.yaml. Managed PAM v2 uses its own launch path.
 	PAMActuatorStrategy string `mapstructure:"pam_actuator_strategy"`
 
 	// Concurrency limits
@@ -210,6 +212,18 @@ type Config struct {
 	// a manifest can be verified by a key other than the one it names.
 	RequireManifestSigningKeyID bool `mapstructure:"require_manifest_signing_key_id" yaml:"require_manifest_signing_key_id"`
 
+	// ECH is the operator opt-out for Encrypted Client Hello on the control
+	// plane connection (#8869). Default true: the dialer dials plain until it
+	// sees the filter signature (plaintext HTTP answered on the TLS port)
+	// twice, then dials that host with ECH and falls back to plain inside the
+	// same dial. One-shot commands (enroll/bootstrap/support) retry with ECH
+	// on the first signature. Set false to never use ECH.
+	ECH bool `mapstructure:"ech" yaml:"ech"`
+
+	// ECHServerEnabled mirrors the server-side ECH kill switch pushed to the
+	// agent. Default true; the control plane can turn ECH off fleet-wide.
+	ECHServerEnabled bool `mapstructure:"ech_server_enabled" yaml:"ech_server_enabled"`
+
 	// HPWarrantyCollectionEnabled is the control-plane switch for device-side
 	// HP warranty collection via HP's CMSL (#5511). Pushed on the heartbeat as
 	// warranty_settings.hp_cmsl_enabled and persisted so the setting survives a
@@ -230,6 +244,14 @@ type Config struct {
 	// Persisted in the same SaveTo that adds the delegated key, so the two
 	// facts can never disagree. See manifestdelegation.go.
 	ManifestDelegationEpoch uint64 `mapstructure:"manifest_delegation_epoch" yaml:"manifest_delegation_epoch"`
+
+	// OwnershipEpoch is the device's PAM ownership epoch as last asserted by
+	// the server in a signed identity assertion v2 (#8202 W4), 0 when none was
+	// ever received. It moves with org_id/site_id: written only by
+	// PersistServerIdentity (never lowered) and enrollment, preserved from disk
+	// by every other save, and reported on each heartbeat so the server can
+	// record which epoch's identity this process has loaded.
+	OwnershipEpoch uint64 `mapstructure:"ownership_epoch" yaml:"ownership_epoch"`
 
 	// mTLS client certificate (Cloudflare API Shield)
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
@@ -374,6 +396,9 @@ func Default() *Config {
 		AuditEnabled:                 true,
 		AuditMaxSizeMB:               50,
 		AuditMaxBackups:              3,
+
+		ECH:              true,
+		ECHServerEnabled: true,
 
 		AutoUpdate:                 true,
 		PatchExcludeFeatureUpdates: true,
@@ -967,9 +992,9 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 		return err
 	}
 
-	orgID, siteID := cfg.OrgID, cfg.SiteID
+	orgID, siteID, ownershipEpoch := cfg.OrgID, cfg.SiteID, cfg.OwnershipEpoch
 	if identity == identityFromDisk {
-		orgID, siteID = resolveOrgSiteForSave(cfgPath, orgID, siteID)
+		orgID, siteID, ownershipEpoch = resolveIdentityForSave(cfgPath, orgID, siteID, ownershipEpoch)
 	}
 
 	viper.Set("agent_id", cfg.AgentID)
@@ -977,6 +1002,7 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	viper.Set("backup_server_url", cfg.BackupServerURL)
 	viper.Set("org_id", orgID)
 	viper.Set("site_id", siteID)
+	viper.Set("ownership_epoch", ownershipEpoch)
 	viper.Set("device_id", cfg.DeviceID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
@@ -992,6 +1018,8 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)
 	viper.Set("require_manifest_signing_key_id", cfg.RequireManifestSigningKeyID)
+	viper.Set("ech", cfg.ECH)
+	viper.Set("ech_server_enabled", cfg.ECHServerEnabled)
 	viper.Set("hp_warranty_collection_enabled", cfg.HPWarrantyCollectionEnabled)
 	viper.Set("manifest_delegation_epoch", cfg.ManifestDelegationEpoch)
 	// helper_auth_token is deliberately NOT set here on any platform: agent.yaml

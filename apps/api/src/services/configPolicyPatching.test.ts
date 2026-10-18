@@ -252,6 +252,58 @@ describe('loadPolicyLocalPatchConfig', () => {
     ]);
   });
 
+  // #8030: the columns must reach the effective settings, and an invalid stored
+  // value must be dropped (and reported) rather than failing the whole policy.
+  const promptRow = (prompt: Record<string, unknown>) => ({
+    configPolicyId: 'policy-1',
+    configPolicyName: 'Policy 1',
+    orgId: 'org-1',
+    featureLinkId: 'link-1',
+    featurePolicyId: null,
+    storedInlineSettings: {},
+    patchSettings: {
+      sources: ['os'],
+      autoApprove: false,
+      autoApproveSeverities: [],
+      scheduleFrequency: 'daily',
+      scheduleTime: '03:00',
+      scheduleDayOfWeek: 'mon',
+      scheduleDayOfMonth: 10,
+      rebootPolicy: 'if_required',
+      rebootPromptTitle: null,
+      rebootPromptBody: null,
+      rebootPromptButton: null,
+      ...prompt,
+    },
+  });
+
+  it('surfaces the restart-prompt text columns (#8030)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([promptRow({
+      rebootPromptTitle: 'Neustart', rebootPromptBody: 'In {{countdown}}', rebootPromptButton: 'Jetzt',
+    })]) as any);
+
+    const result = await loadPolicyLocalPatchConfig('policy-1');
+
+    expect(result?.settings.rebootPromptTitle).toBe('Neustart');
+    expect(result?.settings.rebootPromptBody).toBe('In {{countdown}}');
+    expect(result?.settings.rebootPromptButton).toBe('Jetzt');
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('drops an invalid stored prompt column instead of failing the policy load (#8030)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([promptRow({
+      rebootPromptTitle: 'Neustart', rebootPromptBody: 'Hi <b>', rebootPromptButton: 'x'.repeat(41),
+    })]) as any);
+
+    const result = await loadPolicyLocalPatchConfig('policy-1');
+
+    expect(result?.settings.rebootPromptTitle).toBe('Neustart');
+    expect(result?.settings.rebootPromptBody).toBeNull();
+    expect(result?.settings.rebootPromptButton).toBeNull();
+    expect(result?.settings.scheduleTime).toBe('03:00');
+    expect(captureException).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces exclusiveWindowsUpdate from the normalized column (#1872)', async () => {
     vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
       configPolicyId: 'policy-1',
@@ -680,7 +732,7 @@ describe('ring resolution classification values', () => {
 // so the device Patches tab never holds a second pooled connection.
 describe('resolvePatchPolicyReference — connection discipline (#7647)', () => {
   const RING_ROW = {
-    id: 'ring-1', kind: 'ring', name: 'Pilot', categoryRules: [],
+    id: 'ring-1', kind: 'ring', name: 'Pilot', enabled: true, categoryRules: [],
     categories: [], excludeCategories: [], autoApprove: {},
   };
 
@@ -720,7 +772,7 @@ describe('resolvePatchPolicyReference — connection discipline (#7647)', () => 
 // #8184 W01: the resolver carries the ring's per-app block/pin rules.
 describe('resolvePatchPolicyReference — ring appRules (#8184)', () => {
   const ringRow = (appRules: unknown) => ({
-    id: 'ring-1', kind: 'ring', name: 'Pilot', categoryRules: [],
+    id: 'ring-1', kind: 'ring', name: 'Pilot', enabled: true, categoryRules: [],
     categories: [], excludeCategories: [], autoApprove: {}, appRules,
   });
 
@@ -823,5 +875,90 @@ describe('resolvePatchPolicyReference — ring appRules (#8184)', () => {
     const missing = await resolvePatchPolicyReference('partner-1', 'ring-1');
     expect(missing.classification).toBe('missing_target');
     expect(missing.appRules).toEqual([]);
+  });
+});
+
+// #8678: ring DELETE is a soft delete (enabled = false). The ring picker and
+// GET /update-rings hide such a ring, so the resolver must not keep enforcing
+// it either: it is an invalid reference and the policy's patching is held.
+describe('resolvePatchPolicyReference — disabled (soft-deleted) ring (#8678)', () => {
+  const DISABLED_RING_ROW = {
+    id: 'ring-1', kind: 'ring', name: 'Pilot', enabled: false,
+    categoryRules: [{ category: 'security', autoApprove: true }],
+    categories: ['security'], excludeCategories: ['drivers'],
+    autoApprove: { enabled: true, severities: ['critical'] },
+    appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCurrentDbAccessContext).mockReset();
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      accessiblePartnerIds: [], currentPartnerId: 'partner-1',
+    } as any);
+  });
+
+  it('classifies a disabled ring as disabled_ring, invalid, with none of its config', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([DISABLED_RING_ROW]) as any);
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result).toEqual({
+      classification: 'disabled_ring',
+      valid: false,
+      ringId: null,
+      ringName: null,
+      categoryRules: [],
+      categories: [],
+      excludeCategories: [],
+      autoApprove: {},
+      appRules: [],
+    });
+  });
+
+  it('fails closed when the row carries no enabled flag at all', async () => {
+    const { enabled: _enabled, ...noFlag } = DISABLED_RING_ROW;
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([noFlag]) as any);
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result.classification).toBe('disabled_ring');
+    expect(result.valid).toBe(false);
+  });
+
+  it('an enabled ring still resolves as valid_ring', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(
+      selectJoinLimitRows([{ ...DISABLED_RING_ROW, enabled: true }]) as any,
+    );
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result).toMatchObject({ classification: 'valid_ring', valid: true, ringId: 'ring-1' });
+  });
+
+  it('reports a policy linked to a disabled ring as invalid_reference in the inventory', async () => {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.innerJoin = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.where = vi.fn(() => Promise.resolve([{
+      configPolicyId: 'policy-disabled-ring',
+      configPolicyName: 'Linked to a deleted ring',
+      orgId: 'org-1',
+      partnerId: null,
+      featureLinkId: 'link-disabled-ring',
+      referencedTargetId: 'ring-1',
+      storedInlineSettings: {},
+      patchSettingsId: 'settings-1',
+    }]));
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain)
+      .mockReturnValueOnce(selectJoinLimitRows([DISABLED_RING_ROW]) as any);
+
+    const rows = await listAllPatchInventory();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ classification: 'disabled_ring', effectiveStatus: 'invalid_reference' });
   });
 });

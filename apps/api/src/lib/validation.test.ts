@@ -229,6 +229,34 @@ describe('formatZodError', () => {
     expect(JSON.stringify(body.details.fieldErrors)).toContain('target.deviceId');
   });
 
+  it('never surfaces a regex pattern from a message-less .regex() (#8369)', () => {
+    // zod v4's default regex message is "Invalid string: must match pattern
+    // /^.../" — the raw pattern is an implementation detail, not user copy.
+    // Many schemas still call .regex() without a message, so the formatter
+    // scrubs it centrally; explicit messages pass through untouched.
+    const schema = z.object({
+      color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      batchSize: z.union([z.number().positive(), z.string().regex(/^\d+%$/)]),
+      slug: z.string().regex(/^[a-z]+$/, 'Use lowercase letters only'),
+    });
+    const parsed = schema.safeParse({ color: 'red', batchSize: '25pct', slug: 'ABC' });
+    expect(parsed.success).toBe(false);
+    const result = formatZodError(parsed.error!);
+    const wire = JSON.stringify(result);
+    expect(wire).not.toContain('/^');
+    expect(wire).not.toMatch(/must match pattern/i);
+    expect(result.details.fieldErrors.color).toEqual(['Invalid format']);
+    expect(result.details.fieldErrors.slug).toEqual(['Use lowercase letters only']);
+  });
+
+  it('leaves non-regex format messages alone (#8369)', () => {
+    const parsed = z.object({ email: z.string().email() }).safeParse({ email: 'nope' });
+    expect(parsed.success).toBe(false);
+    const original = parsed.error!.issues[0]!.message;
+    expect(original).not.toBe('Invalid format');
+    expect(formatZodError(parsed.error!).details.fieldErrors.email).toEqual([original]);
+  });
+
   it('collapses duplicate messages produced by identical union branches', () => {
     const result = formatZodError({
       issues: [

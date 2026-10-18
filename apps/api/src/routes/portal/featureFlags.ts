@@ -3,14 +3,28 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { portalBranding } from '../../db/schema';
 import type { PortalVisibilityFlag } from '../../services/portal/portalFlags';
+import {
+  decidePortalTrustPageEditor,
+  type PortalTrustEditorUser,
+} from '../../services/portal/trustPageEditor';
 
 // Network Visibility is deliberately excluded from the generic strict
 // 403 gate. Its approved shared contract represents disabled availability
 // as dataStatus: 'not_enabled' with null metrics.
-export type StrictPortalVisibilityFlag = Exclude<
-  PortalVisibilityFlag,
-  'enableNetworkVisibility'
->;
+//
+// Widened (visibility W05, #7735) with the sensitive flags that DO use the 403
+// gate: enablePatchDetail and enableVulnerabilityDetail (W06, #7736).
+// enableNetworkAlerts stays out like enableNetworkVisibility: it omits fields
+// when off instead of answering 403.
+export type StrictPortalVisibilityFlag =
+  | Exclude<PortalVisibilityFlag, 'enableNetworkVisibility'>
+  | 'enablePatchDetail'
+  | 'enableVulnerabilityDetail';
+
+// Fail-closed gates that are NOT part of the "Enable all" visibility set
+// (PORTAL_VISIBILITY_FLAG_KEYS). Each is independent and billing-sensitive:
+// enableHourBlock exposes a prepaid-hours balance (block hours W04).
+export type StrictPortalGateFlag = StrictPortalVisibilityFlag | 'enableHourBlock';
 
 type PortalBooleanSetting = 'enableAssetCheckout' | 'enableSelfService';
 
@@ -80,7 +94,7 @@ export const portalDevicesEnabledMiddleware: MiddlewareHandler = async (c, next)
 // portal_branding row or an explicit false both return 403. Every existing
 // org defaults to false on all five columns (Task 3.1), so this is the
 // correct default-deny posture for newly introduced portal sections.
-const STRICT_PORTAL_FEATURES: Record<StrictPortalVisibilityFlag, { error: string; code: string }> = {
+const STRICT_PORTAL_FEATURES: Record<StrictPortalGateFlag,{ error: string; code: string }> = {
   enableDashboard: {
     error: 'Dashboard is not enabled for this portal',
     code: 'PORTAL_DASHBOARD_DISABLED',
@@ -129,9 +143,29 @@ const STRICT_PORTAL_FEATURES: Record<StrictPortalVisibilityFlag, { error: string
     error: 'Software inventory is not enabled for this portal',
     code: 'PORTAL_SOFTWARE_INVENTORY_DISABLED',
   },
+  enablePatchDetail: {
+    error: 'Patch detail is not enabled for this portal',
+    code: 'PORTAL_PATCH_DETAIL_DISABLED',
+  },
+  enableVulnerabilityDetail: {
+    error: 'Vulnerability detail is not enabled for this portal',
+    code: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
+  },
+  // EDR provider framework W02 (#8166). No portal route is mounted behind this
+  // gate: it controls whether EDR state feeds the security read model. The
+  // entry exists so the flag is a registered strict portal feature and the
+  // portal knows the code (visibilityGate.ts parity).
+  enableEdrVisibility: {
+    error: 'Managed endpoint protection is not enabled for this portal',
+    code: 'PORTAL_EDR_VISIBILITY_DISABLED',
+  },
+  enableHourBlock: {
+    error: 'Support hours are not enabled for this portal',
+    code: 'PORTAL_HOUR_BLOCK_DISABLED',
+  },
 };
 
-export function createPortalFeatureGateStrict(flag: StrictPortalVisibilityFlag): MiddlewareHandler {
+export function createPortalFeatureGateStrict(flag: StrictPortalGateFlag): MiddlewareHandler {
   return async (c, next) => {
     const auth = c.get('portalAuth');
     if (!auth) {
@@ -183,4 +217,39 @@ export function createPortalFeatureGateAny(
 
     return c.json(STRICT_PORTAL_FEATURES[flags[0]], 403);
   };
+}
+
+// Trust Center W3d (#8771): a PERMISSION gate, not a visibility gate. Passes
+// only when the org's enable_trust_page_editing flag is on AND the portal user
+// is an active org-scoped admin contact (services/portal/trustPageEditor.ts).
+// Re-checked on every request, never cached in the session. The two refusals
+// carry distinct codes so the portal page can tell "your provider has not
+// turned this on" from "you are not an admin contact".
+const PORTAL_TRUST_EDITOR_ERRORS = {
+  PORTAL_TRUST_EDITING_DISABLED: 'Trust page editing is not enabled for this portal',
+  PORTAL_TRUST_EDITOR_REQUIRED: "Only your organization's admin contacts can edit the trust page",
+} as const;
+
+export const requirePortalTrustPageEditor: MiddlewareHandler = async (c, next) => {
+  const auth = c.get('portalAuth');
+  if (!auth) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
+  // Draft state and revision numbers are per-viewer and change under the user.
+  c.header('Cache-Control', 'no-store');
+  const decision = await decidePortalTrustPageEditor({ id: auth.user.id, orgId: auth.user.orgId });
+  if (!decision.allowed) {
+    return c.json({ error: PORTAL_TRUST_EDITOR_ERRORS[decision.code], code: decision.code }, 403);
+  }
+  return next();
+};
+
+/**
+ * Per-user portal capabilities (as opposed to the org-level flags on the
+ * branding row). `canEditTrustPage` decides whether the portal shows the
+ * "Trust page" nav entry; the routes re-check it on every request.
+ */
+export async function resolvePortalCapabilities(user: PortalTrustEditorUser): Promise<{ canEditTrustPage: boolean }> {
+  const decision = await decidePortalTrustPageEditor(user);
+  return { canEditTrustPage: decision.allowed };
 }

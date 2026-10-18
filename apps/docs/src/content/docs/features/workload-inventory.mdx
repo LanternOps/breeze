@@ -1,0 +1,131 @@
+---
+title: Workload Inventory
+description: See the containers, VMs and LXC guests running on a host, and turn collection on with a configuration policy.
+sidebar:
+  label: Workload Inventory
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## What it is
+
+The Breeze agent detects container and virtual-machine runtimes on a device. When collection is enabled, it also lists the **workloads** running on that host: containers, VMs and LXC guests. Use it to answer "what is running on this server?" without logging in to it.
+
+| Runtime | Detected | Workloads listed |
+|---|---|---|
+| Docker | Linux, Windows | Linux, Windows |
+| Podman | Linux | Linux |
+| Hyper-V | Windows | Arrives with a later agent release |
+| Proxmox VE | Linux | Arrives with a later agent release |
+| containerd | Linux | Never. containerd is detected only; its workloads are not listed. |
+
+macOS devices report no runtimes, and Docker Desktop's per-user socket is not supported.
+
+For each workload Breeze shows the name, state, image (repository, tag and digest) or guest OS, compose project and service, restart policy, CPU and memory where the runtime reports them, and start time.
+
+<Aside type="note" title="Detection runs; listing is opt-in">
+  Detection (is Docker installed, which version) always runs and reveals nothing about what is running. Workloads are **not** listed until a configuration policy enables the **Workload inventory** feature, because names and images can identify customer systems.
+</Aside>
+
+## What the agent reads
+
+Collection is read-only. The agent only issues GET requests to the engine API and never starts, stops or changes a container or VM. Environment variables, command lines, mounts and labels are never collected.
+
+The agent only connects to a runtime that is already running. It does not start a stopped Docker daemon or a socket-activated Podman service; that host reports the runtime as unavailable. Podman hosts therefore need `podman system service` (or an enabled socket service that keeps it running) for workloads to appear.
+
+## Turn it on
+
+<Steps>
+
+1. Open **Fleet Management → Config Policies** and edit (or create) a policy. See [Configuration Policies](/features/configuration-policies/).
+2. Add the **Workload inventory** feature.
+3. Switch **Enabled** on and choose the runtimes to collect: **Docker**, **Podman**, **Hyper-V**, **Proxmox**.
+4. Set the **collection interval** in minutes (15 to 1440, default 60).
+5. Save and assign the policy as usual.
+
+</Steps>
+
+Partner-wide and organization policies both work, and the setting follows normal policy inheritance: the closest assignment wins. Devices pick up the change on their next policy refresh and collect on the interval you set.
+
+## The Workloads tab
+
+Open a device and select the **Workloads** tab (URL hash `#workloads`). It shows, for each detected runtime, the version and a plain-language collection status, then counts and a table of workloads.
+
+| Status you may see | What it means |
+|---|---|
+| Collection is off | Enable **Workload inventory** in a configuration policy that applies to the device. |
+| Permission denied | The agent could not read the runtime's socket or service. |
+| Unavailable | The runtime is installed but not running or not reachable. |
+| Agent too old | The device's agent predates workload inventory. Update the agent. |
+
+A **partial snapshot**, where some data could not be read, is shown with a note rather than as an error. Devices without any detected runtime show no Workloads section.
+
+## Fleet filters
+
+Two fields are available in the device filter bar, saved filters and dynamic groups:
+
+- **Hosts workloads**: yes or no.
+- **Workload runtimes**: contains a runtime, for example Docker.
+
+<Aside type="caution" title="Not usable for script targeting">
+  These values are reported by the agent, so they are not trusted for targeting. Filters and groups built on them are refused when selecting devices to run scripts or other commands on.
+</Aside>
+
+## Ask the assistant
+
+The AI assistant can answer questions such as "what containers are running on this host?" using the read-only `query_device_workloads` tool. It returns up to 200 workloads per answer.
+
+## Image currency
+
+Every 30 minutes Breeze compares each container's local image digest with the registry's current digest for the same repository and tag. The check runs on the server and needs no agent change. Only public images are checked.
+
+| Image status | Meaning |
+|---|---|
+| `current` | The local digest matches the registry. |
+| `behind` | The registry has a newer digest for this tag. |
+| `pending` | Not checked yet. |
+| `pinned` | The image is referenced by digest, so there is nothing to compare. |
+| `local` | Built locally; no registry digest exists. |
+| `private` | The registry requires credentials. Private registries are not supported yet. |
+| `unsupported_registry` | The registry is not on the supported list: Docker Hub, GHCR, Quay, MCR, registry.k8s.io, GCR and public ECR. |
+| `not_found` | The tag no longer exists upstream. |
+| `error` | A transient failure. Breeze retries. |
+
+In the **Workloads** tab each container row shows an image status badge, and the tab has a status filter. `pending`, `private`, `unsupported_registry` and `error` display as **Not checked**, never as up to date.
+
+<Aside type="caution" title="Local builds on Docker 29.0–29.2 with the containerd image store">
+  On Docker's containerd image store (the default for new Docker 29 installs), Docker lists a registry-style digest for every named image, local builds included. From Docker 29.3 (Engine API 1.54) the agent asks Docker where each image came from, so a local build shows **Local build** and its name is never sent to a registry. Docker 29.0 to 29.2 cannot answer that question: on those versions a locally built image is still looked up on the registry its name points to (Docker Hub for an unqualified name), usually shows **Not checked** ("Private registry — credentials required") instead of **Local build**, and counts in the "images not checked" figure. Upgrade Docker to 29.3 or later to get the correct status. Hosts on Docker's classic image store are not expected to be affected ([#8993](https://github.com/LanternOps/breeze/issues/8993)).
+</Aside>
+
+## Patch compliance
+
+Container images count toward patch compliance. Each distinct image (repository and tag) on a device counts once, however many containers or replicas run it.
+
+- A `behind` image counts as one pending update.
+- A `current` image counts as one installed update.
+- Images that could not be checked (`pending`, `private`, `unsupported_registry`, `error`) are left out of the percentage and reported as "N images not checked" next to it, so coverage stays visible.
+- `pinned`, `local` and `not_found` images are not counted either way.
+- If replicas of one image disagree, the worst status wins: any `behind` makes it behind, otherwise any not-checked replica makes it not checked.
+
+This applies to the device **Patches** tab percentage, the organization patch compliance percentage and compliant-device count, and the patch compliance CSV report. A device with a behind image and no missing OS patches is listed as needing updates and is not compliant. When an organization has container images, the CSV gains `stale_images`, `current_images` and `images_not_checked` rows.
+
+Views filtered by severity, source or update ring exclude images, because images have no severity, source or approval. The security posture score, and therefore the existing **Patch compliance** monitor, is unaffected. Devices without workload inventory data show the same numbers as before.
+
+## Alert on out-of-date images
+
+The **Container image currency** monitor (`container_image_currency`) is evaluated on the server from the stored image statuses. There is one alert subject per image repository and tag on a device.
+
+| Setting | Meaning |
+|---|---|
+| Minimum days behind (`minDaysBehind`) | 0 to 365, default 7. The image alerts once it has been `behind` for at least this many days. |
+
+- The clock starts when the image was first seen behind. A transient registry error does not restart it; a change of the local image does.
+- The alert recovers when the image is `current`. Any other status is unknown: it neither alerts nor recovers.
+- Pinned, locally built and `not_found` images are not monitored: there is nothing to compare.
+- When the last container using an image is removed, its open alert resolves automatically. This happens in a complete inventory snapshot, when workload collection is turned off by policy, or when the runtime is uninstalled. Failed, incomplete or truncated snapshots never resolve alerts.
+
+Every partner gets a partner-wide built-in monitor, **Container image out of date** (low severity, 7 days, 24-hour cooldown). Like the other built-in monitors it is not attached to any policy: attach it to a configuration policy to start evaluating. Only devices whose policy enables **Workload inventory** have data.
+
+## Not yet available
+
+Private-registry image checks and operator-triggered compose updates are deferred to a later release.

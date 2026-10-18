@@ -44,7 +44,7 @@ import { resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
 import { CONFIG_COMPLIANCE_ALERT_SOURCE, CONFIG_COMPLIANCE_RULE_PREFIX } from './configComplianceAlertBridge';
 import { resolveComplianceAssignmentForDevice, type ResolvedDeviceComplianceRules } from './featureConfigResolver';
 import { POLICY_ALERT_SOURCE, POLICY_RULE_PREFIX } from './policyAlertBridge';
-import { automationPolicyTargetedDeviceIds } from './policyEvaluationService';
+import { automationPolicyIsObserveOnly, automationPolicyTargetedDeviceIds } from './policyEvaluationService';
 import { captureException } from './sentry';
 import type { ComplianceAlertReconcileScope } from './complianceAlertReconcileTrigger';
 
@@ -334,6 +334,9 @@ async function reconcileAutomationPolicy(policyId: string, condition: SQL): Prom
       ?? stringField(alert.overrideSettings, 'policyName') ?? 'unknown'}" was deleted`;
   } else if (!policy.enabled) {
     reasonFor = () => `automation policy "${policy.name}" is disabled`;
+  } else if (automationPolicyIsObserveOnly(policy)) {
+    // Observe-only (#8857): no policy.compliant will ever close these.
+    reasonFor = () => `automation policy "${policy.name}" targets tags, so its results raise no alerts`;
   } else {
     const targeted = await automationPolicyTargetedDeviceIds(policy, [...new Set(open.map((a) => a.deviceId))]);
     reasonFor = (alert) => (targeted.has(alert.deviceId)

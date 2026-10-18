@@ -56,15 +56,15 @@ describe('DeviceActions Wake is permission-gated (#7215)', () => {
   it('hides the compact-menu Wake without devices:execute while the menu opens', async () => {
     render(<DeviceActions device={offlineDevice} compact />);
     await userEvent.click(screen.getByTestId('device-actions-menu'));
-    expect(screen.getByRole('button', { name: /^reboot$/i })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: /^reboot$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /^wake$/i })).toBeNull();
   });
 
   it('shows the compact-menu Wake with devices:execute', async () => {
     h.granted.add('devices:execute');
     render(<DeviceActions device={offlineDevice} compact />);
     await userEvent.click(screen.getByTestId('device-actions-menu'));
-    expect(screen.getByRole('button', { name: /^wake$/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^wake$/i })).toBeInTheDocument();
   });
 });
 
@@ -91,14 +91,14 @@ describe('DeviceActions Remote Tools is permission-gated (live device inspection
     h.granted.add('devices:read');
     render(<DeviceActions device={onlineDevice} compact />);
     await userEvent.click(screen.getByTestId('device-actions-menu'));
-    expect(screen.getByRole('button', { name: /^reboot$/i })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /remote tools/i })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: /^reboot$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /remote tools/i })).toBeNull();
   });
 
   it('shows the compact-menu Remote Tools with devices:execute', async () => {
     h.granted.add('devices:execute');
     render(<DeviceActions device={onlineDevice} compact />);
     await userEvent.click(screen.getByTestId('device-actions-menu'));
-    expect(screen.getByRole('button', { name: /remote tools/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /remote tools/i })).toBeInTheDocument();
   });
 });

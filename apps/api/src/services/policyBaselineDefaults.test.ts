@@ -111,6 +111,11 @@ describe('CONFIG_FEATURE_TYPES parity with DB enum (W05d: canonical ∪ retired)
     expect([...CONFIG_FEATURE_TYPES, ...RETIRED_CONFIG_FEATURE_TYPES].sort())
       .toEqual([...configFeatureTypeEnum.enumValues].sort());
   });
+  it('security_agents (#6960) is in the DB enum and has a not-enforced baseline', () => {
+    expect([...configFeatureTypeEnum.enumValues]).toContain('security_agents');
+    const entry = getPolicyBaselineDefaults().find((e) => e.featureType === 'security_agents');
+    expect(entry).toMatchObject({ applied: false, inlineSettings: null });
+  });
   it('the two lists are disjoint and retired types have no baseline entry', () => {
     const baseline = getPolicyBaselineDefaults().map((e) => e.featureType);
     for (const t of RETIRED_CONFIG_FEATURE_TYPES) {

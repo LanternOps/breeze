@@ -27,7 +27,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
-import { cascadeDeleteOrg, hasActiveBackupLegalHold, TenantCascadeRefusalError } from '../services/tenantCascade';
+import { cascadeDeleteOrg, TenantCascadeRefusalError } from '../services/tenantCascade';
 import { createAuditLog } from '../services/auditService';
 import { attachWorkerObservability } from './workerObservability';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
@@ -122,10 +122,10 @@ export async function enqueueTenantErasure(
  * Refusals (TenantCascadeRefusalError, e.g. an active legal hold): the org
  * survives, so step 1's request could never be satisfied (a rebuild clears it
  * only once the organizations row is gone) and the partner's rows would stay
- * stale forever. So: an active hold at entry skips step 1 (the cascade still
- * runs and refuses with its own audit row), and a refusal after step 1 ran
- * removes the request again (clearOrgErasureRequest) before the refusal
- * propagates unchanged. stale_since is left set; the next sweep rebuilds the
+ * stale forever. So a refusal removes the request again (clearOrgErasureRequest)
+ * before the refusal propagates unchanged. Step 1 is never skipped on a
+ * pre-check: a hold released between such a check and the cascade's own would
+ * erase the org with no mark and no rebuild (#7278). stale_since is left set; the next sweep rebuilds the
  * partner and lifts it. A failed undo is reported, never swallowed silently,
  * and never changes the refusal. Any other cascade failure keeps the request:
  * the org may be half-erased, and a retried erasure removes the org row.
@@ -151,10 +151,13 @@ export async function eraseOrgWithFixMemory(
   hooks: { rebuild?: typeof rebuildFixMemory; erasureJobId?: string | null } = {},
 ) {
   const rebuild = hooks.rebuild ?? rebuildFixMemory;
-  // Cheap pre-check (the same one cascadeDeleteOrg runs first): a held org is
-  // refused before anything is deleted, so marking it would only need undoing.
-  const heldAtEntry = await hasActiveBackupLegalHold(orgId);
-  const fixMemoryPartnerId = heldAtEntry ? null : await runOutsideDbContext(() =>
+  // Always mark, even when the org looks held right now. A legal-hold
+  // pre-check here once skipped the mark, and a hold released between that
+  // check and the cascade's own check let the cascade erase the org with no
+  // mark, no post-cascade partner mark and no rebuild, so partner aggregates
+  // kept the erased org's counts (#7278). The cascade's own check is the only
+  // authoritative one; a refusal is undone below.
+  const fixMemoryPartnerId = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() => markFixMemoryStaleForOrgErasure(orgId), 'tenantErasure.fixMemoryStale'));
   let stats: Awaited<ReturnType<typeof cascadeDeleteOrg>>;
   try {

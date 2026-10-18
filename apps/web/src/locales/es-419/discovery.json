@@ -269,11 +269,15 @@
       "time": "Tiempo",
       "timeout": "Tiempo de espera (ms)",
       "timezone": "Zona horaria",
-      "username": "Nombre de usuario"
+      "username": "Nombre de usuario",
+      "scanAgent": "Agente de escaneo"
     },
     "options": {
       "everyHours": "Cada {{count}} horas",
-      "selectSite": "Seleccione un sitio..."
+      "selectSite": "Seleccione un sitio...",
+      "automaticAgent": "Automático (preferir un agente en estas subredes)",
+      "agentOffline": "{{name}} (sin conexión)",
+      "pinnedAgentUnlisted": "Agente fijado (no está en este sitio)"
     },
     "placeholders": {
       "profileName": "Escaneo de la sede",
@@ -313,7 +317,13 @@
       "moveAssets_one": "Mover también el {{count}} dispositivo de red que descubrió este perfil al nuevo sitio",
       "moveAssets_other": "Mover también los {{count}} dispositivos de red que descubrió este perfil al nuevo sitio",
       "moveAssetsUnknown": "Mover también los dispositivos de red que descubrió este perfil al nuevo sitio"
-    }
+    },
+    "scanAgentHelp": {
+      "automatic": "Se prefiere un agente en línea de este sitio con una dirección en alguna de las subredes.",
+      "pinned": "Los escaneos se ejecutan solo desde este agente. Si está sin conexión, el escaneo falla en lugar de usar otro agente.",
+      "loadError": "No se pudieron cargar los agentes de este sitio. La selección automática sigue disponible."
+    },
+    "subnetTopologyNote": "Las subredes de aquí también identifican las redes de este sitio en el mapa de topología."
   },
   "discoveryProfileList": {
     "actions": {
@@ -427,7 +437,8 @@
       "interval": "El intervalo de escaneo debe estar entre 1 y 168 horas.",
       "selectSite": "Seleccione un sitio antes de guardar."
     },
-    "configuredCount": "líneas base {{count}} configuradas"
+    "configuredCount": "líneas base {{count}} configuradas",
+    "subnetTopologyNote": "Las subredes de aquí también identifican las redes de este sitio en el mapa de topología."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Reconocer evento",

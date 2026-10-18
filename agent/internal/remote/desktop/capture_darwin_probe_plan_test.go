@@ -45,16 +45,17 @@ func TestDarwinCaptureProbePlan_LoginWindowKeepsDefault(t *testing.T) {
 	}
 }
 
-// #8058: the real permission-check entry point never reaches the
-// ScreenCaptureKit opener.
-func TestProbeCaptureAccess_NeverCallsScreenCaptureKit(t *testing.T) {
+// #8058: the CLI probe without --sck never reaches the ScreenCaptureKit
+// opener. (The helper's own permission checks no longer capture at all:
+// CheckCaptureAccess, #8390.)
+func TestProbeCapture_DefaultNeverCallsScreenCaptureKit(t *testing.T) {
 	sck := &scriptedBackend{name: captureBackendScreenCaptureKit}
 	cg := &scriptedBackend{name: captureBackendCoreGraphics}
 	installDarwinFakes(t, sck, cg)
 
 	for i := 0; i < 3; i++ {
-		if granted, err := ProbeCaptureAccess(userSession()); err != nil || !granted {
-			t.Fatalf("ProbeCaptureAccess = %v, %v", granted, err)
+		if report, err := ProbeCapture(userSession(), CaptureProbeOptions{}); err != nil || !report.Granted {
+			t.Fatalf("ProbeCapture = %+v, %v", report, err)
 		}
 	}
 	if sck.opened != 0 || cg.opened != 3 {

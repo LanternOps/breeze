@@ -9,11 +9,12 @@ import {
   MapPin,
   Monitor,
   Receipt,
+  ShieldCheck,
   Ticket,
   Users,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { OverflowTabs, type OverflowTab } from '@/components/shared/OverflowTabs';
+import { OverflowTabs, overflowPanelId, overflowTabId, type OverflowTab } from '@/components/shared/OverflowTabs';
 import ArchiveOrgModal from '@/components/settings/ArchiveOrgModal';
 import MergeOrgModal from '@/components/settings/MergeOrgModal';
 import { statusLabelKeys } from '@/lib/orgStatus';
@@ -32,9 +33,11 @@ import OrgBillingTab from './OrgBillingTab';
 import OrgDevicesTab from './OrgDevicesTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
+import SendMessageDialog from '@/components/endpointMessages/SendMessageDialog';
 import OrgReportHistory from './OrgReportHistory';
 import OrgServiceTab from './OrgServiceTab';
 import OrgDocumentsTab from './OrgDocumentsTab';
+import TrustCenterTab from '@/components/trustCenter/TrustCenterTab';
 import OrgSitesTab from './OrgSitesTab';
 import OrgTicketsTab from './OrgTicketsTab';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
@@ -56,6 +59,7 @@ const TAB_ICONS: Record<OrgRecordTab, React.ReactNode> = {
   billing: <Receipt className="h-4 w-4" />,
   service: <ClipboardCheck className="h-4 w-4" />,
   documents: <FileText className="h-4 w-4" />,
+  trust: <ShieldCheck className="h-4 w-4" />,
   activity: <ActivityIcon className="h-4 w-4" />,
 };
 
@@ -87,6 +91,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   const [summary, setSummary] = useState<OrgSummary | null>(null);
   const [summaryFailed, setSummaryFailed] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [sendMessageOpen, setSendMessageOpen] = useState(false);
   const [modal, setModal] = useState<'archive' | 'merge' | null>(null);
   // #6850: a suspended/churned org's GET 404s, and — unlike an archived org —
   // it never rides in `GET /orgs/organizations` for partner scope
@@ -360,7 +365,9 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         onOpenSettings={() => void navigateTo(`/settings/organizations/${orgId}`)}
         onArchive={archived ? undefined : () => setModal('archive')}
         onMerge={archived || !canMerge ? undefined : () => setModal('merge')}
+        onSendMessage={() => setSendMessageOpen(true)}
       />
+      <SendMessageDialog open={sendMessageOpen} onClose={() => setSendMessageOpen(false)} targets={{ orgId }} />
 
       {archived && (
         <>
@@ -393,8 +400,17 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
       <OverflowTabs tabs={overflowTabs} activeTab={effectiveTab} onTabChange={switchTab} />
 
+      <div role="tabpanel" id={overflowPanelId(effectiveTab)} aria-labelledby={overflowTabId(effectiveTab)} tabIndex={-1}>
       {effectiveTab === 'overview' && (
-        <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} mode={mode} archived={archived} />
+        <OrgOverviewTab
+          orgId={orgId}
+          orgFetch={orgFetch}
+          summary={summary}
+          summaryFailed={summaryFailed}
+          mode={mode}
+          tabs={tabs}
+          archived={archived}
+        />
       )}
       {effectiveTab === 'contacts' && <ContactsCard orgId={orgId} />}
       {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}
@@ -404,12 +420,21 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       {effectiveTab === 'billing' && <OrgBillingTab orgId={orgId} />}
       {effectiveTab === 'service' && <OrgServiceTab orgId={orgId} orgFetch={orgFetch} />}
       {effectiveTab === 'documents' && <OrgDocumentsTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'trust' && <TrustCenterTab orgId={orgId} orgFetch={orgFetch} />}
+      </div>
 
       {modal === 'archive' && (
         <ArchiveOrgModal
           org={modalOrg}
           onClose={() => setModal(null)}
-          onArchived={() => void loadOrg()}
+          onArchived={() => {
+            void loadOrg();
+            // Header org switcher reads the global store; refresh so it drops the archived org (#8371).
+            useOrgStore
+              .getState()
+              .fetchOrganizations()
+              .catch((storeErr: unknown) => console.warn('[OrganizationRecordPage] org store refresh failed after archive', storeErr));
+          }}
           onDoneClose={() => setModal(null)}
         />
       )}

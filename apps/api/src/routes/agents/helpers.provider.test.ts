@@ -46,6 +46,11 @@ describe('normalizeProvider — provider mapping (#2018, #7551)', () => {
     expect(normalizeProvider(null)).toBe('other');
   });
 
+  it("round-trips 'unknown' (failed collection, #8538) instead of relabelling it 'other'", () => {
+    expect(normalizeProvider('unknown')).toBe('unknown');
+    expect(providerCatalog.unknown.name).toBe('Unknown');
+  });
+
   it('keeps the provider sources in sync (dashboard indexes providerCatalog[normalizeProvider(x)])', () => {
     // elastic_defend must be an accepted ingest value...
     expect(securityProviderValues).toContain('elastic_defend');
@@ -58,7 +63,13 @@ describe('normalizeProvider — provider mapping (#2018, #7551)', () => {
   });
 
   it('every ingest provider value is in the catalog, the DB enum and the report labels (#7551)', () => {
-    const dbEnum = securityProviderEnum.enumValues as readonly string[];
+    // 'breeze' (#6263 W02) is Breeze's own scanner, assigned at security_scan
+    // ingest. It is deliberately NOT an AV status-ingest value, so it is in the
+    // DB enum and catalog but not in securityProviderValues.
+    const dbEnum = (securityProviderEnum.enumValues as readonly string[]).filter((v) => v !== 'breeze');
+    expect((securityProviderEnum.enumValues as readonly string[])).toContain('breeze');
+    expect(providerCatalog.breeze).toEqual({ id: 'breeze', name: 'Breeze IOC scan', vendor: 'Breeze' });
+    expect(securityProviderValues).not.toContain('breeze');
     expect([...securityProviderValues]).toEqual([...dbEnum]);
     for (const value of securityProviderValues) {
       // Every value the agent ingest can store must render in the dashboard...
@@ -66,7 +77,7 @@ describe('normalizeProvider — provider mapping (#2018, #7551)', () => {
       // ...and normalize to itself, or the agent's report is relabelled 'other'.
       expect(normalizeProvider(value)).toBe(value);
       // ...and carry a friendly label in the compliance/posture reports.
-      if (value !== 'other') {
+      if (value !== 'other' && value !== 'unknown') {
         expect(prettySecurityProvider(value)).not.toBe(value);
       }
     }

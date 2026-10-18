@@ -9,6 +9,10 @@ function renderTab(overrides: Partial<Parameters<typeof BillingDocumentsTab>[0]>
     autoEmailInvoice: true, setAutoEmailInvoice: vi.fn(),
     notifyOnBehalfAcceptance: false, setNotifyOnBehalfAcceptance: vi.fn(),
     deviceAppendix: false, setDeviceAppendix: vi.fn(),
+    lineShowDate: false, setLineShowDate: vi.fn(),
+    lineShowNote: true, setLineShowNote: vi.fn(),
+    lineShowWorkedTime: true, setLineShowWorkedTime: vi.fn(),
+    lineGrouping: 'entry' as const, setLineGrouping: vi.fn(),
     footer: '', setFooter: vi.fn(),
     documentTheme: 'classic' as const, setDocumentTheme: vi.fn(),
     documentPageSize: 'letter' as const, setDocumentPageSize: vi.fn(),
@@ -25,6 +29,27 @@ function renderTab(overrides: Partial<Parameters<typeof BillingDocumentsTab>[0]>
   return props;
 }
 
+describe('BillingDocumentsTab — time entry lines (#8604)', () => {
+  it('renders the loaded values and wires the setters', () => {
+    const props = renderTab({ lineShowDate: true, lineShowNote: false, lineShowWorkedTime: true, lineGrouping: 'day' });
+    expect((screen.getByTestId('partner-billing-line-show-date') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('partner-billing-line-show-note') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('partner-billing-line-show-worked-time') as HTMLInputElement).checked).toBe(true);
+    const select = screen.getByTestId('partner-billing-line-grouping') as HTMLSelectElement;
+    expect(select.value).toBe('day');
+    expect(select.disabled).toBe(false);
+    fireEvent.click(screen.getByTestId('partner-billing-line-show-note'));
+    expect(props.setLineShowNote).toHaveBeenCalledWith(true);
+    fireEvent.change(select, { target: { value: 'entry' } });
+    expect(props.setLineGrouping).toHaveBeenCalledWith('entry');
+  });
+
+  it('disables the grouping select while show-date is off', () => {
+    renderTab({ lineShowDate: false });
+    expect((screen.getByTestId('partner-billing-line-grouping') as HTMLSelectElement).disabled).toBe(true);
+  });
+});
+
 describe('BillingDocumentsTab', () => {
   it('renders auto-email, device appendix, document theme/size, footer, and the Company card', () => {
     renderTab();
@@ -35,6 +60,15 @@ describe('BillingDocumentsTab', () => {
     expect(screen.getByTestId('partner-billing-footer')).toBeInTheDocument();
     expect(screen.getByTestId('partner-billing-company-name')).toBeInTheDocument();
     expect(screen.getByTestId('partner-billing-website')).toBeInTheDocument();
+  });
+
+  // #7510: one footer per level — this is the PARTNER default, printed on quotes
+  // and invoices; an organization's own footer text overrides it.
+  it('labels the footer as the partner default document footer and names the org override', () => {
+    renderTab();
+    expect(screen.getByLabelText(/document footer/i)).toBe(screen.getByTestId('partner-billing-footer'));
+    expect(screen.getByTestId('partner-billing-footer-help')).toHaveTextContent(/every quote and invoice page/i);
+    expect(screen.getByTestId('partner-billing-footer-help')).toHaveTextContent(/organization's own footer text/i);
   });
 
   it('names the document theme by its fonts — "Condensed" read as a layout change, not a font choice', () => {

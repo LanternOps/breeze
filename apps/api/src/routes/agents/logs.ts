@@ -10,13 +10,15 @@ import { promisify } from 'node:util';
 // agent's request for the duration of the decompression, which is worst
 // exactly when a request is large (the case this is meant to bound).
 const gunzipAsync = promisify(gunzip);
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { devices, agentLogs } from '../../db/schema';
 import { redactAgentLogFields, redactAgentLogMessage } from '../../services/logRedaction';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { envInt } from '../../utils/envInt';
+import { isPgDataException, pgErrorCode } from '../../utils/pgErrors';
+import { stripNul } from '../../utils/stripNul';
 import { recordAgentIngestSubmission } from '../metrics';
 import { captureException } from '../../services/sentry';
 
@@ -62,6 +64,8 @@ const MAX_AGENT_LOG_FUTURE_SKEW_MS = 10 * 60 * 1000;
  * so it stays race-safe under concurrent requests for the same device.
  */
 const DEVICE_LAST_LOG_AT_THROTTLE_MS = 5 * 60 * 1000;
+
+const INSERT_CHUNK_SIZE = 100;
 
 /**
  * Remove the two server-authored clamp-provenance keys from redacted agent
@@ -146,7 +150,10 @@ logsRoutes.post(
       400
     );
   }
-  const data = parsed.data;
+  // Postgres text and jsonb both reject U+0000 (22P05), and one such row
+  // failed the whole batch insert. Strip before redaction so a NUL cannot
+  // split a secret (`pass\u0000word=`) past the redaction patterns either.
+  const data = { ...parsed.data, logs: stripNul(parsed.data.logs) };
 
   const [device] = await db
     .select()
@@ -230,15 +237,31 @@ logsRoutes.post(
     return c.json({ error: 'Daily log ingest budget exceeded', received: 0, dropped: rows.length }, 429);
   }
 
+  // Each insert runs in its own savepoint: this route runs inside the
+  // request-long agent transaction, and a failed bare statement would abort
+  // it, so later chunks, the last_log_at stamp and the earlier chunks' rows
+  // would all be lost at commit.
   let inserted = 0;
-  try {
-    for (let i = 0; i < rows.length; i += 100) {
-      const batch = rows.slice(i, i + 100);
-      await db.insert(agentLogs).values(batch);
+  for (let i = 0; i < rows.length; i += INSERT_CHUNK_SIZE) {
+    const batch = rows.slice(i, i + INSERT_CHUNK_SIZE);
+    try {
+      await withDbTransaction(() => db.insert(agentLogs).values(batch));
       inserted += batch.length;
+    } catch (err) {
+      console.error(`[AgentLogs] Error batch inserting logs for device ${device.id}:`, err);
+      if (!isPgDataException(err)) break;
+      for (const row of batch) {
+        try {
+          await withDbTransaction(() => db.insert(agentLogs).values([row]));
+          inserted += 1;
+        } catch (rowErr) {
+          console.error(
+            `[AgentLogs] Dropping one log row for device ${device.id} (${pgErrorCode(rowErr) ?? 'unknown'}):`,
+            rowErr,
+          );
+        }
+      }
     }
-  } catch (err) {
-    console.error(`[AgentLogs] Error batch inserting logs for device ${device.id}:`, err);
   }
 
   // #7067 — stamp the device's latest log-ingest time (informational; agents

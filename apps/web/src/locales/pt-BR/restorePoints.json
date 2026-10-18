@@ -1,0 +1,41 @@
+{
+  "badge": {
+    "requested": "Aguardando o dispositivo",
+    "created": "Criação do ponto de restauração confirmada {{time}}",
+    "createdNoTime": "Criação do ponto de restauração confirmada",
+    "existingAccepted": "Ponto existente reutilizado — criado há {{age}} (limite do Windows: a cada {{limit}})",
+    "existingAcceptedAgeOnly": "Ponto existente reutilizado — criado há {{age}}",
+    "existingAcceptedNoDetail": "Ponto existente reutilizado",
+    "skippedDisabled": "Ignorado — a Restauração do Sistema está desativada neste dispositivo",
+    "skippedDefinitionOnly": "Ignorado — atualização somente de definições",
+    "unsupported": "Não disponível neste dispositivo",
+    "busy": "Ignorado — o serviço de cópia de sombra de volume estava em uso",
+    "insufficientPrivileges": "Ignorado — privilégios insuficientes",
+    "verificationFailed": "Não foi possível verificar",
+    "failed": "Falha — {{message}}",
+    "failedNoMessage": "Falha",
+    "unknown": "Resultado não reconhecido por esta versão do console"
+  },
+  "list": {
+    "title": "Restauração do Sistema",
+    "disclaimer": "A Restauração do Sistema não é um backup. Esta lista registra quando o Breeze pediu ao Windows para criar um ponto de restauração e o que o dispositivo informou; ela não garante que um ponto de restauração exista ou possa ser restaurado.",
+    "loading": "Carregando o histórico da Restauração do Sistema…",
+    "loadError": "Não foi possível carregar o histórico da Restauração do Sistema.",
+    "retry": "Tentar novamente",
+    "empty": "Nenhuma solicitação de Restauração do Sistema foi registrada para este dispositivo.",
+    "loadMore": "Carregar mais",
+    "loadingMore": "Carregando…",
+    "loadMoreError": "Não foi possível carregar mais entradas.",
+    "columns": {
+      "requested": "Solicitado",
+      "trigger": "Acionado por",
+      "outcome": "Resultado"
+    },
+    "trigger": {
+      "patch": "Instalação de patches",
+      "script": "Execução de script",
+      "software_install": "Instalação de software"
+    },
+    "viewScriptRun": "Ver execução do script"
+  }
+}

@@ -291,6 +291,12 @@ describe('buildPartnerModelsSnapshot', () => {
       expect(s.connections[0]).toMatchObject({ kind: 'platform', baseUrl: null, managedBy: null });
     });
 
+    it('an Anthropic-dialect connection is never env-managed, even with a stray managedBy in provider_config', async () => {
+      h.connections = [conn({ id: C, kind: 'catalog', providerConfig: { managedBy: 'env', envReleasedAt: '2026-10-01T00:00:00.000Z' } })];
+      const s = await buildPartnerModelsSnapshot(P);
+      expect(s.connections.find((c) => c.id === C)).toMatchObject({ managedBy: null, envReleased: false });
+    });
+
     it('a released env connection stays managedBy env (read-only) and is flagged envReleased (the partner may disconnect it)', async () => {
       h.connections = [
         conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env', envReleasedAt: '2026-10-01T00:00:00.000Z' } }),

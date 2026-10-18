@@ -302,6 +302,47 @@ describe('POST /contracts/:id/lines', () => {
   });
 });
 
+describe('POST /contracts/:id/lines — hour_block (#4547 W03)', () => {
+  const ok = {
+    lineType: 'hour_block', description: 'Support block', unitPrice: '1000.00', taxable: false,
+    includedQuantity: '10', overageMode: 'bill', overageUnitPrice: '150.00', rolloverPolicy: 'none',
+  };
+  const post = (body: unknown) => request(`/contracts/${CONTRACT_ID}/lines`, { method: 'POST', body: JSON.stringify(body) });
+
+  it('accepts a valid block (201) and forwards the block fields', async () => {
+    mocks.addContractLineToContract.mockResolvedValue({ ...lineRow, lineType: 'hour_block' });
+    const res = await post(ok);
+    expect(res.status).toBe(201);
+    expect(mocks.addContractLineToContract).toHaveBeenCalledWith(
+      CONTRACT_ID,
+      expect.objectContaining({ lineType: 'hour_block', includedQuantity: '10', overageMode: 'bill', rolloverPolicy: 'none' }),
+      expect.anything(),
+    );
+  });
+
+  it('400s on each violation with no service call', async () => {
+    for (const bad of [
+      { ...ok, overageMode: 'flag', overageUnitPrice: undefined },
+      { ...ok, rolloverPolicy: undefined },
+      { ...ok, rolloverPolicy: 'none', rolloverCapHours: '4' },
+      { ...ok, hourBlockAlertPct: 101 },
+      { ...ok, siteId: ORG_ID },
+    ]) expect((await post(bad)).status).toBe(400);
+    expect(mocks.addContractLineToContract).not.toHaveBeenCalled();
+  });
+
+  it('PATCH names the server-stamped columns as HOUR_BLOCK_FIELD_LOCKED', async () => {
+    for (const [key, value] of [['hourBlockRetiredAt', '2026-01-01'], ['hourBlockFirstPeriodStart', '2026-01-01']] as const) {
+      const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, {
+        method: 'PATCH', body: JSON.stringify({ [key]: value }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: [key] } });
+    }
+    expect(mocks.updateContractLine).not.toHaveBeenCalled();
+  });
+});
+
 describe('PATCH /contracts/:id/lines/:lineId', () => {
   it('requires contracts:write', async () => {
     const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, {
@@ -346,12 +387,21 @@ describe('DELETE /contracts/:id/lines/:lineId', () => {
   it('removes a line', async () => {
     const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: { ok: true } });
+    expect(await res.json()).toEqual({ data: { ok: true, retired: false } });
     expect(mocks.removeContractLine).toHaveBeenCalledWith(
       CONTRACT_ID,
       LINE_ID,
       expect.objectContaining({ partnerId: PARTNER_ID }),
     );
+  });
+
+  it('reports retired: true when the service kept the line as history (#4547 W03)', async () => {
+    mocks.removeContractLine.mockResolvedValueOnce({
+      orgId: ORG_ID, contractId: CONTRACT_ID, contractName: 'Acme MSA', contractLineId: LINE_ID, lineType: 'hour_block', retired: true,
+    });
+    const res = await request(`/contracts/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { ok: true, retired: true } });
   });
 });
 

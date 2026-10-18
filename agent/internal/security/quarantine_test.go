@@ -70,7 +70,7 @@ func TestQuarantineWritesAManifestWithTheOriginalDigest(t *testing.T) {
 	if m.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("manifest sha256 = %q, want the ORIGINAL digest", m.SHA256)
 	}
-	if m.OriginalPath != victim || m.V != 1 {
+	if m.OriginalPath != victim || m.V != 2 {
 		t.Fatalf("manifest = %+v", m)
 	}
 }

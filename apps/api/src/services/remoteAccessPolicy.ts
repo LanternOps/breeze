@@ -13,7 +13,7 @@ import { resolveEffectiveConfig } from './configurationPolicy';
 import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
-import { db, runAfterDbContextExit } from '../db';
+import { db, runAfterDbContextExit, withDbTransaction } from '../db';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_CODE } from './unassignedPool/deliveryEligibility';
 
 // ---------------------------------------------------------------------------
@@ -236,23 +236,37 @@ interface ResolvedRemoteAccess {
   settings: RemoteAccessSettings;
   policyName: string | null;
   policyId: string | null;
+  /**
+   * #8616: true when an effective config was found for the device (including
+   * "no remote_access policy applies", a real decision). False when it was not
+   * (e.g. the device is not visible), in which case `settings` are the
+   * defaults, not a decision; the heartbeat then retains the agent's state for
+   * a protocol-aware agent. Additive: existing callers keep reading `settings`.
+   */
+  resolved: boolean;
 }
 
 export async function resolveRemoteAccessForDevice(
   deviceId: string,
-  options: { bypassCache?: boolean; maxAgeMs?: number } = {},
+  options: { bypassCache?: boolean; maxAgeMs?: number; savepoint?: boolean } = {},
 ): Promise<ResolvedRemoteAccess> {
   // Check cache
   const now = Date.now();
   const maxAgeMs = Math.min(options.maxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS, CACHE_RETENTION_MS);
   const cached = options.bypassCache ? undefined : cache.get(deviceId);
   if (cached && now - cached.resolvedAt < maxAgeMs) {
-    return { settings: cached.settings, policyName: cached.policyName, policyId: cached.policyId };
+    // Only resolutions that found an effective config are cached (below).
+    return { settings: cached.settings, policyName: cached.policyName, policyId: cached.policyId, resolved: true };
   }
 
   // Resolve via the generic config policy engine
   const generationAtStart = cacheGeneration;
-  const effective = await resolveEffectiveConfig(deviceId, systemAuth);
+  // #8997: `savepoint` (caller must be inside a DB context) confines a failed
+  // read to a savepoint so a caller that catches the error does not leave the
+  // surrounding transaction aborted. Only the cache-miss path pays for it.
+  const effective = options.savepoint
+    ? await withDbTransaction(() => resolveEffectiveConfig(deviceId, systemAuth))
+    : await resolveEffectiveConfig(deviceId, systemAuth);
 
   let settings = { ...DEFAULTS };
   let policyName: string | null = null;
@@ -288,7 +302,7 @@ export async function resolveRemoteAccessForDevice(
     cache.set(deviceId, { settings, policyName, policyId, resolvedAt: now });
   }
 
-  return { settings, policyName, policyId };
+  return { settings, policyName, policyId, resolved: effective != null };
 }
 
 // ---------------------------------------------------------------------------

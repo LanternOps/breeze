@@ -1,6 +1,7 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { Fragment, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  MessageSquare,
   LayoutDashboard,
   Monitor,
   Radar,
@@ -68,7 +69,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
-import { useRecentsStore } from '../../stores/recentsStore';
+import { useRecentsStore, selectRecentEntries } from '../../stores/recentsStore';
+import { RECENT_ENTRY_ICONS } from './recentEntryIcons';
 import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
@@ -85,12 +87,42 @@ import BrandHeader from './BrandHeader';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
 import { useExtensionNavigation } from '../extensions/useExtensionNavigation';
 import '../../lib/i18n';
+import { URL_CHANGE_EVENT } from '../../lib/replaceUrl';
+import { claimSamePageHashClick } from '../../lib/samePageHashClick';
+import { ticketTypeFromHash, type TicketType } from '../tickets/ticketType';
 
 interface SidebarProps {
   currentPath?: string;
 }
 
 type SidebarMode = 'open' | 'hover' | 'collapsed';
+
+// ---------------------------------------------------------------------------
+// Hash tracking (#7900 W3): the Service Desk's typed entries share `/tickets`
+// and differ only by `#type=<type>`, so active state needs the live hash.
+// `history.replaceState` (what `replaceUrl` uses) fires neither hashchange nor
+// popstate, hence the explicit `breeze:urlchange` event. Starts '' so the first
+// client render matches SSR, then adopts `window.location.hash` on mount so a
+// deep link `/tickets#type=problem` highlights the right entry.
+// ---------------------------------------------------------------------------
+function useCurrentHash(): string {
+  const [hash, setHash] = useState('');
+  useEffect(() => {
+    const update = () => setHash(window.location.hash);
+    update();
+    window.addEventListener('hashchange', update);
+    window.addEventListener('popstate', update);
+    window.addEventListener(URL_CHANGE_EVENT, update);
+    document.addEventListener('astro:after-swap', update);
+    return () => {
+      window.removeEventListener('hashchange', update);
+      window.removeEventListener('popstate', update);
+      window.removeEventListener(URL_CHANGE_EVENT, update);
+      document.removeEventListener('astro:after-swap', update);
+    };
+  }, []);
+  return hash;
+}
 
 // ---------------------------------------------------------------------------
 // Path tracking (reactive across Astro View Transitions)
@@ -161,6 +193,11 @@ type NavItem = {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   badgeKind?: 'deletion-requests' | 'approvals';
+  // #7900 W3: a Service Desk entry that filters /tickets to one ticket type.
+  // Active only when the page hash parses to this type (see activeHref).
+  ticketType?: TicketType;
+  // Stable e2e/test hook for entries that share a pathname.
+  testId?: string;
   // Hidden unless the current user is a platform admin. Keeps cross-tenant
   // platform-operator nav (and its badge fetch) out of ordinary users' UI.
   platformAdminOnly?: boolean;
@@ -212,8 +249,8 @@ export const topLevelNav: NavItem[] = [
   // longer does: exactly one Organizations entry exists in the nav).
   { name: 'Organizations', labelKey: 'nav.organizations', href: '/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
   // Unified list: agent devices + manual assets + network assets (#4622, #5228),
-  // hence the label. Recently opened devices render under this row — see
-  // `renderNavItem` and Sidebar.recents.test.tsx.
+  // hence the label. The Recent group renders under Dashboard — see
+  // `renderRecentGroup` and Sidebar.recents.test.tsx.
   { name: 'Devices & Assets', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
@@ -296,6 +333,8 @@ export const navSections: NavSection[] = [
       { name: 'Network', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
+      // Messages sent to people at their devices and their delivery history (#8742).
+      { name: 'Messages', labelKey: 'nav.endpointMessages', href: '/endpoint-messages', icon: MessageSquare, requiredPermission: { resource: 'endpoint_messages', action: 'read' } },
     ],
   },
   {
@@ -344,7 +383,13 @@ export const navSections: NavSection[] = [
     icon: Ticket,
     requiresModule: 'service_management',
     items: [
-      { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, testId: 'nav-tickets-all', requiredPermission: { resource: 'tickets', action: 'read' } },
+      // #7900 W3: one entry per ticket type, in ITIL order. Same page, filtered
+      // through the `type=` hash segment (see TicketsPage parseHash).
+      { name: 'Incidents', labelKey: 'nav.ticketsIncidents', href: '/tickets#type=incident', icon: Ticket, ticketType: 'incident', testId: 'nav-tickets-incident', requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Service Requests', labelKey: 'nav.ticketsServiceRequests', href: '/tickets#type=service_request', icon: Ticket, ticketType: 'service_request', testId: 'nav-tickets-service_request', requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Problems', labelKey: 'nav.ticketsProblems', href: '/tickets#type=problem', icon: Ticket, ticketType: 'problem', testId: 'nav-tickets-problem', requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Changes', labelKey: 'nav.ticketsChanges', href: '/tickets#type=change', icon: Ticket, ticketType: 'change', testId: 'nav-tickets-change', requiredPermission: { resource: 'tickets', action: 'read' } },
       { name: 'Timesheets', labelKey: 'nav.timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
     ],
   },
@@ -468,16 +513,17 @@ function saveExpandedSections(state: Record<string, boolean>) {
   try { localStorage.setItem('sidebar-sections', JSON.stringify(state)); } catch { /* Storage unavailable */ }
 }
 
-// Whether the "recent devices" rows under Devices & Assets are shown. Default
-// open; a user who wants a fully static nav collapses it once and it stays
-// collapsed. Safe to read in a useState initializer: the list itself is empty
-// on the server, so the flag cannot cause a hydration mismatch.
-export const RECENT_DEVICES_EXPANDED_KEY = 'sidebar-recent-devices';
-const RECENT_DEVICES_HREF = '/devices';
+// Whether the top-level Recent group is expanded. Default open; a user who
+// wants a fully static nav collapses it once and it stays collapsed. Safe to
+// read in a useState initializer: the group only renders after mount, so the
+// flag cannot cause a hydration mismatch. The old 'sidebar-recent-devices'
+// preference is deliberately not migrated.
+export const RECENT_EXPANDED_KEY = 'sidebar-recent';
+const TICKETS_PATH = '/tickets';
 
-function readRecentDevicesExpanded(): boolean {
+function readRecentExpanded(): boolean {
   try {
-    return localStorage.getItem(RECENT_DEVICES_EXPANDED_KEY) !== 'false';
+    return localStorage.getItem(RECENT_EXPANDED_KEY) !== 'false';
   } catch {
     return true;
   }
@@ -593,15 +639,17 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   modeRef.current = mode;
   const [hovered, setHovered] = useState(false);
   const recentDevices = useRecentsStore((s) => s.devices);
-  const [recentDevicesExpanded, setRecentDevicesExpanded] = useState<boolean>(readRecentDevicesExpanded);
-  const toggleRecentDevices = useCallback(() => {
-    setRecentDevicesExpanded((prev) => {
+  const recentPages = useRecentsStore((s) => s.pages);
+  const [recentExpanded, setRecentExpanded] = useState<boolean>(readRecentExpanded);
+  const toggleRecent = useCallback(() => {
+    setRecentExpanded((prev) => {
       const next = !prev;
-      try { localStorage.setItem(RECENT_DEVICES_EXPANDED_KEY, String(next)); } catch { /* Storage unavailable */ }
+      try { localStorage.setItem(RECENT_EXPANDED_KEY, String(next)); } catch { /* Storage unavailable */ }
       return next;
     });
   }, []);
   const currentPath = useCurrentPath(initialPath);
+  const currentHash = useCurrentHash();
   const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const storedPermissions = useAuthStore((s) => s.user?.permissions);
@@ -764,19 +812,37 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // (not part of the static `allNavItems`) so an extension's own page/nav
   // link highlights correctly while it's active.
   const resolvedPath = pathAliases[currentPath] ?? currentPath;
+  const recentEntries = useMemo(
+    () => selectRecentEntries({ devices: recentDevices, pages: recentPages }, resolvedPath),
+    [recentDevices, recentPages, resolvedPath],
+  );
   const activeHref = useMemo(() => {
     let best: string | null = null;
+    let bestLen = -1;
+    // Typed ticket entries share `/tickets` with plain Tickets: match on the
+    // parsed hash type (never the href string — the hash also carries the
+    // selection and sort), so exactly one of them is active.
+    const hashType = ticketTypeFromHash(currentHash);
     const candidates = extensionsSection ? [...allNavItems, ...extensionsSection.items] : allNavItems;
     for (const item of candidates) {
-      const matches = item.href === '/'
-        ? resolvedPath === '/'
-        : resolvedPath === item.href || resolvedPath.startsWith(item.href + '/');
-      if (matches && (!best || item.href.length > best.length)) {
+      const hrefPath = item.href.split('#')[0];
+      let matches: boolean;
+      if (item.ticketType) {
+        matches = resolvedPath === hrefPath && hashType === item.ticketType;
+      } else if (hrefPath === TICKETS_PATH) {
+        matches = resolvedPath === TICKETS_PATH ? hashType === null : resolvedPath.startsWith(TICKETS_PATH + '/');
+      } else if (hrefPath === '/') {
+        matches = resolvedPath === '/';
+      } else {
+        matches = resolvedPath === hrefPath || resolvedPath.startsWith(hrefPath + '/');
+      }
+      if (matches && hrefPath.length > bestLen) {
         best = item.href;
+        bestLen = hrefPath.length;
       }
     }
     return best;
-  }, [resolvedPath, extensionsSection]);
+  }, [resolvedPath, currentHash, extensionsSection]);
 
   // Auto-expand: the section containing the active page should be expanded.
   // Falls back to the extensions section (not covered by the static
@@ -880,17 +946,23 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
     const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
-    const withRecents = item.href === RECENT_DEVICES_HREF && labels && recentDevices.length > 0;
-    const anchor = (
+    return (
       <a
-        data-testid={item.href === '/billing/autopay' ? 'autopay-nav' : undefined}
-        key={withRecents ? undefined : item.name}
+        data-testid={item.testId ?? (item.href === '/billing/autopay' ? 'autopay-nav' : undefined)}
+        key={item.name}
         href={item.href}
+        aria-current={isActive ? 'page' : undefined}
         title={narrow && !hovered ? label : undefined}
-        onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
+        onClick={(event) => {
+          if (forMobileOverlay) closeMobileMenu();
+          // `/tickets#type=<t>` while already on /tickets: Astro's router would
+          // pushState it silently (no hashchange), leaving TicketsPage's
+          // useHashState filter stale (#8682 sweep). Cross-page clicks fall
+          // through to the router untouched.
+          claimSamePageHashClick(event, item.href);
+        }}
         className={cn(
           'flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-colors',
-          withRecents && 'min-w-0 flex-1',
           // Icon rail: no horizontal padding, center the icon in the full row so
           // the highlight box and icon share the rail's centre line regardless
           // of the available width.
@@ -916,59 +988,49 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         )}
       </a>
     );
-    if (!withRecents) return anchor;
+  };
 
-    // Recently opened devices (recentsStore), newest first. The chevron sits
-    // beside the row rather than inside the <a> — nested interactive content
-    // is invalid HTML and breaks keyboard focus order.
-    const toggleLabel = recentDevicesExpanded
-      ? t('layout.sidebar.hideRecentDevices')
-      : t('layout.sidebar.showRecentDevices');
+  // --- Recent group (devices + named records, newest first) -----------------
+  // Renders only after mount: the recents store is filled client-side by
+  // GlobalShortcuts, so the server HTML never has it. Not shown in the icon rail.
+  const renderRecentGroup = (forMobileOverlay = false) => {
+    const labels = forMobileOverlay ? true : showLabels;
+    if (!hydrated || !labels || recentEntries.length === 0) return null;
+    const toggleLabel = recentExpanded ? t('layout.sidebar.hideRecent') : t('layout.sidebar.showRecent');
     return (
-      <div key={item.name}>
-        <div className="flex items-center gap-1">
-          {anchor}
-          <button
-            type="button"
-            onClick={toggleRecentDevices}
-            aria-expanded={recentDevicesExpanded}
-            aria-label={toggleLabel}
-            title={toggleLabel}
-            className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <ChevronDown
-              className={cn(
-                'h-3.5 w-3.5 transition-transform duration-200',
-                recentDevicesExpanded ? 'rotate-0' : '-rotate-90'
-              )}
-            />
-          </button>
-        </div>
-        {recentDevicesExpanded && (
-          <ul
-            data-testid="sidebar-recent-devices"
-            aria-label={t('layout.sidebar.recentDevices')}
-            className="mt-0.5 space-y-0.5"
-          >
-            {recentDevices.map((device) => {
-              const href = `${RECENT_DEVICES_HREF}/${device.id}`;
-              const current = resolvedPath === href;
+      <div key="recent-group" data-testid="sidebar-recent-group">
+        <button
+          type="button"
+          data-testid="sidebar-recent-toggle"
+          onClick={toggleRecent}
+          aria-expanded={recentExpanded}
+          aria-label={toggleLabel}
+          title={toggleLabel}
+          className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+          style={{ fontSize: '12px' }}
+        >
+          <span>{t('layout.sidebar.recent')}</span>
+          <ChevronDown
+            className={cn(
+              'h-3.5 w-3.5 transition-transform duration-200',
+              recentExpanded ? 'rotate-0' : '-rotate-90'
+            )}
+          />
+        </button>
+        {recentExpanded && (
+          <ul data-testid="sidebar-recent" aria-label={t('layout.sidebar.recent')} className="mt-0.5 space-y-0.5">
+            {recentEntries.map((entry) => {
+              const Icon = RECENT_ENTRY_ICONS[entry.kind];
               return (
-                <li key={device.id}>
+                <li key={entry.href} data-kind={entry.kind}>
                   <a
-                    href={href}
-                    aria-current={current ? 'page' : undefined}
-                    title={device.name}
+                    href={entry.href}
+                    title={entry.label}
                     onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
-                    className={cn(
-                      'flex items-center gap-2 rounded-md py-1.5 pl-9 pr-3 text-sm transition-colors',
-                      current
-                        ? 'bg-muted text-foreground'
-                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                    )}
+                    className="flex items-center gap-2 rounded-md py-1.5 pl-3 pr-3 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                   >
-                    <Clock className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden="true" />
-                    <span className="truncate">{device.name}</span>
+                    <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden="true" />
+                    <span className="truncate">{entry.label}</span>
                   </a>
                 </li>
               );
@@ -978,6 +1040,15 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       </div>
     );
   };
+
+  // Top-level items, with the Recent group directly under Dashboard.
+  const renderTopLevelNav = (forMobileOverlay = false) =>
+    topLevelNav.map((item) => (
+      <Fragment key={item.name}>
+        {renderNavItem(item, forMobileOverlay)}
+        {item.href === '/' && renderRecentGroup(forMobileOverlay)}
+      </Fragment>
+    ));
 
   // --- Render a collapsible section ----------------------------------------
   const renderCollapsibleSection = (section: NavSection, forMobileOverlay = false) => {
@@ -1060,7 +1131,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const sidebarContent = (
     <aside
       className={cn(
-        'flex h-full flex-col border-r bg-card transition-all duration-200',
+        'flex h-full flex-col border-r bg-card transition-shadow duration-200',
         // Hide completely on mobile — the overlay handles it
         isMobile && 'hidden',
         // z-30: app-chrome overlay band. In-page sticky chrome (e.g. the quote/
@@ -1114,13 +1185,13 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2"
         style={{ scrollbarGutter: showLabels ? 'stable' : 'auto' }}
       >
-        {topLevelNav.map((item) => renderNavItem(item))}
+        {renderTopLevelNav()}
         {navSections.map((section) => renderCollapsibleSection(section))}
         {extensionsSection && renderCollapsibleSection(extensionsSection)}
       </nav>
 
       {showLabels && (
-        <div className="border-t px-4 py-2 text-[10px] text-muted-foreground/50">
+        <div className="border-t px-4 py-2 text-[11px] text-muted-foreground">
           <p>
             Web <VersionSpan version={WEB_VERSION} latest={latestVersion} component="Web" />
             {apiVersion && apiVersion !== 'unavailable' && (
@@ -1133,7 +1204,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           <button
             type="button"
             onClick={() => window.dispatchEvent(new Event(REOPEN_EVENT))}
-            className="hover:text-muted-foreground hover:underline"
+            className="hover:text-foreground hover:underline"
           >
             {t('whatsNew.link')}
           </button>
@@ -1176,7 +1247,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         </div>
 
         <nav className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2">
-          {topLevelNav.map((item) => renderNavItem(item, true))}
+          {renderTopLevelNav(true)}
           {navSections.map((section) => renderCollapsibleSection(section, true))}
           {extensionsSection && renderCollapsibleSection(extensionsSection, true)}
         </nav>

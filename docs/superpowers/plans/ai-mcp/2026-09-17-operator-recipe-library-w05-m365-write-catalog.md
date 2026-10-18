@@ -6,6 +6,15 @@ tracking_issue: LanternOps/breeze#6165
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Version note (#8745, 2026-10-13).** This plan was written when the `customer-graph-actions` profile was at v1. #8651 (#8648) has since moved it to **v2** (application role IDs, same two roles), so this wave's bump is **v2 → v3**. The concrete version assertions below (Task 4, Task 5, Task 10) have been updated to v2 → v3. Elsewhere the prose labels "v1" (the profile before this wave's bump, i.e. the current two-role manifest) and "v2" (the profile this wave ships) are unchanged and should be read as v2 and v3. Also landed by #8745: an actions Retest that finds the bumped manifest's new roles not yet granted keeps the stored version (the row stays `manifest-stale` and upgrade-eligible), and the actions profile has `POST /m365/customer-graph-actions/connections/:id/upgrade-consent`.
+
+> **Implementation amendments (#6170, 2026-10-16, from the design quorum; these override the task text below).**
+> 1. `revokeSignInSessions` accepts only `User.RevokeSessions.All` (`77f3a031-c388-4f99-b373-dc68676a979e`) as an application permission — Microsoft lists no higher-privileged alternative — so v3 adds it; `m365.user.revoke_sessions` requires `User.ReadWrite.All` + `User.RevokeSessions.All` and is `idempotent_by_probe` (each call moves the cutoff forward). `m365.user.create` requires only `User.ReadWrite.All` (Microsoft documents it as sufficient for `POST /users`).
+> 2. Role readiness matches observed grants on the canonical `(resourceApplicationId, appRoleId)` key only, never on the value. A missing role refuses `consent_upgrade_required` only on a manifest-stale row; on a current-manifest row it refuses `connection_not_ready` (upgrade consent would refuse `manifest_current`).
+> 3. Executor pre-reads: licence assign checks the user's assignments (incl. requested `disabledPlans`) BEFORE the seat read, and seat-checks only SKUs not yet assigned; payloads are strictly validated (malformed ⇒ `graph_error`, no write). Group removal issues `DELETE …/$ref` directly (404 ⇒ `noop`) — no eventually consistent membership pre-read; group add POSTs and disambiguates a 400 with a membership read. A rejected `POST /users` maps to `user_already_exists` only when a follow-up read finds the UPN.
+> 4. Upgrade finalization derives the promoted status from `active` (a previously `degraded` row finishes `active` after a full approval).
+> 5. Probes: group probes resolve the user id via `m365.user.get` first; the session-revoke cutoff is compared at whole-second precision; Intune retire also counts `managementState` `retirePending`/`retireIssued` as done (added to the device projection). The `aiOperator/effectProbes/m365.ts` adapter opens a strictly org-scoped db context per probe.
+
 **Goal:** Eight new Microsoft 365 Graph write actions (`revoke_sessions`, `license.remove`, `license.assign`, `group.membership.remove`, `group.membership.add`, `intune.device.retire`, `user.create`, `user.mailbox.auto_reply`) are dispatchable end-to-end — from chat as ordinary Tier-3 four-eyes tools, and headlessly from the durable action-intents release worker — each with a typed read-side verification probe, a declared idempotency class, an app-role-aware refusal ladder, the `customer-graph-actions` permission profile bumped to v2 **once**, and a consent UX that tells the customer what v2 adds while v1 connections keep working for the two v1 actions.
 
 **Architecture:** The wire contract stays schema-driven end to end. `packages/shared/src/m365/writeActions.ts` gains eight mutating arms plus one read-only *probe* arm on the same discriminated union, so the executor route (`POST /v1/execute-action`) and the internal-auth operation vocabulary are untouched. The actions executor's `MicrosoftGraphClient` gains `post` and `del` (it has only `readResource`/`readCollection`/`patch` today) and `executeGraphWriteAction` gains one `case` per action, each of which fails closed on a **pre-read** where the end state or the target's shape decides the answer (no license seat → `license_unavailable`; dynamic / role-assignable group → `unsupported_group_type`; already-not-a-member → `noop: true` with no DELETE). Verification runs on the READ side: seven of the eight probes are served by the `customer-graph-read` profile, which already holds every role they need, through a new org-keyed entry `executeM365ReadActionByOrg`; the eighth (auto-reply) cannot be — the read profile holds no `MailboxSettings.Read` — so it runs through the actions executor's probe arm. `services/m365ControlPlane/effectProbes.ts` exposes the single typed function the engine waves call, `probeM365Effect(actionId, args, ctx)`. `writeActionService` gains an app-role ladder that refuses a v2-only action on a v1 connection with the new typed code `consent_upgrade_required` (never `connection_not_ready`), and a `for-auth` entry so chat callers get the same ladder under their own RLS context. The web integrations card explains v2 in plain language, and a partner-scoped route lists every connection still on v1.
@@ -481,14 +490,14 @@ export function listStaleManifestConnectionsForPartner(
 - `apps/m365-graph-actions-executor/src/microsoft/reconcile.test.ts`
 
 **Interfaces**
-- *Consumes:* nothing new. *Produces:* `M365_PERMISSION_PROFILES['customer-graph-actions'].version === 2` and five new `applicationPermissionAssignments`.
+- *Consumes:* nothing new. *Produces:* `M365_PERMISSION_PROFILES['customer-graph-actions'].version === 3` and five new `applicationPermissionAssignments`.
 
 **Steps**
 - [ ] Write the failing test in `profiles.test.ts`:
   ```ts
-  it('customer-graph-actions is v2 and carries every M1 app role exactly once', () => {
+  it('customer-graph-actions is v3 and carries every M1 app role exactly once', () => {
     const profile = getM365PermissionProfile('customer-graph-actions');
-    expect(profile.version).toBe(2);
+    expect(profile.version).toBe(3);
     expect([...profile.applicationPermissions].sort()).toEqual([
       'DeviceManagementManagedDevices.PrivilegedOperations.All',
       'GroupMember.ReadWrite.All',
@@ -519,19 +528,19 @@ export function listStaleManifestConnectionsForPartner(
   });
 
   it('reports every v1 connection as needing consent reconciliation', () => {
-    expect(connectionNeedsConsentReconciliation('customer-graph-actions', 1)).toBe(true);
-    expect(connectionNeedsConsentReconciliation('customer-graph-actions', 2)).toBe(false);
+    expect(connectionNeedsConsentReconciliation('customer-graph-actions', 2)).toBe(true);
+    expect(connectionNeedsConsentReconciliation('customer-graph-actions', 3)).toBe(false);
   });
   ```
 - [ ] Run red: `cd packages/shared && npx vitest run src/m365/profiles.test.ts`.
-- [ ] Implement: set `version: 2`, delete the roadmap comment block at :199-203, and write a v2 rationale comment in the style of the `customer-graph-read` v3 comment above it — naming Operator Recipe Library M1, saying the bump is **once for the whole identity catalog** so customers re-consent once, and stating the `GroupMember.ReadWrite.All` over `Group.ReadWrite.All` choice and the retire-only Intune choice.
+- [ ] Implement: set `version: 3`, delete the roadmap comment block at :199-203, and write a v2 rationale comment in the style of the `customer-graph-read` v3 comment above it — naming Operator Recipe Library M1, saying the bump is **once for the whole identity catalog** so customers re-consent once, and stating the `GroupMember.ReadWrite.All` over `Group.ReadWrite.All` choice and the retire-only Intune choice.
 - [ ] Add the five roles to `applicationPermissions` and the five assignments to `applicationPermissionAssignments`. **Before committing, open `https://learn.microsoft.com/en-us/graph/permissions-reference`, find each permission's application-permission id, and confirm or correct these candidates; then change the comment from `VERIFY` to `verified against <url> on <date>`:**
   ```ts
   {
     resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
-    // VERIFY against https://learn.microsoft.com/en-us/graph/permissions-reference
-    // (search "GroupMember.ReadWrite.All", Application id) before commit.
-    appRoleId: '62a82d76-70ea-41e2-9197-370581804d09',
+    // Verified 2026-10-16 against https://learn.microsoft.com/en-us/graph/permissions-reference
+    // (Application column). The earlier candidate 62a82d76-… is Group.ReadWrite.All — forbidden.
+    appRoleId: 'dbaae8cf-10b5-4b86-a4a1-f871c94c6695',
     value: 'GroupMember.ReadWrite.All',
   },
   {
@@ -555,7 +564,7 @@ export function listStaleManifestConnectionsForPartner(
   ```
   (`User.ReadWrite.All` and `User-PasswordProfile.ReadWrite.All` stay exactly as they are — do not touch their GUIDs.)
 - [ ] Run green: `cd packages/shared && npx vitest run src/m365/profiles.test.ts src/m365/writeActions.test.ts`
-- [ ] Add a reconcile test in `apps/m365-graph-actions-executor/src/microsoft/reconcile.test.ts`: an observation whose `observedGrants` are only the two v1 grants reconciles to `outcome: 'missing'` with `missingGrants` naming the four new roles and `manifestVersion: 2`. Run: `cd apps/m365-graph-actions-executor && npx vitest run src/microsoft/reconcile.test.ts`.
+- [ ] Add a reconcile test in `apps/m365-graph-actions-executor/src/microsoft/reconcile.test.ts`: an observation whose `observedGrants` are only the two v1 grants reconciles to `outcome: 'missing'` with `missingGrants` naming the four new roles and `manifestVersion: 3`. Run: `cd apps/m365-graph-actions-executor && npx vitest run src/microsoft/reconcile.test.ts`.
 - [ ] Commit: `feat(shared): bump customer-graph-actions permission profile to v2 with the full M1 role set`
 
 ---
@@ -585,7 +594,7 @@ export function listStaleManifestConnectionsForPartner(
 
     it('reports true only for roles present in observed_grants', () => {
       const readiness = m365RoleReadiness({
-        permissionManifestVersion: 1,
+        permissionManifestVersion: 2,
         grantsVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
         observedGrants: [
           { resourceApplicationId: GRAPH_APP, appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4', value: 'User.ReadWrite.All' },
@@ -600,7 +609,7 @@ export function listStaleManifestConnectionsForPartner(
     it('matches on appRoleId when the observed grant carries a null value', () => { /* value: null but the GUID matches -> true */ });
 
     it('reports every role false when there is no authoritative observation', () => {
-      const readiness = m365RoleReadiness({ permissionManifestVersion: 2, grantsVerifiedAt: null, observedGrants: [] }, v2);
+      const readiness = m365RoleReadiness({ permissionManifestVersion: 3, grantsVerifiedAt: null, observedGrants: [] }, v2);
       expect(Object.values(readiness).every((ready) => ready === false)).toBe(true);
     });
   });
@@ -1054,11 +1063,11 @@ export function listStaleManifestConnectionsForPartner(
 
 **Steps**
 - [ ] Write the failing integration test first. It must run against real Postgres (`vitest.integration.config.ts`) and must be placed in `apps/api/src/__tests__/integration/` — a file anywhere else runs zero tests. Cases:
-  1. Seed org A with an `m365_connections` row: `profile = 'customer-graph-actions'`, `status = 'active'`, `permission_manifest_version = 1`, `grants_verified_at = now()`, `observed_grants` = the two v1 grants. Assert `connectionNeedsConsentReconciliation('customer-graph-actions', 1) === true`.
+  1. Seed org A with an `m365_connections` row: `profile = 'customer-graph-actions'`, `status = 'active'`, `permission_manifest_version = 2`, `grants_verified_at = now()`, `observed_grants` = the two v1 grants. Assert `connectionNeedsConsentReconciliation('customer-graph-actions', 2) === true`.
   2. Under org A's RLS context, `executeM365WriteActionByOrg(orgA, { type: 'm365.user.disable', … })` reaches the executor client (stubbed) — **v1 keeps working**.
   3. Same for `m365.user.reset_password`.
   4. `executeM365WriteActionByOrg(orgA, { type: 'm365.group.membership.remove', … })` returns `{ ok: false, code: 'consent_upgrade_required' }` and **never** `'connection_not_ready'`. Assert the code explicitly with `expect(result.code).toBe('consent_upgrade_required')` — a `not.toBe('connection_not_ready')` alone would pass on any other refusal.
-  5. Seed org B with `permission_manifest_version = 2`, `grants_verified_at = now()`, `observed_grants` = all six v2 grants. All ten actions reach the executor.
+  5. Seed org B with `permission_manifest_version = 3`, `grants_verified_at = now()`, `observed_grants` = all six v2 grants. All ten actions reach the executor.
   6. Seed org C with `grants_verified_at = null`. Every action reaches the executor (Decision 5 — no authoritative observation is not a refusal).
   7. `m365RoleReadiness` on org A's row reports `{ 'User.ReadWrite.All': true, 'GroupMember.ReadWrite.All': false, … }`.
   8. Cross-tenant: under org B's context, a read of org A's connection returns zero rows (RLS still holds through the new code path).

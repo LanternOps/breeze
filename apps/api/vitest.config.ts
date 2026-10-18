@@ -25,6 +25,7 @@ export default defineConfig({
       'src/services/autopay/charging.integration.test.ts',
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
+      'src/services/scriptProposals/reviewConcurrency.integration.test.ts',
       'src/__tests__/integration/**',
       // Real bearer + PostgreSQL integration connection authority checks.
       'src/routes/integrationConnectionScope.integration.test.ts',
@@ -64,6 +65,8 @@ export default defineConfig({
       'src/services/hardwareHealth/**/*.integration.test.ts',
       'src/services/timeSync/**/*.integration.test.ts',
       'src/services/workloads/**/*.integration.test.ts',
+      // Workload image currency W05 (#8194): real-DB pass + system-only cache proof.
+      'src/services/imageCurrency/**/*.integration.test.ts',
       // Hardware & RAID monitoring (W05 BMC in-band): use real PostgreSQL and
       // the integration setup.
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',

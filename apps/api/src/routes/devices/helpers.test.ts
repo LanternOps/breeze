@@ -374,3 +374,28 @@ describe('getDevicesWithOrgAndSiteCheck (#2787)', () => {
     ).rejects.toMatchObject({ status: 500 });
   });
 });
+
+// #8608 — raw log-shipping columns may only surface through the derived
+// `logShipping` object (lastError only while failing). Adding any of them here
+// would leak the error text for devices that are not yet in the failing state.
+describe('PUBLIC_DEVICE_FIELDS — log-shipping raw columns stay private (#8608)', () => {
+  it.each(['logShippingState', 'logShippingFailureStartedAt', 'logShippingLastError'])(
+    'excludes %s',
+    (field) => {
+      expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain(field);
+      expect(projectPublicDevice({ id: 'd', [field]: 'x' } as Record<string, unknown>)).not.toHaveProperty(field);
+    },
+  );
+});
+
+// #8620 — the raw watchdog_install_* columns surface only through the derived
+// `watchdogInstall` banner view on the device detail response.
+describe('PUBLIC_DEVICE_FIELDS — watchdog install raw columns stay private (#8620)', () => {
+  it.each(['watchdogInstallState', 'watchdogInstallErrorClass', 'watchdogInstallSince'])(
+    'excludes %s',
+    (field) => {
+      expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain(field);
+      expect(projectPublicDevice({ id: 'd', [field]: 'x' } as Record<string, unknown>)).not.toHaveProperty(field);
+    },
+  );
+});

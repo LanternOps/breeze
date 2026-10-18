@@ -47,6 +47,11 @@ describe('buildResolveTenantToolsQuery — owner predicate (DB-less, real db.toS
     vi.mocked(toolSourcesEnabled).mockReturnValue(true);
   });
 
+  it('selects the source kind so descriptors carry the real transport (W2)', () => {
+    const { sql: text } = buildResolveTenantToolsQuery(orgAuth(ORG_A))!.toSQL();
+    expect(text).toContain('"tool_sources"."kind"');
+  });
+
   it('org scope: restricts to the org\'s own tools OR (org_id IS NULL AND partner match) — never another org', () => {
     const built = buildResolveTenantToolsQuery(orgAuth(ORG_A));
     expect(built).not.toBeNull();
@@ -281,6 +286,7 @@ function makeRow(overrides: Partial<ResolvedToolRow> = {}): ResolvedToolRow {
     orgId: 'org-1',
     partnerId: null,
     sourceName: 'Hudu',
+    sourceKind: 'mcp',
     rateLimitPerMinute: 60,
     ...overrides,
   };
@@ -310,6 +316,11 @@ describe('compileToolDescriptor', () => {
     const descriptor = compileToolDescriptor(makeRow({ qualifiedName: 'hudu__get_asset' }), newTestAjv());
     expect(descriptor!.definition.name).toBe('hudu__get_asset');
     expect(descriptor!.definition.input_schema).toEqual(descriptor!.inputSchema);
+  });
+
+  it('carries the source kind from the joined row onto the descriptor (W2)', () => {
+    expect(compileToolDescriptor(makeRow({ sourceKind: 'openapi' }), newTestAjv())!.sourceKind).toBe('openapi');
+    expect(compileToolDescriptor(makeRow(), newTestAjv())!.sourceKind).toBe('mcp');
   });
 
   it('skips (returns null) a tool whose inputSchema fails to compile, instead of throwing', () => {

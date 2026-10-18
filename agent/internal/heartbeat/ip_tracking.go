@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
@@ -245,23 +246,75 @@ func macOSDHCPLeaseEvidence(ifaceName, ipAddress string) bool {
 	return strings.Contains(content, "lease_time")
 }
 
+// readDHCPEnabledAliases returns DHCPv4 state keyed by lower-cased, trimmed
+// interface alias. On Windows it reads adapter flags in-process
+// (GetAdaptersAddresses); it is a var so tests can stub it.
+var readDHCPEnabledAliases = readDHCPEnabledAliasesIPHelper
+
+// readDHCPEnabledAliasesPowerShell is the pre-#7765 path, kept only as the
+// fallback when the in-process read fails: one powershell Get-NetIPInterface
+// per call. A var so tests can assert it is not spawned.
+var readDHCPEnabledAliasesPowerShell = powershellDHCPEnabledAliases
+
+// dhcpInProcessFailureLogged keeps a persistently failing in-process read
+// from logging a warning on every heartbeat for every adapter IP. A
+// successful read re-arms it, so a later, separate failure warns again.
+var dhcpInProcessFailureLogged atomic.Bool
+
 func windowsDHCPLeaseEvidence(ifaceName, ipAddress string) bool {
+	aliases, err := readDHCPEnabledAliases()
+	if err == nil {
+		dhcpInProcessFailureLogged.Store(false)
+	} else {
+		var fallbackErr error
+		aliases, fallbackErr = readDHCPEnabledAliasesPowerShell()
+		logDHCPInProcessFailure(err, fallbackErr)
+		if fallbackErr != nil {
+			return false
+		}
+	}
+	return aliases[strings.ToLower(strings.TrimSpace(ifaceName))]
+}
+
+// logDHCPInProcessFailure warns once per failure streak, then logs at debug.
+// It names the fallback's outcome too, so "both sources failed" (DHCP then
+// falls to the interface-name heuristic) is distinguishable from a recovery.
+func logDHCPInProcessFailure(inProcessErr, fallbackErr error) {
+	msg := "in-process DHCP state read failed; used PowerShell Get-NetIPInterface fallback"
+	args := []any{"error", inProcessErr.Error()}
+	if fallbackErr != nil {
+		msg = "in-process DHCP state read and PowerShell Get-NetIPInterface fallback both failed; using interface-name heuristic"
+		args = append(args, "fallbackError", fallbackErr.Error())
+	}
+	if dhcpInProcessFailureLogged.CompareAndSwap(false, true) {
+		log.Warn(msg, args...)
+	} else {
+		log.Debug(msg, args...)
+	}
+}
+
+func powershellDHCPEnabledAliases() (map[string]bool, error) {
 	// Use PowerShell Get-NetIPInterface which returns .NET enum values
 	// ("Enabled"/"Disabled") that are always English regardless of OS locale.
 	// This avoids parsing ipconfig /all which is fully localized.
 	out, err := commandOutput(2*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command",
 		`Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.Dhcp -eq 'Enabled' } | Select-Object -ExpandProperty InterfaceAlias`)
-	if err != nil || len(out) == 0 {
-		return false
+	if err != nil {
+		return nil, err
 	}
+	return parseDHCPEnabledAliases(out), nil
+}
 
-	target := strings.ToLower(strings.TrimSpace(ifaceName))
+// parseDHCPEnabledAliases turns one-alias-per-line output (DHCP-enabled
+// aliases only) into the alias map readDHCPEnabledAliases returns.
+func parseDHCPEnabledAliases(out []byte) map[string]bool {
+	aliases := map[string]bool{}
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.ToLower(strings.TrimSpace(line)) == target {
-			return true
+		if name := strings.ToLower(strings.TrimSpace(line)); name != "" {
+			aliases[name] = true
 		}
 	}
-	return false
+	return aliases
 }
 
 // isLinkLocal checks if an IP is link-local.
@@ -356,6 +409,18 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect network adapters for ip history: %w", err)
 	}
+	return h.ipHistoryFromAdapters(adapters), nil
+}
+
+// ipHistoryFromAdapters builds the current IP entries, diffs them against the
+// persisted previous state, and saves the new state. Returns nil when there
+// is nothing to report.
+func (h *Heartbeat) ipHistoryFromAdapters(adapters []collectors.NetworkAdapterInfo) *IPHistoryUpdate {
+	previousIPs := h.loadPreviousIPState()
+	previousByKey := make(map[string]IPHistoryEntry, len(previousIPs))
+	for _, entry := range previousIPs {
+		previousByKey[ipEntryKey(entry)] = entry
+	}
 
 	currentIPs := make([]IPHistoryEntry, 0, len(adapters))
 	for _, adapter := range adapters {
@@ -370,22 +435,31 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 			AssignmentType: determineAssignmentType(adapter.InterfaceName, adapter.IPAddress),
 			MACAddress:     adapter.MACAddress,
 			Gateway:        h.legacyContextGateway(adapter.InterfaceName, adapter.IPType),
+			DNSServers:     h.legacyContextDNSServers(adapter.InterfaceName),
 		})
 		if !ok {
 			continue
+		}
+		// nil means the resolvers are unknown right now (network context
+		// off, stale or degraded). Keep the last known list rather than
+		// report a change: on the wire nil and [] are both an absent field,
+		// which the API stores as "no resolvers".
+		if entry.DNSServers == nil {
+			if previous, found := previousByKey[ipEntryKey(entry)]; found {
+				entry.DNSServers = previous.DNSServers
+			}
 		}
 		currentIPs = append(currentIPs, entry)
 	}
 
 	currentIPs = dedupeEntries(currentIPs)
-	previousIPs := h.loadPreviousIPState()
 	changedIPs, removedIPs := detectIPChanges(currentIPs, previousIPs)
 	if err := h.savePreviousIPState(currentIPs); err != nil {
 		log.Warn("ip history state save failed, diff may be inaccurate next heartbeat", "error", err.Error())
 	}
 
 	if len(currentIPs) == 0 && len(changedIPs) == 0 && len(removedIPs) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	// Ensure non-nil slices so JSON serializes as [] instead of null.
@@ -402,7 +476,7 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 		ChangedIPs: changedIPs,
 		RemovedIPs: removedIPs,
 		DetectedAt: time.Now().UTC(),
-	}, nil
+	}
 }
 
 // perUserStateDir is the per-user ~/.breeze dir the small state stores below

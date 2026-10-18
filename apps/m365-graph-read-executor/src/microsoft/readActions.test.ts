@@ -61,12 +61,14 @@ function createStubGraphClient(options: {
 const SAMPLE_ACTIONS: Record<M365InteractiveReadActionId, M365InteractiveReadAction> = {
   'm365.user.list': { type: 'm365.user.list' },
   'm365.user.get': { type: 'm365.user.get', userIdOrUpn: 'ada@contoso.com' },
+  'm365.user.mailboxes': { type: 'm365.user.mailboxes', userId: DEVICE_ID },
   'm365.signins.list': { type: 'm365.signins.list' },
   'm365.intune.device.list': { type: 'm365.intune.device.list' },
   'm365.intune.device.get': { type: 'm365.intune.device.get', deviceId: DEVICE_ID },
   'm365.group.list': { type: 'm365.group.list' },
   'm365.group.get': { type: 'm365.group.get', groupId: GROUP_ID },
   'm365.group.members.list': { type: 'm365.group.members.list', groupId: GROUP_ID },
+  'm365.group.member.get': { type: 'm365.group.member.get', groupId: GROUP_ID, userId: DEVICE_ID },
   'm365.org.get': { type: 'm365.org.get' },
   'm365.org.skus.list': { type: 'm365.org.skus.list' },
   'm365.sites.list': { type: 'm365.sites.list', search: 'intranet' },
@@ -76,12 +78,14 @@ const SAMPLE_ACTIONS: Record<M365InteractiveReadActionId, M365InteractiveReadAct
 const EXPECTED_PATH: Record<M365InteractiveReadActionId, string> = {
   'm365.user.list': '/users',
   'm365.user.get': `/users/${encodeURIComponent('ada@contoso.com')}`,
+  'm365.user.mailboxes': `/users/${encodeURIComponent(DEVICE_ID)}`,
   'm365.signins.list': '/auditLogs/signIns',
   'm365.intune.device.list': '/deviceManagement/managedDevices',
   'm365.intune.device.get': `/deviceManagement/managedDevices/${encodeURIComponent(DEVICE_ID)}`,
   'm365.group.list': '/groups',
   'm365.group.get': `/groups/${encodeURIComponent(GROUP_ID)}`,
   'm365.group.members.list': `/groups/${encodeURIComponent(GROUP_ID)}/members`,
+  'm365.group.member.get': `/groups/${encodeURIComponent(GROUP_ID)}/members`,
   'm365.org.get': '/organization',
   'm365.org.skus.list': '/subscribedSkus',
   'm365.sites.list': '/sites',
@@ -93,12 +97,64 @@ const EXPECTED_PATH: Record<M365InteractiveReadActionId, string> = {
 // first item into a `resource` result — goes through readCollection.
 const RESOURCE_ACTION_IDS = new Set<M365InteractiveReadActionId>([
   'm365.user.get',
+  'm365.user.mailboxes',
   'm365.intune.device.get',
   'm365.group.get',
   'm365.site.get',
 ]);
 
 describe('executeGraphReadAction — dispatch table', () => {
+  it('m365.user.mailboxes returns exactly the four-field projection, keeping explicit empty aliases (#6354 W03)', async () => {
+    const { client, readResourceCalls } = createStubGraphClient({ resource: {
+      id: DEVICE_ID, userPrincipalName: 'alex@example.com', mail: null, proxyAddresses: [], displayName: 'Alex', passwordProfile: { password: 'x' },
+    } });
+    expect(await executeGraphReadAction({ type: 'm365.user.mailboxes', userId: DEVICE_ID }, { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW }))
+      .toEqual({ success: true, kind: 'resource', resource: { id: DEVICE_ID, userPrincipalName: 'alex@example.com', mail: null, proxyAddresses: [] } });
+    expect(readResourceCalls[0]!.select).toEqual(['id', 'userPrincipalName', 'mail', 'proxyAddresses']);
+  });
+
+  it('m365.group.member.get issues a one-row advanced-query $filter on the member id', async () => {
+    const { client, readCollectionCalls } = createStubGraphClient({ collection: { items: [], truncated: false } });
+    const result = await executeGraphReadAction(
+      { type: 'm365.group.member.get', groupId: GROUP_ID, userId: DEVICE_ID },
+      { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW },
+    );
+    expect(result).toEqual({ success: true, kind: 'collection', items: [], truncated: false });
+    const call = readCollectionCalls[0]!;
+    expect(call.path).toBe(`/groups/${GROUP_ID}/members`);
+    expect(call.query['$select']).toBe('id,displayName,userPrincipalName,mail');
+    expect(call.query['$filter']).toBe(`id eq '${DEVICE_ID}'`);
+    expect(call.query['$count']).toBe('true');
+    expect(call.consistencyLevelEventual).toBe(true);
+    expect(call.maxItems).toBe(1);
+    expect(call.maxPages).toBe(1);
+  });
+
+  it('m365.group.member.get returns one projected item when the member is present', async () => {
+    const { client } = createStubGraphClient({ collection: { items: [{ id: DEVICE_ID, displayName: 'Ada', secret: 'x' }], truncated: false } });
+    const result = await executeGraphReadAction(
+      { type: 'm365.group.member.get', groupId: GROUP_ID, userId: DEVICE_ID },
+      { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW },
+    );
+    expect(result).toEqual({ success: true, kind: 'collection', items: [{ id: DEVICE_ID, displayName: 'Ada' }], truncated: false });
+  });
+
+  it('m365.user.get selects signInSessionsValidFromDateTime and passes assignedLicenses {skuId, disabledPlans} through unreduced', async () => {
+    const licenses = [{ skuId: GROUP_ID, disabledPlans: [DEVICE_ID] }];
+    const { client, readResourceCalls } = createStubGraphClient({ resource: {
+      id: 'u1', assignedLicenses: licenses, signInSessionsValidFromDateTime: '2026-10-16T00:00:00Z',
+    } });
+    const result = await executeGraphReadAction(
+      { type: 'm365.user.get', userIdOrUpn: 'ada@contoso.com' },
+      { accessToken: ACCESS_TOKEN, graphClient: client, now: NOW },
+    );
+    expect(readResourceCalls[0]!.select).toContain('signInSessionsValidFromDateTime');
+    expect(readResourceCalls[0]!.select).toContain('assignedLicenses');
+    expect(result).toEqual({ success: true, kind: 'resource', resource: {
+      id: 'u1', assignedLicenses: licenses, signInSessionsValidFromDateTime: '2026-10-16T00:00:00Z',
+    } });
+  });
+
   it.each(M365_INTERACTIVE_READ_ACTION_IDS)('%s calls the fixed path with the full field allowlist as $select', async (actionId) => {
     const { client, readResourceCalls, readCollectionCalls } = createStubGraphClient();
     const action = SAMPLE_ACTIONS[actionId];

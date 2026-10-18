@@ -39,13 +39,18 @@ import {
   huntressIntegrations,
   s1Threats,
   s1Integrations,
+  edrConnections,
+  edrTenants,
+  edrDetections,
 } from '../../db/schema';
 import { buildIncidentFeed, type IncidentFeedParams } from '../../routes/incidents.helpers';
 import type { AuthContext } from '../../middleware/auth';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const FEED_PARAMS: IncidentFeedParams = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null };
+const FEED_PARAMS: IncidentFeedParams = {
+  limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null, allowedSiteIds: null,
+};
 
 // Minimal org-scoped auth. buildIncidentFeed only reads scope/orgId via
 // resolveOrgFilter; the rest of AuthContext is never touched on this path.
@@ -252,5 +257,75 @@ describe('buildIncidentFeed (real Postgres)', () => {
 
     expect(rows.some((r) => r.sourceId === 'H-A-DEVICE')).toBe(false);
     expect(rows.some((r) => r.sourceId === 'H-A-NODEVICE')).toBe(true);
+  });
+
+  // #8166 A3: the EDR-framework leg and the D14 detached-finding site rule.
+  // Site-A device, site-B device, a finding detached from a site-B device
+  // (org move / device delete snapshot), a never-linked finding, and a D13
+  // tombstone. A site-A-only caller sees the site-A and never-linked rows; an
+  // unrestricted caller sees every live row; the tombstone is invisible.
+  runDb('EDR-framework leg: site-restricted callers never see another site or its detached findings', async () => {
+    const db = getTestDb();
+    const siteA = await createSite({ orgId: orgA.orgId, name: 'Site A' });
+    const siteB = await createSite({ orgId: orgA.orgId, name: 'Site B' });
+    const mkDevice = async (siteId: string, hostname: string) => {
+      const [d] = await db.insert(devices).values({
+        orgId: orgA.orgId, siteId, agentId: `agent-${hostname}-${Date.now()}`, hostname,
+        osType: 'windows', osVersion: '11', architecture: 'x64', agentVersion: '1.0.0',
+      }).returning({ id: devices.id });
+      return d!.id;
+    };
+    const devA = await mkDevice(siteA!.id, 'edr-host-a');
+    const devB = await mkDevice(siteB!.id, 'edr-host-b');
+
+    const [conn] = await db.insert(edrConnections).values({
+      partnerId: orgA.partnerId, provider: 'bitdefender', name: 'GZ', credentialsEncrypted: 'enc:test',
+      vendorRootId: 'root-1', vendorRootType: 'partner',
+    }).returning({ id: edrConnections.id });
+    const [tenant] = await db.insert(edrTenants).values({
+      connectionId: conn!.id, partnerId: orgA.partnerId, vendorTenantId: 'company-a', vendorTenantName: 'Company A',
+      vendorTenantType: 'company', orgId: orgA.orgId, mappingSource: 'manual',
+    }).returning({ id: edrTenants.id });
+    const base = {
+      connectionId: conn!.id, partnerId: orgA.partnerId, orgId: orgA.orgId, provider: 'bitdefender',
+      vendorKind: 'incident' as const, severity: 'high' as const, status: 'open' as const,
+      detectedAt: new Date('2026-06-07T00:00:00Z'),
+    };
+    const ins = async (vendorDetectionId: string, over: Partial<typeof edrDetections.$inferInsert>) => {
+      const [r] = await db.insert(edrDetections).values({ ...base, tenantId: tenant!.id, vendorDetectionId, title: vendorDetectionId, ...over })
+        .returning({ id: edrDetections.id });
+      return r!.id;
+    };
+    const onA = await ins('det-site-a', { breezeDeviceId: devA });
+    const onB = await ins('det-site-b', { breezeDeviceId: devB });
+    const detachedB = await ins('det-detached-b', { deviceDetachedAt: new Date(), lastSiteId: siteB!.id });
+    const detachedA = await ins('det-detached-a', { deviceDetachedAt: new Date(), lastSiteId: siteA!.id });
+    const neverLinked = await ins('det-never-linked', {});
+    const tombstone = await ins('det-tombstone', { tenantId: null, detachedAt: new Date() });
+
+    const ids = (rows: Array<{ sourceId: string; source: string }>) =>
+      new Set(rows.filter((r) => r.source === 'bitdefender').map((r) => r.sourceId));
+
+    const restricted = await runFeed(orgA.orgId, { ...FEED_PARAMS, allowedDeviceIds: [devA], allowedSiteIds: [siteA!.id] });
+    expect(ids(restricted.rows)).toEqual(new Set([onA, detachedA, neverLinked]));
+
+    const unrestricted = await runFeed(orgA.orgId);
+    expect(ids(unrestricted.rows)).toEqual(new Set([onA, onB, detachedB, detachedA, neverLinked]));
+    expect(ids(unrestricted.rows).has(tombstone)).toBe(false);
+    const row = unrestricted.rows.find((r) => r.sourceId === onA)!;
+    expect(row).toMatchObject({ kind: 'finding', severity: 'p2', edrStatus: 'open', deviceId: devA, linkOut: null });
+
+    // source filter: only the provider leg.
+    const onlyEdr = await runFeed(orgA.orgId, { ...FEED_PARAMS, source: 'bitdefender' });
+    expect(onlyEdr.rows.every((r) => r.source === 'bitdefender')).toBe(true);
+    expect(onlyEdr.total).toBe(5);
+
+    // Promotion dedupe: a promoted detection leaves the finding legs.
+    await db.insert(incidents).values({
+      orgId: orgA.orgId, title: 'Promoted EDR', classification: 'malware', severity: 'p2', status: 'detected',
+      detectedAt: new Date(), sourceType: 'edr_detection', sourceRef: onB,
+    });
+    const afterPromote = await runFeed(orgA.orgId);
+    expect(ids(afterPromote.rows).has(onB)).toBe(false);
   });
 });

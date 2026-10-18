@@ -36,6 +36,7 @@ import {
   addCatalogLine,
   addBundleLine,
   updateLine,
+  refreshDraftTimeLines,
   removeLine,
   updateInvoice,
   deleteDraftInvoice,
@@ -118,6 +119,7 @@ const MANAGE_INVOICES_REQUIRED: Record<string, readonly string[]> = {
   add_bundle_line: ['invoiceId', 'bundleId', 'quantity'],
   add_contract_line: ['invoiceId', 'contractId', 'contractLineId'],
   update_line: ['invoiceId', 'lineId', 'patch'],
+  refresh_time_lines: ['invoiceId'],
   remove_line: ['invoiceId', 'lineId'],
   update_header: ['invoiceId', 'patch'],
   delete_draft: ['invoiceId'],
@@ -241,17 +243,17 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_invoices',
       description:
-        "Invoices; issue/void/payments need approval. Never sum currencies. Actions:create_draft,add_manual_line,add_catalog_line,add_bundle_line,add_contract_line,update_line,remove_line,update_header,delete_draft,assemble_from_org,assemble_from_ticket,issue,void,record_payment,void_payment,create_pay_link.",
+        "Issue/void/payments need approval. Never sum currencies. create_draft,add_manual_line,add_catalog_line,add_bundle_line,add_contract_line,update_line,remove_line,update_header,delete_draft,assemble_from_org,assemble_from_ticket,refresh_time_lines,issue,void,record_payment,void_payment,create_pay_link",
       input_schema: {
         type: 'object' as const,
         properties: {
           action: {
             type: 'string',
-            description: 'Relay create_pay_link warning CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT to the user; it does not block the link.',
+            description: 'Relay create_pay_link warning CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT to the user; it does not block the link. refresh_time_lines: drafts only; keeps amounts.',
             enum: [
               'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
               'update_line', 'remove_line', 'update_header', 'delete_draft',
-              'assemble_from_org', 'assemble_from_ticket',
+              'assemble_from_org', 'assemble_from_ticket', 'refresh_time_lines',
               'issue', 'void', 'record_payment', 'void_payment', 'create_pay_link',
             ],
           },
@@ -382,7 +384,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });
 
             const deviceEvidence = new Map<string, readonly DeviceSnapshotRow[]>();
-            const estimate = await computeContractEstimate(contractId, contractActor, deviceEvidence);
+            const estimate = await computeContractEstimate(contractId, contractActor, deviceEvidence, { includeHourBlock: false });
             const est = estimate.lines.find((candidate) => candidate.lineId === line.id);
             if (!est) return JSON.stringify({ error: 'Contract line estimate not found for this contract' });
 
@@ -415,6 +417,22 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             ));
           case 'remove_line':
             return JSON.stringify(await removeLine(String(input.invoiceId), String(input.lineId), actor));
+          case 'refresh_time_lines':
+            // #8606: draft-only (NOT_A_DRAFT 409 otherwise). Never changes
+            // quantity, price, totals or a hand-edited description.
+          {
+            const result = await refreshDraftTimeLines(String(input.invoiceId), actor);
+            // A line whose entry another invoice already billed will fail
+            // issue (SOURCE_ALREADY_BILLED); say so instead of a bare count.
+            const blocked = result.lines
+              .filter((o) => o.status === 'skipped' && o.reason === 'billed_elsewhere')
+              .map((o) => o.lineId);
+            return JSON.stringify(blocked.length === 0 ? result : {
+              ...result,
+              issueBlockedByLineIds: blocked,
+              warning: `${blocked.length} line(s) bill time already billed on another invoice; issuing this draft will fail with SOURCE_ALREADY_BILLED until they are removed. Tell the user.`,
+            });
+          }
           case 'update_header':
             return JSON.stringify(await updateInvoice(
               String(input.invoiceId),

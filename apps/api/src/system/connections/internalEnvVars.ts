@@ -12,6 +12,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   ABUSE_SIGNAL_OVERRIDES: 'abuse heuristic weight overrides',
   // AGENT_*
   AGENT_BINARY_DIR: 'filesystem path',
+  AGENT_BODY_RECEIVE_TIMEOUT_MS: 'agent request body receive deadline',
+  AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS: 'agent request body receive deadline',
   AGENT_CHANGES_MAX_BYTES_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
@@ -48,6 +50,12 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_INVOCATIONS_RETENTION_DAYS: 'data retention window',
   AI_INVOCATIONS_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   AI_TOOL_EVAL_KEY: 'dev script (services/llm/__scripts__)',
+  AI_TOOL_OUTPUT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  AI_TOOL_OUTPUT_RETENTION_CRON: 'job schedule override',
+  AI_TOOL_OUTPUT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  AI_TRANSCRIPT_SWEEPER_CRON: 'job schedule override',
+  AI_TRANSCRIPT_SWEEPER_ENABLED: 'job toggle',
+  AI_TRANSCRIPT_SWEEPER_GRACE_HOURS: 'transcript sweep grace window',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
@@ -98,11 +106,20 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BMR_RECOVERY_ADVERTISE_QUERY_TOKEN: 'recovery compatibility toggle',
   BMR_RECOVERY_ALLOW_QUERY_TOKEN: 'recovery compatibility toggle',
   // BREEZE_*
+  BREEZE_ADMISSION_BULK_MAX_IN_FLIGHT: 'agent admission control tuning',
+  BREEZE_ADMISSION_DB_WAIT_MS: 'agent admission control tuning',
+  BREEZE_ADMISSION_EMERGENCY_MS: 'agent admission control tuning',
+  BREEZE_ADMISSION_LAG_MS: 'agent admission control tuning',
+  BREEZE_ADMISSION_MODE: 'agent admission control mode / kill switch',
+  BREEZE_ADMISSION_WS_BURST: 'agent admission control tuning',
+  BREEZE_ADMISSION_WS_MAX_SETUPS: 'agent admission control tuning',
+  BREEZE_ADMISSION_WS_RATE_PER_SEC: 'agent admission control tuning',
   BREEZE_ALLOW_UNSAFE_DB_ROLE: 'non-production safety opt-out',
   BREEZE_BOOTSTRAP_ADMIN_EMAIL: 'one-time first-boot seed',
   BREEZE_BOOTSTRAP_ADMIN_NAME: 'one-time first-boot seed',
   BREEZE_BOOTSTRAP_ADMIN_PASSWORD: 'one-time first-boot seed',
   BREEZE_BUILTIN_MONITORS_AUTOSEED: 'seed toggle',
+  BREEZE_EDR_ACTIONS_ENABLED: 'EDR response-action kill switch',
   BREEZE_INTEGRATION_ALLOW_LEDGER_DRIFT: 'test harness (testUtils)',
   BREEZE_INTEGRATION_LOCK_NOWAIT: 'test harness (testUtils)',
   BREEZE_LEGACY_ALERTING_SWEEP: 'boot sweep opt-out (legacy alerting retirement)',
@@ -111,9 +128,11 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_ROLE: 'process role (api/worker)',
   BREEZE_SEED_E2E_FORCE: 'E2E seed toggle',
   BREEZE_TEST_DB_URL: 'test harness (testUtils)',
+  BREEZE_TRUST_CIS_FRAMEWORK_VIEW: 'Trust Center CIS v8 framework view rollout gate; set only after CIS licensing confirmation (spec §18.13)',
   BREEZE_UPGRADE_PREFLIGHT_STRICT: 'upgrade CLI flag',
   // CALLER_*
   CALLER_VERIFICATION_ENABLED: 'feature flag',
+  CALLER_VERIFICATION_WORKSTATION_ENABLED: 'feature flag (workstation tier, dark by default)',
   // CANCEL_*
   CANCEL_GRACE_MS: 'timing knob',
   // CHANGE_*
@@ -126,6 +145,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // CHILD_*
   CHILD_ENROLLMENT_KEY_TTL_MINUTES: 'timing knob',
   // CLAUDE_*
+  CLAUDE_CONFIG_DIR: 'SDK transcript directory (filesystem path)',
   CLAUDE_AGENT_SDK_CLIENT_APP: 'SDK child-process label',
   // COOKIE_*
   COOKIE_FORCE_SECURE: 'cookie policy override',
@@ -171,6 +191,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   DEV_PUSH_WORK_DIR: 'filesystem path',
   // E2E_*
   E2E_MODE: 'E2E test mode',
+  // EDR_*
+  EDR_DETECTION_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  EDR_DETECTION_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // EMAIL_*
   EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE: 'sending-domain policy knob',
   EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: 'sending-domain policy knob',
@@ -214,6 +237,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FILESYSTEM_CLEANUP_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // FRANKFURTER_*
   FRANKFURTER_BASE_URL: 'FX API base override',
+  // HEARTBEAT_*
+  HEARTBEAT_RETAIN_STATE_ENABLED: 'heartbeat retain-state rollout kill switch',
+  AGENT_ECH_ENABLED: 'agent ECH (encrypted client hello) kill switch',
   // HELPER_*
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',
@@ -247,6 +273,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // IS_*
   IS_HOSTED: 'shown as report.deployMode',
   // LLM_*
+  LLM_EGRESS_EVENTS_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  LLM_EGRESS_EVENTS_RETENTION_DAYS: 'data retention window',
+  LLM_EGRESS_EVENTS_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   LLM_FIDELITY_API_KEY: 'dev script (services/llm/__scripts__)',
   LLM_FIDELITY_AUTH_MODE: 'dev script (services/llm/__scripts__)',
   LLM_FIDELITY_BASE_URL: 'dev script (services/llm/__scripts__)',
@@ -273,6 +302,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 'rate limit knob',
   // MCP_*
   MCP_EXECUTE_TOOL_ALLOWLIST: 'MCP tool policy',
+  MCP_INSUFFICIENT_SCOPE_HTTP_403: 'MCP step-up challenge flag',
   MCP_MAX_SSE_SESSIONS_PER_KEY: 'rate limit knob',
   MCP_MESSAGE_MAX_BODY_BYTES: 'request size limit',
   MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
@@ -308,6 +338,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   METRIC_ROLLUP_PARTITION_MONTHS_BACK: 'partition maintenance tuning',
   // MFA_*
   MFA_FORCE_FOR_PARTNER_ADMIN: 'auth policy flag',
+  // MIGRATION_*
+  MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR: 'rate limit knob',
+  MIGRATION_WINDOW_MAX_DAYS: 'timing knob',
+  MIGRATION_WINDOW_MAX_WRITES_PER_HOUR: 'rate limit knob',
   // ML_*
   ML_DISABLED_FLAGS: 'ML kill switch',
   ML_FEATURES_DISABLED: 'ML kill switch',
@@ -341,6 +375,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   ORG_MERGE_MAX_ROWS: 'org merge safety limit',
   // PAM_*
   PAM_ACTUATOR_ENABLED: 'feature flag',
+  PAM_EVIDENCE_RETENTION_DAYS: 'retention TTL knob',
+  PAM_EVIDENCE_RETENTION_ENABLED: 'retention job kill switch',
+  PAM_OWNERSHIP_EPOCH_TRANSFER: 'feature flag (also needs the owner-only DB switch)',
   PAM_PENDING_REQUEST_TTL_MINUTES: 'timing knob',
   // PARTNER_*
   PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES: 'timing knob',
@@ -411,6 +448,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // REQUIRE_*
   REQUIRE_DB_ON_STARTUP: 'boot strictness flag',
   REQUIRE_REDIS_ON_STARTUP: 'boot strictness flag',
+  // RESTORE_*
+  RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  RESTORE_POINT_ATTEMPT_RETENTION_DAYS: 'data retention window',
+  RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // S1_*
   S1_SYNC_MAX_PAGES: 'sync paging limit',
   // S3_*

@@ -230,6 +230,13 @@ describe('securityMiddleware', () => {
       expect(res.headers.get('Permissions-Policy')).toBeTruthy();
     });
 
+    it('treats an empty prefix as "skip nothing", not "skip every path"', async () => {
+      const app = createApp({ skipHeadersPathPrefix: '' });
+      const res = await app.request('/test');
+      expect(res.headers.get('Content-Security-Policy')).toBeTruthy();
+      expect(res.headers.get('Permissions-Policy')).toBeTruthy();
+    });
+
     it('still redirects HTTP to HTTPS for a path under the skipped prefix', async () => {
       const app = createApp({
         forceHttps: 'true',
@@ -258,6 +265,35 @@ describe('securityMiddleware', () => {
       const res = await app.request(req);
       expect(res.status).toBe(400);
       expect(res.headers.get('Location')).toBeNull();
+    });
+
+    // Network Proxy host mode (plan amendment 2026-10-12b item 6): a tunnel
+    // host is never canonical to PUBLIC_API_URL. Behind a trusted proxy that
+    // forwards `X-Forwarded-Proto: https` it must pass; resolved as http it is
+    // refused 400 (fail-closed, documented in the Caddyfile and .env.example).
+    describe('tunnel host under FORCE_HTTPS', () => {
+      const TUNNEL_HOST = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test';
+      const tunnelApp = () => {
+        const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL, skipHeadersWhen: () => true });
+        app.get('/device/page', (c) => c.text('device'));
+        return app;
+      };
+
+      it('does not 400 a tunnel Host from a trusted proxy that forwarded https', async () => {
+        const res = await tunnelApp().request(new Request(`http://${TUNNEL_HOST}/device/page`, {
+          headers: { 'x-forwarded-proto': 'https', host: TUNNEL_HOST },
+        }));
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe('device');
+      });
+
+      it('400s (never redirects) a tunnel Host whose scheme resolves to http', async () => {
+        const res = await tunnelApp().request(new Request(`http://${TUNNEL_HOST}/device/page`, {
+          headers: { 'x-forwarded-proto': 'http', host: TUNNEL_HOST },
+        }));
+        expect(res.status).toBe(400);
+        expect(res.headers.get('Location')).toBeNull();
+      });
     });
   });
 
@@ -479,5 +515,15 @@ describe('FORCE_HTTPS redirect warning (#3047)', () => {
     expect(res.status).toBe(308);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(String(warnSpy.mock.calls[0]?.[0])).toContain('xForwardedProto=http');
+  });
+});
+
+describe('securityMiddleware skipHeadersWhen', () => {
+  it('skips its response headers when skipHeadersWhen returns true', async () => {
+    const app = new Hono();
+    app.use('*', securityMiddleware({ nodeEnv: 'production', skipHeadersWhen: (c) => c.req.header('host') === 'tunnel.test' }));
+    app.get('/', (c) => c.text('ok'));
+    expect((await app.request('/', { headers: { host: 'tunnel.test' } })).headers.get('content-security-policy')).toBeNull();
+    expect((await app.request('/', { headers: { host: 'app.test' } })).headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
   });
 });

@@ -30,6 +30,7 @@ import {
 } from '../services/assetAccessScope';
 import {
   deletePlacement,
+  PlacementConcurrentUpdateError,
   placementBodySchema,
   readPlacement,
   resolvePlacementAuthority,
@@ -125,7 +126,18 @@ discoveryAssetPlacementRoutes.put(
     }
 
     const before = await readPlacement('discovered', asset.id);
-    const placement = await savePlacement(subject, c.req.valid('json'));
+    let placement;
+    try {
+      placement = await savePlacement(subject, c.req.valid('json'));
+    } catch (err) {
+      if (err instanceof PlacementConcurrentUpdateError) {
+        return c.json(
+          { error: 'The placement was changed by a concurrent update; reload and try again.', code: 'PLACEMENT_CONCURRENT_UPDATE' },
+          409,
+        );
+      }
+      throw err;
+    }
 
     writeRouteAudit(c, {
       orgId: asset.orgId,
@@ -180,16 +192,14 @@ discoveryAssetPlacementRoutes.delete(
     const before = await readPlacement('discovered', asset.id);
     await deletePlacement({ kind: 'discovered', id: asset.id });
 
-    if (before) {
-      writeRouteAudit(c, {
-        orgId: asset.orgId,
-        action: 'asset.placement.delete',
-        resourceType: 'discovered_asset',
-        resourceId: asset.id,
-        resourceName: asset.hostname ?? asset.ipAddress ?? undefined,
-        details: { before, after: null },
-      });
-    }
+    writeRouteAudit(c, {
+      orgId: asset.orgId,
+      action: 'asset.placement.delete',
+      resourceType: 'discovered_asset',
+      resourceId: asset.id,
+      resourceName: asset.hostname ?? asset.ipAddress ?? undefined,
+      details: before ? { before, after: null } : { before: null, after: null, noop: true },
+    });
 
     return c.json({ success: true });
   },

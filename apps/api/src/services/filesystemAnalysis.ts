@@ -1,5 +1,8 @@
-import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db';
+import { deviceCommands } from '../db/schema/devices';
+import { CommandTypes } from './commandTypes';
+import { getCommandTimeoutMs } from './commandTimeouts';
 import {
   deviceFilesystemSnapshots,
   deviceFilesystemScanState,
@@ -467,6 +470,52 @@ export function readExecutedActions(value: unknown): StoredExecutedActions {
 export function readPlanScanPath(plan: unknown): string | null {
   const record = asRecord(plan);
   return asString(record?.scanPath);
+}
+
+export type InFlightFilesystemScan = {
+  id: string;
+  status: string;
+  createdAt: Date;
+  scanPath: string | null;
+};
+
+/**
+ * The filesystem_analysis command already pending or sent to this device, if
+ * any (#8509). Device-wide, not per volume: the agent runs one walker at a
+ * time, so a D:\ scan in flight makes a new C:\ scan wait just the same.
+ *
+ * Bounded by the command's server-side timeout so a row whose device went
+ * silent mid-scan cannot block scans forever; the stale-command reaper
+ * terminalises such rows on the same clock.
+ */
+export async function findInFlightFilesystemScan(
+  deviceId: string,
+  now: Date = new Date(),
+): Promise<InFlightFilesystemScan | null> {
+  const cutoff = new Date(now.getTime() - getCommandTimeoutMs(CommandTypes.FILESYSTEM_ANALYSIS));
+  const [row] = await db
+    .select({
+      id: deviceCommands.id,
+      status: deviceCommands.status,
+      createdAt: deviceCommands.createdAt,
+      payload: deviceCommands.payload,
+    })
+    .from(deviceCommands)
+    .where(and(
+      eq(deviceCommands.deviceId, deviceId),
+      eq(deviceCommands.type, CommandTypes.FILESYSTEM_ANALYSIS),
+      inArray(deviceCommands.status, ['pending', 'sent']),
+      gte(deviceCommands.createdAt, cutoff),
+    ))
+    .orderBy(desc(deviceCommands.createdAt))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    status: row.status,
+    createdAt: row.createdAt,
+    scanPath: asString(asRecord(row.payload)?.path),
+  };
 }
 
 /** Register the producer even when this is the volume's first scan. */

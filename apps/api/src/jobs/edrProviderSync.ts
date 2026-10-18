@@ -4,7 +4,8 @@ import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import * as dbModule from '../db';
 import { edrConnections, edrTenants } from '../db/schema';
-import { getBullMQConnection } from '../services/redis';
+import { getBullMQConnection, getRedis } from '../services/redis';
+import { ackEdrHints, readEdrHints, type EdrHintSnapshot } from '../services/edrProviders/hints';
 import { captureException } from '../services/sentry';
 import { decryptEdrSecret } from '../services/edrProviders/credentials';
 import { getEdrProvider } from '../services/edrProviders/registry';
@@ -17,6 +18,7 @@ import {
   type EdrProviderAdapter,
 } from '../services/edrProviders/types';
 import {
+  clearExpiredTenantDenials,
   isDeadlockError,
   persistDetections,
   persistInventory,
@@ -29,7 +31,14 @@ import {
 } from '../services/edrProviders/persist';
 import { autoMapEdrTenants } from '../services/edrProviders/mapping';
 import { matchEdrEndpoints } from '../services/edrProviders/deviceMatching';
+import {
+  evaluateEdrAlerts,
+  evaluateEdrEndpointHealth,
+  evaluateEdrStaleTenants,
+} from '../services/edrProviders/alerts';
+import { EDR_ACTION_UNKNOWN_GIVEUP_MS, pollEdrActionStatus } from '../services/edrProviders/actionStatus';
 import { attachWorkerObservability } from './workerObservability';
+import { isFinalSyncAttempt, reportTerminalSyncFailure } from './syncAttempt';
 
 /**
  * External EDR provider sync (#8164 W01b). Two independent streams per
@@ -43,7 +52,9 @@ export type EdrSyncStream = 'inventory' | 'detections';
 export type EdrSyncJobData =
   | { type: 'sync-all' }
   | { type: 'sync-inventory'; connectionId: string }
-  | { type: 'sync-detections'; connectionId: string };
+  | { type: 'sync-detections'; connectionId: string }
+  /** W03 (#8167): settle open response actions; never re-sends (actionStatus.ts). */
+  | { type: 'sync-action-status'; connectionId: string };
 
 export const EDR_PROVIDER_SYNC_JOB_OPTS: Omit<JobsOptions, 'jobId'> = {
   removeOnComplete: { count: 50 },
@@ -88,6 +99,24 @@ export async function enqueueEdrSync(
   return id;
 }
 
+export function edrActionStatusJobId(connectionId: string): string {
+  return `edr-action-status-${connectionId}`;
+}
+
+/** Queue one action-status pass for a connection (coalesces on the job id). */
+export async function enqueueEdrActionStatus(connectionId: string): Promise<string> {
+  if (!connectionId) throw new Error('enqueueEdrActionStatus requires a connection id');
+  const { id } = await enqueueOrReplaceStale(
+    getEdrProviderSyncQueue(),
+    'sync-action-status',
+    edrActionStatusJobId(connectionId),
+    { type: 'sync-action-status', connectionId },
+    EDR_PROVIDER_SYNC_JOB_OPTS,
+    '[EdrProviderSync]',
+  );
+  return id;
+}
+
 export async function shutdownEdrProviderSyncQueue(): Promise<void> {
   if (!queue) return;
   await queue.close();
@@ -125,6 +154,22 @@ export interface DueRow {
   lastDetectionSyncAt: Date | null;
   inventoryIntervalMinutes: number;
   detectionIntervalMinutes: number;
+  /** W03 PR-B: unacked push-hint marker (`edr_connections.pending_hint_at`). */
+  pendingHintAt?: Date | null;
+}
+
+/**
+ * A pending hint makes detections due when it is newer than the last detection
+ * sync, or when it outlived a sync that finished at least one sync-all period
+ * ago: the run that saw it queued a `rerun`, but that enqueue may have coalesced
+ * into an already-active rerun job, so the sweep is the durable fallback.
+ */
+function isHintDue(row: DueRow, now: Date): boolean {
+  const hint = row.pendingHintAt;
+  if (!hint) return false;
+  const last = row.lastDetectionSyncAt;
+  if (!last || hint.getTime() > last.getTime()) return true;
+  return now.getTime() - last.getTime() >= SYNC_ALL_INTERVAL_MINUTES * 60_000;
 }
 
 /** PURE: which (connection, stream) pairs are due now. Each stream uses its own interval. */
@@ -137,11 +182,47 @@ export function selectDueStreams(
     if (isStreamDue(row.lastInventorySyncAt, row.inventoryIntervalMinutes, now)) {
       out.push({ connectionId: row.connectionId, stream: 'inventory' });
     }
-    if (isStreamDue(row.lastDetectionSyncAt, row.detectionIntervalMinutes, now)) {
+    if (isStreamDue(row.lastDetectionSyncAt, row.detectionIntervalMinutes, now) || isHintDue(row, now)) {
       out.push({ connectionId: row.connectionId, stream: 'detections' });
     }
   }
   return out;
+}
+
+
+/**
+ * Phase 4 (#8166): post-commit notification, OUTSIDE any db context and after
+ * Phase 3 committed. Its own try/catch: an alert-path outage is logged and
+ * never fails the sync job or marks the connection errored.
+ */
+async function runPhase4(label: string, connectionId: string, fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await dbModule.runOutsideDbContext(fn);
+  } catch (error) {
+    console.error(`[EdrProviderSync] Connection ${connectionId}: ${label} failed (sync result kept):`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      service: 'edrProviderSync', operation: label, connectionId,
+    });
+  }
+}
+
+/**
+ * Connections (of `ids`) that have open (queued/submitted) actions for the
+ * status pass. Runs under system context; one scan on edr_actions_open_status_idx.
+ * A row a remap detached is skipped until it is past the give-up window — the
+ * reconciler can only fail it then (`detached_unsettled`), so an earlier job
+ * would be a no-op every tick.
+ */
+export async function connectionsWithOpenEdrActions(ids: string[], now: Date): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const giveUpBefore = new Date(now.getTime() - EDR_ACTION_UNKNOWN_GIVEUP_MS);
+  const open = (await runWithSystemDbAccess(() => db.execute(sql`
+    SELECT DISTINCT connection_id FROM edr_actions
+    WHERE status IN ('queued', 'submitted')
+      AND (detached_at IS NULL OR requested_at < ${giveUpBefore.toISOString()}::timestamptz)
+      AND connection_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+  `), 'edrProviderSync.openActions')) as unknown as Array<{ connection_id: string }>;
+  return open.map((r) => r.connection_id);
 }
 
 async function processSyncAll(): Promise<{ queued: number }> {
@@ -153,6 +234,7 @@ async function processSyncAll(): Promise<{ queued: number }> {
       provider: edrConnections.provider,
       lastInventorySyncAt: edrConnections.lastInventorySyncAt,
       lastDetectionSyncAt: edrConnections.lastDetectionSyncAt,
+      pendingHintAt: edrConnections.pendingHintAt,
       effectiveInventory: edrConnections.effectiveInventoryIntervalMinutes,
       effectiveDetection: edrConnections.effectiveDetectionIntervalMinutes,
       requestedInventory: edrConnections.inventoryIntervalMinutes,
@@ -176,6 +258,7 @@ async function processSyncAll(): Promise<{ queued: number }> {
       connectionId: c.id,
       lastInventorySyncAt: c.lastInventorySyncAt,
       lastDetectionSyncAt: c.lastDetectionSyncAt,
+      pendingHintAt: c.pendingHintAt ?? null,
       inventoryIntervalMinutes: c.effectiveInventory ?? Math.max(c.requestedInventory ?? d.inventoryMinutes, d.inventoryMinutes),
       detectionIntervalMinutes: c.effectiveDetection ?? Math.max(c.requestedDetection ?? d.detectionsMinutes, d.detectionsMinutes),
     });
@@ -184,6 +267,25 @@ async function processSyncAll(): Promise<{ queued: number }> {
   // Enqueue with NO transaction held (#1105).
   const due = selectDueStreams(rows, new Date());
   await Promise.all(due.map((d) => enqueueEdrSync(d.connectionId, d.stream)));
+
+  // W03 (#8167): connections with open (queued/submitted) actions get a
+  // status pass. One scan on edr_actions_open_status_idx; never fails the tick.
+  await runPhase4('enqueueEdrActionStatus', 'all', async () => {
+    const ids = candidates.map((c) => c.id);
+    if (ids.length === 0) return;
+    for (const connectionId of await connectionsWithOpenEdrActions(ids, new Date())) {
+      try {
+        await enqueueEdrActionStatus(connectionId);
+      } catch (error) {
+        console.error(`[EdrProviderSync] Failed to queue action status for ${connectionId}:`, error);
+      }
+    }
+  });
+
+  // D10 (#8166): stale mapped tenants are checked on the tick, not after a
+  // sync, because a connection whose every sync throws before Phase 3 never
+  // reaches a post-commit hook. Never fails the tick.
+  await runPhase4('evaluateEdrStaleTenants', 'all', () => evaluateEdrStaleTenants(new Date()));
   return { queued: due.length };
 }
 
@@ -239,6 +341,31 @@ async function readCurrentTenants(
     vendorTenantId: string; orgId: string | null; detectionCursor: string | null;
   }>;
   return new Map(rows.map((r) => [r.vendorTenantId, r]));
+}
+
+/** W03 PR-B: push-hint snapshot for a detections run, outside any DB context; null on failure. */
+async function snapshotHints(connectionId: string): Promise<EdrHintSnapshot | null> {
+  try {
+    return await dbModule.runOutsideDbContext(() => readEdrHints(connectionId, getRedis()));
+  } catch (error) {
+    console.error(`[EdrProviderSync] Connection ${connectionId}: push-hint snapshot failed (marker kept):`, error);
+    return null;
+  }
+}
+
+/**
+ * W03 PR-B: after Phase 3 COMMITTED, ack exactly the snapshot. Returns true when
+ * a newer hint is still pending (the caller enqueues one rerun). A failure keeps
+ * the sync result and the marker; `sync-all` picks the connection up.
+ */
+async function acknowledgeHints(connectionId: string, snap: EdrHintSnapshot): Promise<boolean> {
+  try {
+    const { stillPending } = await dbModule.runOutsideDbContext(() => ackEdrHints(connectionId, snap, getRedis()));
+    return stillPending;
+  } catch (error) {
+    console.error(`[EdrProviderSync] Connection ${connectionId}: push-hint ack failed (sync result kept):`, error);
+    return false;
+  }
 }
 
 /** Best-effort re-run of a stream whose tenants were dropped by the per-tenant fence. */
@@ -510,6 +637,8 @@ async function handleSyncError(
   // fall through to a plain rethrow so BullMQ backs off; nothing was persisted.
   if (isFinalAttempt || reauth) {
     await recordSyncFailure(loaded, stream, message, reauth);
+    // Connection health (W4): observe this kind soon instead of at its next poll.
+    reportTerminalSyncFailure('edr');
   }
   if (reauth) {
     throw error instanceof UnrecoverableError ? error : new UnrecoverableError(`${EDR_REAUTH_MARKER} ${message}`);
@@ -612,6 +741,7 @@ export async function syncEdrInventory(
       const dropped = fetched.results.length - keep.length;
       const inv = await persistInventory(tx, conn, keep, now);
       await pruneMissingTenantEndpoints(tx, conn.id, now);
+      await clearExpiredTenantDenials(tx, conn.id, now);
       const match = await matchEdrEndpoints(tx, conn.id);
       await refreshDetectionDeviceLinks(tx, conn.id);
 
@@ -656,6 +786,7 @@ export async function syncEdrInventory(
     });
 
     if (done && done.dropped > 0) await reenqueueStream(connectionId, 'inventory');
+    if (done) await runPhase4('evaluateEdrEndpointHealth', connectionId, () => evaluateEdrEndpointHealth(connectionId));
 
     if (!done) {
       console.warn(
@@ -693,6 +824,11 @@ export async function syncEdrDetections(
     secrets = built.secrets;
     // Unmapped tenants are not fetched.
     const mappedTenants = loaded.tenants.filter((t) => t.orgId);
+
+    // W03 PR-B: snapshot (never clear) the push hints BEFORE the vendor fetch,
+    // so everything in the snapshot is covered by this run's window. Acked only
+    // after Phase 3 commits. A read failure just skips the ack (marker survives).
+    const hintSnapshot = await snapshotHints(connectionId);
 
     // ---- phase 2 (NO DB) ---------------------------------------------
     const now = new Date();
@@ -759,7 +895,9 @@ export async function syncEdrDetections(
       return { dropped };
     });
 
-    if (done && done.dropped > 0) await reenqueueStream(connectionId, 'detections');
+    const hintStillPending = done && hintSnapshot ? await acknowledgeHints(connectionId, hintSnapshot) : false;
+    if (done && (done.dropped > 0 || hintStillPending)) await reenqueueStream(connectionId, 'detections');
+    if (done) await runPhase4('evaluateEdrAlerts', connectionId, () => evaluateEdrAlerts(connectionId, { now: new Date() }));
 
     if (!done) {
       console.warn(
@@ -777,13 +915,22 @@ export async function syncEdrDetections(
 // Worker
 // ---------------------------------------------------------------------------
 
-/**
- * True on the job's last configured attempt. BullMQ 5 increments `attemptsMade` only when an
- * attempt finishes or is retried (move-to-active bumps `attemptsStarted`), so inside the
- * processor it is 0-based: the 3rd of 3 attempts runs with attemptsMade === 2.
- */
-export function isFinalSyncAttempt(job: Pick<Job, 'attemptsMade'> & { opts: { attempts?: number } }): boolean {
-  return job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+// Moved to ./syncAttempt (shared with the backup/M365/Huntress workers, #8351).
+export { isFinalSyncAttempt };
+
+async function processJob(data: EdrSyncJobData, isFinalAttempt: boolean): Promise<unknown> {
+  switch (data.type) {
+    case 'sync-all':
+      return processSyncAll();
+    case 'sync-inventory':
+      return syncEdrInventory(data.connectionId, { isFinalAttempt });
+    case 'sync-detections':
+      return syncEdrDetections(data.connectionId, { isFinalAttempt });
+    case 'sync-action-status':
+      return pollEdrActionStatus(data.connectionId, new Date());
+    default:
+      throw new Error(`Unknown EDR provider sync job type: ${(data as { type: string }).type}`);
+  }
 }
 
 function createEdrProviderSyncWorker(): Worker<EdrSyncJobData> {
@@ -791,17 +938,7 @@ function createEdrProviderSyncWorker(): Worker<EdrSyncJobData> {
     EDR_PROVIDER_SYNC_QUEUE,
     async (job: Job<EdrSyncJobData>) => {
       // No blanket system-context wrap: each path manages its own short contexts.
-      const isFinalAttempt = isFinalSyncAttempt(job);
-      switch (job.data.type) {
-        case 'sync-all':
-          return processSyncAll();
-        case 'sync-inventory':
-          return syncEdrInventory(job.data.connectionId, { isFinalAttempt });
-        case 'sync-detections':
-          return syncEdrDetections(job.data.connectionId, { isFinalAttempt });
-        default:
-          throw new Error(`Unknown EDR provider sync job type: ${(job.data as { type: string }).type}`);
-      }
+      return processJob(job.data, isFinalSyncAttempt(job));
     },
     {
       connection: getBullMQConnection(),
@@ -861,3 +998,5 @@ export async function shutdownEdrProviderSyncJob(): Promise<void> {
   await shutdownEdrProviderSyncQueue();
   console.log('[EdrProviderSync] EDR provider sync worker shut down');
 }
+
+export const __testOnly = { processSyncAll, processJob };

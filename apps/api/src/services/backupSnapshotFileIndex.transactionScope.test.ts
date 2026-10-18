@@ -78,7 +78,7 @@ const STORAGE_IDENTITY = 'local::/srv/backups';
 function snapshotRow(overrides: Record<string, unknown> = {}) {
   return {
     id: SNAPSHOT_DB_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: 'snap-current',
-    jobId: 'job-1', configId: 'config-1', storageIdentity: STORAGE_IDENTITY,
+    jobId: 'job-1', configId: 'config-1', storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null,
     fileIndexStatus: 'none', fileIndexHydratedAt: null, referencedFiles: 5,
     ...overrides,
   };

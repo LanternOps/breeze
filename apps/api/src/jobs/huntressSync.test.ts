@@ -122,7 +122,10 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
-import { syncIntegrationById } from './huntressSync';
+import { syncIntegrationById, processSyncIntegration } from './huntressSync';
+import { makeRealJob } from './__helpers__/realBullJob';
+
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 
 describe('huntressSync — DB context boundaries (#1697)', () => {
   beforeEach(() => {
@@ -213,6 +216,29 @@ describe('huntressSync — DB context boundaries (#1697)', () => {
     expect(String(errorWrite!.payload.lastSyncError)).toContain('scheduled:');
   });
 
+  it('nudges connection health only when a terminal failure is recorded (W4)', async () => {
+    listAgents.mockRejectedValueOnce(new Error('transient CONNECTION_CLOSED'));
+    await expect(
+      syncIntegrationById('integration-1', 'scheduled', undefined, { isFinalAttempt: false })
+    ).rejects.toThrow('transient');
+    expect(nudgeConnectionHealth).not.toHaveBeenCalled();
+
+    listAgents.mockRejectedValueOnce(new Error('exhausted CONNECTION_CLOSED'));
+    await expect(
+      syncIntegrationById('integration-1', 'scheduled', undefined, { isFinalAttempt: true })
+    ).rejects.toThrow('exhausted');
+    expect(nudgeConnectionHealth).toHaveBeenCalledTimes(1);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('huntress');
+  });
+
+  it('nudges connection health on a mid-retry 401 auth failure (W4)', async () => {
+    const { HuntressApiError } = await import('../services/huntressClient');
+    listAgents.mockRejectedValueOnce(new HuntressApiError(401, 'Huntress API request failed (401 Unauthorized)'));
+    await syncIntegrationById('integration-1', 'scheduled', undefined, { isFinalAttempt: false })
+      .then(() => null, (e: unknown) => e);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('huntress');
+  });
+
   it('on a 401 auth failure, records the error status and fails UNRECOVERABLY even on a non-final attempt (BREEZE-1: dead credential must not retry/flood)', async () => {
     const { HuntressApiError } = await import('../services/huntressClient');
     const { UnrecoverableError } = await import('bullmq');
@@ -287,5 +313,23 @@ describe('huntressSync — DB context boundaries (#1697)', () => {
 
     expect(listOrganizations).not.toHaveBeenCalled();
     expect(result.upsertedAgents).toBe(0);
+  });
+});
+
+describe('processSyncIntegration — final-attempt detection with a real BullMQ Job (#8351)', () => {
+  const data = { type: 'sync-integration' as const, integrationId: 'integration-1' };
+
+  it('does not record a terminal error on the first of three attempts (attemptsMade 0)', async () => {
+    listAgents.mockRejectedValueOnce(new Error('transient CONNECTION_CLOSED'));
+    await expect(processSyncIntegration(data, makeRealJob(data, { attemptsMade: 0, attempts: 3 })))
+      .rejects.toThrow('transient');
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(false);
+  });
+
+  it('records the terminal error on the third of three attempts (attemptsMade 2)', async () => {
+    listAgents.mockRejectedValueOnce(new Error('exhausted CONNECTION_CLOSED'));
+    await expect(processSyncIntegration(data, makeRealJob(data, { attemptsMade: 2, attempts: 3 })))
+      .rejects.toThrow('exhausted');
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(true);
   });
 });

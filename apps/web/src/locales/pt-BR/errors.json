@@ -1,7 +1,7 @@
 {
   "NOT_FOUND": "Não encontrado",
   "ACCESS_DENIED": "Acesso negado",
-  "VALIDATION_FAILED": "Valide os campos destacados",
+  "VALIDATION_FAILED": "Corrija os valores inválidos e tente novamente",
   "RATE_LIMITED": "Muitas requisições! Tente novamente em instantes",
   "CONFLICT": "Há um conflito com estado atual",
   "LIMIT_REACHED": "Limite para essa ação atingido",

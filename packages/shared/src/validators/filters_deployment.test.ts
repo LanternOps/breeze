@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   rolloutConfigSchema,
   deploymentTargetConfigSchema,
+  scriptRunGroupTargetSchema,
+  automationTargetConfigSchema,
   deploymentScheduleSchema,
   scriptPayloadSchema,
   patchPayloadSchema,
@@ -486,5 +488,66 @@ describe('filterPreviewSchema', () => {
   it('should reject missing conditions', () => {
     const result = filterPreviewSchema.safeParse({});
     expect(result.success).toBe(false);
+  });
+});
+
+const GROUP_ID = '11111111-1111-4111-8111-111111111111';
+
+describe('scriptRunGroupTargetSchema', () => {
+  it('accepts a groups target', () => {
+    expect(scriptRunGroupTargetSchema.safeParse({ type: 'groups', groupIds: [GROUP_ID] }).success).toBe(true);
+  });
+
+  it('rejects empty groupIds, non-groups types and more than 100 groups', () => {
+    expect(scriptRunGroupTargetSchema.safeParse({ type: 'groups', groupIds: [] }).success).toBe(false);
+    expect(scriptRunGroupTargetSchema.safeParse({ type: 'all' }).success).toBe(false);
+    expect(scriptRunGroupTargetSchema.safeParse({ type: 'devices', deviceIds: [GROUP_ID] }).success).toBe(false);
+    const many = Array.from({ length: 101 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    expect(scriptRunGroupTargetSchema.safeParse({ type: 'groups', groupIds: many }).success).toBe(false);
+  });
+
+  it('rejects non-uuid group ids', () => {
+    expect(scriptRunGroupTargetSchema.safeParse({ type: 'groups', groupIds: ['nope'] }).success).toBe(false);
+  });
+});
+
+describe('automationTargetConfigSchema', () => {
+  it('rejects empty or missing members for groups, devices and filter', () => {
+    expect(automationTargetConfigSchema.safeParse({ type: 'groups' }).success).toBe(false);
+    expect(automationTargetConfigSchema.safeParse({ type: 'groups', groupIds: [] }).success).toBe(false);
+    expect(automationTargetConfigSchema.safeParse({ type: 'devices', deviceIds: [] }).success).toBe(false);
+    expect(automationTargetConfigSchema.safeParse({ type: 'devices' }).success).toBe(false);
+    expect(automationTargetConfigSchema.safeParse({ type: 'filter' }).success).toBe(false);
+  });
+
+  it('rejects unknown target types', () => {
+    expect(automationTargetConfigSchema.safeParse({ type: 'gruops', groupIds: [GROUP_ID] }).success).toBe(false);
+  });
+
+  it('accepts all, groups with ids, devices with ids and filter with a filter', () => {
+    expect(automationTargetConfigSchema.safeParse({ type: 'all' }).success).toBe(true);
+    expect(automationTargetConfigSchema.safeParse({ type: 'groups', groupIds: [GROUP_ID] }).success).toBe(true);
+    expect(automationTargetConfigSchema.safeParse({ type: 'devices', deviceIds: [GROUP_ID] }).success).toBe(true);
+    expect(
+      automationTargetConfigSchema.safeParse({
+        type: 'filter',
+        filter: { operator: 'AND', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }] },
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe('rolloutConfigSchema batchSize message (#8369)', () => {
+  it('rejects a malformed percentage with a human message, never the regex', () => {
+    const result = rolloutConfigSchema.safeParse({
+      type: 'staggered',
+      staggered: { batchSize: '25pct', batchDelayMinutes: 5 },
+    });
+    expect(result.success).toBe(false);
+    // Only the messages reach the user (the issue's `pattern` field does not).
+    const text = result.error!.issues.map((i) => i.message).join('\n');
+    expect(text).not.toContain('/^');
+    expect(text).not.toMatch(/must match pattern/i);
+    expect(text).toContain('percentage');
   });
 });

@@ -68,6 +68,19 @@ When you assemble from work, every unbilled AI usage charge for a month that has
 
 A line pulled in from a time entry bills the entry's **billed** quantity, not necessarily the time actually worked -- the entry's [billing profile](/features/rates/) can apply a minimum or round up to a billing increment first. When the two differ, the line's description states both, for example "On-site -- 0.50 h worked, 1.00 h billed." There is still exactly one invoice line per time entry.
 
+### Time-entry line detail
+
+You choose how time-entry lines print on customer invoices under **Settings → Billing → Documents**, in the **Time entry lines on invoices** group:
+
+- **Show the date worked** (off by default) prints the day each entry was worked under its line. The date is the day the entry started, in your partner time zone.
+- **Show the technician's note** (on by default) prints the time entry's description as the line title. Turn it off and time-entry lines read **Labor** instead; parts, manual lines and other lines keep their text. The note is withheld from the customer portal, the public invoice link and the copy pushed to QuickBooks or Xero too, not just hidden on screen.
+- **Show worked vs billed time** (on by default) prints the "0.50 h worked, 1.00 h billed" note described above, on the invoice and in the line description pushed to QuickBooks or Xero.
+- **Group by day** lists time-entry lines under a heading for each day, with that day's hours and amount, while dates are shown. Each entry still keeps its own line, rate and amount. Lines with no date, such as parts and the block-hours overage line, follow the dated ones.
+
+With the defaults, the content of an invoice is the same as before: same lines, text and amounts. Two PDF layout fixes apply to every invoice PDF generated from now on. A line title that wraps onto a second line is now measured in its bold font, so the text under it no longer prints over the title's second line. A tall line that doesn't fit at the bottom of a page now moves whole to the next page instead of splitting. An issued invoice's stored PDF never changes. Drafts, and invoices whose PDF hasn't been generated yet, may print slightly differently if they have a wrapping title or a tall line near the bottom of a page.
+
+To change these for one invoice, use **Time entry lines** in the draft editor. **Billing default** follows your partner setting. The choice is frozen when the invoice is issued. A later change to your setting never changes an invoice the customer already has, and invoices issued before this setting existed keep their original layout. A reissued invoice starts with the voided invoice's choice.
+
 ### Line grouping by ticket and category
 
 Wherever an invoice is rendered -- the web editor and document view, the generated PDF, the authenticated customer portal, and the public invoice link -- line items are grouped under the ticket they came from, then by category within that ticket (Labour, Materials, Recurring, and so on), instead of a flat list. This makes it clear to the customer which charges belong to which piece of work. Lines with no ticket are grouped together at the top.
@@ -89,6 +102,21 @@ On a draft, group headings show the ticket's current subject and category. From 
 Partners edit the invoice email under **Settings → Partner → Email templates** (Invoice) -- subject, heading, button label, and HTML body. Merge variables: `{{invoice_number}}`, `{{partner_name}}`, `{{total}}`, `{{due_date}}`, and `{{portal_url}}`. The pay/view button always uses the server invoice link; partners cannot point it somewhere else. A personal message, the PDF note, amount due, and your email signature still appear around that body. Leave it on the default to keep the built-in wording. This does not change the email card's accent bar or pull colors from the Branding tab.
 
 An invoice that has already been issued can be **re-sent** without changing anything about it -- its number, dates, amounts, and "sent" timestamp all stay as they were, so a reminder never looks like a second invoice. A paid invoice can be re-sent too, as a receipt. Drafts and voided invoices can't be sent this way.
+
+When **Show the date worked** is in effect for an invoice, the date is also sent to accounting: as the line's service date in QuickBooks, and appended to the line description in Xero, which has no per-line date field. Long line descriptions are shortened before the worked-vs-billed note and the date, so those always reach the accounting copy whole.
+
+#### Refresh from time entries
+
+If a technician corrects a time entry's note or start time after a draft invoice was assembled, click **Refresh from time entries** in the draft editor. It updates each time-entry line's note, date worked, worked time and approval marker from its source entry.
+
+- **Never changed:** quantities, prices, line totals and invoice totals, and any description you edited by hand. Lines are never added or removed.
+- A line whose entry's billed time no longer matches the line quantity is left untouched and listed, so you can edit the quantity or assemble a new draft.
+- Lines whose entry was deleted, billed on another invoice or is no longer billable on this draft are skipped and listed. A line whose entry was billed on another invoice blocks **Issue** until you remove it.
+- Only drafts can be refreshed; issued and void invoices are refused.
+
+When you upgrade to v0.123.0, time-entry lines already on draft invoices are treated as hand-edited, so a refresh never overwrites a description that existed before the upgrade.
+
+To remind customers automatically about upcoming and overdue invoices, turn on [payment reminders](/features/online-payments/#payment-reminders). They are off by default and do not need automatic payments.
 
 The issued-invoice view puts the **balance due** front and center, shows recorded payments, and offers a one-click **PDF download**, plus **Copy invoice link** and **Reset customer link** -- see [Online Payments](/features/online-payments/#the-customer-invoice-link).
 

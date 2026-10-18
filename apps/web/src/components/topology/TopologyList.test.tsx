@@ -2,6 +2,7 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import TopologyList from './TopologyList';
 import { topologyGraphFixture, NODE } from './topologyFixtures';
+import { groupedGraphFixture } from './groupedGraphFixture';
 
 afterEach(cleanup);
 
@@ -110,4 +111,59 @@ it('shows each device’s address and network and sorts rows by network, then na
   expect(zedRow).toHaveTextContent('10.1.2.0/24');
   const names = [...screen.getByTestId('topology-list').querySelectorAll('tbody tr button[data-testid^="topology-node-"]')].map((b) => b.textContent);
   expect(names.indexOf('AMY')).toBeLessThan(names.indexOf('ZED'));
+});
+
+it('marks a decommissioned device row as removed (#8307)', () => {
+  const graph = topologyGraphFixture();
+  const base = graph.nodes[0]!;
+  const inv = (agentStatus: string) => ({ source: 'device' as const, name: 'PC', addresses: ['10.1.2.9'], mac: null, vendor: null, model: null, os: null, type: 'workstation',
+    presence: { state: 'offline' as const, source: 'agent' as const, agentStatus, lastSeenAt: null } });
+  const gone = { ...base, id: '10000000-0000-4000-8000-0000000000d1', kind: 'endpoint' as const, label: 'OLD-PC', inventory: inv('decommissioned') };
+  const live = { ...base, id: '10000000-0000-4000-8000-0000000000d2', kind: 'endpoint' as const, label: 'NEW-PC', inventory: inv('online') };
+  graph.nodes = [gone, live]; graph.relationships = [];
+  render(<TopologyList graph={graph} onSelect={() => {}} />);
+  expect(screen.getByTestId(`topology-node-${gone.id}`).closest('tr')).toHaveTextContent('Decommissioned');
+  expect(screen.getByTestId(`topology-node-${live.id}`).closest('tr')).not.toHaveTextContent('Decommissioned');
+});
+
+it('tells repeated gateway rows apart by who reported them (#8307)', () => {
+  const graph = topologyGraphFixture();
+  const base = graph.nodes[0]!;
+  const gwA = { ...base, id: '10000000-0000-4000-8000-0000000000e1', label: '10.1.2.100' };
+  const gwB = { ...base, id: '10000000-0000-4000-8000-0000000000e2', label: '10.1.2.100' };
+  const a = { ...base, id: '10000000-0000-4000-8000-0000000000e3', kind: 'endpoint' as const, label: 'FRONT-DESK' };
+  const b = { ...base, id: '10000000-0000-4000-8000-0000000000e4', kind: 'endpoint' as const, label: 'BACK-OFFICE' };
+  graph.nodes = [gwA, gwB, a, b];
+  const route = { kind: 'default_route', meaning: 'default route', evidence: base.evidence, freshness: 'fresh', health: base.health };
+  graph.relationships = [{ ...route, id: 'r1', sourceNodeId: a.id, targetNodeId: gwA.id }, { ...route, id: 'r2', sourceNodeId: b.id, targetNodeId: gwB.id }] as never;
+  render(<TopologyList graph={graph} onSelect={() => {}} />);
+  expect(screen.getByTestId(`topology-node-${gwA.id}`).closest('tr')).toHaveTextContent('Reported by FRONT-DESK');
+  expect(screen.getByTestId(`topology-node-${gwB.id}`).closest('tr')).toHaveTextContent('Reported by BACK-OFFICE');
+});
+
+it('does not name a decommissioned device as a gateway reporter (#8307)', () => {
+  const graph = topologyGraphFixture();
+  const base = graph.nodes[0]!;
+  const gw = { ...base, id: '10000000-0000-4000-8000-0000000000f1', label: '10.1.2.100' };
+  const inv = (agentStatus: string) => ({ source: 'device' as const, name: 'PC', addresses: [], mac: null, vendor: null, model: null, os: null, type: null,
+    presence: { state: 'offline' as const, source: 'agent' as const, agentStatus, lastSeenAt: null } });
+  const live = { ...base, id: '10000000-0000-4000-8000-0000000000f2', kind: 'endpoint' as const, label: 'LIVE-PC', inventory: inv('online') };
+  const gone = { ...base, id: '10000000-0000-4000-8000-0000000000f3', kind: 'endpoint' as const, label: 'RETIRED-PC', inventory: inv('decommissioned') };
+  graph.nodes = [gw, live, gone];
+  const route = { kind: 'default_route', meaning: 'default route', evidence: base.evidence, freshness: 'fresh', health: base.health };
+  graph.relationships = [{ ...route, id: 'r1', sourceNodeId: live.id, targetNodeId: gw.id }, { ...route, id: 'r2', sourceNodeId: gone.id, targetNodeId: gw.id }] as never;
+  render(<TopologyList graph={graph} onSelect={() => {}} />);
+  const row = screen.getByTestId(`topology-node-${gw.id}`).closest('tr')!;
+  expect(row).toHaveTextContent('Reported by LIVE-PC');
+  expect(row).not.toHaveTextContent('RETIRED-PC');
+});
+
+it('has a Declared column: Yes/No for network cards that carry a declaration, a dash for everything else', () => {
+  const graph = groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'declared', members: 1 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 1 }]);
+  render(<TopologyList graph={graph} onSelect={vi.fn()} />);
+  expect(screen.getByRole('columnheader', { name: 'Declared' })).toBeInTheDocument();
+  const cell = (label: string) => screen.getByRole('button', { name: label }).closest('tr')!.querySelector('[data-testid^="topology-declared-"]')!;
+  expect(cell('10.1.2.0/24')).toHaveTextContent('Yes');
+  expect(cell('10.1.5.0/24')).toHaveTextContent('No');
+  expect(cell('HOST-0-0')).toHaveTextContent('\u2014');
 });

@@ -184,6 +184,12 @@ export interface InviteEmailParams {
   orgName?: string;
   inviteUrl: string;
   supportEmail?: string;
+  /** Owning partner's name: brands the layout footer and fills {{partner_name}}. */
+  partnerName?: string;
+  /** Days until the invite link expires; defaults to the invite TTL (7). */
+  expiresDays?: number;
+  /** Partner-saved template override; null/absent uses code defaults. */
+  custom?: PartnerEmailCustom | null;
 }
 
 export interface AccountLockedEmailParams {
@@ -552,7 +558,7 @@ export class EmailService {
   }
 
   async sendInvite(params: InviteEmailParams): Promise<void> {
-    const template = buildInviteTemplate(params);
+    const template = buildStaffInviteTemplate(params);
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
@@ -1180,45 +1186,67 @@ function buildSignupAttemptOnExistingAccountTemplate(
   return { subject, html, text };
 }
 
-function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
+/** Mirrors INVITE_TOKEN_TTL_SECONDS (routes/auth/schemas.ts): 7 days. */
+const DEFAULT_INVITE_EXPIRES_DAYS = 7;
+
+/**
+ * Caller verification (#6354 W03) link email to the CONTACT. Names the exact
+ * request and offers "This is not me"; never carries a challenge number or the
+ * reverse code (those exist only on the anonymous page). Partner-supplied text
+ * is escaped. Sent on the partner support stream
+ * (`security.caller_verification_link`).
+ */
+export function buildCallerVerificationTemplate(p: {
+  partnerName: string; technicianLabel: string; requestLabel: string; url: string;
+}): EmailTemplate {
+  const subject = 'Review a support request';
+  const request = `${p.technicianLabel} from ${p.partnerName} wants to ${p.requestLabel}.`;
+  const caution = `If you are not sure, hang up and call ${p.partnerName} on the number you already have.`;
+  const body = `<p style="${BODY_PARA}">${escapeHtml(request)}</p>
+    ${renderButton('Review request', p.url)}
+    <p style="${MUTED_PARA}">The page shows the request and lets you choose “This is not me”. This link expires in 10 minutes.</p>
+    <p style="${MUTED_PARA}">${escapeHtml(caution)}</p>`;
+  return {
+    subject,
+    html: renderLayout({ title: subject, preheader: request, heading: subject, body, brandName: p.partnerName }),
+    text: [request, `Review request: ${p.url}`, 'The link expires in 10 minutes.',
+      'Choose “This is not me” if you did not request this.', caution].join('\n\n'),
+  };
+}
+
+export function buildStaffInviteTemplate(params: InviteEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
   const inviter = params.inviterName?.trim() || 'A teammate';
-  const orgName = params.orgName?.trim();
-  const subject = orgName
-    ? `${inviter} invited you to ${orgName} on Breeze`
-    : `${inviter} invited you to Breeze`;
-  const preheader = orgName
-    ? `Accept your invitation to ${orgName} on Breeze.`
-    : 'Accept your invitation to Breeze.';
-  const heading = orgName ? `Join ${orgName}` : 'You are invited';
-
-  const body = `
-      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
-      <p style="${BODY_PARA}">${escapeHtml(inviter)} invited you${orgName ? ` to ${escapeHtml(orgName)}` : ''} on Breeze.</p>
-      ${renderButton('Accept invitation', params.inviteUrl)}
-      <p style="${MUTED_PARA}">This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.</p>
-  `;
-
-  const html = renderLayout({
-    title: heading,
-    preheader,
-    heading,
-    body,
+  const orgName = params.orgName?.trim() ?? '';
+  const expiresDays = params.expiresDays ?? DEFAULT_INVITE_EXPIRES_DAYS;
+  const rendered = renderPartnerEmail({
+    id: 'staff_invite',
+    custom: params.custom ?? null,
+    vars: {
+      name,
+      inviter_name: inviter,
+      org_name: orgName,
+      partner_name: params.partnerName ?? '',
+      invite_url: params.inviteUrl,
+      expires_days: String(expiresDays),
+    },
+    ctaUrl: params.inviteUrl,
+    brandName: params.partnerName?.trim() || undefined,
     footer: supportFooter(params.supportEmail, 'Questions? Contact'),
+    preheader: orgName
+      ? `Accept your invitation to ${orgName} on Breeze.`
+      : 'Accept your invitation to Breeze.',
   });
 
   const support = getSupportEmail(params.supportEmail);
   const text = [
-    `Hi ${name},`,
-    `${inviter} invited you${orgName ? ` to ${orgName}` : ''} on Breeze.`,
-    `Accept invitation: ${params.inviteUrl}`,
-    "This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.",
+    rendered.bodyText,
     support ? `Questions? Contact ${support}.` : null,
   ]
     .filter(Boolean)
     .join('\n');
 
-  return { subject, html, text };
+  return { subject: rendered.subject, html: rendered.html, text };
 }
 
 export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate {

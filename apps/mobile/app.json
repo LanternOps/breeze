@@ -24,7 +24,8 @@
         "NSPhotoLibraryUsageDescription": "Choose photos of hardware, screens and cabling to attach to a ticket.",
         "NSMotionUsageDescription": "Use device motion to support responsive interface animations.",
         "NSSpeechRecognitionUsageDescription": "Use voice to ask Breeze about your fleet.",
-        "NSMicrophoneUsageDescription": "Use voice to ask Breeze about your fleet."
+        "NSMicrophoneUsageDescription": "Use voice to ask Breeze about your fleet.",
+        "NSLocationWhenInUseUsageDescription": "Breeze checks your location on this phone while the app is open to suggest starting a timer when you arrive at a client site. Your location is not sent to Breeze unless you choose to save it as a site's location."
       },
       "privacyManifests": {
         "NSPrivacyTracking": false,
@@ -71,7 +72,9 @@
         "USE_FINGERPRINT",
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
-        "CAMERA"
+        "CAMERA",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
       ]
     },
     "web": {
@@ -128,6 +131,14 @@
         {
           "photosPermission": "Choose photos of hardware, screens and cabling to attach to a ticket.",
           "cameraPermission": "Take photos of hardware, screens and cabling to attach to a ticket."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Breeze checks your location on this phone while the app is open to suggest starting a timer when you arrive at a client site. Your location is not sent to Breeze unless you choose to save it as a site's location.",
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false
         }
       ],
       [

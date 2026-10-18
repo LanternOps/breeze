@@ -24,7 +24,8 @@
         "perDeviceRole": "Cihaz rolüne göre",
         "perDeviceGroup": "Cihaz grubu başına",
         "perSeat": "Koltuk başına",
-        "manual": "Manuel miktar"
+        "manual": "Manuel miktar",
+        "hourBlock": "Saat paketi"
       },
       "dynamicGroup": "dinamik",
       "deletedGroup": "{{name}} (silinmiş grup)",
@@ -588,6 +589,62 @@
       "warnings": {
         "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Anlaşma gövdeleri başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
       }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Dönem başına dahil saat",
+        "extraRate": "Ek saat başına fiyat",
+        "rolloverMode": "Dönem sonunda kullanılmayan saatler",
+        "rolloverExpire": "Sona erer",
+        "rolloverCarry": "Sonraki döneme aktarılır",
+        "carryCap": "Aktarım sınırı (saat; sınırsız için boş bırakın)",
+        "alertPct": "Paketin bu %'si kullanıldığında uyar (isteğe bağlı)",
+        "required": "Dahil saatleri ve ek saat başına fiyatı girin.",
+        "firstPeriod": "Saatler, henüz faturalanmamış ilk faturalama döneminden itibaren sayılır; taslak sözleşmede bu, etkinleştirildiğinde belirlenir. Öncesindeki süre her zamanki gibi faturalanır.",
+        "midPeriodEdit": "Değişiklikler, mevcut açık döneme ({{start}} – {{end}}) dönem kapandığında uygulanır.",
+        "midPeriodEditNoDates": "Değişiklikler, mevcut açık döneme dönem kapandığında uygulanır.",
+        "onlyOne": "Bu kuruluşun zaten etkin bir saat paketi var. Yenisini eklemeden önce onu kullanımdan kaldırın."
+      },
+      "row": {
+        "perPeriod": "Dönem başına {{hours}} saat",
+        "retiredBadge": "Kullanımdan kaldırıldı",
+        "startsOn": "{{date}} tarihinden itibaren sayılır"
+      },
+      "errors": {
+        "exists": "Bu kuruluşun zaten etkin bir saat paketi satırı var. Önce onu kullanımdan kaldırın, ardından yenisini ekleyin.",
+        "locked": "Bu alan bir saat paketi satırında değiştirilemez."
+      },
+      "retire": {
+        "title": "Saat paketini kullanımdan kaldır",
+        "message": "\"{{description}}\" faturalama geçmişine sahip olduğundan silinmek yerine kullanımdan kaldırılır. Yeni dönem yok; zaten faturalanmış dönemler yine de kapanır. Kapanmış dönemler sözleşmede kalır.",
+        "confirm": "Paketi kaldır",
+        "toast": "Saat paketi kullanımdan kaldırıldı"
+      },
+      "detail": {
+        "title": "Saat paketi",
+        "usage": "{{included}} saatin {{used}} saati kullanıldı · {{remaining}} kaldı · dönem {{end}} tarihinde bitiyor",
+        "carried": "Aktarılan {{hours}} saati içerir.",
+        "unapproved": "Bu sürenin {{hours}} saati henüz onaylanmadı.",
+        "foreign": "{{hours}} saat başka bir para biriminde kaydedildi; yine de paketten düşer.",
+        "over": "Paketin {{hours}} saat üzerinde → dönem kapanışında {{amount}}",
+        "advanceNote": "Aşım, sonraki faturada faturalanır.",
+        "arrearsNote": "Aşım, bu dönemin faturasında faturalanır.",
+        "lateEntry": "{{hours}} saat, dönemi kapandıktan sonra girildi ve ayrıca faturalanır.",
+        "startsLater": "Paket {{date}} tarihinde başlar.",
+        "extraRate": "Ek saatler: saat başına {{rate}}",
+        "loadFailed": "Paket kullanımı yüklenemedi."
+      },
+      "history": {
+        "title": "Kapanan paket dönemleri",
+        "empty": "Henüz kapanan bir paket dönemi yok.",
+        "included": "Dahil",
+        "carriedIn": "Gelen aktarım",
+        "used": "Kullanılan",
+        "over": "Aşım",
+        "carriedOut": "Giden aktarım",
+        "loadMore": "Daha fazla yükle",
+        "invoiceRemoved": "Aşım faturası kaldırıldı — saatler faturalanmadı"
+      }
     }
   },
   "agreements": {
@@ -1009,8 +1066,8 @@
         "title": "Altbilgi satırı (her sayfa)",
         "helper": "Her sayfanın altında yazdırılan kısa bir satır — örn. geçerlilik tarihleri. Varsayılan altbilgiyi kullanmak için boş bırakın. Küçük yazılar buraya değil Şartlar ve Koşullar'a eklenmelidir.",
         "placeholder": "Boş = varsayılan altbilgiyi kullan",
-        "inheritedPartner": "Ayarlar'daki ortak fatura altbilgisi kullanılıyor: “{{text}}”",
-        "inheritedBrand": "Marka kiti altbilgi metni kullanılıyor: “{{text}}”",
+        "inheritedPartner": "Faturalandırma ayarlarındaki iş ortağı belge altbilgisi kullanılıyor: “{{text}}”",
+        "inheritedBrand": "Bu kuruluşun Portal ayarlarındaki altbilgi metni kullanılıyor: “{{text}}”",
         "inheritedNone": "Ayarlar'da varsayılan bir altbilgi ayarlanmamış — sayfa altbilgisi boş olacak.",
         "counter": "{{count}} / {{max}}"
       },
@@ -1714,7 +1771,8 @@
       "saveNotes": "Notlar kaydedilemedi.",
       "saveTerms": "Şartlar kaydedilemedi.",
       "updateLine": "Satır güncellenemedi.",
-      "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin."
+      "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin.",
+      "saveLineDetail": "Zaman kayıtlarının nasıl yazdırıldığı güncellenemedi"
     },
     "fields": {
       "descriptionOptional": "Açıklama (isteğe bağlı)",
@@ -1781,6 +1839,35 @@
     "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın",
     "unsavedField": {
       "lines": "Satır öğeleri"
+    },
+    "lineDetail": {
+      "default": "Faturalama varsayılanı",
+      "grouping": "Düzen",
+      "groupingDay": "Güne göre grupla",
+      "groupingEntry": "Kayıt başına bir satır",
+      "help": "Faturalama varsayılanını yalnızca bu taslak için geçersiz kılar.",
+      "hide": "Gizle",
+      "show": "Göster",
+      "showDate": "Çalışılan tarih",
+      "showNote": "Teknisyen notu",
+      "showWorkedTime": "Çalışılan ve faturalanan süre",
+      "title": "Zaman kaydı satırları"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} satır düzenlemeyi engelleyecek: zaman kayıtları başka bir faturada faturalandı. Düzenlemeden önce kaldırın:",
+      "billedElsewhere_one": "{{count}} satır düzenlemeyi engelleyecek: zaman kaydı başka bir faturada faturalandı. Düzenlemeden önce kaldırın:",
+      "billedElsewhere_other": "{{count}} satır düzenlemeyi engelleyecek: zaman kayıtları başka bir faturada faturalandı. Düzenlemeden önce kaldırın:",
+      "button": "Zaman kayıtlarından yenile",
+      "drifted": "{{count}} satır değiştirilmedi: zaman kayıtlarının faturalanan süresi artık miktarla eşleşmiyor. Miktarı düzenleyin veya yeni bir taslak oluşturun.",
+      "drifted_one": "{{count}} satır değiştirilmedi: zaman kaydının faturalanan süresi artık miktarla eşleşmiyor. Miktarı düzenleyin veya yeni bir taslak oluşturun.",
+      "drifted_other": "{{count}} satır değiştirilmedi: zaman kayıtlarının faturalanan süresi artık miktarla eşleşmiyor. Miktarı düzenleyin veya yeni bir taslak oluşturun.",
+      "error": "Zaman kayıtlarından yenilenemedi",
+      "help": "Notları, çalışılan tarihleri ve onayı zaman kayıtlarından günceller. Miktarlar, fiyatlar ve elle düzenlenen açıklamalar asla değişmez.",
+      "running": "Yenileniyor…",
+      "skipped": "{{count}} satır atlandı: zaman kayıtları başka bir faturada faturalandı, silindi veya bu taslakta artık faturalanamaz.",
+      "skipped_one": "{{count}} satır atlandı: zaman kaydı başka bir faturada faturalandı, silindi veya bu taslakta artık faturalanamaz.",
+      "skipped_other": "{{count}} satır atlandı: zaman kayıtları başka bir faturada faturalandı, silindi veya bu taslakta artık faturalanamaz.",
+      "summary": "Yenilenen: {{refreshed}} · Zaten güncel: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -1963,7 +2050,10 @@
       "syncingToProvider": "Eşitleniyor…",
       "providerSyncFailed": "{{provider}} eşitlemesi başarısız oldu",
       "reverseInProviderToo": "Bu ödemeyi {{provider}} tarafında da iptal edin",
-      "overpayment": "Tutar, ödenmesi gereken bakiyeden ({{balance}}) fazla."
+      "overpayment": "Tutar, ödenmesi gereken bakiyeden ({{balance}}) fazla.",
+      "fillLabel": "Tutarı doldur",
+      "fillDeposit": "Depozito ({{amount}})",
+      "fillBalance": "Tüm bakiye ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fatura gönderildi",
@@ -1978,7 +2068,8 @@
       "paid": "Ücretli",
       "subtotal": "Ara Toplam",
       "tax": "Vergi",
-      "total": "Toplam"
+      "total": "Toplam",
+      "depositDueNow": "Şimdi ödenecek depozito"
     },
     "terms": "Şartlar ve Koşullar",
     "void": {
@@ -2028,6 +2119,7 @@
     "empty": "Bu faturada henüz herhangi bir satır öğesi yok.",
     "fallbackTitle": "Fatura",
     "issued": "Verildi",
+    "laborLine": "İşçilik",
     "preview": {
       "description": "Müşterinizin faturasında gördüğü şey budur.",
       "downloadError": "Fatura PDF'si indirilemedi.",
@@ -2124,7 +2216,9 @@
       "sourceAria": "Fatura kaynağı",
       "title": "Yeni fatura",
       "to": "Kime",
-      "working": "Çalışıyor…"
+      "working": "Çalışıyor…",
+      "heldForHourBlock_one": "{{count}} zaman kaydı ({{hours}} saat) bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak.",
+      "heldForHourBlock_other": "{{count}} zaman kaydı ({{hours}} saat) bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak."
     },
     "empty": {
       "description": "Faturalandırılmamış zamanları ve parçaları bir taslakta birleştirin veya boş bir fatura başlatın.",
@@ -2191,6 +2285,7 @@
       "title": "Para birimi",
       "description": "Bu organizasyon için yeni teklifler, faturalar, sözleşmeler, zaman kayıtları ve parçalar bu para birimiyle damgalanır. Hiçbir mevcut kayıt değiştirilmez.",
       "label": "Faturalama para birimi",
+      "partnerDefault": "Devralınmaz: her kuruluş kendi faturalandırma para birimini korur. İş ortağı varsayılanı ({{currency}}) yalnızca bundan sonra oluşturulan kuruluşlara uygulanır.",
       "loading": "{{currency}} birimine geçişin neleri etkileyeceği kontrol ediliyor…",
       "error": "Para birimi değişikliği özeti yüklenemedi.",
       "panelTitle": "Faturalama para birimi {{currency}} olarak değiştirilsin mi?",
@@ -2275,10 +2370,11 @@
       "autoEmailInvoiceHelp": "Bir müşteri teklifi kabul ettiğinde, düzenlenen fatura güvenli bir görüntüleme ve ödeme bağlantısıyla hemen e-postayla gönderilir — oturum açma gerekmez.",
       "notifyOnBehalfAcceptance": "Müşteri adına bir kabul kaydettiğinizde müşteriye e-posta gönder",
       "notifyOnBehalfAcceptanceHelp": "Ekibinizden biri bir müşteri adına teklifi kabul ettiğinde, müşteri kabulü kimin ve ne zaman kaydettiğini belirten kısa bir not alır; bir fatura düzenlendiyse fatura numarası da eklenir. Yanlışsa yanıtlayabilir. Varsayılan olarak kapalı.",
-      "currencyCode": "Para birimi kodu",
+      "currencyCode": "Yeni kuruluşlar için varsayılan para birimi",
+      "currencyHelp": "Yeni kuruluşlar bu para birimiyle başlar. Mevcut kuruluşlar kendi para birimlerini korur; değiştirmek için ilgili kuruluşun Faturalandırma sekmesini kullanın.",
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",
-      "description": "Müşterileriniz genelinde yeni fiyat tekliflerine ve faturalara uygulanan para birimi, vergi, numaralandırma ve koşullar.",
+      "description": "Müşterilerinizin fiyat teklifleri ve faturaları için varsayılanlar. Bir kuruluş kendi vergi oranını ve ödeme koşullarını belirleyebilir. Para birimi buradaki varsayılan para birimiyle başlar ve kuruluşun Faturalandırma sekmesinden değiştirilir.",
       "deviceAppendix": "Fatura PDF'lerine faturalanan cihazlar ekini dahil et",
       "deviceAppendixHelp": "Her fatura satırında sayılan tüm cihazları listeleyen bir sayfa ekler. Varsayılan olarak kapalıdır; seçim fatura düzenlendiğinde dondurulur.",
       "documentPageSize": "Sayfa boyutu",
@@ -2287,7 +2383,8 @@
       "documentTheme": "Belge yazı tipleri",
       "documentThemeClassic": "Helvetica",
       "documentThemeCondensed": "Barlow Condensed + DM Sans",
-      "invoiceFooter": "Fatura altbilgisi",
+      "invoiceFooter": "Belge altbilgisi",
+      "invoiceFooterHelp": "Fiyat tekliflerinizin ve faturalarınızın her sayfasının altına basılır. Bir kuruluşun kendi altbilgi metni (Portal ayarlarında) o kuruluş için bunun yerine geçer; bir fiyat teklifinin kendi altbilgi satırı ise ikisinin de yerine geçer.",
       "invoiceFooterPlaceholder": "Ödeme talimatları, teşekkür notu vb.",
       "invoiceNumberPrefix": "Fatura numarası öneki",
       "markupHelp": "Katalog ürünlerini içe aktarırken satış fiyatını önceden doldurmak için kullanılan, distribütör maliyeti üzerinden varsayılan kar marjı. Ortaya çıkan brüt kar marjı siz içe aktardıkça gösterilir.",
@@ -2295,7 +2392,15 @@
       "prefixInvalid": "1 ile 12 karakter arasında bir ön ek girin.",
       "taxRateInvalid": "0 ile 100 arasında bir vergi oranı girin.",
       "termsDaysInvalid": "0 ile 365 arasında tam sayı olarak gün girin.",
-      "title": "Faturalandırma varsayılanları"
+      "title": "Faturalandırma varsayılanları",
+      "lineDetailTitle": "Faturalardaki zaman kaydı satırları",
+      "lineDetailHelp": "Müşterilerin zaman kayıtlarında neyi göreceğini seçin. Taslak bir fatura bunu geçersiz kılabilir; seçim fatura düzenlendiğinde sabitlenir.",
+      "lineShowDate": "Çalışılan tarihi göster",
+      "lineShowNote": "Teknisyen notunu göster",
+      "lineShowWorkedTime": "Çalışılan ve faturalanan süreyi göster",
+      "lineGrouping": "Düzen",
+      "lineGroupingEntry": "Kayıt başına bir satır",
+      "lineGroupingDay": "Güne göre grupla"
     },
     "loadError": "Faturalandırma ayarları yüklenemedi.",
     "loading": "Faturalandırma ayarları yükleniyor…",

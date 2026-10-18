@@ -137,6 +137,9 @@ vi.mock("./M365CustomerGraphActionsCard", () => ({
     />
   ),
 }));
+vi.mock("./M365ActionsStaleManifestTable", () => ({
+  default: () => <div data-testid="m365-stale-manifest-table" />,
+}));
 vi.mock("./Pax8Integration", () => ({
   default: () => <div data-testid="stub-pax8" />,
 }));
@@ -249,6 +252,32 @@ describe("IntegrationsPage — M365 coexistence", () => {
     expect(section).toContainElement(legacy);
     expect(section).toContainElement(graphRead);
     expect(section).toContainElement(screen.getByTestId("stub-customer-graph-actions"));
+  });
+});
+
+describe("IntegrationsPage — M365 stale-manifest re-consent table mount", () => {
+  beforeEach(() => {
+    scope = "partner";
+    window.history.replaceState({}, "", "/integrations#m365");
+  });
+
+  it("mounts the table for a partner-scoped session", () => {
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("m365-stale-manifest-table")).toBeInTheDocument();
+  });
+
+  it("does not mount the table for an organization-scoped session", () => {
+    scope = "organization";
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("m365-tenant-section")).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-stale-manifest-table")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Microsoft 365 section selected for the table's row-selection hash", () => {
+    window.history.replaceState({}, "", "/integrations#m365-reconsent-11111111-1111-4111-8111-111111111111");
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("m365-tenant-section")).toBeInTheDocument();
+    expect(screen.getByTestId("m365-stale-manifest-table")).toBeInTheDocument();
   });
 });
 

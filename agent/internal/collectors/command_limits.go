@@ -222,9 +222,42 @@ func newCollectorScanner(output []byte) *bufio.Scanner {
 }
 
 func truncateCollectorString(value string) string {
-	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(stripCollectorControlChars(value))
 	if len(value) <= collectorStringLimit {
 		return value
 	}
 	return strings.TrimSpace(value[:collectorStringLimit]) + "... [truncated]"
+}
+
+// isCollectorControlChar reports whether r is a control character collectors
+// must not ship: C0 controls (including NUL) and DEL. Tab, LF and CR are kept
+// because multi-line command output and error text rely on them.
+func isCollectorControlChar(r rune) bool {
+	switch r {
+	case '\t', '\n', '\r':
+		return false
+	}
+	return r < 0x20 || r == 0x7f
+}
+
+// hasCollectorControlChars reports whether value contains a character that
+// stripCollectorControlChars would remove. A collector uses it to tell that a
+// raw read was corrupt (#8904), since the stripped value can still be wrong.
+func hasCollectorControlChars(value string) bool {
+	return strings.IndexFunc(value, isCollectorControlChar) >= 0
+}
+
+// stripCollectorControlChars removes NUL and other control characters from
+// value. A Windows CIM read once returned a service account as four NULs
+// followed by "lSystem" (#8904); PostgreSQL rejects NUL in text and jsonb.
+func stripCollectorControlChars(value string) string {
+	if !hasCollectorControlChars(value) {
+		return value
+	}
+	return strings.Map(func(r rune) rune {
+		if isCollectorControlChar(r) {
+			return -1
+		}
+		return r
+	}, value)
 }

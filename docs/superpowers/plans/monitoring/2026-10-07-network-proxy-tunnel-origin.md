@@ -21,14 +21,209 @@ depends_on: PR #8110 (fix/network-proxy-sandbox-subresource-auth) merged to main
 
 **Tracking:** after Todd approves this plan, the orchestrator registers it with the `feature-lifecycle` MCP (`register_feature`: one parent plus waves W00, W01, W02, W03, W04) and adds `tracking_issue: LanternOps/breeze#<parent>` to this file's frontmatter. Each wave branch is `feature/<parent#>-network-proxy-tunnel-origin/wave-<sub#>`, and its PR body carries `Closes #<sub#>`.
 
+## Amendments 2026-10-12 (product-owner decisions)
+
+These override the tasks they name. Where an amendment and a task's text disagree, the amendment wins.
+
+1. **Tunnel domain.** It stays configuration only. The env var keeps the name `TUNNEL_ORIGIN_TEMPLATE`, because the template already subsumes a host suffix. Task 1 already adds a commented placeholder to `.env.example`. The production name is supplied at W04, so nothing before W04 waits on it.
+2. **W00 runs locally.** Task 0.1 (real DNS, ACM and ingress on US) **moves to W04** and runs as the first step of Task 17. Tasks 0.2 (Caddy routing) and 0.3 (CHIPS in real browsers) run now against `*.tunnel.localhost`, with the app on `app.localhost`. These are different registrable domains, so the iframe is genuinely cross-site. `Partitioned` requires `Secure`, so Task 0.3 first records whether each browser accepts `Secure` cookies on `http://*.localhost`. Where one doesn't, that browser runs behind Caddy's internal CA (`tls internal`) instead.
+3. **Opt-in is per partner, not per region.** The region env var only makes host mode *available*. A partner setting decides whether that partner's sessions *use* it. New Task 4b (W01) and Task 13b (W03) below implement this. Tasks 4 and 8 change as follows:
+   - **Task 4:** `mode` is `host` only when `getTunnelOriginConfig()` is non-null **and** `isTunnelOriginEnabledForOrg(session.orgId)` returns true. Otherwise the route returns the path-mode URL. Add a test where the region template is set but the partner hasn't opted in: it expects `mode: 'path'`.
+   - **Task 8:** `/__bz/enter` re-checks `isTunnelOriginEnabledForOrg(session.orgId)` after the ticket is consumed and **before** minting `__Host-bzt`. When the check fails it returns 404 and mints nothing. This is defense in depth: the tunnel host has no app auth context, and the partner can switch the setting off between ticket mint and exchange. Add a route test for it.
+   - **Task 19:** the "default flip" becomes changing `TUNNEL_ORIGIN_PARTNER_DEFAULT` to `true` once PSL inclusion is verified. It is no longer a per-region switch.
+   - **Settings rule 9:**
+     - Home: Partner Settings → Remote Access.
+     - Level: partner only. It has no org override because it is a partner-wide transport choice, and the UI says so.
+     - Resolver: `isTunnelOriginEnabledForOrg`.
+     - Places configured: 0 before, 1 after.
+4. **Execution:** `superpowers:subagent-driven-development`, with a fresh implementer and a fresh reviewer per task.
+6. **The W00 gate moves to W02.** W01 is path-mode-preserving groundwork: config, the shared core, the revocation race, the server-built URL, fail-closed host dispatch and the opt-in. None of it depends on browser cookie behaviour, so it starts now, in parallel with the W00 local spikes. W02, the host-mode auth shape, starts only after the W00 results are appended to the spec.
+5. **Task 14 shrinks.** PR #8408 already makes "Open In New Tab" mint a fresh ticket in path mode: it opens `about:blank` synchronously, clears the opener, then calls `location.replace`. Task 14 now only switches that handler to request `?mode=tab` and use the response's `url`. Its other steps are done.
+
+### Task 4b: Per-partner opt-in for the dedicated tunnel origin (W01; run before Task 4, which consumes it)
+
+**Files:**
+- Create: `apps/api/src/services/tunnelOriginOptIn.ts`
+- Create: `apps/api/src/services/tunnelOriginOptIn.test.ts`
+- Modify: `apps/api/src/routes/orgs.ts` (`partnerSettingsSchema`, ~line 737; add the `networkProxy` key next to `ml`)
+- Modify: `apps/api/src/routes/orgs.test.ts` (PATCH `/partners/me` validation case)
+
+**Interfaces:**
+- Produces:
+  - `TUNNEL_ORIGIN_PARTNER_DEFAULT: boolean` (`false`);
+  - `tunnelOriginOptInFromSettings(settings: unknown): boolean`;
+  - `isTunnelOriginEnabledForOrg(orgId: string): Promise<boolean>`.
+  - Tasks 4 and 8 consume the last one.
+- Partner settings key: `settings.networkProxy.dedicatedTunnelOrigin: boolean`.
+
+- [ ] **Step 1: Write the failing tests** (`tunnelOriginOptIn.test.ts`):
+
+```ts
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+const { selectRows } = vi.hoisted(() => ({ selectRows: { value: [] as unknown[] } }));
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn(async () => selectRows.value) })),
+        })),
+      })),
+    })),
+  },
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+}));
+vi.mock('../db/schema', () => ({
+  organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
+  partners: { id: 'partners.id', settings: 'partners.settings' },
+}));
+
+import {
+  TUNNEL_ORIGIN_PARTNER_DEFAULT,
+  isTunnelOriginEnabledForOrg,
+  tunnelOriginOptInFromSettings,
+} from './tunnelOriginOptIn';
+
+describe('tunnelOriginOptInFromSettings', () => {
+  it('is off by default until PSL inclusion is verified', () => {
+    expect(TUNNEL_ORIGIN_PARTNER_DEFAULT).toBe(false);
+    expect(tunnelOriginOptInFromSettings(null)).toBe(false);
+    expect(tunnelOriginOptInFromSettings({})).toBe(false);
+    expect(tunnelOriginOptInFromSettings({ networkProxy: {} })).toBe(false);
+  });
+
+  it('honours an explicit partner value either way', () => {
+    expect(tunnelOriginOptInFromSettings({ networkProxy: { dedicatedTunnelOrigin: true } })).toBe(true);
+    expect(tunnelOriginOptInFromSettings({ networkProxy: { dedicatedTunnelOrigin: false } })).toBe(false);
+  });
+
+  it('ignores a non-boolean value instead of treating it as truthy', () => {
+    expect(tunnelOriginOptInFromSettings({ networkProxy: { dedicatedTunnelOrigin: 'yes' } })).toBe(false);
+    expect(tunnelOriginOptInFromSettings({ networkProxy: 'on' })).toBe(false);
+  });
+});
+
+describe('isTunnelOriginEnabledForOrg', () => {
+  beforeEach(() => { selectRows.value = []; });
+
+  it('reads the org\'s partner settings', async () => {
+    selectRows.value = [{ settings: { networkProxy: { dedicatedTunnelOrigin: true } } }];
+    expect(await isTunnelOriginEnabledForOrg('11111111-1111-4111-8111-111111111111')).toBe(true);
+  });
+
+  it('fails closed when the org or partner is missing', async () => {
+    selectRows.value = [];
+    expect(await isTunnelOriginEnabledForOrg('11111111-1111-4111-8111-111111111111')).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+  Run: `cd apps/api && npx vitest run src/services/tunnelOriginOptIn.test.ts`
+  Expected: FAIL, with `Cannot find module './tunnelOriginOptIn'`.
+- [ ] **Step 3: Implement** `tunnelOriginOptIn.ts`:
+
+```ts
+import { eq } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { organizations, partners } from '../db/schema';
+
+/**
+ * Whether a partner's Network Proxy sessions use the dedicated tunnel origin
+ * when the region offers one (TUNNEL_ORIGIN_TEMPLATE). Flips to `true` only
+ * after the tunnel domain's Public Suffix List inclusion is verified in
+ * shipped browsers (plan W04 Task 19); until then it is opt-in per partner.
+ */
+export const TUNNEL_ORIGIN_PARTNER_DEFAULT = false;
+
+export function tunnelOriginOptInFromSettings(settings: unknown): boolean {
+  if (!settings || typeof settings !== 'object') return TUNNEL_ORIGIN_PARTNER_DEFAULT;
+  const networkProxy = (settings as Record<string, unknown>).networkProxy;
+  if (!networkProxy || typeof networkProxy !== 'object') return TUNNEL_ORIGIN_PARTNER_DEFAULT;
+  const value = (networkProxy as Record<string, unknown>).dedicatedTunnelOrigin;
+  return typeof value === 'boolean' ? value : TUNNEL_ORIGIN_PARTNER_DEFAULT;
+}
+
+/**
+ * Resolver for the per-partner opt-in, keyed by the tunnel session's org.
+ * System context: called from the ticket route (inside a request) and from
+ * the tunnel host's `/__bz/enter` (no app auth context). Missing rows fail
+ * closed to path mode.
+ */
+export async function isTunnelOriginEnabledForOrg(orgId: string): Promise<boolean> {
+  const [row] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ settings: partners.settings })
+        .from(organizations)
+        .innerJoin(partners, eq(organizations.partnerId, partners.id))
+        .where(eq(organizations.id, orgId))
+        .limit(1),
+    ),
+  );
+  return row ? tunnelOriginOptInFromSettings(row.settings) : false;
+}
+```
+
+  Then, in `orgs.ts` `partnerSettingsSchema`, next to `ml`:
+
+```ts
+  // Network Proxy transport (#8155). Partner-only: no org override, since
+  // it chooses how every session of this partner is served. Read by
+  // services/tunnelOriginOptIn.ts. Replaced wholesale (one field).
+  networkProxy: z.object({ dedicatedTunnelOrigin: z.boolean().optional() }).strict().optional(),
+```
+
+  In `orgs.test.ts`, add a PATCH `/partners/me` case. `{ settings: { networkProxy: { dedicatedTunnelOrigin: 'yes' } } }` returns 400. `{ settings: { networkProxy: { dedicatedTunnelOrigin: true } } }` returns 200 and persists the setting. Copy the request and assertion shape from the neighbouring `ml` settings PATCH case in the same file.
+- [ ] **Step 4: Run to verify it passes**
+  Run: `cd apps/api && npx vitest run src/services/tunnelOriginOptIn.test.ts src/routes/orgs.test.ts`
+  Expected: PASS.
+- [ ] **Step 5: Commit**
+  ```bash
+  git add apps/api/src/services/tunnelOriginOptIn.ts apps/api/src/services/tunnelOriginOptIn.test.ts apps/api/src/routes/orgs.ts apps/api/src/routes/orgs.test.ts
+  git commit -m "feat(network-proxy): per-partner opt-in for the dedicated tunnel origin"
+  ```
+
+### Task 13b: Partner toggle for the dedicated tunnel origin (W03)
+
+**Files:**
+- Modify: `apps/web/src/components/settings/PartnerRemoteAccessTab.tsx` (+ `PartnerRemoteAccessTab.test.ts`)
+- Modify: the partner settings page's save path that already sends `remoteAccessProviders`, so it also sends `settings.networkProxy`. Find it with `grep -rn "PartnerRemoteAccessTab" apps/web/src/components/settings/`.
+- Modify: `apps/web/src/locales/*/settings.json`, **all 7 locales**. The locale-parity test lives in `src/lib/i18n` and fails if a locale is missing.
+
+**Interfaces:**
+- Consumes: the partner settings key `networkProxy.dedicatedTunnelOrigin` (Task 4b).
+- The form uses the page-level Save (settings rule 7: forms use page Save). It does not autosave.
+
+- [ ] **Step 1: Write the failing test.** Rendering the tab with `networkProxy: { dedicatedTunnelOrigin: true }` shows the switch checked. Toggling it calls `onChange` with `dedicatedTunnelOrigin: false`, and the helper text says it applies to every organization of the partner. Use the existing `PartnerRemoteAccessTab.test.ts` render helper.
+- [ ] **Step 2: Run to verify it fails.**
+  Run: `cd apps/web && npx vitest run src/components/settings/PartnerRemoteAccessTab.test.ts`
+- [ ] **Step 3: Implement** a labelled switch section, "Serve Network Proxy from a dedicated origin". Its helper text says: "Applies to all organizations. Recommended once your region offers it; improves compatibility with device web UIs." Add the keys `partnerRemoteAccess.networkProxy.title` and `partnerRemoteAccess.networkProxy.help` to every locale.
+- [ ] **Step 4: Run to verify it passes**, including the locale-parity suite.
+  Run: `cd apps/web && npx vitest run src/components/settings/PartnerRemoteAccessTab.test.ts src/lib/i18n`
+- [ ] **Step 5: Commit.**
+
+### Amendments 2026-10-12b (W01 review + W00 results, binding for W02)
+
+These override the tasks they name. Where an amendment and a task's text disagree, the amendment wins. Items 1–3 come from the spec's "W00 spike results (2026-10-12)" section; items 4–6 from the review of W01 (PR #8458). Each affected task carries the change in place, marked "(amended 2026-10-12b)".
+
+1. **`/__bz/enter` probes web storage, not only the cookie (Task 8).** Spec W00 results, contradiction 2 (§4 fallback, Goals): in Chrome 154 with third-party cookies blocked, "the `Partitioned` `__Host-bzt` still worked, so `/__bz/ping` returned 204 and no cookie-blocked notice fired. But `localStorage` threw `SecurityError` inside the tunnel iframe, both with and without the §6 sandbox attribute. A device SPA that uses web storage will fail in the iframe, and the user gets no fallback prompt. The cookie-only ping cannot detect this." The bootstrap page therefore runs a `localStorage` set/remove probe beside the ping and treats a throw like a blocked cookie: it posts the `breeze-tunnel-cookie-blocked` message (with `reason: 'cookie' | 'storage'`) so the parent offers "Open in New Tab", where storage worked in every engine. W03 Task 13 consumes `reason` for its notice text; the message type does not change.
+2. **Caddy refuses tunnel-domain hosts that miss the wildcards (Task 10).** Spec W00 results, contradiction 3 (§3) and Caddy routing table (Task 0.2): a trailing-dot host, a three-label host (`a.b.c.<suffix>`) and the bare suffix "never reach the tunnel block. The app block served them, with no assertion header … The app block needs its own reject for tunnel-domain hosts." W01's classifier (`apps/api/src/middleware/tunnelHostDispatch.ts`) is the backstop and 421s them, but it only ever sees `/api/*` from the app block; `/` would be served by `web` on the tunnel domain. Caddy must refuse them at the edge with a 421 before any app routing. Site addresses are label-exact (G10), so this is a Host matcher inside the `:80` app block rather than another site address; it needs its own input (`TUNNEL_HOST_SUFFIX`; compose supplies `tunnel-disabled.invalid` when unset or empty, because Caddy's `{$VAR:default}` does not apply to a set-but-empty variable), placed as the **first** `handle` in the app block, since that block routes with `handle @x` blocks evaluated in written order. The contract script asserts all three cases.
+3. **`TUNNEL_SITE_ADDRESS` must never be empty (Task 10).** Spec W00 results, Caddy routing table, last row: "Unset: adapts (exit 0) … Empty: `caddy adapt` **fails** (exit 1, `server block without any key is global configuration, and if used, it must be first`). Compose must therefore always pass `${TUNNEL_SITE_ADDRESS:-…}`, with `:-` so that empty also gets the default." Task 10's compose snippet already uses `:-`; it is now binding, the contract script pins it, and the `.env.example` placeholder says why it must stay commented out rather than set empty.
+4. **Replica-safe Close: re-read the row inside dispatch (Task 8; open decision, default: do it).** W01 made close revocation process-local: a cancellation tombstone in `apps/api/src/services/agentCommandAwait.ts` plus the in-flight cancel. With more than one API replica (#8127, which G9 deferred), a request that passed its gates on replica B still reaches the device after a Close served by replica A. Decision for W02: `dispatchTunnelHttpRequest` (`apps/api/src/routes/tunnelHttpCore.ts`) re-reads the tunnel row's status immediately before `sendCommandToAgentAwaitResult`, under the same system read it already does for the allowlist, and refuses with 502 `Tunnel closed` unless the row's status is still in `CONNECTABLE_TUNNEL_STATUSES` (the same set `loadOwnedTunnelSession` accepts; no second list). That is replica-safe and removes the tombstone, `CANCELLED_PREFIX_TOMBSTONE_TTL_MS`, the hand-synced `PROXIED_REQUEST_TIMEOUT_MS` copy and `__resetCancelledPrefixTombstonesForTests`; `cancelPendingAgentCommandsByPrefix` stays for the in-flight cancel. Cost: one indexed primary-key read per proxied subresource request, in both modes (the core is shared). The implementer records the choice in the PR; a reason to decline must address the multi-replica gap.
+5. **Observability on the tunnel surface (Task 9).** `tunnelHostDispatch` returns the sub-app's Response directly, so headers set with `c.header()` before `next()` are dropped: `X-Request-Id` from `requestPathLogger` never reaches a tunnel response. And because the sub-app's `routePath` is invisible to the outer context, every accepted tunnel request logs as `route=unmatched`. Task 9 sets a route label for the tunnel surface at the classifier (e.g. `tunnel-host`, read by `safeMatchedRouteLabel`) and copies the correlation id onto the returned Response in `tunnelHostDispatch`. `tunnelHostLogRedaction.test.ts` asserts both, so it fails first.
+6. **FORCE_HTTPS on tunnel hosts is fail-closed (Task 10).** When the request scheme resolves to `http` (the peer is not in `TRUSTED_PROXY_CIDRS`, or no `X-Forwarded-Proto`), `securityMiddleware`'s canonical-Host check 400s every tunnel-host request (`FORCE_HTTPS_NON_CANONICAL_HOST`): a tunnel host is never canonical to `PUBLIC_API_URL`, so it gets the 400 where app-host traffic gets a 308. This is acceptable and stays. Task 10 documents it in the deploy notes (Caddyfile header comment and the `.env.example` block; W04 Task 16 carries it to the operator docs), and the W02 Caddy contract asserts the trusted-proxy path: the tunnel block forwards `X-Forwarded-Proto` exactly as the app block does, and an API `securityMiddleware` case with `forceHttps`, a trusted peer, `X-Forwarded-Proto: https` and a tunnel Host does not 400.
+
 ## Wave → PR map
 
 | Wave | PR | Tasks | Notes |
 |---|---|---|---|
-| W00 spikes | 1 docs PR (spec results + harness) | 0.1–0.4 | Gate: Todd approves W01 only after results are appended to the spec |
-| W01 API foundation | 1 PR | 1–5 | Config/validator, shared core, revocation race fix, server-built URL, Host dispatch scaffold (tunnel hosts 404) |
+| W00 spikes | 1 docs PR (spec results + harness) | 0.2–0.4 (0.1 → W04) | Gate: W02 starts only after results are appended to the spec (W01 runs in parallel) |
+| W01 API foundation | 1 PR | 1–5, 4b | Config/validator, shared core, revocation race fix, server-built URL, Host dispatch scaffold (tunnel hosts 404) |
 | W02 API host mode | 1 PR | 6–11 | Header/cookie rules, admission, `tunnelHostRoutes`, budgets/metrics, real-Caddy contract, security-checklist exit |
-| W03 web | 1 PR | 12–15 | Server URL, validation, sandbox, new tab, cookie-blocked notice, `runAction` close, Playwright |
+| W03 web | 1 PR | 12–15, 13b | Server URL, validation, sandbox, new tab, cookie-blocked notice, `runAction` close, Playwright |
 | W04 infra + rollout | 1 docs PR + ops runbook (no app code) | 16–19 | Several steps need **[TODD]** |
 | W05 WebSockets | none | — | Separate spec later |
 
@@ -71,7 +266,7 @@ These are the input classes the spec implies but does not spell out. The test th
 - **G6 (§2 response shape).** Today `http-ticket` returns `{ ticket: { ticket, expiresInSeconds } }` (`tunnels.ts` ~line 1352, and the web reads `body.ticket?.ticket`). Resolution: keep that shape and add `url` and `mode: 'host' | 'path'`.
 - **G7 (§3 "admission … run before Host dispatch").** `globalRateLimit` buckets by **path prefix**. Tunnel-host requests have arbitrary paths, so device subresources would drain the shared 300/min per-IP dashboard bucket. Resolution: a dedicated `tunnelhost` bucket keyed on the classifier flag (Task 5).
 - **G8 (§9 "outstanding tickets die on Close").** Tickets are random Redis keys (`remote:ws_ticket:<secret>`, `services/remoteSessionAuth.ts` ~line 86) with no per-session index, so they cannot be enumerated and deleted. They die because the exchange requires a connectable row, and the conditional activation closes the race. Pinned by tests rather than by new storage.
-- **G9 (§4 cancel in flight).** `agentCommandAwait`'s `pending` map is process-local and API-role-affine. A DELETE served by a different API replica than the in-flight request cannot cancel it. Today each region runs one `api` container, so this is acceptable. Recorded as a limitation.
+- **G9 (§4 cancel in flight).** `agentCommandAwait`'s `pending` map is process-local and API-role-affine. A DELETE served by a different API replica than the in-flight request cannot cancel it. Today each region runs one `api` container, so this is acceptable. Recorded as a limitation. **Superseded by amendment 2026-10-12b item 4:** W02 re-reads the row status inside dispatch, which closes the gap across replicas.
 - **G10 (§3/§8).** The Caddy wildcard `*.us.<domain>` matches exactly one label. In the hosted `:80` catch-all configuration, a deeper host would fall through to the **app** block and be served the web app on the tunnel domain. Resolution: `TUNNEL_SITE_ADDRESS` lists both `*.` and `*.*.` forms, and the API treats any host at or under the suffix as tunnel surface (Tasks 1, 5, 10).
 
 ## Current code that contradicts spec assumptions (verified 2026-10-07)
@@ -2611,10 +2806,15 @@ export function admitTunnelHostRequest(input: TunnelAdmissionInput): TunnelAdmis
 **Files:**
 - Modify: `apps/api/src/routes/tunnelHost.ts` (replace the Task 5 scaffold)
 - Create: `apps/api/src/routes/tunnelHost.test.ts`
+- Modify (amended 2026-10-12b, item 4): `apps/api/src/routes/tunnelHttpCore.ts` + `tunnelHttpCore.test.ts` (status re-read in `dispatchTunnelHttpRequest`), `apps/api/src/services/agentCommandAwait.ts` + `agentCommandAwait.test.ts` (tombstone removal), `apps/api/src/routes/tunnelHttp.test.ts` (path-mode mocks gain the extra select)
 
 **Interfaces:**
 - Consumes: Task 1 (`getTunnelOriginConfig`, `matchTunnelHost`, `buildTunnelOrigin`), Task 2/3 core, Task 6 headers, Task 7 admission.
-- Produces: `tunnelHostRoutes` (a Hono app), plus the exported `TUNNEL_COOKIE_BLOCKED_MESSAGE_TYPE = 'breeze-tunnel-cookie-blocked'`, which W03 Task 13 consumes.
+- Produces: `tunnelHostRoutes` (a Hono app), plus the exported `TUNNEL_COOKIE_BLOCKED_MESSAGE_TYPE = 'breeze-tunnel-cookie-blocked'`, which W03 Task 13 consumes. The posted message is `{ type, tunnelId, reason: 'cookie' | 'storage' }` (amended 2026-10-12b, item 1).
+
+**Amended 2026-10-12b** (see the amendments list for the evidence):
+- **Item 1, storage probe.** The bootstrap page runs a `localStorage` set/remove probe beside the `/__bz/ping` fetch. Ping 204 **and** probe ok → `location.replace('/')`. Ping not 204 → `blocked('cookie')`. Ping 204 but probe throws → `blocked('storage')`. Both call the same `blocked(reason)`, which posts the message with `reason` to the frame ancestor. Chrome with third-party cookies blocked keeps the `Partitioned` cookie but throws `SecurityError` on `localStorage` in the iframe (spec W00 contradiction 2), so without this probe a storage-using device SPA fails with no fallback prompt. Add the test assertions shown in Step 1.
+- **Item 4, replica-safe Close (open decision, default: do it).** In `dispatchTunnelHttpRequest`, after the allowlist read and immediately before `sendCommandToAgentAwaitResult`, re-read the row (`loadTunnelRow(tunnelId)`, same system read) and return `{ ok: false, status: 502, message: 'Tunnel closed', reason: 'tunnel_closed' }` unless the row's status is still in `CONNECTABLE_TUNNEL_STATUSES` (the set `loadOwnedTunnelSession` already uses; do not introduce a second list). Then delete the tombstone machinery from `agentCommandAwait.ts` (`CANCELLED_PREFIX_TOMBSTONE_TTL_MS`, `PROXIED_REQUEST_TIMEOUT_MS`, `findCancelledPrefix`, `__resetCancelledPrefixTombstonesForTests` and the "cancellation tombstones" tests); keep `cancelPendingAgentCommandsByPrefix` for the in-flight cancel. Pin it in `tunnelHttpCore.test.ts`: a row that reads `disconnected` at the re-read gets 502 and the agent is never contacted. The path-mode suite (`tunnelHttp.test.ts`) must stay green with the extra select. Record the decision in the PR description; declining requires an alternative that holds with more than one API replica.
 
 - [ ] **Step 1: Write the failing tests** (mock pattern copied from `tunnelHttp.test.ts`):
 
@@ -2731,6 +2931,10 @@ describe('/__bz/enter', () => {
     const html = await res.text();
     expect(html).toContain("fetch('/__bz/ping'");
     expect(html).toContain('breeze-tunnel-cookie-blocked');
+    // amended 2026-10-12b, item 1: the page probes web storage, not just the cookie
+    expect(html).toContain('localStorage.setItem(');
+    expect(html).toContain("blocked('storage')");
+    expect(html).toContain("blocked('cookie')");
     expect(capturedUpdates).toContainEqual(expect.objectContaining({ status: 'active' }));
   });
 
@@ -2937,7 +3141,9 @@ function isReservedPath(rawPathname: string): boolean {
 /**
  * 200 bootstrap, NOT a 302 (plan G1): a redirect inherits the cross-site
  * taint of the app's iframe navigation, so §4a would refuse the device's `/`.
- * The page confirms the cookie stuck (CHIPS/3PC) via a same-origin ping, then
+ * The page confirms the cookie stuck (CHIPS/3PC) via a same-origin ping AND
+ * that web storage works (amended 2026-10-12b, item 1: Chrome with 3PC blocked
+ * keeps the Partitioned cookie but throws on localStorage in the iframe), then
  * navigates same-origin; otherwise it tells the parent to offer a new tab.
  */
 function enterPage(nonce: string, tunnelId: string, frameAncestor: string, context: TunnelCookieContext): string {
@@ -2945,9 +3151,10 @@ function enterPage(nonce: string, tunnelId: string, frameAncestor: string, conte
     .replace(/</g, '\\u003c');
   return `<!doctype html><html><head><meta charset="utf-8"><title>Connecting…</title></head>`
     + `<body><p id="m">Connecting…</p><script nonce="${nonce}">(function(){var c=${cfg};`
-    + `function blocked(){document.getElementById('m').textContent='This browser blocked the proxy session. Open the device in a new tab from Breeze.';`
-    + `if(c.framed&&window.parent!==window){try{window.parent.postMessage({type:c.type,tunnelId:c.tunnelId},c.ancestor);}catch(e){}}}`
-    + `fetch('/__bz/ping',{credentials:'same-origin',cache:'no-store'}).then(function(r){if(r.status===204){location.replace('/');}else{blocked();}},blocked);`
+    + `function blocked(reason){document.getElementById('m').textContent='This browser blocked the proxy session. Open the device in a new tab from Breeze.';`
+    + `if(c.framed&&window.parent!==window){try{window.parent.postMessage({type:c.type,tunnelId:c.tunnelId,reason:reason},c.ancestor);}catch(e){}}}`
+    + `function storageOk(){try{localStorage.setItem('__bz_probe','1');localStorage.removeItem('__bz_probe');return true;}catch(e){return false;}}`
+    + `fetch('/__bz/ping',{credentials:'same-origin',cache:'no-store'}).then(function(r){if(r.status!==204){blocked('cookie');}else if(!storageOk()){blocked('storage');}else{location.replace('/');}},function(){blocked('cookie');});`
     + `})();</script></body></html>`;
 }
 
@@ -3053,9 +3260,15 @@ tunnelHostRoutes.all('*', async (c) => {
 **Files:**
 - Create: `apps/api/src/services/tunnelHttpBudget.ts`, `apps/api/src/services/tunnelHttpBudget.test.ts`
 - Create: `apps/api/src/services/tunnelHttpMetrics.ts`
-- Modify: `apps/api/src/routes/tunnelHost.ts`, `apps/api/src/routes/tunnelHttp.ts` (metrics only), `apps/api/src/middleware/tunnelHostDispatch.ts` (metric on reject)
+- Modify: `apps/api/src/routes/tunnelHost.ts`, `apps/api/src/routes/tunnelHttp.ts` (metrics only), `apps/api/src/middleware/tunnelHostDispatch.ts` (metric on reject; route label + `X-Request-Id` propagation, amended 2026-10-12b)
 - Modify: `apps/api/src/routes/tunnelHost.test.ts`
 - Create: `apps/api/src/middleware/tunnelHostLogRedaction.test.ts`
+- Modify (amended 2026-10-12b, item 5): `apps/api/src/services/safeRequestLabel.ts` (tunnel-surface label), `apps/api/src/middleware/tunnelHostDispatch.test.ts`
+
+**Amended 2026-10-12b, item 5 (observability on the tunnel surface).** Two W01 gaps to close here:
+- `tunnelHostDispatch` returns the sub-app's Response as-is, so anything set with `c.header()` before `next()` is lost. `X-Request-Id` (set by `requestPathLogger`) must be copied from `c.get('requestCorrelationId')` onto the returned Response (clone it with `new Response(res.body, res)` when its headers are immutable). The device's own headers never win over it.
+- The sub-app's `routePath` is invisible to the outer context, so `safeMatchedRouteLabel(c)` logs `route=unmatched` for every accepted tunnel request. Set a route label at the classifier when it marks the surface (e.g. `c.set('routeLabelOverride', 'tunnel-host')`, read by `safeMatchedRouteLabel` before it looks at `routePath`). Rejects keep their `rejectReason`.
+- `tunnelHostLogRedaction.test.ts` asserts `route=tunnel-host` (never `unmatched`) and `X-Request-Id` on the tunnel response, beside the redaction assertions, so it fails before Step 3 and is not just a regression pin.
 
 **Interfaces:**
 - Produces:
@@ -3195,7 +3408,7 @@ describe('tunnel host request logging', () => {
 
 - [ ] **Step 2: Run to verify they fail**
   Run: `cd apps/api && npx vitest run src/services/tunnelHttpBudget.test.ts src/routes/tunnelHost.test.ts src/middleware/tunnelHostLogRedaction.test.ts`
-  Expected: the budget and metric tests FAIL (modules missing, 200 instead of 429). The log-redaction test may already PASS, because `requestPathLogger` logs only the matched route label. Keep it as a regression pin.
+  Expected: the budget and metric tests FAIL (modules missing, 200 instead of 429). The log-redaction test FAILS on `route=unmatched` and the missing `X-Request-Id` (amended 2026-10-12b, item 5); its redaction assertions alone would already pass, because `requestPathLogger` logs only the matched route label.
 - [ ] **Step 3: Implement**:
 
 ```ts
@@ -3348,9 +3561,14 @@ In `tunnelHostDispatch.ts`, call `recordTunnelHttpOutcome('host', 'host_rejected
 
 **Interfaces:**
 - Consumes: the assertion name and value from Task 5 (`X-Breeze-Tunnel-Site: 1`).
-- Produces: the env vars `TUNNEL_SITE_ADDRESS` (default `http://tunnel-disabled.invalid`) and `TUNNEL_TLS_DIRECTIVE` (default empty) for the caddy service.
+- Produces: the env vars `TUNNEL_SITE_ADDRESS` (default `http://tunnel-disabled.invalid`) and `TUNNEL_TLS_DIRECTIVE` (default empty) for the caddy service, plus (amended 2026-10-12b, item 2) `TUNNEL_HOST_SUFFIX` (compose default `tunnel-disabled.invalid`, which matches nothing; never pass it empty, same trap as item 3): the bare tunnel suffix the app block uses to refuse tunnel-domain hosts that miss the wildcards.
 
 This task deviates from the wave split in the brief: the Caddy *block* lands in W01 because the spec requires a real-Caddy integration test for W01 merge (§3, §9). W04 only sets the env on the droplets.
+
+**Amended 2026-10-12b** (items 2, 3 and 6; evidence in the amendments list):
+- **Item 2, edge reject.** Caddy site addresses are label-exact, so the bare suffix, `a.b.c.<suffix>` and a trailing-dot host fall into the `:80` app block (spec W00 contradiction 3). The app block gets a Host matcher on `TUNNEL_HOST_SUFFIX` (the suffix itself, any depth under it, optional trailing dot and port) that responds 421 before any route. The API classifier stays the backstop. The contract script asserts all three hosts get 421 from the edge.
+- **Item 3, never empty.** Empty `TUNNEL_SITE_ADDRESS` makes `caddy adapt` fail (spec W00 Caddy routing table, last row). Both compose files must use `${TUNNEL_SITE_ADDRESS:-http://tunnel-disabled.invalid}` (`:-`, not `-`), and the contract script greps for it. The `.env.example` placeholder stays commented out and says why.
+- **Item 6, FORCE_HTTPS deploy note.** When the API resolves the request scheme to `http` (peer not in `TRUSTED_PROXY_CIDRS`, or no `X-Forwarded-Proto`), `securityMiddleware` returns 400 `FORCE_HTTPS_NON_CANONICAL_HOST` for every tunnel-host request, because a tunnel host is never canonical to `PUBLIC_API_URL`; app hosts get a 308 in the same misconfiguration. Fail-closed by design. Document it in the Caddyfile header comment and the `.env.example` block (Step 2); W04 Task 16 repeats it in the operator docs. The contract script shows the tunnel block forwards `X-Forwarded-Proto` exactly as the app block does (the `trusted_proxies` server option is global, so both blocks share it), and `security.test.ts` gains a case: `forceHttps`, trusted peer, `X-Forwarded-Proto: https`, tunnel Host → not 400.
 
 - [ ] **Step 1: Write the failing contract script**:
 
@@ -3444,6 +3662,35 @@ expect "deeper tunnel host → api (API 404s it)"   "api|a.b.${SUFFIX}|1|/"     
 expect "app /api strips a forged assertion"       "api|app.example.test||/api/v1/health" app.example.test /api/v1/health -H "X-Breeze-Tunnel-Site: 1"
 expect "app / strips a forged assertion"          "web|app.example.test||/"        app.example.test / -H "X-Breeze-Tunnel-Site: 1"
 
+# (amended 2026-10-12b, item 2) Tunnel-domain hosts that miss both wildcards land
+# in the :80 app block (W00 contradiction 3). The app block must refuse them at
+# the edge; the API classifier (421) is only the backstop.
+probe_status() { # probe_status <host> <path>
+  docker run --rm --network "${NET}" "${CURL_IMAGE}" -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $1" "http://edge:80$2"
+}
+expect_status() { # expect_status <label> <expected-code> <host> <path>
+  local label="$1" expected="$2"; shift 2
+  local got; got="$(probe_status "$@")"
+  if [ "${got}" = "${expected}" ]; then echo "ok   ${label}"; else echo "FAIL ${label}: expected status '${expected}' got '${got}'"; fail=1; fi
+}
+expect_status "bare suffix refused at the edge"         421 "${SUFFIX}" /
+expect_status "three-label tunnel host refused"         421 "a.b.c.${SUFFIX}" /
+expect_status "trailing-dot tunnel host refused"        421 "${TH}." /
+expect_status "app host still served"                   200 app.example.test /
+
+# (amended 2026-10-12b, item 6) The tunnel block must forward X-Forwarded-Proto
+# like the app block, or FORCE_HTTPS 400s every tunnel request (spec note in the
+# Caddyfile header). Extend the stub echo, or add a dedicated probe, so both
+# blocks are shown to send the same X-Forwarded-Proto to the upstream.
+
+# (amended 2026-10-12b, item 3) Empty TUNNEL_SITE_ADDRESS breaks `caddy adapt`;
+# compose must default it with `:-` so empty also gets the default.
+for f in "${REPO_ROOT}/docker-compose.yml" "${REPO_ROOT}/deploy/docker-compose.prod.yml"; do
+  grep -q 'TUNNEL_SITE_ADDRESS:-http://tunnel-disabled.invalid' "$f" \
+    && echo "ok   $(basename "$f") defaults TUNNEL_SITE_ADDRESS with :-" \
+    || { echo "FAIL $(basename "$f") must pass \${TUNNEL_SITE_ADDRESS:-http://tunnel-disabled.invalid}"; fail=1; }
+done
+
 # Disabled default: with TUNNEL_SITE_ADDRESS unset the file must still adapt.
 docker run --rm -v "${CADDYFILE}:/etc/caddy/Caddyfile:ro" "${CADDY_IMAGE}" caddy adapt --config /etc/caddy/Caddyfile >/dev/null \
   && echo "ok   adapts with TUNNEL_SITE_ADDRESS unset" || { echo "FAIL adapt with TUNNEL_SITE_ADDRESS unset"; fail=1; }
@@ -3451,8 +3698,10 @@ docker run --rm -v "${CADDYFILE}:/etc/caddy/Caddyfile:ro" "${CADDY_IMAGE}" caddy
 exit "${fail}"
 ```
 
+  The edge container also needs `-e TUNNEL_HOST_SUFFIX="${SUFFIX}"` (amended 2026-10-12b, item 2).
+
   Run: `chmod +x scripts/check-tunnel-site-routing.sh && bash scripts/check-tunnel-site-routing.sh`
-  Expected: FAIL. The tunnel-host cases return `web|…` or `api|…||…` (no tunnel block yet), and the forged app assertion reaches the upstream (`|1|`).
+  Expected: FAIL. The tunnel-host cases return `web|…` or `api|…||…` (no tunnel block yet), the forged app assertion reaches the upstream (`|1|`), the three off-wildcard hosts return 200 from `web` instead of 421, and the compose grep fails.
 
 - [ ] **Step 2: Implement the Caddyfile changes.**
   - Header comment (after the `CADDY_LOCAL_CERTS` paragraph):
@@ -3466,6 +3715,21 @@ exit "${fail}"
     #   TUNNEL_TLS_DIRECTIVE Optional. Empty (default) or a full `tls <cert> <key>`
     #                       line for an Origin CA wildcard when Caddy terminates TLS
     #                       for the tunnel domain itself. Expands like CADDY_LOCAL_CERTS.
+    #
+    #   TUNNEL_HOST_SUFFIX  Optional (amended 2026-10-12b). The bare tunnel suffix
+    #                       (`<region>.<tunnel-domain>`). Hosts at or under it that
+    #                       miss the TUNNEL_SITE_ADDRESS wildcards (bare suffix, three
+    #                       or more labels, trailing dot) would otherwise be served by
+    #                       the app block; the app block answers them 421 instead.
+    #                       Compose supplies `tunnel-disabled.invalid` (matches nothing)
+    #                       when unset or empty. Never pass it empty: an empty suffix
+    #                       turns the matcher into "any trailing-dot host".
+    #
+    #   FORCE_HTTPS note (amended 2026-10-12b): the API trusts X-Forwarded-Proto only
+    #   from TRUSTED_PROXY_CIDRS. If Caddy's peer address is not in that list, the API
+    #   resolves the scheme to http and, under FORCE_HTTPS, answers every tunnel-host
+    #   request 400 FORCE_HTTPS_NON_CANONICAL_HOST (a tunnel host is never canonical to
+    #   PUBLIC_API_URL; app hosts get a 308). Fail-closed by design: fix the CIDR.
     ```
   - In the `{$CADDY_SITE_ADDRESS::80}` block, directly under `request_header -X-Breeze-Client-Cert-Serial`:
     ```
@@ -3473,7 +3737,21 @@ exit "${fail}"
       # host. Strip any client-supplied copy before every route (same reason
       # as the mTLS strip above: header_up deletes run after sets).
       request_header -X-Breeze-Tunnel-Site
+
+      # (amended 2026-10-12b, item 2) Tunnel-domain hosts that miss the tunnel
+      # wildcards land here. Refuse them before any route (W00 contradiction 3).
+      # Match the suffix itself and any depth under it; ignore a trailing dot
+      # and a port. Compose always supplies TUNNEL_HOST_SUFFIX (default
+      # `tunnel-disabled.invalid`, which matches nothing).
+      @tunnelDomainHost header_regexp tunnelhost Host (?i)^(.+\.)?{$TUNNEL_HOST_SUFFIX}\.?(:\d+)?$
     ```
+    and, as the **first** `handle` block in the site (before `handle @streaming`), because `respond` runs after `handle` in Caddy's directive order and the handles evaluate in written order:
+    ```
+      handle @tunnelDomainHost {
+        respond "Misdirected request" 421
+      }
+    ```
+    Verify the exact matcher form against real Caddy in the contract script (placeholder expansion inside a regexp, dot-escaping of the suffix); adjust the syntax, not the contract.
   - Append at the end of the file:
     ```
     # --- Network Proxy tunnel origin (host mode) ---------------------------------
@@ -3503,14 +3781,28 @@ exit "${fail}"
   - Compose: in `docker-compose.yml` and `deploy/docker-compose.prod.yml`, under the `caddy` service `environment:`, add:
     ```yaml
       # Network Proxy host mode (optional). Default matches nothing.
+      # `:-` (not `-`) is load-bearing: an EMPTY TUNNEL_SITE_ADDRESS makes
+      # `caddy adapt` fail (amended 2026-10-12b, item 3).
       TUNNEL_SITE_ADDRESS: ${TUNNEL_SITE_ADDRESS:-http://tunnel-disabled.invalid}
       TUNNEL_TLS_DIRECTIVE: ${TUNNEL_TLS_DIRECTIVE:-}
+      # Same `:-` rule: Caddy's own `{$VAR:default}` ignores a set-but-empty var.
+      TUNNEL_HOST_SUFFIX: ${TUNNEL_HOST_SUFFIX:-tunnel-disabled.invalid}
     ```
   - `.env.example`, next to the `TUNNEL_ORIGIN_TEMPLATE` block:
     ```bash
     # Caddy site address for the tunnel domain (see docker/Caddyfile.prod).
+    # Leave these commented out when host mode is off. Do NOT set
+    # TUNNEL_SITE_ADDRESS to an empty value: Caddy fails to start on an empty
+    # site address (compose substitutes the disabled default only via `:-`).
     # TUNNEL_SITE_ADDRESS=
     # TUNNEL_TLS_DIRECTIVE=
+    # Bare tunnel suffix (`<region>.<tunnel-domain>`), so Caddy refuses
+    # tunnel-domain hosts that miss the wildcards instead of serving the app.
+    # Leave commented out when unused (compose defaults it); never set it empty.
+    # TUNNEL_HOST_SUFFIX=
+    # FORCE_HTTPS + host mode: Caddy's peer address must be in
+    # TRUSTED_PROXY_CIDRS, or every tunnel-host request gets 400
+    # FORCE_HTTPS_NON_CANONICAL_HOST (fail-closed; app hosts get a 308).
     ```
   - `.github/workflows/ci.yml`, directly after the `bash scripts/check-caddyfile-local-certs.sh` step:
     ```yaml
@@ -3553,6 +3845,8 @@ exit "${fail}"
 | Cross-tunnel refused before dispatch (GET included, SFS absent) | `tunnelHostAdmission.test.ts`, `tunnelHost.test.ts` |
 | Proxy cookies never reach the device; other `__Host-*` pass | `tunnelHostHeaders.test.ts` |
 | Exchange racing Close does not reopen; tickets die on Close | `tunnelHttp.test.ts` + `tunnelHost.test.ts` revocation cases (G8) |
+| Close holds across API replicas: a request that passed its gates is refused at dispatch once the row is closed (amended 2026-10-12b, item 4) | `tunnelHttpCore.test.ts` status re-read case |
+| Tunnel surface logs a route label and carries `X-Request-Id`; FORCE_HTTPS trusted-proxy path never 400s a tunnel host (amended 2026-10-12b, items 5–6) | `tunnelHostLogRedaction.test.ts`, `security.test.ts`, `check-tunnel-site-routing.sh` |
 | `Service-Worker: script` refused | `tunnelHostAdmission.test.ts`, `tunnelHost.test.ts` |
 | Budgets, log redaction, metrics by mode | `tunnelHttpBudget.test.ts`, `tunnelHost.test.ts` budgets, `tunnelHostLogRedaction.test.ts` |
 

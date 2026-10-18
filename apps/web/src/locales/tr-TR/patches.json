@@ -83,8 +83,12 @@
       "pendingDevices": "{{count}} bekleyen yamalar var",
       "approved": "{{count}} onaylandı",
       "pendingApproval": "{{count}} onay bekleniyor",
+      "failedInstalls_one": "{{count}} başarısız kurulum",
+      "failedInstalls_other": "{{count}} başarısız kurulum",
       "critical": "{{count}} kritik",
-      "reboot": "{{count}} yeniden başlat"
+      "reboot": "{{count}} yeniden başlat",
+      "imagesNotChecked_one": "{{count}} kapsayıcı imajı denetlenmedi",
+      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi"
     },
     "filters": {
       "allDevices": "Tüm Cihazlar ({{count}})",
@@ -109,6 +113,8 @@
       "approvedTitle": "Kurulum için onaylanan olağanüstü yamalar",
       "pendingApproval": "Onay Bekleniyor",
       "pendingApprovalTitle": "Öne çıkan yamalar hâlâ onay bekliyor",
+      "failed": "Başarısız",
+      "failedTitle": "Son kurulum denemesi başarısız olan bekleyen yamalar",
       "osPatches": "İşletim Sistemi Yamaları",
       "osPatchesTitle": "Windows Update, Apple veya Linux paket yöneticilerinden olağanüstü güncellemeler",
       "thirdParty": "3. Taraf",
@@ -564,7 +570,26 @@
     "badges": {
       "manual": "Manuel",
       "os": "İşletim Sistemi: {{severities}}",
-      "thirdParty": "3. taraf uygulamalar"
+      "thirdParty": "3. taraf uygulamalar",
+      "appRules_one": "{{count}} uygulama kuralı",
+      "appRules_other": "{{count}} uygulama kuralı"
     }
+  },
+  "ringAppRules": {
+    "applicationRules": "Başvuru Kuralları",
+    "blockSpecificApplicationsFromAutomatedPatchingOr": "Belirli uygulamaların otomatik yama uygulanmasını engelleyin veya bunları maksimum sürüme sabitleyin.",
+    "blocked": "Engellendi",
+    "pinned": "Sabitlendi",
+    "maxVersion": "Maksimum sürüm",
+    "pinnedApplicationsNeedAVersion": "Sabitlenen uygulamaların bir sürümü olması gerekir.",
+    "addApplication": "Uygulama ekle",
+    "searchCatalogAndDetectedApplications": "Katalogda ve algılanan uygulamalarda arama yapın...",
+    "searching": "Aranıyor...",
+    "catalog": "katalog",
+    "couldnTLoadApplicationsYouCanStill": "Uygulamalar yüklenemedi — hâlâ aşağıdaki paket kimliğine göre ekleyebilirsiniz.",
+    "noMatches": "Eşleşme yok.",
+    "orEnterAPackageIDManually": "Veya manuel olarak bir paket kimliği girin",
+    "removeRuleFor": "{{application}} kuralını kaldır",
+    "scopeNote": "Bu kurallar, yapılandırma ilkesi bu halkaya bağlı olan her cihaz için geçerlidir."
   }
 }

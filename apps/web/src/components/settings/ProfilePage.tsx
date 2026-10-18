@@ -10,6 +10,7 @@ import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import RemoteToolSettings from './RemoteToolSettings';
 import TicketPushoverSettings from './TicketPushoverSettings';
+import EmailNotificationSettings from './EmailNotificationSettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
 import { pickReauthTier, type ReauthTier } from './StepUpPrompt';
@@ -28,6 +29,7 @@ import {
   type SsoReauthIntent,
   type SsoReauthManageIntent,
 } from '@/lib/ssoReauthIntent';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 /**
  * #4045: the API's two factor-management rejections that mean "the SSO re-auth
@@ -79,6 +81,9 @@ const SSO_REAUTH_ERROR_KEYS: Record<string, string> = {
   provider_inactive: 'profilePage.ssoReauthProviderInactive',
   config_changed: 'profilePage.ssoReauthConfigChanged',
   email_unverified: 'profilePage.ssoReauthEmailUnverified',
+  // #8862: the IdP's id_token failed verification (signature/issuer/expiry).
+  // The API logs the token's timing claims, so the copy points there.
+  idp_verify_failed: 'profilePage.ssoReauthIdpVerifyFailed',
 };
 
 /**
@@ -114,11 +119,7 @@ function takeSsoReauthErrorFromQuery(): string | null {
   if (!code) return null;
   params.delete(SSO_REAUTH_ERROR_PARAM);
   const qs = params.toString();
-  window.history.replaceState(
-    null,
-    '',
-    `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`,
-  );
+  replaceUrl(`${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`);
   return code;
 }
 
@@ -133,7 +134,7 @@ function takeSsoReauthGrantFromHash(): string | null {
   const match = /^#ssoReauthGrant=(.+)$/.exec(window.location.hash);
   if (!match) return null;
   const grantId = decodeURIComponent(match[1]);
-  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  replaceUrl(`${window.location.pathname}${window.location.search}`);
   return grantId;
 }
 
@@ -1521,12 +1522,22 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       </form>
 
       {/* Change Password */}
-      <ChangePasswordForm
-        onSubmit={handlePasswordChange}
-        errorMessage={passwordError}
-        successMessage={passwordSuccess}
-        loading={isChangingPassword}
-      />
+      {isPasswordless ? (
+        <section
+          data-testid="change-password-unavailable"
+          className="space-y-1 rounded-lg border bg-card p-6 shadow-xs"
+        >
+          <h2 className="text-lg font-semibold">{t('changePasswordForm.changePassword')}</h2>
+          <p className="text-sm text-muted-foreground">{t('changePasswordForm.noPasswordNotice')}</p>
+        </section>
+      ) : (
+        <ChangePasswordForm
+          onSubmit={handlePasswordChange}
+          errorMessage={passwordError}
+          successMessage={passwordSuccess}
+          loading={isChangingPassword}
+        />
+      )}
 
       {/* MFA Settings */}
       <MFASettings
@@ -1867,6 +1878,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
       />
       <TicketPushoverSettings />
+      <EmailNotificationSettings />
 
       {/* Onboarding */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">

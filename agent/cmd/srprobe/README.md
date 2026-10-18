@@ -20,7 +20,7 @@ System Restore configuration itself.
 
 `srrestoreptapi.h` (Windows SDK; the mingw-w64 copy is identical) wraps both
 structs in `#pragma pack(1)`, so **C** is what the header declares. #4752
-moves the agent to C and pins it with `internal/patching/restorepoint_abi_test.go`.
+moves the agent to C and pins it with `internal/systemrestore/abi_test.go` (moved from `internal/patching` in #4753).
 The hardware runs below are the empirical check.
 
 ## What the harness does

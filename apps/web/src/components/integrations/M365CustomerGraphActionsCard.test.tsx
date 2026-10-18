@@ -98,20 +98,27 @@ const ORG_B = "22222222-2222-4222-8222-222222222222";
 const CONNECTION_ID = "33333333-3333-4333-8333-333333333333";
 const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
 const REQUIRED_GRANTS = [
-  ["204e0828-b5ca-4ad8-b9f3-f32a958e7cc4", "User.ReadWrite.All"],
-  ["56760768-b641-451f-8906-e1b8ab31bca7", "User-PasswordProfile.ReadWrite.All"],
+  ["741f803b-c850-494e-b5df-cde7c675a1ca", "User.ReadWrite.All"],
+  ["cc117bb9-00cf-4eb8-b580-ea2a878fe8f7", "User-PasswordProfile.ReadWrite.All"],
+  ["77f3a031-c388-4f99-b373-dc68676a979e", "User.RevokeSessions.All"],
+  ["dbaae8cf-10b5-4b86-a4a1-f871c94c6695", "GroupMember.ReadWrite.All"],
+  ["5b07b0dd-2377-4e44-a38d-703f09a0dc3c", "DeviceManagementManagedDevices.PrivilegedOperations.All"],
+  ["6931bccd-447a-43d1-b442-00a195474933", "MailboxSettings.ReadWrite"],
+  ["498476ce-e0fe-48b0-b801-37ba7e2685c6", "Organization.Read.All"],
 ].map(([appRoleId, value]) => ({
   resourceApplicationId: GRAPH_APP_ID,
   appRoleId,
   value,
 }));
+const PRE_W05_GRANTS = REQUIRED_GRANTS.slice(0, 2);
+const NEW_GRANTS = REQUIRED_GRANTS.slice(2);
 
 function envelope(overrides: Record<string, unknown> = {}) {
   return {
     profile: {
       id: "customer-graph-actions",
       displayName: "Customer Graph Actions",
-      manifestVersion: 1,
+      manifestVersion: 3,
       requiredGrants: REQUIRED_GRANTS,
     },
     onboardingEnabled: true,
@@ -128,8 +135,8 @@ function connection(overrides: Record<string, unknown> = {}) {
     displayName: "Northwind Tenant",
     status: "active",
     grantHealth: "active",
-    manifestVersion: 1,
-    currentManifestVersion: 1,
+    manifestVersion: 3,
+    currentManifestVersion: 3,
     observedGrants: REQUIRED_GRANTS,
     missingGrants: [],
     unexpectedGrants: [],
@@ -163,7 +170,7 @@ describe("M365CustomerGraphActionsCard", () => {
     state.errorMessages = [];
   });
 
-  it("renders the exact two fixed action permissions for an empty envelope", async () => {
+  it("renders the exact seven fixed action permissions for an empty envelope", async () => {
     fetchWithAuthMock.mockResolvedValue(makeResponse(envelope()));
 
     render(<M365CustomerGraphActionsCard />);
@@ -174,7 +181,7 @@ describe("M365CustomerGraphActionsCard", () => {
     for (const grant of REQUIRED_GRANTS) {
       expect(screen.getByText(grant.value)).toBeInTheDocument();
     }
-    expect(screen.getAllByTestId("required-grant")).toHaveLength(2);
+    expect(screen.getAllByTestId("required-grant")).toHaveLength(7);
     expect(screen.getByRole("button", { name: "Grant admin actions…" })).toBeEnabled();
     expect(screen.queryAllByRole("textbox")).toHaveLength(0);
     expect(fetchWithAuthMock).toHaveBeenCalledWith(
@@ -274,7 +281,7 @@ describe("M365CustomerGraphActionsCard", () => {
     render(<M365CustomerGraphActionsCard />);
 
     expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
-    expect(screen.getByText("Manifest version 1")).toBeInTheDocument();
+    expect(screen.getByText("Manifest version 3")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Required permissions" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Observed permissions" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Missing permissions" })).toBeInTheDocument();
@@ -641,5 +648,193 @@ describe("M365CustomerGraphActionsCard — identity-first consent (W03)", () => 
     expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
     const listCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith("/m365/customer-graph-actions/connections?orgId="));
     expect(listCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  describe("permission profile v3 upgrade notice", () => {
+    const staleConnection = (overrides: Record<string, unknown> = {}) => connection({
+      manifestVersion: 2,
+      currentManifestVersion: 3,
+      grantHealth: "manifest-stale",
+      observedGrants: PRE_W05_GRANTS,
+      missingGrants: NEW_GRANTS,
+      lastErrorCode: "manifest_stale",
+      ...overrides,
+    });
+
+    it("shows the upgrade notice with one translated purpose line per new role", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: staleConnection() })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      expect(await screen.findByTestId("m365-actions-upgrade-notice")).toBeInTheDocument();
+      const purposes = screen.getAllByTestId("m365-actions-v2-purpose");
+      expect(purposes).toHaveLength(5);
+      for (const node of purposes) {
+        for (const grant of NEW_GRANTS) expect(node.textContent).not.toBe(grant.value);
+      }
+      expect(purposes.map((node) => node.textContent)).toContain(
+        "Sign a user out of every session — used to revoke sign-in sessions when an account is compromised or offboarded.",
+      );
+      expect(purposes.some((node) => /group/i.test(node.textContent ?? ""))).toBe(true);
+      // The pre-W05 roles are not new, so they get no purpose row.
+      expect(purposes.some((node) => /Set a user's password/.test(node.textContent ?? ""))).toBe(false);
+    });
+
+    it("shows the notice when only the version numbers differ", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: staleConnection({ grantHealth: "active", lastErrorCode: null, missingGrants: [] }),
+      })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      expect(await screen.findByTestId("m365-actions-upgrade-notice")).toBeInTheDocument();
+    });
+
+    it("omits the notice when the manifest is current", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(screen.queryByTestId("m365-actions-upgrade-notice")).not.toBeInTheDocument();
+    });
+
+    it("does not present the five expected-new roles as an error while manifest-stale", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: staleConnection() })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      await screen.findByTestId("m365-actions-upgrade-notice");
+      expect(screen.queryByRole("heading", { name: "Missing permissions" })).not.toBeInTheDocument();
+      expect(screen.queryByTestId("m365-actions-revoked-grant")).not.toBeInTheDocument();
+    });
+
+    it("falls back to the unknown purpose for a role without a purpose key", async () => {
+      const unknownGrant = {
+        resourceApplicationId: GRAPH_APP_ID,
+        appRoleId: "88888888-8888-4888-8888-888888888888",
+        value: "Totally.New.Role",
+      };
+      const { M365_PERMISSION_PROFILES } = await import("@breeze/shared");
+      const profile = M365_PERMISSION_PROFILES["customer-graph-actions"];
+      const original = profile.applicationPermissionAssignments;
+      (profile as { applicationPermissionAssignments?: unknown }).applicationPermissionAssignments = [
+        ...(original ?? []),
+        unknownGrant,
+      ];
+      try {
+        fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+          profile: { ...envelope().profile, requiredGrants: [...REQUIRED_GRANTS, unknownGrant] },
+          connection: staleConnection(),
+        })));
+
+        render(<M365CustomerGraphActionsCard />);
+
+        await screen.findByTestId("m365-actions-upgrade-notice");
+        const purposes = screen.getAllByTestId("m365-actions-v2-purpose");
+        expect(purposes).toHaveLength(6);
+        expect(purposes.map((node) => node.textContent)).toContain("Used by a Microsoft 365 action in Breeze.");
+        expect(purposes.every((node) => (node.textContent ?? "").trim().length > 0)).toBe(true);
+      } finally {
+        (profile as { applicationPermissionAssignments?: unknown }).applicationPermissionAssignments = original;
+      }
+    });
+
+    it("starts the existing upgrade-consent route through runAction and navigates to Microsoft", async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse(envelope({ connection: staleConnection() })))
+        .mockResolvedValueOnce(makeResponse({
+          adminConsentUrl: "https://login.microsoftonline.com/common/adminconsent?state=raw",
+        }));
+
+      render(<M365CustomerGraphActionsCard />);
+      fireEvent.click(await screen.findByRole("button", { name: "Review and approve new permissions" }));
+
+      await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
+      expect(fetchWithAuthMock).toHaveBeenLastCalledWith(
+        `/m365/customer-graph-actions/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_A}`,
+        { method: "POST" },
+      );
+      await waitFor(() => expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(
+        "https://login.microsoftonline.com/common/adminconsent?state=raw",
+      ));
+    });
+
+    it("refuses a non-Microsoft upgrade consent URL", async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse(envelope({ connection: staleConnection() })))
+        .mockResolvedValueOnce(makeResponse({ adminConsentUrl: "https://evil.example/adminconsent" }));
+
+      render(<M365CustomerGraphActionsCard />);
+      fireEvent.click(await screen.findByRole("button", { name: "Review and approve new permissions" }));
+
+      await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
+      expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
+    });
+
+    it("disables the upgrade button without organizations:write", async () => {
+      state.canWrite = false;
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: staleConnection() })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      expect(await screen.findByRole("button", { name: "Review and approve new permissions" })).toBeDisabled();
+    });
+
+    it("keeps the full Re-consent button on its existing behaviour", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: staleConnection() })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Re-consent" }));
+      expect(await screen.findByTestId("m365-actions-preflight")).toBeInTheDocument();
+    });
+
+    it("still shows the unexpected-grant alert on a kept-stale row (lastErrorCode manifest_stale)", async () => {
+      const unexpected = {
+        resourceApplicationId: GRAPH_APP_ID,
+        appRoleId: "66666666-6666-4666-8666-666666666666",
+        value: "Directory.ReadWrite.All",
+      };
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: staleConnection({
+          observedGrants: PRE_W05_GRANTS.concat(unexpected),
+          unexpectedGrants: [unexpected],
+        }),
+      })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      const alert = await screen.findByRole("alert", { name: "Unexpected permissions detected" });
+      expect(alert).toHaveTextContent("Directory.ReadWrite.All");
+    });
+
+    it("warns when a pre-existing role is no longer observed on a verified stale row", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: staleConnection({
+          observedGrants: [PRE_W05_GRANTS[0]],
+          missingGrants: [PRE_W05_GRANTS[1], ...NEW_GRANTS],
+        }),
+      })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      const warning = await screen.findByTestId("m365-actions-revoked-grant");
+      expect(warning).toHaveTextContent(
+        "Microsoft 365 no longer shows a permission this connection already had: User-PasswordProfile.ReadWrite.All.",
+      );
+      expect(warning).not.toHaveTextContent("User.ReadWrite.All.");
+    });
+
+    it("does not warn about a pre-existing role when permissions were never verified", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: staleConnection({ observedGrants: [], grantsVerifiedAt: null }),
+      })));
+
+      render(<M365CustomerGraphActionsCard />);
+
+      await screen.findByTestId("m365-actions-upgrade-notice");
+      expect(screen.queryByTestId("m365-actions-revoked-grant")).not.toBeInTheDocument();
+    });
   });
 });

@@ -272,3 +272,26 @@ describe('the SDK tool_use id reaches onPreToolUse, matching onPostToolUse (#816
     expect((post.mock.calls[0] as unknown[])[7]).toBeUndefined();
   });
 });
+
+describe('plain tool handler: typed caller-verification refusal (#6354 W05)', () => {
+  it('emits the refusal JSON intact (isError, no sanitised message) and posts the same text', async () => {
+    const { CallerVerificationRequiredError } = await import('./callerVerification/errors');
+    const payload = {
+      orgId: 'org-1', contactId: null, action: 'disable_user' as const,
+      requiredTier: 2, reason: 'no_fresh_verification' as const, latest: null,
+    };
+    mockExecuteTool.mockRejectedValueOnce(new CallerVerificationRequiredError(payload));
+    const post = vi.fn(async () => undefined);
+    const handler = makeHandler('query_devices', () => fakeAuth, undefined, post);
+
+    const res = (await handler({}, undefined)) as { content: Array<{ text: string }>; isError?: boolean };
+
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      error: 'Caller verification required',
+      requiresCallerVerification: payload,
+    });
+    expect((post.mock.calls[0] as unknown[])[2]).toBe(res.content[0]!.text);
+    expect((post.mock.calls[0] as unknown[])[3]).toBe(true);
+  });
+});

@@ -31,16 +31,23 @@ export function defaultRemapCmdCtrl(viewerOs: ViewerOs, remoteOs: string | null)
   return viewerIsMac !== remoteIsMac;
 }
 
+export type AgentMouseButton = 'left' | 'middle' | 'right' | 'back' | 'forward';
+
 /**
- * DOM MouseEvent.button → agent button name. Back (3) and forward (4) have no
- * agent equivalent yet; returning null drops them instead of the old fallback,
- * which sent them as a left click (M1).
+ * DOM MouseEvent.button → agent button name. Back (3) and forward (4) map only
+ * when the agent advertised support for them (W2c); otherwise null drops them
+ * instead of the old fallback, which sent them as a left click (M1).
  */
-export function mouseButtonName(button: number): 'left' | 'middle' | 'right' | null {
+export function mouseButtonName(
+  button: number,
+  opts: { extraButtons?: boolean } = {},
+): AgentMouseButton | null {
   switch (button) {
     case 0: return 'left';
     case 1: return 'middle';
     case 2: return 'right';
+    case 3: return opts.extraButtons ? 'back' : null;
+    case 4: return opts.extraButtons ? 'forward' : null;
     default: return null;
   }
 }

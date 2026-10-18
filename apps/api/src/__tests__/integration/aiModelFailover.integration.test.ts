@@ -10,6 +10,7 @@ import { withSystemDbAccessContext } from '../../db';
 import { reserveAiBudget } from '../../services/aiBudgetReservations';
 import { disconnectAnthropicConnection } from '../../services/aiModels/connectionRemap';
 import { recordServedHop, startHopFor } from '../../services/aiAgents/agentRunFailover';
+import { admissionFailoverOf, admissionServedColumns } from '../../services/aiAgents/admissionFailover';
 import { resolveModel } from '../../services/aiModels/resolveModel';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { seedFailoverPartner, setPartnerDefault, setPartnerFallbacks, type SeededFailoverPartner } from './helpers/aiModelFailoverSeed';
@@ -219,9 +220,12 @@ describe.runIf(RUN)('W09 agent-run served hop (Task 11)', () => {
     const s = await seedRegistryPartner('platform');
     const [agent] = await fixtureSql`
       INSERT INTO ai_agents (org_id, kind, name, created_by) VALUES (${s.orgId}, 'triage', 'w09', ${s.userId}) RETURNING id`;
+    // A run-loop hop never re-serves the admitted offering (it is always in
+    // `tried`); served = admitted is admission's own provenance (#7787).
+    const admittedOfferingId = randomUUID();
     const [run] = await fixtureSql`
       INSERT INTO ai_agent_runs (agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot, admitted_offering_id, funding_source)
-      VALUES (${agent!.id}, ${s.orgId}, 'manual', ${`w09-${randomUUID()}`}, 'shadow', '{}'::jsonb, ${s.offeringId}, 'platform')
+      VALUES (${agent!.id}, ${s.orgId}, 'manual', ${`w09-${randomUUID()}`}, 'shadow', '{}'::jsonb, ${admittedOfferingId}, 'platform')
       RETURNING id`;
     await recordServedHop(run!.id as string, { offeringId: s.offeringId, funding: 'platform', hop: 1, cause: 'overloaded' });
     const [row] = await fixtureSql`
@@ -232,10 +236,45 @@ describe.runIf(RUN)('W09 agent-run served hop (Task 11)', () => {
       served_failover_cause: 'overloaded', funding_source: 'platform',
     });
     expect(startHopFor({
-      admittedOfferingId: s.offeringId,
+      admittedOfferingId,
       servedOfferingId: row!.served_offering_id as string,
       servedFailoverHop: row!.served_failover_hop as number,
     })).toEqual({ requestedOfferingId: s.offeringId, hop: 1 });
+  });
+
+  it('#7787: admission\'s failover provenance (served = admitted, with its source) satisfies the served CHECK, stays on hop 0, and a later hop clears the source', async () => {
+    const s = await seedRegistryPartner('platform');
+    const [agent] = await fixtureSql`
+      INSERT INTO ai_agents (org_id, kind, name, created_by) VALUES (${s.orgId}, 'triage', 'w09', ${s.userId}) RETURNING id`;
+    const primaryOfferingId = randomUUID();
+    const served = admissionServedColumns({
+      offering: { id: s.offeringId, displayName: 'fallback' }, funding: 'platform',
+      failover: { fromOfferingId: primaryOfferingId, hop: 2, cause: 'cooldown' },
+    });
+    const [run] = await fixtureSql`
+      INSERT INTO ai_agent_runs (agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot, admitted_offering_id, funding_source,
+                                 served_offering_id, served_funding_source, served_failover_hop, served_failover_cause, served_failover_from_offering_id)
+      VALUES (${agent!.id}, ${s.orgId}, 'manual', ${`w09-${randomUUID()}`}, 'shadow', '{}'::jsonb, ${s.offeringId}, 'platform',
+              ${served.servedOfferingId}, ${served.servedFundingSource}, ${served.servedFailoverHop}, ${served.servedFailoverCause},
+              ${served.servedFailoverFromOfferingId})
+      RETURNING id, admitted_offering_id, served_offering_id, served_failover_hop, served_failover_cause, served_failover_from_offering_id`;
+    expect(run).toMatchObject({
+      served_offering_id: s.offeringId, served_failover_hop: 2, served_failover_cause: 'cooldown',
+      served_failover_from_offering_id: primaryOfferingId,
+    });
+    const asRun = {
+      admittedOfferingId: run!.admitted_offering_id as string,
+      servedOfferingId: run!.served_offering_id as string,
+      servedFailoverHop: run!.served_failover_hop as number,
+      servedFailoverCause: run!.served_failover_cause as string,
+      servedFailoverFromOfferingId: run!.served_failover_from_offering_id as string,
+    };
+    expect(startHopFor(asRun)).toEqual({ requestedOfferingId: s.offeringId, hop: 0 });
+    expect(admissionFailoverOf(asRun)).toEqual({ fromOfferingId: primaryOfferingId, hop: 2, cause: 'cooldown' });
+
+    await recordServedHop(run!.id as string, { offeringId: randomUUID(), funding: 'platform', hop: 1, cause: 'overloaded' });
+    const [after] = await fixtureSql`SELECT served_failover_from_offering_id FROM ai_agent_runs WHERE id = ${run!.id}`;
+    expect(after!.served_failover_from_offering_id).toBeNull();
   });
 });
 

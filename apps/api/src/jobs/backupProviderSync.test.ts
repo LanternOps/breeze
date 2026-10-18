@@ -107,7 +107,8 @@ vi.mock('../services/bullmqUtils', () => ({
   enqueueOrReplaceStale: vi.fn(async () => ({ id: 'job-1' })),
 }));
 
-import { selectDueConnections, syncConnectionById } from './backupProviderSync';
+import { selectDueConnections, syncConnectionById, processSyncConnection } from './backupProviderSync';
+import { makeRealJob } from './__helpers__/realBullJob';
 
 const CONNECTION_ID = '00000000-0000-4000-8000-0000000000c1';
 const BASE_ROW = {
@@ -221,6 +222,8 @@ describe('syncConnectionById — abort guards', () => {
   });
 });
 
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
+
 describe('syncConnectionById — failure handling', () => {
   it('does not persist anything when the vendor enumeration fails, and records the error', async () => {
     const boom = new Error('cove page 3 of 7 failed');
@@ -237,6 +240,23 @@ describe('syncConnectionById — failure handling', () => {
     await expect(syncConnectionById(CONNECTION_ID, { isFinalAttempt: false })).rejects.toThrow('transient');
     expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'running')).toBe(true);
     expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(false);
+  });
+
+  it('nudges connection health only when a terminal failure is recorded (W4)', async () => {
+    listDevices.mockRejectedValueOnce(new Error('transient'));
+    await expect(syncConnectionById(CONNECTION_ID, { isFinalAttempt: false })).rejects.toThrow('transient');
+    expect(nudgeConnectionHealth).not.toHaveBeenCalled();
+
+    listDevices.mockRejectedValueOnce(new Error('exhausted'));
+    await expect(syncConnectionById(CONNECTION_ID, { isFinalAttempt: true })).rejects.toThrow('exhausted');
+    expect(nudgeConnectionHealth).toHaveBeenCalledTimes(1);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('backup_provider');
+  });
+
+  it('nudges connection health on a mid-retry reauth failure (W4)', async () => {
+    listCustomers.mockRejectedValueOnce(new FakeProviderRequestError('credentials rejected', true));
+    await syncConnectionById(CONNECTION_ID, { isFinalAttempt: false }).then(() => null, (e: unknown) => e);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('backup_provider');
   });
 
   it('on a reauth failure sets status reauth_required and throws UnrecoverableError even mid-retry', async () => {
@@ -279,5 +299,23 @@ describe('syncConnectionById — failure handling', () => {
     await syncConnectionById(CONNECTION_ID);
     expect(order[0]).toMatch(/^persist@[1-9]/);
     expect(order[1]).toBe('alerts@0');
+  });
+});
+
+describe('processSyncConnection — final-attempt detection with a real BullMQ Job (#8351)', () => {
+  const data = { type: 'sync-connection' as const, connectionId: CONNECTION_ID };
+
+  it('leaves the row running on the first of three attempts (attemptsMade 0)', async () => {
+    listDevices.mockRejectedValueOnce(new Error('transient'));
+    await expect(processSyncConnection(data, makeRealJob(data, { attemptsMade: 0, attempts: 3 })))
+      .rejects.toThrow('transient');
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(false);
+  });
+
+  it('records the terminal error on the third of three attempts (attemptsMade 2)', async () => {
+    listDevices.mockRejectedValueOnce(new Error('exhausted'));
+    await expect(processSyncConnection(data, makeRealJob(data, { attemptsMade: 2, attempts: 3 })))
+      .rejects.toThrow('exhausted');
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(true);
   });
 });

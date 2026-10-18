@@ -83,6 +83,7 @@ vi.mock('../../db/schema', () => ({
     priority: 'tickets.priority',
     updatedAt: 'tickets.updated_at',
     submitterEmail: 'tickets.submitter_email',
+    ticketType: 'tickets.ticket_type',
     emailThreadKey: 'tickets.email_thread_key',
     emailMessageId: 'tickets.email_message_id',
     deletedAt: 'tickets.deleted_at',
@@ -300,6 +301,7 @@ function ticketRow(overrides: Record<string, unknown> = {}) {
     priority: 'normal',
     updatedAt: new Date('2026-08-15T00:00:00Z'),
     submitterEmail: 'customer@acme.com',
+    ticketType: 'incident',
     ...overrides,
   };
 }
@@ -1392,5 +1394,29 @@ describe('POST /tickets/draft', () => {
       expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
       expect(hoisted.draftTicketFromEmail).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// #7900 / #8592 W01: ticketType on the add-in surface (additive).
+describe('POST /tickets/from-email — ticketType', () => {
+  it('forwards an explicit ticketType to createTicket and returns it on the summary', async () => {
+    hoisted.createTicket.mockResolvedValueOnce(ticketRow({ ticketType: 'service_request' }));
+    const res = await post({ ...baseBody, ticketType: 'service_request' });
+    expect(res.status).toBe(201);
+    expect(hoisted.createTicket.mock.calls[0]![0]).toMatchObject({ source: 'email', ticketType: 'service_request' });
+    expect((await res.json()).ticket.ticketType).toBe('service_request');
+  });
+
+  it('sends no ticketType when the add-in omits it (the service defaults to incident)', async () => {
+    const res = await post(baseBody);
+    expect(res.status).toBe(201);
+    expect(hoisted.createTicket.mock.calls[0]![0]).not.toHaveProperty('ticketType');
+    expect((await res.json()).ticket.ticketType).toBe('incident');
+  });
+
+  it('400s on an unknown ticketType', async () => {
+    const res = await post({ ...baseBody, ticketType: 'outage' });
+    expect(res.status).toBe(400);
+    expect(hoisted.createTicket).not.toHaveBeenCalled();
   });
 });

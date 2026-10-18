@@ -36,6 +36,12 @@ import {
 import { enqueueFixWatchPhase1 } from './fixWatchWorker';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import {
+  callerRefusal,
+  callerRefusalFromPayload,
+  CALLER_VERIFICATION_REQUIRED_CODE,
+  type CallerRefusalPayload,
+} from '../services/callerVerification/refusal';
 import { buildApproverAuthContextForIntent } from '../services/actionIntents/actorContext';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
@@ -68,7 +74,7 @@ import {
   MAX_RESULT_BYTES,
   type SecretToolResult,
 } from '../services/actionIntents/secretBearingTools';
-import { attachWorkerObservability } from './workerObservability';
+import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
 
 /**
  * Durable release worker (spec
@@ -900,6 +906,14 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   's1_threat_action:kill',
   's1_threat_action:quarantine',
   's1_threat_action:rollback',
+  // edr_actions.requested_by (db/schema/edrProviders.ts) — one dispatch site
+  // (dispatchEdrAction) serves every action, so every key the agent lane can
+  // mint is listed, Tier-2 scan included (the agentTier2 lane mints a
+  // supervised intent). Only the actions the tool's schema accepts can be
+  // minted; a new action joins this list with its adapter. #8167 W03.
+  'edr_endpoint_action:isolate',
+  'edr_endpoint_action:unisolate',
+  'edr_endpoint_action:scan',
 ]);
 
 function userOwnedReleaseKey(intent: ActionIntent): string | null {
@@ -942,9 +956,16 @@ async function failIntent(
       await markOperationDispatchFailed(intent.id, errorCode);
     }
   }
+  // A typed caller-verification refusal persists its safe, typed payload as
+  // the intent's result (never a message/stack) so the UI can render "verify
+  // the caller"; no other error code ever sets `result` here.
+  const callerPayload = errorCode === CALLER_VERIFICATION_REQUIRED_CODE
+    ? (options.details?.requiresCallerVerification as CallerRefusalPayload | undefined)
+    : undefined;
   const won = await terminalizeIntent(intent, 'failed', {
     errorCode,
     ...(options.executed ? { executedAt: new Date() } : {}),
+    ...(callerPayload ? { result: callerRefusalFromPayload(callerPayload) } : {}),
   });
   if (!won) {
     // Lost the race — e.g. the stale-executing reaper (jobs/intentExpiryReaper.ts)
@@ -1303,7 +1324,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
   // Delegant/inline tools. Google Tier-3 tools ARE headless-executable
   // (org-keyed connection, resolved by intent.orgId) as of Phase 2, and M365
-  // Tier-3 tools (m365_disable_user, m365_reset_password) ARE ALSO
+  // Tier-3 tools (the ten in M365_HEADLESS_ACTIONS, m365ToolsHeadless.ts) ARE ALSO
   // headless-executable as of Phase 2 via the control-plane
   // customer-graph-actions executor (executeM365ToolHeadless) — so gate the
   // session_required fail on "not a headless Google tool AND not a headless
@@ -1474,6 +1495,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
     }
   } catch (err) {
+    // The backend dispatch guard refused right before the outbound mutation:
+    // nothing was sent, so this is a clean, non-retried terminal failure that
+    // keeps its typed payload (not `executed`, no rethrow).
+    const refusal = callerRefusal(err);
+    if (refusal) {
+      await failIntent(intent, CALLER_VERIFICATION_REQUIRED_CODE, {
+        details: { requiresCallerVerification: refusal.requiresCallerVerification },
+      });
+      return;
+    }
     if (err instanceof GoogleConnectionUnavailableError || err instanceof M365ConnectionUnavailableError) {
       // The org's Google/M365 connection is missing/rotated/inactive (or the
       // M365 write-action ladder refused for a connection-level reason:
@@ -1985,10 +2016,11 @@ async function notifyRequesterOfOutcome(
  * why) and NOT unconditionally acknowledged: a DETERMINISTIC outcome from
  * `attemptPolicyDecision` (it returns normally either way) always acks, but
  * a TRANSIENT failure (it throws `PolicyDecisionTransientError`, review fix
- * #3827) is rethrown so BullMQ redelivers the job — this queue's outbox
- * publisher (intentOutboxPublisher.ts) is a separate producer role, not this
- * consumer's retry policy, but this IS the branch that relies on BullMQ's
- * own per-job retry policy to make that redelivery real.
+ * #3827) is rethrown so BullMQ redelivers the job. The retry policy lives on
+ * the job itself, set at enqueue time by the outbox publisher
+ * (intentOutboxPublisher.ts: `ACTION_INTENT_JOB_ATTEMPTS` + exponential
+ * backoff, #4156). It applies to ANY throw from EVERY branch here, so each
+ * one must stay idempotent under redelivery.
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
   if (
@@ -2126,6 +2158,31 @@ async function releaseAndNotify(intentId: string): Promise<{ released: boolean }
   return { released: true };
 }
 
+/**
+ * #4156 — `PolicyDecisionTransientError` is rethrown from the `intent_created`
+ * branch precisely so BullMQ redelivers it (ACTION_INTENT_JOB_ATTEMPTS with
+ * exponential backoff, set by the publisher). Its intermediate attempts are an
+ * expected, self-healing condition and add volume, not information; a job
+ * that EXHAUSTS its attempts on it leaves the intent `unattempted` with no
+ * approval rows until the expiry reaper cancels it, so that single report is
+ * error level.
+ *
+ * Every other failure keeps the default every-attempt report on purpose: a
+ * throw AFTER the release claim (e.g. a DB fault writing the outcome) is
+ * retried too, but the retry loses the `approved -> executing` CAS and
+ * completes as a no-op — holding that report until exhaustion would drop it
+ * entirely.
+ */
+export function classifyIntentReleaseFailure(
+  _job: Job | undefined,
+  err: Error,
+): WorkerFailureClassification | null {
+  if (err instanceof PolicyDecisionTransientError) {
+    return { reason: 'action_intent_policy_decide_transient', level: 'error', reportOnlyWhenExhausted: true };
+  }
+  return null;
+}
+
 function createWorker(): Worker<IntentReleaseJobData> {
   return new Worker<IntentReleaseJobData>(
     ACTION_INTENTS_QUEUE_NAME,
@@ -2133,8 +2190,16 @@ function createWorker(): Worker<IntentReleaseJobData> {
       try {
         return await processIntentReleaseJob(job.data);
       } catch (err) {
-        console.error(`[IntentReleaseWorker] Job ${job.id} (intent ${job.data.intentId}) failed:`, err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
+        // Logged here, REPORTED by attachWorkerObservability's `failed`
+        // listener (#4156): BullMQ emits `failed` on every attempt, so a
+        // capture here as well double-reported each one, and the listener is
+        // where classifyIntentReleaseFailure holds an expected transient back
+        // until the job actually gives up.
+        console.error(
+          `[IntentReleaseWorker] Job ${job.id} (intent ${job.data.intentId}) attempt `
+          + `${job.attemptsMade + 1}/${job.opts.attempts ?? 1} failed:`,
+          err,
+        );
         throw err;
       }
     },
@@ -2154,13 +2219,14 @@ export async function initializeIntentReleaseWorker(): Promise<void> {
   if (releaseWorker) return;
 
   releaseWorker = createWorker();
-  attachWorkerObservability(releaseWorker, 'intentReleaseWorker');
+  // The observability `failed` listener is the ONLY failure reporter for this
+  // worker (#4156) — a second local listener used to capture every attempt
+  // again.
+  attachWorkerObservability(releaseWorker, 'intentReleaseWorker', {
+    classifyFailure: classifyIntentReleaseFailure,
+  });
   releaseWorker.on('error', (error) => {
     console.error('[IntentReleaseWorker] Worker error:', error);
-    captureException(error);
-  });
-  releaseWorker.on('failed', (job, error) => {
-    console.error(`[IntentReleaseWorker] Job ${job?.id} failed:`, error);
     captureException(error);
   });
 

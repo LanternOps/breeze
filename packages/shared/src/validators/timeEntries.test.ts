@@ -2,8 +2,22 @@ import { describe, it, expect } from 'vitest';
 import {
   createTimeEntrySchema, updateTimeEntrySchema, startTimerSchema,
   listTimeEntriesQuerySchema, bulkApproveSchema, ticketPartSchema,
-  updateTicketPartSchema, billablesExportQuerySchema
+  updateTicketPartSchema, billablesExportQuerySchema, billingStatusSchema
 } from './timeEntries';
+
+describe('awaiting_approval (#4617 W02): readable, never client-writable', () => {
+  const base = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };
+  it('is a known billing status (list filter, response typing)', () => {
+    expect(billingStatusSchema.safeParse('awaiting_approval').success).toBe(true);
+    expect(listTimeEntriesQuerySchema.safeParse({ billingStatus: 'awaiting_approval' }).success).toBe(true);
+  });
+  it('is rejected on every client write — only the approval gate sets it', () => {
+    expect(createTimeEntrySchema.safeParse({ ...base, billingStatus: 'awaiting_approval' }).success).toBe(false);
+    expect(updateTimeEntrySchema.safeParse({ billingStatus: 'awaiting_approval' }).success).toBe(false);
+    expect(ticketPartSchema.safeParse({ description: 'SSD', quantity: 1, billingStatus: 'awaiting_approval' }).success).toBe(false);
+    expect(updateTicketPartSchema.safeParse({ billingStatus: 'awaiting_approval' }).success).toBe(false);
+  });
+});
 
 const UUID = '3f2f1d8e-1111-4222-8333-444455556666';
 

@@ -29,7 +29,7 @@ export interface OfflineCondition {
 export interface EventLogCondition {
   type: 'event_log';
   category: 'security' | 'hardware' | 'application' | 'system';
-  level: 'warning' | 'error' | 'critical';
+  level: 'info' | 'warning' | 'error' | 'critical';
   sourcePattern?: string;
   messagePattern?: string;
   countThreshold: number;
@@ -190,6 +190,13 @@ export interface TimeSyncCondition {
   consecutiveSnapshots: number;
 }
 
+// Workload inventory W06 (#8195). Root-only subject monitor: one subject per
+// container image repository:tag on the device.
+export interface ContainerImageCurrencyCondition {
+  type: 'container_image_currency';
+  minDaysBehind: number;
+}
+
 // Union of all condition types
 export type AlertCondition =
   | ThresholdCondition
@@ -209,7 +216,8 @@ export type AlertCondition =
   | ScriptMonitorCondition
   | NetworkCheckCondition
   | HardwareHealthCondition
-  | TimeSyncCondition;
+  | TimeSyncCondition
+  | ContainerImageCurrencyCondition;
 
 // Compound condition with AND/OR logic
 export interface ConditionGroup {

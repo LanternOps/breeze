@@ -14,9 +14,11 @@ import { advanceOutcomesForTerminalExecution } from '../../services/fixMemory/sc
 import { alertSignature } from '../../services/fixMemory/signatureLoader';
 import {
   clearOrgErasureRequest, fillOutcomeSignature, markFixMemoryStaleForOrgErasure, markOwnerDriftStale, rebuildFixMemory, recomputeForOutcome,
-  stalePartnerIds, transitionOutcome,
+  stalePartnerIds, stampRebuildAttempt, transitionOutcome,
 } from '../../services/fixMemory/store';
+import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/deviceDeletion';
 import { executeOrgMerge } from '../../services/orgMerge';
+import { TenantCascadeRefusalError } from '../../services/tenantCascade';
 import { probeTelemetryFreshness } from '../../services/outcomeProbes';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { seedEpisode } from './metricAnomalyEpisodeFixtures';
@@ -318,6 +320,39 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, staleSince: null, rebuildPendingOrgIds: [] });
   });
 
+  it('#7280: the erasure JOB path itself — a legal-hold refusal undoes the request, propagates unchanged, and deletes nothing', async () => {
+    const w = await world();
+    const base = Date.UTC(2026, 11, 8);
+    await verify(w, w.o1, w.d1, w.partnerScript, new Date(base));
+    await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 30 * H));
+    // An active legal hold on one of o2's snapshots: the cascade's own check refuses.
+    const testDb = getTestDb();
+    const [config] = (await testDb.execute(sql`
+      INSERT INTO backup_configs (org_id, name, type, provider, provider_config)
+      VALUES (${w.o2}, 'hold fixture', 'file', 'local', '{}') RETURNING id`)) as unknown as Array<{ id: string }>;
+    const [job] = (await testDb.execute(sql`
+      INSERT INTO backup_jobs (org_id, config_id, device_id) VALUES (${w.o2}, ${config!.id}, ${w.d2}) RETURNING id`)) as unknown as Array<{ id: string }>;
+    await testDb.execute(sql`
+      INSERT INTO backup_snapshots (org_id, job_id, device_id, snapshot_id, legal_hold)
+      VALUES (${w.o2}, ${job!.id}, ${w.d2}, ${randomUUID()}, true)`);
+    const actor = await createUser({ partnerId: w.partnerId, orgId: null, email: `hold-${randomUUID()}@example.com` });
+    const rebuild = vi.fn();
+
+    await expect(eraseOrgWithFixMemory(w.o2, actor.id, actor.email, { rebuild: rebuild as never }))
+      .rejects.toBeInstanceOf(TenantCascadeRefusalError);
+
+    // Nothing erased, no rebuild attempted, and no durable request left behind.
+    expect(rebuild).not.toHaveBeenCalled();
+    expect(await sys(() => db.select().from(fixOutcomes).where(eq(fixOutcomes.orgId, w.o2)))).toHaveLength(1);
+    const after = (await partnerMemory(w.partnerId))[0]!;
+    expect(after).toMatchObject({ attempts: 2, rebuildPendingOrgIds: [] });
+    // stale_since stays set by design; the sweeper rebuilds and lifts it.
+    expect(after.staleSince).not.toBeNull();
+    expect(await sys(() => stalePartnerIds(1000))).toContain(w.partnerId);
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, staleSince: null, rebuildPendingOrgIds: [] });
+  }, 240_000);
+
   it('stalePartnerIds returns the partner stale the longest first (I1b)', async () => {
     const older = await world();
     const newer = await world();
@@ -327,6 +362,42 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     await sys(() => db.update(fixMemory).set({ staleSince: new Date(Date.UTC(2026, 9, 1)) }).where(eq(fixMemory.partnerId, older.partnerId)));
     expect(await sys(() => stalePartnerIds(1))).toEqual([older.partnerId]);
     expect(await sys(() => stalePartnerIds(10))).toEqual([older.partnerId, newer.partnerId]);
+  });
+
+  it('a partner whose rebuild was just attempted yields its slot: stalePartnerIds rotates by last attempt (#7278)', async () => {
+    const stuck = await world();
+    const waiting = await world();
+    await verify(stuck, stuck.o1, stuck.d1, stuck.partnerScript, new Date(Date.UTC(2026, 10, 28)));
+    await verify(waiting, waiting.o1, waiting.d1, waiting.partnerScript, new Date(Date.UTC(2026, 10, 28)));
+    // `stuck` has been stale far longer (e.g. a pending request for an org whose erasure keeps failing).
+    await sys(() => db.update(fixMemory).set({ staleSince: new Date(Date.UTC(2026, 8, 1)) }).where(eq(fixMemory.partnerId, stuck.partnerId)));
+    await sys(() => db.update(fixMemory).set({ staleSince: new Date(Date.UTC(2026, 10, 1)) }).where(eq(fixMemory.partnerId, waiting.partnerId)));
+    expect(await sys(() => stalePartnerIds(1))).toEqual([stuck.partnerId]);
+    // The sweeper stamps its attempt in its own transaction; the rebuild then fails or cannot lift the row.
+    expect(await sys(() => stampRebuildAttempt(stuck.partnerId, new Date(Date.UTC(2026, 11, 1))))).toBe(1);
+    expect(await sys(() => stalePartnerIds(1))).toEqual([waiting.partnerId]);
+    expect(await sys(() => stampRebuildAttempt(waiting.partnerId, new Date(Date.UTC(2026, 11, 2))))).toBe(1);
+    expect(await sys(() => stalePartnerIds(10))).toEqual([stuck.partnerId, waiting.partnerId]);
+  });
+
+  it('deleting a device stale-marks the fix memory its outcomes fed, and the rebuild drops its attempts (#7278)', async () => {
+    const w = await world();
+    const base = Date.UTC(2026, 10, 29);
+    await verify(w, w.o1, w.d1, w.partnerScript, new Date(base));
+    await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 30 * H));
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, staleSince: null });
+
+    await sys(() => db.transaction((tx) => deleteDeviceCascade(tx as unknown as DeviceDeletionTx, w.d1)));
+
+    expect(await sys(() => db.select().from(fixOutcomes).where(eq(fixOutcomes.deviceId, w.d1)))).toHaveLength(0);
+    const marked = (await partnerMemory(w.partnerId))[0]!;
+    // The aggregate still says 2 until the rebuild, but it is out of "proven" and queued for one.
+    expect(marked.attempts).toBe(2);
+    expect(marked.staleSince).not.toBeNull();
+    expect(marked.rebuildPendingOrgIds).toEqual([]);
+    expect(await sys(() => stalePartnerIds(1000))).toContain(w.partnerId);
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 1, verifiedCount: 1, staleSince: null });
   });
 
   it('script re-scope org→partner folds org history into the partner row (Review Focus 5)', async () => {
@@ -535,6 +606,46 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     expect(await byScript()).toEqual([]); // org A's attempts no longer belong to any owner org B could see
   });
 
+  describe('owner drift across the system <-> non-system boundary (#7280)', () => {
+    const memoryFor1 = (scriptId: string) => sys(() => db.select().from(fixMemory).where(eq(fixMemory.scriptId, scriptId)));
+
+    it('control: a partner row whose script is promoted to a system script is NOT drift (system scripts stay shareable)', async () => {
+      const w = await world();
+      const script = await w.mkScript({ partnerId: w.partnerId });
+      await verify(w, w.o1, w.d1, script, new Date(Date.UTC(2026, 11, 1)));
+      await sys(() => db.update(scripts).set({ isSystem: true, partnerId: null, orgId: null }).where(eq(scripts.id, script.scriptId)));
+      await sys(() => markOwnerDriftStale());
+      const rows = await memoryFor1(script.scriptId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ orgId: null, partnerId: w.partnerId, staleSince: null });
+    });
+
+    it('a partner row whose SYSTEM script is re-scoped to a single org (system -> non-system) is flagged stale and rebuilt under the new owner', async () => {
+      const w = await world();
+      const script = await w.mkScript({});
+      await sys(() => db.update(scripts).set({ isSystem: true }).where(eq(scripts.id, script.scriptId)));
+      await verify(w, w.o1, w.d1, script, new Date(Date.UTC(2026, 11, 3)));
+      expect((await memoryFor1(script.scriptId))[0]).toMatchObject({ orgId: null, partnerId: w.partnerId, staleSince: null });
+      await sys(() => db.update(scripts).set({ isSystem: false, orgId: w.o1, partnerId: w.partnerId }).where(eq(scripts.id, script.scriptId)));
+      await sys(() => markOwnerDriftStale());
+      expect((await memoryFor1(script.scriptId))[0]!.staleSince).not.toBeNull();
+      await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+      const rebuilt = await memoryFor1(script.scriptId);
+      expect(rebuilt).toHaveLength(1);
+      expect(rebuilt[0]).toMatchObject({ orgId: w.o1, partnerId: null, attempts: 1 });
+    });
+
+    it('an org row whose org-owned script is flipped to is_system (non-system -> system, org_id unchanged) is flagged stale', async () => {
+      const w = await world();
+      const script = await w.mkScript({ orgId: w.o1, partnerId: w.partnerId });
+      await verify(w, w.o1, w.d1, script, new Date(Date.UTC(2026, 11, 5)), 'org_script');
+      expect((await memoryFor1(script.scriptId))[0]).toMatchObject({ orgId: w.o1, staleSince: null });
+      await sys(() => db.update(scripts).set({ isSystem: true }).where(eq(scripts.id, script.scriptId)));
+      await sys(() => markOwnerDriftStale());
+      expect((await memoryFor1(script.scriptId))[0]!.staleSince).not.toBeNull();
+    });
+  });
+
   it('org merge: loser outcomes stay with the loser (leave-for-erasure); erasure + rebuild leave only the survivor’s proof', async () => {
     const prior = process.env.ORG_MERGE_FENCE_DRAIN_MS;
     process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
@@ -561,6 +672,69 @@ describe('fix outcome lifecycle (real Postgres)', () => {
       else process.env.ORG_MERGE_FENCE_DRAIN_MS = prior;
     }
   }, 240_000); // executeOrgMerge + the org cascade each walk every tenant table (30-110 s locally, load-dependent): far over the 30 s default
+
+  it('#8746: a loser kept under a PAM evidence hold is erased scoped; its organizations row survives, yet the rebuild still lifts the request', async () => {
+    const prior = process.env.ORG_MERGE_FENCE_DRAIN_MS;
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+    try {
+      const w = await world();
+      const base = Date.UTC(2026, 10, 23);
+      await verify(w, w.o1, w.d1, w.partnerScript, new Date(base)); // loser
+      await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 30 * H)); // survivor
+      await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 60 * H)); // survivor
+      const actor = await createUser({ partnerId: w.partnerId, orgId: null, email: `held-${randomUUID()}@example.com` });
+
+      await executeOrgMerge({ loserOrgId: w.o1, survivorOrgId: w.o2, partnerId: w.partnerId, performedBy: actor.id, performedByEmail: actor.email });
+      // The PAM evidence hold Phase B would write for a loser that kept PAM
+      // history (blocks-merge still refuses such merges until W6): raw insert
+      // against the real merge event.
+      await getTestDb().execute(sql`
+        INSERT INTO org_evidence_holds (loser_org_id, partner_id, survivor_org_id, merge_event_id, reason)
+        SELECT e.loser_org_id, e.partner_id, e.survivor_org_id, e.id, 'pam_evidence'
+          FROM org_merge_events e WHERE e.loser_org_id = ${w.o1}::uuid`);
+
+      const stats = await eraseOrgWithFixMemory(w.o1, actor.id, actor.email);
+      expect(stats.evidenceHoldScoped).toBe(true);
+      const [shell] = (await getTestDb().execute(sql`SELECT 1 AS present FROM organizations WHERE id = ${w.o1}::uuid`)) as unknown as Array<{ present: number }>;
+      expect(shell, 'the held shell organizations row must survive a scoped erasure').toBeDefined();
+      expect(await sys(() => db.select().from(fixOutcomes).where(eq(fixOutcomes.orgId, w.o1)))).toEqual([]);
+      // The org row survives, but its outcomes are gone, so the request is satisfied.
+      expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, verifiedCount: 2, staleSince: null, rebuildPendingOrgIds: [] });
+    } finally {
+      if (prior === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
+      else process.env.ORG_MERGE_FENCE_DRAIN_MS = prior;
+    }
+  }, 240_000);
+
+  it('#8746: the scoped-erasure stamp satisfies a request only on a held shell, and a held shell without it stays pending', async () => {
+    const w = await world();
+    const base = Date.UTC(2026, 10, 25);
+    await verify(w, w.o1, w.d1, w.partnerScript, new Date(base));
+    await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 30 * H));
+    expect(await sys(() => markFixMemoryStaleForOrgErasure(w.o2))).toBe(w.partnerId);
+    const stamp = `{"evidenceHoldScopedErasureAt":"2026-01-01T00:00:00Z"}`;
+
+    // A stray stamp on a live, un-held org satisfies nothing.
+    await getTestDb().execute(sql`
+      UPDATE organizations SET settings = COALESCE(settings, '{}'::jsonb) || ${stamp}::jsonb WHERE id = ${w.o2}::uuid`);
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ rebuildPendingOrgIds: [w.o2] });
+
+    // A held shell whose scoped erasure has not completed (no stamp) stays pending.
+    await getTestDb().execute(sql`
+      UPDATE organizations SET settings = settings - 'evidenceHoldScopedErasureAt' WHERE id = ${w.o2}::uuid`);
+    const [event] = (await getTestDb().execute(sql`
+      INSERT INTO org_merge_events (partner_id, loser_org_id, loser_org_name, survivor_org_id, summary)
+      VALUES (${w.partnerId}::uuid, ${w.o2}::uuid, 'held fixture', ${w.o1}::uuid, '{"tables":{},"warnings":[]}'::jsonb)
+      RETURNING id`)) as unknown as Array<{ id: string }>;
+    await getTestDb().execute(sql`
+      INSERT INTO org_evidence_holds (loser_org_id, partner_id, survivor_org_id, merge_event_id, reason)
+      VALUES (${w.o2}::uuid, ${w.partnerId}::uuid, ${w.o1}::uuid, ${event!.id}::uuid, 'pam_evidence')`);
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+    const pending = (await partnerMemory(w.partnerId))[0]!;
+    expect(pending).toMatchObject({ rebuildPendingOrgIds: [w.o2] });
+    expect(pending.staleSince).not.toBeNull();
+  });
 
   it('the inline script hook fails the attempt once and the recount pass aggregates it (decision D-a)', async () => {
     const w = await world();

@@ -86,8 +86,9 @@ function ReadOnlyScript({ language, content }: { language: string; content: stri
       .then((mod) => {
         if (!cancelled) setEditor(() => mod.default);
       })
-      .catch(() => {
+      .catch((err) => {
         // Stay on the <pre> fallback — the content is still fully readable.
+        console.error('[ScriptProposalApprovalCard] script editor failed to load', err);
       });
     return () => {
       cancelled = true;

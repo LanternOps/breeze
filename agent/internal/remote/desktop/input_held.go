@@ -13,7 +13,7 @@ import (
 // Only the SafeInput worker goroutine touches it; it is not safe for
 // concurrent use.
 type heldInput struct {
-	keys    map[string]struct{}
+	keys    map[string]heldKey // by heldKeyID
 	buttons map[string]struct{}
 	lastX   int
 	lastY   int
@@ -21,7 +21,47 @@ type heldInput struct {
 }
 
 func newHeldInput() *heldInput {
-	return &heldInput{keys: map[string]struct{}{}, buttons: map[string]struct{}{}, goos: runtime.GOOS}
+	return &heldInput{keys: map[string]heldKey{}, buttons: map[string]struct{}{}, goos: runtime.GOOS}
+}
+
+// heldKey is what a key_down named: the normalised key name and, from a W2c
+// viewer, the physical key code. The release carries both, so the platform
+// handler resolves it to the same physical key it pressed (on Windows, a
+// right Ctrl pressed by scancode is not released as VK_CONTROL).
+type heldKey struct {
+	name string
+	code string
+}
+
+// heldKeyID is the record's identity: the code when there is one, so that
+// ShiftLeft and ShiftRight are two held keys, else the key name.
+func heldKeyID(name, code string) string {
+	if code != "" {
+		return "code:" + code
+	}
+	return name
+}
+
+// heldInputToggleCodes are the DOM codes of the toggle keys.
+var heldInputToggleCodes = map[string]struct{}{"CapsLock": {}, "NumLock": {}, "ScrollLock": {}}
+
+func isToggleKey(name, code string) bool {
+	if _, ok := heldInputToggleKeys[name]; ok {
+		return true
+	}
+	_, ok := heldInputToggleCodes[code]
+	return ok
+}
+
+// nameHeld reports whether any held key has this logical name, whichever
+// physical key (code) pressed it.
+func (h *heldInput) nameHeld(name string) bool {
+	for _, k := range h.keys {
+		if k.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Toggle keys change state on press. They are never "held", and releasing
@@ -31,7 +71,9 @@ var heldInputToggleKeys = map[string]struct{}{"capslock": {}, "numlock": {}, "sc
 // filterableModifier reports whether a modifier means the same key held via
 // key_down as bundled in a key_press. "meta" does on Linux (Super both ways)
 // but not on Windows, where bundled meta is injected as Ctrl (Mac Cmd → Ctrl)
-// and held meta is the Win key. macOS never holds modifiers at all.
+// and held meta is the Win key. macOS holds modifiers only in sequenced
+// sessions (W2c running mask); its key_press ORs the held mask back in, so
+// filtering there changes nothing either way.
 func (h *heldInput) filterableModifier(name string) bool {
 	switch name {
 	case "ctrl", "alt", "shift":
@@ -65,20 +107,60 @@ func heldButtonName(button string) string {
 // again and release them on the way out, leaving the operator's still-held
 // Shift released on the remote (spec gotcha K5).
 func (h *heldInput) prepare(ev InputEvent) InputEvent {
+	if ev.Type == "key_up" {
+		return h.resolveKeyUp(ev)
+	}
 	if ev.Type != "key_press" || len(ev.Modifiers) == 0 {
 		return ev
 	}
 	kept := make([]string, 0, len(ev.Modifiers))
 	for _, m := range ev.Modifiers {
 		name := heldKeyName(m)
-		if h.filterableModifier(name) {
-			if _, held := h.keys[name]; held {
-				continue
-			}
+		if h.filterableModifier(name) && h.nameHeld(name) {
+			continue
 		}
 		kept = append(kept, m)
 	}
 	ev.Modifiers = kept
+	return ev
+}
+
+// resolveKeyUp makes a W2c key_up release the key its key_down pressed, so
+// the platform handler releases that physical key and observe clears that
+// record:
+//   - code held: release with the pressing key name. The browser's key_up can
+//     name another key ("!" for Digit1 once Shift is down), which the handler
+//     cannot map; the key would stay down and its record would be dropped.
+//   - code given but only the name held: release without the code, as pressed.
+//   - no code, name not held, but held by code: release by that code, or
+//     Windows would release VK_CONTROL (left) for a right Ctrl.
+//
+// A key_up with no codes on either side (every legacy viewer) is unchanged.
+func (h *heldInput) resolveKeyUp(ev InputEvent) InputEvent {
+	name := heldKeyName(ev.Key)
+	if ev.Code != "" {
+		if k, ok := h.keys[heldKeyID(name, ev.Code)]; ok {
+			ev.Key = k.name
+			return ev
+		}
+		if _, ok := h.keys[name]; ok {
+			ev.Code = ""
+		}
+		return ev
+	}
+	if _, ok := h.keys[name]; ok {
+		return ev
+	}
+	ids := make([]string, 0, 1)
+	for id, k := range h.keys {
+		if k.name == name && k.code != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > 0 {
+		sort.Strings(ids)
+		ev.Code = h.keys[ids[0]].code
+	}
 	return ev
 }
 
@@ -93,12 +175,12 @@ func (h *heldInput) observe(ev InputEvent, err error) {
 	switch ev.Type {
 	case "key_down":
 		name := heldKeyName(ev.Key)
-		if _, toggle := heldInputToggleKeys[name]; toggle || err != nil {
+		if isToggleKey(name, ev.Code) || err != nil {
 			return
 		}
-		h.keys[name] = struct{}{}
+		h.keys[heldKeyID(name, ev.Code)] = heldKey{name: name, code: ev.Code}
 	case "key_up":
-		delete(h.keys, heldKeyName(ev.Key))
+		delete(h.keys, heldKeyID(heldKeyName(ev.Key), ev.Code))
 	case "mouse_down":
 		if err == nil {
 			h.buttons[heldButtonName(ev.Button)] = struct{}{}
@@ -115,10 +197,16 @@ func (h *heldInput) releases() []InputEvent {
 	for _, b := range sortedSetKeys(h.buttons) {
 		out = append(out, InputEvent{Type: "mouse_up", X: h.lastX, Y: h.lastY, Button: b})
 	}
-	for _, k := range sortedSetKeys(h.keys) {
-		out = append(out, InputEvent{Type: "key_up", Key: k})
+	ids := make([]string, 0, len(h.keys))
+	for id := range h.keys {
+		ids = append(ids, id)
 	}
-	h.keys = map[string]struct{}{}
+	sort.Strings(ids)
+	for _, id := range ids {
+		k := h.keys[id]
+		out = append(out, InputEvent{Type: "key_up", Key: k.name, Code: k.code})
+	}
+	h.keys = map[string]heldKey{}
 	h.buttons = map[string]struct{}{}
 	return out
 }

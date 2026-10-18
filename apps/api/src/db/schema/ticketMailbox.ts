@@ -5,6 +5,7 @@ import {
   text,
   varchar,
   boolean,
+  integer,
   timestamp,
   unique,
   uniqueIndex,
@@ -60,6 +61,12 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
   lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
   lastError: text('last_error'),
+  // Microsoft 365 poll sweeps in a row that failed transiently (Graph 5xx/429,
+  // network failure, sweep budget spent) and when the last one happened (#8308).
+  // Reset by a successful poll or a reconnect. A counter and timestamp only: the
+  // raw Graph error text stays in server logs, never in lastError (#6192).
+  consecutiveTransientFailures: integer('consecutive_transient_failures').notNull().default(0),
+  lastTransientFailureAt: timestamp('last_transient_failure_at', { withTimezone: true }),
   // Gmail only: per-mailbox "mark handled" (#7949). NULL label = off. When set,
   // mail that became (or joined) a ticket gets this USER label and, if
   // gmailArchiveOnHandle, leaves INBOX. Edited on the mailbox settings card.

@@ -121,8 +121,11 @@ it('carries no hand-typed tool index any more', () => {
   expect(AI_SYSTEM_PROMPT_BASE).not.toMatch(/\bquery_devices\b/);
   expect(AI_SYSTEM_PROMPT_TAIL).not.toContain('## Available Tools by Domain');
 });
-it('BASE + TAIL stay under 7 KB together', () => {
-  expect(Buffer.byteLength(AI_SYSTEM_PROMPT_BASE + AI_SYSTEM_PROMPT_TAIL, 'utf8')).toBeLessThan(7 * 1024);
+// 7.5 KB since #8852 W04 added guardrail 6a (the untrusted device-text rule,
+// ~400 bytes) — a safety rule, not tool prose; tool detail still belongs in
+// the generated index, not here.
+it('BASE + TAIL stay under 7.5 KB together', () => {
+  expect(Buffer.byteLength(AI_SYSTEM_PROMPT_BASE + AI_SYSTEM_PROMPT_TAIL, 'utf8')).toBeLessThan(7.5 * 1024);
 });
 
 it('tells the model how to continue a paged result and how to read a handle (A-W05)', () => {

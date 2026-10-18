@@ -23,3 +23,10 @@ it('round-trips an open Explain investigation and its approved AI diagnostic run
   expect(parseTopologyHash('#topology/view/overview/explain/not-a-uuid')).toBeUndefined();
   expect(parseTopologyHash('#topology/view/overview/airun/../../x')).toBeUndefined();
 });
+
+it('round-trips the show-other-networks toggle and rejects other values', () => {
+  writeTopologyHash({ siteId: SITE, view: 'overview', search: '', showOtherNetworks: true });
+  expect(window.location.hash).toBe(`#topology/site/${SITE}/view/overview/others/1`);
+  expect(parseTopologyHash(window.location.hash)).toEqual({ siteId: SITE, view: 'overview', search: '', showOtherNetworks: true });
+  expect(parseTopologyHash('#topology/view/overview/others/0')).toBeUndefined();
+});

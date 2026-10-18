@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Endpoint messaging",
+        "endpointMessagingHelp": "Lets technicians send messages to the person at the device.",
+        "allowUserReply": "Allow replies from the user",
+        "allowUserReplyHelp": "Lets the person at the device reply in a chat a technician starts. When off, chats are one-way."
       },
       "inlineEntityPicker": {
         "search": "Search...",
@@ -769,6 +773,7 @@
         "overridesLabel": "Overrides:",
         "failedToLoadMonitors": "Failed to load monitors",
         "createMonitor": "Create monitor",
+        "notAttachable": "This monitor can't be attached to this policy. Partner-owned policies can only use partner-wide monitors.",
         "monitorDeleted": "Monitor deleted",
         "recommended": {
           "title": "Recommended monitors",
@@ -791,25 +796,6 @@
         "approvalRulesLiveInThePAMConsole": "Approval rules live in the PAM console",
         "thisPolicyOnlyControlsWhetherDevicesCapture": "This policy only controls whether devices capture elevation prompts. Verdicts (auto-approve, deny, require approval), the request queue, and audit history are managed in the",
         "privilegedAccessConsole": "Privileged Access console"
-      },
-      "patchAppRulesSection": {
-        "applicationRules": "Application Rules",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Block specific applications from automated patching, or pin them to a maximum version.",
-        "blocked": "Blocked",
-        "pinned": "Pinned",
-        "maxVersion": "Max version",
-        "pinnedApplicationsNeedAVersion": "Pinned applications need a version.",
-        "addApplication": "Add application",
-        "searchCatalogAndDetectedApplications": "Search catalog and detected applications...",
-        "searching": "Searching...",
-        "catalog": "catalog",
-        "couldnTLoadApplicationsYouCanStill": "Couldn't load applications — you can still add by package ID below.",
-        "noMatches": "No matches.",
-        "orEnterAPackageIDManually": "Or enter a package ID manually",
-        "block": "block",
-        "pin": "pin",
-        "thirdParty": "third_party",
-        "removeRuleFor": "Remove rule for {{application}}"
       },
       "patchTab": {
         "daily": "Daily",
@@ -868,6 +854,13 @@
         "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
         "rebootDeferralMinutes": "Postpone by (minutes)",
         "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
+        "rebootPromptText": "Restart prompt text",
+        "rebootPromptTextDescription": "Optional. Replaces the wording of the restart warnings users see, for example to show them in your users' language. Leave a field blank to keep the built-in English text.",
+        "rebootPromptTitle": "Title",
+        "rebootPromptButton": "Restart button label",
+        "rebootPromptBody": "Message",
+        "rebootPromptBodyDescription": "Plain text. {{placeholder}} is replaced with the time left until the restart. Windows shows fixed Yes/No buttons, so there the button label is named in the message instead.",
+        "rebootPromptInvalid": "Restart prompt text must be plain text (no < or >, no line breaks in the title or button label) and may use no placeholder other than {{placeholder}}.",
         "windowsUpdateSource": "Windows Update Source",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Manage Windows Update exclusively through Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suppresses the endpoint's native Windows Update automatic-install channel so updates only flow through Breeze's approval rings — preventing unexpected reboots and patches outside your schedule. Windows-only; Breeze's own scan/approve/install path is unaffected. Reverts cleanly when disabled (a pre-existing admin Group Policy is left untouched).",
@@ -889,7 +882,15 @@
         "text2xl": "2xl",
         "saveChanges": "Save Changes",
         "createRing": "Create Ring",
-        "thirdPartyRingHint": "Auto-approval rules for third-party updates are configured on the linked Update Ring."
+        "thirdPartyRingHint": "Auto-approval rules for third-party updates are configured on the linked Update Ring.",
+        "ringOwnsApprovalHint": "Auto-approval and application rules are set on the linked Update Ring.",
+        "noRingManualApprovalHint": "No ring linked — patches install only after manual approval.",
+        "unavailableRingOption": "Unavailable ring",
+        "ringInvalidTitle": "The linked Update Ring is no longer available.",
+        "ringInvalidBody": "Patches for this policy are held until you choose a ring and save.",
+        "ringInvalidLegacyRules": "This policy still carries application rules from before they moved to rings ({{rules}}). The ring you choose must already have exactly these rules — add them to it first.",
+        "approvalRulesMovedToRing": "Auto-approval and application rules are now set on the Update Ring. Edit them on the linked ring. If this page was open before the update, reload it and save again.",
+        "ringLacksPolicyAppRules": "The Update Ring you chose does not have this policy's application rules. Add exactly these rules to that ring first, or choose a ring that already has them."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link Peripheral Policy",
@@ -1109,6 +1110,38 @@
         "thisPolicyOnlyControlsWhetherDevicesAre": "This policy only controls whether devices are scanned. Detected CVEs, risk scores, and remediation actions are managed in the",
         "vulnerabilitiesConsole": "Vulnerabilities console"
       },
+      "systemProtectionTab": {
+        "title": "System Protection",
+        "description": "Attempt a Windows System Restore checkpoint before patching, scripts, and software installs",
+        "beforePatching": "Before patch installs",
+        "beforePatchingHelp": "Attempt a checkpoint before installing operating system updates.",
+        "beforeScripts": "Before scripts",
+        "beforeScriptsHelp": "Attempt a checkpoint before running a script on the device.",
+        "beforeSoftwareInstall": "Before software installs",
+        "beforeSoftwareInstallHelp": "Attempt a checkpoint before installing or updating software.",
+        "labelPrefix": "Checkpoint label prefix",
+        "labelPrefixHelp": "Shown at the start of each restore point's description in Windows. Up to 64 characters.",
+        "platformDefaultNote": "No policy is assigned. Platform default: a checkpoint is attempted before patch installs only.",
+        "legacyAgentWarning": "Turning this off only takes effect on agents that report System Restore support. Older agents will continue to attempt a checkpoint before patch installs.",
+        "aboutTitle": "About System Restore",
+        "aboutBody": "Applies to Windows devices only. System Restore covers system files, the registry, installed programs and settings. It is not a backup and does not cover personal files. Windows limits restore-point creation to once every 24 hours by default, and a created point can later be removed by Windows or become unusable."
+      },
+      "securityAgentsTab": {
+        "title": "Security Agents",
+        "description": "Deploy and keep managed security agents installed on devices",
+        "deployVendor": "Deploy {{vendor}}",
+        "comingSoon": "Coming soon",
+        "platformWindows": "Windows: installed automatically.",
+        "platformMacos": "macOS: requires MDM approval, so Breeze does not install it automatically. These devices show as not applicable.",
+        "platformLinux": "Linux: not supported.",
+        "keysNotice": "Installs use the per-customer keys from the Huntress integration. Organizations that are not mapped in that integration are skipped and shown as not applicable, with no failed deployments. Turning a vendor off stops enforcement but never uninstalls the agent.",
+        "closerWarning": "A configuration policy assigned closer to a device (site, group or device, or an inheriting child policy) that has its own Security Agents settings replaces these settings entirely for those devices. A vendor left out there is not enforced.",
+        "partnerWideBadge": "Applies to all organizations",
+        "noneEnabledNote": "No vendor is enabled: devices reached by this policy are opted out of every security agent.",
+        "catalogMissing": "Huntress is not set up for this partner yet. Connect the Huntress integration first, then save again.",
+        "catalogMissingLink": "Connect Huntress",
+        "executeRequired": "Turning on installs requires permission to run commands on devices, with MFA. Ask an administrator who has that permission to save this setting."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Warranty alerting is opt-in: devices with no warranty policy assigned never alert. Thresholds below apply to fixed-term coverage only — active AppleCare subscriptions renew rather than expire, so their expiry alerts are always suppressed.",
         "enableWarrantyExpiryAlerts": "Enable warranty expiry alerts",
@@ -1327,7 +1360,9 @@
       "installSkippedNoCatalog": "A required rule has no linked catalog item, so there's nothing to install. Add a catalog link in the policy editor to fix this.",
       "installSkippedCapOrPlatform": "Not a failure — either the per-pass install cap was reached or this device's platform has no install method for the software. May be attempted again next pass.",
       "installAttempts": "{{count}} attempt(s)",
-      "installLastAttempt": "Last install attempt: "
+      "installLastAttempt": "Last install attempt: ",
+      "managedByConfigPolicy": "Managed by configuration policy",
+      "managedByConfigPolicyHint": "This policy is generated from a configuration policy and is read-only here. Change it in Configuration Policies."
     },
     "deploymentList": {
       "running": "Running",

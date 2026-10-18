@@ -252,6 +252,47 @@ describe('PartnerSettingsPage language control', () => {
   });
 });
 
+describe('PartnerSettingsPage security clear (#8976)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    await act(async () => { await i18n.changeLanguage('en'); });
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  it('sends an explicit null for a cleared session timeout so the server drops the stored value', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro',
+        createdAt: '2026-02-09T00:00:00.000Z',
+        settings: {
+          timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en',
+          businessHours: { preset: 'business' }, contact: {},
+          security: { sessionTimeout: 720, maxSessions: 3 },
+        },
+      })
+    );
+    render(<PartnerSettingsPage />);
+    await screen.findByRole('heading', { name: /Partner Settings/i });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^security$/i }));
+
+    const input = screen.getByDisplayValue('720') as HTMLInputElement;
+    await user.clear(input);
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.settings.security.sessionTimeout).toBeNull();
+    // Untouched fields keep their value.
+    expect(body.settings.security.maxSessions).toBe(3);
+  });
+});
+
 describe('PartnerSettingsPage Company tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -636,6 +677,80 @@ describe('PartnerSettingsPage Email templates tab', () => {
     render(<PartnerSettingsPage />);
 
     expect(await screen.findByTestId('stub-email-templates-tab')).not.toBeNull();
+  });
+});
+
+// #8155 W03: the dedicated-tunnel-origin opt-in rides the page Save under
+// `settings.networkProxy` (server: orgs.ts partnerSettingsSchema, shallow merge).
+describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => {
+  const partnerWith = (extraSettings: Record<string, unknown>) => ({
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+      ...extraSettings,
+    },
+  });
+
+  const openRemoteAccess = async (extraSettings: Record<string, unknown>) => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerWith(extraSettings)));
+    window.location.hash = '#remote-access';
+    render(<PartnerSettingsPage />);
+    return screen.findByTestId('partner-network-proxy-dedicated-origin');
+  };
+
+  const patchedSettings = () => {
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    return JSON.parse((patchCall![1] as RequestInit).body as string).settings;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('hydrates an opted-in partner, marks the tab dirty on toggle, and saves the explicit choice', async () => {
+    const toggle = await openRemoteAccess({ networkProxy: { dedicatedTunnelOrigin: true } });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    const saveBtn = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(true);
+
+    const user = userEvent.setup();
+    await user.click(toggle);
+    expect(saveBtn.disabled).toBe(false);
+    await user.click(saveBtn);
+
+    expect(patchedSettings().networkProxy).toEqual({ dedicatedTunnelOrigin: false });
+  });
+
+  it('leaves the choice unset for a partner who never chose, so a later default flip still reaches them', async () => {
+    const toggle = await openRemoteAccess({});
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    const user = userEvent.setup();
+    // An unrelated edit on another tab makes the page saveable.
+    await user.click(screen.getByRole('link', { name: /^company$/i }));
+    await user.type(await screen.findByLabelText(/company name/i), ' Inc.');
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    expect(patchedSettings()).not.toHaveProperty('networkProxy');
   });
 });
 

@@ -3,7 +3,8 @@
     "errors": {
       "fetch": "Impossibile recuperare l'automazione",
       "generic": "Si è verificato un errore",
-      "save": "Impossibile salvare l'automazione"
+      "save": "Impossibile salvare l'automazione",
+      "invalidTarget": "La destinazione dei dispositivi non è valida: {{detail}}"
     },
     "loading": "Caricamento automazione...",
     "breadcrumb": {
@@ -210,7 +211,9 @@
     },
     "empty": {
       "noActions": "Nessuna azione definita. Fai clic su \"Aggiungi azione\" per crearne una."
-    }
+    },
+    "partnerGroupsNote": "Le automazioni a livello di partner non possono avere come destinazione gruppi di dispositivi o dispositivi specifici, perché ciascuno appartiene a una sola organizzazione. Usa Tutti i dispositivi o un filtro avanzato.",
+    "partnerTargetBlocked": "Questa automazione a livello di partner ha come destinazione gruppi di dispositivi o dispositivi specifici, il che non è supportato. Cambia la destinazione in Tutti i dispositivi o in un filtro avanzato prima di salvare."
   },
   "automationList": {
     "elevated": "Privilegi elevati",
@@ -420,12 +423,17 @@
     "empty": {
       "noPolicies": "Nessun criterio configurato",
       "allCompliant": "Tutti i dispositivi sono conformi!",
+      "notEvaluated": "Nessun dispositivo è ancora stato valutato.",
+      "noViolationsPending_one": "Nessuna violazione trovata; {{count}} dispositivo è ancora in attesa di valutazione.",
+      "noViolationsPending_other": "Nessuna violazione trovata; {{count}} dispositivi sono ancora in attesa di valutazione.",
       "noMatchingDevices": "Nessun dispositivo corrispondente trovato."
     },
     "policyComplianceRatio": "{{compliant}} / {{total}} conformi",
     "searchDevices": "Cerca dispositivi...",
-    "violationCount": "{{count}} violazione",
-    "moreViolations": "+{{count}} altre violazioni",
+    "violationCount_one": "{{count}} violazione",
+    "violationCount_other": "{{count}} violazioni",
+    "moreViolations_one": "+{{count}} altra violazione",
+    "moreViolations_other": "+{{count}} altre violazioni",
     "lastChecked": "Ultimo controllo: {{date}}",
     "pagination": {
       "showing": "Visualizzazione da {{start}} a {{end}} di {{total}}",
@@ -979,6 +987,43 @@
     },
     "toasts": {
       "runsWhenOnline": "Viene eseguito quando il dispositivo è online"
+    },
+    "targetMode": {
+      "label": "Esegui su",
+      "devices": "Dispositivi",
+      "groups": "Gruppi di dispositivi"
+    },
+    "groups": {
+      "title": "Seleziona gruppi di dispositivi",
+      "searchPlaceholder": "Cerca gruppi",
+      "selectedCount": "{{count}} gruppo/i selezionato/i",
+      "dynamic": "Dinamico",
+      "deviceCount": "{{count}} dispositivo/i",
+      "refusedReason": "Non disponibile come destinazione di esecuzione: le regole di questo gruppo si basano su campi che il dispositivo stesso segnala ({{fields}}).",
+      "loading": "Caricamento dei gruppi di dispositivi...",
+      "loadFailed": "Impossibile caricare i gruppi di dispositivi.",
+      "retry": "Riprova",
+      "empty": "Nessun gruppo di dispositivi trovato.",
+      "tooManyGroups": "Un'esecuzione può avere al massimo {{max}} gruppi come destinazione.",
+      "countingMembers": "Conteggio dei membri...",
+      "countFailed": "Impossibile contare i membri dei gruppi selezionati. Il server verifica il limite durante l'esecuzione.",
+      "summaryUnique": "{{count}} dispositivo/i univoco/i nei gruppi selezionati",
+      "summaryCompatible": "{{count}} possono eseguire questo script (sistema operativo compatibile)",
+      "summaryOffline": "{{count}} di questi sono offline e verranno eseguiti quando il dispositivo sarà online",
+      "membershipNote": "L'appartenenza ai gruppi dinamici è quella dell'ultima valutazione e viene riletta all'avvio dell'esecuzione.",
+      "overCap": "Questi gruppi contengono {{count}} dispositivi univoci, oltre il limite di {{max}} per esecuzione. Deseleziona un gruppo o suddividi l'esecuzione.",
+      "submitting": "Invio a {{count}} gruppo/i...",
+      "warningsTitle": "Note del server",
+      "confirmDescription": "Esegui “{{name}}” su {{groups}} gruppo/i di dispositivi come {{runAs}}. Gli script vengono messi in coda e iniziano subito.",
+      "confirmMembers": "In questo momento {{count}} dispositivo/i univoco/i fanno parte di questi gruppi; l'appartenenza viene riletta alla conferma.",
+      "confirmMembersUnknown": "Il numero di dispositivi non è ancora noto; l'appartenenza viene letta alla conferma.",
+      "errors": {
+        "selectGroup": "Seleziona almeno un gruppo di dispositivi",
+        "tooManyTargets": "Questi gruppi corrispondono a {{count}} dispositivi, oltre il limite di {{max}} per esecuzione. Deseleziona un gruppo o suddividi l'esecuzione.",
+        "perGroup": "Dispositivi per gruppo: {{groups}}.",
+        "groupNotFound": "{{count}} gruppo/i selezionato/i non esiste/esistono più o non è/sono accessibile/i. Ricarica l'elenco e riprova.",
+        "noTargets": "I gruppi selezionati non contengono dispositivi che questa esecuzione possa raggiungere; non è stato eseguito nulla."
+      }
     }
   },
   "secretParameters": {

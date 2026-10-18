@@ -110,7 +110,12 @@
     "timeSync": "Zeitsynchronisierung",
     "aiModels": "KI-Modelle",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Störungen",
+    "ticketsServiceRequests": "Serviceanfragen",
+    "ticketsProblems": "Probleme",
+    "ticketsChanges": "Änderungen",
+    "endpointMessages": "Nachrichten"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -311,6 +316,17 @@
       "target": "Ziel",
       "time": "Zeit"
     },
+    "recentlyViewed": {
+      "title": "Weitermachen, wo Sie aufgehört haben",
+      "kind": {
+        "device": "Gerät",
+        "org": "Organisation",
+        "ticket": "Vorgang",
+        "alert": "Alarm",
+        "site": "Standort",
+        "page": "Seite"
+      }
+    },
     "alerts": {
       "title": "Letzte Warnmeldungen",
       "viewAll": "Alle anzeigen",
@@ -408,7 +424,9 @@
       "unratedPending": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
       "unratedPending_one": "{{count}} unbewerteter Patch ausstehend (wird nicht automatisch genehmigt)",
       "unratedPending_other": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
-      "empty": "Noch keine Patch-Daten"
+      "empty": "Noch keine Patch-Daten",
+      "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft"
     },
     "vuln": {
       "title": "Schwachstellen",
@@ -476,7 +494,10 @@
       "createFirst": "Ersten Filter erstellen",
       "created": "Erstellt am {{date}}",
       "deleteConfirm": "Diesen Filter löschen?",
-      "duplicate": "Duplizieren"
+      "duplicate": "Duplizieren",
+      "saveFailed": "Filter konnte nicht gespeichert werden",
+      "deleteFailed": "Filter konnte nicht gelöscht werden",
+      "ownerOrgHint": "Gespeicherte Filter gehören zu einer Organisation. Wählen Sie die Organisation aus, der dieser Filter gehört."
     },
     "targets": {
       "modes": {
@@ -494,7 +515,9 @@
       "noGroups": "Keine Gerätegruppen verfügbar",
       "deviceCount": "{{count}} Geräte",
       "loadSaved": "Gespeicherten Filter laden:",
-      "select": "Auswählen"
+      "select": "Auswählen",
+      "dynamic": "Dynamisch",
+      "refusedGroup": "Als Ziel nicht verfügbar: Die Regeln dieser Gruppe beruhen auf Feldern, die ein Gerät selbst meldet ({{fields}})."
     },
     "preview": {
       "title": "Übereinstimmende Geräte",
@@ -680,7 +703,23 @@
       "noSelection": "Organisation auswählen",
       "searchOrganizations": "Organisationen durchsuchen…",
       "noMatches": "Keine passenden Organisationen",
-      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl."
+      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl.",
+      "recent": "Zuletzt",
+      "pane": {
+        "destinations": {
+          "overview": "Übersicht",
+          "devices": "Geräte",
+          "tickets": "Support-Tickets",
+          "alerts": "Warnungen",
+          "sites": "Standorte",
+          "billing": "Abrechnung"
+        },
+        "offlineCount": "{{count}} nicht erreichbar",
+        "openCount": "{{count}} offen",
+        "criticalCount": "{{count}} kritisch",
+        "noCritical": "keine",
+        "hint": "Namen anklicken zum Wechseln · Seite anklicken zum Wechseln und Öffnen"
+      }
     },
     "header": {
       "menu": "Menü",
@@ -797,9 +836,9 @@
       "expand": "Seitenleiste ausklappen",
       "collapseSections": "Alle Bereiche einklappen",
       "closeMenu": "Menü schließen",
-      "recentDevices": "Zuletzt geöffnete Geräte",
-      "hideRecentDevices": "Zuletzt geöffnete Geräte ausblenden",
-      "showRecentDevices": "Zuletzt geöffnete Geräte anzeigen"
+      "recent": "Zuletzt",
+      "hideRecent": "Zuletzt geöffnete ausblenden",
+      "showRecent": "Zuletzt geöffnete anzeigen"
     },
     "orgRequired": {
       "title": "Organisation auswählen",
@@ -1323,6 +1362,18 @@
           "ticketAssigned": {
             "description": "Wird ausgelöst, wenn ein Ticket zugewiesen oder die Zuweisung aufgehoben wird.",
             "label": "Ticket zugewiesen"
+          },
+          "migrationWindowClosed": {
+            "description": "Wird einmal pro Organisation ausgelöst, wenn ein Ticket-Migrationsfenster geschlossen wird, mit den importierten Zählungen.",
+            "label": "Migrationsfenster geschlossen"
+          },
+          "integrationHealthOpened": {
+            "description": "Wird ausgelöst, wenn für die Verbindung einer Organisation ein Integritätsvorfall eröffnet wird.",
+            "label": "Integritätsvorfall bei Verbindung eröffnet"
+          },
+          "integrationHealthResolved": {
+            "description": "Wird ausgelöst, wenn ein Integritätsvorfall einer Verbindung behoben wird.",
+            "label": "Integritätsvorfall bei Verbindung behoben"
           }
         },
         "fields": {
@@ -1705,7 +1756,8 @@
         "deleteEntry": "Eintrag {{id}} löschen",
         "deleteConfirmTitle": "Zeiteintrag löschen?",
         "deleteConfirmMessage": "Damit wird der Eintrag über {{duration}} im Ticket {{ticket}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden.",
-        "deleteConfirmMessageNoTicket": "Damit wird der Eintrag über {{duration}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden."
+        "deleteConfirmMessageNoTicket": "Damit wird der Eintrag über {{duration}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "noteInvoiceCue": "Kunden sehen diese Notiz auf ihrer Rechnung, sofern Ihre Abrechnungseinstellungen Notizen nicht ausblenden."
       },
       "sourceBadge": {
         "timer": "Timer",
@@ -2192,7 +2244,8 @@
         "viewInSource": "Ansicht in {{source}}",
         "promoteFromEdr": "Aus EDR-Ansicht übernehmen",
         "pagination": "Seite {{page}} von {{totalPages}} ({{total}} insgesamt)",
-        "previous": "Zurück"
+        "previous": "Zurück",
+        "genericEdrProvider": "EDR-Anbieter"
       },
       "IncidentDetailPage": {
         "errors": {
@@ -2591,6 +2644,34 @@
         "sending": "Senden…",
         "send": "Senden"
       }
+    },
+    "mcpDomains": {
+      "legend": "Werkzeugzugriff",
+      "allLabel": "Alle Werkzeuge (einschließlich später hinzugefügter Bereiche)",
+      "selectedLabel": "Nur diese Bereiche",
+      "coreLabel": "Kern (immer enthalten)",
+      "error": "Wählen Sie mindestens einen Bereich oder „Alle Werkzeuge“.",
+      "allEquivalentNote": "Alle Bereiche sind ausgewählt. Das entspricht „Alle Werkzeuge“, einschließlich später hinzugefügter Bereiche.",
+      "reconnectNote": "Gilt für diese Verbindung. Um eine bestehende Verbindung einzuschränken, widerrufen Sie sie unter „Verbundene Apps“ und verbinden Sie sich erneut.",
+      "apiKeyHint": "Legen Sie fest, welche Werkzeugbereiche dieser Schlüssel über die KI-/MCP-Schnittstelle nutzen darf.",
+      "allTools": "Alle Werkzeuge",
+      "areaCount_one": "{{count}} Bereich",
+      "areaCount_other": "{{count}} Bereiche",
+      "labels": {
+        "devices": "Geräte",
+        "scripts": "Skripte & Automatisierung",
+        "patching": "Patching & Software",
+        "monitoring": "Überwachung & Warnungen",
+        "network": "Netzwerk",
+        "security": "Sicherheit & Compliance",
+        "backup": "Backup & Wiederherstellung",
+        "tickets": "Tickets & Zeiterfassung",
+        "billing": "Abrechnung",
+        "accounts": "Konten",
+        "integrations": "Integrationen",
+        "admin": "Verwaltung",
+        "ai": "KI-Agenten"
+      }
     }
   },
   "whatsNew": {
@@ -2614,7 +2695,8 @@
     "dismiss": "Erinnerung an die Zwei-Faktor-Authentifizierung schließen"
   },
   "mfaPolicyOffBanner": {
-    "message": "Für Ihr Team ist keine Multi-Faktor-Authentifizierung erforderlich. Sitzungen nur mit Passwort können Skripte ausführen, Geräte verschieben und Richtlinien ändern.",
+    "label": "MFA-Erinnerung",
+    "message": "MFA ist für Ihr Team nicht Pflicht. Reine Passwort-Sitzungen können Skripte ausführen.",
     "cta": "MFA erzwingen",
     "dismiss": "Erinnerung an die MFA-Richtlinie für heute schließen"
   },
@@ -2684,5 +2766,10 @@
     "errors": {
       "loadFailed": "Fix-Gedächtnis konnte nicht geladen werden."
     }
+  },
+  "islandError": {
+    "title": "Dieser Bereich ist abgestürzt",
+    "description": "Ein Darstellungsfehler hat die Anzeige dieser Seite verhindert. Versuche es erneut und gib bei wiederholtem Auftreten die folgende Meldung in deiner Fehlermeldung an.",
+    "retry": "Erneut versuchen"
   }
 }

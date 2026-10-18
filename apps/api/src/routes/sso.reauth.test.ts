@@ -908,6 +908,76 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
+  // #8862: Entra answers max_age=0 with an id_token that is already expired on
+  // arrival. The verify failure used to fall into the shared catch and dump a
+  // signed-in user on /login?error=sso_error, abandoning enrollment.
+  it('keeps an id_token verification failure on the profile page, namespaced and audited', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    primeReauthCallback();
+    vi.mocked(verifyIdTokenSignature).mockRejectedValue(
+      new Error('ID token signature verification failed: "exp" claim timestamp check failed')
+    );
+
+    const res = await doCallback();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/settings/profile?ssoReauthError=idp_verify_failed');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+    expect(getUserInfo).not.toHaveBeenCalled();
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sso.reauth.rejected',
+        result: 'denied',
+        details: expect.objectContaining({ mode: 'reauth', reason: 'idp_verify_failed', userId: USER_ID }),
+      })
+    );
+    expect(writeRouteAudit).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'sso.reauth.completed' })
+    );
+  });
+
+  // A nonce mismatch is a replay/injection signal, not an IdP clock quirk: the
+  // audit row must say which, even though the user-facing code stays coarse.
+  it.each([
+    ['nonce', 'nonce'],
+    ['claims', 'claims'],
+    ['timing', 'timing'],
+    ['evil', 'unknown'],
+    [undefined, 'unknown'],
+  ] as const)('records failureKind=%s on the audit row (as %s)', async (thrownKind, auditedKind) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    primeReauthCallback();
+    vi.mocked(verifyIdTokenSignature).mockRejectedValue(
+      Object.assign(new Error('Invalid nonce'), thrownKind ? { failureKind: thrownKind } : {})
+    );
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toBe('/settings/profile?ssoReauthError=idp_verify_failed');
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sso.reauth.rejected',
+        details: expect.objectContaining({ reason: 'idp_verify_failed', failureKind: auditedKind }),
+      })
+    );
+  });
+
+  it('verifies the re-auth id_token with the bounded clock tolerance', async () => {
+    primeReauthCallback();
+
+    await doCallback();
+
+    expect(verifyIdTokenSignature).toHaveBeenCalledWith(
+      'h.p.s',
+      expect.anything(),
+      'nonce',
+      { clockToleranceSeconds: 300, mode: 'reauth' }
+    );
+  });
+
   // #4045: the mint site now picks the grant's PURPOSE from the account's
   // factor state (via the same userIsMfaProtected predicate both redemption
   // sites use). An unprotected account gets enroll_first_factor — the only

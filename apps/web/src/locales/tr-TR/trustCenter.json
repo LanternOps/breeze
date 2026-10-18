@@ -1,0 +1,10 @@
+{
+  "export": {
+    "title": "Anket yanıtlarını dışa aktar",
+    "csv": "CSV indir",
+    "json": "JSON indir",
+    "unpublishedNote": "Dışa aktarmayı etkinleştirmek için sayfanızı yayımlayın.",
+    "failed": "Dışa aktarma indirilemedi. Tekrar deneyin.",
+    "publishedOnlyNote": "Herkese açık sayfanızın gösterdiklerini dışa aktarır."
+  }
+}

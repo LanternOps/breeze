@@ -5,6 +5,7 @@ import {
   retestOperation,
   type ExecutorOperationDependencies,
 } from './operations';
+import { getM365PermissionProfile } from '@breeze/shared/m365';
 import type { MicrosoftGraphClient } from './microsoft/graphClient';
 import { MicrosoftTokenClientError } from './microsoft/tokenClient';
 
@@ -91,7 +92,7 @@ describe('completeConsentOperation / retestOperation', () => {
       tenantId: TENANT,
       applicationId: CLIENT_ID,
       organizationDisplayName: 'Example',
-      manifestVersion: 1,
+      manifestVersion: 3,
       grantReconciliation: 'unavailable',
       errorCode: 'grant_reconciliation_unavailable',
       observedGrants: null,
@@ -117,10 +118,7 @@ describe('completeConsentOperation / retestOperation', () => {
   });
 
   it('reconciles observed grants against the fixed customer-graph-actions manifest', async () => {
-    const observedGrants = [
-      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4', value: 'User.ReadWrite.All' },
-      { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '56760768-b641-451f-8906-e1b8ab31bca7', value: 'User-PasswordProfile.ReadWrite.All' },
-    ];
+    const observedGrants = [...getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!];
     const d = deps();
     d.graphClient.probeTenant = vi.fn().mockResolvedValue({
       tenantId: TENANT,
@@ -137,7 +135,8 @@ describe('completeConsentOperation / retestOperation', () => {
     expect(result).toMatchObject({
       success: true,
       grantReconciliation: 'complete',
-      observedGrants,
+      // reconcile canonicalises (sorts by resource/role id), so compare order-insensitively
+      observedGrants: expect.arrayContaining(observedGrants),
       missingGrants: [],
       unexpectedGrants: [],
     });

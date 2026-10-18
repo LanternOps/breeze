@@ -19,11 +19,17 @@ import { portalHardwareHealthRoutes } from './hardwareHealth';
 import { portalHardwareInventoryRoutes } from './hardwareInventory';
 import { portalPerformanceRoutes } from './performance';
 import { portalSoftwareRoutes } from './software';
+import { portalPatchRoutes } from './patches';
+import { portalVulnerabilityRoutes } from './vulnerabilities';
 import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
 import { portalDocumentRoutes } from './documents';
+import { portalTrustPageRoutes } from './trustPage';
 import { portalNetworkRoutes } from './network';
+import { portalHourBlockRoutes } from './hourBlock';
+import { portalApprovalRoutes } from './approvals';
+import { portalTrustPageLinkRoutes } from './trustPageLink';
 
 export const portalRoutes = new Hono();
 
@@ -81,12 +87,23 @@ portalRoutes.use('/performance/*', createPortalFeatureGateStrict('enablePerforma
 // W04 (#7734): independent of enableDevices.
 portalRoutes.use('/software/*', portalAuthMiddleware);
 portalRoutes.use('/software/*', createPortalFeatureGateStrict('enableSoftwareInventory'));
+// W05 (#7735): patch detail, sensitive (outside "Enable all"), fail-closed.
+portalRoutes.use('/patches/*', portalAuthMiddleware);
+portalRoutes.use('/patches/*', createPortalFeatureGateStrict('enablePatchDetail'));
+// W06 (#7736): vulnerability detail, sensitive (outside "Enable all"), fail-closed.
+portalRoutes.use('/vulnerabilities/*', portalAuthMiddleware);
+portalRoutes.use('/vulnerabilities/*', createPortalFeatureGateStrict('enableVulnerabilityDetail'));
 // Network Visibility has its own fail-closed availability response:
 // disabled or missing settings return dataStatus: 'not_enabled'.
 portalRoutes.use('/network/*', portalAuthMiddleware);
 portalRoutes.use('/documents/*', portalAuthMiddleware);
 portalRoutes.use('/documents/*', async (c, next) =>
   isDocumentContentPath(c) ? documentBytesGate(c, next) : documentsLibraryGate(c, next));
+// Trust Center W3d: auth here, before the '/' mounts below whose router-wide
+// middleware (portalFinancialMutationGuard) reads portalAuth on every POST.
+// The editor permission gate lives in the trust-page router itself.
+portalRoutes.use('/trust-page', portalAuthMiddleware);
+portalRoutes.use('/trust-page/*', portalAuthMiddleware);
 
 // `/tickets/usage` (Part B adds the handler to ticketRoutes) is gated on
 // enableSupportUsage, not enableTickets — it must not inherit the general
@@ -96,6 +113,15 @@ portalRoutes.use('/documents/*', async (c, next) =>
 // generic middleware below handle those.
 portalRoutes.use('/tickets/usage', portalAuthMiddleware);
 portalRoutes.use('/tickets/usage', createPortalFeatureGateStrict('enableSupportUsage'));
+
+// Block hours W04: the "Support hours" card lives inside the Support usage
+// section, so its endpoint requires BOTH fail-closed flags — auth first, then
+// enableSupportUsage, then its own enableHourBlock. A separate prefix on
+// purpose: nesting under `/tickets/*` would inherit the enable_tickets gate
+// that Support usage deliberately opts out of (see the exact-path wrappers above).
+portalRoutes.use('/support-usage/*', portalAuthMiddleware);
+portalRoutes.use('/support-usage/*', createPortalFeatureGateStrict('enableSupportUsage'));
+portalRoutes.use('/support-usage/*', createPortalFeatureGateStrict('enableHourBlock'));
 
 portalRoutes.use('/tickets/*', async (c, next) => {
   if (isTicketsUsagePath(c)) {
@@ -113,6 +139,13 @@ portalRoutes.use('/tickets/*', async (c, next) => {
   return portalTicketsEnabledMiddleware(c, next);
 });
 
+// Customer work approval (#4617 W04): a ticketing surface, so it carries the
+// same fail-open enable_tickets gate as `/tickets/*` (403
+// PORTAL_TICKETS_DISABLED) — no flag of its own. `/approvals/*` also matches
+// the bare `/approvals` list path (approvals.gate.test.ts pins both).
+portalRoutes.use('/approvals/*', portalAuthMiddleware);
+portalRoutes.use('/approvals/*', portalTicketsEnabledMiddleware);
+
 portalRoutes.route('/', deviceRoutes);
 portalRoutes.route('/', ticketRoutes);
 portalRoutes.route('/', assetRoutes);
@@ -120,13 +153,20 @@ portalRoutes.route('/', profileRoutes);
 portalRoutes.route('/', portalInvoiceRoutes);
 portalRoutes.route('/', portalQuoteRoutes);
 portalRoutes.route('/', portalDashboardRoutes);
+portalRoutes.route('/dashboard', portalTrustPageLinkRoutes); // under the /dashboard/* auth + enableDashboard gate
 portalRoutes.route('/', portalSecurityRoutes);
 portalRoutes.route('/', portalHardwareHealthRoutes);
 portalRoutes.route('/', portalHardwareInventoryRoutes);
 portalRoutes.route('/', portalPerformanceRoutes);
 portalRoutes.route('/', portalSoftwareRoutes);
+portalRoutes.route('/', portalPatchRoutes);
+portalRoutes.route('/', portalVulnerabilityRoutes);
 portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);
 portalRoutes.route('/', portalDocumentRoutes);
+// Trust Center W3d: auth is mounted above; the router carries the editor gate.
+portalRoutes.route('/trust-page', portalTrustPageRoutes);
 portalRoutes.route('/', portalNetworkRoutes);
+portalRoutes.route('/', portalHourBlockRoutes);
+portalRoutes.route('/', portalApprovalRoutes);

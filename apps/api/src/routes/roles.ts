@@ -74,6 +74,12 @@ const createRoleSchema = z.object({
   // validated against the caller's own org allowlist (see the handler) before it
   // re-scopes the creation.
   orgId: z.string().guid().optional(),
+  // #8370: the owner axis, stated explicitly by the caller (Partner-Wide First,
+  // docs/agents/tenancy-rls.md). Create-only — updateRoleSchema has no such
+  // field, so a role never moves between axes. When omitted, the legacy rule
+  // applies (orgId present → organization, else the token's own scope), which
+  // is what let the web dialog silently mint org roles from the header org.
+  ownerScope: z.enum(['partner', 'organization']).optional(),
   // #5317: `roles.force_mfa` — members of this role must have MFA enrolled
   // (enforced in services/mfaPolicy.ts). Not inherited through parentRoleId.
   forceMfa: z.boolean().optional()
@@ -634,6 +640,24 @@ roleRoutes.post(
     const auth = c.get('auth');
     let scopeContext = getScopeContext(auth);
     const body = c.req.valid('json');
+
+    // #8370: an explicit owner axis is validated against the caller before any
+    // org re-scoping. These checks only narrow what the legacy path already
+    // allowed; the partner-wide gate (canManagePartnerWidePolicies, enforced by
+    // the router middleware for every partner token) is unchanged.
+    if (body.ownerScope === 'partner') {
+      if (auth.scope !== 'partner') {
+        return c.json({ error: 'Only partner-scope users can create partner roles' }, 403);
+      }
+      if (body.orgId !== undefined) {
+        return c.json({ error: 'orgId must not be sent with ownerScope "partner"' }, 400);
+      }
+    } else if (body.ownerScope === 'organization' && auth.scope === 'partner' && body.orgId === undefined) {
+      return c.json(
+        { error: 'orgId is required: send the owning organization as orgId when ownerScope is "organization"' },
+        400
+      );
+    }
 
     // #3524: a partner admin may target a specific org so the SSO default-role
     // picker (which offers only org-scoped, non-system roles) can be populated.

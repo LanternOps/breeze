@@ -353,6 +353,7 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `manage_ticket_checklist` | 1/2 | Ticket checklist steps and checklist templates. Listing steps and listing or reading templates are Tier 1. Adding, editing (label and detail), deleting and reordering steps, and applying a template, are Tier 2. Requires partner or system scope. Ticking a step done is not available to tools, and a step that is already ticked cannot be edited or deleted through the tool. |
 | `list_time_entries` | 1 | List logged work by ticket, user, organization, dates, billing status, or approval. Requires partner or system scope; non-admins see their own entries. |
 | `get_running_timer` | 1 | Retrieve the caller's running time entry, or null when no timer is running. Requires partner or system scope and a user principal. |
+| `get_ticket_approval_status` | 1 | Read a ticket's budget and customer-approval status: consumed and held time, approved extensions and requests. Read-only; there is no tool to decide, record consent, write off or set a budget. Requires partner or system scope. |
 | `get_timesheet` | 1 | Retrieve a weekly timesheet. Requires partner or system scope and a user principal; another user's timesheet requires admin access. |
 
 ### Billing tools
@@ -455,6 +456,95 @@ When a client calls `tools/call`, the server re-checks scopes before execution. 
 ### RBAC permission checks
 
 In addition to API key scopes, every tool call passes through the Breeze RBAC system. The user who created the API key must have the appropriate role-based permissions for the resource and action. For example, calling `run_script` requires the `scripts.execute` permission on the creator's role.
+
+---
+
+## Limit a connection to tool areas
+
+By default a connection can use every tool its scopes allow. You can instead limit an API key or an OAuth connection to specific **tool areas** (domains). This narrows what the connection can see and call over MCP, which is useful when you want an assistant to work with tickets and nothing else.
+
+The default is **All tools (including areas added later)**. A connection set to all tools also gets any area Breeze adds in a future release. **Core** tools are always included and cannot be turned off. A restricted connection must name at least one area. The setting is stored as `mcpDomains`; `null` means all tools.
+
+| Area (as shown in the UI) | `mcpDomains` value |
+|---|---|
+| Devices | `devices` |
+| Scripts & automation | `scripts` |
+| Patching & software | `patching` |
+| Monitoring & alerts | `monitoring` |
+| Network | `network` |
+| Security & compliance | `security` |
+| Backup & recovery | `backup` |
+| Tickets & time | `tickets` |
+| Billing | `billing` |
+| Accounts | `accounts` |
+| Integrations | `integrations` |
+| Administration | `admin` |
+| AI agents | `ai` |
+
+### What the limit covers
+
+- It applies only to the MCP server (`/api/v1/mcp`): `tools/list`, `tools/call`, `resources/list` and `resources/read`. A tool outside the granted areas is not listed and cannot be called.
+- REST API behavior of an API key is unchanged. The in-app AI assistant is not affected.
+- It only narrows access. Scopes, roles (RBAC), approvals and MFA requirements still apply to every call in a granted area.
+- Tenant (bring-your-own MCP) tools count as **Integrations**. Extension tools are available only to connections set to all tools.
+- Resources map to areas as follows: the device list is core, device detail is Devices, alerts are Monitoring & alerts, and scripts and automations are Scripts & automation.
+- Partner service principal (`brz_sp_`) keys are always unrestricted in this release.
+
+### When a call is refused
+
+Calling a tool outside the granted areas returns the JSON-RPC error `-32003`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "error": {
+    "code": -32003,
+    "message": "Tool \"manage_tickets\" is in the \"tickets\" domain, which this connection was not granted. Call whoami to see granted domains; reconnect or edit the API key to add it.",
+    "data": {
+      "reason": "domain_not_granted",
+      "domain": "tickets",
+      "hint": "Call whoami to see granted domains; reconnect or edit the API key to add it."
+    }
+  }
+}
+```
+
+A tool name that does not exist still returns `Unknown tool`, whatever the grant.
+
+### OAuth connections
+
+The areas are chosen on the consent screen, under **Tool access**, for each connection. Pick **All tools (including areas added later)** or **Only these areas**; **Core (always included)** is shown for reference. You cannot change the areas of an existing connection. To narrow one, revoke it under **Connected apps**, then reconnect.
+
+### API keys
+
+When you check an `ai:*` scope in **Settings > API Keys > Create API Key**, a **Tool access** picker appears with the same choices. The picker is hidden when no `ai:*` scope is selected, and the key is stored with `mcpDomains: null`.
+
+To change the areas later, call `PATCH /api/v1/api-keys/:id` with `{ "mcpDomains": ["tickets", "devices"] }`, or `{ "mcpDomains": null }` for all tools. Widening a key needs the same delegation rights as granting the key's scopes. Rotating a key keeps its setting. See [API keys](/reference/api-keys/#mcp-tool-areas-mcpdomains).
+
+### The `whoami` tool
+
+`whoami` is always listed, even for a connection limited to core tools. It takes no arguments and returns:
+
+- who the connection acts as (API key, OAuth connection or partner service principal), with its id and name
+- the tenant scope (organization or partner)
+- the effective `ai:*` scopes and the resulting capability (`read`, `write` or `execute`)
+- `domains.granted`, the areas the connection can use, and `domains.available`, the areas you can ask for
+- `notes`, short plain-language hints, such as which actions need the Breeze web app
+
+`domains.available` lists areas that exist, not permissions you hold. `whoami` never returns secrets: no key, token or hash.
+
+### Authentication challenges
+
+Every 401 from the MCP endpoint carries a `WWW-Authenticate` header:
+
+```
+WWW-Authenticate: Bearer realm="breeze", resource_metadata="<issuer>/.well-known/oauth-protected-resource", scope="mcp:read mcp:write mcp:execute"
+```
+
+A 401 on the bearer-token path also includes `error="invalid_token"`. A bearer token without `mcp:read` gets a 403 with `error="insufficient_scope", scope="mcp:read"`.
+
+By default a `tools/call` that is refused for a missing `ai:write` or `ai:execute` scope returns HTTP 200 with the JSON-RPC error in the body. If you set `MCP_INSUFFICIENT_SCOPE_HTTP_403=true` (default `false`), an OAuth bearer's `tools/call` refused **only** for a missing tier scope returns HTTP 403 with an `insufficient_scope` challenge that names the connection's current MCP scopes plus the required one, so the client can ask the user to re-authorize. The JSON-RPC error stays in the body. The 403 is never used for `X-API-Key` callers, domain denials, approval, MFA or RBAC denials, or the legacy HTTP+SSE transport, because re-authorizing cannot fix those.
 
 ---
 
@@ -596,6 +686,7 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 | `MCP_MESSAGE_MAX_BODY_BYTES` | `65536` | Maximum accepted JSON-RPC request body size, in bytes (64 KB). Larger requests are rejected. |
 | `MCP_TOOLS_LIST_PAGE_SIZE` | `0` (unset) | Experimental pagination: 0/unset returns a single page. Set to e.g. `50` only when every connected client follows `nextCursor`. Cursors are offsets; a catalog change mid-enumeration can skip tools. |
 | `MCP_SESSION_TTL_SECONDS` | `660` | Idle lifetime, in seconds, of a minted streamable-HTTP session principal in Redis (11 minutes). |
+| `MCP_INSUFFICIENT_SCOPE_HTTP_403` | `false` | When `true`, an OAuth bearer's `tools/call` refused only for a missing tier scope (`ai:write` or `ai:execute`) returns HTTP 403 with an `insufficient_scope` `WWW-Authenticate` challenge instead of HTTP 200. Never applies to API-key callers, domain, approval, MFA or RBAC denials, or the legacy HTTP+SSE transport. See [Authentication challenges](#authentication-challenges). |
 
 ### OAuth 2.1
 

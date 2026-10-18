@@ -59,6 +59,13 @@ import {
 import { buildActionLabel } from './actionIntents/actionLabel';
 import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
+import {
+  callerRefusal,
+  callerRefusalFromPayload,
+  CALLER_VERIFICATION_REQUIRED_CODE,
+  CALLER_VERIFICATION_REQUIRED_ERROR,
+  type CallerRefusalPayload,
+} from './callerVerification/refusal';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
 import {
   APPROVED_FAILED_STATUS,
@@ -331,6 +338,13 @@ function approvalAuditDetails(
  */
 const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
 
+/** The exact object `callerRefusal` emits for a thrown typed refusal. */
+function isCallerRefusalResult(result: Record<string, unknown>): boolean {
+  const payload = result.requiresCallerVerification;
+  return result.error === CALLER_VERIFICATION_REQUIRED_ERROR
+    && typeof payload === 'object' && payload !== null;
+}
+
 // SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE and MAX_RESULT_BYTES (aliased
 // here as MAX_INLINE_RESULT_BYTES for readability at call sites below) are
 // shared with the durable release worker via secretBearingTools.ts, rather
@@ -338,13 +352,21 @@ const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
 // see the doc comments at their declaration site.
 
 /**
- * Human-readable verbs for the two M365 mutation tools that hit per-step
+ * Human-readable verbs for the ten M365 mutation tools that hit per-step
  * approval. The three read tools are tier 1 and never create an approval card,
  * so they are intentionally absent.
  */
 const M365_VERB: Record<string, string> = {
   m365_reset_password: 'Reset M365 password for',
   m365_disable_user: 'Disable M365 sign-in for',
+  m365_revoke_sessions: 'Revoke all M365 sessions for',
+  m365_remove_license: 'Remove M365 licences from',
+  m365_assign_license: 'Assign M365 licences to',
+  m365_remove_from_group: 'Remove from M365 group',
+  m365_add_to_group: 'Add to M365 group',
+  m365_retire_intune_device: 'Retire Intune device for',
+  m365_create_user: 'Create M365 user',
+  m365_set_auto_reply: 'Set M365 auto-reply for',
 };
 
 /**
@@ -773,6 +795,13 @@ export function intentCreationRefusal(toolName: string, input: unknown, err: unk
       + 'has expired, or is no longer reviewed. '
       + 'Call get_script_proposal: its executions list each run\'s executionId, and get_script_execution reads '
       + 'that run\'s output. To run the script again, submit it as a new proposal with propose_script.';
+  }
+  // #8600: a device-group refusal (too large, not found, empty, out of scope,
+  // malformed) says what to do instead. The messages are existence-neutral by
+  // construction (actionIntents/runScriptGroupTarget.ts), so they are safe to
+  // hand back to the model verbatim.
+  if (toolName === 'run_script' && typeof code === 'string' && code.startsWith('group_target_') && err instanceof Error) {
+    return `${code}: ${err.message}`;
   }
   return 'Failed to create approval record';
 }
@@ -1487,6 +1516,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               // configured interactive approval window, not a fixed 5 min,
               // so the wait below is not cut short by the intent's own expiry.
               chatApprovalWindowMs: session.approvalWaitBudgetMs,
+              // #6354 W05 — the chat session id the caller-verification gate
+              // matches a fresh verification against (protected M365 actions).
+              m365SessionId: session.breezeSessionId,
               // Tool catalog W01 PR B (#5216): a tenant (BYO MCP) tool binds
               // the intent to the exact tool row + revision this session
               // resolved, so release revalidation reloads THAT row and fails
@@ -1504,6 +1536,16 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
                 : {}),
             });
           } catch (err) {
+            // A typed caller-verification refusal is the gate's answer, not a
+            // fault: carry its payload intact instead of the generic wording.
+            const refusal = callerRefusal(err);
+            if (refusal) {
+              return await failMatchedPlanStep({
+                allowed: false,
+                error: refusal.error,
+                requiresCallerVerification: refusal.requiresCallerVerification,
+              });
+            }
             console.error('[AI-SDK] Failed to create action intent:', toolName, err);
             return await failMatchedPlanStep({ allowed: false, error: intentCreationRefusal(toolName, input, err) });
           }
@@ -1553,9 +1595,18 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // Topology M4-D3 (#6000): the approver must read the PINNED effect —
           // the server-materialized arguments and approval text the digest
           // binds — never the model's raw input.
+          // #8600: same rule for a device-group run_script — the intent froze
+          // the group's resolved deviceIds (plus a count + id hash in its
+          // reason), and THAT is what the approver must read, not `{groupId}`.
           const pinnedCard = toolName === 'diagnose_connectivity'
-            ? await loadPinnedApprovalCard(session.orgId, intent.id)
-            : null;
+            ? await loadPinnedApprovalCard(session.orgId, intent.id, 'Run one approved topology connectivity check')
+            : toolName === 'run_script' && (input as Record<string, unknown>).groupId != null
+              ? await loadPinnedApprovalCard(
+                session.orgId,
+                intent.id,
+                'Device-group script run: the resolved device list could not be loaded here. Review it in the Approvals queue before approving.',
+              )
+              : null;
           // Emit approval_required event via session event bus. `intentBacked:
           // true` always means the four-eyes waiting state UNLESS
           // selfApprovalRequestId is also set — in that case the sole-operator
@@ -1786,10 +1837,22 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
           const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
           if (!revalidation.ok) {
+            // Only the typed caller-verification payload is surfaced; the rest
+            // of `details` is never exposed for any other code.
+            const requiresCallerVerification =
+              revalidation.errorCode === CALLER_VERIFICATION_REQUIRED_CODE
+                ? (revalidation.details?.requiresCallerVerification as CallerRefusalPayload | undefined)
+                : undefined;
+            const callerRefusalResult = requiresCallerVerification
+              ? callerRefusalFromPayload(requiresCallerVerification)
+              : undefined;
             const revalidationCasWon = await transitionIntentAndPublish(
               intent.id,
               'failed',
-              { errorCode: revalidation.errorCode },
+              {
+                errorCode: revalidation.errorCode,
+                ...(callerRefusalResult ? { result: callerRefusalResult } : {}),
+              },
               session.orgId,
               'intent_failed',
             );
@@ -1808,7 +1871,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             );
             return await failMatchedPlanStep({
               allowed: false,
-              error: 'Authorization for this action could no longer be verified; it was not executed.',
+              error: callerRefusalResult?.error
+                ?? 'Authorization for this action could no longer be verified; it was not executed.',
+              ...(requiresCallerVerification ? { requiresCallerVerification } : {}),
             });
           }
 
@@ -2386,19 +2451,27 @@ export async function attachChatProposalToSession(
  */
 /**
  * The stored (immutable) arguments and approval text of a pinned-effect intent
- * (topology M4-D3). A read failure yields an EMPTY input and a fixed text —
+ * (topology M4-D3), or of a device-group run_script whose group the intent
+ * resolved and froze (#8600). A read failure yields an EMPTY input and a fixed text —
  * never the model's input — the approval stays bound to the pinned digest
  * server-side either way.
  */
-async function loadPinnedApprovalCard(orgId: string, intentId: string): Promise<{ input: Record<string, unknown>; description: string }> {
-  const fallback = { input: {}, description: 'Run one approved topology connectivity check' };
+async function loadPinnedApprovalCard(
+  orgId: string,
+  intentId: string,
+  fallbackDescription: string,
+): Promise<{ input: Record<string, unknown>; description: string }> {
+  const fallback = { input: {}, description: fallbackDescription };
   try {
     const [row] = await withDbAccessContext(
       { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
       () => db.select({ arguments: actionIntents.arguments, reason: actionIntents.reason })
         .from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1),
     );
-    if (!row || !row.arguments || typeof row.arguments !== 'object') return fallback;
+    if (!row || !row.arguments || typeof row.arguments !== 'object') {
+      console.error('[AI-SDK] Pinned approval effect missing for intent', intentId);
+      return fallback;
+    }
     return { input: row.arguments as Record<string, unknown>, description: typeof row.reason === 'string' && row.reason ? row.reason : fallback.description };
   } catch (err) {
     console.error('[AI-SDK] Failed to read the pinned approval effect:', err instanceof Error ? err.message : err);
@@ -2740,7 +2813,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
                 // release worker's vocabulary); the raw tool error text is
                 // unbounded free-form and belongs in `result`, not `error_code`.
                 ...(isError
-                  ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
+                  ? {
+                      // A handler-thrown caller refusal (the backend dispatch
+                      // guard) arrives here as the adapter's refusal object.
+                      errorCode: isCallerRefusalResult(sizedResult)
+                        ? CALLER_VERIFICATION_REQUIRED_CODE
+                        : INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE,
+                      result: sizedResult,
+                    }
                   : { result: sizedResult }),
               },
               session.orgId,

@@ -23,10 +23,15 @@ import (
 // reversible transform. #6263 W01 / spec D6.
 
 const (
-	quarantinePayloadExt      = ".bqz"
-	quarantineManifestExt     = ".bqz.json"
-	quarantineManifestVersion = 1
+	quarantinePayloadExt  = ".bqz"
+	quarantineManifestExt = ".bqz.json"
+	// quarantineManifestVersion is what this agent writes. v2 (#6263 W02)
+	// adds ruleName/ruleSetId; readers accept every version in
+	// supportedManifestVersions.
+	quarantineManifestVersion = 2
 )
+
+var supportedManifestVersions = map[int]struct{}{1: {}, 2: {}}
 
 // QuarantineManifest records what a .bqz payload used to be, so restore is
 // exact and the operator UI can show what got quarantined without decoding
@@ -39,6 +44,10 @@ type QuarantineManifest struct {
 	Type          string `json:"type"`
 	Severity      string `json:"severity"`
 	QuarantinedAt string `json:"quarantinedAt"`
+	// v2: the YARA rule that triggered the quarantine (empty for a legacy
+	// signature hit or a manual quarantine).
+	RuleName  string `json:"ruleName,omitempty"`
+	RuleSetID string `json:"ruleSetId,omitempty"`
 }
 
 // encodeStream copies src -> dst XOR-ing every byte, in 64 KiB chunks so a
@@ -133,6 +142,8 @@ func QuarantineThreat(threat Threat, quarantineDir string) (string, error) {
 		Type:          threat.Type,
 		Severity:      threat.Severity,
 		QuarantinedAt: time.Now().UTC().Format(time.RFC3339),
+		RuleName:      threat.RuleName,
+		RuleSetID:     threat.RuleSetID,
 	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
@@ -227,6 +238,9 @@ func RestoreQuarantined(quarantinedPath, originalPath string) (string, error) {
 	var manifest QuarantineManifest
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return "", fmt.Errorf("failed to parse quarantine manifest: %w", err)
+	}
+	if _, ok := supportedManifestVersions[manifest.V]; !ok {
+		return "", fmt.Errorf("unsupported quarantine manifest version %d", manifest.V)
 	}
 
 	target := manifest.OriginalPath

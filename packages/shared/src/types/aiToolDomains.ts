@@ -38,3 +38,11 @@ export const AI_TOOL_SEARCH_HINT_MAX_CHARS = 120;
 export function isAiToolDomain(value: unknown): value is AiToolDomain {
   return typeof value === 'string' && (AI_TOOL_DOMAINS as readonly string[]).includes(value);
 }
+
+/** A domain a principal can be granted (B-W02 #6156). `core` is never stored: every grant includes it. */
+export type McpGrantableDomain = Exclude<AiToolDomain, 'core'>;
+
+/** The 13 non-core domains, in `AI_TOOL_DOMAINS` order. */
+export const MCP_GRANTABLE_DOMAINS: readonly McpGrantableDomain[] = AI_TOOL_DOMAINS.filter(
+  (d): d is McpGrantableDomain => d !== 'core',
+);

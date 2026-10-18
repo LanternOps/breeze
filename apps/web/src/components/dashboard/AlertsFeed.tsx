@@ -4,6 +4,8 @@ import { cn } from '@/lib/utils';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { useTranslation } from 'react-i18next';
+import { navigateTo } from '@/lib/navigation';
+import { EntityLink } from '@/components/shared/EntityLink';
 import { fleetPresence } from './fleetPresence';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { AlertRow, AlertsSummary, DeviceStats } from './types';
@@ -198,8 +200,20 @@ export default function AlertsFeed({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{title}</span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {alert.deviceHostname ?? t('states.unknown')}
-                    {showOrg && alert.orgName ? ` · ${alert.orgName}` : ''}
+                    {/* Also links when the hostname is missing, so a row with a
+                        deviceId always has a keyboard path to the device. */}
+                    <EntityLink
+                      kind="device"
+                      id={alert.deviceId ?? ''}
+                      name={alert.deviceHostname || t('states.unknown')}
+                      tone="muted"
+                    />
+                    {showOrg && alert.orgName && (
+                      <>
+                        {' · '}
+                        <EntityLink kind="org" id={alert.orgId ?? ''} name={alert.orgName} tone="muted" />
+                      </>
+                    )}
                   </span>
                 </span>
                 <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
@@ -209,14 +223,20 @@ export default function AlertsFeed({
             );
             const rowClass =
               'flex items-center gap-3 rounded-md px-2 py-2.5 transition-colors';
-            return alert.deviceId ? (
-              <a key={alert.id} href={`/devices/${alert.deviceId}`} className={cn(rowClass, 'group hover:bg-muted/40')}>
+            // The row is a div (not an <a>) so the hostname/org links inside it
+            // are never nested anchors; keyboard reach to the device is the
+            // hostname EntityLink. A row with no deviceId is inert.
+            const deviceId = alert.deviceId;
+            return (
+              <div
+                key={alert.id}
+                className={cn(rowClass, deviceId && 'group cursor-pointer hover:bg-muted/40')}
+                onClick={deviceId ? () => void navigateTo(`/devices/${deviceId}`) : undefined}
+              >
                 {inner}
-                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground" aria-hidden="true" />
-              </a>
-            ) : (
-              <div key={alert.id} className={rowClass}>
-                {inner}
+                {deviceId && (
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground" aria-hidden="true" />
+                )}
               </div>
             );
           })}

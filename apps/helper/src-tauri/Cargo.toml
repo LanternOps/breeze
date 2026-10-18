@@ -17,7 +17,7 @@ tauri-plugin-shell = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-serde_yaml = "0.9"
+serde_norway = "0.9"
 # rustls-tls = bundled public (webpki) roots; rustls-tls-native-roots = the OS
 # trust store (Windows cert store, macOS keychain, Linux system bundle). With
 # both enabled reqwest trusts the union, so a self-hosted server on a private

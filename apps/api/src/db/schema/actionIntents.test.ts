@@ -348,6 +348,12 @@ describe('action_intents schema', () => {
         // Tool catalog W01 PR B (#5216): external Tier-3 tool binding.
         'toolSourceToolId',
         'toolRevision',
+        // Caller verification W05 (#6359): the pinned Entra target and the
+        // committed dispatch marker (2026-12-30-220000-action-intents-caller-target.sql).
+        'targetEntraTenantId',
+        'targetEntraOid',
+        'targetConnectionRef',
+        'dispatchStartedAt',
       ].sort(),
     );
   });

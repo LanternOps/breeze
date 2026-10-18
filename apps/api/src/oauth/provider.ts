@@ -30,9 +30,14 @@ import {
 } from '../db/schema';
 import { eq, isNull, lt, or, sql, and as drizzleAnd } from 'drizzle-orm';
 import { ERROR_IDS, logOauthError } from './log';
+import { createGrantErrorLogger, grantErrorContext } from './grantErrorLog';
+import { recordRefreshRetry } from '../services/connectionHealth/oauthRetryCounter';
 import { assertActiveTenantContext } from '../services/tenantStatus';
 
 let providerInstance: Provider | null = null;
+// The hook feeds the connection-health "still retrying" detail (W4).
+/** Exported for provider.test.ts (the hook wiring); the provider registers it on `grant.error`. */
+export const logProviderGrantError = createGrantErrorLogger({ onRefreshTokenNotFound: (clientId) => recordRefreshRetry(clientId) });
 
 // Shared AccessToken TTL. Used for the JWT exp AND as the TTL for the
 // grant-revocation cache marker (see revocationCache.revokeGrant) so the
@@ -620,11 +625,12 @@ export async function getProvider(): Promise<Provider> {
   // and the JSON error responses sent to clients deliberately omit the
   // detail string for security — so without these listeners, on-call has
   // no way to diagnose a 400/500 from the OAuth endpoints.
-  (providerInstance as any).on('server_error', (_ctx: any, err: any) => {
+  (providerInstance as any).on('server_error', (ctx: any, err: any) => {
     logOauthError({
       errorId: ERROR_IDS.OAUTH_PROVIDER_SERVER_ERROR,
       message: 'oidc-provider server_error',
       err,
+      context: grantErrorContext(ctx),
     });
   });
   (providerInstance as any).on('authorization.error', (_ctx: any, err: any) => {
@@ -634,16 +640,6 @@ export async function getProvider(): Promise<Provider> {
       err,
     });
   });
-  (providerInstance as any).on('grant.error', (_ctx: any, err: any) => {
-    logOauthError({
-      errorId: ERROR_IDS.OAUTH_PROVIDER_GRANT_ERROR,
-      message: 'oidc-provider grant.error',
-      err,
-      context: {
-        error: err?.error,
-        detail: err?.error_detail,
-      },
-    });
-  });
+  (providerInstance as any).on('grant.error', logProviderGrantError);
   return providerInstance;
 }

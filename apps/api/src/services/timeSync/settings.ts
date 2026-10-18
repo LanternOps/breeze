@@ -24,6 +24,7 @@ import {
   matchesRoleOsFilter,
 } from '../featureConfigResolver';
 import { getRedis } from '../redis';
+import { selfBoundDeviceSettingsKey } from '../devicePolicyCache';
 import type { ExpectedTimezoneInput } from './expectedTimezone';
 
 export interface ResolvedTimeSyncSettings {
@@ -240,7 +241,7 @@ export async function getDeviceTimeSyncSettings(
       .limit(1);
   if (!device) throw new Error('Time sync device not visible');
   const redis = getRedis();
-  const key = `timesync:settings:device:${deviceId}`;
+  const key = selfBoundDeviceSettingsKey('timesync', deviceId);
   if (redis) {
     try {
       const raw = await redis.get(key);

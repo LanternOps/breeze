@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partnerUsers, roles, users } from '../../db/schema';
+import { users } from '../../db/schema';
+import { listActivePartnerAdmins } from '../partnerAdminRecipients';
 import { BODY_PARA, MUTED_PARA, getEmailService, supportFooter, type EmailTemplate } from '../email';
 import { escapeHtml, renderButton, renderLayout } from '../emailLayout';
 import { captureException } from '../sentry';
@@ -87,44 +88,24 @@ export function buildSendingDomainStatusTemplate(input: SendingDomainStatusMailI
 }
 
 /**
- * Recipients: the user who added the domain plus the partner's admins
- * (spec §6.3). Runs in SYSTEM scope — `partner_users` / `users` are partner-axis
- * and this is called from the worker, which has no tenant context at all.
- *
- * The `roles.name = 'Partner Admin'` join is duplicated rather than shared: the
- * same query already exists at `routes/auth/accountDeletion.ts:62-98` and
- * `services/tenantOffboarding.ts:1767-1783`, and extracting a helper would mean
- * editing two unrelated files inside a tenancy-surface PR. If a third caller
- * appears after this one, extract all four together.
+ * Recipients: the user who added the domain plus the partner's active
+ * Partner Admins (spec §6.3). The adder lookup runs in SYSTEM scope —
+ * `users` is partner-axis and this is called from the worker, which has no
+ * tenant context at all. The admin list comes from the shared helper.
  */
 async function resolveRecipients(input: SendingDomainStatusMailInput): Promise<string[]> {
-  return withSystemDbAccessContext(async () => {
-    const out: string[] = [];
-    if (input.createdBy) {
-      const creator = await db
-        .select({ email: users.email })
-        .from(users)
-        .where(and(eq(users.id, input.createdBy), eq(users.status, 'active')))
-        .limit(1);
-      const email = creator[0]?.email?.trim();
-      if (email) out.push(email);
-    }
-    const admins = await db
+  const out: string[] = [];
+  if (input.createdBy) {
+    const creator = await withSystemDbAccessContext(async () => db
       .select({ email: users.email })
-      .from(partnerUsers)
-      .innerJoin(users, eq(users.id, partnerUsers.userId))
-      .innerJoin(roles, eq(roles.id, partnerUsers.roleId))
-      .where(and(
-        eq(partnerUsers.partnerId, input.partnerId),
-        eq(roles.name, 'Partner Admin'),
-        eq(users.status, 'active'),
-      ));
-    for (const row of admins) {
-      const email = row.email?.trim();
-      if (email) out.push(email);
-    }
-    return [...new Set(out)];
-  }, 'sendingDomainStatusMailRecipients');
+      .from(users)
+      .where(and(eq(users.id, input.createdBy!), eq(users.status, 'active')))
+      .limit(1), 'sendingDomainStatusMailRecipients');
+    const email = creator[0]?.email?.trim();
+    if (email) out.push(email);
+  }
+  for (const admin of await listActivePartnerAdmins(input.partnerId)) out.push(admin.email);
+  return [...new Set(out)];
 }
 
 /**

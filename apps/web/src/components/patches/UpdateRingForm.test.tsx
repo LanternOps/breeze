@@ -2,6 +2,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(async () => ({ ok: true, json: async () => ({ data: [] }) })),
+}));
+
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 
 // #1317: the Update Ring now owns the patch auto-approval gate. These tests
@@ -427,6 +431,63 @@ describe('UpdateRingForm — unrated-patch opt-in (#3758)', () => {
     await screen.findByText(
       'Select at least one severity or enable third-party app auto-approval.'
     );
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+// #8187: application rules (block / pin) moved from the config policy to the ring.
+describe('UpdateRingForm — application rules (#8187)', () => {
+  it('submits appRules: [] for a ring with no rules', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect((onSubmit.mock.calls[0][0] as UpdateRingFormValues).appRules).toEqual([]);
+  });
+
+  it('includes an added block rule in the submit payload', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    expect(screen.getByTestId('ring-app-rules-section')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('app-rules-add'));
+    fireEvent.change(screen.getByTestId('app-rules-manual-id'), { target: { value: 'Mozilla.Firefox' } });
+    fireEvent.click(screen.getByTestId('app-rules-manual-add'));
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect((onSubmit.mock.calls[0][0] as UpdateRingFormValues).appRules).toEqual([
+      expect.objectContaining({ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }),
+    ]);
+  });
+
+  it('loads the stored rules of an edited ring and round-trips them', async () => {
+    const onSubmit = vi.fn();
+    const appRules = [
+      { source: 'third_party', packageId: 'Mozilla.Firefox', displayName: 'Firefox', action: 'block' as const },
+      { source: 'third_party', packageId: 'VideoLAN.VLC', displayName: 'VLC', action: 'pin' as const, pinnedVersion: '3.0.20' },
+    ];
+    render(<UpdateRingForm onSubmit={onSubmit} defaultValues={{ name: 'Pilot', appRules }} />);
+    expect(screen.getByText('Firefox')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('3.0.20')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('app-rule-remove-third_party|mozilla.firefox'));
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect((onSubmit.mock.calls[0][0] as UpdateRingFormValues).appRules).toEqual([appRules[1]]);
+  });
+
+  it('blocks submit while a pinned rule has no version', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <UpdateRingForm
+        onSubmit={onSubmit}
+        defaultValues={{ name: 'Pilot', appRules: [{ source: 'third_party', packageId: 'A.B', action: 'pin', pinnedVersion: '' }] }}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+    await waitFor(() => expect(screen.getAllByText('Pinned applications need a version.').length).toBeGreaterThan(0));
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });

@@ -89,6 +89,11 @@ vi.mock('../db/schema', () => ({
     enablePerformanceMetrics: 'enablePerformanceMetrics',
     enableSoftwareInventory: 'enableSoftwareInventory',
     enableNetworkVisibility: 'enableNetworkVisibility',
+    enableHourBlock: 'enableHourBlock',
+    enablePatchDetail: 'enablePatchDetail',
+    enableVulnerabilityDetail: 'enableVulnerabilityDetail',
+    enableEdrVisibility: 'enableEdrVisibility',
+    enableTrustPageEditing: 'enableTrustPageEditing',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
@@ -97,7 +102,8 @@ vi.mock('../db/schema', () => ({
     customCss: 'customCss',
     updatedAt: 'updatedAt'
   },
-  organizations: { id: 'id', deletedAt: 'deletedAt' }
+  organizations: { id: 'id', partnerId: 'partnerId', deletedAt: 'deletedAt' },
+  partners: { id: 'id', invoiceFooter: 'invoiceFooter' }
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -130,6 +136,7 @@ const FULL_ROW = {
   enablePerformanceMetrics: false,
   enableSoftwareInventory: false,
   enableNetworkVisibility: false,
+  enableEdrVisibility: false,
   chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
   supportPhone: null,
@@ -167,8 +174,9 @@ describe('GET /organizations/:id/portal-settings', () => {
 
   it('returns the managed subset when a row exists (including customCss, never visual branding columns)', async () => {
     dbSelectResult
-      .mockResolvedValueOnce([{ id: ORG_ID }]) // org existence check
-      .mockResolvedValueOnce([FULL_ROW]);      // portal_branding row
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }]) // org existence check
+      .mockResolvedValueOnce([FULL_ROW])       // portal_branding row
+      .mockResolvedValueOnce([{ invoiceFooter: 'Partner footer' }]); // partner default footer
     const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -192,12 +200,14 @@ describe('GET /organizations/:id/portal-settings', () => {
       enablePerformanceMetrics: false,
       enableSoftwareInventory: false,
       enableNetworkVisibility: false,
+      enableEdrVisibility: false,
       chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
       footerText: null,
-      customCss: 'body{}'
+      customCss: 'body{}',
+      partnerInvoiceFooter: 'Partner footer'
     });
     expect(JSON.stringify(body)).not.toContain('customDomain');
     expect(JSON.stringify(body)).not.toContain('logo.png');
@@ -205,8 +215,9 @@ describe('GET /organizations/:id/portal-settings', () => {
 
   it('returns schema defaults when no row exists', async () => {
     dbSelectResult
-      .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ invoiceFooter: null }]);
     const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -231,18 +242,48 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableSoftwareInventory: false,
       enableNetworkVisibility: false,
       enableNetworkAlerts: false,
+      enableHourBlock: false,
+      enablePatchDetail: false,
+      enableVulnerabilityDetail: false,
+      enableEdrVisibility: false,
+      enableTrustPageEditing: false,
       chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
       footerText: null,
-      customCss: null
+      customCss: null,
+      partnerInvoiceFooter: null
     });
+  });
+
+  // #7510 (settings rule 4): the org "Footer text" is the org override of the
+  // partner's document footer, so the editor needs the inherited partner value
+  // to show beside a blank field. Read-only — never part of the PATCH schema.
+  it("reports the partner's invoice footer as the inherited document footer", async () => {
+    dbSelectResult
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ ...FULL_ROW, footerText: null }])
+      .mockResolvedValueOnce([{ invoiceFooter: 'Thanks for your business' }]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.partnerInvoiceFooter).toBe('Thanks for your business');
+  });
+
+  it('reports null when the partner row is not visible', async () => {
+    dbSelectResult
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
+      .mockResolvedValueOnce([FULL_ROW])
+      .mockResolvedValueOnce([]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.partnerInvoiceFooter).toBeNull();
   });
 
   it('returns false defaults for every visibility flag', async () => {
     dbSelectResult
-      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
     const response = await makeApp().request(
@@ -302,6 +343,121 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
       .onConflictDoUpdate.mock.results[0]?.value.returning;
     expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableDevices', 'enableDevices');
+  });
+
+  it('persists the Support hours flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableHourBlock: true }]);
+
+    const res = await patch({ enableHourBlock: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableHourBlock: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableHourBlock: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableHourBlock', 'enableHourBlock');
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ changedFields: ['enableHourBlock'] }) }),
+    );
+  });
+
+  it('persists the strict EDR visibility flag and treats it as a visibility flag (Enable all)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableEdrVisibility: true }]);
+
+    const res = await patch({ enableEdrVisibility: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableEdrVisibility: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableEdrVisibility: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableEdrVisibility', 'enableEdrVisibility');
+    expect(onPortalFlagsChanged).toHaveBeenCalledWith(
+      expect.objectContaining({ requested: { enableEdrVisibility: true } }),
+    );
+  });
+
+  it('persists the trust-page editing permission flag without treating it as a visibility flag (Trust Center W3d)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableTrustPageEditing: true }]);
+
+    const res = await patch({ enableTrustPageEditing: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableTrustPageEditing: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableTrustPageEditing: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableTrustPageEditing', 'enableTrustPageEditing');
+    expect(onPortalFlagsChanged).not.toHaveBeenCalled();
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ changedFields: ['enableTrustPageEditing'] }) }),
+    );
+  });
+
+  it('refuses the EDR visibility PATCH for a caller who cannot access the org (no write)', async () => {
+    resetAuth({ canAccessOrg: () => false });
+
+    const res = await patch({ enableEdrVisibility: true });
+
+    expect(res.status).toBe(404);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('persists the sensitive vulnerability detail flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableVulnerabilityDetail: true }]);
+
+    const res = await patch({ enableVulnerabilityDetail: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableVulnerabilityDetail: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableVulnerabilityDetail: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableVulnerabilityDetail', 'enableVulnerabilityDetail');
+  });
+
+  it('persists the sensitive patch detail flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enablePatchDetail: true }]);
+
+    const res = await patch({ enablePatchDetail: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enablePatchDetail: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enablePatchDetail: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enablePatchDetail', 'enablePatchDetail');
+  });
+
+  it('still rejects an unknown portal setting (strict schema)', async () => {
+    expect((await patch({ enableHourBlockz: true })).status).toBe(400);
+  });
+
+  it('rejects partnerInvoiceFooter — the inherited value is read-only here (#7510)', async () => {
+    expect((await patch({ partnerInvoiceFooter: 'x' })).status).toBe(400);
   });
 
   it('upserts and returns the managed subset', async () => {
@@ -458,7 +614,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableHardwareInventory: true,
         enablePerformanceMetrics: true,
         enableSoftwareInventory: true,
-        enableNetworkVisibility: true
+        enableNetworkVisibility: true,
+        enableEdrVisibility: false
       }
     });
   });

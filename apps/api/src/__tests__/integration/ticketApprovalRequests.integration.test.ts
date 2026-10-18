@@ -332,26 +332,61 @@ describe('ticket_approval_requests RLS (Shape 1)', () => {
 });
 
 describe('org moves carry the request and its held entry (#4617 §4.6)', () => {
-  runDb('the TICKET axis (real moveTicketOrg) re-stamps a pending and a decided request', async () => {
+  runDb('the TICKET axis (real moveTicketOrg) re-stamps decided requests and the time held on them', async () => {
     const f = await seed();
-    const pending = await insertRequest(f);
+    const denied = await insertRequest(f, { ...DECIDED, status: 'denied', approvedExtensionMinutes: null });
     const decided = await insertRequest(f, { ...DECIDED, trigger: 'after_hours' });
-    const entryId = await insertHeldEntry(f, pending);
+    const entryId = await insertHeldEntry(f, denied);
 
     await withSystemDbAccessContext(() =>
       moveTicketOrg(f.ticket.id, f.orgB.id, { kind: 'user' as const, userId: f.actor.id }));
 
-    expect((await row('ticket_approval_requests', pending))!.org_id).toBe(f.orgB.id);
+    expect((await row('ticket_approval_requests', denied))!.org_id).toBe(f.orgB.id);
     expect((await row('ticket_approval_requests', decided))!.org_id).toBe(f.orgB.id);
     const entry = await row('time_entries', entryId);
     expect(entry!.org_id).toBe(f.orgB.id);
-    expect(entry!.approval_request_id).toBe(pending);
+    expect(entry!.approval_request_id).toBe(denied);
     expect(entry!.billing_status).toBe('awaiting_approval');
   });
 
-  runDb('the DEVICE axis (real moveDeviceOrgInTransaction) re-stamps the request and its held entry', async () => {
+  // W02 decision (#4617): a PENDING request's approver list is frozen from the
+  // source org, so after a move nobody could decide it. Both movers refuse.
+  runDb('the TICKET axis refuses to move a ticket with a PENDING request (409 APPROVAL_REQUEST_PENDING), nothing moves', async () => {
     const f = await seed();
     const pending = await insertRequest(f);
+    const entryId = await insertHeldEntry(f, pending);
+    const err = await withSystemDbAccessContext(() =>
+      moveTicketOrg(f.ticket.id, f.orgB.id, { kind: 'user' as const, userId: f.actor.id })).catch((e) => e);
+    expect(err).toMatchObject({ status: 409, code: 'APPROVAL_REQUEST_PENDING', details: { pendingApprovalRequests: 1 } });
+    expect((await row('tickets', f.ticket.id))!.org_id).toBe(f.orgA.id);
+    expect((await row('ticket_approval_requests', pending))!.org_id).toBe(f.orgA.id);
+    expect((await row('time_entries', entryId))!.org_id).toBe(f.orgA.id);
+  });
+
+  runDb('the DEVICE axis refuses to move a device whose ticket has a PENDING request', async () => {
+    const f = await seed();
+    const pending = await insertRequest(f);
+    const siteB = await createSite({ orgId: f.orgB.id });
+    const err = await withSystemDbAccessContext(() => db.transaction((tx) => moveDeviceOrgInTransaction(tx, {
+      deviceId: f.device.id,
+      sourceOrgId: f.orgA.id,
+      targetOrgId: f.orgB.id,
+      targetSiteId: siteB.id,
+      targetOrgName: 'target',
+      deviceLinkGroupId: null,
+      acceptCurrencyMismatch: false,
+      actor: { userId: f.actor.id, allowedSiteIds: undefined },
+      stepUp: null,
+      via: 'generic_move',
+    } as Parameters<typeof moveDeviceOrgInTransaction>[1]))).catch((e) => e);
+    expect(err).toMatchObject({ status: 409, code: 'APPROVAL_REQUEST_PENDING' });
+    expect((await row('tickets', f.ticket.id))!.org_id).toBe(f.orgA.id);
+    expect((await row('ticket_approval_requests', pending))!.org_id).toBe(f.orgA.id);
+  });
+
+  runDb('the DEVICE axis (real moveDeviceOrgInTransaction) re-stamps decided requests and the time held on them', async () => {
+    const f = await seed();
+    const pending = await insertRequest(f, { ...DECIDED, status: 'denied', approvedExtensionMinutes: null });
     const decided = await insertRequest(f, { ...DECIDED, trigger: 'after_hours' });
     const entryId = await insertHeldEntry(f, pending);
     const siteB = await createSite({ orgId: f.orgB.id });

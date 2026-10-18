@@ -15,16 +15,9 @@ import (
 // not a design choice: the agent answers these as unknown commands. Remove an
 // entry when its route lands. The test below fails if an entry becomes routed
 // or disappears from the helper, so this list cannot go stale silently.
-//
-// vault_*: the API dispatches vault_sync (routes/backup/vault.ts), but the
-// helper only reaches execVaultSync when it has an agent.yaml backup manager,
-// and nothing dispatches vault_configure, so routing it alone would not make
-// a manual vault sync work.
-var helperCommandsNotRoutedByAgent = map[string]bool{
-	"vault_sync":      true,
-	"vault_status":    true,
-	"vault_configure": true,
-}
+// It is empty: the last entries (vault_sync, vault_status, vault_configure)
+// were routed in #8385.
+var helperCommandsNotRoutedByAgent = map[string]bool{}
 
 // helperCommandTypes returns every string literal used as a case label in the
 // backup helper's executeCommand (cmd/breeze-backup/main.go). That switch is

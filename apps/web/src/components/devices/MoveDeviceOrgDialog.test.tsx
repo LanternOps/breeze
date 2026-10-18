@@ -339,7 +339,7 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     expect(screen.queryByTestId('move-org-currency-accept')).not.toBeInTheDocument();
   });
 
-  it('surfaces a 409 PAM_DEVICE_MOVE_BLOCKED message verbatim', async () => {
+  it('explains a 409 PAM_DEVICE_MOVE_BLOCKED in localized copy, not the raw server text', async () => {
     moveMock.mockRejectedValueOnce(Object.assign(
       new Error('Device organization move is blocked because durable PAM lifecycle evidence exists'),
       { status: 409, code: 'PAM_DEVICE_MOVE_BLOCKED' },
@@ -347,7 +347,21 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     renderDialog();
     await chooseTarget();
     await userEvent.click(screen.getByTestId('move-org-submit'));
-    await waitFor(() => expect(screen.getByText(/durable PAM lifecycle evidence/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('move-org-error')).toHaveTextContent(/not enabled on this deployment/i));
+    expect(screen.getByTestId('move-org-error')).not.toHaveTextContent(/durable PAM lifecycle evidence/);
+    expect(screen.queryByTestId('move-org-stepup-code')).not.toBeInTheDocument();
+  });
+
+  it('explains a 409 PAM_DEVICE_MOVE_ACTIVE as a session that has not finished cleanup', async () => {
+    moveMock.mockRejectedValueOnce(Object.assign(
+      new Error('raw server text'),
+      { status: 409, code: 'PAM_DEVICE_MOVE_ACTIVE' },
+    ));
+    renderDialog();
+    await chooseTarget();
+    await userEvent.click(screen.getByTestId('move-org-submit'));
+    await waitFor(() => expect(screen.getByTestId('move-org-error')).toHaveTextContent(/not finished cleanup/i));
+    expect(screen.getByTestId('move-org-error')).not.toHaveTextContent('raw server text');
     expect(screen.queryByTestId('move-org-stepup-code')).not.toBeInTheDocument();
   });
 

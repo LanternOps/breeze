@@ -12,14 +12,19 @@ type SavePayload = {
   inlineSettings?: Record<string, unknown> | null;
 };
 
+/** Structured failure of the last save/remove, for tabs that render code-specific UI. */
+export type FeatureLinkErrorDetail = { status: number; code?: string; body?: unknown };
+
 export function useFeatureLink(policyId: string) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorDetail, setErrorDetail] = useState<FeatureLinkErrorDetail>();
 
   const save = useCallback(
     async (existingLinkId: string | null, payload: SavePayload): Promise<FeatureLink | null> => {
       setSaving(true);
       setError(undefined);
+      setErrorDetail(undefined);
       try {
         const url = existingLinkId
           ? `/configuration-policies/${policyId}/features/${existingLinkId}`
@@ -40,6 +45,24 @@ export function useFeatureLink(policyId: string) {
           request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
           parseSuccess: (value) => (value as { data: FeatureLink }).data ?? value as FeatureLink,
           errorFallback: i18n.t('common:states.error'),
+          friendly: (code) => {
+            if (code === 'MONITOR_NOT_ATTACHABLE') {
+              return i18n.t('policies:configurationPolicies.featureTabs.monitorsTab.notAttachable');
+            }
+            // #8187: a patch link write that edits ring-owned approval rules
+            // (most often a Patch tab loaded before the release).
+            if (code === 'APPROVAL_RULES_MOVED_TO_RING') {
+              return i18n.t('policies:configurationPolicies.featureTabs.patchTab.approvalRulesMovedToRing');
+            }
+            // #8678: repointing a link off a ring reference that does not
+            // resolve (missing, deleted, not a ring) onto one that lacks the
+            // link's legacy app rules — the Patch tab's repair flow. Reloading
+            // would not help; the chosen ring needs the rules.
+            if (code === 'RING_LACKS_POLICY_APP_RULES') {
+              return i18n.t('policies:configurationPolicies.featureTabs.patchTab.ringLacksPolicyAppRules');
+            }
+            return undefined;
+          },
           successMessage: i18n.t('common:states.saved'),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });
@@ -47,6 +70,9 @@ export function useFeatureLink(policyId: string) {
         if (err instanceof ActionError && err.status === 401) return null;
         if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('common:states.error') });
         setError(err instanceof Error ? err.message : i18n.t('common:states.error'));
+        setErrorDetail(
+          err instanceof ActionError ? { status: err.status, code: err.code, body: err.body } : undefined,
+        );
         return null;
       } finally {
         setSaving(false);
@@ -64,6 +90,7 @@ export function useFeatureLink(policyId: string) {
     async (linkId: string, opts: { successMessage?: string | null } = {}): Promise<boolean> => {
       setSaving(true);
       setError(undefined);
+      setErrorDetail(undefined);
       try {
         await runAction({
           request: () => fetchWithAuth(`/configuration-policies/${policyId}/features/${linkId}`, { method: 'DELETE' }),
@@ -78,6 +105,9 @@ export function useFeatureLink(policyId: string) {
         if (err instanceof ActionError && err.status === 401) return false;
         if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('common:states.error') });
         setError(err instanceof Error ? err.message : i18n.t('common:states.error'));
+        setErrorDetail(
+          err instanceof ActionError ? { status: err.status, code: err.code, body: err.body } : undefined,
+        );
         return false;
       } finally {
         setSaving(false);
@@ -86,7 +116,10 @@ export function useFeatureLink(policyId: string) {
     [policyId]
   );
 
-  const clearError = useCallback(() => setError(undefined), []);
+  const clearError = useCallback(() => {
+    setError(undefined);
+    setErrorDetail(undefined);
+  }, []);
 
-  return { save, remove, saving, error, clearError };
+  return { save, remove, saving, error, errorDetail, clearError };
 }

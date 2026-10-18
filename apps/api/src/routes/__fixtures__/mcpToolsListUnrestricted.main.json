@@ -1,0 +1,167 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "title": "Create ticket",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true
+        },
+        "_meta": {
+          "app.breeze/domain": "tickets"
+        },
+        "name": "create_ticket",
+        "description": "Create a ticket",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "title": "Ext vendor lookup",
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        },
+        "_meta": {
+          "app.breeze/domain": "unknown"
+        },
+        "name": "ext_vendor_lookup",
+        "description": "Extension tool",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "title": "Get device details",
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        },
+        "_meta": {
+          "app.breeze/domain": "devices"
+        },
+        "name": "get_device_details",
+        "description": "Device detail",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "deviceId": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "title": "Get invite funnel",
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        },
+        "_meta": {
+          "app.breeze/domain": "accounts"
+        },
+        "name": "get_invite_funnel",
+        "description": "Invite funnel",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "title": "List tickets",
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        },
+        "_meta": {
+          "app.breeze/domain": "tickets"
+        },
+        "name": "list_tickets",
+        "description": "List tickets",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "title": "Manage services",
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true
+        },
+        "_meta": {
+          "app.breeze/domain": "devices"
+        },
+        "name": "manage_services",
+        "description": "Manage services (Actions \"restart\" require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "list",
+                "restart"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Query devices",
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        },
+        "_meta": {
+          "app.breeze/domain": "core"
+        },
+        "name": "query_devices",
+        "description": "List devices",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "title": "Hudu  get asset",
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        },
+        "_meta": {
+          "app.breeze/domain": "integrations"
+        },
+        "name": "hudu__get_asset",
+        "description": "Get an asset",
+        "inputSchema": {
+          "type": "object"
+        }
+      }
+    ]
+  }
+}

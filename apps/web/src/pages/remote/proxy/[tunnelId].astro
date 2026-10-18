@@ -2,6 +2,7 @@
 import Layout from '../../../layouts/Layout.astro';
 import AuthOverlay from '../../../components/auth/AuthOverlay';
 import ProxyTunnelPage from '../../../components/remote/ProxyTunnelPage';
+import ToastContainer from '../../../components/shared/Toast';
 
 const { tunnelId } = Astro.params;
 const target = Astro.url.searchParams.get('target') || '';
@@ -17,6 +18,9 @@ if (!tunnelId) {
        AuthThrottledError from a throttled /auth/refresh here went unhandled —
        no waiting mask, no recovery, just a broken remote session. -->
   <AuthOverlay client:load />
+  <!-- Bare Layout.astro has no toast host: without this, the page's error
+       toasts (Close failed, new tab could not open) were silently dropped. -->
+  <ToastContainer client:load />
   <div class="h-[calc(100vh-1rem)]">
     <ProxyTunnelPage
       tunnelId={tunnelId}

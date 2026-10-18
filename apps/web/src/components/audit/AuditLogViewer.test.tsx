@@ -123,4 +123,36 @@ describe('AuditLogViewer', () => {
       expect(qs.get('userId')).toBe('11111111-1111-4111-8111-111111111111');
     });
   });
+
+  it('forwards the same date/user/action/resource/search filters to the export as the list request (#8366)', async () => {
+    render(<AuditLogViewer />);
+    await screen.findByText(/audit log/i);
+    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+    fireEvent.click(await screen.findByText('apply-test-filters'));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/audit-logs/search'))).toBe(true));
+    const listCall = [...fetchMock.mock.calls].reverse().find(([u]) => String(u).includes('/audit-logs/search'))!;
+    const listQs = new URLSearchParams(String(listCall[0]).split('?')[1] ?? '');
+
+    fireEvent.click(screen.getByRole('button', { name: /export/i }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/audit-logs/export'));
+      expect(call).toBeTruthy();
+      const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
+      for (const key of ['user', 'action', 'resource', 'q']) {
+        expect(listQs.get(key), `list sends ${key}`).toBeTruthy();
+        expect(qs.get(key), `export sends ${key}`).toBe(listQs.get(key));
+      }
+      // The relative "last 7d" window is recomputed at click time, so compare
+      // within a few seconds rather than byte-for-byte.
+      expect(listQs.get('from')).toBeTruthy();
+      expect(qs.get('from')).toBeTruthy();
+      expect(Math.abs(Date.parse(qs.get('from')!) - Date.parse(listQs.get('from')!))).toBeLessThan(10_000);
+      expect(qs.get('to')).toBeTruthy();
+      // Pagination / count hints are list-only.
+      expect(qs.has('page')).toBe(false);
+      expect(qs.has('limit')).toBe(false);
+      expect(qs.has('skipCount')).toBe(false);
+    });
+  });
 });

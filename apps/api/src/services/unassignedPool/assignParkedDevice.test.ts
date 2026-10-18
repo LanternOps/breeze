@@ -64,6 +64,7 @@ vi.mock('../mfaStepUpGrant', async (importOriginal) => {
 vi.mock('../deviceUninstallDrain', () => ({ isDeviceUninstallDraining: vi.fn() }));
 vi.mock('../../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluation: vi.fn(async () => 'job') }));
 vi.mock('../agentOrgRateLimit', () => ({ invalidateOrgDeviceCount: vi.fn(async () => undefined) }));
+vi.mock('../devicePolicyCache', () => ({ invalidateDevicePolicyCaches: vi.fn(async () => undefined) }));
 vi.mock('../redis', () => ({ getRedis: vi.fn(() => ({ redis: true })) }));
 vi.mock('../../routes/agentWs', () => ({ disconnectAgent: vi.fn(() => 'disconnected') }));
 vi.mock('../deviceIdentityCollisionAlert', () => ({
@@ -72,6 +73,7 @@ vi.mock('../deviceIdentityCollisionAlert', () => ({
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn() }));
 vi.mock('../../jobs/peripheralJobs', () => ({ schedulePeripheralPolicyDevice: vi.fn(async () => 'job') }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../ticketLinkMoveNotes', () => ({ scheduleTicketLinkRemovalNotes: vi.fn() }));
 
 import {
   assignParkedDevice,
@@ -86,6 +88,7 @@ import {
 } from '../deviceOrgMove/moveDeviceOrgInTransaction';
 import { TicketMoveCurrencyBlockedError } from '../ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../ticketMoveApprovalGuard';
 import { PamDeviceMoveBlockedError } from '../pamDeviceMoveGuard';
 import { TicketServiceError } from '../ticketService';
 import { admitPartnerDeviceCapacity, previewPartnerDeviceCapacity } from '../partnerDeviceCapacity';
@@ -94,7 +97,9 @@ import { consumeStepUpGrant } from '../mfaStepUpGrant';
 import { isDeviceUninstallDraining } from '../deviceUninstallDrain';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { captureException } from '../sentry';
+import { scheduleTicketLinkRemovalNotes } from '../ticketLinkMoveNotes';
 import { invalidateOrgDeviceCount } from '../agentOrgRateLimit';
+import { invalidateDevicePolicyCaches } from '../devicePolicyCache';
 import { disconnectAgent } from '../../routes/agentWs';
 import { raiseDeviceIdentityCollisionAlert } from '../deviceIdentityCollisionAlert';
 import { writeAuditEvent } from '../auditEvents';
@@ -193,6 +198,8 @@ beforeEach(() => {
       currencyGuard: null,
       alertChildRewrite: null,
       customFieldRehome: { rehomed: 0, dropped: 0 },
+      removedTicketLinks: [],
+      expiredElevationRequests: 0,
     };
   });
 });
@@ -254,6 +261,8 @@ describe('assignParkedDevice', () => {
       deviceId: DEVICE, orgId: TARGET_ORG, eventType: 'device.updated', reason: 'parked_device_assigned',
     });
     expect(vi.mocked(invalidateOrgDeviceCount).mock.calls.map((c) => c[1]).sort()).toEqual([HOLDING_ORG, TARGET_ORG].sort());
+    // #8257: the holding org's cached heartbeat policy config is dropped.
+    expect(invalidateDevicePolicyCaches).toHaveBeenCalledWith(DEVICE);
     expect(disconnectAgent).toHaveBeenCalledWith(`agent-${DEVICE.slice(0, 4)}`, 4040, expect.any(String));
     expect(writeAuditEvent).toHaveBeenCalledWith(request, expect.objectContaining({
       orgId: TARGET_ORG,
@@ -264,6 +273,17 @@ describe('assignParkedDevice', () => {
     }));
   });
 
+  it('after commit: schedules the ticket-link removal notes the move returned (#7900 W02)', async () => {
+    const removed = [{ orgId: HOLDING_ORG, sourceTicketId: 't1', targetTicketId: 't2', linkType: 'related' as const, sourceMoved: true, targetMoved: false }];
+    vi.mocked(moveDeviceOrgInTransaction).mockImplementationOnce(async () => ({
+      updated: { id: DEVICE, agentId: 'agent-1' } as any,
+      linkGroupDissolved: false, currencyGuard: null, alertChildRewrite: null,
+      customFieldRehome: { rehomed: 0, dropped: 0 }, removedTicketLinks: removed, expiredElevationRequests: 0,
+    }));
+    await single();
+    expect(scheduleTicketLinkRemovalNotes).toHaveBeenCalledWith(removed);
+  });
+
   it('refuses a device that is not parked, without consuming the grant', async () => {
     vi.mocked(steps.lockDeviceForAssignment).mockResolvedValueOnce(parkedDevice({ orgType: 'customer' }));
     expect(await single()).toMatchObject({ ok: false, code: 'DEVICE_NOT_PARKED' });
@@ -271,6 +291,7 @@ describe('assignParkedDevice', () => {
     expect(moveDeviceOrgInTransaction).not.toHaveBeenCalled();
     expect(writeAuditEvent).not.toHaveBeenCalled();
     expect(disconnectAgent).not.toHaveBeenCalled();
+    expect(invalidateDevicePolicyCaches).not.toHaveBeenCalled();
   });
 
   it("answers another partner's parked device, or a missing one, as not found", async () => {
@@ -385,6 +406,7 @@ describe('assignParkedDevice', () => {
     expect(await single()).toMatchObject({ ok: false, code: 'PARTNER_DEVICE_LIMIT_REACHED' });
     expect(ledgerRows).toEqual([]);
     expect(writeAuditEvent).not.toHaveBeenCalled();
+    expect(scheduleTicketLinkRemovalNotes).not.toHaveBeenCalled();
   });
 
   it('refuses when the grant cannot be consumed inside the transaction', async () => {
@@ -489,6 +511,7 @@ describe('assignParkedDevice — refusals raised by the move engine', () => {
     ['holding org gone', new OrgVanishedDuringMoveError('source'), 'DEVICE_NOT_FOUND'],
     ['currency block', new TicketMoveCurrencyBlockedError('m', {} as any), 'TICKET_MOVE_CURRENCY_BLOCKED'],
     ['block-drawn time', new TicketMoveHourBlockError({ drawnTimeEntries: 1 }), 'HOUR_BLOCK_DRAWN_TIME'],
+    ['pending customer approval', new TicketMoveApprovalPendingError({ pendingApprovalRequests: 1 }), 'APPROVAL_REQUEST_PENDING'],
     ['PAM evidence', new PamDeviceMoveBlockedError(), 'PAM_DEVICE_MOVE_BLOCKED'],
     ['PAM evidence (database guard)', pgPamViolation, 'PAM_DEVICE_MOVE_BLOCKED'],
     ['a lock timeout', Object.assign(new Error('canceling statement due to lock timeout'), { cause: { code: '55P03' } }), 'ASSIGNMENT_BUSY'],

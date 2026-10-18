@@ -842,7 +842,11 @@ export function verifyReleaseArtifactManifestIdentity(args: {
   };
 }
 
-async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
+async function fetchSmallBuffer(
+  url: string,
+  label: string,
+  signal?: AbortSignal,
+): Promise<Buffer> {
   // A naive `redirect: "follow"` on verification inputs was an SSRF bypass
   // (#3649): a trusted URL could redirect into private space. The guarded
   // helper re-validates and pins every hop before it is dialed. `maxBytes`
@@ -850,6 +854,7 @@ async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
   // overrun rather than the body being buffered and measured afterwards.
   const resp = await safeFetchFollowingRedirects(url, {
     maxBytes: MAX_MANIFEST_BYTES,
+    ...(signal ? { signal } : {}),
   });
   if (!resp.ok) {
     throw new Error(`Failed to fetch ${label}: ${resp.status}`);
@@ -922,6 +927,8 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
   expectedEdition?: string;
   requireMacosPublisher?: boolean;
   maxAssetBytes: number;
+  /** Aborts the manifest, signature and asset fetches (e.g. AbortSignal.timeout). */
+  signal?: AbortSignal;
 }): Promise<{ buffer: Buffer; verified: VerifiedReleaseArtifact }> {
   if (!isReleaseArtifactManifestVerificationConfigured()) {
     throw new Error(
@@ -930,10 +937,11 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
   }
 
   const [manifestBytes, signatureBytes] = await Promise.all([
-    fetchSmallBuffer(args.manifestUrl, "release artifact manifest"),
+    fetchSmallBuffer(args.manifestUrl, "release artifact manifest", args.signal),
     fetchSmallBuffer(
       args.signatureUrl,
       "release artifact manifest Ed25519 signature",
+      args.signal,
     ),
   ]);
   const selected = await verifyReleaseArtifactManifestAsset({
@@ -954,6 +962,7 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
 
   const response = await safeFetchFollowingRedirects(args.assetUrl, {
     maxBytes: selected.size,
+    ...(args.signal ? { signal: args.signal } : {}),
   });
   if (!response.ok) {
     throw new Error(`Failed to fetch release artifact ${args.assetName}: ${response.status}`);
@@ -971,6 +980,43 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
     requireMacosPublisher: args.requireMacosPublisher,
   });
   return { buffer, verified };
+}
+
+/**
+ * Fetches and signature-verifies ONLY the manifest pair (a few KB) and returns
+ * the verified entry for one asset, without downloading the asset itself.
+ * Lets a cache refresher compare the signed sha256 against what it already
+ * holds and skip the (up to 128 MiB) body download when nothing changed.
+ */
+export async function peekVerifiedGithubReleaseArtifact(args: {
+  assetName: string;
+  manifestUrl: string;
+  signatureUrl: string;
+  expectedRepository?: string;
+  expectedRelease?: string | null;
+  expectedPlatformTrust?: string;
+  expectedEdition?: string;
+  requireMacosPublisher?: boolean;
+}): Promise<VerifiedReleaseArtifact> {
+  if (!isReleaseArtifactManifestVerificationConfigured()) {
+    throw new Error(
+      "Release artifact manifest public key is required for privileged installer downloads",
+    );
+  }
+  const [manifestBytes, signatureBytes] = await Promise.all([
+    fetchSmallBuffer(args.manifestUrl, "release artifact manifest"),
+    fetchSmallBuffer(args.signatureUrl, "release artifact manifest Ed25519 signature"),
+  ]);
+  return verifyReleaseArtifactManifestAsset({
+    assetName: args.assetName,
+    manifestBytes,
+    signatureBytes,
+    expectedRepository: args.expectedRepository,
+    expectedRelease: args.expectedRelease,
+    expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition: args.expectedEdition,
+    requireMacosPublisher: args.requireMacosPublisher,
+  });
 }
 
 export async function verifyGithubReleaseArtifactBuffer(args: {

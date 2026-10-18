@@ -269,11 +269,15 @@
       "time": "Saat",
       "timeout": "Zaman Aşımı (ms)",
       "timezone": "Saat Dilimi",
-      "username": "Kullanıcı adı"
+      "username": "Kullanıcı adı",
+      "scanAgent": "Tarama ajanı"
     },
     "options": {
       "everyHours": "Her {{count}} saatte bir",
-      "selectSite": "Bir site seçin..."
+      "selectSite": "Bir site seçin...",
+      "automaticAgent": "Otomatik (bu alt ağlardaki bir ajanı tercih et)",
+      "agentOffline": "{{name}} (çevrimdışı)",
+      "pinnedAgentUnlisted": "Sabitlenmiş ajan (bu sitede değil)"
     },
     "placeholders": {
       "profileName": "Karargah taraması",
@@ -313,7 +317,13 @@
       "moveAssets_one": "Bu profilin keşfettiği {{count}} ağ cihazını da yeni siteye taşı",
       "moveAssets_other": "Bu profilin keşfettiği {{count}} ağ cihazını da yeni siteye taşı",
       "moveAssetsUnknown": "Bu profilin keşfettiği ağ cihazlarını da yeni siteye taşı"
-    }
+    },
+    "scanAgentHelp": {
+      "automatic": "Bu sitede, alt ağlardan birinde adresi olan çevrimiçi bir ajan tercih edilir.",
+      "pinned": "Taramalar yalnızca bu ajandan çalışır. Ajan çevrimdışıysa tarama başka bir ajana geçmek yerine başarısız olur.",
+      "loadError": "Bu sitenin ajanları yüklenemedi. Otomatik seçim kullanılabilir durumda."
+    },
+    "subnetTopologyNote": "Buradaki alt ağlar, topoloji haritasında bu sitenin ağlarını da tanımlar."
   },
   "discoveryProfileList": {
     "actions": {
@@ -427,7 +437,8 @@
       "interval": "Tarama aralığı 1 ila 168 saat arasında olmalıdır.",
       "selectSite": "Kaydetmeden önce bir site seçin."
     },
-    "configuredCount": "{{count}} temeller yapılandırıldı"
+    "configuredCount": "{{count}} temeller yapılandırıldı",
+    "subnetTopologyNote": "Buradaki alt ağlar, topoloji haritasında bu sitenin ağlarını da tanımlar."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Onaylama Etkinliği",

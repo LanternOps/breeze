@@ -6,6 +6,7 @@ import { adoptFeeEntry, feeEntryDocumentNumber, feeEntryError, feeEntryMarker, f
 import { AccountingProviderError } from './accountingProviderError';
 import { withProviderCallSlot } from './accountingRateLimit';
 import { parseRetryAfterMs } from './retryAfter';
+import { capWithSuffix } from './accountingLineDescription';
 import { captureException } from '../sentry';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import type {
@@ -41,6 +42,11 @@ const QBO_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer
 const QBO_SCOPE = 'com.intuit.quickbooks.accounting';
 const QBO_API_MINOR_VERSION = '70';
 const QBO_QUERY_PAGE_SIZE = 1000; // QBO hard cap per query page
+/**
+ * #8605: Intuit Invoice reference, SalesItemLine `Description`: "max
+ * character: Max 4000 chars". Applied in UTF-16 units (accountingLineDescription).
+ */
+export const QBO_LINE_DESCRIPTION_MAX = 4000;
 
 /**
  * Abort budget for the OPTIONAL home-currency capture. It is awaited inline in
@@ -950,8 +956,16 @@ export class QuickbooksProvider implements AccountingProvider {
         // The wire-time Number() conversion — storage stays a major-unit
         // decimal string (spec §12); QBO wants a JSON number.
         Amount: Number(line.lineTotal),
-        Description: line.description,
+        // #8605: sent verbatim within QuickBooks' 4000-character limit (no
+        // trim, so every fitting description is unchanged). An over-limit one
+        // is truncated before the worked-vs-billed suffix, which stays whole;
+        // previously it was sent whole and QuickBooks refused the invoice.
+        Description: capWithSuffix(line.description, line.descriptionSuffix ?? '', QBO_LINE_DESCRIPTION_MAX),
         SalesItemLineDetail: {
+          // #8605: Intuit SalesItemLineDetail.ServiceDate (optional Date, "Date
+          // when the service is performed"). Present only when the invoice's
+          // frozen line detail shows dates; the date stays out of the text.
+          ...(line.serviceDate ? { ServiceDate: line.serviceDate } : {}),
           ItemRef: itemRef ? { value: itemRef.id } : undefined,
           Qty: Number(line.quantity),
           UnitPrice: Number(line.unitPrice),

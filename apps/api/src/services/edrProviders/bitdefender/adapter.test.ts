@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { EdrProviderRequestError, type EdrAdapterContext, type GuardedFetch } from '../types';
+import type { EdrActionKey } from '@breeze/shared';
+import {
+  EdrProviderRequestError, type EdrActionRequest, type EdrActionSupport, type EdrActionTargetFacts,
+  type EdrAdapterContext, type GuardedFetch,
+} from '../types';
 import { bitdefenderAdapter as adapter } from './adapter';
 
 const fx = (n: string) => readFileSync(join(__dirname, '__fixtures__', n), 'utf8');
@@ -44,6 +48,65 @@ function makeCtx(routes: Record<string, Route>, over: Partial<EdrAdapterContext>
 
 const ok = (name: string): Reply => ({ body: fx(name) });
 const rpc = (result: unknown): Reply => ({ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result }) });
+
+describe('push (W03 PR-B)', () => {
+  it('declares poll_and_push and a 5/min push budget', () => {
+    expect(adapter.capabilities.detectionDelivery).toBe('poll_and_push');
+    expect(adapter.capabilities.operationBudgets?.push).toEqual({ perMinute: 5 });
+    expect(typeof adapter.verifyWebhook).toBe('function');
+  });
+
+  const OURS = 'https://breeze.example.test/api/v1/webhooks/edr/x';
+  const settings = (status: number, url: string | null) => rpc({ status, serviceType: 'jsonRPC', serviceSettings: url ? { url } : {} });
+
+  it('registerPush enables vendor push with the url, secret and mapped companies (console had no push)', async () => {
+    const { ctx, calls } = makeCtx({ 'push.getPushEventSettings': settings(0, null), 'push.setPushEventSettings': rpc(true) });
+    await adapter.registerPush!(ctx, { url: OURS, secret: 'sek', vendorTenantIds: [C1, C2] });
+    expect(calls.map((c) => c.key)).toEqual(['push.getPushEventSettings', 'push.setPushEventSettings']);
+    expect(calls[1]!.params).toMatchObject({
+      status: 1, serviceSettings: { url: OURS, authorization: 'sek' },
+      subscribeToCompanies: [C1, C2],
+    });
+  });
+
+  it('review: registerPush refuses to overwrite push that already goes elsewhere (e.g. a SIEM) unless told to replace it', async () => {
+    const { ctx, count } = makeCtx({ 'push.getPushEventSettings': settings(1, 'https://siem.example.test/ingest'), 'push.setPushEventSettings': rpc(true) });
+    await expect(adapter.registerPush!(ctx, { url: OURS, secret: 's', vendorTenantIds: [] }))
+      .rejects.toMatchObject({ code: 'push_conflict' });
+    expect(count('push.setPushEventSettings')).toBe(0);
+    await adapter.registerPush!(ctx, { url: OURS, secret: 's', vendorTenantIds: [], replaceExisting: true });
+    expect(count('push.setPushEventSettings')).toBe(1);
+  });
+
+  it('review: re-registering over our own URL is not a conflict', async () => {
+    const { ctx, count } = makeCtx({ 'push.getPushEventSettings': settings(1, OURS), 'push.setPushEventSettings': rpc(true) });
+    await adapter.registerPush!(ctx, { url: OURS, secret: 's', vendorTenantIds: [] });
+    expect(count('push.setPushEventSettings')).toBe(1);
+  });
+
+  it('unregisterPush disables vendor push only while it still points at Breeze', async () => {
+    const ours = makeCtx({ 'push.getPushEventSettings': settings(1, OURS), 'push.setPushEventSettings': rpc(true) });
+    expect(await adapter.unregisterPush!(ours.ctx, { url: OURS })).toEqual({ changed: true });
+    expect(ours.calls.at(-1)!.params).toEqual({ status: 0 });
+    for (const [status, url] of [[1, 'https://siem.example.test/ingest'], [0, OURS], [1, null]] as const) {
+      const other = makeCtx({ 'push.getPushEventSettings': settings(status, url), 'push.setPushEventSettings': rpc(true) });
+      expect(await adapter.unregisterPush!(other.ctx, { url: OURS }), `${status} ${url}`).toEqual({ changed: false });
+      expect(other.count('push.setPushEventSettings')).toBe(0);
+    }
+  });
+
+  it('sendTestPush calls sendTestPushEvent', async () => {
+    const { ctx, count } = makeCtx({ 'push.sendTestPushEvent': rpc(true) });
+    await adapter.sendTestPush!(ctx);
+    expect(count('push.sendTestPushEvent')).toBe(1);
+  });
+
+  it('a vendor refusal surfaces as a typed error', async () => {
+    const { ctx } = makeCtx({ 'push.getPushEventSettings': settings(0, null), 'push.setPushEventSettings': ok('error-invalid-params-32602.json') });
+    await expect(adapter.registerPush!(ctx, { url: 'https://x.example.test/h', secret: 's', vendorTenantIds: [] }))
+      .rejects.toBeInstanceOf(EdrProviderRequestError);
+  });
+});
 
 describe('bitdefender adapter metadata', () => {
   it('pins budgets and capabilities', () => {
@@ -358,5 +421,125 @@ describe('listDetections', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('response actions', () => {
+  const T = { vendorTenantId: C1, apiHost: null };
+  const ACT = '7f0c0000-0000-4000-8000-00000000a001';
+  const INCIDENTS_OFF = 'note:incidents: API not enabled on key';
+  const facts = (over: Partial<EdrActionTargetFacts> = {}): EdrActionTargetFacts => ({
+    vendorEndpointId: 'ep1', osPlatform: 'windows', isolationState: 'not_isolated', online: true,
+    tenantUnsupportedActions: [], connectionCapabilityNotes: [], ...over,
+  });
+  const endpointReq = (action: 'isolate' | 'unisolate' | 'scan' | 'update_agent'): EdrActionRequest =>
+    ({ action, target: { kind: 'endpoint', vendorEndpointId: 'ep1' } });
+
+  it('declares isolate/unisolate/scan with a 30/min actions budget', () => {
+    expect(adapter.capabilities.actions).toEqual(['isolate', 'unisolate', 'scan']);
+    expect(adapter.capabilities.operationBudgets?.actions).toEqual({ perMinute: 30 });
+  });
+
+  describe('supportsAction', () => {
+    const cases: Array<[string, Partial<EdrActionTargetFacts>, EdrActionKey, EdrActionSupport]> = [
+      ['rule 1: action outside capabilities', {}, 'kill_process', { ok: false, reason: 'Not supported by Bitdefender GravityZone' }],
+      ['rule 2: endpoint not linked', { vendorEndpointId: null }, 'scan', { ok: false, reason: 'Endpoint not linked to this vendor' }],
+      ['rule 3: isolate without incidents API', { connectionCapabilityNotes: [INCIDENTS_OFF] }, 'isolate',
+        { ok: false, reason: 'The API key lacks the Incidents API (needed for isolation)' }],
+      ['rule 3: unisolate without incidents API', { connectionCapabilityNotes: [INCIDENTS_OFF], isolationState: 'isolated' }, 'unisolate',
+        { ok: false, reason: 'The API key lacks the Incidents API (needed for isolation)' }],
+      ['rule 3 does not apply to scan', { connectionCapabilityNotes: [INCIDENTS_OFF] }, 'scan', { ok: true }],
+      ['rule 4: licence denial', { tenantUnsupportedActions: ['scan'] }, 'scan',
+        { ok: false, reason: "This company's GravityZone licence does not include this action" }],
+      ['rule 5: already isolated', { isolationState: 'isolated' }, 'isolate', { ok: false, reason: 'Already isolated' }],
+      ['rule 5: not isolated', { isolationState: 'not_isolated' }, 'unisolate', { ok: false, reason: 'Not isolated' }],
+      ['rule 5: pending allows isolate', { isolationState: 'pending' }, 'isolate', { ok: true }],
+      ['rule 5: pending allows unisolate', { isolationState: 'pending' }, 'unisolate', { ok: true }],
+      ['rule 5: unknown allows isolate', { isolationState: 'unknown' }, 'isolate', { ok: true }],
+      ['rule 5: null allows unisolate', { isolationState: null }, 'unisolate', { ok: true }],
+      ['rule 5 does not apply to scan', { isolationState: 'isolated' }, 'scan', { ok: true }],
+      ['rule 6: ok', {}, 'isolate', { ok: true }],
+      ['order: not-supported beats unlinked', { vendorEndpointId: null }, 'rollback', { ok: false, reason: 'Not supported by Bitdefender GravityZone' }],
+      ['order: unlinked beats incidents note', { vendorEndpointId: null, connectionCapabilityNotes: [INCIDENTS_OFF] }, 'isolate',
+        { ok: false, reason: 'Endpoint not linked to this vendor' }],
+      ['order: incidents note beats licence denial', { connectionCapabilityNotes: [INCIDENTS_OFF], tenantUnsupportedActions: ['isolate'] }, 'isolate',
+        { ok: false, reason: 'The API key lacks the Incidents API (needed for isolation)' }],
+      ['order: licence denial beats already-isolated', { isolationState: 'isolated', tenantUnsupportedActions: ['isolate'] }, 'isolate',
+        { ok: false, reason: "This company's GravityZone licence does not include this action" }],
+    ];
+    it.each(cases)('%s', (_name, over, action, expected) => {
+      expect(adapter.supportsAction!(facts(over), action)).toEqual(expected);
+    });
+  });
+
+  describe('performAction', () => {
+    const routes: Array<['isolate' | 'unisolate' | 'scan', string, Reply, unknown]> = [
+      ['isolate', 'incidents.createIsolateEndpointTask', ok('action-isolate-ok.json'), { status: 'succeeded' }],
+      ['unisolate', 'incidents.createRestoreEndpointFromIsolationTask', ok('action-restore-ok.json'), { status: 'succeeded' }],
+      ['scan', 'network.createScanTask', ok('action-scan-ok.json'), { status: 'submitted', vendorActionId: '6a0000000000000000000b01' }],
+      ['scan', 'network.createScanTask', rpc(true), { status: 'succeeded' }],
+      // Review fix: a task-id answer to isolate/restore is still "accepted" — completion is
+      // observed through inventory isIsolated / reconcileAction, never the scan-task list.
+      ['isolate', 'incidents.createIsolateEndpointTask', rpc(['6a0000000000000000000c01']), { status: 'succeeded' }],
+      ['unisolate', 'incidents.createRestoreEndpointFromIsolationTask', rpc(['6a0000000000000000000c02']), { status: 'succeeded' }],
+    ];
+    it.each(routes)('%s -> %s maps the result and passes the trace id (action id) as the JSON-RPC id', async (action, key, reply, expected) => {
+      const { ctx, calls } = makeCtx({ [key]: reply });
+      const spy = vi.mocked(ctx.fetch);
+      expect(await adapter.performAction!(ctx, T, endpointReq(action), ACT)).toEqual(expected);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.key).toBe(key);
+      const sent = JSON.parse(spy.mock.calls[0]![1].body!);
+      expect(sent).toMatchObject({ id: ACT });
+      expect(JSON.stringify(sent.params)).toContain('ep1');
+    });
+
+    it.each<EdrActionRequest>([
+      endpointReq('update_agent'),
+      { action: 'kill_process', target: { kind: 'process', vendorEndpointId: 'ep1', pid: 4 } },
+      { action: 'rollback', target: { kind: 'detection', vendorDetectionId: 'd1', vendorKind: 'incident' } },
+      { action: 'quarantine_delete', target: { kind: 'quarantine_item', vendorItemId: 'q1' } },
+      { action: 'isolate', target: { kind: 'process', vendorEndpointId: 'ep1', pid: 4 } } as unknown as EdrActionRequest,
+    ])('refuses $action / $target.kind with unsupported_action and no vendor call', async (req) => {
+      const { ctx, calls } = makeCtx({});
+      await expect(adapter.performAction!(ctx, T, req, ACT)).rejects.toMatchObject({
+        code: 'unsupported_action', reauth: false, scope: 'operation',
+      });
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  describe('getActionStatus', () => {
+    it.each([[1, { status: 'submitted' }], [2, { status: 'submitted' }], [99, { status: 'submitted' }],
+      [3, { status: 'succeeded' }], [4, { status: 'failed', code: 'vendor_task_failed', message: 'Scan task failed' }]])(
+      'vendor status %s -> %j', async (code, expected) => {
+        const { ctx } = makeCtx({ 'network.getScanTasksList': rpc({ items: [{ id: 't1', status: code }] }) });
+        expect(await adapter.getActionStatus!(ctx, T, 't1')).toEqual(expected);
+      },
+    );
+  });
+
+  describe('reconcileAction (read-only)', () => {
+    const detail = (isIsolated?: boolean) => rpc({ id: 'ep1', ...(isIsolated === undefined ? {} : { isIsolated }) });
+    it.each([
+      ['isolate', true, 'applied'], ['isolate', false, 'not_applied'], ['isolate', undefined, 'unknown'],
+      ['unisolate', true, 'not_applied'], ['unisolate', false, 'applied'], ['unisolate', undefined, 'unknown'],
+    ] as const)('%s with isIsolated=%s -> %s', async (action, flag, verdict) => {
+      const { ctx, calls } = makeCtx({ 'network.getManagedEndpointDetails': detail(flag) });
+      expect(await adapter.reconcileAction!(ctx, T, endpointReq(action))).toBe(verdict);
+      expect(calls.map((c) => c.key)).toEqual(['network.getManagedEndpointDetails']);
+    });
+
+    it('scan is always unknown and makes no vendor call', async () => {
+      const { ctx, calls } = makeCtx({});
+      expect(await adapter.reconcileAction!(ctx, T, endpointReq('scan'))).toBe('unknown');
+      expect(calls).toHaveLength(0);
+    });
+
+    it('never calls a write method', async () => {
+      const { ctx, calls } = makeCtx({ 'network.getManagedEndpointDetails': detail(true) });
+      await adapter.reconcileAction!(ctx, T, endpointReq('isolate'));
+      expect(calls.every((c) => !/\.create/.test(c.key))).toBe(true);
+    });
   });
 });

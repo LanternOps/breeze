@@ -29,6 +29,10 @@ vi.mock('../../services/auditService', () => ({
 
 vi.mock('../../services/partnerTrustEvidenceCard', () => ({ buildEvidenceCard }));
 
+vi.mock('../../services/partnerTrustPartnerMail', () => ({
+  sendTrustApprovedEmail: vi.fn(async () => 0),
+}));
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -43,6 +47,7 @@ vi.mock('../../db', () => ({
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  runAfterDbContextExit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -137,6 +142,7 @@ describe('admin partner trust routes', () => {
       'trusted',
       'admin:promote',
       auth.user.id,
+      'restricted',
     );
     expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
       actorId: auth.user.id,
@@ -148,6 +154,44 @@ describe('admin partner trust routes', () => {
         reason: 'manual approval',
       }),
     }));
+  });
+
+  it('promotes a probation partner with a CAS on the loaded state', async () => {
+    state.trust = { trustState: 'probation', probationEnrollments: 0, trustReviewRequestedAt: null };
+    const response = await buildApp().request('/admin/partners/p-1/trust/promote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'review completed' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(writeTrust).toHaveBeenCalledWith('p-1', 'trusted', 'admin:promote', auth.user.id, 'probation');
+  });
+
+  it('returns 409 and writes no audit row when the CAS loses', async () => {
+    state.trust = { trustState: 'probation', probationEnrollments: 0, trustReviewRequestedAt: null };
+    writeTrust.mockResolvedValueOnce(0 as never);
+    const response = await buildApp().request('/admin/partners/p-1/trust/promote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'review completed' }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'trust state changed since the queue was loaded; refresh and retry' });
+    expect(createAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('restricts with a CAS on the loaded state', async () => {
+    state.trust = { trustState: 'probation', probationEnrollments: 0, trustReviewRequestedAt: null };
+    const response = await buildApp().request('/admin/partners/p-1/trust/restrict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'manual restriction' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(writeTrust).toHaveBeenCalledWith('p-1', 'restricted', 'admin:restrict', auth.user.id, 'probation');
   });
 
   it('rejects promote when the MFA step-up is not satisfied (403)', async () => {
@@ -190,6 +234,7 @@ describe('admin partner trust routes', () => {
       'restricted',
       'admin:restrict',
       auth.user.id,
+      'probation',
     );
   });
 

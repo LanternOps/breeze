@@ -432,7 +432,7 @@ func handleFileTrashPurge(_ *Heartbeat, cmd Command) tools.CommandResult {
 }
 
 func handleFilesystemAnalysis(_ *Heartbeat, cmd Command) tools.CommandResult {
-	return tools.AnalyzeFilesystem(cmd.Payload)
+	return tools.AnalyzeFilesystemCommand(cmd.ID, cmd.Payload)
 }
 
 func handleFileListDrives(_ *Heartbeat, cmd Command) tools.CommandResult {

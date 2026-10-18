@@ -110,7 +110,16 @@ const DEV_ENV: Record<string, string> = {
 const NO_LIVE_MAIL_KEYS = ['RESEND_API_KEY', 'MAILGUN_API_KEY', 'SMTP_HOST'] as const;
 
 /** Keys set after compose runs (see setStackEnvValues); a rewrite keeps them. */
-const RUNTIME_KEYS = ['WEBAUTHN_ORIGIN', 'WEBAUTHN_RP_ID'] as const;
+const RUNTIME_KEYS = [
+  'WEBAUTHN_ORIGIN', 'WEBAUTHN_RP_ID',
+  // Network Proxy host mode on a local stack (#8155 W03): set by
+  // e2e-tests/helpers/tunnelOriginStack.ts once caddy's port is known.
+  // PUBLIC_PORTAL_URL travels with them: with the template set, the API's
+  // config validator refuses compose's `https://${BREEZE_DOMAIN}/portal`
+  // default (no host), so dropping it on a re-up would leave api unbootable.
+  'TUNNEL_ORIGIN_TEMPLATE', 'TUNNEL_FRAME_ANCESTOR', 'TUNNEL_SITE_ADDRESS', 'TUNNEL_HOST_SUFFIX',
+  'PUBLIC_PORTAL_URL',
+] as const;
 
 /**
  * The dev images are built locally from the worktree, but docker-compose.yml
@@ -128,6 +137,22 @@ function nativeDockerPlatform(worktreePath: string, arch: string): string | null
   return pinned ? null : 'linux/arm64';
 }
 
+/**
+ * #8718 — opt-in fixed host port for caddy. The worktree override publishes
+ * caddy as `${BREEZE_WT_CADDY_PORT:-0}:80`; unset keeps the random port. A
+ * `docker restart` re-allocates a random port, so a storm scenario that
+ * restarts caddy (`socket-drop`) strands every client holding `baseUrl`.
+ */
+export function caddyPortPin(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.BREEZE_WT_CADDY_PORT?.trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(`BREEZE_WT_CADDY_PORT must be an integer 1-65535, got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
 export function writeEnvStack(worktreePath: string, opts: { arch?: string } = {}): string {
   const p = envStackPath(worktreePath);
   // Carry runtime keys across a re-`up` so an unchanged stack is not recreated
@@ -141,8 +166,10 @@ export function writeEnvStack(worktreePath: string, opts: { arch?: string } = {}
   if (blankMail) {
     console.log('[wt-stack] outbound mail disabled (RESEND_API_KEY/MAILGUN_API_KEY/SMTP_HOST blanked; set BREEZE_WT_STACK_LIVE_MAIL=1 to keep them)');
   }
+  const caddyPin = caddyPortPin();
   const body = [
     ...Object.entries(DEV_ENV).map(([k, v]) => `${k}=${v}`),
+    ...(caddyPin !== null ? [`BREEZE_WT_CADDY_PORT=${caddyPin}`] : []),
     ...(blankMail ? NO_LIVE_MAIL_KEYS.map((k) => `${k}=`) : []),
     ...(platform ? [`DOCKER_PLATFORM=${platform}`] : []),
     ...kept,

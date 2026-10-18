@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Calendar } from "lucide-react";
+import { AlertTriangle, BellOff, Calendar, CheckCircle, Loader2 } from "lucide-react";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { fetchWithAuth } from "../../stores/auth";
 import HashLink from "../shared/HashLink";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { usePermissions } from "../../lib/permissions";
+import { useAlertActions } from "../alerts/useAlertActions";
+import SuppressAlertDialog from "../alerts/SuppressAlertDialog";
 
 type AlertItem = {
   id?: string;
+  title?: string;
   severity?: string;
   level?: string;
   message?: string;
@@ -35,6 +39,8 @@ const severityStyles: Record<string, string> = {
   info: "bg-info/15 text-info border-info/30",
 };
 
+type ActionableItem = { id: string; title: string; status: string };
+
 function formatDateTime(value?: string, timezone?: string) {
   if (!value) return "Not reported";
   const date = new Date(value);
@@ -50,6 +56,13 @@ export default function DeviceAlertHistory({
   limit,
 }: DeviceAlertHistoryProps) {
   const { t } = useTranslation("devices");
+  const { t: ta } = useTranslation("alerts");
+  const { can } = usePermissions();
+  // UX gate only — mirrors requirePermission on the /alerts/:id/* routes.
+  const canAck = can("alerts", "acknowledge");
+  const canWrite = can("alerts", "write");
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [resolveNote, setResolveNote] = useState("");
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -70,9 +83,12 @@ export default function DeviceAlertHistory({
     Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const fetchAlerts = useCallback(
-    async (range?: { startDate: string; endDate: string }) => {
-      setLoading(true);
-      setError(undefined);
+    async (
+      range?: { startDate: string; endDate: string },
+      opts?: { silent?: boolean },
+    ) => {
+      if (!opts?.silent) setLoading(true);
+      if (!opts?.silent) setError(undefined);
       try {
         const params = new URLSearchParams();
         const startDate = range?.startDate ?? appliedRange.startDate;
@@ -90,13 +106,19 @@ export default function DeviceAlertHistory({
           setSiteTimezone(json.timezone ?? json.siteTimezone);
         }
       } catch (err) {
+        // A silent post-action refetch must not replace an already-patched list
+        // with the blocking error screen; the action itself succeeded.
+        if (opts?.silent) {
+          console.error("[device-alerts] post-action refetch failed", err);
+          return;
+        }
         setError(
           err instanceof Error
             ? err.message
             : t("deviceAlertHistory.failedToFetchAlertHistory"),
         );
       } finally {
-        setLoading(false);
+        if (!opts?.silent) setLoading(false);
       }
     },
     [appliedRange.endDate, appliedRange.startDate, deviceId],
@@ -105,6 +127,28 @@ export default function DeviceAlertHistory({
   useEffect(() => {
     fetchAlerts();
   }, [fetchAlerts]);
+
+  const patchAlert = useCallback((id: string, patch: Record<string, unknown>) => {
+    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  }, []);
+
+  const {
+    submittingId,
+    suppressTarget,
+    acknowledge,
+    resolve,
+    requestSuppress,
+    cancelSuppress,
+    confirmSuppress,
+  } = useAlertActions<ActionableItem>({
+    // Silent refetch: no full-tab spinner, the row updates in place.
+    refresh: () => fetchAlerts(undefined, { silent: true }),
+    patchAlert,
+    onResolveSettled: () => {
+      setResolvingId(null);
+      setResolveNote("");
+    },
+  });
 
   const visibleAlerts = useMemo(() => {
     if (!limit) return alerts;
@@ -157,12 +201,14 @@ export default function DeviceAlertHistory({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">
+          <h2 className="text-lg font-semibold">
             {t("deviceAlertHistory.alertHistory")}
-          </h3>
+          </h2>
         </div>
+        {/* #9030: the date filter is secondary to the list — outline/ghost
+            controls, right-aligned. */}
         {showFilters && (
-          <div className="flex flex-wrap items-center gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2 text-sm sm:justify-end">
             <div className="relative">
               <Calendar className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
@@ -187,23 +233,25 @@ export default function DeviceAlertHistory({
             <button
               type="button"
               onClick={handleApply}
-              className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+              className="h-9 rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted"
             >
               {t("deviceAlertHistory.apply")}{" "}
             </button>
             <button
               type="button"
               onClick={handleClear}
-              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
+              className="h-9 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               {t("deviceAlertHistory.clear")}{" "}
             </button>
           </div>
         )}
       </div>
-      <div className="mt-4 space-y-3">
+      {/* #9030: one border — rows are a divided list inside the tab card, not
+          bordered cards nested in it. */}
+      <div className="mt-4 divide-y border-t">
         {visibleAlerts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="pt-4 text-sm text-muted-foreground">
             {t("deviceAlertHistory.noAlertsReportedForThisDevice")}
           </p>
         ) : (
@@ -216,19 +264,41 @@ export default function DeviceAlertHistory({
             const badgeStyle =
               severityStyles[severity] ||
               "bg-muted/40 text-muted-foreground border-muted";
+            const alertId = alert.id;
+            const status = (alert.status || "").toLowerCase();
+            const title = alert.title || alert.message || alert.summary || "Alert reported";
+            const actionable: ActionableItem | null = alertId
+              ? { id: alertId, title, status }
+              : null;
+            const isSubmitting = !!alertId && submittingId === alertId;
+            const isOpen = status === "active" || status === "acknowledged";
+            const showSuppress =
+              status !== "suppressed" &&
+              status !== "resolved" &&
+              status !== "dismissed";
+            const resolveOpen = !!alertId && resolvingId === alertId;
             return (
               <div
                 key={
                   alert.id ??
                   `${alert.message ?? alert.summary ?? "alert"}-${index}`
                 }
-                className="rounded-md border p-4"
+                data-testid={alertId ? `device-alert-row-${alertId}` : undefined}
+                className="py-4"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium">
-                      {alert.message || alert.summary || "Alert reported"}
-                    </p>
+                    {alertId ? (
+                      <a
+                        href={`/alerts/${alertId}`}
+                        data-testid={`device-alert-link-${alertId}`}
+                        className="text-sm font-medium hover:underline"
+                      >
+                        {title}
+                      </a>
+                    ) : (
+                      <p className="text-sm font-medium">{title}</p>
+                    )}
                     <p className="mt-1 text-xs text-muted-foreground">
                       {formatDateTime(
                         alert.createdAt || alert.timestamp,
@@ -236,12 +306,108 @@ export default function DeviceAlertHistory({
                       )}
                     </p>
                   </div>
-                  <span
-                    className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badgeStyle}`}
-                  >
-                    {severity}
-                  </span>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {status && (
+                      <span
+                        data-testid={alertId ? `device-alert-status-${alertId}` : undefined}
+                        className="inline-flex items-center rounded-full border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+                      >
+                        {ta(/* i18n-dynamic */ `alertDetails.status.${status}`, { defaultValue: status })}
+                      </span>
+                    )}
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badgeStyle}`}
+                    >
+                      {severity}
+                    </span>
+                  </div>
                 </div>
+                {actionable && (canAck || canWrite) && (
+                  <div className="mt-3 flex flex-wrap items-center justify-end gap-1.5">
+                    {isSubmitting ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    ) : (
+                      <>
+                        {canAck && status === "active" && (
+                          <button
+                            type="button"
+                            data-testid={`device-alert-ack-${actionable.id}`}
+                            onClick={() => void acknowledge(actionable)}
+                            aria-label={ta("alertList.acknowledgeAlert", { title })}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            <CheckCircle className="h-3.5 w-3.5" />
+                            {ta("alertList.ack")}
+                          </button>
+                        )}
+                        {canWrite && isOpen && (
+                          <button
+                            type="button"
+                            data-testid={`device-alert-resolve-${actionable.id}`}
+                            onClick={() => {
+                              setResolveNote("");
+                              setResolvingId(actionable.id);
+                            }}
+                            aria-label={ta("alertList.resolveAlert", { title })}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-success hover:bg-success/10"
+                          >
+                            <CheckCircle className="h-3.5 w-3.5" />
+                            {ta("alertList.resolve")}
+                          </button>
+                        )}
+                        {canWrite && showSuppress && (
+                          <button
+                            type="button"
+                            data-testid={`device-alert-suppress-${actionable.id}`}
+                            onClick={() => requestSuppress(actionable)}
+                            aria-label={ta("alertList.suppressAlert", { title })}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            <BellOff className="h-3.5 w-3.5" />
+                            {ta("alertList.mute")}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+                {actionable && resolveOpen && (
+                  <div className="mt-3 space-y-2">
+                    <label
+                      htmlFor={`device-alert-resolve-note-${actionable.id}`}
+                      className="text-xs font-medium"
+                    >
+                      {ta("alertDetails.resolutionNote")}
+                    </label>
+                    <textarea
+                      id={`device-alert-resolve-note-${actionable.id}`}
+                      data-testid={`device-alert-resolve-note-${actionable.id}`}
+                      value={resolveNote}
+                      onChange={(e) => setResolveNote(e.target.value)}
+                      placeholder={ta("alertDetails.describeHowTheIssueWasResolved")}
+                      rows={2}
+                      className="w-full rounded-md border bg-background px-2 py-1 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setResolvingId(null)}
+                        className="h-8 rounded-md border px-3 text-xs font-medium hover:bg-muted"
+                      >
+                        {ta("alertDetails.cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`device-alert-resolve-confirm-${actionable.id}`}
+                        disabled={isSubmitting}
+                        onClick={() => void resolve(actionable, resolveNote)}
+                        className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      >
+                        {ta("alertDetails.resolveAlert")}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })
@@ -256,6 +422,13 @@ export default function DeviceAlertHistory({
           {t("deviceAlertHistory.alerts")}{" "}
           <span aria-hidden="true">{t("deviceAlertHistory.text")}</span>
         </HashLink>
+      )}
+      {suppressTarget && (
+        <SuppressAlertDialog
+          alertTitle={suppressTarget.title}
+          onCancel={cancelSuppress}
+          onConfirm={(until) => void confirmSuppress(suppressTarget, until)}
+        />
       )}
     </div>
   );
