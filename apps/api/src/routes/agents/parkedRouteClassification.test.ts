@@ -52,6 +52,8 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/security/status': 'deny',
   'PUT /:id/management/posture': 'deny',
   'PUT /:id/security/recovery-keys': 'deny',
+  // #6263 W03a: a parked device runs no scans, so it fetches no rule bundles.
+  'GET /:id/yara/rule-sets/:ruleSetId/:version': 'deny',
   'PUT /:id/hardware': 'deny',
   'PUT /:id/software': 'deny',
   'PUT /:id/disks': 'deny',

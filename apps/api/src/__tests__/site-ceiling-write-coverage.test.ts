@@ -77,6 +77,10 @@ const GOVERNANCE_TABLE_NAMES = [
   // A DNS allow/block policy is pushed to the org's DNS filtering provider and
   // applies to every device behind it; the table has no site axis.
   'dnsPolicies',
+  // YARA rule sets (#6263 W03a) are scanned by every device of every policy
+  // that attaches them (and may auto-quarantine there); no site axis.
+  'yaraRuleSets',
+  'yaraRules',
 ] as const;
 
 /**
@@ -84,6 +88,11 @@ const GOVERNANCE_TABLE_NAMES = [
  * site-ceiling gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
+  // #6263 W03a. Called only from the mutating routes in
+  // routes/security/yara.ts, each of which runs writeDenial
+  // (canMutateOrgWideGovernance) before reaching it.
+  'services/yaraRuleSetPublisher.ts':
+    'reached only through routes/security/yara.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing either file',
   // Background probe of a destination's create-only write support, started
   // after a brokered backup write is issued. Writes only the
   // provider_capabilities.conditionalWrites record, in system context; no

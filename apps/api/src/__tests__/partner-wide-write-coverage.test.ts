@@ -108,6 +108,13 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // tenant records a licence denial. No caller-chosen value reaches either
   // row; the caller-facing config write (PATCH actionsEnabled) is gated in
   // routes/edr/connections.ts by requireEdrPartnerAdmin.
+  // #6263 W03a. The publisher writes only a set's version/publish columns and
+  // its rules' compile_error, for a set it re-locks FOR UPDATE under the
+  // caller's RLS (read-only partner-wide/built-in rows are not lockable). Its
+  // only callers are the mutating routes in routes/security/yara.ts, each of
+  // which runs `set.orgId === null && !canManagePartnerWidePolicies(auth)`
+  // (writeDenial) first; it refuses the built-in set outright.
+  'services/yaraRuleSetPublisher.ts': 'writes only version/publish columns + compile_error of a set the caller already passed routes/security/yara.ts writeDenial (canManagePartnerWidePolicies for partner-wide); re-locks FOR UPDATE under the caller RLS; refuses the built-in set',
   'services/edrProviders/actions.ts': 'vendor-outcome bookkeeping only (reauth_required on a rejected key, a licence denial on the acted-on tenant), system context, ids from the authorized row; no caller-chosen value',
   'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
