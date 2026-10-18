@@ -167,6 +167,70 @@ export async function loadContractBlockRenderData(
   );
 }
 
+/** One pinned template version's render data, not tied to a quote block. */
+export type TemplateVersionRenderData = Omit<ContractBlockRenderData, 'blockId'>;
+
+/** Read ONE pinned PUBLISHED version + its template through the bare `db` in
+ *  WHATEVER context the caller established (#8865 W1c) — deliberately NOT
+ *  wrapped in runOutsideDbContext/withSystemDbAccessContext, unlike
+ *  loadContractBlockRenderData. Staff paths (record-signed; W2: create /
+ *  PATCH / preview) read templates in the request's own context: an org-owned
+ *  template is visible to its org, a partner-wide one through the partner-wide
+ *  SELECT branch (2026-10-10-100400-identity-contracts-partner-wide-select.sql).
+ *  Only W2's public/portal accept path wraps this in system scope itself.
+ *
+ *  An invisible id, an unpublished version, or an invisible parent template are
+ *  all the same 404 VERSION_NOT_FOUND — the caller learns nothing about rows it
+ *  cannot read. Usability (archived template, org visibility) is
+ *  assertTemplateVersionUsable's job, not this loader's. */
+export async function loadTemplateVersionRenderData(
+  templateVersionId: string,
+  opts?: { includeFileData?: boolean },
+): Promise<TemplateVersionRenderData> {
+  const includeFileData = opts?.includeFileData ?? false;
+  const notFound = () =>
+    new ContractTemplateServiceError('Agreement template version not found', 404, 'VERSION_NOT_FOUND');
+
+  const [version] = await db
+    .select({
+      id: contractTemplateVersions.id,
+      templateId: contractTemplateVersions.templateId,
+      status: contractTemplateVersions.status,
+      sourceType: contractTemplateVersions.sourceType,
+      bodyHtml: contractTemplateVersions.bodyHtml,
+      sha256: contractTemplateVersions.sha256,
+      declaredVariables: contractTemplateVersions.declaredVariables,
+      versionNumber: contractTemplateVersions.versionNumber,
+      // Never the up-to-10MB blob unless the caller freezes the bytes.
+      ...(includeFileData ? { fileData: contractTemplateVersions.fileData } : {}),
+    })
+    .from(contractTemplateVersions)
+    .where(eq(contractTemplateVersions.id, templateVersionId));
+  if (!version || version.status !== 'published') throw notFound();
+
+  const [template] = await db
+    .select({ id: contractTemplates.id, name: contractTemplates.name })
+    .from(contractTemplates)
+    .where(eq(contractTemplates.id, version.templateId));
+  if (!template) throw notFound();
+
+  const fileData =
+    includeFileData && version.sourceType === 'uploaded'
+      ? ((version as { fileData?: Buffer | null }).fileData ?? null)
+      : null;
+  return {
+    templateId: version.templateId,
+    templateVersionId: version.id,
+    sourceType: version.sourceType,
+    bodyHtml: version.sourceType === 'authored' ? sanitizeRichTextHtml(version.bodyHtml ?? '') : null,
+    fileData,
+    versionSha256: version.sha256 ?? '',
+    declaredVariables: (version.declaredVariables as ContractVariable[] | null) ?? [],
+    templateName: template.name,
+    versionNumber: version.versionNumber,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Admin-only authoring fields
 // ---------------------------------------------------------------------------
@@ -472,7 +536,7 @@ export function substituteVariables(bodyHtml: string, values: Record<string, str
  *  Used to gate send (spec: "Send is blocked while any declared variable is
  *  unresolved") ahead of ever calling substituteVariables. */
 export function findUnresolvedVariables(
-  data: ContractBlockRenderData,
+  data: Pick<ContractBlockRenderData, 'declaredVariables'>,
   variableValues: Record<string, string>,
   autoValues: Record<string, string>
 ): string[] {

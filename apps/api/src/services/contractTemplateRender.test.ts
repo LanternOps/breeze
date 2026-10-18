@@ -23,6 +23,7 @@ import {
   findUnresolvedVariables,
   renderContractBlocksForClient,
   loadContractPdfInputs,
+  loadTemplateVersionRenderData,
   type ContractBlockRenderData,
   type QuoteRow,
 } from './contractTemplateRender';
@@ -794,5 +795,74 @@ describe('loadContractBlockAuthoring (admin-only editor fields)', () => {
     expect(map.size).toBe(0);
     expect(db.select).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadTemplateVersionRenderData (staff paths: caller-context read, #8865 W1c)', () => {
+  beforeEach(() => {
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    vi.mocked(runOutsideDbContext).mockClear();
+    vi.mocked(db.select).mockReset();
+  });
+
+  const publishedVersion = {
+    id: 'ver-9',
+    templateId: 'tmpl-9',
+    status: 'published',
+    sourceType: 'authored' as const,
+    bodyHtml: '<p>PO {{custom.po}}</p><script>x</script>',
+    sha256: 'vsha-9',
+    declaredVariables: [{ name: 'custom.po', kind: 'manual' }],
+    versionNumber: 3,
+  };
+
+  it('reads the version + template in the CALLER context — never system scope — and returns render data', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([publishedVersion]) as never)
+      .mockReturnValueOnce(selectReturning([{ id: 'tmpl-9', name: 'Master Services' }]) as never);
+
+    const data = await loadTemplateVersionRenderData('ver-9');
+
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(data).toEqual({
+      templateId: 'tmpl-9',
+      templateVersionId: 'ver-9',
+      sourceType: 'authored',
+      bodyHtml: '<p>PO {{custom.po}}</p>',
+      fileData: null,
+      versionSha256: 'vsha-9',
+      declaredVariables: [{ name: 'custom.po', kind: 'manual' }],
+      templateName: 'Master Services',
+      versionNumber: 3,
+    });
+  });
+
+  it('returns the uploaded bytes only when includeFileData is set', async () => {
+    const uploaded = { ...publishedVersion, sourceType: 'uploaded' as const, bodyHtml: null, fileData: Buffer.from('%PDF-1.4') };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([uploaded]) as never)
+      .mockReturnValueOnce(selectReturning([{ id: 'tmpl-9', name: 'Scan' }]) as never);
+    const data = await loadTemplateVersionRenderData('ver-9', { includeFileData: true });
+    expect(data.fileData?.toString()).toBe('%PDF-1.4');
+    expect(data.bodyHtml).toBeNull();
+  });
+
+  it('404 VERSION_NOT_FOUND when the version is invisible to the caller', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectReturning([]) as never);
+    await expect(loadTemplateVersionRenderData('ver-x')).rejects.toMatchObject({ status: 404, code: 'VERSION_NOT_FOUND' });
+  });
+
+  it('404 VERSION_NOT_FOUND when the version is not published (draft)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectReturning([{ ...publishedVersion, status: 'draft' }]) as never);
+    await expect(loadTemplateVersionRenderData('ver-9')).rejects.toMatchObject({ status: 404, code: 'VERSION_NOT_FOUND' });
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('404 VERSION_NOT_FOUND when the parent template is invisible to the caller', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([publishedVersion]) as never)
+      .mockReturnValueOnce(selectReturning([]) as never);
+    await expect(loadTemplateVersionRenderData('ver-9')).rejects.toMatchObject({ status: 404, code: 'VERSION_NOT_FOUND' });
   });
 });
