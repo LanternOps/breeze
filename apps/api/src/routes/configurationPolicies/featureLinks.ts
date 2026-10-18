@@ -64,6 +64,7 @@ import { AutomationReferenceAuthorizationError } from '../../services/automation
 import { omitUnsentLegacyApprovalKeys, PolicyApprovalFieldMovedError } from '../../services/configPolicyPatching';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
+import { checkSecurityRuleSetsWrite } from './securityRuleSetGate';
 import { withoutFeatureLinkAuthority } from '../../services/securityScanQuarantineAuthority';
 import type { SensitiveDataAuthorityValues } from '../../services/sensitiveDataPolicyAuthority';
 
@@ -234,6 +235,12 @@ featureLinkRoutes.post(
       );
       if (!gate.allowed) return c.json(gate.body, 403);
       securityAuthority = gate.executionAuthority;
+      // #6263 W03: only rule sets every device the policy reaches can fetch.
+      const ruleSets = await checkSecurityRuleSetsWrite(
+        { orgId: policy.orgId, partnerId: policy.partnerId },
+        data.inlineSettings,
+      );
+      if (!ruleSets.ok) return c.json(ruleSets.body, ruleSets.status);
     }
 
     // #6960: authorization (arming), NULL featurePolicyId, strict settings and
@@ -588,6 +595,11 @@ featureLinkRoutes.patch(
       );
       if (!gate.allowed) return c.json(gate.body, 403);
       securityAuthority = gate.executionAuthority;
+      const ruleSets = await checkSecurityRuleSetsWrite(
+        { orgId: policy.orgId, partnerId: policy.partnerId },
+        data.inlineSettings,
+      );
+      if (!ruleSets.ok) return c.json(ruleSets.body, ruleSets.status);
     }
 
     // #6960: same checks as POST, applied to whichever fields this PATCH sends.
