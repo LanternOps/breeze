@@ -469,12 +469,20 @@ describe('SoftwareCatalog deployments tab (hash-driven)', () => {
     expect(window.location.hash).toBe('');
   });
 
-  it('#versions=<unknown id> opens nothing and is cleared', async () => {
-    routeDeployments();
+  it('#versions=<unknown id> opens nothing and is cleared (by-id lookup 404s)', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/software/catalog') return Promise.resolve(jsonResponse({ data: [ITEM] }));
+      if (url === '/software/catalog/cat-unknown') return Promise.resolve(jsonResponse({ error: 'Catalog item not found' }, false, 404));
+      return Promise.resolve(jsonResponse({ data: null }));
+    });
     setHash('versions=cat-unknown');
     render(<SoftwareCatalog />);
     await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
-    await waitFor(() => expect(window.location.hash).toBe(''));
+    // Wait for the fallback lookup itself, then let its response settle.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/software/catalog/cat-unknown'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(window.location.hash).toBe('');
     expect(screen.queryByTestId('version-manager-probe')).not.toBeInTheDocument();
   });
 
