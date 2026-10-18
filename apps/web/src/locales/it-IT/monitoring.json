@@ -545,6 +545,7 @@
     },
     "errorCodes": {
       "preview_stale": "Il criterio è cambiato dopo questa anteprima. Genera una nuova anteprima prima di convertire.",
+      "conversion_contended": "Modifiche simultanee hanno interrotto la conversione. Non è stato modificato nulla. Riprova.",
       "preview_failed": "Impossibile generare l'anteprima. Riprova più tardi.",
       "equivalence_delta": "I monitor convertiti non si comporterebbero come le regole legacy su tutti i dispositivi. Controlla l'anteprima prima di convertire.",
       "CONVERSION_PREREQUISITE_MISSING": "Un aggiornamento necessario della piattaforma non è ancora stato distribuito, quindi la conversione non è possibile.",

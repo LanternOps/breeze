@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../../middleware/auth';
 import type { PolicySources } from './loadSources';
+import { ConversionError } from './errors';
 const m = vi.hoisted(() => ({
   context: vi.fn(async (_context: unknown, fn: () => unknown) => fn()),
   currentContext: vi.fn(() => undefined),
@@ -1010,8 +1011,19 @@ it.each(['40001', '40P01'])('retries an aborted caller transaction after Postgre
   expect(work).toHaveBeenCalledTimes(1);
 });
 
-it('maps exhausted deadlock retries to the existing stale-preview conflict', async () => {
+it('reports exhausted deadlock retries as conversion_contended, not preview_stale', async () => {
   m.context.mockRejectedValueOnce({ code: '40P01' }).mockRejectedValueOnce({ code: '40P01' });
-  await expect(inCallerTransaction(auth, vi.fn())).rejects.toMatchObject({ code: 'preview_stale' });
+  await expect(inCallerTransaction(auth, vi.fn())).rejects.toMatchObject({ code: 'conversion_contended' });
   expect(m.context).toHaveBeenCalledTimes(2);
+});
+
+it('reports exhausted serialization failures as conversion_contended', async () => {
+  m.context.mockRejectedValueOnce({ code: '40001' }).mockRejectedValueOnce({ code: '40001' });
+  await expect(inCallerTransaction(auth, vi.fn())).rejects.toMatchObject({ code: 'conversion_contended' });
+});
+
+it('keeps preview_stale for a genuinely stale preview inside the transaction', async () => {
+  m.context.mockRejectedValueOnce(new ConversionError('preview_stale', 'Preview inputs changed'));
+  await expect(inCallerTransaction(auth, vi.fn())).rejects.toMatchObject({ code: 'preview_stale' });
+  expect(m.context).toHaveBeenCalledTimes(1);
 });

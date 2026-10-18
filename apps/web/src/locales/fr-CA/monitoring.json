@@ -545,6 +545,7 @@
     },
     "errorCodes": {
       "preview_stale": "La politique a changé depuis cet aperçu. Générez un nouvel aperçu avant de convertir.",
+      "conversion_contended": "Des modifications simultanées ont interrompu la conversion. Rien n'a été modifié. Réessayez.",
       "preview_failed": "L'aperçu n'a pas pu être généré. Réessayez plus tard.",
       "equivalence_delta": "Les moniteurs convertis ne se comporteraient pas comme les règles héritées sur tous les appareils. Vérifiez l'aperçu avant de convertir.",
       "CONVERSION_PREREQUISITE_MISSING": "Une mise à jour requise de la plateforme n'a pas encore été déployée; la conversion est donc impossible.",

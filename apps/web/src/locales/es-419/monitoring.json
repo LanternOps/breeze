@@ -545,6 +545,7 @@
     },
     "errorCodes": {
       "preview_stale": "La política cambió desde esta vista previa. Genera otra vista previa antes de convertir.",
+      "conversion_contended": "Otros cambios simultáneos interrumpieron la conversión. No se modificó nada. Inténtalo de nuevo.",
       "preview_failed": "No se pudo generar la vista previa. Inténtalo más tarde.",
       "equivalence_delta": "Los monitores convertidos no se comportarían como las reglas heredadas en todos los dispositivos. Revisa la vista previa antes de convertir.",
       "CONVERSION_PREREQUISITE_MISSING": "Aún no se implementó una actualización necesaria de la plataforma, así que no se puede convertir.",

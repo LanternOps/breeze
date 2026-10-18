@@ -545,6 +545,7 @@
     },
     "errorCodes": {
       "preview_stale": "The policy changed since this preview. Preview again before converting.",
+      "conversion_contended": "Other changes were happening at the same time, so the conversion did not complete. Nothing was changed. Try again.",
       "preview_failed": "The preview could not be produced. Try again later.",
       "equivalence_delta": "The converted monitors would not behave like the legacy rules on every device. Review the preview before converting.",
       "CONVERSION_PREREQUISITE_MISSING": "A required platform update has not been deployed yet, so this cannot be converted.",

@@ -197,10 +197,12 @@ export async function inCallerTransaction<T>(auth: AuthContext, fn: (tx: DbExecu
       // 40001 = serialization_failure; 40P01 = deadlock_detected.
       // pgErrorCode unwraps Drizzle's .cause, including errors from revert.
       if (!['40001', '40P01'].includes(pgErrorCode(error) ?? '')) throw error;
-      if (attempt === 1) throw new ConversionError('preview_stale', 'Conversion inputs changed concurrently');
+      if (attempt === 1) break;
     }
   }
-  throw new ConversionError('preview_stale', 'Conversion inputs changed concurrently');
+  // Retries exhausted by concurrent writes: nothing is known to be stale, so
+  // do not tell the caller to re-preview (#8944).
+  throw new ConversionError('conversion_contended', 'Conversion was aborted by concurrent changes; try again');
 }
 export async function lockConversion(tx: DbExecutor, owner: Owner) {
   let partnerId = owner.partnerId;
