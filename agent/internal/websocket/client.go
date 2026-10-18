@@ -412,9 +412,12 @@ func (c *Client) connect() error {
 	// waiting out HandshakeTimeout (and the ECH/DNS path before it).
 	dialCtx, cancelDial := context.WithCancel(context.Background())
 	defer cancelDial()
+	c.stopMu.RLock()
+	done := c.done // read on the caller's goroutine, under the lock Stop takes
+	c.stopMu.RUnlock()
 	go func() {
 		select {
-		case <-c.done:
+		case <-done:
 			cancelDial()
 		case <-dialCtx.Done():
 		}
