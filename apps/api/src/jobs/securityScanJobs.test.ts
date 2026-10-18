@@ -68,12 +68,18 @@ vi.mock('../services/securityScanQuarantineAuthority', () => ({
   resolveSecurityScanQuarantineAuthority: vi.fn(),
 }));
 
+vi.mock('../services/yaraScanRefs', () => ({
+  planYaraScan: vi.fn(),
+}));
+
 import { db } from '../db';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { isCronDue } from '../services/cronDue';
 import { resolveSecurityScanPolicyForDevice } from '../services/featureConfigResolver';
 import { resolveSecurityScanQuarantineAuthority } from '../services/securityScanQuarantineAuthority';
+import { planYaraScan } from '../services/yaraScanRefs';
 import {
+  buildSecurityScanPayload,
   processDispatchScan,
   shouldScheduleSecurityScan,
   schedulePolicyScans,
@@ -118,6 +124,68 @@ describe('processDispatchScan', () => {
       featureLinkId: 'link-1',
     });
     vi.mocked(resolveSecurityScanQuarantineAuthority).mockResolvedValue({ allowed: true });
+    vi.mocked(planYaraScan).mockResolvedValue({ ruleSets: [], engine: 'legacy', ruleSetErrors: null });
+  });
+
+  // ---- #6263 W03: rule-set refs + explicit outcome --------------------------
+
+  const REF = {
+    id: 'aaaaaaaa-0000-4000-8000-00000000000a', version: 4, sha256: 'e'.repeat(64),
+    url: '/api/v1/agents/agent-1/yara/rule-sets/aaaaaaaa-0000-4000-8000-00000000000a/4',
+  };
+
+  it('sends the policy\'s rule sets as W02 ruleSets refs and records engine yara + per-set errors', async () => {
+    vi.mocked(resolveSecurityScanPolicyForDevice).mockResolvedValue({
+      settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS, autoQuarantine: false, ruleSetIds: [REF.id, 'bbbbbbbb-0000-4000-8000-00000000000b'] },
+      featureLinkId: 'link-1',
+    });
+    vi.mocked(planYaraScan).mockResolvedValue({
+      ruleSets: [REF], engine: 'yara', ruleSetErrors: [{ id: 'bbbbbbbb-0000-4000-8000-00000000000b', code: 'disabled' }],
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([{ ...queuedScan, deviceAgentVersion: '0.124.0' }]))
+      .mockReturnValueOnce(chain([{ count: 0 }]))
+      .mockReturnValueOnce(chain([{ count: 0 }]))
+      .mockReturnValueOnce(chain([{ count: 0 }]));
+
+    await processDispatchScan({ type: 'dispatch-scan', scanId: queuedScan.id, origin: 'manual' });
+
+    expect(planYaraScan).toHaveBeenCalledWith({
+      deviceId: queuedScan.deviceId,
+      agentVersion: '0.124.0',
+      ruleSetIds: [REF.id, 'bbbbbbbb-0000-4000-8000-00000000000b'],
+    });
+    const payload = vi.mocked(queueCommandForExecution).mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.ruleSets).toEqual([REF]);
+    expect(payload).not.toHaveProperty('ruleSetIds');
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'running',
+      engine: 'yara',
+      ruleSetErrors: [{ id: 'bbbbbbbb-0000-4000-8000-00000000000b', code: 'disabled' }],
+    }));
+  });
+
+  it('an agent too old for YARA gets no ruleSets and the row records legacy + agent_too_old', async () => {
+    vi.mocked(resolveSecurityScanPolicyForDevice).mockResolvedValue({
+      settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS, autoQuarantine: false, ruleSetIds: [REF.id] },
+      featureLinkId: 'link-1',
+    });
+    const tooOld = [{ id: '*', code: 'agent_too_old', detail: 'agent 0.1.0 is older than 0.124.0' }];
+    vi.mocked(planYaraScan).mockResolvedValue({ ruleSets: [], engine: 'legacy', ruleSetErrors: tooOld });
+    admitDispatch();
+
+    await processDispatchScan({ type: 'dispatch-scan', scanId: queuedScan.id, origin: 'manual' });
+
+    const payload = vi.mocked(queueCommandForExecution).mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('ruleSets');
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ engine: 'legacy', ruleSetErrors: tooOld }));
+  });
+
+  it('a device with no governing policy plans with no rule sets', async () => {
+    vi.mocked(resolveSecurityScanPolicyForDevice).mockResolvedValue(null);
+    admitDispatch();
+    await processDispatchScan({ type: 'dispatch-scan', scanId: queuedScan.id, origin: 'manual' });
+    expect(planYaraScan).toHaveBeenCalledWith(expect.objectContaining({ ruleSetIds: [] }));
   });
 
   function admitDispatch() {
@@ -384,5 +452,24 @@ describe('schedulePolicyScans', () => {
     const created = await schedulePolicyScans({ ...entry, deviceIds: [] } as any, new Date());
     expect(created).toBe(0);
     expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildSecurityScanPayload ruleSets (#6263 W03, W02 C1)', () => {
+  const settings = { ...SECURITY_SCAN_SETTINGS_DEFAULTS, ruleSetIds: ['aaaaaaaa-0000-4000-8000-00000000000a'] };
+
+  it('emits no ruleSets key when there are no refs, so the W01 payload shape is unchanged', () => {
+    const withoutRefs = buildSecurityScanPayload('scan-1', 'quick', settings);
+    const emptyRefs = buildSecurityScanPayload('scan-1', 'quick', settings, undefined, []);
+    expect(withoutRefs).toEqual(emptyRefs);
+    expect(Object.keys(withoutRefs).sort()).toEqual([
+      'autoQuarantine', 'exclusions', 'maxFileSizeMb', 'scanRecordId', 'scanType', 'timeoutMinutes', 'triggerDefender',
+    ]);
+  });
+
+  it('emits each ref with exactly the four C1 keys', () => {
+    const ref = { id: 'a', version: 1, sha256: 'f'.repeat(64), url: '/api/v1/agents/x/yara/rule-sets/a/1', extra: 'nope' };
+    const payload = buildSecurityScanPayload('scan-1', 'quick', settings, undefined, [ref as never]);
+    expect(payload.ruleSets).toEqual([{ id: 'a', version: 1, sha256: 'f'.repeat(64), url: '/api/v1/agents/x/yara/rule-sets/a/1' }]);
   });
 });

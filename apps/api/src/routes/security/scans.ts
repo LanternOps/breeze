@@ -14,6 +14,7 @@ import { deviceIdParamSchema, scanRequestSchema, listScansQuerySchema } from './
 import { getPagination, paginate, parseDateRange, matchDateRange } from './helpers';
 import { resolveSecurityScanSettingsForDevice } from '../../services/featureConfigResolver';
 import { buildSecurityScanPayload } from '../../jobs/securityScanJobs';
+import { planYaraScan } from '../../services/yaraScanRefs';
 
 /**
  * Site-scope gate: partner-scope users restricted via `allowedSiteIds` must
@@ -61,7 +62,7 @@ scansRoutes.post(
     if (orgCondition) conditions.push(orgCondition);
 
     const [device] = await db
-      .select({ id: devices.id, hostname: devices.hostname, orgId: devices.orgId, siteId: devices.siteId })
+      .select({ id: devices.id, hostname: devices.hostname, orgId: devices.orgId, siteId: devices.siteId, agentVersion: devices.agentVersion })
       .from(devices)
       .where(and(...conditions))
       .limit(1);
@@ -91,6 +92,13 @@ scansRoutes.post(
       autoQuarantineSuppressedReason = 'manual_no_mfa';
     }
 
+    // #6263 W03: same rule-set refs + explicit outcome as a scheduled scan.
+    const yara = await planYaraScan({
+      deviceId: device.id,
+      agentVersion: device.agentVersion,
+      ruleSetIds: settings?.ruleSetIds ?? [],
+    });
+
     await db.insert(securityScans).values({
       id: scanId,
       deviceId: device.id,
@@ -100,12 +108,14 @@ scansRoutes.post(
       startedAt: new Date(),
       initiatedBy: auth.user.id,
       autoQuarantineSuppressedReason,
+      engine: yara.engine,
+      ruleSetErrors: yara.ruleSetErrors,
     });
 
     await queueCommand(
       device.id,
       CommandTypes.SECURITY_SCAN,
-      buildSecurityScanPayload(scanId, payload.scanType, settings, payload.paths),
+      buildSecurityScanPayload(scanId, payload.scanType, settings, payload.paths, yara.ruleSets),
       auth.user.id
     );
 

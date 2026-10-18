@@ -302,3 +302,71 @@ describe('security_scan attribution and YARA detail (#6265)', () => {
     warn.mockRestore();
   });
 });
+
+describe('security_scan result: engine + ruleSetErrors (#6263 W03, W02 C3)', () => {
+  const SET_A = 'aaaaaaaa-0000-4000-8000-00000000000a';
+  const SET_B = 'bbbbbbbb-0000-4000-8000-00000000000b';
+
+  it('the agent\'s engine overwrites the dispatch value; its ruleSetErrors are appended to the dispatch-time ones', async () => {
+    // device org lookup, existing scan lookup (with dispatch-time outcome)
+    selectQueue.push([{ orgId: ORG_ID }], [{ id: SCAN_ID, ruleSetErrors: [{ id: SET_A, code: 'disabled' }] }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      stdout: JSON.stringify({
+        scanRecordId: SCAN_ID, scanType: 'quick', threatsFound: 0, threats: [],
+        engine: 'legacy',
+        ruleSetErrors: [{ id: SET_B, version: 3, code: 'compile', detail: 'x'.repeat(2000) }],
+      }),
+    }));
+
+    const set = updateSetMock.mock.calls.at(-1)![0];
+    expect(set.engine).toBe('legacy');
+    expect(set.ruleSetErrors).toEqual([
+      { id: SET_A, code: 'disabled' },
+      { id: SET_B, version: 3, code: 'compile', detail: 'x'.repeat(512) },
+    ]);
+    warn.mockRestore();
+  });
+
+  it('an old agent that reports neither key leaves the dispatch outcome untouched', async () => {
+    selectQueue.push([{ orgId: ORG_ID }], [{ id: SCAN_ID, ruleSetErrors: [{ id: '*', code: 'agent_too_old' }] }]);
+
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      stdout: JSON.stringify({ scanRecordId: SCAN_ID, scanType: 'quick', threatsFound: 0, threats: [] }),
+    }));
+
+    const set = updateSetMock.mock.calls.at(-1)![0];
+    expect(set).not.toHaveProperty('engine');
+    expect(set).not.toHaveProperty('ruleSetErrors');
+  });
+
+  it('ignores an unknown engine value and malformed error entries', async () => {
+    selectQueue.push([{ orgId: ORG_ID }], [{ id: SCAN_ID, ruleSetErrors: null }]);
+
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      stdout: JSON.stringify({
+        scanRecordId: SCAN_ID, scanType: 'quick', threatsFound: 0, threats: [],
+        engine: 'clamav',
+        ruleSetErrors: ['nope', { code: 'fetch' }, { id: SET_A, code: 'http_404' }],
+      }),
+    }));
+
+    const set = updateSetMock.mock.calls.at(-1)![0];
+    expect(set).not.toHaveProperty('engine');
+    expect(set.ruleSetErrors).toEqual([{ id: SET_A, code: 'http_404' }]);
+  });
+
+  it('a scan row created at ingest (no dispatch row) records the agent outcome', async () => {
+    selectQueue.push([{ orgId: ORG_ID }], []);
+
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      stdout: JSON.stringify({
+        scanRecordId: SCAN_ID, scanType: 'quick', threatsFound: 0, threats: [],
+        engine: 'yara', ruleSetErrors: [],
+      }),
+    }));
+
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ engine: 'yara', ruleSetErrors: null }));
+  });
+});

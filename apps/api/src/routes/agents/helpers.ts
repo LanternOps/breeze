@@ -648,6 +648,45 @@ async function updateThreatStatusForAction(command: typeof deviceCommands.$infer
   }
 }
 
+const SCAN_RULE_SET_ERRORS_MAX = 50;
+const SCAN_RULE_SET_ERROR_DETAIL_MAX = 512;
+
+type ScanRuleSetError = { id: string; version?: number; code: string; detail?: string };
+
+function parseScanEngine(raw: unknown): 'yara' | 'legacy' | undefined {
+  return raw === 'yara' || raw === 'legacy' ? raw : undefined;
+}
+
+/**
+ * W02 C3 `ruleSetErrors`, bounded and shape-checked: entries without a string
+ * id and code are dropped, detail is capped at 512 chars, at most 50 entries.
+ * `undefined` when the agent sent no array at all (an agent older than W02).
+ */
+function parseRuleSetErrors(raw: unknown): ScanRuleSetError[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ScanRuleSetError[] = [];
+  for (const item of raw) {
+    if (!isObject(item)) continue;
+    const id = asString(item.id);
+    const code = asString(item.code);
+    if (!id || !code) continue;
+    const entry: ScanRuleSetError = { id: id.slice(0, 64), code: code.slice(0, 64) };
+    if (typeof item.version === 'number' && Number.isInteger(item.version) && item.version > 0) entry.version = item.version;
+    const detail = asString(item.detail);
+    if (detail) entry.detail = detail.slice(0, SCAN_RULE_SET_ERROR_DETAIL_MAX);
+    out.push(entry);
+    if (out.length >= SCAN_RULE_SET_ERRORS_MAX) break;
+  }
+  return out;
+}
+
+/** Dispatch-time errors first, then the agent's; null when there are none. */
+function mergeRuleSetErrors(existing: unknown, reported: ScanRuleSetError[]): ScanRuleSetError[] | null {
+  const prior = parseRuleSetErrors(existing) ?? [];
+  const merged = [...prior, ...reported].slice(0, SCAN_RULE_SET_ERRORS_MAX);
+  return merged.length > 0 ? merged : null;
+}
+
 export async function handleSecurityCommandResult(
   command: typeof deviceCommands.$inferSelect,
   resultData: z.infer<typeof commandResultSchema>
@@ -693,10 +732,15 @@ export async function handleSecurityCommandResult(
       ? 'failed'
       : timedOut ? 'timed_out' : 'completed';
 
-    let existingScan: { id: string } | undefined;
+    // #6263 W03 (W02 C3): the agent's engine + per-set errors. Absent on
+    // agents that predate W02, in which case the dispatch outcome stands.
+    const agentEngine = parseScanEngine(resultJson?.engine);
+    const agentRuleSetErrors = parseRuleSetErrors(resultJson?.ruleSetErrors);
+
+    let existingScan: { id: string; ruleSetErrors: unknown } | undefined;
     if (isUuid(scanRecordId)) {
       [existingScan] = await db
-        .select({ id: securityScans.id })
+        .select({ id: securityScans.id, ruleSetErrors: securityScans.ruleSetErrors })
         .from(securityScans)
         .where(and(eq(securityScans.id, scanRecordId), eq(securityScans.deviceId, command.deviceId)))
         .limit(1);
@@ -710,7 +754,11 @@ export async function handleSecurityCommandResult(
           completedAt,
           duration: durationSeconds,
           threatsFound,
-          itemsScanned
+          itemsScanned,
+          ...(agentEngine ? { engine: agentEngine } : {}),
+          ...(agentRuleSetErrors !== undefined
+            ? { ruleSetErrors: mergeRuleSetErrors(existingScan.ruleSetErrors, agentRuleSetErrors) }
+            : {}),
         })
         .where(eq(securityScans.id, existingScan.id));
     } else {
@@ -724,7 +772,9 @@ export async function handleSecurityCommandResult(
         completedAt,
         threatsFound,
         duration: durationSeconds,
-        itemsScanned
+        itemsScanned,
+        engine: agentEngine ?? null,
+        ruleSetErrors: agentRuleSetErrors && agentRuleSetErrors.length > 0 ? agentRuleSetErrors : null,
       });
     }
 
