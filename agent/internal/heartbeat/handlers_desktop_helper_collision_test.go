@@ -426,7 +426,7 @@ func TestJoinOrRunDesktopStartJoinsInFlight(t *testing.T) {
 
 	h := &Heartbeat{}
 	ran := false
-	got := h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
+	got := h.joinOrRunDesktopStart(sessionID, "", func() tools.CommandResult {
 		ran = true
 		return tools.NewErrorResult(errors.New("second start reached the helper"), 0)
 	})
@@ -451,7 +451,7 @@ func TestJoinOrRunDesktopStartReleasesOnPanic(t *testing.T) {
 
 	go func() {
 		defer func() { _ = recover() }()
-		h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
+		h.joinOrRunDesktopStart(sessionID, "", func() tools.CommandResult {
 			close(leaderIn)
 			<-release
 			panic("helper path blew up")
@@ -460,7 +460,7 @@ func TestJoinOrRunDesktopStartReleasesOnPanic(t *testing.T) {
 	<-leaderIn
 
 	go func() {
-		joined <- h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
+		joined <- h.joinOrRunDesktopStart(sessionID, "", func() tools.CommandResult {
 			return tools.NewSuccessResult(map[string]any{"answer": "own"}, 0)
 		})
 	}()
@@ -500,7 +500,7 @@ func TestJoinOrRunDesktopStartAbortsOnShutdown(t *testing.T) {
 
 	done := make(chan tools.CommandResult, 1)
 	go func() {
-		done <- h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
+		done <- h.joinOrRunDesktopStart(sessionID, "", func() tools.CommandResult {
 			return tools.NewSuccessResult(map[string]any{}, 0)
 		})
 	}()
@@ -533,7 +533,7 @@ func TestJoinOrRunDesktopStartNeverRunsTwoAtOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
+			h.joinOrRunDesktopStart(sessionID, "", func() tools.CommandResult {
 				n := atomic.AddInt32(&live, 1)
 				for {
 					prev := atomic.LoadInt32(&maxLive)
