@@ -41,6 +41,7 @@ export type BodyLimitRule =
   | 'ticket-attachment'
   | 'org-document'
   | 'quote-acceptance-evidence'
+  | 'agreement-signed-copy'
   | 'edr-webhook'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
@@ -174,6 +175,16 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
       rule: 'quote-acceptance-evidence',
       maxSize: 10 * 1024 * 1024 + 64 * 1024,
       error: 'Evidence file too large (max 10 MB)',
+    };
+  }
+  // Record signed agreement (#8865 W1c): one multipart form with an optional
+  // externally signed copy (PDF/PNG/JPEG), capped at 10 MiB by the route and
+  // agreementRequestService. Same 64 KiB slack as the evidence carve-out.
+  if (path.match(/^\/api\/v1\/contracts\/agreement-requests\/record-signed$/)) {
+    return {
+      rule: 'agreement-signed-copy',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Signed copy too large (max 10 MB)',
     };
   }
   if (path === '/api/v1/users/me/avatar') {

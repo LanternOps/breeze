@@ -425,6 +425,13 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // for the length of the accept. The handler opens its own short
   // withAuthDbAccessContext for the org-scoped lookup instead.
   { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/accept-on-behalf\/?$/ },
+  // Record signed agreement (#8865 W1c) — the agreement counterpart of
+  // accept-on-behalf, same reason: the handler reads the org owner + template
+  // in a short withAuthDbAccessContext, then runs the request insert + freeze
+  // as ONE transaction under runOutsideDbContext(withSystemDbAccessContext).
+  // Without this entry the ambient request transaction stays held alongside
+  // the system one — two pooled connections for the whole freeze.
+  { method: 'POST', pattern: /^\/api\/v1\/contracts\/agreement-requests\/record-signed\/?$/ },
   // #3922 review round 2 — revision AUTHORING is the second network-touching
   // route on this surface, and the quieter one. `createRevision` runs
   // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,

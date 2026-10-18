@@ -39,6 +39,7 @@ vi.mock('./contractDocumentService', async (importActual) => ({
 import { db } from '../db';
 import {
   recordSignedAgreement,
+  loadOrgOwnerPartnerId,
   AgreementRequestServiceError,
   type RecordSignedAgreementParams,
 } from './agreementRequestService';
@@ -368,5 +369,17 @@ describe('recordSignedAgreement — happy paths', () => {
     queueHappy();
     freezeMock.mockRejectedValueOnce(Object.assign(new Error('Agreement variables unresolved: x'), { status: 422, code: 'AGREEMENT_VARIABLES_UNRESOLVED' }));
     await expect(recordSignedAgreement(params())).rejects.toMatchObject({ status: 422 });
+  });
+});
+
+describe('loadOrgOwnerPartnerId', () => {
+  it('returns the org\'s owning partner', async () => {
+    queue([{ partnerId: PARTNER }]);
+    await expect(loadOrgOwnerPartnerId(ORG)).resolves.toBe(PARTNER);
+  });
+
+  it('an org invisible to the caller → 404 ORG_NOT_FOUND', async () => {
+    queue([]);
+    await expect(loadOrgOwnerPartnerId(ORG)).rejects.toMatchObject({ status: 404, code: 'ORG_NOT_FOUND' });
   });
 });

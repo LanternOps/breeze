@@ -10,6 +10,7 @@ import { contractHourPeriodRoutes } from './hourPeriods';
 import { contractBulkRoutes } from './bulk';
 import { contractTemplateRoutes } from './templates';
 import { contractDocumentRoutes } from './documents';
+import { agreementRequestRoutes } from './agreementRequests';
 import { contractReportRoutes } from './reports';
 
 export const contractRoutes = new Hono();
@@ -17,6 +18,7 @@ contractRoutes.use('*', authMiddleware);
 contractRoutes.route('/', contractBulkRoutes);       // bulk-* before /:id
 contractRoutes.route('/contract-templates', contractTemplateRoutes); // /contract-templates/* — before /:id param matchers
 contractRoutes.route('/contract-documents', contractDocumentRoutes); // /contract-documents/* — before /:id param matchers
+contractRoutes.route('/agreement-requests', agreementRequestRoutes); // /agreement-requests/* (#8865) — before /:id param matchers
 contractRoutes.route('/', contractReportRoutes);   // /currency-mismatches — literal path, before /:id param matchers
 contractRoutes.route('/', contractLifecycleRoutes); // /:id/activate, /:id/pause, /:id/resume, /:id/cancel
 contractRoutes.route('/', contractGenerateRoutes);  // /:id/generate

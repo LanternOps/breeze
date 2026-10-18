@@ -267,6 +267,7 @@ describe('bodyLimitForPath', () => {
       'image-upload': '/api/v1/catalog/item-1/image',
       avatar: '/api/v1/users/me/avatar',
       'contract-template': '/api/v1/contracts/contract-templates/tpl-1/versions/upload',
+      'agreement-signed-copy': '/api/v1/contracts/agreement-requests/record-signed',
       'agent-ingest': '/api/v1/agents/agent-1/software',
       'agent-hardware-health': '/api/v1/agents/agent-1/hardware-health',
       'agent-time-status': '/api/v1/agents/agent-1/time-status',
@@ -335,6 +336,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     paths: ['/api/v1/catalog/item-1/image'],
     globalMaxSize: 5 * MB + 64 * KB,
     note: 'carved out — 5MB product image',
+  },
+  'contracts/agreementRequests.ts': {
+    paths: ['/api/v1/contracts/agreement-requests/record-signed'],
+    globalMaxSize: 10 * MB + 64 * KB,
+    note: 'carved out — 10MB externally signed agreement copy (#8865 W1c)',
   },
   'contracts/templates.ts': {
     paths: ['/api/v1/contracts/contract-templates/tpl-1/versions/upload'],
@@ -531,6 +537,16 @@ describe('quote acceptance evidence carve-out (#6633)', () => {
       maxSize: 10 * 1024 * 1024 + 64 * 1024,
       error: 'Evidence file too large (max 10 MB)',
     });
+  });
+
+  it('gives record-signed the signed-copy headroom and nothing else under agreement-requests (#8865 W1c)', () => {
+    expect(bodyLimitForPath('/api/v1/contracts/agreement-requests/record-signed')).toEqual({
+      rule: 'agreement-signed-copy',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Signed copy too large (max 10 MB)',
+    });
+    expect(bodyLimitForPath('/api/v1/contracts/agreement-requests').rule).toBe('default');
+    expect(bodyLimitForPath('/api/v1/contracts/agreement-requests/record-signed/extra').rule).toBe('default');
   });
 
   it('does NOT widen the quote JSON routes', () => {

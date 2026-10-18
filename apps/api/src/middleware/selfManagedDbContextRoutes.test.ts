@@ -178,6 +178,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes/abc-123/accept-on-behalf'],
     ['POST', '/api/v1/quotes/abc-123/accept-on-behalf/'],
     ['post', '/api/v1/quotes/abc-123/accept-on-behalf'], // method is case-insensitive
+    // Record signed agreement (#8865 W1c) — same shape as accept-on-behalf:
+    // short auth-context reads, then the insert + freeze in a system context.
+    ['POST', '/api/v1/contracts/agreement-requests/record-signed'],
+    ['POST', '/api/v1/contracts/agreement-requests/record-signed/'],
     // Task A9 — the tool test-call route dispatches a real outbound MCP call.
     ['POST', '/api/v1/tool-sources'],
     ['PATCH', '/api/v1/tool-sources/src-1'],
@@ -264,6 +268,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes/abc-123/send/extra', 'extra path segment must not match'],
     ['GET', '/api/v1/quotes/abc-123/share-link', 'share-link mails nothing and keeps the ambient tx'],
     ['GET', '/api/v1/quotes/abc-123/accept-on-behalf', 'accept-on-behalf is POST-only'],
+    ['GET', '/api/v1/contracts/agreement-requests/record-signed', 'record-signed is POST-only'],
+    ['POST', '/api/v1/contracts/agreement-requests/record-signed/extra', 'extra path segment must not match'],
     ['GET', '/api/v1/invoices/abc-123/pay-link', 'wrong method (only POST opts out)'],
     ['GET', '/api/v1/portal/invoices/def-456/pay', 'wrong method'],
     ['POST', '/api/v1/invoices/abc-123', 'invoice route without /pay-link'],

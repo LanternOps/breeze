@@ -129,6 +129,20 @@ async function loadPartySnapshot(orgId: string, callerPartnerId: string | null) 
   return org;
 }
 
+/** The org's owning partner, read in the CALLER's context (the route runs this
+ *  under withAuthDbAccessContext, so RLS decides visibility). An org the
+ *  caller cannot see is a 404 ORG_NOT_FOUND. The template guard needs the
+ *  org's own partner — a system-scope caller has no auth.partnerId. */
+export async function loadOrgOwnerPartnerId(orgId: string): Promise<string> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org) throw new AgreementRequestServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  return org.partnerId;
+}
+
 async function loadPartner(partnerId: string) {
   const [partner] = await db
     .select({
