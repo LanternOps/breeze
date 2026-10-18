@@ -126,6 +126,16 @@ type ScriptExecution struct {
 	// pre-#5129 behaviour (fail closed), so an older API talking to a newer
 	// agent cannot loosen anything.
 	AcknowledgedSecurityPatterns []string `json:"acknowledgedSecurityPatterns,omitempty"`
+
+	// BeforeLaunch, when set, runs exactly once after every refusal path in
+	// Execute has passed (type, platform, parameter rendering, security
+	// validation, script-file write, bash syntax gate) and BEFORE the script's
+	// timeout clock starts or any process exists. The service-side script
+	// handler takes its #4609 System Restore checkpoint here, so a script the
+	// executor refuses never consumes the day's one restore point and the
+	// checkpoint never eats timeoutSeconds. A cancel that lands while it runs
+	// still stops the launch (beginStart). Never serialized.
+	BeforeLaunch func() `json:"-"`
 }
 
 // ScriptResult represents the result of a script execution
@@ -502,6 +512,12 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 			result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			return result, err
 		}
+	}
+
+	// #4609: the last point before the script can change anything, and before
+	// its timeout context exists (see ScriptExecution.BeforeLaunch).
+	if script.BeforeLaunch != nil {
+		script.BeforeLaunch()
 	}
 
 	// Determine timeout

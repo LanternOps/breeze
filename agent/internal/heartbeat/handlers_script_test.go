@@ -398,7 +398,7 @@ func TestExecuteViaUserHelperMissingScope(t *testing.T) {
 		ID:      "cmd-noscope",
 		Type:    tools.CmdScript,
 		Payload: map[string]any{"content": "echo hi", "language": "bash"},
-	}, 10)
+	}, 10, nil)
 
 	if result.Status != "failed" {
 		t.Fatalf("expected failed, got %s", result.Status)
@@ -459,7 +459,7 @@ func TestExecuteViaUserHelperSuccess(t *testing.T) {
 			"language":       "bash",
 			"timeoutSeconds": 10,
 		},
-	}, 10)
+	}, 10, nil)
 
 	session.Close()
 	clientIPC.Close()
@@ -519,7 +519,7 @@ func TestExecuteViaUserHelperFailedScript(t *testing.T) {
 			"content":  "nonexistent_command",
 			"language": "bash",
 		},
-	}, 10)
+	}, 10, nil)
 
 	session.Close()
 	clientIPC.Close()
@@ -560,7 +560,7 @@ func TestExecuteViaUserHelperTimeout(t *testing.T) {
 			"language":       "bash",
 			"timeoutSeconds": 1,
 		},
-	}, 1) // 1 second timeout
+	}, 1, nil) // 1 second timeout
 
 	session.Close()
 	clientIPC.Close()
@@ -873,7 +873,7 @@ func TestExecuteViaUserHelperEmitsCustomFieldEnvelope(t *testing.T) {
 			"language":       "bash",
 			"timeoutSeconds": 10,
 		},
-	}, 10)
+	}, 10, nil)
 
 	_ = session.Close()
 	_ = clientIPC.Close()
@@ -949,7 +949,7 @@ func TestExecuteViaUserHelperNoCustomFieldWritesLeavesResultNil(t *testing.T) {
 			"language":       "bash",
 			"timeoutSeconds": 10,
 		},
-	}, 10)
+	}, 10, nil)
 
 	_ = session.Close()
 	_ = clientIPC.Close()
