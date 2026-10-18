@@ -36,7 +36,7 @@ describe('Monaco structural CSS', () => {
     const offenders = walk(SRC)
       .filter((f) => !f.endsWith('lib/monacoLoader.ts'))
       .filter((f) => runtimeImport.test(readFileSync(f, 'utf8')))
-      .filter((f) => !readFileSync(f, 'utf8').includes('@/lib/monacoLoader'))
+      .filter((f) => !/^\s*import\s+\{[^}]*configureMonacoLoader[^}]*\}\s+from\s+['"]@\/lib\/monacoLoader['"]/m.test(readFileSync(f, 'utf8')))
       .map((f) => relative(SRC, f));
     expect(offenders).toEqual([]);
   });
