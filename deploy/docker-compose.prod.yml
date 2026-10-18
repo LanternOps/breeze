@@ -511,6 +511,10 @@ x-api-env: &api-env
   AUDIT_CHAIN_VERIFY_MODE: ${AUDIT_CHAIN_VERIFY_MODE:-}
   AUDIT_CHAIN_VERIFY_RESCAN_SLICES: ${AUDIT_CHAIN_VERIFY_RESCAN_SLICES:-}
   AUDIT_ADMIN_DATABASE_URL: ${AUDIT_ADMIN_DATABASE_URL:-}
+  # PAM evidence retention for org-merge held shells (#8208). Empty === unset:
+  # the job runs with the 400-day default TTL.
+  PAM_EVIDENCE_RETENTION_ENABLED: ${PAM_EVIDENCE_RETENTION_ENABLED:-}
+  PAM_EVIDENCE_RETENTION_DAYS: ${PAM_EVIDENCE_RETENTION_DAYS:-}
   # Outbox / anomaly-incident retention (#4210). Read by the three daily
   # prune jobs (jobs/*Retention.ts), which are `global` placement and so run
   # in the worker role — the worker service inherits this same *api-env

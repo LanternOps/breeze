@@ -369,6 +369,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   ORG_MERGE_MAX_ROWS: 'org merge safety limit',
   // PAM_*
   PAM_ACTUATOR_ENABLED: 'feature flag',
+  PAM_EVIDENCE_RETENTION_DAYS: 'retention TTL knob',
+  PAM_EVIDENCE_RETENTION_ENABLED: 'retention job kill switch',
+  PAM_OWNERSHIP_EPOCH_TRANSFER: 'feature flag (also needs the owner-only DB switch)',
   PAM_PENDING_REQUEST_TTL_MINUTES: 'timing knob',
   // PARTNER_*
   PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES: 'timing knob',

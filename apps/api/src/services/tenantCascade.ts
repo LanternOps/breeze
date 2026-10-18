@@ -65,6 +65,7 @@ import {
   listHoldsBySurvivor,
 } from './orgEvidenceHold';
 import { removeScreenshotFiles } from './screenshotFiles';
+import { ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS } from './orgSettingsInternalKeys';
 import { removePatchReportFiles } from './patchReportFiles';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from './authLifecycle';
 import {
@@ -2401,9 +2402,6 @@ async function cascadeDeleteOrgInternal(
   // shell's name. Re-running it is a no-op.
   if (scopedHold) {
     try {
-      // Imported lazily: orgSettingsInternalKeys imports orgMerge, which
-      // imports this module.
-      const { ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS } = await import('./orgSettingsInternalKeys');
       const engineKeys = sql`ARRAY[${sql.join(ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS.map((k) => sql`${k}`), sql`, `)}]::text[]`;
       await dbModule.withSystemDbAccessContext(() => dbModule.db.execute(sql`
         UPDATE organizations

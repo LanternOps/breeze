@@ -143,6 +143,13 @@ export async function assertPamDeviceOrgMoveAllowed(
  * No post-commit event/notification is emitted: the transaction may still
  * roll back, and the ownership change itself is what callers audit.
  */
+/**
+ * `details.cause` of the OD4 `expired` audit row. Bound as a value, not a SQL
+ * literal: the elevation_audit writer inventory reads quoted names inside a
+ * jsonb_build_object as details keys.
+ */
+export const OWNERSHIP_CHANGED_CAUSE = 'ownership_changed';
+
 export async function expireUnactuatedElevationRequests(
   executor: SqlExecutor,
   input: { orgId: string; deviceId?: string },
@@ -166,7 +173,7 @@ export async function expireUnactuatedElevationRequests(
     ), audited AS (
       INSERT INTO elevation_audit (org_id, elevation_request_id, event_type, actor, details, occurred_at)
       SELECT f.org_id, f.id, 'expired', 'system',
-             jsonb_build_object('cause', 'ownership_changed', 'prior_status', f.prior_status),
+             jsonb_build_object('cause', ${OWNERSHIP_CHANGED_CAUSE}::text, 'prior_status', f.prior_status),
              now()
         FROM flipped f
       RETURNING elevation_request_id

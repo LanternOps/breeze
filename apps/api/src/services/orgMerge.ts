@@ -66,6 +66,7 @@ import {
   resolvePamEpochTransfer,
 } from './pamDeviceMoveGuard';
 import { pgErrorNode } from '../utils/pgErrors';
+import { MERGE_PRIOR_STATUS_KEY } from './orgSettingsInternalKeys';
 import { envInt } from '../utils/envInt';
 import { disconnectLiveAgentSocketsForOrgIds } from './tenantLifecycle';
 import { invalidateAgentTenantCache, isUsableOrgStatus } from './tenantStatus';
@@ -422,7 +423,7 @@ const DEFAULT_MAX_ROWS = 500_000;
  * module's own `unfenceLoser` uses, instead of hand-duplicating the key
  * string.
  */
-export const MERGE_PRIOR_STATUS_KEY = 'mergePriorStatus';
+export { MERGE_PRIOR_STATUS_KEY }; // declared in orgSettingsInternalKeys.ts (a leaf module)
 
 /**
  * Drain window between fencing the loser and opening the merge transaction,

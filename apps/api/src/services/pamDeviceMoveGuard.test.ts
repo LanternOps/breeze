@@ -145,8 +145,11 @@ describe('PAM ownership epoch transfer (W6, #8208)', () => {
     expect(rendered.sql).toMatch(/status in \('pending', 'approved', 'auto_approved', 'actuating'\)/i);
     expect(rendered.sql).toMatch(/not exists \(select 1 from pam_actuations a where a\.elevation_request_id = r\.id\)/i);
     expect(rendered.sql).toMatch(/insert into elevation_audit/i);
-    expect(rendered.sql).toMatch(/'ownership_changed'/);
-    expect(rendered.params).toEqual([SOURCE_ORG_ID, DEVICE_ID]);
+    // The cause is a bound value, not a SQL literal: the elevation_audit writer
+    // inventory (pamAuditExport.test.ts) reads every quoted name in a
+    // jsonb_build_object as a details key.
+    expect(rendered.sql).toMatch(/jsonb_build_object\('cause', \$3::text, 'prior_status', f\.prior_status\)/);
+    expect(rendered.params).toEqual([SOURCE_ORG_ID, DEVICE_ID, 'ownership_changed']);
   });
 
   it('OD4 for a merge scopes to the whole loser org (no device filter)', async () => {
@@ -155,6 +158,6 @@ describe('PAM ownership epoch transfer (W6, #8208)', () => {
     await expect(expireUnactuatedElevationRequests({ execute } as never, { orgId: SOURCE_ORG_ID })).resolves.toBe(0);
     const rendered = dialect.sqlToQuery(execute.mock.calls[0]![0] as unknown as SQL);
     expect(rendered.sql).not.toMatch(/r\.device_id =/i);
-    expect(rendered.params).toEqual([SOURCE_ORG_ID]);
+    expect(rendered.params).toEqual([SOURCE_ORG_ID, 'ownership_changed']);
   });
 });
