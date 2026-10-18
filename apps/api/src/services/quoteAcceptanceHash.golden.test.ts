@@ -148,6 +148,21 @@ describe('acceptance hash golden vectors (characterization — recorded on main 
   it("v1 legacy NULL render_locale → 'en'", () => expect(hash('en', 1)).toBe('d1d12c529f5e335c289ab57be1725a90325a8e4ad05a7e3c8399efe60c6ee760'));
   it('v2 with no contract parts (pre-contract acceptance)', () =>
     expect(computeQuoteSha256(quote as any, [block] as any, [line] as any, [], 2)).toBe('45871af38131e3ff5c1ecbc5f96b98257e92c78ca9136686b5726bf82c819d10'));
+  // #9221: acceptance now stamps quote_lines.unit_cost onto the invoice line's
+  // cost_basis. Internal cost is NOT part of what the customer signs, so a line
+  // carrying a unit cost must hash byte-for-byte like the recorded vectors.
+  it('a line unit cost (cost basis) is not a hash input — vectors unchanged (#9221)', () => {
+    const costed = { ...line, unitCost: '61.24' };
+    const costedHash = (locale: string, version: 1 | 2) =>
+      computeQuoteSha256(quote as any, [block] as any, [costed] as any,
+        buildContractHashParts([block], renderData, quote, EFFECTIVE, locale), version);
+    expect(costedHash('fr-FR', 2)).toBe('332c207864b5e8f7fe56d295c09bf8fe0e524845458cf46f3a8ba21f18cf3e61');
+    expect(costedHash('fr-FR', 1)).toBe('89e91e218903630b674dbe9ffa269ab18ec234101f78556e3711f4f99d1aaee2');
+    expect(costedHash('en', 2)).toBe('0d00c38b0bb26b1ed0fc423fa3635750bad29efb5388211c250e209634de2a53');
+    expect(costedHash('en', 1)).toBe('d1d12c529f5e335c289ab57be1725a90325a8e4ad05a7e3c8399efe60c6ee760');
+    expect(computeQuoteSha256(quote as any, [block] as any, [costed] as any, [], 2))
+      .toBe('45871af38131e3ff5c1ecbc5f96b98257e92c78ca9136686b5726bf82c819d10');
+  });
   it('quote-context HTML map is key- and value-stable', () => {
     expect(resolveQuoteAutoVariables(quote, { effectiveDate: EFFECTIVE, renderLocale: 'fr-FR' })).toEqual(HTML_MAP);
     // Same map through the context path the freeze uses (#8865 W1a Task 3+).

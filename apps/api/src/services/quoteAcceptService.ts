@@ -10,6 +10,7 @@ import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
 import { computeLineTotal, computeInvoiceTotals } from './invoiceMath';
+import { snapshotCost } from './catalogPricing';
 import { computeDueDate, resolveInvoiceTermsDays } from './invoiceTerms';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { isQuoteExpired } from './quoteExpiry';
@@ -492,7 +493,13 @@ export async function acceptQuote(
       description: l.description,
       quantity: l.quantity,
       unitPrice: l.unitPrice,
-      costBasis: null,
+      // Per-unit cost snapshot for margin reporting (#9221). The quote line's
+      // unit_cost is stored in the quote currency, which is the invoice
+      // currency here; snapshotCost keeps it only when exact at the currency's
+      // minor unit, else NULL (unknown cost — never coerced to zero). Internal
+      // cost is not part of the acceptance hash (computeQuoteSha256 allowlists
+      // its line fields), so this cannot move a recorded quote_sha256.
+      costBasis: snapshotCost(l.unitCost, quote.currencyCode, quote.currencyCode),
       taxable: l.taxable,
       customerVisible: true,
       lineTotal,
