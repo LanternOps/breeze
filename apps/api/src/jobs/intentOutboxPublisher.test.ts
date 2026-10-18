@@ -353,15 +353,14 @@ describe('intentOutboxPublisher.publishOutboxRows', () => {
       expect(result.published).toBe(1);
     });
 
-    it('leaves the row unpublished (retried next pass) when linking fails', async () => {
+    it('still publishes the terminal event (and reports) when the informational link fails', async () => {
       claim('intent_cancelled');
       linkMock.mockRejectedValueOnce(new Error('db down'));
 
       const result = await publishOutboxRows();
 
-      expect(result).toEqual({ published: 0, skipped: 0 });
-      expect(addMock).not.toHaveBeenCalled();
-      expect(updateMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ published: 1, skipped: 0 });
+      expect(addMock).toHaveBeenCalledTimes(1);
       expect(captureException).toHaveBeenCalled();
     });
 

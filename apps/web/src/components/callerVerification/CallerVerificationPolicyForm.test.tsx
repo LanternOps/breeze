@@ -154,6 +154,26 @@ it('caps the tier selectors at maxAchievableTier and explains why while the work
   expect(screen.getByTestId('cv-policy-maxAttemptsPerHour')).toHaveAttribute('max', '100');
 });
 
+it('caps each tier input by its own per-action cap', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 2, maxAchievableTierResetPassword: 2, maxAchievableTierDisableUser: 3 }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierResetPassword')).toHaveAttribute('max', '2');
+  expect(screen.getByTestId('cv-policy-requiredTierDisableUser')).toHaveAttribute('max', '3');
+  expect(screen.getByTestId('cv-policy-requiredTierResetPassword-cap-hint')).toBeInTheDocument();
+  expect(screen.queryByTestId('cv-policy-requiredTierDisableUser-cap-hint')).toBeNull();
+});
+
+it('keeps a stored disable_user tier 3 on save when its own cap allows it', async () => {
+  const row = { ...inheritedDraft(), requiredTierDisableUser: 3, requiredTierResetPassword: 3 } as unknown as PolicyResponse['row'];
+  const caps = { maxAchievableTier: 2 as const, maxAchievableTierResetPassword: 2 as const, maxAchievableTierDisableUser: 3 as const };
+  vi.mocked(getPolicy).mockResolvedValue(response({ ...caps, row }));
+  vi.mocked(putPolicy).mockResolvedValue(response({ ...caps, row }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierDisableUser')).toHaveValue(3);
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
+  expect(putPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, { ...inheritedDraft(), requiredTierResetPassword: 2, requiredTierDisableUser: 3 });
+});
+
 it('allows tier 3 and shows no hint when the workstation tier is available', async () => {
   vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 3 }));
   render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);

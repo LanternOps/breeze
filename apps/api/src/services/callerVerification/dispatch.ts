@@ -115,10 +115,11 @@ export async function prepareCallerDispatch(
     )).limit(1);
     return { pin, grant: grant ?? null };
   }, 'callerVerification.dispatch.prepare'));
+  // Canonical (lower-case) ids: the backend may report its tenant as stored.
   const gateInput: GateInput = {
     orgId: input.orgId, action: input.action,
-    target: { entraTenantId: prepared.pin.targetEntraTenantId!, entraOid: prepared.pin.targetEntraOid! },
-    backendTenantId: input.backendTenantId, technicianUserId: prepared.pin.requestedByUserId!,
+    target: { entraTenantId: prepared.pin.targetEntraTenantId!.toLowerCase(), entraOid: prepared.pin.targetEntraOid!.toLowerCase() },
+    backendTenantId: input.backendTenantId.toLowerCase(), technicianUserId: prepared.pin.requestedByUserId!,
     intentId, mode: 'check',
   };
 

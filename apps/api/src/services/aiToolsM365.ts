@@ -186,6 +186,14 @@ async function call(
       idempotencyKey: context?.actionIntentId,
       actorId: auth.user.id,
     });
+    if (!outcome.ok && outcome.code === 'executor_unavailable') {
+      // Can only happen after the dispatch marker committed: the change may
+      // have been applied. Say so instead of inviting a blind retry.
+      return {
+        kind: 'error', code: outcome.code,
+        message: 'The Microsoft 365 executor became unavailable after the change was sent; it may have been applied. Confirm in Entra before retrying.',
+      } as unknown as DelegantInvokeResult;
+    }
     return (outcome.ok
       ? { kind: 'ok', data: outcome.result }
       : { kind: 'error', code: outcome.code, message: outcome.message }) as DelegantInvokeResult;
@@ -331,6 +339,9 @@ export async function resolveM365CallerTarget(
       if (result.code === 'tenant_mismatch') throw new CallerVerificationValidationError('tenant_mismatch', result.message);
       if (result.code === 'graph_not_found' || result.code === 'invalid_subject') {
         throw new CallerVerificationValidationError('subject_unmatched', result.message);
+      }
+      if (result.code === 'tools_disabled' || result.code === 'connection_not_ready') {
+        throw new CallerVerificationValidationError('connection_not_ready', result.message);
       }
       throw new Error(`Microsoft target lookup failed: ${result.code}`);
     }

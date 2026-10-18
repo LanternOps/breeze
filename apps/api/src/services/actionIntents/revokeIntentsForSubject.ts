@@ -43,14 +43,14 @@ export async function revokeIntentsForSubject(input: {
           sql`(
             EXISTS (SELECT 1 FROM caller_verification_subject_bindings b
               WHERE b.org_id = ${actionIntents.orgId} AND b.id IN (${ids})
-                AND b.entra_tenant_id = ${actionIntents.targetEntraTenantId}
-                AND b.entra_oid = ${actionIntents.targetEntraOid})
+                AND lower(b.entra_tenant_id) = lower(${actionIntents.targetEntraTenantId})
+                AND lower(b.entra_oid) = lower(${actionIntents.targetEntraOid}))
             OR EXISTS (SELECT 1 FROM caller_verifications g
               WHERE g.org_id = ${actionIntents.orgId} AND g.requester_binding_id IN (${ids})
                 AND (g.consumed_intent_ref = ${actionIntents.id}
-                  OR (g.consumed_at IS NULL AND g.status IN ('verified', 'revoked')
-                    AND g.target_entra_tenant_id = ${actionIntents.targetEntraTenantId}
-                    AND g.target_entra_oid = ${actionIntents.targetEntraOid}
+                  OR (g.consumed_at IS NULL AND g.status IN ('verified', 'revoked', 'rejected_by_user')
+                    AND lower(g.target_entra_tenant_id) = lower(${actionIntents.targetEntraTenantId})
+                    AND lower(g.target_entra_oid) = lower(${actionIntents.targetEntraOid})
                     AND g.action_scope::text IN ('any', CASE WHEN ${actionIntents.actionName} = 'm365_disable_user'
                       THEN 'disable_user' ELSE 'reset_password' END))))
           )`,

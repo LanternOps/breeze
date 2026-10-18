@@ -62,6 +62,9 @@ export type PolicyDraft = { [K in keyof PolicyValues]: PolicyValues[K] | null };
 export interface PolicyResponse {
   /** Highest tier the server can currently satisfy (2 while the workstation tier is dark). */
   maxAchievableTier?: 2 | 3;
+  /** Per-action caps; disable_user can reach tier 3 via administrative step-up even while the workstation tier is dark. */
+  maxAchievableTierResetPassword?: 2 | 3;
+  maxAchievableTierDisableUser?: 2 | 3;
   /** The owner's own stored row (may carry extra server columns), null when none. */
   row: Partial<PolicyDraft> | null;
   defaults: PolicyValues;

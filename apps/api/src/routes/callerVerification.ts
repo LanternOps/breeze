@@ -40,7 +40,7 @@ import { attestDestination, isEstablished } from '../services/callerVerification
 import { reachableContact } from '../services/callerVerification/access';
 import { withAdministrativeProof } from '../services/callerVerification/administrativeContext';
 import { fenceOverride } from '../services/callerVerification/rejection';
-import { getEffectivePolicy, resolveEffectivePolicy, getPolicyResponse, assertTiersAchievable } from '../services/callerVerification/policy';
+import { getEffectivePolicy, resolveEffectivePolicy, getPolicyResponse, assertTiersAchievable, allowAdministrativeDisableAfterWrite } from '../services/callerVerification/policy';
 import { directoryUsers, syncDirectory } from '../services/callerVerification/directory';
 import { CallerVerificationRequiredError, CallerVerificationValidationError } from '../services/callerVerification/errors';
 import { importDirectoryContact } from '../services/contacts/import';
@@ -217,9 +217,10 @@ for (const owner of ['org', 'partner'] as const) {
   callerVerificationRoutes.put(path, ...base, write, requireMfa(), zValidator('json', callerVerificationPolicySchema), async (c) => {
     const a = c.get('auth') as AuthContext;
     if (owner === 'partner' && !canManagePartnerWidePolicies(a)) return c.json({ error: 'Partner-wide administration required' }, 403);
-    // Tier 3 needs the (dark) workstation tier: refuse before any DB work.
-    assertTiersAchievable(c.req.valid('json'));
     const where = await ownerWhere(c);
+    // Tier 3 needs the workstation tier, or (disable_user only) administrative
+    // disable as it will be after this write: refuse before writing.
+    assertTiersAchievable(c.req.valid('json'), await allowAdministrativeDisableAfterWrite(owner, ownerId(c), c.req.valid('json')));
     await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-policy:${owner}:${ownerId(c)}`}))`);
     const [before] = await db.select().from(p).where(where).limit(1);
     const patch = c.req.valid('json');

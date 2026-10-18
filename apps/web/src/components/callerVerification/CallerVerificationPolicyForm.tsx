@@ -94,7 +94,8 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
   const show = (v: unknown) => (Array.isArray(v) ? v.join(', ') || '—' : typeof v === 'boolean' ? (v ? t('policy.yes') : t('policy.no')) : String(v));
   const fieldLabel = (key: string) => t(/* i18n-dynamic */ `policy.fields.${key}`);
   // Tier 3 needs the workstation tier; the server refuses it while that is dark.
-  const maxTier = data.maxAchievableTier ?? 3;
+  const tierCap = (key: (typeof TIER_KEYS)[number]): number =>
+    (key === 'requiredTierResetPassword' ? data.maxAchievableTierResetPassword : data.maxAchievableTierDisableUser) ?? data.maxAchievableTier ?? 3;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,7 +105,7 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
     try {
       // A stored tier above what is achievable would be refused; send the achievable one.
       const body = { ...draft };
-      for (const k of TIER_KEYS) if (body[k] !== null && body[k]! > maxTier) body[k] = maxTier;
+      for (const k of TIER_KEYS) if (body[k] !== null && body[k]! > tierCap(k)) body[k] = tierCap(k);
       const result = await putPolicy(owner, body);
       setData(result);
       setDraft(draftFrom(result.row));
@@ -137,7 +138,8 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
           const options = SETS[key as keyof typeof SETS];
           const base = data.baseline[key];
           const isTier = (TIER_KEYS as readonly string[]).includes(key);
-          const cap = isTier ? Math.min(num?.[1] ?? maxTier, maxTier) : undefined;
+          const tierMax = isTier ? tierCap(key as (typeof TIER_KEYS)[number]) : 3;
+          const cap = isTier ? Math.min(num?.[1] ?? tierMax, tierMax) : undefined;
           const min = num ? (org && num[2] === 'max' ? Math.max(num[0], base as number) : num[0]) : undefined;
           const max = num ? (org && num[2] === 'min' ? Math.min(num[1], base as number) : (cap ?? num[1])) : undefined;
           return (
@@ -154,8 +156,8 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
                 {num && (
                   <NumberField id={id} min={Math.min(min!, max!)} max={max!} value={isTier ? Math.min(value(key) as number, max!) : (value(key) as number)} onCommit={(n) => update(key, n)} />
                 )}
-                {isTier && maxTier < 3 && (
-                  <p data-testid={`${id}-cap-hint`} className="text-xs text-muted-foreground">{t('policy.tierCapHint', { max: maxTier })}</p>
+                {isTier && tierMax < 3 && (
+                  <p data-testid={`${id}-cap-hint`} className="text-xs text-muted-foreground">{t('policy.tierCapHint', { max: tierMax })}</p>
                 )}
                 {bool && (
                   <select id={id} data-testid={id} value={String(value(key))} className="h-8 rounded-md border bg-background px-2"

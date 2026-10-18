@@ -8,7 +8,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: (f: () => unknown) => f(),
   withSystemDbAccessContext: (f: () => unknown) => f(),
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: async () => m.rows }) }) }),
+    select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ limit: async () => m.rows }), limit: async () => m.rows }) }) }),
     update: () => ({ set: (v: Record<string, unknown>) => ({ where: async () => { m.updates.push(v); } }) }),
   },
 }));
@@ -139,10 +139,28 @@ it('does not republish an administrative row whose marker is set', async () => {
   expect(m.updates).toEqual([]);
 });
 
-it('leaves an administrative row unmarked when the email transport is unavailable', async () => {
+it('administrative row without an email transport still notifies in-app, reports, and is marked (no retry loop)', async () => {
   m.emailService = null;
   m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: null })];
   await publishCallerVerificationEffects();
-  expect(m.updates).toEqual([]);
+  expect(m.notify).toHaveBeenCalledTimes(2);
+  expect(m.updates).toHaveLength(1);
+  expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('email transport unavailable') }), undefined, { verificationId: 'v1' });
+});
+
+it('administrative row: one failing email does not block the others or the marker', async () => {
+  m.emailService = { sendEmail: m.sendEmail };
+  m.sendEmail.mockRejectedValueOnce(new Error('smtp 550')).mockResolvedValue(undefined);
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: null })];
+  await publishCallerVerificationEffects();
+  expect(m.sendEmail).toHaveBeenCalledTimes(2);
+  expect(m.updates).toHaveLength(1);
   expect(m.capture).toHaveBeenCalled();
+});
+
+it('administrative row with zero recipients is reported loudly', async () => {
+  m.recipients.mockResolvedValueOnce([]);
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: null })];
+  await publishCallerVerificationEffects();
+  expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('no security notification recipients') }), undefined, { verificationId: 'v1' });
 });

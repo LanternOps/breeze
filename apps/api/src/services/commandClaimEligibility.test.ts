@@ -436,6 +436,22 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.cancelled).toEqual([]);
   });
 
+  it('holds a pending caller_verify row (does not cancel it) while the workstation tier is off, passes it with the flag on', async () => {
+    try {
+      delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
+      const off = await partitionClaimable(tx(), device, [row({ type: 'caller_verify' }), row({ id: 'c2' })]);
+      expect(off.held).toEqual([{ id: 'c1', reason: 'held_feature_disabled' }]);
+      expect(off.claimable.map((x) => x.id)).toEqual(['c2']);
+      expect(off.cancelled).toEqual([]);
+      process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED = 'true';
+      const on = await partitionClaimable(tx(), device, [row({ type: 'caller_verify' })]);
+      expect(on.claimable.map((x) => x.id)).toEqual(['c1']);
+      expect(on.held).toEqual([]);
+    } finally {
+      delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
+    }
+  });
+
   it('a type hold that returns false lets the row through', async () => {
     typeHolds.install_patches = async () => false;
     const r = await partitionClaimable(tx(), device, [row({ type: 'install_patches' })]);

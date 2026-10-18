@@ -93,12 +93,19 @@ describe('executeM365ToolHeadless', () => {
       .rejects.toBeInstanceOf(M365ConnectionUnavailableError);
   });
 
-  it('throws for every connection-unavailable refusal code (tools_disabled/write_rate_limited/executor_unavailable)', async () => {
-    for (const code of ['tools_disabled', 'write_rate_limited', 'executor_unavailable']) {
+  it('throws M365ConnectionUnavailableError for pre-dispatch refusal codes (tools_disabled/write_rate_limited)', async () => {
+    for (const code of ['tools_disabled', 'write_rate_limited']) {
       execByOrg.mockResolvedValue({ ok: false, code, message: 'refused' });
       await expect(executeM365ToolHeadless('m365_disable_user', DISABLE_INPUT, ORG, PINNED_INTENT))
         .rejects.toBeInstanceOf(M365ConnectionUnavailableError);
     }
+  });
+
+  it('executor_unavailable after the caller-verified dispatch marker is an attempted execution, not "nothing sent"', async () => {
+    execByOrg.mockResolvedValue({ ok: false, code: 'executor_unavailable', message: 'refused' });
+    const outcome = executeM365ToolHeadless('m365_disable_user', DISABLE_INPUT, ORG, PINNED_INTENT);
+    await expect(outcome).rejects.toThrow('confirm the outcome in Entra');
+    await expect(outcome).rejects.not.toBeInstanceOf(M365ConnectionUnavailableError);
   });
 
   it('returns a JSON error body on a Graph-level failure (→ tool_returned_error)', async () => {

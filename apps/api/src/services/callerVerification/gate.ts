@@ -28,7 +28,7 @@
  * including one created before the flag was turned off — never satisfies the
  * gate.
  */
-import { and, eq, desc, isNull } from 'drizzle-orm';
+import { and, eq, desc, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { callerVerifications as v, callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
 import { contacts } from '../../db/schema/contacts';
@@ -80,7 +80,13 @@ function requiredTierFor(p: EffectiveCallerVerificationPolicy, action: CallerVer
   return action === 'reset_password' ? p.requiredTierResetPassword : p.requiredTierDisableUser;
 }
 
-export async function requireCallerVerification(input: GateInput): Promise<{ verificationId: string; tier: number }> {
+export async function requireCallerVerification(rawInput: GateInput): Promise<{ verificationId: string; tier: number }> {
+  // Entra ids are GUIDs: compare canonically (lower case) everywhere below.
+  const input: GateInput = {
+    ...rawInput,
+    backendTenantId: rawInput.backendTenantId.toLowerCase(),
+    target: { entraTenantId: rawInput.target.entraTenantId.toLowerCase(), entraOid: rawInput.target.entraOid.toLowerCase() },
+  };
   let latest: VerificationRow | null = null;
   let requiredTier = 2;
   let contactId: string | null = null;
@@ -93,7 +99,11 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
   if (!isCallerVerificationEnabled()) refuse('feature_disabled');
 
   const dispatch = currentDispatchGate();
-  if (dispatch && (input.mode !== 'check' || !sameGateInput(input, dispatch.input))) {
+  if (dispatch && (input.mode !== 'check' || !sameGateInput(input, {
+    ...dispatch.input,
+    backendTenantId: dispatch.input.backendTenantId.toLowerCase(),
+    target: { entraTenantId: dispatch.input.target.entraTenantId.toLowerCase(), entraOid: dispatch.input.target.entraOid.toLowerCase() },
+  }))) {
     throw new Error('Dispatch gate context does not match the pinned operation');
   }
   // Inside a dispatch the marker transaction IS the scope; elsewhere every
@@ -114,7 +124,9 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
         if (e instanceof CallerVerificationRequiredError) {
           // A subject that WAS bound and is now unmatched/ambiguous was rebound.
           const [historical] = await db.select().from(v)
-            .where(and(eq(v.orgId, input.orgId), eq(v.targetEntraTenantId, input.target.entraTenantId), eq(v.targetEntraOid, input.target.entraOid)))
+            .where(and(eq(v.orgId, input.orgId),
+              sql`lower(${v.targetEntraTenantId}) = ${input.target.entraTenantId}`,
+              sql`lower(${v.targetEntraOid}) = ${input.target.entraOid}`))
             .orderBy(desc(v.createdAt)).limit(1);
           latest = historical ?? null;
           if (historical) refuse('target_rebound');
@@ -191,7 +203,8 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
         latest = r;
         if (await fencedUntil(input.orgId, r.contactId, p)) refuse('contact_fenced');
         if (r.status !== 'verified') { if (r.status === 'revoked') reason = 'target_rebound'; return null; }
-        if (r.targetBindingId !== target.id || r.targetEntraTenantId !== input.target.entraTenantId || r.targetEntraOid !== input.target.entraOid) {
+        if (r.targetBindingId !== target.id || r.targetEntraTenantId?.toLowerCase() !== input.target.entraTenantId
+          || r.targetEntraOid?.toLowerCase() !== input.target.entraOid) {
           reason = 'target_rebound'; return null;
         }
         if (r.consumedAt && r.consumedIntentRef !== input.intentId) { reason = 'grant_consumed'; return null; }
@@ -262,6 +275,7 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
 }
 
 function sameGateInput(a: GateInput, b: GateInput): boolean {
+  // Both sides are canonical (lower-case) by the time this runs.
   return a.orgId === b.orgId && a.action === b.action && a.backendTenantId === b.backendTenantId
     && a.technicianUserId === b.technicianUserId && a.intentId === b.intentId && a.mode === b.mode
     && a.target.entraTenantId === b.target.entraTenantId && a.target.entraOid === b.target.entraOid;

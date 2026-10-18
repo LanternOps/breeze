@@ -111,7 +111,16 @@ describe('incidentLinks', () => {
     expect(h.forCalls).toEqual([]);
   });
 
+  it('linkCallerIntentTerminal skips intents that are not caller-gated without scanning incidents', async () => {
+    h.selectQueue.push([{ orgId: ORG, actionName: 'run_script' }]);
+    h.selectQueue.push([{ id: 'inc-1' }]);
+    await linkCallerIntentTerminal('i1');
+    expect(h.updateSet).not.toHaveBeenCalled();
+    expect(h.selectQueue).toHaveLength(1); // the incident scan never ran
+  });
+
   it('linkCallerIntentTerminal updates every incident already referencing the intent', async () => {
+    h.selectQueue.push([{ orgId: ORG, actionName: 'm365_disable_user' }]); // the intent
     h.selectQueue.push([{ id: 'inc-1' }]); // referencing incidents
     h.selectQueue.push([incident()]);
     h.selectQueue.push([{ id: 'i1', status: 'completed', dispatchStartedAt: null, errorCode: null }]);
@@ -123,6 +132,7 @@ describe('incidentLinks', () => {
   });
 
   it('linkCallerIntentTerminal is a no-op when no incident references the intent', async () => {
+    h.selectQueue.push([{ orgId: ORG, actionName: 'm365_reset_password' }]);
     h.selectQueue.push([]);
     await linkCallerIntentTerminal('i1');
     expect(h.updateSet).not.toHaveBeenCalled();

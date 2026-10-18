@@ -74,11 +74,17 @@ export async function linkCallerIncidentIntents(
 /** Outbox hook: an intent reached a terminal state; update any incident already tracking it. */
 export async function linkCallerIntentTerminal(intentId: string): Promise<void> {
   await withSystemDbAccessContext(async () => {
+    // Only the two caller-gated actions can ever be linked; skip every other
+    // intent without touching incidents, and scope the scan to the intent's org.
+    const [intent] = await db.select({ orgId: actionIntents.orgId, actionName: actionIntents.actionName })
+      .from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
+    if (!intent || (intent.actionName !== 'm365_disable_user' && intent.actionName !== 'm365_reset_password')) return;
     const rows = await db
       .select({ id: incidents.id })
       .from(incidents)
       .where(
         and(
+          eq(incidents.orgId, intent.orgId),
           eq(incidents.sourceType, 'caller_verification'),
           sql`EXISTS (SELECT 1 FROM jsonb_array_elements(${incidents.timeline}) e
             WHERE e->'metadata'->>'intentId' = ${intentId})`,

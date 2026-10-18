@@ -258,7 +258,11 @@ export async function freshForTicket(
   const row = ticketRow ? await get(actor, orgId, ticketRow.id) : history.rows[0] ?? null;
   return {
     row,
-    isFresh: !!row && row.status === 'verified' && !history.fencedUntil && !!row.decidedAt && Date.parse(row.decidedAt) > Date.now() - p.verificationTtlMinutes * 60000,
+    // A workstation grant never authorizes while the workstation tier is dark
+    // (the gate refuses it), so the badge must not call it fresh either.
+    isFresh: !!row && row.status === 'verified' && !history.fencedUntil && !!row.decidedAt
+      && (row.method !== 'workstation' || callerVerificationWorkstationEnabled())
+      && Date.parse(row.decidedAt) > Date.now() - p.verificationTtlMinutes * 60000,
     isConsumed: !!row?.consumedAt,
   };
 }

@@ -214,6 +214,15 @@ async function executeProtectedM365Headless(
       ...(loaded.intent.requestedByUserId ? { actorId: loaded.intent.requestedByUserId } : {}),
     });
     if (!outcome.ok) {
+      // `executor_unavailable` is the ONLY connection-level code that can occur
+      // AFTER prepareCallerDispatch committed the dispatch marker (the client
+      // threw mid-request): the change may have been applied. Never report it
+      // as "nothing was sent" — throw an ordinary error so the worker records
+      // an attempted execution (execution_error, executed) and the operator
+      // confirms the outcome in Entra.
+      if (outcome.code === 'executor_unavailable') {
+        throw new Error('Graph actions executor became unavailable after caller-verified dispatch started; confirm the outcome in Entra before retrying');
+      }
       if (CONNECTION_UNAVAILABLE_CODES.has(outcome.code)) {
         throw new M365ConnectionUnavailableError(JSON.stringify({ error: outcome.message }));
       }

@@ -164,6 +164,18 @@ async function sqlState(promise: Promise<unknown>): Promise<string | undefined> 
     return err.code ?? err.cause?.code;
   }
 }
+/** Resolve once some backend is blocked waiting on an advisory (subject) lock. */
+async function waitForAdvisoryLockWaiter(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = await runOutsideDbContext(() => run(() => db.execute(
+      sql`SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`)));
+    const n = Number((rows as unknown as Array<{ n: number }>)[0]?.n ?? 0);
+    if (n > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('no backend ever waited on the subject locks');
+}
 function barrier() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
@@ -297,8 +309,21 @@ describe('prepareCallerDispatch', () => {
     await run(() => requireCallerVerification(gateInput()));
     await run(() => db.update(callerVerifications).set({ status: 'revoked' }).where(eq(callerVerifications.id, f.grant.id)));
     await run(() => db.insert(callerVerifications).values({ ...f.grant, id: randomUUID(), status: 'verified', consumedAt: null, consumedIntentRef: null }));
-    await expect(prepareCallerDispatch(dispatchInput())).rejects.toMatchObject({ name: 'CallerVerificationRequiredError' });
+    // The revoked consumed grant is the only authority; the newer grant can never substitute.
+    await expect(prepareCallerDispatch(dispatchInput())).rejects.toMatchObject({
+      name: 'CallerVerificationRequiredError', payload: { reason: expect.stringMatching(/^(target_rebound|grant_consumed)$/) },
+    });
     expect((await readIntent()).dispatchStartedAt).toBeNull();
+  });
+
+  it('a newer unconsumed grant alongside a valid consumed one does not change which grant dispatch evaluates', async () => {
+    await run(() => requireCallerVerification(gateInput()));
+    const [newer] = await run(() => db.insert(callerVerifications).values({
+      ...f.grant, id: randomUUID(), status: 'verified', consumedAt: null, consumedIntentRef: null,
+    }).returning());
+    await expect(prepareCallerDispatch(dispatchInput())).resolves.toBeUndefined();
+    expect((await readGrant(newer!.id)).consumedAt).toBeNull();
+    expect((await readGrant()).consumedIntentRef).toBe(f.intent.id);
   });
 
   it('manager may disable the target, but substituting another OID fails', async () => {
@@ -311,6 +336,18 @@ describe('prepareCallerDispatch', () => {
     await run(() => requireCallerVerification(gateInput()));
     await run(() => db.execute(sql`UPDATE m365_connections SET tenant_id = ${randomUUID()} WHERE id = ${f.connection.id}`));
     await expect(prepareCallerDispatch(dispatchInput())).rejects.toMatchObject({ payload: { reason: 'tenant_mismatch' } });
+  });
+
+  it('tolerates upper-case stored tenants on bindings/grant and an upper-case backend tenant (pin is canonical lower-case)', async () => {
+    const upper = f.tenant.toUpperCase();
+    await run(async () => {
+      await db.execute(sql`UPDATE caller_verification_subject_bindings SET entra_tenant_id = ${upper} WHERE org_id = ${f.org.id}`);
+      await db.execute(sql`UPDATE caller_verifications SET target_entra_tenant_id = ${upper} WHERE id = ${f.grant.id}`);
+      // (m365_connections has a lower-case tenant CHECK; a backend may still report its tenant upper-case.)
+    });
+    await expect(run(() => requireCallerVerification(gateInput()))).resolves.toHaveProperty('verificationId', f.grant.id);
+    await expect(prepareCallerDispatch({ ...dispatchInput(), backendTenantId: upper })).resolves.toBeUndefined();
+    expect((await readIntent()).dispatchStartedAt).toBeInstanceOf(Date);
   });
 
   it('pre-consume refusal leaves the grant unused', async () => {
@@ -351,7 +388,7 @@ describe('rejection versus dispatch', () => {
     }));
     await locked.promise;
     const observed = prepareCallerDispatch(dispatchInput()).then(() => ({ passed: true }), (error) => ({ error }));
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await waitForAdvisoryLockWaiter();
     release.resolve();
     await fence;
     expect(await observed).toMatchObject({ error: { payload: { reason: 'contact_fenced' } } });
@@ -369,12 +406,33 @@ describe('rejection versus dispatch', () => {
     }));
     await locked.promise;
     const rejection = applyDecision({ verificationId: f.grant.id, decision: { kind: 'not_me' } });
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await waitForAdvisoryLockWaiter();
     release.resolve();
     await marker;
     await rejection;
     const result = await run(() => revokeIntentsForSubject({ orgId: f.org.id, bindingIds: [f.requester.id], verificationId: f.grant.id }));
     expect(result.alreadyDispatched).toContain(f.intent.id);
+  });
+
+  it('the requester rejecting their own unconsumed grant cancels the queued intent it would have authorized', async () => {
+    await run(() => db.update(actionIntents).set({ status: 'approved' }).where(eq(actionIntents.id, f.intent.id)));
+    await applyDecision({ verificationId: f.grant.id, decision: { kind: 'not_me' } });
+    const row = await readIntent();
+    expect(row.status).toBe('cancelled');
+    expect(row.result).toMatchObject({ actor: 'system:caller_verification', verificationId: f.grant.id });
+  });
+
+  it('a reset grant does not cancel a disable intent, and another org is untouched', async () => {
+    const other = await seed();
+    await run(async () => {
+      await db.update(actionIntents).set({ status: 'approved' }).where(eq(actionIntents.id, f.intent.id));
+      await db.update(actionIntents).set({ status: 'approved' }).where(eq(actionIntents.id, other.intent.id));
+      await db.update(callerVerifications).set({ actionScope: 'reset_password' }).where(eq(callerVerifications.id, f.grant.id));
+    });
+    const result = await run(() => revokeIntentsForSubject({ orgId: f.org.id, bindingIds: [f.requester.id], verificationId: f.grant.id }));
+    expect(result.cancelled).toEqual([]);
+    expect((await readIntent()).status).toBe('approved');
+    expect((await readIntent(other.intent.id)).status).toBe('approved');
   });
 
   it('rejection fan-out cancels an approved intent for the bound target through the system path', async () => {
@@ -428,7 +486,7 @@ describe('real release worker', () => {
     expect(row).toMatchObject({ status: 'failed', errorCode: 'caller_verification_required', dispatchStartedAt: null });
     expect(row.result).toMatchObject({
       error: 'Caller verification required',
-      requiresCallerVerification: { action: 'disable_user', orgId: f.org.id, reason: expect.any(String) },
+      requiresCallerVerification: { action: 'disable_user', orgId: f.org.id, reason: 'no_fresh_verification' },
     });
   });
 

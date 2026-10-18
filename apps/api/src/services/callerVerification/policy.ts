@@ -114,22 +114,67 @@ export async function getEffectivePolicy(orgId: string): Promise<EffectiveCaller
 }
 
 /**
- * Highest tier a policy can actually require. Tier 3 is reachable only through
- * a bound workstation (administrative grants are not policy-selectable), so
- * while the workstation tier is dark nothing can satisfy more than tier 2.
+ * Highest tier each action can actually require. Tier 3 is reachable through a
+ * bound workstation, and for disable_user also through an administrative
+ * step-up grant while `allowAdministrativeDisable` is on (computeTier returns 3
+ * for administrative_stepup). While the workstation tier is dark, reset_password
+ * therefore tops out at 2; disable_user only if administrative disable is on.
  */
-export function maxAchievableTier(): 2 | 3 {
-  return callerVerificationWorkstationEnabled() ? 3 : 2;
+export function maxAchievableTiers(allowAdministrativeDisable: boolean): { resetPassword: 2 | 3; disableUser: 2 | 3 } {
+  const workstation = callerVerificationWorkstationEnabled();
+  return {
+    resetPassword: workstation ? 3 : 2,
+    disableUser: workstation || allowAdministrativeDisable ? 3 : 2,
+  };
 }
 
-/** Refuses a policy write that requires a tier nothing can currently satisfy. */
-export function assertTiersAchievable(patch: { requiredTierResetPassword?: number | null; requiredTierDisableUser?: number | null }): void {
-  const max = maxAchievableTier();
-  for (const tier of [patch.requiredTierResetPassword, patch.requiredTierDisableUser]) {
+/** Back-compat scalar: the lowest cap across both actions. */
+export function maxAchievableTier(allowAdministrativeDisable = false): 2 | 3 {
+  const t = maxAchievableTiers(allowAdministrativeDisable);
+  return t.resetPassword < t.disableUser ? t.resetPassword : t.disableUser;
+}
+
+/**
+ * Refuses a policy write that requires a tier nothing can currently satisfy.
+ * `allowAdministrativeDisable` must be the value as it will be AFTER the write.
+ */
+export function assertTiersAchievable(
+  patch: { requiredTierResetPassword?: number | null; requiredTierDisableUser?: number | null },
+  allowAdministrativeDisable = false,
+): void {
+  const caps = maxAchievableTiers(allowAdministrativeDisable);
+  const checks: Array<[number | null | undefined, number]> = [
+    [patch.requiredTierResetPassword, caps.resetPassword],
+    [patch.requiredTierDisableUser, caps.disableUser],
+  ];
+  for (const [tier, max] of checks) {
     if (typeof tier === 'number' && tier > max) {
       throw new CallerVerificationValidationError('tier_unachievable', `Required tier ${tier} is not achievable: the maximum available tier is ${max}`);
     }
   }
+}
+
+/**
+ * allowAdministrativeDisable as it will be after a PUT: the submitted value
+ * when present (an org can only tighten, so org = baseline AND requested),
+ * otherwise what the owner's row already resolves to.
+ */
+export async function allowAdministrativeDisableAfterWrite(
+  owner: 'org' | 'partner',
+  ownerId: string,
+  patch: { allowAdministrativeDisable?: boolean | null },
+): Promise<boolean> {
+  if (owner === 'partner') {
+    const [row] = await db.select().from(callerVerificationPolicies)
+      .where(and(eq(callerVerificationPolicies.partnerId, ownerId), isNull(callerVerificationPolicies.orgId))).limit(1);
+    const submitted = patch.allowAdministrativeDisable;
+    return submitted != null ? submitted : resolveEffectivePolicy(row ?? null, null).allowAdministrativeDisable;
+  }
+  const { partnerRow, orgRow } = await loadOrgAndPartnerRows(ownerId);
+  const next = 'allowAdministrativeDisable' in patch
+    ? ({ ...(orgRow ?? {}), allowAdministrativeDisable: patch.allowAdministrativeDisable ?? null } as PolicyRow)
+    : orgRow;
+  return resolveEffectivePolicy(partnerRow, next).allowAdministrativeDisable;
 }
 
 /**
@@ -139,8 +184,11 @@ export function assertTiersAchievable(patch: { requiredTierResetPassword?: numbe
  */
 export function policyResponse(partnerRow: PolicyRow | null, orgRow: PolicyRow | null, owner: 'org' | 'partner') {
   const { provenance: _provenance, ignored: _ignored, ...baseline } = resolveEffectivePolicy(partnerRow, null);
+  const caps = maxAchievableTiers(resolveEffectivePolicy(partnerRow, owner === 'org' ? orgRow : null).allowAdministrativeDisable);
   return {
-    maxAchievableTier: maxAchievableTier(),
+    maxAchievableTier: caps.resetPassword < caps.disableUser ? caps.resetPassword : caps.disableUser,
+    maxAchievableTierResetPassword: caps.resetPassword,
+    maxAchievableTierDisableUser: caps.disableUser,
     row: owner === 'partner' ? partnerRow : orgRow,
     defaults: structuredClone(CALLER_VERIFICATION_POLICY_DEFAULTS),
     baseline,

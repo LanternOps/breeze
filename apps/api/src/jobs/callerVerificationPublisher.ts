@@ -49,7 +49,7 @@ export async function publishCallerVerificationEffects(): Promise<void> {
     and(eq(v.method, 'administrative_stepup'), isNull(v.deliveryPublishedAt)),
     and(eq(v.status, 'rejected_by_user'), isNull(v.rejectionNotifiedAt)),
     and(eq(v.status, 'pending'), or(isNull(v.deliveryPublishedAt), and(ne(v.method, 'callback_attestation'), sql`${v.expiresAt}<=now()`))),
-  )).limit(BATCH));
+  )).orderBy(v.createdAt).limit(BATCH));
   for (const row of rows) {
     try {
       await publishRow(row);
@@ -87,9 +87,16 @@ async function publishRow(row: Row): Promise<void> {
     // Never routed through `ports.deliver`. The marker is independent of
     // `rejectionNotifiedAt`, so a later rejection still reaches the branch below.
     if (row.method === 'administrative_stepup' && !row.deliveryPublishedAt) {
+      // In-app first (deduplicated, so a retry never duplicates it); email is
+      // best-effort per recipient so one bad address or a missing transport
+      // can neither block the in-app record nor re-email earlier recipients.
+      // The administrative audit row was written transactionally at creation.
       const recipients = await scoped(() => securityRecipients(row.orgId));
-      const email = getEmailService();
-      if (!email) throw new Error('Administrative notification transport unavailable');
+      if (recipients.length === 0) {
+        const error = new Error('Administrative disable authorised but the org has no security notification recipients');
+        console.error('[CallerVerificationPublisher]', { verificationId: row.id, orgId: row.orgId, error: error.message });
+        captureException(error, undefined, { verificationId: row.id });
+      }
       for (const person of recipients) {
         await scoped(() => createNotification({
           userId: person.id, orgId: row.orgId, type: 'security', priority: 'high',
@@ -99,14 +106,24 @@ async function publishRow(row: Row): Promise<void> {
           dedupeKey: `caller-administrative-${row.id}`,
           metadata: { verificationId: row.id, contactId: row.contactId },
         }));
-        await email.sendEmail({
-          to: person.email,
-          subject: 'Administrative account disable authorised',
-          html: '<p>Review the administrative verification and its reason in Breeze.</p>',
-          text: `Administrative verification ${row.id}. Reason: ${row.reason ?? ''}`,
-          headers: { 'Message-ID': `<caller-admin-${row.id}-${person.id}@notifications.invalid>` },
-          purpose: 'security.caller_rejection',
-        });
+      }
+      const email = getEmailService();
+      if (!email && recipients.length > 0) {
+        captureException(new Error('Administrative notification email transport unavailable; in-app notifications sent'), undefined, { verificationId: row.id });
+      }
+      for (const person of email ? recipients : []) {
+        try {
+          await email!.sendEmail({
+            to: person.email,
+            subject: 'Administrative account disable authorised',
+            html: '<p>Review the administrative verification and its reason in Breeze.</p>',
+            text: `Administrative verification ${row.id}. Reason: ${row.reason ?? ''}`,
+            headers: { 'Message-ID': `<caller-admin-${row.id}-${person.id}@notifications.invalid>` },
+            purpose: 'security.caller_rejection',
+          });
+        } catch (err) {
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, { verificationId: row.id, recipientId: person.id });
+        }
       }
       await scoped(() => db.update(v).set({ deliveryPublishedAt: new Date() }).where(eq(v.id, row.id)));
       return;

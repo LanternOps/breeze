@@ -1955,7 +1955,9 @@ export async function createActionIntent(
     const refuseCaller = async (
       reason: 'technician_mismatch' | 'subject_unmatched' | 'subject_ambiguous' | 'tenant_mismatch',
     ): Promise<never> => {
-      const policy = await withSystemDbAccessContext(() => getCallerVerificationPolicy(orgId), 'callerVerification.create.policy');
+      // Escape any ambient org-scoped context: partner-level policy rows must be visible.
+      const policy = await runOutsideDbContext(() => withSystemDbAccessContext(
+        () => getCallerVerificationPolicy(orgId), 'callerVerification.create.policy'));
       throw new CallerVerificationRequiredError({
         orgId, contactId: null, action: protectedCallerAction,
         requiredTier: protectedCallerAction === 'reset_password' ? policy.requiredTierResetPassword : policy.requiredTierDisableUser,

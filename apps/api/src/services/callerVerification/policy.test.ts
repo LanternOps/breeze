@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveEffectivePolicy, policyResponse, maxAchievableTier, assertTiersAchievable, CALLER_VERIFICATION_POLICY_DEFAULTS } from './policy';
+import { resolveEffectivePolicy, policyResponse, maxAchievableTier, maxAchievableTiers, assertTiersAchievable, CALLER_VERIFICATION_POLICY_DEFAULTS } from './policy';
 import type { PolicyRow } from './types';
 
 const row = (p: Partial<PolicyRow>) => p as PolicyRow;
@@ -58,29 +58,45 @@ it.each(['org', 'partner'] as const)('returns independent defaults, baseline and
 describe('tier clamp while the workstation tier is dark (W05)', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it('maxAchievableTier is 2 by default and 3 only with the exact workstation flag', () => {
+  it('per-action caps: reset_password needs the workstation flag; disable_user also passes with administrative disable', () => {
     delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
-    expect(maxAchievableTier()).toBe(2);
+    expect(maxAchievableTiers(false)).toEqual({ resetPassword: 2, disableUser: 2 });
+    expect(maxAchievableTiers(true)).toEqual({ resetPassword: 2, disableUser: 3 });
     vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', '1');
-    expect(maxAchievableTier()).toBe(2);
+    expect(maxAchievableTiers(true)).toEqual({ resetPassword: 2, disableUser: 3 });
     vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'true');
+    expect(maxAchievableTiers(false)).toEqual({ resetPassword: 3, disableUser: 3 });
     expect(maxAchievableTier()).toBe(3);
   });
 
-  it.each(['org', 'partner'] as const)('policyResponse exposes maxAchievableTier for %s', (owner) => {
+  it.each(['org', 'partner'] as const)('policyResponse exposes per-action caps for %s', (owner) => {
     delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
-    expect(policyResponse(null, null, owner).maxAchievableTier).toBe(2);
+    // Defaults have allowAdministrativeDisable = true.
+    const r = policyResponse(null, null, owner);
+    expect(r.maxAchievableTierResetPassword).toBe(2);
+    expect(r.maxAchievableTierDisableUser).toBe(3);
+    expect(r.maxAchievableTier).toBe(2);
+    const off = policyResponse({ allowAdministrativeDisable: false } as never, null, owner);
+    expect(off.maxAchievableTierDisableUser).toBe(2);
     vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'true');
-    expect(policyResponse(null, null, owner).maxAchievableTier).toBe(3);
+    const on = policyResponse({ allowAdministrativeDisable: false } as never, null, owner);
+    expect([on.maxAchievableTierResetPassword, on.maxAchievableTierDisableUser, on.maxAchievableTier]).toEqual([3, 3, 3]);
   });
 
-  it('assertTiersAchievable refuses tier 3 for either action only while dark', () => {
+  it('an org that tightens allowAdministrativeDisable off loses the disable_user tier-3 cap', () => {
     delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
-    expect(() => assertTiersAchievable({ requiredTierResetPassword: 3 })).toThrowError(expect.objectContaining({ code: 'tier_unachievable' }));
+    expect(policyResponse(null, { allowAdministrativeDisable: false } as never, 'org').maxAchievableTierDisableUser).toBe(2);
+  });
+
+  it('assertTiersAchievable: dark reset_password 3 refused; disable_user 3 allowed only with administrative disable', () => {
+    delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
+    expect(() => assertTiersAchievable({ requiredTierResetPassword: 3 }, true)).toThrowError(expect.objectContaining({ code: 'tier_unachievable' }));
+    expect(() => assertTiersAchievable({ requiredTierDisableUser: 3 }, false)).toThrowError(expect.objectContaining({ code: 'tier_unachievable' }));
     expect(() => assertTiersAchievable({ requiredTierDisableUser: 3 })).toThrowError(expect.objectContaining({ code: 'tier_unachievable' }));
-    expect(() => assertTiersAchievable({ requiredTierResetPassword: 2, requiredTierDisableUser: null })).not.toThrow();
+    expect(() => assertTiersAchievable({ requiredTierDisableUser: 3 }, true)).not.toThrow();
+    expect(() => assertTiersAchievable({ requiredTierResetPassword: 2, requiredTierDisableUser: null }, false)).not.toThrow();
     expect(() => assertTiersAchievable({})).not.toThrow();
     vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'true');
-    expect(() => assertTiersAchievable({ requiredTierResetPassword: 3, requiredTierDisableUser: 3 })).not.toThrow();
+    expect(() => assertTiersAchievable({ requiredTierResetPassword: 3, requiredTierDisableUser: 3 }, false)).not.toThrow();
   });
 });

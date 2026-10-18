@@ -40,10 +40,19 @@ export async function bindingsForContact(orgId: string, contactId: string): Prom
   return db.select().from(b).where(and(eq(b.orgId, orgId), eq(b.contactId, contactId), isNull(b.revokedAt)));
 }
 
-/** Exactly one active binding for the subject, or a fail-closed refusal. */
+/**
+ * Exactly one active binding for the subject, or a fail-closed refusal.
+ * Entra tenant and object ids are GUIDs: matched case-insensitively (W05 —
+ * a tenant pasted in upper case must not make a subject unmatchable).
+ */
 export async function resolveTargetBinding(orgId: string, subject: EntraSubject): Promise<BindingRow> {
   const rows = await db.select().from(b)
-    .where(and(eq(b.orgId, orgId), eq(b.entraTenantId, subject.entraTenantId), eq(b.entraOid, subject.entraOid), isNull(b.revokedAt)))
+    .where(and(
+      eq(b.orgId, orgId),
+      sql`lower(${b.entraTenantId}) = ${subject.entraTenantId.toLowerCase()}`,
+      sql`lower(${b.entraOid}) = ${subject.entraOid.toLowerCase()}`,
+      isNull(b.revokedAt),
+    ))
     .limit(2);
   if (rows.length !== 1) {
     throw new CallerVerificationRequiredError({
