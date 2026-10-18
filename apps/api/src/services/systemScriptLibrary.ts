@@ -414,6 +414,126 @@ try {
 }
 `;
 
+/**
+ * #8290 printer cleanup scripts. Both remove printer QUEUES only; ports and
+ * drivers are deliberately left alone (other queues may share them, and
+ * re-adding a printer is far cheaper without a driver reinstall). Run as
+ * SYSTEM, so only machine-wide printers are visible.
+ */
+const DELETE_PRINTER_BY_NAME_CONTENT = `# Delete Printer by Name (Windows).
+#
+# Removes every printer queue whose name matches printer_name (case-insensitive,
+# wildcards * and ? allowed). Never touches ports or drivers.
+# Exit 1: blank parameter, print spooler unavailable, or any removal failed
+# (the remaining matches are still attempted). Exit 0 otherwise, including
+# when nothing matched.
+$ErrorActionPreference = 'Stop'
+
+$pattern = ("$env:BREEZE_PARAM_PRINTER_NAME").Trim()
+$dryRun = ("$env:BREEZE_PARAM_DRY_RUN").Trim() -ieq 'yes'
+
+if ([string]::IsNullOrWhiteSpace($pattern)) {
+  Write-Output 'ERROR: printer_name is required and was blank.'
+  exit 1
+}
+
+try {
+  $printers = @(Get-Printer)
+} catch {
+  Write-Output "ERROR: could not list printers (is the Print Spooler service running?): $($_.Exception.Message)"
+  exit 1
+}
+
+Write-Output "Pattern: $pattern$(if ($dryRun) { ' (dry run - nothing will be removed)' })"
+$matched = @($printers | Where-Object { $_.Name -like $pattern })
+if ($matched.Count -eq 0) {
+  Write-Output 'No printers matched.'
+  exit 0
+}
+
+$removed = 0
+$failed = 0
+foreach ($p in $matched) {
+  if ($dryRun) {
+    Write-Output "WOULD REMOVE: $($p.Name)"
+    continue
+  }
+  try {
+    Remove-Printer -Name $p.Name -ErrorAction Stop
+    Write-Output "REMOVED: $($p.Name)"
+    $removed++
+  } catch {
+    Write-Output "FAILED: $($p.Name): $($_.Exception.Message)"
+    $failed++
+  }
+}
+
+Write-Output "Summary: $($matched.Count) matched, $removed removed, $failed failed."
+if ($failed -gt 0) { exit 1 }
+exit 0
+`;
+
+const DELETE_ALL_PRINTERS_EXCEPT_CONTENT = `# Delete All Printers Except Listed (Windows).
+#
+# Removes every printer queue whose name does NOT match any entry in
+# keep_printers (comma- or newline-separated; case-insensitive; wildcards * and
+# ? allowed). Never touches ports or drivers.
+# An empty keep list is refused (exit 1) before anything is listed or removed,
+# so this can never silently delete every printer.
+# Exit 1: empty keep list, print spooler unavailable, or any removal failed
+# (the rest are still attempted). Exit 0 otherwise.
+$ErrorActionPreference = 'Stop'
+
+$raw = "$env:BREEZE_PARAM_KEEP_PRINTERS"
+$dryRun = ("$env:BREEZE_PARAM_DRY_RUN").Trim() -ieq 'yes'
+
+$keep = @(($raw -split '[,\\r\\n]+') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+if ($keep.Count -eq 0) {
+  Write-Output 'ERROR: keep_printers is empty. Refusing to remove every printer.'
+  exit 1
+}
+
+try {
+  $printers = @(Get-Printer)
+} catch {
+  Write-Output "ERROR: could not list printers (is the Print Spooler service running?): $($_.Exception.Message)"
+  exit 1
+}
+
+Write-Output "Keep patterns ($($keep.Count)): $($keep -join ' | ')$(if ($dryRun) { ' (dry run - nothing will be removed)' })"
+
+$removed = 0
+$kept = 0
+$failed = 0
+foreach ($p in $printers) {
+  $isKept = $false
+  foreach ($k in $keep) {
+    if ($p.Name -like $k) { $isKept = $true; break }
+  }
+  if ($isKept) {
+    Write-Output "KEPT: $($p.Name)"
+    $kept++
+    continue
+  }
+  if ($dryRun) {
+    Write-Output "WOULD REMOVE: $($p.Name)"
+    continue
+  }
+  try {
+    Remove-Printer -Name $p.Name -ErrorAction Stop
+    Write-Output "REMOVED: $($p.Name)"
+    $removed++
+  } catch {
+    Write-Output "FAILED: $($p.Name): $($_.Exception.Message)"
+    $failed++
+  }
+}
+
+Write-Output "Summary: $($printers.Count) found, $kept kept, $removed removed, $failed failed."
+if ($failed -gt 0) { exit 1 }
+exit 0
+`;
+
 export const SYSTEM_LIBRARY_SCRIPTS: SystemLibraryScriptDefinition[] = [
   {
     name: 'Migrate Agent Edition (Windows)',
@@ -444,6 +564,63 @@ export const SYSTEM_LIBRARY_SCRIPTS: SystemLibraryScriptDefinition[] = [
       },
     ],
     timeoutSeconds: 1800,
+    runAs: 'system',
+  },
+  {
+    name: 'Delete Printer by Name (Windows)',
+    description:
+      'Removes every printer whose name matches printer_name (case-insensitive; * and ? wildcards ' +
+      'allowed, e.g. "HP*" or "*Front Desk*"). Only the printer queue is removed - ports and drivers ' +
+      'are left in place. Set dry_run to yes to list what would be removed. Prints each removed ' +
+      'printer and a summary; exits 1 if the parameter is blank, the print spooler is unavailable, or ' +
+      'any removal fails, and exits 0 when nothing matched. Runs as SYSTEM, so it sees machine-wide ' +
+      'printers only: per-user connected network printers are not visible to it.',
+    category: 'Maintenance',
+    osTypes: ['windows'],
+    language: 'powershell',
+    content: DELETE_PRINTER_BY_NAME_CONTENT,
+    parameters: [
+      { name: 'printer_name', type: 'string', required: true, source: 'runtime' },
+      {
+        name: 'dry_run',
+        type: 'select',
+        required: false,
+        options: 'no,yes',
+        defaultValue: 'no',
+        source: 'runtime',
+      },
+    ],
+    timeoutSeconds: 300,
+    runAs: 'system',
+  },
+  {
+    name: 'Delete All Printers Except Listed (Windows)',
+    description:
+      'Cleans up a printer list: removes every printer EXCEPT those matching keep_printers ' +
+      '(comma- or newline-separated names; case-insensitive; * and ? wildcards allowed). Use it to ' +
+      'standardise printer deployment. Built-in printers such as "Microsoft Print to PDF", "Microsoft ' +
+      'XPS Document Writer" and "OneNote" are matched like any other, so list them too if you want to ' +
+      'keep them. An empty keep list is refused (exit 1) before anything is removed. Only the printer ' +
+      'queue is removed - ports and drivers are left in place. Set dry_run to yes to list what would ' +
+      'be removed. Prints every kept and removed printer plus a summary; exits 1 if the keep list is ' +
+      'empty, the print spooler is unavailable, or any removal fails. Runs as SYSTEM, so it sees ' +
+      'machine-wide printers only: per-user connected network printers are not visible to it.',
+    category: 'Maintenance',
+    osTypes: ['windows'],
+    language: 'powershell',
+    content: DELETE_ALL_PRINTERS_EXCEPT_CONTENT,
+    parameters: [
+      { name: 'keep_printers', type: 'string', required: true, source: 'runtime' },
+      {
+        name: 'dry_run',
+        type: 'select',
+        required: false,
+        options: 'no,yes',
+        defaultValue: 'no',
+        source: 'runtime',
+      },
+    ],
+    timeoutSeconds: 300,
     runAs: 'system',
   },
 ];
