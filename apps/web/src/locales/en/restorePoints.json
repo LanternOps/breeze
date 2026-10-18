@@ -8,6 +8,7 @@
     "existingAcceptedNoDetail": "Existing point reused",
     "skippedDisabled": "Skipped — System Restore is turned off on this device",
     "skippedDefinitionOnly": "Skipped — definitions-only update",
+    "skippedNoMutation": "Not needed — no changes were made, so no restore point was created",
     "unsupported": "Not available on this device",
     "busy": "Skipped — the volume snapshot service was in use",
     "insufficientPrivileges": "Skipped — not enough privileges",

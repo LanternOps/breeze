@@ -25,16 +25,16 @@ function outcome(overrides: Record<string, unknown> = {}) {
 
 describe('restorePoint outcome status vocabulary (#4757)', () => {
   // The agent (agent/internal/systemrestore/types.go, Status) produces exactly
-  // these nine. A rename or a new value on any one of the three sides must
+  // these ten. A rename or a new value on any one of the three sides must
   // fail here rather than silently classify real outcomes as invalid.
-  const NINE = [
-    'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only',
+  const TEN = [
+    'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only', 'skipped_no_mutation',
     'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed',
   ];
 
-  it('accepts exactly the nine agent-produced statuses', () => {
-    expect([...RESTORE_POINT_OUTCOME_STATUSES]).toEqual(NINE);
-    expect([...restorePointOutcomeSchema.shape.status.options]).toEqual(NINE);
+  it('accepts exactly the ten agent-produced statuses', () => {
+    expect([...RESTORE_POINT_OUTCOME_STATUSES]).toEqual(TEN);
+    expect([...restorePointOutcomeSchema.shape.status.options]).toEqual(TEN);
   });
 
   it('equals the shared status union minus the server-only requested', () => {

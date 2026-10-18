@@ -8,6 +8,7 @@
     "existingAcceptedNoDetail": "Vorhandener Punkt wiederverwendet",
     "skippedDisabled": "Übersprungen — Systemwiederherstellung ist auf diesem Gerät deaktiviert",
     "skippedDefinitionOnly": "Übersprungen — reines Definitionsupdate",
+    "skippedNoMutation": "Nicht erforderlich — es wurden keine Änderungen vorgenommen, daher wurde kein Wiederherstellungspunkt erstellt",
     "unsupported": "Auf diesem Gerät nicht verfügbar",
     "busy": "Übersprungen — der Volumeschattenkopie-Dienst war ausgelastet",
     "insufficientPrivileges": "Übersprungen — unzureichende Berechtigungen",
