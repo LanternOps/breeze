@@ -792,6 +792,11 @@ const REPOINT_TABLES: readonly string[] = [
   "agent_rollback_directives",
   // agent_rollback_events removed (#4371 fixup): reclassified 'leave-for-erasure'
   // in SPECIAL above — breeze_app has no UPDATE on this append-only table.
+  // agreement_request_recipients / agreement_requests (#8865 W1b): composite
+  // (…, org_id) FKs are DEFERRABLE, so parent and child org_id move in separate
+  // statements; the only unique key, (request_id, email), cannot collide across orgs.
+  "agreement_request_recipients",
+  "agreement_requests",
   "ai_action_plans",
   // ai_invocations (#7600 W02) is append-only, but its trigger admits exactly
   // the org_id-only UPDATE this policy issues while the loser org is fenced

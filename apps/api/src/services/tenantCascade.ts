@@ -260,6 +260,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'action_intents',
   'agent_health_observations',
   'agent_logs',
+  // agreement_request_recipients / agreement_requests (#8865 W1b): children
+  // before parent (recipients → requests is a composite ON DELETE CASCADE FK).
+  // contract_documents.agreement_request_id → agreement_requests is ON DELETE
+  // SET NULL, so a list position ahead of contract_documents is safe;
+  // topologicalCascadeOrder() deletes contract_documents first regardless.
+  'agreement_request_recipients',
+  'agreement_requests',
   'ai_action_plans',
   // ai_agent_circuit_state / ai_agent_fix_watches (Wave 6 PR 2, #3828): sort
   // here alphabetically (before ai_agent_runs) even though
