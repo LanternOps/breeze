@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -272,6 +273,125 @@ func TestLinuxLadderPromptsInTheSessionAndWallsWithoutOne(t *testing.T) {
 		}
 		if !strings.Contains(f.walls[0], "Neustart geplant") {
 			t.Errorf("wall message %q dropped the operator's custom title (#8030)", f.walls[0])
+		}
+	})
+}
+
+func TestDesktopPromptThatCouldNotRenderLeavesTheWallToNotify(t *testing.T) {
+	// zenity is installed and a session exists, but the dialog never reached
+	// the screen (stale X cookie, compositor restarting). Prompt must say so,
+	// and the manager's follow-up Notify must then wall exactly once.
+	f := &fakeDesktop{sessions: fakeSessions(1), zenity: true, promptOK: false, notifyOK: false}
+	d := f.delivery()
+
+	if _, shown := d.Prompt("t", "b", "normal", []string{"a", "b"}, time.Second); shown {
+		t.Fatal("Prompt reported shown although the dialog never rendered")
+	}
+	if len(f.walls) != 0 {
+		t.Fatalf("Prompt walled: %q", f.walls)
+	}
+	d.Notify("t", "b", "normal")
+	if len(f.walls) != 1 {
+		t.Errorf("walls = %d after the follow-up Notify, want 1", len(f.walls))
+	}
+}
+
+func TestRunWallReportsANonZeroExitWithItsOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("wall is a Unix tool")
+	}
+	script := filepath.Join(t.TempDir(), "fake-wall")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'wall: cannot get tty name' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := runWall(context.Background(), script, "m")
+	if err == nil || !strings.Contains(err.Error(), "cannot get tty name") {
+		t.Errorf("runWall error = %v, want it to carry wall's own complaint", err)
+	}
+}
+
+func TestRunWallKillsAHungWall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("wall is a Unix tool")
+	}
+	script := filepath.Join(t.TempDir(), "fake-wall")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := runWall(ctx, script, "m")
+	if err == nil || !strings.Contains(err.Error(), "killed") {
+		t.Errorf("runWall error = %v, want a kill report", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Errorf("runWall took %v; a hung wall must not stall the ladder", time.Since(start))
+	}
+}
+
+// runWholeLadder fires every armed timer offset once, in order.
+func runWholeLadder(timers *fakeTimers) {
+	seen := map[time.Duration]bool{}
+	var offs []time.Duration
+	for _, o := range timers.offsets() {
+		if !seen[o] {
+			seen[o] = true
+			offs = append(offs, o)
+		}
+	}
+	sort.Slice(offs, func(i, j int) bool { return offs[i] < offs[j] })
+	for _, o := range offs {
+		timers.runAt(o)
+	}
+}
+
+// TestLinuxWholeLadderWallsEveryRungOnlyWhenHeadless runs a maintenance
+// schedule_reboot to completion: a headless box gets one wall per planned
+// warning (none swallowed, none doubled), and a box whose desktop took every
+// warning gets no wall at all.
+func TestLinuxWholeLadderWallsEveryRungOnlyWhenHeadless(t *testing.T) {
+	opts := RebootOptions{Deferral: DeferralPolicy{Allowed: true, MaxDeferrals: 2, DeferralMinutes: 60}}
+
+	t.Run("headless", func(t *testing.T) {
+		rm, timers, _, osCalls, clock, _ := newDeferralTestManager(t, 3)
+		f := &fakeDesktop{zenity: true}
+		d := f.delivery()
+		rm.promptFn, rm.notifyFn = d.Prompt, d.Notify
+		if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour),
+			"Pending reboot — maintenance window", "maintenance_window", opts); err != nil {
+			t.Fatalf("ScheduleWithOptions: %v", err)
+		}
+		planned := rm.State().NotificationsPlanned
+		runWholeLadder(timers)
+
+		if len(*osCalls) != 1 {
+			t.Fatalf("osCalls = %d, want the reboot to have been invoked once", len(*osCalls))
+		}
+		if planned < 2 || len(f.walls) != planned {
+			t.Errorf("walls = %d, planned warnings = %d; want one wall per warning", len(f.walls), planned)
+		}
+	})
+
+	t.Run("desktop", func(t *testing.T) {
+		rm, timers, _, osCalls, clock, _ := newDeferralTestManager(t, 3)
+		f := &fakeDesktop{sessions: fakeSessions(1), zenity: true, promptOK: true, notifyOK: true}
+		d := f.delivery()
+		rm.promptFn, rm.notifyFn = d.Prompt, d.Notify
+		if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour),
+			"Pending reboot — maintenance window", "maintenance_window", opts); err != nil {
+			t.Fatalf("ScheduleWithOptions: %v", err)
+		}
+		runWholeLadder(timers)
+
+		if len(*osCalls) != 1 {
+			t.Fatalf("osCalls = %d, want the reboot to have been invoked once", len(*osCalls))
+		}
+		if len(f.walls) != 0 {
+			t.Errorf("walls = %d although the desktop took every warning", len(f.walls))
+		}
+		if f.prompts+f.notifies == 0 {
+			t.Error("the desktop received nothing")
 		}
 	})
 }

@@ -121,7 +121,11 @@ func (d desktopDelivery) Notify(title, body, urgency string) {
 	if err := d.wall(wallCtx, wallMessage(title, body)); err != nil {
 		log.Warn("the reboot warning reached no graphical session and wall failed; "+
 			"the user may not have been warned", "title", title, "error", err.Error())
+		return
 	}
+	// wall exits 0 even when no terminal is open, so this records that the
+	// broadcast was attempted, not that anyone read it.
+	log.Info("reboot warning broadcast with wall", "title", title)
 }
 
 // wallMessage renders a warning for a terminal broadcast: the title, a blank
