@@ -2648,6 +2648,7 @@
       "selectedLabel": "Solo queste aree",
       "coreLabel": "Core (sempre incluso)",
       "error": "Seleziona almeno un’area oppure scegli Tutti gli strumenti.",
+      "allEquivalentNote": "Tutte le aree sono selezionate, quindi equivale a Tutti gli strumenti, comprese le aree aggiunte in seguito.",
       "reconnectNote": "Si applica a questa connessione. Per restringere una connessione esistente, revocala in App connesse e poi riconnettiti.",
       "apiKeyHint": "Scegli quali aree di strumenti questa chiave può usare tramite l’interfaccia IA/MCP.",
       "allTools": "Tutti gli strumenti",

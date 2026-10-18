@@ -2648,6 +2648,7 @@
       "selectedLabel": "Nur diese Bereiche",
       "coreLabel": "Kern (immer enthalten)",
       "error": "Wählen Sie mindestens einen Bereich oder „Alle Werkzeuge“.",
+      "allEquivalentNote": "Alle Bereiche sind ausgewählt. Das entspricht „Alle Werkzeuge“, einschließlich später hinzugefügter Bereiche.",
       "reconnectNote": "Gilt für diese Verbindung. Um eine bestehende Verbindung einzuschränken, widerrufen Sie sie unter „Verbundene Apps“ und verbinden Sie sich erneut.",
       "apiKeyHint": "Legen Sie fest, welche Werkzeugbereiche dieser Schlüssel über die KI-/MCP-Schnittstelle nutzen darf.",
       "allTools": "Alle Werkzeuge",

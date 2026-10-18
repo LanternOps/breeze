@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { normalizeMcpDomainsInput } from '@breeze/shared';
+import { MCP_GRANTABLE_DOMAINS, normalizeMcpDomainsInput } from '@breeze/shared';
 import { apiKeyRoutes } from './apiKeys';
 
 // Valid UUID constants for tests
@@ -876,6 +876,11 @@ describe('api keys routes', () => {
       // adding a domain also widens: denied
       const addDenied = await patch({ mcpDomains: ['tickets', 'devices'] });
       expect(addDenied.status).toBe(403);
+
+      // an explicit list of every area normalizes to null (incl. future areas): denied
+      const allDenied = await patch({ mcpDomains: [...MCP_GRANTABLE_DOMAINS] });
+      expect(allDenied.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
 
       // narrowing to a subset: allowed
       mockPatch({ scopes: ['ai:execute'], mcpDomains: ['tickets', 'devices'] });

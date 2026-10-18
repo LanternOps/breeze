@@ -2648,6 +2648,7 @@
       "selectedLabel": "Yalnızca bu alanlar",
       "coreLabel": "Çekirdek (her zaman dahil)",
       "error": "En az bir alan seçin veya Tüm araçlar seçeneğini işaretleyin.",
+      "allEquivalentNote": "Tüm alanlar seçili; bu, daha sonra eklenecek alanlar dahil Tüm araçlar ile aynıdır.",
       "reconnectNote": "Bu bağlantı için geçerlidir. Mevcut bir bağlantıyı daraltmak için Bağlı uygulamalar bölümünden iptal edin, ardından yeniden bağlanın.",
       "apiKeyHint": "Bu anahtarın yapay zekâ/MCP arayüzü üzerinden kullanabileceği araç alanlarını seçin.",
       "allTools": "Tüm araçlar",

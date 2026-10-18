@@ -2648,6 +2648,7 @@
       "selectedLabel": "Somente estas áreas",
       "coreLabel": "Núcleo (sempre incluído)",
       "error": "Selecione pelo menos uma área ou escolha Todas as ferramentas.",
+      "allEquivalentNote": "Todas as áreas estão selecionadas, então isso equivale a Todas as ferramentas, incluindo áreas adicionadas depois.",
       "reconnectNote": "Vale para esta conexão. Para restringir uma conexão existente, revogue-a em Aplicativos conectados e conecte novamente.",
       "apiKeyHint": "Escolha quais áreas de ferramentas esta chave pode usar pela interface de IA/MCP.",
       "allTools": "Todas as ferramentas",

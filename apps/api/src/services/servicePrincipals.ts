@@ -94,19 +94,27 @@ export async function createServicePrincipal(input: {
  * routes/apiKeys.ts. The revoke-then-mint ordering means there is never a
  * window where two keys are simultaneously active for one principal.
  */
+export class ServicePrincipalMcpDomainsConflictError extends Error {
+  constructor() {
+    super('The principal has several active keys whose MCP tool areas do not overlap; revoke the extra keys, then rotate.');
+    this.name = 'ServicePrincipalMcpDomainsConflictError';
+  }
+}
+
 /**
- * The narrowest of several stored `mcp_domains` values. `null` (unrestricted)
- * loses to any restricted set; restricted sets intersect. An empty
- * intersection is not storable (the CHECK forbids `[]`), so it falls back to
- * the smallest restricted set — still never wider than every input.
+ * The narrowest of several stored `mcp_domains` values: `null` (unrestricted)
+ * loses to any restricted set and restricted sets intersect. An empty
+ * intersection is not storable (the CHECK forbids `[]`) and any pick would be
+ * wider than one of the inputs, so it refuses instead (fail closed). Only
+ * reachable with several active keys at once, which revoke-then-mint avoids.
  */
 function narrowestMcpDomains(values: Array<string[] | null>): string[] | null {
   const restricted = values.filter((v): v is string[] => v !== null);
   if (restricted.length === 0) return null;
   const [first, ...rest] = restricted;
   const intersection = first!.filter((d) => rest.every((r) => r.includes(d)));
-  if (intersection.length > 0) return intersection;
-  return restricted.reduce((a, b) => (b.length < a.length ? b : a));
+  if (intersection.length === 0) throw new ServicePrincipalMcpDomainsConflictError();
+  return intersection;
 }
 
 export async function rotateServicePrincipalKey(

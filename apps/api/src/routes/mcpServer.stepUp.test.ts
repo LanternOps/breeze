@@ -91,9 +91,12 @@ vi.mock('./mcpExecutionOrg', () => ({
   resolveMcpExecutionContext: async () => ({ orgId: 'org-1' }),
   McpExecutionOrgError: class McpExecutionOrgError extends Error {},
 }));
+const tenantMocks = vi.hoisted(() => ({
+  resolveTenantToolByName: vi.fn(async (): Promise<unknown> => null),
+}));
 vi.mock('../services/toolSources/resolver', () => ({
   resolveTenantTools: vi.fn(async () => []),
-  resolveTenantToolByName: vi.fn(async () => null),
+  resolveTenantToolByName: (...args: unknown[]) => tenantMocks.resolveTenantToolByName(...(args as [])),
   resolveTenantToolHealthByName: vi.fn(async () => ({ found: false })),
 }));
 vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
@@ -123,6 +126,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 });
 
 import { mcpServerRoutes } from './mcpServer';
+import { makeTenantDescriptor as tenantDescriptor } from './__fixtures__/mcpDomainTools';
 
 const DEFAULT_CHALLENGE =
   'Bearer realm="breeze", resource_metadata="https://issuer.example.com/.well-known/oauth-protected-resource", scope="mcp:read mcp:write mcp:execute"';
@@ -202,6 +206,22 @@ describe('insufficient_scope step-up', () => {
     expect(res.status).toBe(403);
     expect(res.headers.get('www-authenticate')).toContain('error="insufficient_scope"');
     expect((await res.json()).error.data).toEqual({ reason: 'insufficient_scope', requiredScope: 'ai:write' });
+  });
+
+  it('flag on: a restricted bearer inside its granted domain still steps up for the tier scope', async () => {
+    vi.stubEnv('MCP_INSUFFICIENT_SCOPE_HTTP_403', 'true');
+    const restricted = await callCreateTicket(bearer({ mcpDomains: ['tickets'] }));
+    expect(restricted.res.status).toBe(403);
+    expect(restricted.res.headers.get('www-authenticate')).toContain('scope="mcp:read mcp:write"');
+  });
+
+  it('flag on: a tenant tool scope denial steps up the same way', async () => {
+    vi.stubEnv('MCP_INSUFFICIENT_SCOPE_HTTP_403', 'true');
+    tenantMocks.resolveTenantToolByName.mockResolvedValueOnce(tenantDescriptor('hudu__update_asset', 2));
+    const { res, body } = await post('/message', bearer({ scopes: ['ai:read'] }), 'tools/call', { name: 'hudu__update_asset', arguments: {} });
+    expect(res.status).toBe(403);
+    expect(res.headers.get('www-authenticate')).toContain('scope="mcp:read mcp:write"');
+    expect(body.error.data).toEqual({ reason: 'insufficient_scope', requiredScope: 'ai:write' });
   });
 
   it('flag on: X-API-Key callers never get 403', async () => {

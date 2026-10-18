@@ -331,6 +331,31 @@ describe('B-W02 domain gate — tools/call', () => {
     expect(audit.details.canonicalTool).toBe('get_invite_funnel');
   });
 
+  it('a granted domain never loosens the approval or RBAC gates', async () => {
+    setKey({ mcpDomains: ['scripts', 'tickets'], scopes: ALL_AI_SCOPES });
+    const approval = await rpc('tools/call', { name: 'run_script', arguments: {} });
+    expect(approval.body.error).toBeUndefined();
+    expect(JSON.parse(approval.body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+
+    mocks.checkToolPermission.mockResolvedValueOnce('Permission denied: tickets.write');
+    const rbac = await rpc('tools/call', { name: 'create_ticket', arguments: {} });
+    expect(rbac.body.error).toEqual({ code: -32603, message: 'Permission denied: tickets.write' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('an over-long denied resource URI is bounded in the error and the audit row', async () => {
+    // The device-detail pattern accepts any length of [0-9a-f-], so the
+    // caller controls how much text a denial would echo and audit.
+    setKey({ mcpDomains: ['tickets'] });
+    const longUri = `breeze://devices/${'a'.repeat(5000)}`;
+    const { body } = await rpc('resources/read', { uri: longUri });
+    expect(body.error.code).toBe(-32003);
+    expect(body.error.message.length).toBeLessThan(400);
+    const audit = mocks.writeAuditEvent.mock.calls.map((c: any[]) => c[1]).find((e: any) => e?.resourceType === 'mcp_request');
+    expect(audit.details).toMatchObject({ domain: 'devices', deniedReason: 'domain_not_granted' });
+    expect(audit.details.resourceUri.length).toBeLessThanOrEqual(129);
+  });
+
   it('unknown tool names stay Unknown tool, never domain_not_granted', async () => {
     setKey({ mcpDomains: ['tickets'] });
     const { body } = await rpc('tools/call', { name: 'not_a_tool', arguments: {} });

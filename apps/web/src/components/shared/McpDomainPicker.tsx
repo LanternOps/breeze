@@ -64,6 +64,9 @@ export default function McpDomainPicker({
   };
 
   const invalid = mode === 'selected' && checked.size === 0;
+  // Every box ticked is stored as "All tools", which also covers areas added
+  // later — say so rather than let the radio imply a fixed list.
+  const allEquivalent = mode === 'selected' && checked.size === MCP_GRANTABLE_DOMAINS.length;
 
   return (
     <fieldset className="space-y-2" disabled={disabled}>
@@ -116,6 +119,12 @@ export default function McpDomainPicker({
       {invalid && (
         <p data-testid="mcp-domains-error" role="alert" className="text-xs text-destructive">
           {t('longTail.mcpDomains.error')}
+        </p>
+      )}
+
+      {allEquivalent && (
+        <p data-testid="mcp-domains-all-equivalent" className="text-xs text-muted-foreground">
+          {t('longTail.mcpDomains.allEquivalentNote')}
         </p>
       )}
 

@@ -4,10 +4,11 @@
  * An API key or OAuth grant may be limited to a set of tool domains
  * (`mcp_domains`). This module turns the stored value into a grant and
  * answers "may this principal see/use something in domain D?". Every MCP
- * tool and resource path in `routes/mcpServer.ts` calls it, AFTER the scope
- * tier, approval, MFA, allowlist and RBAC gates — never instead of them.
- * Domain eligibility is not authority: a granted domain only stops hiding a
- * tool; every other gate still applies.
+ * tool and resource path in `routes/mcpServer.ts` calls it IN ADDITION TO the
+ * scope tier, approval, MFA, allowlist and RBAC gates — never instead of
+ * them. In `tools/call` it runs first (a denied principal learns nothing about
+ * the tool's tiers); it only ever adds a denial, so every later gate still
+ * runs for anything it lets through. Domain eligibility is not authority.
  *
  * Fail-closed rules:
  *  - Only `null` means unrestricted. `undefined` (a middleware forgot the
@@ -39,8 +40,14 @@ export function parseStoredMcpDomains(raw: unknown): McpDomainGrant {
     return { restricted: true, domains: new Set() };
   }
   const domains = new Set<McpGrantableDomain>();
+  let dropped = 0;
   for (const value of raw) {
     if (typeof value === 'string' && GRANTABLE.has(value)) domains.add(value as McpGrantableDomain);
+    else dropped += 1;
+  }
+  if (dropped > 0) {
+    // Fail closed, but loudly: the support symptom is "my key lost its tools".
+    console.warn('[MCP] ignored unknown stored mcpDomains values', { dropped, kept: domains.size });
   }
   return { restricted: true, domains };
 }
@@ -84,6 +91,17 @@ export type DomainNotGrantedError = {
   data: { reason: 'domain_not_granted'; domain: AiToolDomain | 'unclassified'; hint: string };
 };
 
+/**
+ * A denied name can be caller-controlled (a tenant tool is denied on its
+ * `<slug>__<name>` shape alone), so it is bounded before it is echoed or
+ * written to the audit row.
+ */
+export const MCP_DENIED_NAME_MAX_CHARS = 128;
+
+export function boundDeniedName(name: string): string {
+  return name.length > MCP_DENIED_NAME_MAX_CHARS ? `${name.slice(0, MCP_DENIED_NAME_MAX_CHARS)}…` : name;
+}
+
 const DOMAIN_NOT_GRANTED_HINT = 'Call whoami to see granted domains; reconnect or edit the API key to add it.';
 
 export function buildDomainNotGrantedError(
@@ -93,7 +111,7 @@ export function buildDomainNotGrantedError(
   const label = domain ?? 'unclassified';
   return {
     code: -32003,
-    message: `Tool "${toolOrUri}" is in the "${label}" domain, which this connection was not granted. ${DOMAIN_NOT_GRANTED_HINT}`,
+    message: `Tool "${boundDeniedName(toolOrUri)}" is in the "${label}" domain, which this connection was not granted. ${DOMAIN_NOT_GRANTED_HINT}`,
     data: { reason: 'domain_not_granted', domain: label, hint: DOMAIN_NOT_GRANTED_HINT },
   };
 }

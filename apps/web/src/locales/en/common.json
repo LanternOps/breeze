@@ -2648,6 +2648,7 @@
       "selectedLabel": "Only these areas",
       "coreLabel": "Core (always included)",
       "error": "Select at least one area, or choose All tools.",
+      "allEquivalentNote": "Every area is selected, so this is the same as All tools, including areas added later.",
       "reconnectNote": "Applies to this connection. To narrow an existing connection, revoke it under Connected apps, then reconnect.",
       "apiKeyHint": "Choose which tool areas this key can use through the AI/MCP interface.",
       "allTools": "All tools",

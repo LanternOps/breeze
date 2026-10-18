@@ -10,6 +10,7 @@ import {
 } from './mcpDomains';
 import { getAllRegisteredToolNames } from './aiTools';
 import { hasCoreAiToolName, MCP_WHOAMI_TOOL_NAME } from './aiToolNames';
+import { DEPRECATED_TOOL_ALIASES, resolveDeprecatedToolAlias } from './aiToolAliases';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -31,6 +32,7 @@ describe('parseStoredMcpDomains', () => {
   });
 
   it('unknown stored values grant nothing and never widen', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const mixed = parseStoredMcpDomains(['tickets', 'legacy_x']);
     expect(mixed.restricted).toBe(true);
     expect(mixed.restricted && [...mixed.domains]).toEqual(['tickets']);
@@ -45,6 +47,14 @@ describe('parseStoredMcpDomains', () => {
     expect(parseStoredMcpDomains(['core'])).toEqual({ restricted: true, domains: new Set() });
     expect(parseStoredMcpDomains([])).toEqual({ restricted: true, domains: new Set() });
     expect(parseStoredMcpDomains([null, 'devices'])).toEqual({ restricted: true, domains: new Set(['devices']) });
+    // Dropped values are logged (support symptom: "my key lost its tools").
+    expect(warn).toHaveBeenCalledWith('[MCP] ignored unknown stored mcpDomains values', { dropped: 1, kept: 1 });
+  });
+
+  it('a clean stored set logs nothing', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    parseStoredMcpDomains(['tickets', 'devices']);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
@@ -94,6 +104,18 @@ describe('mcpResourceDomain', () => {
   it('unknown URI families have no domain', () => {
     expect(mcpResourceDomain('breeze://secrets')).toBeUndefined();
     expect(mcpResourceDomain('breeze://devices/../alerts')).toBeUndefined();
+  });
+});
+
+describe('deprecated aliases (real table)', () => {
+  it('every deprecated alias resolves to a registered tool with a domain', () => {
+    const registered = new Set(getAllRegisteredToolNames());
+    expect(DEPRECATED_TOOL_ALIASES.size).toBeGreaterThan(0);
+    for (const [alias, canonical] of DEPRECATED_TOOL_ALIASES) {
+      expect(resolveDeprecatedToolAlias(alias)).toBe(canonical);
+      expect(registered.has(canonical), `${alias} -> ${canonical}`).toBe(true);
+      expect(mcpToolDomain(canonical), canonical).toBeDefined();
+    }
   });
 });
 

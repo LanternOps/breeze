@@ -56,6 +56,7 @@ import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } f
 import { API_VERSION } from '../version';
 import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
 import {
+  boundDeniedName,
   buildDomainNotGrantedError,
   isDomainGranted,
   isMcpToolGranted,
@@ -682,8 +683,8 @@ function domainDenialAuditDetails(body: JsonRpcRequest, response: JsonRpcRespons
   if (data?.reason !== 'domain_not_granted') return {};
   const params = body.params ?? {};
   const target = body.method === 'resources/read'
-    ? { resourceUri: typeof params.uri === 'string' ? params.uri : null }
-    : { canonicalTool: typeof params.name === 'string' ? resolveDeprecatedToolAlias(params.name) : null };
+    ? { resourceUri: typeof params.uri === 'string' ? boundDeniedName(params.uri) : null }
+    : { canonicalTool: typeof params.name === 'string' ? boundDeniedName(resolveDeprecatedToolAlias(params.name)) : null };
   return { ...target, domain: data.domain, deniedReason: 'domain_not_granted' };
 }
 
@@ -1913,19 +1914,6 @@ async function handleToolsCall(
   );
 }
 
-/**
- * `tools/call` dispatch for a tenant (BYO MCP) tool — Task A10. Mirrors the
- * core `handleToolsCall` path's order of checks (resolve → MCP approval gate
- * → scope gates → RBAC → rate limit → execute → audit), except that the
- * execution org is resolved BEFORE the tool itself (#6046): it is the
- * access-checked target org the tenant resolver needs to see org-owned tools.
- * Checks run against the tenant descriptor's own tier and the tenant
- * (`toolSources/*`) guardrail adapters rather than the core registry's.
- *
- * Tier 3 external tools are denied over MCP exactly like a core Tier 3 tool
- * (`isMcpApprovalRequired`) — this transport has no interactive approval
- * surface; PR B's action-intents flow does not extend to MCP.
- */
 function handleWhoamiCall(
   id: string | number,
   auth: AuthContext,
@@ -1958,6 +1946,19 @@ function handleWhoamiCall(
   });
 }
 
+/**
+ * `tools/call` dispatch for a tenant (BYO MCP) tool — Task A10. Mirrors the
+ * core `handleToolsCall` path's order of checks (resolve → MCP approval gate
+ * → scope gates → RBAC → rate limit → execute → audit), except that the
+ * execution org is resolved BEFORE the tool itself (#6046): it is the
+ * access-checked target org the tenant resolver needs to see org-owned tools.
+ * Checks run against the tenant descriptor's own tier and the tenant
+ * (`toolSources/*`) guardrail adapters rather than the core registry's.
+ *
+ * Tier 3 external tools are denied over MCP exactly like a core Tier 3 tool
+ * (`isMcpApprovalRequired`) — this transport has no interactive approval
+ * surface; PR B's action-intents flow does not extend to MCP.
+ */
 async function handleTenantToolCall(
   id: string | number,
   toolName: string,

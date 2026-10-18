@@ -418,7 +418,7 @@ describe('bearerTokenAuthMiddleware', () => {
       // No grant id was asked about, so the join answers nothing. `null` is
       // "not asked" and must stay distinct from `false` ("asked, and dead").
       grantActive: null,
-      grantMcpDomains: null,
+      grantMcpDomains: undefined,
     });
     expect(vi.mocked(db.select)).toHaveBeenCalled();
   });
@@ -860,7 +860,7 @@ describe('bearerTokenAuthMiddleware', () => {
       dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 3, grantActive: false, mcpDomains: null }];
       await expect(
         assertLiveOAuthUser({ sub: userId, auth_epoch: 3 }, new Date(), { grantId: 'g' }),
-      ).resolves.toEqual(expect.objectContaining({ ok: true, grantActive: false, grantMcpDomains: null }));
+      ).resolves.toEqual(expect.objectContaining({ ok: true, grantActive: false, grantMcpDomains: undefined }));
     });
   });
 

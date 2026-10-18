@@ -69,6 +69,15 @@ describe('McpDomainPicker', () => {
     for (const d of MCP_GRANTABLE_DOMAINS) fireEvent.click(screen.getByTestId(`mcp-domain-${d}`));
     expect(onChange).toHaveBeenLastCalledWith(normalizeMcpDomainsInput([...MCP_GRANTABLE_DOMAINS]));
     expect(onChange).toHaveBeenLastCalledWith(null);
+    // Saying so: every box equals All tools, including areas added later.
+    expect(screen.getByTestId('mcp-domains-all-equivalent').textContent).toMatch(/added later/);
+  });
+
+  it('shows no all-equivalent note for a partial selection', () => {
+    setup();
+    fireEvent.click(screen.getByTestId('mcp-domains-selected'));
+    fireEvent.click(screen.getByTestId('mcp-domain-tickets'));
+    expect(screen.queryByTestId('mcp-domains-all-equivalent')).toBeNull();
   });
 
   it('switching back to all emits null', () => {

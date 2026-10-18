@@ -35,6 +35,7 @@ import {
   migrateHumanKeyToServicePrincipal,
   ServicePrincipalNotFoundError,
   ApiKeyNotFoundError,
+  ServicePrincipalMcpDomainsConflictError,
 } from './servicePrincipals';
 
 const PRINCIPAL_ID = 'principal-1';
@@ -195,6 +196,18 @@ describe('rotateServicePrincipalKey mcp_domains carry (#6156)', () => {
     await rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID);
 
     expect(captured.values).toHaveProperty('mcpDomains', ['tickets']);
+  });
+
+  it('disjoint active restrictions refuse the rotation before anything is revoked', async () => {
+    mockSelectOnce([{ id: PRINCIPAL_ID, orgId: ORG_ID, name: 'CI bot', status: 'active', scopes: ['ai:read'] }]);
+    mockPriorKeysOnce([
+      { mcpDomains: ['tickets'], status: 'active' },
+      { mcpDomains: ['devices'], status: 'active' },
+    ]);
+
+    await expect(rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID)).rejects.toBeInstanceOf(ServicePrincipalMcpDomainsConflictError);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('rotation with no prior key at all mints an unrestricted (null) key', async () => {

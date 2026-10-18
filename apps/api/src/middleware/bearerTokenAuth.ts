@@ -34,7 +34,8 @@ interface OAuthApiKeyContext {
   oauthGrantId?: string;
   oauthClientId?: string;
   // B-W02 (#6156): the Grant's mcp_domains, read in the live-user query.
-  mcpDomains: readonly string[] | null;
+  // Only ever set for a live grant; `undefined` would fail closed.
+  mcpDomains: readonly string[] | null | undefined;
 }
 
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -54,11 +55,12 @@ export type LiveOAuthUserResult =
       grantActive: boolean | null;
       /**
        * B-W02 (#6156): the live Grant's `mcp_domains`, from the SAME joined
-       * row. `null` = unrestricted. Also `null` when the Grant is not live,
-       * which would read as unrestricted — safe only because the middleware
-       * 401s on `grantActive !== true` before it sets any context.
+       * row. `null` = unrestricted. `undefined` when no grant was asked about
+       * or the Grant is not live — never `null`, so a caller that forgot to
+       * check `grantActive` gets core-only (parseStoredMcpDomains), not
+       * everything. The middleware 401s on a dead grant before using it.
        */
-      grantMcpDomains: string[] | null;
+      grantMcpDomains: string[] | null | undefined;
     }
   | {
       ok: false;
@@ -160,7 +162,7 @@ export async function assertLiveOAuthUser(
       authEpoch: liveUser.authEpoch,
       legacyClaim: true,
       grantActive: grantId ? liveUser.grantActive : null,
-      grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : null,
+      grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : undefined,
     };
   }
 
@@ -178,7 +180,7 @@ export async function assertLiveOAuthUser(
     authEpoch: liveUser.authEpoch,
     legacyClaim: false,
     grantActive: grantId ? liveUser.grantActive : null,
-    grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : null,
+    grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : undefined,
   };
 }
 
