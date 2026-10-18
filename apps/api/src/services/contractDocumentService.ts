@@ -216,8 +216,10 @@ export interface SignedAgreementRender {
 
 export interface FreezeSignedAgreementInput {
   /** Where the signature came from. W1a: quote acceptance only. W1b adds
-   *  `{ kind: 'request'; agreementRequestId: string }`. */
-  source: { kind: 'quote'; quoteId: string; quoteAcceptanceId: string };
+   *  `{ kind: 'request'; agreementRequestId: string }`. `blockId` is the quote
+   *  block being frozen — diagnostics only (log/Sentry/error text), never
+   *  persisted. */
+  source: { kind: 'quote'; quoteId: string; quoteAcceptanceId: string; blockId: string };
   orgId: string;
   contractId: string | null;
   templateId: string;
@@ -251,7 +253,7 @@ export async function freezeSignedAgreement(input: FreezeSignedAgreementInput): 
       // A published uploaded version with no stored bytes can't be snapshotted —
       // fail rather than persist an empty legal record.
       throw new QuoteServiceError(
-        `Uploaded agreement template version ${input.templateVersionId} has no stored file to snapshot`,
+        `Uploaded contract block ${source.blockId} has no stored file to snapshot`,
         500,
         'CONTRACT_RENDER_DATA_MISSING',
       );
@@ -279,12 +281,12 @@ export async function freezeSignedAgreement(input: FreezeSignedAgreementInput): 
       // The send gate (findUnresolvedVariables, Task 12) should make this
       // unreachable, but a raw {{token}} must never reach an executed legal PDF.
       console.error('[contractDocumentService] unresolved variable(s) at accept-time snapshot', {
-        templateVersionId: input.templateVersionId,
+        blockId: source.blockId,
         quoteId: source.quoteId,
         missing: first.missing,
       });
       captureException(new Error(
-        `[contractDocumentService] unresolved variable(s) at accept-time snapshot: templateVersionId=${input.templateVersionId} quoteId=${source.quoteId} missing=${first.missing.join(',')}`
+        `[contractDocumentService] unresolved variable(s) at accept-time snapshot: blockId=${source.blockId} quoteId=${source.quoteId} missing=${first.missing.join(',')}`
       ));
       const blanks = Object.fromEntries(first.missing.map((n) => [n, '']));
       html = substituteVariables(html, blanks).html;
@@ -350,7 +352,7 @@ export async function createExecutedDocuments(
   const insertedIds: string[] = [];
   for (const data of renderData) {
     const { id } = await freezeSignedAgreement({
-      source: { kind: 'quote', quoteId: quote.id, quoteAcceptanceId: acceptanceId },
+      source: { kind: 'quote', quoteId: quote.id, quoteAcceptanceId: acceptanceId, blockId: data.blockId },
       orgId: quote.orgId,
       contractId,
       templateId: data.templateId,

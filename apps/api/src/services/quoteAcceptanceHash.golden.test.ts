@@ -163,3 +163,34 @@ describe('acceptance hash golden vectors (characterization — recorded on main 
     expect(pdf).toEqual(PDF_MAP);
   });
 });
+
+// Null-heavy fixture (#8865 W1a review): unset bill-to, seller, title, expiry
+// and document locale. Same DO-NOT-regenerate rule — these were computed with
+// origin/main 3cb835cee1's contractTemplateRender + contractDocumentService
+// (copied verbatim into a scratch module), not with the refactored code.
+describe('acceptance hash golden vectors — null parties / unstamped quote (recorded against origin/main)', () => {
+  const nullQuote = fixtureQuote({
+    ...quote, billToName: null, billToAddress: null, sellerSnapshot: null, title: null, expiryDate: null, documentLocale: null,
+  } as Partial<QuoteRow>);
+  const nullHash = (version: 1 | 2) =>
+    computeQuoteSha256(nullQuote as any, [block] as any, [line] as any,
+      buildContractHashParts([block], renderData, nullQuote, EFFECTIVE, 'en'), version);
+
+  it("v2 'en'", () => expect(nullHash(2)).toBe('17068479c90371c0d12fdb708a514137545f875d0faa43aabc22d72ca30f1469'));
+  it("v1 'en'", () => expect(nullHash(1)).toBe('65b13add2d113186c6579eb61edc5ff0c37c781b6254f31ea1e0ee036432803d'));
+  it('null fields resolve to empty strings, keys still present', () => {
+    expect(resolveAutoVariables(renderContextFromQuote(nullQuote, { effectiveDate: EFFECTIVE, renderLocale: 'en' }))).toEqual({
+      'client.name': '',
+      'client.address': '',
+      'seller.name': '',
+      'quote.number': 'Q-2026-0042',
+      'quote.title': '',
+      'totals.one_time': '€234.50',
+      'totals.monthly': '€1,000.00',
+      'totals.annual': '€0.00',
+      'totals.total': '€1,234.50',
+      'dates.effective': 'Oct 01, 2026',
+      'dates.expiry': '',
+    });
+  });
+});

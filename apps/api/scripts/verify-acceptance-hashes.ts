@@ -29,9 +29,22 @@ import { and, desc, eq, gte, type SQL } from 'drizzle-orm';
 import { closeDb, db, runOutsideDbContext, withSystemDbAccessContext } from '../src/db';
 import { quoteAcceptances, quotes } from '../src/db/schema/quotes';
 import { acceptanceRenderLocale, verifyQuoteAcceptanceHash } from '../src/services/quoteAcceptanceVerify';
+import { QuoteServiceError } from '../src/services/quoteTypes';
 import { parseVerifyArgs, summarize, type VerifyOutcome } from './verify-acceptance-hashes.lib';
 
 const LOG = '[verify-acceptance-hashes]';
+
+/** Error text that is safe to print and paste: QuoteServiceError messages are
+ *  fixed strings, but a driver/ORM error can embed the failing query text, its
+ *  parameters or a row `detail`, so only its class name and SQLSTATE are shown. */
+function safeErrorText(err: unknown): string {
+  if (err instanceof QuoteServiceError) return err.message;
+  if (err instanceof Error) {
+    const code = (err as { code?: unknown }).code;
+    return `${err.name}${typeof code === 'string' ? ` (code ${code})` : ''}`;
+  }
+  return typeof err;
+}
 
 type Candidate = { id: string; quoteId: string; hashVersion: number; renderLocale: string | null };
 
@@ -75,15 +88,19 @@ async function verifyOne(c: Candidate): Promise<VerifyOutcome> {
       hashVersion: c.hashVersion,
       renderLocale: acceptanceRenderLocale(c),
       matches: false,
-      error: err instanceof Error ? err.message : String(err),
+      error: safeErrorText(err),
     };
   }
 }
 
-async function main(): Promise<void> {
-  const args = parseVerifyArgs(process.argv.slice(2));
+async function main(args: ReturnType<typeof parseVerifyArgs>): Promise<void> {
   const candidates = await selectCandidates(args);
-  console.log(`${LOG} checking ${candidates.length} acceptance(s)`);
+  const filters = [args.orgId && 'org', args.partnerId && 'partner', args.since && 'since'].filter(Boolean);
+  console.log(`${LOG} checking ${candidates.length} acceptance(s) (limit ${args.limit}${filters.length ? `, filters: ${filters.join('+')}` : ''})`);
+  if (candidates.length === 0 && filters.length > 0) {
+    // Exit stays 0 (nothing failed), but a mistyped id must not read as a green gate.
+    console.warn(`${LOG} WARNING: the filters matched no acceptances — check the ids/date; nothing was verified`);
+  }
 
   const outcomes: VerifyOutcome[] = [];
   for (const c of candidates) {
@@ -101,9 +118,18 @@ async function main(): Promise<void> {
   process.exitCode = summary.exitCode;
 }
 
-main()
+let parsed: ReturnType<typeof parseVerifyArgs> | null = null;
+try {
+  parsed = parseVerifyArgs(process.argv.slice(2));
+} catch (error) {
+  // Our own argv messages — safe to print verbatim.
+  console.error(`${LOG} ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 2;
+}
+
+(parsed ? main(parsed) : Promise.resolve())
   .catch((error) => {
-    console.error(`${LOG} Failed:`, error instanceof Error ? error.message : error);
+    console.error(`${LOG} Failed: ${safeErrorText(error)}`);
     process.exitCode = 2;
   })
   .finally(async () => {

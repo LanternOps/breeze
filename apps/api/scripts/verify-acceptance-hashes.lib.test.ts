@@ -10,6 +10,13 @@ describe('parseVerifyArgs', () => {
     expect(() => parseVerifyArgs(['--limit', 'abc'])).toThrow(/limit/);
     expect(() => parseVerifyArgs(['--limit'])).toThrow(/limit/);
   });
+  it('rejects unknown flags, the --flag=value form, stray positionals and lenient numbers', () => {
+    expect(() => parseVerifyArgs(['--limt', '500'])).toThrow(/unknown argument/);
+    expect(() => parseVerifyArgs(['--limit=500'])).toThrow(/unknown argument/);
+    expect(() => parseVerifyArgs(['100'])).toThrow(/unknown argument/);
+    expect(() => parseVerifyArgs(['--limit', '0x10'])).toThrow(/limit/);
+    expect(() => parseVerifyArgs(['--limit', '1e2'])).toThrow(/limit/);
+  });
   it('reads --partner-id and --since, rejecting a malformed date', () => {
     const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
     expect(parseVerifyArgs(['--partner-id', id, '--since', '2026-10-01'])).toEqual({ limit: 50, partnerId: id, since: '2026-10-01' });

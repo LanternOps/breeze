@@ -45,14 +45,30 @@ function flagValue(argv: string[], name: string): string | undefined {
   return v;
 }
 
+const KNOWN_FLAGS = new Set(['--limit', '--org-id', '--partner-id', '--since']);
+
+/** Reject anything that is not `--known-flag value`: a typo'd flag
+ *  (`--limt 500`), the `--limit=500` form, or a stray positional would
+ *  otherwise be ignored and silently narrow a post-deploy gate. */
+function assertOnlyKnownFlags(argv: string[]): void {
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i]!;
+    if (!KNOWN_FLAGS.has(tok)) {
+      throw new Error(`unknown argument ${JSON.stringify(tok)} (expected --limit N, --org-id <uuid>, --partner-id <uuid>, --since <ISO date>)`);
+    }
+    i++; // skip the value; flagValue validates presence
+  }
+}
+
 export function parseVerifyArgs(argv: string[]): ParsedVerifyArgs {
+  assertOnlyKnownFlags(argv);
   const out: ParsedVerifyArgs = { limit: DEFAULT_LIMIT };
 
   const rawLimit = flagValue(argv, 'limit');
   if (rawLimit !== undefined) {
-    const n = Number(rawLimit);
-    if (!Number.isInteger(n) || n < 1) throw new Error('--limit must be a positive integer');
-    out.limit = Math.min(n, MAX_LIMIT);
+    // Digits only — Number() would accept 0x10 / 1e2 / ' 5 '.
+    if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1) throw new Error('--limit must be a positive integer');
+    out.limit = Math.min(Number(rawLimit), MAX_LIMIT);
   }
 
   const orgId = flagValue(argv, 'org-id');
