@@ -85,6 +85,7 @@ import { AI_TOOL_OUTPUT_SCRUBBED, type AiToolOutputTombstone } from '@breeze/sha
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { aiDataPolicies, organizations, type AiDataPolicyRow } from '../db/schema';
+import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { mergeAiDataPolicies } from '../services/aiDataPolicy';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
@@ -286,6 +287,11 @@ export async function scrubOrgToolOutputs(
   const quietSinceIso = new Date(now.getTime() - LIVE_SESSION_QUIET_MS).toISOString();
   // Rows older than this are scrubbed even in a live session (see the header).
   const deferUntilIso = new Date(now.getTime() - retentionDays * DAY_MS - LIVE_SESSION_MAX_DEFER_MS).toISOString();
+  // An intent's `result` may carry a sealed one-time secret (temporary password)
+  // that the tech can reveal for REVEAL_WINDOW_DAYS; never null it sooner, even
+  // for an org whose retention is shorter than that window.
+  const revealFloorIso = new Date(now.getTime() - REVEAL_WINDOW_DAYS * DAY_MS).toISOString();
+  const intentCutoffIso = revealFloorIso < cutoffIso ? revealFloorIso : cutoffIso;
   const markerJson = JSON.stringify(tombstone(now));
   const clearedSdkSessionIds: string[] = [];
 
@@ -301,7 +307,7 @@ export async function scrubOrgToolOutputs(
   const messages = await scrubTable('ai_messages');
   const executions = await scrubTable('ai_tool_executions');
   const artifacts = await batched(opts.batchSize, opts.maxBatches, () => expireCapturesBatch(orgId, cutoffIso, opts.batchSize));
-  const intents = await batched(opts.batchSize, opts.maxBatches, () => nullIntentResultsBatch(orgId, cutoffIso, opts.batchSize));
+  const intents = await batched(opts.batchSize, opts.maxBatches, () => nullIntentResultsBatch(orgId, intentCutoffIso, opts.batchSize));
   return { messages, executions, artifacts, intents, clearedSdkSessionIds };
 }
 

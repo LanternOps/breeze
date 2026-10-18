@@ -32,6 +32,8 @@
  *     yet and any transcript still being appended to;
  *   - no `ai_sessions.sdk_session_id` equals its id. A failed lookup aborts the
  *     run before anything in that batch is deleted (fail closed).
+ * The job runs only in production by default (see `sweeperEnabled`) because the
+ * default projects dir is shared with the Claude Code CLI on a dev machine.
  * Deletion goes through the SDK's own `deleteSession` (the transcript plus its
  * subagent directory). Idempotent: a second run finds nothing left to do.
  */
@@ -159,7 +161,9 @@ export async function sweepOrphanTranscripts(opts: TranscriptSweepOptions): Prom
         return 'failed' as const;
       });
       if (outcome === 'deleted') summary.deleted += 1;
-      else if (outcome === 'not_found') summary.notFound += 1;
+      // The file was listed moments ago, so "not found" means the SDK is looking
+      // in a different directory than we are: a failure, never a clean outcome.
+      else if (outcome === 'not_found') { summary.notFound += 1; summary.failed += 1; }
       else summary.failed += 1;
     }
   }
@@ -189,7 +193,25 @@ function getQueue(): Queue<SweepJobData> {
   return queue;
 }
 
-export async function runAiTranscriptSweep(): Promise<TranscriptSweepSummary> {
+/**
+ * The projects dir defaults to `~/.claude/projects`, the same place the Claude
+ * Code CLI keeps ITS UUID-named transcripts. On a developer machine or a
+ * self-hoster running the API as the CLI's OS user, sweeping it would delete
+ * the user's own CLI history. So the sweep defaults ON only in production
+ * (containers with a private HOME); `AI_TRANSCRIPT_SWEEPER_ENABLED` overrides.
+ */
+export function sweeperEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.AI_TRANSCRIPT_SWEEPER_ENABLED?.trim().toLowerCase();
+  if (v === 'true' || v === '1') return true;
+  if (v === 'false' || v === '0') return false;
+  return env.NODE_ENV === 'production';
+}
+
+export async function runAiTranscriptSweep(): Promise<TranscriptSweepSummary | null> {
+  if (!sweeperEnabled()) {
+    console.log(`${LOG} Disabled (NODE_ENV is not production; set AI_TRANSCRIPT_SWEEPER_ENABLED=true to run)`);
+    return null;
+  }
   const summary = await sweepOrphanTranscripts({
     projectsDir: resolveProjectsDir(),
     graceMs: GRACE_HOURS * HOUR_MS,
@@ -201,7 +223,7 @@ export async function runAiTranscriptSweep(): Promise<TranscriptSweepSummary> {
   if (summary.failed > 0) {
     try {
       captureMessage(
-        `${LOG} Could not delete ${summary.failed} orphaned SDK transcript(s)`,
+        `${LOG} Could not delete ${summary.failed} of ${summary.orphans} orphaned SDK transcript(s) (notFound=${summary.notFound})`,
         { eventCode: 'ai_transcript_sweep_incomplete' },
       );
     } catch (err) {

@@ -70,6 +70,7 @@ vi.mock('./aiToolOutputRetention', () => ({ deleteSdkTranscript: vi.fn() }));
 import {
   initializeAiTranscriptSweeper,
   shutdownAiTranscriptSweeper,
+  sweeperEnabled,
   sweepOrphanTranscripts,
   type TranscriptDeleter,
 } from './aiTranscriptSweeper';
@@ -166,7 +167,7 @@ describe('sweepOrphanTranscripts', () => {
     expect(calls).toEqual([]);
   });
 
-  it('counts not_found and failed outcomes and keeps going after a throwing deleter', async () => {
+  it('counts not_found as a failure (the file was just listed) alongside failed outcomes and keeps going after a throwing deleter', async () => {
     transcript(ID(8), 72 * HOUR);
     transcript(ID(9), 72 * HOUR);
     transcript(ID(20), 72 * HOUR);
@@ -179,7 +180,7 @@ describe('sweepOrphanTranscripts', () => {
         return o;
       },
     });
-    expect(s).toMatchObject({ orphans: 3, deleted: 0, notFound: 1, failed: 2 });
+    expect(s).toMatchObject({ orphans: 3, deleted: 0, notFound: 1, failed: 3 });
   });
 
   it('is a no-op when the projects directory does not exist', async () => {
@@ -201,5 +202,15 @@ describe('initializeAiTranscriptSweeper wiring', () => {
     await initializeAiTranscriptSweeper();
     expect(m.workerNames[0]).toMatch(/^ai-transcript-sweeper-[A-Za-z0-9_-]+$/);
     expect(m.queueNames[0]).toBe(m.workerNames[0]);
+  });
+});
+
+describe('sweeperEnabled (default projects dir is shared with the Claude Code CLI)', () => {
+  it('defaults on only in production; an explicit flag overrides either way', () => {
+    expect(sweeperEnabled({ NODE_ENV: 'production' })).toBe(true);
+    expect(sweeperEnabled({ NODE_ENV: 'development' })).toBe(false);
+    expect(sweeperEnabled({})).toBe(false);
+    expect(sweeperEnabled({ NODE_ENV: 'development', AI_TRANSCRIPT_SWEEPER_ENABLED: 'true' })).toBe(true);
+    expect(sweeperEnabled({ NODE_ENV: 'production', AI_TRANSCRIPT_SWEEPER_ENABLED: 'false' })).toBe(false);
   });
 });
