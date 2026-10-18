@@ -277,4 +277,22 @@ describe('an org switch after a site link has been applied (#8113)', () => {
     expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
     expect(window.location.hash).toBe(`#topology/site/${OTHER}/view/overview`);
   });
+  it('a link re-opened after the hash left the site (tab click, org switch) is not mistaken for a user switch (#8335)', async () => {
+    window.location.hash = `#topology/site/${OTHER}/view/overview`;
+    const selectOrganization = vi.fn();
+    vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+    const view = render(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }, { id: SITE, name: 'HQ' }]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+    // The hash leaves the site without the entry seeing an org change (the router drops it on a switch)...
+    window.location.hash = '#topology';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await waitFor(() => expect(screen.queryByTestId('topology-explorer')).toBeNull());
+    // ...the user switches away, then links to the site again from the other organization.
+    view.rerender(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: ORG_B });
+    window.location.hash = `#topology/site/${OTHER}/view/overview`;
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith(ORG_B));
+    expect(window.location.hash).toBe(`#topology/site/${OTHER}/view/overview`);
+  });
 });
