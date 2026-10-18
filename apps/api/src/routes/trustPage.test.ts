@@ -7,7 +7,7 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: c.req.header('x-scope') ?? 'partner', partnerOrgAccess: c.req.header('x-org-access') ?? 'all', accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'], canAccessOrg: (id: string) => id === '11111111-1111-4111-8111-111111111111' });
     return next();
   },
-  requireScope: () => async (_c: any, next: any) => next(),
+  requireScope: (...allowed: string[]) => async (c: any, next: any) => (allowed.includes(c.get('auth')?.scope) ? next() : c.json({ error: 'Forbidden' }, 403)),
   requireMfa: () => async (c: any, next: any) => (c.req.header('x-mfa') === '1' ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)),
   requirePermission: (resource: string, action: string) => async (c: any, next: any) =>
     (c.req.header('x-allow') ?? '').split(',').includes(`${resource}:${action}`) ? next() : c.json({ error: 'Forbidden' }, 403),
@@ -440,6 +440,7 @@ describe('trust page routes', () => {
     ['POST', 'trust-page/preview-token', undefined],
     ['GET', 'trust-page/controls', undefined],
     ['GET', 'trust-page/publication', undefined],
+    ['PUT', 'trust-page/embed', { origins: [] }],
   ])('%s /%s 404s an inaccessible org without touching services', async (method, path, payload) => {
     const res = await app.request(`/orgs/${OTHER}/${path}`, {
       method,
@@ -452,5 +453,70 @@ describe('trust page routes', () => {
     expect(svc.publishTrustPage).not.toHaveBeenCalled();
     expect(svc.unpublishTrustPage).not.toHaveBeenCalled();
     expect(createTrustPreviewToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('W03a embed allowlist', () => {
+  const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', partnerId: 'p1', trustState: 'trusted', partnerCountry: 'AU', deletedAt: null };
+  const put = (origins: unknown, extra: Record<string, string> = { 'x-mfa': '1' }) =>
+    app.request(`/orgs/${ORG}/trust-page/embed`, { method: 'PUT', headers: H(extra), body: JSON.stringify({ origins }) });
+  const sets = () => vi.mocked((db as unknown as { set: (v: unknown) => unknown }).set).mock.calls.map((c) => c[0] as Record<string, unknown>);
+  beforeEach(() => {
+    dbm.rows = []; dbm.values = []; dbm.tx = 0; dbm.sets = []; dbm.locks = []; vi.clearAllMocks();
+    svc.ensureTrustPage.mockResolvedValue({ ...FRESH_PAGE, embedAllowedOrigins: ['https://old.example.com', 'https://keep.example.com'] });
+  });
+
+  it('PUT /embed without MFA → 403 MFA_REQUIRED and writes nothing', async () => {
+    const res = await put(['https://example.com'], {});
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('MFA_REQUIRED');
+    expect(sets()).toEqual([]);
+  });
+  it('an org-scoped sign-in → 403 (partner/system scopes only)', async () => {
+    expect((await put(['https://example.com'], { 'x-mfa': '1', 'x-scope': 'organization' })).status).toBe(403);
+    expect(svc.ensureTrustPage).not.toHaveBeenCalled();
+  });
+  it('organizations:read only → 403', async () => {
+    expect((await put(['https://example.com'], { 'x-mfa': '1', 'x-allow': 'organizations:read' })).status).toBe(403);
+    expect(svc.ensureTrustPage).not.toHaveBeenCalled();
+  });
+  it('normalizes and stores origins, echoing the stored list', async () => {
+    dbm.rows.push([ctxRow], [{ embedAllowedOrigins: ['https://example.com'] }]);
+    const res = await put(['https://Example.com/']);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { embedAllowedOrigins: ['https://example.com'] } });
+    const set = sets().find((v) => 'embedAllowedOrigins' in v)!;
+    expect(set.embedAllowedOrigins).toEqual(['https://example.com']);
+    expect(set.updatedByUserId).toBe('u1');
+    expect(set.updatedAt).toBeInstanceOf(Date);
+  });
+  it('an invalid origin → 400 with the issue at origins.0, nothing written', async () => {
+    const res = await put(['http://example.com']);
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toMatch(/"origins",0|origins\.0/);
+    expect(sets()).toEqual([]);
+    expect(svc.ensureTrustPage).not.toHaveBeenCalled();
+  });
+  it('audits trust_page.embed.update with { added, removed, count }', async () => {
+    dbm.rows.push([ctxRow], [{ embedAllowedOrigins: ['https://keep.example.com', 'https://new.example.com'] }]);
+    expect((await put(['https://keep.example.com', 'https://new.example.com'])).status).toBe(200);
+    expect(auditMock).toHaveBeenCalledTimes(1);
+    const entry = (auditMock.mock.calls[0] as unknown as [{ action: string; resourceId: string; details: Record<string, unknown> }])[0];
+    expect(entry.action).toBe('trust_page.embed.update');
+    expect(entry.resourceId).toBe('pg1');
+    expect(entry.details).toEqual({ added: ['https://new.example.com'], removed: ['https://old.example.com'], count: 2 });
+  });
+  it('does not bump publication_revision (a live setting, not a draft change)', async () => {
+    dbm.rows.push([ctxRow], [{ embedAllowedOrigins: [] }]);
+    expect((await put([])).status).toBe(200);
+    expect(dbm.tx).toBe(0); // withTrustPageRevision never ran
+    for (const v of sets()) expect(v).not.toHaveProperty('publicationRevision');
+  });
+  it('GET returns embedPath for an org page and for the partner home', async () => {
+    dbm.rows.push([ctxRow], []);
+    expect((await (await app.request(`/orgs/${ORG}/trust-page`, { headers: H() })).json()).data.embedPath).toBe('/portal/trust/embed/nw/acme');
+    svc.ensureTrustPage.mockResolvedValueOnce({ ...FRESH_PAGE, isPartnerHome: true });
+    dbm.rows.push([ctxRow], []);
+    expect((await (await app.request(`/orgs/${ORG}/trust-page`, { headers: H() })).json()).data.embedPath).toBe('/portal/trust/embed/nw');
   });
 });

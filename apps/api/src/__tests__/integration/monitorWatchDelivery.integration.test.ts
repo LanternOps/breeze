@@ -36,6 +36,7 @@ import {
 import { buildMonitoringConfigUpdate } from '../../routes/agents/helpers';
 import { createMonitorDefinition, getMonitorDefinition } from '../../services/monitors/monitorService';
 import { getRedis } from '../../services/redis';
+import { devicePolicyCacheKey } from '../../services/devicePolicyCache';
 import { updateFeatureLink } from '../../services/configurationPolicy';
 import { monitorsLinkSettings, readMonitorsLink } from '../../services/monitors/monitorAttachments';
 import { replayMigration } from './replayMigration';
@@ -192,7 +193,7 @@ async function seedPartnerWideServiceMonitor(
 }
 
 /**
- * `buildMonitoringConfigUpdate` caches on `monitoring:settings:device:<id>` for
+ * `buildMonitoringConfigUpdate` caches on `monitoring:settings:v2:device:<id>` for
  * 120s. Every test seeds a FRESH device (fresh uuid → fresh key), which alone
  * rules out a stale hit; this purge makes the point explicit rather than
  * implicit, so a passing assertion is never a cached artifact.
@@ -200,7 +201,7 @@ async function seedPartnerWideServiceMonitor(
 async function purgeCache(deviceId: string) {
   const redis = getRedis();
   if (!redis) return;
-  await redis.del(`monitoring:settings:device:${deviceId}`);
+  await redis.del(devicePolicyCacheKey('monitoring', deviceId));
 }
 
 describe('partner-wide monitor watch delivery (#5291 W04)', () => {

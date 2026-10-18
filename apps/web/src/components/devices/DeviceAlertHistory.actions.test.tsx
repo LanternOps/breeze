@@ -75,6 +75,24 @@ describe('DeviceAlertHistory — status + link', () => {
   });
 });
 
+describe('DeviceAlertHistory — structure (#9030)', () => {
+  it('opens the tab with an h2 and renders rows as one bordered list, each linked to its alert', async () => {
+    await renderIt();
+    expect(screen.getByRole('heading', { level: 2, name: 'Alert History' })).toBeInTheDocument();
+    const rowEl = screen.getByTestId('device-alert-row-a1');
+    expect(rowEl.className).not.toMatch(/(^|\s)border(\s|$)/);
+    expect(rowEl.className).not.toContain('rounded-md');
+    expect(rowEl.parentElement!.className).toContain('divide-y');
+    expect(within(rowEl).getByRole('link')).toHaveAttribute('href', '/alerts/a1');
+  });
+
+  it('keeps the date-range filter visually lighter than the list (no filled Apply)', async () => {
+    await renderIt();
+    const apply = screen.getByRole('button', { name: /apply/i });
+    expect(apply.className).not.toMatch(/(^|\s)bg-primary(\s|$)/);
+  });
+});
+
 describe('DeviceAlertHistory — buttons by status and permission', () => {
   it('renders no action buttons without permissions', async () => {
     await renderIt();

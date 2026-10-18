@@ -16,9 +16,18 @@ vi.mock('./unassignedPool/deliveryEligibility', async (importOriginal) => {
   };
 });
 
-const dbState = vi.hoisted(() => ({ inContext: false, deferred: [] as Array<() => unknown> }));
+const dbState = vi.hoisted(() => ({ inContext: false, deferred: [] as Array<() => unknown>, savepointDepth: 0, savepointsOpened: 0 }));
 vi.mock('../db', () => ({
   db: { execute: vi.fn() },
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    dbState.savepointDepth += 1;
+    dbState.savepointsOpened += 1;
+    try {
+      return await fn();
+    } finally {
+      dbState.savepointDepth -= 1;
+    }
+  },
   // Outside a context the real helper runs deferred work at once; inside one it
   // waits for the transaction to settle — tests flush `deferred` to model COMMIT.
   runAfterDbContextExit: (_label: string, work: () => unknown) => {
@@ -55,6 +64,40 @@ describe('remote access baseline defaults (single source of truth)', () => {
     expect(d.idleTimeoutMinutes).toBe(5);
     expect(d.maxSessionDurationHours).toBe(8);
     expect(d.clipboardViewerToHost).toBe(true);
+  });
+});
+
+describe('resolveRemoteAccessForDevice savepoint option (#8997)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invalidateRemoteAccessCache();
+  });
+
+  const effective = (deviceId: string) => ({ deviceId, features: {}, inheritanceChain: [] }) as never;
+
+  it('runs the cache-miss read inside a savepoint when asked', async () => {
+    const deviceId = `test-device-sp-${Date.now()}`;
+    let depth = -1;
+    vi.mocked(resolveEffectiveConfig).mockImplementationOnce(async () => {
+      depth = dbState.savepointDepth;
+      return effective(deviceId);
+    });
+    await resolveRemoteAccessForDevice(deviceId, { savepoint: true });
+    expect(depth).toBe(1);
+  });
+
+  it('takes no savepoint without the option, or on a cache hit', async () => {
+    const deviceId = `test-device-sp2-${Date.now()}`;
+    let depth = -1;
+    vi.mocked(resolveEffectiveConfig).mockImplementationOnce(async () => {
+      depth = dbState.savepointDepth;
+      return effective(deviceId);
+    });
+    await resolveRemoteAccessForDevice(deviceId);
+    expect(depth).toBe(0);
+    const before = dbState.savepointsOpened;
+    await resolveRemoteAccessForDevice(deviceId, { savepoint: true });
+    expect(dbState.savepointsOpened).toBe(before);
   });
 });
 

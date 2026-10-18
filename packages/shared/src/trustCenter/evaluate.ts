@@ -1,7 +1,8 @@
 // packages/shared/src/trustCenter/evaluate.ts
 import {
   TELEMETRY_CONTROL_IDS, type ControlEvidence, type PostureControlEvidence, type TelemetryControlId,
-  type TrustControlAssessment, type TrustControlDefinition, type TrustControlStatus, type TrustEvaluationPolicy,
+  type SafeguardEvidence, type TrustControlAssessment, type TrustControlDefinition, type TrustControlStatus,
+  type TrustEvaluationPolicy, type TrustSafeguardAssessment,
 } from './types';
 
 /** By reference to securityCompliancePostureConfigSchema defaults (spec §5.2, §18.5). */
@@ -80,6 +81,27 @@ function evaluateOne(def: TrustControlDefinition, e: ControlEvidence, policy: Tr
   };
 }
 
+const naturalRefCompare = new Intl.Collator('en', { numeric: true }).compare;
+
+/**
+ * Per-safeguard assessments (W3e). Deliberately the SAME rule as a coverage_pct control — floor, freshness, page
+ * thresholds — by evaluating through `evaluateOne` with a coverage_pct stand-in, so there is no second threshold path.
+ */
+export function evaluateSafeguards(
+  def: TrustControlDefinition,
+  safeguards: Readonly<Record<string, SafeguardEvidence>>,
+  policy: TrustEvaluationPolicy,
+  asOf: Date,
+): TrustSafeguardAssessment[] {
+  const standIn: TrustControlDefinition = { ...def, metric: 'coverage_pct', gate: undefined };
+  return Object.entries(safeguards)
+    .sort(([a], [b]) => naturalRefCompare(a, b))
+    .map(([ref, e]) => {
+      const a = evaluateOne(standIn, { ...e, aggregatePct: null }, policy, asOf);
+      return { framework: 'cis_v8' as const, ref, status: a.status, reason: a.reason, percent: a.percent, assessed: a.assessed, eligible: a.eligible };
+    });
+}
+
 /** Pure. Output order = insurerRank ascending. */
 export function evaluateTrustControls(
   catalog: readonly TrustControlDefinition[],
@@ -89,7 +111,13 @@ export function evaluateTrustControls(
 ): TrustControlAssessment[] {
   return [...catalog]
     .sort((a, b) => a.insurerRank - b.insurerRank)
-    .map((def) => evaluateOne(def, evidence[def.id] ?? { eligible: 0, assessed: 0, passing: 0, aggregatePct: null, newestEvidenceAt: null }, policy, asOf));
+    .map((def) => {
+      const e = evidence[def.id] ?? { eligible: 0, assessed: 0, passing: 0, aggregatePct: null, newestEvidenceAt: null };
+      const out = evaluateOne(def, e, policy, asOf);
+      // Only hardening_baseline carries safeguards, and only when the loader produced them (CIS gate on).
+      if (def.id === 'hardening_baseline' && e.safeguards) out.safeguards = evaluateSafeguards(def, e.safeguards, policy, asOf);
+      return out;
+    });
 }
 
 export type TrustPillRole = 'success' | 'warning' | 'danger' | 'neutral';

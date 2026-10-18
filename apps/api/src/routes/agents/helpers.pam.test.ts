@@ -403,13 +403,14 @@ describe('buildPamConfigUpdate — Redis cache behavior', () => {
 
   it('cache hit returns parsed value WITHOUT running resolver queries (db.select not called)', async () => {
     const cachedSettings = { uacInterceptionEnabled: false };
-    redisMock.get.mockResolvedValue(JSON.stringify(cachedSettings));
+    // #8257: entries are bound to the device's org.
+    redisMock.get.mockResolvedValue(JSON.stringify({ orgId: ORG_ID, settings: cachedSettings }));
 
-    const result = await buildPamConfigUpdate(DEVICE_ID);
+    const result = await buildPamConfigUpdate(DEVICE_ID, { orgId: ORG_ID });
 
     expect(result).toEqual(cachedSettings);
     expect(dbMock.select).not.toHaveBeenCalled();
-    expect(redisMock.get).toHaveBeenCalledWith(`pam:settings:device:${DEVICE_ID}`);
+    expect(redisMock.get).toHaveBeenCalledWith(`pam:settings:v2:device:${DEVICE_ID}`);
   });
 
   it('cache miss → resolves from DB → redis.set called with correct key, value, and TTL', async () => {
@@ -421,15 +422,15 @@ describe('buildPamConfigUpdate — Redis cache behavior', () => {
       [{ level: 'device', assignmentPriority: 1, inlineSettings: { uacInterceptionEnabled: false } }],
     );
 
-    const result = await buildPamConfigUpdate(DEVICE_ID);
+    const result = await buildPamConfigUpdate(DEVICE_ID, { orgId: ORG_ID });
 
     expect(result.uacInterceptionEnabled).toBe(false);
     // DB should have been called
     expect(dbMock.select).toHaveBeenCalled();
     // Redis set should be called with the correct cache key, serialized value, EX, and 120s TTL
     expect(redisMock.set).toHaveBeenCalledWith(
-      `pam:settings:device:${DEVICE_ID}`,
-      JSON.stringify({ uacInterceptionEnabled: false }),
+      `pam:settings:v2:device:${DEVICE_ID}`,
+      JSON.stringify({ orgId: ORG_ID, settings: { uacInterceptionEnabled: false } }),
       'EX',
       120,
     );
@@ -444,7 +445,7 @@ describe('buildPamConfigUpdate — Redis cache behavior', () => {
       [{ level: 'device', assignmentPriority: 1, inlineSettings: { uacInterceptionEnabled: true } }],
     );
 
-    const result = await buildPamConfigUpdate(DEVICE_ID, { skipCacheWrite: true });
+    const result = await buildPamConfigUpdate(DEVICE_ID, { orgId: ORG_ID, skipCacheWrite: true });
 
     expect(result.uacInterceptionEnabled).toBe(true);
     expect(redisMock.set).not.toHaveBeenCalled();
@@ -460,7 +461,7 @@ describe('buildPamConfigUpdate — Redis cache behavior', () => {
     );
 
     // Should not throw
-    const result = await buildPamConfigUpdate(DEVICE_ID);
+    const result = await buildPamConfigUpdate(DEVICE_ID, { orgId: ORG_ID });
 
     // Falls through to DB resolution despite Redis error
     expect(result.uacInterceptionEnabled).toBe(true);
@@ -477,7 +478,7 @@ describe('buildPamConfigUpdate — Redis cache behavior', () => {
       [],
     );
 
-    const result = await buildPamConfigUpdate(DEVICE_ID);
+    const result = await buildPamConfigUpdate(DEVICE_ID, { orgId: ORG_ID });
     expect(result).toEqual(PAM_DEFAULTS);
   });
 
@@ -490,7 +491,7 @@ describe('buildPamConfigUpdate — Redis cache behavior', () => {
       [{ level: 'site', assignmentPriority: 1, inlineSettings: { uacInterceptionEnabled: false } }],
     );
 
-    const result = await buildPamConfigUpdate(DEVICE_ID);
+    const result = await buildPamConfigUpdate(DEVICE_ID, { orgId: ORG_ID });
     expect(result.uacInterceptionEnabled).toBe(false);
     expect(redisMock.get).not.toHaveBeenCalled();
     expect(redisMock.set).not.toHaveBeenCalled();

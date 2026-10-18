@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Dispositivi",
-        "devicesSub": "{{online}} di {{total}} online",
         "alerts": "Avvisi aperti",
-        "alertsSub": "{{critical}} critici · {{high}} alti",
         "tickets": "Ticket aperti",
-        "ticketsSub": "{{count}} in attesa del cliente",
         "contracts": "Contratti attivi",
         "contractsSub": "Prossimo rinnovo {{date}}",
         "contractsNoRenewal": "Nessun rinnovo in arrivo",
-        "invoices": "In sospeso",
         "invoicesSub": "Prossima scadenza {{date}}",
         "invoicesOverdue_one": "{{count}} scaduta",
         "invoicesOverdue_other": "{{count}} scadute",
@@ -94,7 +90,23 @@
       },
       "lastActivity": "Ultima attività {{date}}",
       "noSummary": "I totali di riepilogo non sono al momento disponibili.",
-      "archivedNotice": "I dati di riepilogo non vengono mostrati per le organizzazioni archiviate."
+      "archivedNotice": "I dati di riepilogo non vengono mostrati per le organizzazioni archiviate.",
+      "fleet": {
+        "title": "Stato della flotta",
+        "total": "Totale",
+        "allOnline": "Tutti online",
+        "noDevices": "Nessun dispositivo",
+        "critical": "Critici",
+        "high": "Alti",
+        "otherAlerts": "Altri",
+        "noAlerts": "Nessun avviso aperto",
+        "awaitingCustomer": "In attesa del cliente",
+        "noTickets": "Nessun ticket aperto"
+      },
+      "account": {
+        "title": "Dati commerciali",
+        "invoices": "Fatture in sospeso"
+      }
     },
     "archived": {
       "banner": "Questa organizzazione è archiviata ed è di sola lettura. Ripristinala per apportare modifiche.",
@@ -531,6 +543,29 @@
         "copy": "Copia snippet",
         "copied": "Snippet copiato",
         "copyFailed": "Impossibile copiare lo snippet."
+      },
+      "embed": {
+        "title": "Incorpora nel tuo sito web",
+        "description": "Mostra una scheda compatta e aggiornata della postura di sicurezza sul tuo sito, all’interno di un iframe. Solo i siti elencati qui possono visualizzarla; la pagina di fiducia completa non può mai essere incorporata.",
+        "liveNote": "Le modifiche si applicano al prossimo caricamento della scheda incorporata; non serve ripubblicare.",
+        "unpublishedNote": "La scheda incorporata compare dopo la pubblicazione della pagina.",
+        "originLabel": "Indirizzo del sito (solo https, senza percorso)",
+        "add": "Aggiungi sito",
+        "remove": "Rimuovi",
+        "save": "Salva siti",
+        "saved": "Siti di incorporamento salvati",
+        "saveFailed": "Impossibile salvare i siti di incorporamento.",
+        "invalidOrigin": "Inserisci un indirizzo https esatto, senza percorso, caratteri jolly o indirizzo IP, ad esempio https://www.example.com",
+        "duplicateOrigin": "Questo sito è già nell’elenco.",
+        "maxReached": "Puoi consentire al massimo {{max}} siti.",
+        "preview": "Verrà salvato come",
+        "snippetLabel": "HTML di incorporamento",
+        "frameTitle": "Scheda della postura di sicurezza",
+        "copy": "Copia frammento",
+        "copied": "Frammento copiato",
+        "copyFailed": "Impossibile copiare il frammento.",
+        "emptyNote": "Aggiungi almeno un sito per abilitare l’incorporamento.",
+        "mfaRequired": "La modifica dei siti di incorporamento richiede l’autenticazione a più fattori. Attiva l’MFA nelle impostazioni di sicurezza del profilo, poi riprova."
       }
     },
     "documents": {

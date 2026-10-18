@@ -73,7 +73,7 @@ describe('DeviceDetails Chat tab (#8743)', () => {
   it('offers a Chat entry in the More menu when allowed', async () => {
     granted.add('endpoint_messages:send');
     render(<DeviceDetails device={device} />);
-    fireEvent.click(await screen.findByRole('button', { name: /more/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^more$/i }));
     await waitFor(() => expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toContain('Chat'));
   });
 
@@ -82,7 +82,7 @@ describe('DeviceDetails Chat tab (#8743)', () => {
     flags.ENABLE_ENDPOINT_MESSAGING = false;
     window.location.hash = '#chat';
     render(<DeviceDetails device={device} />);
-    fireEvent.click(await screen.findByRole('button', { name: /more/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^more$/i }));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).not.toContain('Chat');
     expect(screen.queryByTestId('chat-panel-stub')).toBeNull();
   });
@@ -91,7 +91,7 @@ describe('DeviceDetails Chat tab (#8743)', () => {
     granted.add('endpoint_messages:read');
     window.location.hash = '#chat';
     render(<DeviceDetails device={device} />);
-    fireEvent.click(await screen.findByRole('button', { name: /more/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^more$/i }));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).not.toContain('Chat');
     expect(screen.queryByTestId('chat-panel-stub')).toBeNull();
   });

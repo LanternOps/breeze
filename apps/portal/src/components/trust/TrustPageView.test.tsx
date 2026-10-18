@@ -7,11 +7,12 @@ import TrustPageView from './TrustPageView';
 // @/lib/api -> lib/navigation dynamically imports an Astro virtual module vitest cannot resolve.
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 // W2 section seams: each stub records its props and its render order (the real stubs render nothing).
-const seen = vi.hoisted(() => ({ order: [] as string[], props: {} as Record<string, unknown> }));
+const seen = vi.hoisted(() => ({ order: [] as string[], props: {} as Record<string, unknown>, hardening: [] as string[] }));
 vi.mock('./TrustDeclaredControls', () => ({ default: (p: unknown) => { seen.order.push('declared'); seen.props.declared = p; return <div data-testid="seam-declared" />; } }));
 vi.mock('./TrustFrameworkView', () => ({ default: (p: unknown) => { seen.order.push('frameworks'); seen.props.frameworks = p; return <div data-testid="seam-frameworks" />; } }));
 vi.mock('./TrustSubprocessors', () => ({ default: (p: unknown) => { seen.order.push('subprocessors'); return <div data-testid="seam-subprocessors" />; } }));
 vi.mock('./TrustFaq', () => ({ default: (p: unknown) => { seen.order.push('faq'); seen.props.faq = p; return <div data-testid="seam-faq" />; } }));
+vi.mock('./HardeningSafeguards', () => ({ default: (p: { control: { id: string } }) => { seen.hardening.push(p.control.id); return <div data-testid="seam-hardening-safeguards" />; } }));
 vi.mock('./TrustHistory', () => ({ default: (p: unknown) => { seen.order.push('history'); return <div data-testid="seam-history" />; } }));
 
 const payload = {
@@ -143,6 +144,18 @@ describe('TrustPageView', () => {
       render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={{ ...initial, payload: { ...de, locale: 'xx-XX' } } as never} />);
       expect(screen.getByText(/Showing 3 of 15 Breeze-verifiable controls/)).toBeInTheDocument();
       expect(screen.getByText('Disk encryption')).toBeInTheDocument();
+    });
+  });
+
+  describe('hardening safeguards (W03e)', () => {
+    const hardeningControl = { id: 'hardening_baseline', category: 'patching_hardening', source: 'telemetry', unit: 'devices', status: 'met', reason: null, percent: null, assessed: null, eligible: null, evidenceAsOf: null, frameworkRefs: [{ framework: 'cis_v8', ref: '4.1' }] };
+    it('mounts the safeguards disclosure only for hardening_baseline', () => {
+      seen.hardening.length = 0;
+      const withHardening = { ...initial, payload: { ...payload, controls: [...payload.controls, hardeningControl] } };
+      render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={withHardening as never} />);
+      expect(seen.hardening).toEqual(['hardening_baseline']);
+      expect(within(screen.getByTestId('trust-control-hardening_baseline')).getByTestId('seam-hardening-safeguards')).toBeInTheDocument();
+      expect(within(screen.getByTestId('trust-control-disk_encryption')).queryByTestId('seam-hardening-safeguards')).toBeNull();
     });
   });
 });

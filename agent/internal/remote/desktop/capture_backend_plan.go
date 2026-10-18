@@ -63,8 +63,8 @@ func macUserSessionPlan(b macCaptureBackends, sckAttempts int, sckRetryDelay tim
 	}
 }
 
-// probeNoGrantWarned keeps the permission-check probe's "frame without a
-// grant" warning to once per process: the TCC loop probes every few minutes.
+// probeNoGrantWarned keeps the CLI probe's "frame without a grant" warning to
+// once per process.
 var probeNoGrantWarned atomic.Bool
 
 // macProbePlan builds the macOS 14+ user-session capability probe. It never

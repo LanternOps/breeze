@@ -50,6 +50,10 @@ import { executeTenantToolDetailed } from './execute';
 import { loadTenantToolForExecution } from './resolver';
 import { checkTenantToolRateLimit } from './guardrails';
 import { __resetToolSourceInFlightForTests, __resetOrgToolInFlightForTests } from './inFlightCap';
+import type { ToolSourceToolRow as W2ToolRow } from '../../db/schema';
+
+/** The fresh tool row the dispatch-time reload returns (W2); MCP dispatch never reads it. */
+const MCP_TOOL_ROW = { annotations: {} } as unknown as W2ToolRow;
 
 function makeDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
   return {
@@ -111,7 +115,7 @@ describe('executeTenantToolDetailed — DB context depth around the outbound cal
     vi.mocked(checkTenantToolRateLimit).mockReset().mockResolvedValue(null);
     vi.mocked(loadTenantToolForExecution).mockReset().mockResolvedValue({
       descriptor: makeDescriptor(),
-      source: makeSource(),
+      source: makeSource(), tool: MCP_TOOL_ROW,
     });
     __resetToolSourceInFlightForTests();
     __resetOrgToolInFlightForTests();

@@ -4,6 +4,7 @@ package helper
 
 import (
 	"errors"
+	"math"
 	"os/user"
 	"slices"
 	"strconv"
@@ -200,5 +201,22 @@ func TestSpawnCredentialRejectsMalformedIDs(t *testing.T) {
 	}
 	if _, _, err := spawnCredentialFromIDs("501", "x", nil, nil, -1, 16); err == nil {
 		t.Fatal("want error for non-numeric gid")
+	}
+}
+
+// The breeze gid arrives as a platform int (Atoi on the group database). A gid
+// can never exceed uint32; a value outside that range is treated as unresolved
+// rather than silently truncated into some other group.
+func TestSpawnCredentialIgnoresOutOfRangeBreezeGID(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("int cannot exceed uint32 on this platform")
+	}
+	tooBig := math.MaxInt // > math.MaxUint32 on 64-bit
+	cred, _, err := spawnCredentialFromIDs("501", "20", nil, errors.New("getgrouplist failed"), tooBig, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(cred.Groups, []uint32{20}) {
+		t.Fatalf("Groups with out-of-range breeze gid = %v, want [20]", cred.Groups)
 	}
 }

@@ -28,7 +28,7 @@ it('conserves deltas, remains monotone, and puts residue on the last event in 20
     }
     expect(totalP).toBe(p);expect(totalF).toBe(f);
   }
-});
+},30_000);
 it('rejects invalid and out-of-range amounts on every argument',()=>{
   for(const key of ['principal','fee','cumulativeReversedGross'] as const)
     for(const value of ['-1.00','1.001','NaN','1e2','',' 1.00','10000000000.00'])

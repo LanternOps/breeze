@@ -466,11 +466,19 @@ export default function ComplianceDashboard({
 
         {filteredDevices.length === 0 ? (
           <div className="rounded-md border border-dashed p-8 text-center">
-            <CheckCircle className="mx-auto h-8 w-8 text-green-500" />
+            {nonCompliantDevices.length === 0 && (overallCompliance.total === 0 || overallCompliance.unknown > 0) ? (
+              <AlertCircle className="mx-auto h-8 w-8 text-gray-400" />
+            ) : (
+              <CheckCircle className="mx-auto h-8 w-8 text-green-500" />
+            )}
             <p className="mt-2 text-sm text-muted-foreground">
-              {nonCompliantDevices.length === 0
-                ? t('complianceDashboard.empty.allCompliant')
-                : t('complianceDashboard.empty.noMatchingDevices')}
+              {nonCompliantDevices.length > 0
+                ? t('complianceDashboard.empty.noMatchingDevices')
+                : overallCompliance.total === 0
+                  ? t('complianceDashboard.empty.notEvaluated')
+                  : overallCompliance.unknown > 0
+                    ? t('complianceDashboard.empty.noViolationsPending', { count: overallCompliance.unknown })
+                    : t('complianceDashboard.empty.allCompliant')}
             </p>
           </div>
         ) : (

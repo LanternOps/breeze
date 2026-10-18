@@ -72,10 +72,10 @@ export default function DeviceBillingCard({ deviceId }: { deviceId: string }) {
 
   const shell = (children: ReactNode) => (
     <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="device-billing-card">
-      <h3 className="flex items-center gap-2 text-sm text-muted-foreground">
+      <h2 className="flex items-center gap-2 text-sm text-muted-foreground">
         <Receipt className="h-4 w-4" aria-hidden="true" />
         {t('deviceBillingCard.title')}
-      </h3>
+      </h2>
       {children}
     </div>
   );

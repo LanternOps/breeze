@@ -6,6 +6,7 @@ import { pgErrorCode } from '../utils/pgErrors';
 // edge. See setConnectTimeoutClassifier below for why that matters.
 import type { ConnectTimeoutDiagnosis } from './postgresConnectTimeout';
 import {
+  TUNNEL_HOST_ROUTE_LABEL,
   UNMATCHED_ROUTE_LABEL,
   safeMatchedRouteLabel,
 } from './safeRequestLabel';
@@ -498,7 +499,7 @@ function isBoundedTagValue(value: unknown): value is string | number | boolean {
 }
 
 function isSafeRouteTemplateTag(value: unknown): value is string {
-  if (value === UNMATCHED_ROUTE_LABEL) return true;
+  if (value === UNMATCHED_ROUTE_LABEL || value === TUNNEL_HOST_ROUTE_LABEL) return true;
   if (typeof value !== 'string') return false;
   const c = { req: { routePath: value } } as unknown as Context;
   return safeMatchedRouteLabel(c) === value;

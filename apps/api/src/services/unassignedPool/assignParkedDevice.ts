@@ -54,6 +54,7 @@ import { raiseDeviceIdentityCollisionAlert } from '../deviceIdentityCollisionAle
 import { writeAuditEvent, type RequestLike } from '../auditEvents';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { expireDiagnosticApprovalsForMovedDevice } from '../diagnosticAccess/deviceMove';
+import { invalidateDevicePolicyCaches } from '../devicePolicyCache';
 import { captureException } from '../sentry';
 import { isUnassignedPoolOrgType } from './orgType';
 import { isParkedDeviceExpired } from './limits';
@@ -461,6 +462,9 @@ function afterCommit(
       invalidateOrgDeviceCount(redis, item.targetOrgId),
     ]);
   });
+  // #8257: the device's cached heartbeat policy config was resolved for the
+  // holding org (org-bound, so never served to the target org anyway).
+  safely(item.deviceId, 'policy cache invalidation', () => invalidateDevicePolicyCaches(item.deviceId));
   safely(item.deviceId, 'diagnostic approval expiry', () => {
     void expireDiagnosticApprovalsForMovedDevice(item.deviceId).catch((error) => {
       console.error(`[parkedAssignment] failed to expire diagnostic access approvals for ${item.deviceId}:`, error);

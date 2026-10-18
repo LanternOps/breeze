@@ -109,7 +109,8 @@
       "waylandUnsupported": "Bu bir Wayland masaüstü — uzak masaüstünün daha yeni bir aracıya ihtiyacı var",
       "x11AuthFailed": "Görüntü sunucusunda kimlik doğrulaması yapılamadı (X yetkilisi)",
       "x11ConnectFailed": "Bu cihazdaki ekran sunucusuna bağlanılamadı"
-    }
+    },
+    "opensNewWindow": "(yeni bir pencerede açılır)"
   },
   "connectVncButton": {
     "creatingTunnel": "Tünel oluşturuluyor...",

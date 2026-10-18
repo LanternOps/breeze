@@ -783,6 +783,9 @@ const REPOINT_TABLES: readonly string[] = [
   // (org_id) grant for it — so usage history follows the merged client
   // (spec §5.5; chargeback W10).
   "ai_invocations",
+  // AI model registry W08b (#7606): legacy AI model config archive (history,
+  // partner axis); org-level rows follow the merged client.
+  "ai_model_registry_legacy_archive",
   "ai_screenshots",
   "ai_sessions",
   // AI chargeback (#7608): billed history and unbilled charges follow the

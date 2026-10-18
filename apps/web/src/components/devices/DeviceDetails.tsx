@@ -39,11 +39,13 @@ import {
   History,
   Bot,
   MessageSquare,
+  ArrowLeft,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
 import type { Device, DeviceStatus } from "./DeviceList";
-import { formatDeviceSummaryOs } from "./osDisplay";
+import { formatOsLabel } from "./formatOsLabel";
+import { formatTimeAgo } from "@/lib/formatTime";
 import RebootScheduledBadge from "./RebootScheduledBadge";
 import UninstallStateBadge from "./UninstallStateBadge";
 import DeviceActions from "./DeviceActions";
@@ -58,6 +60,7 @@ import DeviceAlertHistory from "./DeviceAlertHistory";
 import DeviceActivityFeed from "./DeviceActivityFeed";
 import DeviceAiActivitySignal from "./DeviceAiActivitySignal";
 import DeviceQueuedActions from "./DeviceQueuedActions";
+import DeviceOverviewState from "./DeviceOverviewState";
 import DeviceScriptHistory from "./DeviceScriptHistory";
 import DevicePerformanceGraphs from "./DevicePerformanceGraphs";
 import DeviceEventLogViewer from "./DeviceEventLogViewer";
@@ -93,7 +96,7 @@ import DeviceReliabilityPanel from "./DeviceReliabilityPanel";
 import DeviceMonitoringTab from "./DeviceMonitoringTab";
 import DeviceComplianceTab from "./DeviceComplianceTab";
 import DeviceLinkedProfilesTab from "./DeviceLinkedProfilesTab";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import ContactResponsibilitiesCard from "../shared/ContactResponsibilitiesCard";
 import { Puzzle } from "lucide-react";
@@ -156,7 +159,43 @@ type DeviceDetailsProps = {
   timezone?: string;
   onBack?: () => void;
   onAction?: (action: string, device: Device) => void;
+  /**
+   * Timestamp of the newest CPU/RAM sample behind `device.cpuPercent` /
+   * `ramPercent`; `null` = the device has no sample in the last 24h. Omitted =
+   * the caller cannot say, so only the offline rule applies (#9026).
+   */
+  metricsSampledAt?: string | null;
+  /** The user's working org (null = fleet view); drives the scope cue (#9027). */
+  workingOrgId?: string | null;
+  /** Switch the working org to this device's org and stay on the record. */
+  onSwitchToDeviceOrg?: () => void;
 };
+
+// Sub-line record links: foreground colour plus a quiet resting underline, so
+// they are distinguishable from the plain OS / agent text beside them (#9026).
+// Below md they also get a 32px tap height (#9028).
+const SUBLINE_LINK =
+  "text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground max-md:inline-flex max-md:min-h-[32px] max-md:items-center";
+
+// A sample is written on every heartbeat that carries metrics (60s by
+// default, routes/agents/heartbeat.ts). Twice the API's 5-minute offline
+// threshold (services/deviceLiveness) tolerates a lengthened heartbeat or a
+// skipped sample without flapping to "—", while a genuinely stale number
+// still never reads as live.
+export const METRIC_SAMPLE_FRESH_MS = 10 * 60 * 1000;
+
+/** Whether the header's CPU/RAM numbers describe the machine right now (#9026). */
+export function metricsAreCurrent(
+  status: DeviceStatus,
+  sampledAt: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (status === "offline" || status === "decommissioned") return false;
+  if (sampledAt === undefined) return true;
+  if (!sampledAt) return false;
+  const at = Date.parse(sampledAt);
+  return Number.isFinite(at) && now - at <= METRIC_SAMPLE_FRESH_MS;
+}
 
 const statusColors: Record<DeviceStatus, string> = {
   online: "bg-success/15 text-success border-success/30",
@@ -357,9 +396,29 @@ export default function DeviceDetails({
   timezone,
   onBack,
   onAction,
+  metricsSampledAt,
+  workingOrgId,
+  onSwitchToDeviceOrg,
 }: DeviceDetailsProps) {
+  // #9027: the record is in another org than the one the user is working in
+  // (fleet view has no working org, so it never shows the cue).
+  const scopeMismatch =
+    workingOrgId != null && device.orgId !== "" && workingOrgId !== device.orgId;
   const { t } = useTranslation("devices");
   usePageItemName(device.displayName || device.hostname);
+  const deviceName = device.displayName || device.hostname;
+  const showHostname = Boolean(device.hostname) && device.hostname !== deviceName;
+  const statsCurrent = metricsAreCurrent(device.status, metricsSampledAt);
+  const formatStat = (value: number) =>
+    statsCurrent && Number.isFinite(value)
+      ? formatPercent(value / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+      : "—";
+  // "Offline · last seen 25 minutes ago": state first when the machine is gone.
+  const lastSeenValid = !Number.isNaN(new Date(device.lastSeen).getTime()) && device.lastSeen !== "";
+  const statusText =
+    device.status === "offline" && lastSeenValid
+      ? t("deviceDetails.offlineLastSeen", { ago: formatTimeAgo(device.lastSeen) })
+      : statusLabels[device.status];
   // Enabled `device.detail.tabs` contributions, deterministically ordered.
   // Never throws — a registry failure or zero enabled contributions simply
   // appends no extension tabs (see useExtensionSlotDescriptors).
@@ -576,6 +635,9 @@ export default function DeviceDetails({
     },
     {
       id: "topology",
+      // #9030: grouped, so it sits under the Monitoring header in "More"
+      // instead of orphaned above the first section.
+      group: groups.monitoring,
       label: t("topology:title"),
       icon: <Network className="h-4 w-4" />,
       title: t("topology:title"),
@@ -797,24 +859,43 @@ export default function DeviceDetails({
 
   return (
     <div className="space-y-6">
-      <div className="rounded-lg border bg-card p-6 shadow-xs">
+      {/* #9025: onBack was only rendered in the error state, so the happy path
+          had no Back control at all. Quiet by design — the breadcrumb above
+          remains the primary wayfinding. */}
+      {onBack && (
+        <button
+          type="button"
+          data-testid="device-detail-back"
+          onClick={onBack}
+          className="-mb-2 flex items-center gap-1.5 text-sm text-muted-foreground transition hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          {t("deviceDetailPage.backToDevices")}
+        </button>
+      )}
+      {/* #9028: below md the card tightens (no icon tile, smaller padding),
+          the title clamps to two lines and the status pills wrap onto their own
+          line, so the header stays ~200px tall at 390px. md+ is unchanged. */}
+      <div className="rounded-lg border bg-card p-4 shadow-xs md:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex items-start gap-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-muted">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="hidden h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-muted md:flex">
               <Monitor className="h-7 w-7 text-muted-foreground" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-3 min-w-0">
+              <div className="flex min-w-0 flex-col items-start gap-1.5 md:flex-row md:items-center md:gap-3">
                 <h1
-                  className="truncate text-xl font-semibold tracking-tight"
-                  title={device.displayName || device.hostname}
+                  className="line-clamp-2 text-xl font-semibold tracking-tight [overflow-wrap:anywhere] md:line-clamp-1"
+                  title={deviceName}
                 >
-                  {device.displayName || device.hostname}
+                  {deviceName}
                 </h1>
+                <div className="flex flex-wrap items-center gap-2 md:contents">
                 <span
+                  data-testid="device-status-pill"
                   className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
                 >
-                  {statusLabels[device.status]}
+                  {statusText}
                 </span>
                 {/* "Removed" says the record was offboarded; this says what
                     happened to the agent on the actual machine (#3987).
@@ -843,18 +924,78 @@ export default function DeviceDetails({
                   rebootDeferralsUsed={device.rebootDeferralsUsed}
                   rebootMaxDeferrals={device.rebootMaxDeferrals}
                 />
+                </div>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                <span>
-                  {formatDeviceSummaryOs(device.os, device.osVersion)}
-                </span>
+              {/* One name in the h1; the hostname appears once, here, only when
+                  it differs. Org/site links sit in the foreground colour with a
+                  resting underline so they read as links beside plain text. */}
+              <p
+                data-testid="device-header-subline"
+                className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground"
+              >
+                {showHostname && (
+                  <>
+                    <span data-testid="device-header-hostname" className="font-mono">
+                      {device.hostname}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                  </>
+                )}
+                <span>{formatOsLabel(device.os, device.osVersion, device.osBuild)}</span>
+                <span aria-hidden="true">·</span>
                 <span>
                   {t("deviceDetails.agentV")}
                   {device.agentVersion}
                 </span>
-                <EntityLink kind="org" id={device.orgId} name={device.orgName} />
-                <EntityLink kind="site" id={device.siteId} name={device.siteName} />
-              </div>
+                <span aria-hidden="true">·</span>
+                <span>
+                  <Trans
+                    t={t}
+                    i18nKey="deviceDetails.locatedIn"
+                    components={{
+                      org: (
+                        <EntityLink
+                          kind="org"
+                          id={device.orgId}
+                          name={device.orgName}
+                          className={device.orgId ? SUBLINE_LINK : undefined}
+                        />
+                      ),
+                      site: (
+                        <EntityLink
+                          kind="site"
+                          id={device.siteId}
+                          name={device.siteName}
+                          className={device.siteId ? SUBLINE_LINK : undefined}
+                        />
+                      ),
+                    }}
+                  />
+                </span>
+              </p>
+              {/* #9027: same idea as the org record's "Workspace: X" chip. Not
+                  a live region — it describes the page, it is not an event. */}
+              {scopeMismatch && (
+                <p
+                  data-testid="device-scope-cue"
+                  className="mt-2 flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground"
+                >
+                  <span>{t("deviceDetails.scopeCue.viewing", { org: device.orgName })}</span>
+                  {onSwitchToDeviceOrg && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        data-testid="device-scope-switch"
+                        onClick={onSwitchToDeviceOrg}
+                        className="font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+                      >
+                        {t("deviceDetails.scopeCue.switch", { org: device.orgName })}
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -875,12 +1016,26 @@ export default function DeviceDetails({
         tabs={overflowTabs}
         activeTab={activeTab}
         onTabChange={(id) => switchTab(id as Tab)}
+        mobileMode="scroll"
       />
 
       {activeTab === "overview" && (
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div className="min-w-0 flex-1 space-y-6">
-            <ContactResponsibilitiesCard orgId={device.orgId} siteId={device.siteId} deviceId={device.id} />
+            {/* #9029: blocks run in triage order — (1) state + what is open,
+                (2) health, (3) the performance chart, (4) contacts / warranty
+                / billing. Empty cards collapse to one line with a next step. */}
+            <DeviceOverviewState
+              deviceId={device.id}
+              status={device.status}
+              lastSeen={device.lastSeen}
+              alertCount={tabCounts?.alerts}
+              ticketCount={tabCounts?.tickets}
+              onOpenTab={(tab) => switchTab(tab)}
+            />
+            {device.status !== "decommissioned" && (
+              <DeviceQueuedActions deviceId={device.id} />
+            )}
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — side by side on ≥xl (stacked and wrapping below,
                 since the Activity rail narrows this card at lg). Stats are
@@ -890,18 +1045,18 @@ export default function DeviceDetails({
                 itself is also allowed to truncate as a last resort under
                 extreme width constraints (#7153) — both blocks get min-w-0
                 so the Health block can't starve the Activity block. */}
-            <div className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 xl:flex-row xl:gap-6">
+            <div
+              data-testid="device-health-strip"
+              className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 xl:flex-row xl:gap-6"
+            >
               <div className="flex min-w-0 flex-1 flex-wrap gap-x-6 gap-y-3">
                 <div className="shrink-0">
                   <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
                     <Cpu className="h-3.5 w-3.5" />
                     CPU
                   </div>
-                  <p className="mt-1 text-lg font-semibold tabular-nums">
-                    {formatPercent(device.cpuPercent / 100, {
-                      minimumFractionDigits: 1,
-                      maximumFractionDigits: 1,
-                    })}
+                  <p data-testid="device-stat-cpu" className="mt-1 text-lg font-semibold tabular-nums">
+                    {formatStat(device.cpuPercent)}
                   </p>
                 </div>
                 <div className="shrink-0">
@@ -909,11 +1064,8 @@ export default function DeviceDetails({
                     <MemoryStick className="h-3.5 w-3.5" />
                     RAM
                   </div>
-                  <p className="mt-1 text-lg font-semibold tabular-nums">
-                    {formatPercent(device.ramPercent / 100, {
-                      minimumFractionDigits: 1,
-                      maximumFractionDigits: 1,
-                    })}
+                  <p data-testid="device-stat-ram" className="mt-1 text-lg font-semibold tabular-nums">
+                    {formatStat(device.ramPercent)}
                   </p>
                 </div>
                 <div className="shrink-0">
@@ -960,23 +1112,32 @@ export default function DeviceDetails({
               </div>
             </div>
 
-            <NetworkAssetRow deviceId={device.id} />
-
             <DeviceReliabilityPanel deviceId={device.id} />
 
-            <DevicePerformanceGraphs deviceId={device.id} compact />
+            <DevicePerformanceGraphs
+              deviceId={device.id}
+              compact
+              offlineSince={device.status === "offline" ? device.lastSeen : undefined}
+            />
+
+            <ContactResponsibilitiesCard
+              orgId={device.orgId}
+              siteId={device.siteId}
+              deviceId={device.id}
+              assignHref={device.orgId ? `/organizations/${device.orgId}#contacts` : undefined}
+            />
 
             <DeviceWarrantyCard deviceId={device.id} compact />
 
             <DeviceBillingCard deviceId={device.id} />
 
-            {device.status !== "decommissioned" && (
-              <DeviceQueuedActions deviceId={device.id} />
-            )}
+            <NetworkAssetRow deviceId={device.id} />
           </div>
 
+          {/* #9030: the rail collapses instantly — animating `width` reflowed
+              the whole Overview column on every frame. */}
           <div
-            className={`w-full shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${
+            className={`w-full shrink-0 overflow-hidden ${
               activityCollapsed ? "lg:w-11 lg:self-stretch" : "lg:w-80"
             }`}
           >
@@ -1117,7 +1278,10 @@ export default function DeviceDetails({
 
       {activeTab === "performance" && (
         <div className="space-y-6">
-          <DevicePerformanceGraphs deviceId={device.id} />
+          <DevicePerformanceGraphs
+            deviceId={device.id}
+            offlineSince={device.status === "offline" ? device.lastSeen : undefined}
+          />
           <DeviceAnomaliesPanel deviceId={device.id} compact onChanged={refreshTabCounts} />
         </div>
       )}

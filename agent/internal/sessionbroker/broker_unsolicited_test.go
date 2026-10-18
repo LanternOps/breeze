@@ -1,6 +1,8 @@
 package sessionbroker
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +89,31 @@ func TestSanitizeTCCStatusForSessionScopes(t *testing.T) {
 	}
 	if !got.ScreenRecording || !got.Accessibility || !got.FullDiskAccess {
 		t.Fatalf("unexpected sanitized TCC status: %+v", got)
+	}
+}
+
+// #8390: the docs point operators at screenRecordingState on the "TCC
+// permissions received" line to tell an unverified grant from a known one.
+// Not parallel: captureLogs swaps the global logger.
+func TestDispatchTCCStatusLogsScreenRecordingState(t *testing.T) {
+	logs := captureLogs(t)
+	payload, err := json.Marshal(ipc.TCCStatus{
+		ScreenRecording:      true,
+		ScreenRecordingState: "unknown",
+		CheckedAt:            time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{UID: 501, SessionID: "tcc-log", AllowedScopes: []string{"desktop"}}
+	(&Broker{}).dispatchHelperMessage(s, &ipc.Envelope{Type: ipc.TypeTCCStatus, Payload: payload})
+
+	out := logs.String()
+	if !strings.Contains(out, "TCC permissions received") {
+		t.Fatalf("TCC status not logged; logs:\n%s", out)
+	}
+	if !strings.Contains(out, "screenRecordingState=unknown") {
+		t.Fatalf("TCC log line lacks screenRecordingState; logs:\n%s", out)
 	}
 }
 

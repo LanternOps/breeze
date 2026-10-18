@@ -366,7 +366,6 @@
       "supportedGeos": "Prend en charge : {{geos}}",
       "refreshQueued": "Actualisation des modèles mise en file d'attente",
       "refreshFailed": "Impossible de mettre l'actualisation des modèles en file d'attente.",
-      "alreadyConnected": "Déjà connectée",
       "addKind": {
         "anthropic_byok": "Clé API Anthropic",
         "openai_compatible": "Point de terminaison compatible OpenAI"
@@ -4417,7 +4416,8 @@
     "reEnterYourNewPassword": "Saisissez à nouveau votre nouveau mot de passe",
     "confirmPassword": "confirmerMot de passe",
     "newPassword2": "newPassword",
-    "changingPassword": "Changement de mot de passe..."
+    "changingPassword": "Changement de mot de passe...",
+    "noPasswordNotice": "Ce compte se connecte via le fournisseur d'identité de votre organisation et n'a pas de mot de passe; il n'y a donc rien à modifier ici. Si votre organisation n'impose pas l'authentification unique, utilisez « Mot de passe oublié » sur la page de connexion pour en définir un."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Connexion simple connectée.",

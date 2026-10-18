@@ -41,6 +41,10 @@ import {
   __resetOrgToolInFlightForTests,
   currentOrgToolInFlightForTests,
 } from './inFlightCap';
+import type { ToolSourceToolRow as W2ToolRow } from '../../db/schema';
+
+/** The fresh tool row the dispatch-time reload returns (W2); MCP dispatch never reads it. */
+const MCP_TOOL_ROW = { annotations: {} } as unknown as W2ToolRow;
 
 function makeDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
   return {
@@ -124,7 +128,7 @@ describe('executeTenantToolDetailed — per-org in-flight cap', () => {
       const d = makeDescriptor({ sourceId, ownerRef: { orgId: 'org-1', partnerId: null } });
       vi.mocked(loadTenantToolForExecution).mockResolvedValueOnce({
         descriptor: d,
-        source: makeSource({ id: sourceId }),
+        source: makeSource({ id: sourceId }), tool: MCP_TOOL_ROW,
       });
       return executeTenantToolDetailed(d, {}, makeAuth(), { surface: 'mcp', orgId: 'org-1' });
     });
@@ -145,8 +149,8 @@ describe('executeTenantToolDetailed — per-org in-flight cap', () => {
 
     const dOrgA = makeDescriptor({ sourceId: 'source-a', ownerRef: { orgId: 'org-a', partnerId: null } });
     const dOrgB = makeDescriptor({ sourceId: 'source-b', ownerRef: { orgId: 'org-b', partnerId: null } });
-    vi.mocked(loadTenantToolForExecution).mockResolvedValueOnce({ descriptor: dOrgA, source: makeSource({ id: 'source-a', orgId: 'org-a' }) });
-    vi.mocked(loadTenantToolForExecution).mockResolvedValueOnce({ descriptor: dOrgB, source: makeSource({ id: 'source-b', orgId: 'org-b' }) });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValueOnce({ descriptor: dOrgA, source: makeSource({ id: 'source-a', orgId: 'org-a' }), tool: MCP_TOOL_ROW });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValueOnce({ descriptor: dOrgB, source: makeSource({ id: 'source-b', orgId: 'org-b' }), tool: MCP_TOOL_ROW });
 
     const resA = await executeTenantToolDetailed(dOrgA, {}, makeAuth({ orgId: 'org-a' }), { surface: 'mcp', orgId: 'org-a' });
     const resB = await executeTenantToolDetailed(dOrgB, {}, makeAuth({ orgId: 'org-b' }), { surface: 'mcp', orgId: 'org-b' });

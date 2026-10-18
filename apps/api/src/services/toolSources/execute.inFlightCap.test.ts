@@ -36,6 +36,10 @@ import {
   __resetToolSourceInFlightForTests,
   currentToolSourceInFlightForTests,
 } from './inFlightCap';
+import type { ToolSourceToolRow as W2ToolRow } from '../../db/schema';
+
+/** The fresh tool row the dispatch-time reload returns (W2); MCP dispatch never reads it. */
+const MCP_TOOL_ROW = { annotations: {} } as unknown as W2ToolRow;
 
 function makeDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
   return {
@@ -99,7 +103,7 @@ describe('executeTenantToolDetailed — per-source in-flight cap', () => {
     vi.mocked(decryptToolSourceAuth).mockReset();
     vi.mocked(decryptToolSourceAuth).mockReturnValue({ authKind: 'none' });
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     __resetToolSourceInFlightForTests();
   });
 

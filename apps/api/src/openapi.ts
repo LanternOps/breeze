@@ -3728,6 +3728,25 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
+    '/alerts/{id}/unsuppress': {
+      post: {
+        operationId: 'unsuppressAlert',
+        tags: ['Alerts'],
+        summary: 'Lift an alert mute',
+        description: 'Restores a suppressed alert to acknowledged (if it was acknowledged before the mute) or active, and clears the mute deadline. Returns 409 if the alert is not suppressed.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Alert restored',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Alert' }
+              }
+            }
+          }
+        }
+      }
+    },
     '/alerts/rules': {
       get: {
         operationId: 'listAlertRules',

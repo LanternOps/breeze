@@ -19,6 +19,7 @@ import { policyOwnershipCondition } from '../configPolicyOwnership';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
 import { buildRoleOsFilterConditions, matchesRoleOsFilter } from '../featureConfigResolver';
 import { getRedis } from '../redis';
+import { selfBoundDeviceSettingsKey } from '../devicePolicyCache';
 
 export interface ResolvedWorkloadInventorySettings {
   orgId: string;
@@ -188,7 +189,7 @@ export async function getDeviceWorkloadInventorySettings(
       .limit(1);
   if (!device) throw new Error('Workload inventory device not visible');
   const redis = getRedis();
-  const key = `workloads:settings:device:${deviceId}`;
+  const key = selfBoundDeviceSettingsKey('workloads', deviceId);
   if (redis) {
     try {
       const raw = await redis.get(key);

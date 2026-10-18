@@ -93,6 +93,24 @@ describe.skipIf(!RUN)('trust_pages schema bounds', () => {
     const err = await sys(() => db.update(trustPages).set({ ndaText: 'x'.repeat(10_001) }).where(eq(trustPages.id, page.id))).catch((e) => e);
     expect(pgCode(err)).toBe('23514');
   });
+
+  it('W3a: embed_allowed_origins is text[] NOT NULL DEFAULT {} and holds at most 10 origins (CHECK trust_pages_embed_origins_max_chk)', async () => {
+    const cols = (await sys(() => db.execute(sql`
+      SELECT data_type, udt_name, is_nullable, column_default FROM information_schema.columns
+      WHERE table_name = 'trust_pages' AND column_name = 'embed_allowed_origins'`))) as unknown as Array<{ data_type: string; udt_name: string; is_nullable: string; column_default: string | null }>;
+    expect(cols).toHaveLength(1);
+    expect(cols[0]).toMatchObject({ data_type: 'ARRAY', udt_name: '_text', is_nullable: 'NO' });
+    expect(cols[0]!.column_default).toContain("'{}'");
+    const { page } = await newPage();
+    expect(page.embedAllowedOrigins).toEqual([]);
+    const ten = Array.from({ length: 10 }, (_, i) => `https://s${i}.example.com`);
+    await sys(() => db.update(trustPages).set({ embedAllowedOrigins: ten }).where(eq(trustPages.id, page.id)));
+    const [row] = await sys(() => db.select({ o: trustPages.embedAllowedOrigins }).from(trustPages).where(eq(trustPages.id, page.id)));
+    expect(row?.o).toEqual(ten);
+    const err = await sys(() => db.update(trustPages).set({ embedAllowedOrigins: [...ten, 'https://s10.example.com'] }).where(eq(trustPages.id, page.id))).catch((e) => e);
+    expect(pgCode(err)).toBe('23514');
+    expect(JSON.stringify((err as { cause?: unknown }).cause ?? err)).toContain('trust_pages_embed_origins_max_chk');
+  });
 });
 
 describe.skipIf(!RUN)('trust center W2 tables', () => {

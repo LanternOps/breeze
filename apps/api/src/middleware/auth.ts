@@ -5,6 +5,7 @@ import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from './mobile
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { normalizeSiteAllowlist } from '../services/siteAllowlist';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
+import { runPreContextChecks } from './preContextChecks';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
@@ -896,7 +897,17 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // class). They run with NO ambient context and manage their own short DB
   // access contexts; auth is still set above so requireScope/requirePermission
   // and the handler's actor still work.
-  const runScopedHandler = () => {
+  const runScopedHandler = async () => {
+    // #8334 / #1105: per-user Redis limiters registered on the matched routes
+    // run HERE, before a pooled connection is taken, not inside the request
+    // transaction. A denial is finalized on the context directly:
+    // ipAllowlistGuard awaits this function but discards its return value, so
+    // returning the Response would drop it ("Context is not finalized").
+    const preContextDenied = await runPreContextChecks(c);
+    if (preContextDenied) {
+      c.res = preContextDenied;
+      return;
+    }
     if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
       return next();
     }

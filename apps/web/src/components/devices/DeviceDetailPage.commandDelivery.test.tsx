@@ -80,7 +80,7 @@ async function rebootFromDetailPage(commandResponse: unknown) {
   // The full (non-compact) action bar puts Reboot behind the "Power"
   // dropdown, not the "…" overflow menu.
   fireEvent.click(await screen.findByRole('button', { name: 'Power' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Reboot' }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Reboot' }));
   // The dropdown item closes on click; the ConfirmDialog's "Reboot" button
   // is the only one left once it does.
   fireEvent.click(await screen.findByRole('button', { name: 'Reboot' }));

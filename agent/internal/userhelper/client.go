@@ -205,12 +205,10 @@ func (c *Client) Run() error {
 	}
 
 	// Start TCC permission check loop (macOS only; no-op on other platforms).
-	// Skip capture probes while a live session is active to avoid contending
-	// with the streaming capturer in the same helper process.
+	// It never captures the screen (#8390), so it needs no coordination with
+	// a live session's capturer.
 	safeGo("tcc_check", func() {
-		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, func() bool {
-			return !c.desktopMgr.hasActiveSessions()
-		})
+		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind)
 	})
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
@@ -383,7 +381,7 @@ func (c *Client) authenticate() error {
 }
 
 // currentCapabilities computes the capabilities this helper would report now.
-// On macOS desktop helpers this runs a real capture probe.
+// On macOS desktop helpers this runs the non-capturing access check.
 func (c *Client) currentCapabilities() ipc.Capabilities {
 	caps := detectCapabilitiesFn(c.binaryKind, c.context)
 	// On Windows, user-role helpers cannot capture desktop (no SYSTEM token
@@ -1540,19 +1538,15 @@ func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
 		caps.CanTray = false
 		caps.CanClipboard = false
 		if runtime.GOOS == "darwin" {
-			// A permission check: ProbeCaptureAccess never calls
-			// ScreenCaptureKit (#8058). The backend a real session uses is
-			// chosen when it opens its capturer.
-			granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
-				DesktopContext: desktopContext,
-			})
-			if err != nil {
-				log.Warn("desktop helper capability probe failed",
-					"context", desktopContext,
-					"error", err.Error())
-				caps.CanCapture = false
-			} else {
-				caps.CanCapture = granted
+			// A permission check: it never captures (#8390) and never calls
+			// ScreenCaptureKit (#8058). A session may try unless access is
+			// known to be denied; its own capture is the precise check, and
+			// the backend is chosen when it opens its capturer.
+			access := checkCaptureAccessFn(desktop.CaptureConfig{DesktopContext: desktopContext})
+			caps.CanCapture = access.CanCapture()
+			if !caps.CanCapture {
+				log.Warn("desktop helper cannot capture: Screen Recording access denied",
+					"context", desktopContext, "reason", access.Reason)
 			}
 		}
 	}

@@ -9,6 +9,7 @@ import TrustDeclaredControls from './TrustDeclaredControls';
 import TrustDocumentsList from './TrustDocumentsList';
 import TrustFaq from './TrustFaq';
 import TrustFrameworkView from './TrustFrameworkView';
+import HardeningSafeguards from './HardeningSafeguards';
 import TrustHistory from './TrustHistory';
 import TrustSubprocessors from './TrustSubprocessors';
 
@@ -131,6 +132,7 @@ function ControlRow({ control, coverageFloorPct, locale }: { control: TrustPageP
         <p className="text-sm text-muted-foreground">{copy.description}</p>
         {control.status === 'not_assessed' && control.reason && <p className="mt-1 text-xs text-muted-foreground">{notAssessedReasonCopy(control.reason, { coverageFloorPct, unit: control.unit }, locale)}</p>}
         <p className="mt-1 flex flex-wrap gap-1">{control.frameworkRefs.map((r) => <span key={`${r.framework}:${r.ref}`} className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">{frameworkChip(r, locale)}</span>)}</p>
+        {control.id === 'hardening_baseline' && <HardeningSafeguards control={control} />}
       </div>
       <div className="text-right">
         <TrustStatusPill status={control.status} />

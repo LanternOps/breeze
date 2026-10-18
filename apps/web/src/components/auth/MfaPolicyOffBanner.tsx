@@ -119,22 +119,22 @@ export default function MfaPolicyOffBanner() {
   };
 
   return (
-    <div
-      role="status"
+    // Not a live region: role="status" re-announced on every page load (#9031).
+    // One row at >=1024px (message + inline CTA + dismiss, ~40px); wraps below.
+    <aside
+      aria-label={t('mfaPolicyOffBanner.label')}
       data-testid="mfa-policy-off-banner"
-      className="mb-4 flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3"
+      className="mb-4 flex items-center gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2"
     >
-      <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-warning" aria-hidden="true" />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm text-foreground">{t('mfaPolicyOffBanner.message')}</p>
-        <div className="mt-3">
-          <a
-            href="/settings/partner#security"
-            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            {t('mfaPolicyOffBanner.cta')}
-          </a>
-        </div>
+      <ShieldAlert className="h-5 w-5 shrink-0 text-warning" aria-hidden="true" />
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1">
+        <p className="max-w-prose text-sm text-foreground">{t('mfaPolicyOffBanner.message')}</p>
+        <a
+          href="/settings/partner#security"
+          className="shrink-0 rounded-md bg-primary px-3 py-1 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+        >
+          {t('mfaPolicyOffBanner.cta')}
+        </a>
       </div>
       <button
         type="button"
@@ -144,6 +144,6 @@ export default function MfaPolicyOffBanner() {
       >
         <X className="h-4 w-4" aria-hidden="true" />
       </button>
-    </div>
+    </aside>
   );
 }

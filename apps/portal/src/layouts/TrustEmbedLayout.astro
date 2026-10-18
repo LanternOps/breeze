@@ -1,0 +1,31 @@
+---
+// Trust Center W03a (#8771): shell for the framable embed card (/trust/embed/*). Deliberately minimal: no
+// ClientRouter, no islands, no scripts — a static card that links out, so there is nothing to clickjack. Never
+// indexed on its own; canonical points at the full trust page. Framing headers are set by the middleware from
+// Astro.locals.trustEmbedOrigins (the card's live allowlist).
+import '../styles/globals.css';
+import { buildDocAccentCss } from '../lib/docAccent';
+
+interface Props {
+  title: string;
+  canonicalUrl: string;           // absolute URL of the full trust page
+  accent?: string | null;
+}
+const { title, canonicalUrl, accent } = Astro.props;
+const accentCss = buildDocAccentCss(accent);
+const cspNonce = Astro.locals.cspNonce;
+---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow" />
+    <link rel="canonical" href={canonicalUrl} />
+    <title>{title}</title>
+    {accentCss && <style nonce={cspNonce} set:html={accentCss}></style>}
+  </head>
+  <body class="bg-background antialiased">
+    <slot />
+  </body>
+</html>
