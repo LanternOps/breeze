@@ -507,6 +507,29 @@ describe('portal quotes /:id/pdf', () => {
     expect(body.code).toBe('CONTRACT_PDF_UNREADABLE');
   });
 
+  // #7510 (settings rule 3): the customer-facing PDF resolves the footer through
+  // the shared chain — document line → org footer → partner default.
+  it.each<[string, string | null, string | null, string]>([
+    ['the org footer wins over the partner default', null, 'Org footer', 'Org footer'],
+    ['the partner default when the org sets none', null, null, 'Partner footer'],
+    ["the quote's own frozen line wins over both", 'Quote line', 'Org footer', 'Quote line'],
+  ])('footer: %s', async (_name, terms, orgFooter, expected) => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null, sellerSnapshot: null, terms,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([{ name: 'Lantern IT', billingCompanyName: null, billingEmail: null, billingPhone: null, billingWebsite: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null, invoiceFooter: 'Partner footer', currencyCode: 'USD' }]); // partners SELECT (system ctx)
+    dbResults.push(orgFooter === null ? [] : [{ logoUrl: null, primaryColor: null, footerText: orgFooter }]); // portalBranding SELECT
+
+    const res = await app().request(`/quotes/${QUOTE_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const [, , , , brandingArg] = renderQuotePdfMock.mock.calls[0] as [unknown, unknown, unknown, unknown, { footer: string | null }];
+    expect(brandingArg.footer).toBe(expected);
+  });
+
   it('sanitizes a legacy dirty rich_text block before handing blocks to the PDF renderer', async () => {
     dbResults.push([{
       id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',

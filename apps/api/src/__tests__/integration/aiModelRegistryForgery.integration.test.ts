@@ -52,10 +52,11 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
       .rejects.toMatchObject({ cause: { code: '23514' } });
   });
 
-  it('enforces one compat (anthropic_byok|catalog) connection per partner during W02–W03 (23505)', async () => {
+  it('allows more than one anthropic_byok connection per partner once W08b dropped compat_uq (#7606)', async () => {
     const p = await createPartner();
-    await seedByokConnection(p.id);
-    await expect(seedByokConnection(p.id)).rejects.toMatchObject({ code: '23505' });
+    const first = await seedByokConnection(p.id);
+    const second = await seedByokConnection(p.id);
+    expect(second).not.toBe(first);
   });
 });
 

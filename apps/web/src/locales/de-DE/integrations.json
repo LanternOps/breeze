@@ -201,6 +201,34 @@
       "revoke": "Um den Zugriff später zu widerrufen, trennen Sie die Verbindung hier oder entfernen Sie die Breeze-Unternehmensanwendung in Microsoft Entra.",
       "continue": "Weiter zu Microsoft",
       "defaultTarget": "den Microsoft 365-Mandanten dieser Organisation"
+    },
+    "v2": {
+      "title": "Erneute Zustimmung für die Identitätsaktionen erforderlich",
+      "intro": "Dieser Mandant hat einem älteren Berechtigungssatz zugestimmt. Eine erneute Zustimmung behält alles bei, was heute funktioniert, und ergänzt die unten aufgeführten Berechtigungen. Für den Kunden ändert sich nichts, bis ein Administrator die neue Zustimmung erteilt.",
+      "keepsWorking": "Benutzer deaktivieren und Kennwort zurücksetzen funktionieren weiterhin mit der aktuellen Zustimmung.",
+      "upgradeAction": "Neue Berechtigungen prüfen und genehmigen",
+      "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden.",
+      "revokedGrant": "Microsoft 365 zeigt eine Berechtigung nicht mehr an, die diese Verbindung bereits hatte: {{grants}}. Testen Sie erneut und stimmen Sie erneut zu, falls sie weiterhin fehlt.",
+      "purpose": {
+        "userReadWrite": "Benutzerkonten lesen und ändern – zum Sperren der Anmeldung, Ändern von Lizenzen und Anlegen neuer Benutzer.",
+        "userPasswordProfile": "Kennwort eines Benutzers setzen – zum Ausstellen eines temporären Kennworts bei einer Zurücksetzung oder einem neuen Konto.",
+        "userRevokeSessions": "Einen Benutzer von allen Sitzungen abmelden – zum Widerrufen von Anmeldesitzungen, wenn ein Konto kompromittiert ist oder ein Mitarbeiter ausscheidet.",
+        "groupMember": "Gruppen lesen und deren Mitglieder ändern – zum Hinzufügen und Entfernen von Gruppenmitgliedschaften. Gruppen können damit weder erstellt noch gelöscht werden.",
+        "intunePrivileged": "Ein Intune-verwaltetes Gerät außer Betrieb nehmen – entfernt Firmendaten und hebt die Registrierung auf. Breeze führt niemals eine vollständige Löschung durch.",
+        "mailboxSettings": "Postfacheinstellungen lesen und setzen – zum Ein- und Ausschalten der automatischen Antwort und zur Bestätigung der Wirkung.",
+        "organizationRead": "Das Abonnementinventar des Mandanten lesen – zur Prüfung freier Lizenzplätze vor der Zuweisung.",
+        "unknown": "Wird von einer Aktion für Microsoft 365 in Breeze verwendet."
+      }
+    },
+    "staleManifest": {
+      "title": "Organisationen, die eine erneute Zustimmung für Microsoft 365 brauchen",
+      "description": "Diese Kunden verwenden noch einen älteren Berechtigungssatz. Öffnen Sie die Organisation, um die erneute Zustimmung zu starten.",
+      "empty": "Keine Organisation braucht eine erneute Zustimmung.",
+      "columnOrganization": "Organisation",
+      "columnTenant": "Mandant",
+      "columnVersion": "Berechtigungssatz",
+      "columnLastVerified": "Zuletzt geprüft",
+      "loadFailed": "Die Liste für die erneute Zustimmung konnte nicht geladen werden."
     }
   },
   "m365ConfirmTenant": {
@@ -331,6 +359,27 @@
       "verification_failed": "Überprüfung fehlgeschlagen",
       "unknown": "Erfordert Aufmerksamkeit"
     }
+  },
+  "connectionHealthSettings": {
+    "title": "Integritätsbenachrichtigungen",
+    "description": "Mitarbeitende des MSP, die eine fehlerhafte Verbindung reparieren können, erhalten immer deren In-App-Hinweis und die tägliche Zusammenfassung. Legen Sie fest, ob auch Administratoren der Kundenorganisationen von den Verbindungen ihrer eigenen Organisation erfahren.",
+    "partnerLabel": "Kundenadministratoren standardmäßig benachrichtigen",
+    "partnerDescription": "Gilt für jede Organisation ohne eigene Einstellung. Partnerweite Verbindungen erreichen Kundenadministratoren nie.",
+    "partnerReadOnly": "Nur Partneradministratoren mit Zugriff auf alle Organisationen können den Standard ändern.",
+    "orgLabel": "Diese Organisation",
+    "orgDescription": "Überschreibt den Standard für die oben ausgewählte Organisation.",
+    "selectOrg": "Wählen Sie eine Organisation aus, um den Standard für sie zu überschreiben.",
+    "inherit": "Übernehmen",
+    "inheritOn": "Übernehmen (ein, von {{from}})",
+    "inheritOff": "Übernehmen (aus, von {{from}})",
+    "fromPartner": "der Partnereinstellung",
+    "fromDefault": "dem integrierten Standard",
+    "on": "Ein",
+    "off": "Aus",
+    "loadFailed": "Die Einstellungen für Integritätsbenachrichtigungen konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "saved": "Einstellung für Integritätsbenachrichtigungen gespeichert",
+    "saveFailed": "Die Einstellung für Integritätsbenachrichtigungen konnte nicht gespeichert werden"
   },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Verbindung überprüft und gespeichert.",

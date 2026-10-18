@@ -13,10 +13,8 @@
  * and every lock in connectionRemap.ts treats it as absent, so no write edits
  * or revives it.
  */
-import { and, eq, inArray, ne } from 'drizzle-orm';
-import { ANTHROPIC_API_CONNECTION_KINDS, isAnthropicApiConnectionKind } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { partnerAiConnections } from '../../db/schema';
+import { isAnthropicApiConnectionKind } from '@breeze/shared';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 // `isLlmProviderCatalogEnabled` is called from inside function bodies here,
 // never at module-evaluation time.
 import { buildCatalogEndpointSnapshot, isLlmProviderCatalogEnabled, type ResolvedLlmEndpoint } from '../llm/llmConfigResolver';
@@ -41,9 +39,6 @@ import { RegistryWriteError, toRegistryWriteError } from './registryWriteErrors'
 import { lockPartnerRegistry } from './registryWriteLock';
 import { safeErrorMessage } from './safeDbError';
 import { captureException } from '../sentry';
-
-/** R1 cap: one Anthropic API connection per partner while partner_ai_connections_compat_uq exists. W08b Task 14 removes it with the index. */
-export const MAX_ANTHROPIC_API_CONNECTIONS_PER_PARTNER = 1;
 
 const notCutOver = () => new ConnectionCheckError('AI configuration is being upgraded. Try again in a moment.', 503);
 const configChanged = () => new ConnectionCheckError('The AI provider configuration changed. Reload and try again.', 409);
@@ -147,18 +142,6 @@ function cleanKey(apiKey: string): string {
   return key;
 }
 
-/** Route-level pre-check (outside any transaction) for the friendly 409; the cap is re-checked under the lock. Soft-disconnected rows do not count. */
-export async function hasAnthropicConnection(partnerId: string): Promise<boolean> {
-  const [row] = await systemRead(() => db.select({ id: partnerAiConnections.id }).from(partnerAiConnections)
-    .where(and(
-      eq(partnerAiConnections.partnerId, partnerId),
-      inArray(partnerAiConnections.kind, [...ANTHROPIC_API_CONNECTION_KINDS]),
-      ne(partnerAiConnections.status, 'disconnected'),
-    ))
-    .limit(1), 'aiModels.hasAnthropicConnection');
-  return Boolean(row);
-}
-
 export async function createAnthropicKeyConnection(input: {
   partnerId: string; apiKey: string; userId: string;
 }): Promise<{ connectionId: string; last4: string; configVersion: number }> {
@@ -167,10 +150,10 @@ export async function createAnthropicKeyConnection(input: {
   await probeAnthropicKey(apiKey, { kind: 'anthropic' });
   const verifiedAt = new Date();
   const connectionId = await inRegistryWrite(input.partnerId, async () => {
+    // Several Anthropic connections may coexist (W08b, #7606). Only the
+    // partner's first one takes over the features on the platform key; models
+    // discovered on a later one arrive disabled until an admin assigns them.
     const existing = await lockAnthropicConnectionIds(input.partnerId);
-    if (existing.length >= MAX_ANTHROPIC_API_CONNECTIONS_PER_PARTNER) {
-      throw new ConnectionCheckError('This partner already has an Anthropic connection. Rotate its key instead.', 409);
-    }
     return connectAnthropicConnection(input.partnerId, {
       kind: 'anthropic_byok', apiKey, catalogEntryId: null, connectedBy: input.userId, verifiedAt,
       movePlatformReferences: existing.length === 0,

@@ -28,6 +28,8 @@ vi.mock('../db', () => {
 });
 
 vi.mock('../middleware/auth', () => ({
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  hasSatisfiedMfa: vi.fn(() => true),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', { user: { id: 'user-1' }, scope: state.scope, partnerId: 'p-1', orgId: null });
     return next();

@@ -7,6 +7,7 @@ import { authMiddleware, requirePermission, requireScope } from '../middleware/a
 import { zValidator } from '../lib/validation';
 import { PERMISSIONS, hasPermission } from '../services/permissions';
 import { permissionFromText } from '../services/connectionHealth/store';
+import { registerConnectionHealthSettingsRoutes } from './connectionHealthSettings';
 
 // Read-only view of connection health incidents (spec 2026-10-15). Only the
 // reconciler writes this table. Rows are narrowed by RLS (request DB context)
@@ -88,3 +89,7 @@ connectionHealthRoutes.get(
     return c.json({ data, truncated });
   },
 );
+
+// W5: the customer-delivery setting (GET /settings, PUT /settings/partner,
+// PUT /settings/orgs/:orgId). The incidents API itself stays GET-only.
+registerConnectionHealthSettingsRoutes(connectionHealthRoutes);

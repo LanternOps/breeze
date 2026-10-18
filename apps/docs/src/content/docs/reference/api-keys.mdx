@@ -65,6 +65,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/api-keys \
 | `scopes` | `string[]` | No | `[]` | Permissions granted to this key. |
 | `expiresAt` | `string (datetime)` | No | `null` (never) | ISO 8601 expiration timestamp. |
 | `rateLimit` | `integer` | No | `1000` | Maximum requests per hour (1-100,000). |
+| `mcpDomains` | `string[] \| null` | No | `null` (all tools) | Limit the key to MCP tool areas. See [MCP tool areas](#mcp-tool-areas-mcpdomains). |
 
 <Aside>
   MFA verification is required to create, update, rotate, or revoke API keys. The requesting session must have completed MFA.
@@ -84,6 +85,31 @@ Scopes restrict which API operations a key can perform. When a route is protecte
 ```
 
 Scopes can be updated after creation via the `PATCH` endpoint without rotating the key material.
+
+### MCP tool areas (`mcpDomains`)
+
+A key with an `ai:*` scope can be limited to specific tool areas on the [MCP server](/features/mcp-server/#limit-a-connection-to-tool-areas). `mcpDomains` is an array of area names, or `null` for all tools (the default, which also includes areas added later).
+
+Valid values: `devices`, `scripts`, `patching`, `monitoring`, `network`, `security`, `backup`, `tickets`, `billing`, `accounts`, `integrations`, `admin`, `ai`. Core tools are always included and are not listed. An empty array, `core` and unknown names are rejected with a 400. Duplicates are removed, and a list naming every area is stored as `null`.
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/api-keys \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orgId": "ORG_UUID",
+    "name": "Ticket assistant",
+    "scopes": ["ai:read", "ai:write"],
+    "mcpDomains": ["tickets", "devices"]
+  }'
+```
+
+- The limit applies only to the MCP server. REST API behavior of the key is unchanged.
+- It narrows access only. Scopes, roles, approvals and MFA still apply.
+- The create, `GET /api-keys` and `GET /api-keys/:id` responses include `mcpDomains`.
+- To change it, send `PATCH /api-keys/:id` with `{ "mcpDomains": ["tickets"] }`, or `{ "mcpDomains": null }` to allow all tools. Widening needs the same delegation rights as granting the key's scopes.
+- Rotating a key keeps its `mcpDomains`.
+- Partner service principal keys are always unrestricted in this release.
 
 ### Authentication Flow
 
@@ -426,6 +452,7 @@ Create a new API key. Returns the full key exactly once.
   "scopes": ["devices:read"],
   "expiresAt": "2026-12-31T23:59:59.000Z",
   "rateLimit": 1000,
+  "mcpDomains": null,
   "createdBy": "uuid",
   "createdAt": "2026-02-18T...",
   "status": "active",
@@ -445,7 +472,7 @@ Retrieve metadata for a single API key. The `keyHash` is not included.
 
 #### `PATCH /api-keys/:id`
 
-Update an active API key's name, scopes, or rate limit. Cannot update revoked or expired keys.
+Update an active API key's name, scopes, rate limit, or MCP tool areas. Cannot update revoked or expired keys.
 
 **Required permission:** `organizations:write` + MFA
 
@@ -456,6 +483,7 @@ Update an active API key's name, scopes, or rate limit. Cannot update revoked or
 | `name` | `string` | New display name (1-255 characters). |
 | `scopes` | `string[]` | Replace the scopes array. |
 | `rateLimit` | `integer` | New rate limit (1-100,000 requests/hour). |
+| `mcpDomains` | `string[] \| null` | Limit the key to MCP tool areas, or `null` for all tools. Widening needs the same delegation rights as granting the key's scopes. |
 
 ---
 

@@ -238,6 +238,7 @@ function setTestApiKey(overrides: Record<string, unknown> = {}) {
     partnerId: 'partner-1',
     name: 'test',
     keyPrefix: 'brz_test',
+    mcpDomains: null,
     scopes: ['ai:read'],
     rateLimit: 1000,
     createdBy: 'user-1',
@@ -535,6 +536,7 @@ describe('MCP transport integration', () => {
       oauthGrantId: 'grant-stable-1',
       name: 'OAuth bearer',
       keyPrefix: 'oauth',
+      mcpDomains: null,
     });
 
     const rateLimiter = routeMocks.rateLimiter;
@@ -875,6 +877,7 @@ describe('MCP transport integration', () => {
       partnerId: 'partner-1',
       name: 'A',
       keyPrefix: 'oauth',
+      mcpDomains: null,
       scopes: ['ai:read'],
       rateLimit: 1000,
       createdBy: 'user-shared',
@@ -1046,6 +1049,7 @@ describe('MCP transport integration', () => {
       partnerId: 'partner-1',
       name: 'A',
       keyPrefix: 'brz_a',
+      mcpDomains: null,
       scopes: ['ai:read'],
       rateLimit: 1000,
       createdBy: 'user-A',
@@ -1056,6 +1060,7 @@ describe('MCP transport integration', () => {
       partnerId: 'partner-1',
       name: 'B',
       keyPrefix: 'brz_b',
+      mcpDomains: null,
       scopes: ['ai:read'],
       rateLimit: 1000,
       createdBy: 'user-B',
@@ -1408,8 +1413,8 @@ describe('MCP transport integration', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.result.tools.map((tool: { name: string }) => tool.name))
-        .toEqual(['get_backup_status', 'query_devices', 'aa__read', 'ab__read']);
-      for (const tool of body.result.tools.slice(2)) {
+        .toEqual(['get_backup_status', 'query_devices', 'whoami', 'aa__read', 'ab__read']);
+      for (const tool of body.result.tools.slice(3)) {
         expect(Object.keys(tool).sort()).toEqual(['_meta', 'annotations', 'description', 'inputSchema', 'name', 'title']);
         expect(tool.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true });
       }
@@ -1940,7 +1945,15 @@ describe('MCP transport integration', () => {
       });
       const page2 = await page2Res.json();
       expect(page2.result.tools.map((t: { name: string }) => t.name)).toEqual(['query_devices']);
-      expect(page2.result.nextCursor).toBeUndefined();
+      // B-W02: the server-intrinsic whoami tool sorts after the two registry tools.
+      const page3Res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: page2.result.nextCursor } }),
+      });
+      const page3 = await page3Res.json();
+      expect(page3.result.tools.map((t: { name: string }) => t.name)).toEqual(['whoami']);
+      expect(page3.result.nextCursor).toBeUndefined();
     });
 
     it('rejects a page-1 cursor with a JSON-RPC error once the resolved catalog changes before page 2', async () => {
@@ -2040,7 +2053,7 @@ describe('MCP transport integration', () => {
       });
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_backup_status', 'query_devices']);
+      expect(body.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_backup_status', 'query_devices', 'whoami']);
       expect(body.result.nextCursor).toBeUndefined();
     });
   });

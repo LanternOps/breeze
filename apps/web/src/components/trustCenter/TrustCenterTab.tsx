@@ -11,6 +11,7 @@ import TrustContentSection from './TrustContentSection';
 import TrustControlsSection from './TrustControlsSection';
 import TrustDeclarationsSection from './TrustDeclarationsSection';
 import TrustDocumentsSection from './TrustDocumentsSection';
+import TrustEmbedSection from './TrustEmbedSection';
 import TrustFaqSection from './TrustFaqSection';
 import TrustFrameworksSection from './TrustFrameworksSection';
 import TrustHistorySection from './TrustHistorySection';
@@ -96,6 +97,7 @@ export default function TrustCenterTab({ orgId, orgFetch }: { orgId: string; org
       <TrustFaqSection {...section} />
       <TrustSubprocessorsSection {...section} />
       <TrustDocumentsSection orgId={orgId} orgFetch={orgFetch} canWrite={canWrite} documents={page.documents} onReload={load} />
+      <TrustEmbedSection {...section} />
       <TrustAccessSection {...section} />
       <TrustHistorySection {...section} />
       <TrustBadgeSnippet publicPath={page.publicPath} badgePath={page.badgePath} published={page.page.publishedAt !== null} />

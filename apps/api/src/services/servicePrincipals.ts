@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { apiKeys, servicePrincipals } from '../db/schema';
 import { createAuditLogAsync } from './auditService';
@@ -94,6 +94,29 @@ export async function createServicePrincipal(input: {
  * routes/apiKeys.ts. The revoke-then-mint ordering means there is never a
  * window where two keys are simultaneously active for one principal.
  */
+export class ServicePrincipalMcpDomainsConflictError extends Error {
+  constructor() {
+    super('The principal has several active keys whose MCP tool areas do not overlap; revoke the extra keys, then rotate.');
+    this.name = 'ServicePrincipalMcpDomainsConflictError';
+  }
+}
+
+/**
+ * The narrowest of several stored `mcp_domains` values: `null` (unrestricted)
+ * loses to any restricted set and restricted sets intersect. An empty
+ * intersection is not storable (the CHECK forbids `[]`) and any pick would be
+ * wider than one of the inputs, so it refuses instead (fail closed). Only
+ * reachable with several active keys at once, which revoke-then-mint avoids.
+ */
+function narrowestMcpDomains(values: Array<string[] | null>): string[] | null {
+  const restricted = values.filter((v): v is string[] => v !== null);
+  if (restricted.length === 0) return null;
+  const [first, ...rest] = restricted;
+  const intersection = first!.filter((d) => rest.every((r) => r.includes(d)));
+  if (intersection.length === 0) throw new ServicePrincipalMcpDomainsConflictError();
+  return intersection;
+}
+
 export async function rotateServicePrincipalKey(
   principalId: string,
   actorId: string,
@@ -107,6 +130,21 @@ export async function rotateServicePrincipalKey(
   if (!principal) {
     throw new ServicePrincipalNotFoundError(principalId);
   }
+
+  // B-W02 (#6156): carry MCP tool domains into the replacement so rotation
+  // never widens a restricted key. Source: the active key(s) — the narrowest
+  // if there are several — else the most recent key (a revoked restricted key
+  // followed by a rotate must not come back unrestricted). Only a principal
+  // that never had a key mints an unrestricted one.
+  const priorKeys = await db
+    .select({ mcpDomains: apiKeys.mcpDomains, status: apiKeys.status })
+    .from(apiKeys)
+    .where(eq(apiKeys.principalId, principalId))
+    .orderBy(desc(apiKeys.createdAt));
+  const activePrior = priorKeys.filter((k) => k.status === 'active');
+  const carriedMcpDomains = narrowestMcpDomains(
+    (activePrior.length > 0 ? activePrior : priorKeys.slice(0, 1)).map((k) => k.mcpDomains ?? null),
+  );
 
   await db
     .update(apiKeys)
@@ -123,6 +161,7 @@ export async function rotateServicePrincipalKey(
       keyHash,
       keyPrefix,
       scopes: principal.scopes,
+      mcpDomains: carriedMcpDomains,
       createdBy: actorId,
       status: 'active',
       principalType: 'service',

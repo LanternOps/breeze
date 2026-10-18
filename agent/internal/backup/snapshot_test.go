@@ -2225,51 +2225,126 @@ func setUploadLeaseIntervalForTest(d time.Duration) (restore func()) {
 	return func() { uploadLeaseInterval = old }
 }
 
-// slowFirstUploadProvider wraps mockProvider and sleeps for `delay` on the
-// FIRST call to Upload/UploadContext only (the real file, not the
-// upload.lease refreshes or the final manifest), so a test can force the
-// upload loop to sit still long enough for the lease-refresh ticker to fire
-// at least once without depending on real wall-clock file I/O.
-type slowFirstUploadProvider struct {
+// useManualLeaseTicksForTest swaps newUploadLeaseTicker for a clock the test
+// drives: refreshes happen only when the test sends on the returned channel.
+// It returns that channel and a func reporting the interval the run asked
+// for. It swaps a package var, so a test that calls it must not run in
+// parallel with other tests in this package.
+func useManualLeaseTicksForTest(t *testing.T) (ticks chan time.Time, requested func() time.Duration) {
+	t.Helper()
+	ticks = make(chan time.Time)
+	var mu sync.Mutex
+	var asked time.Duration
+	orig := newUploadLeaseTicker
+	newUploadLeaseTicker = func(d time.Duration) (<-chan time.Time, func()) {
+		mu.Lock()
+		asked = d
+		mu.Unlock()
+		return ticks, func() {}
+	}
+	t.Cleanup(func() { newUploadLeaseTicker = orig })
+	return ticks, func() time.Duration {
+		mu.Lock()
+		defer mu.Unlock()
+		return asked
+	}
+}
+
+// leaseTickDuringUploadProvider wraps mockProvider. On the FIRST upload that
+// is not an upload.lease refresh (the data file, in a one-file run) it sends one lease tick and waits until the refresh that tick
+// triggers has reached the backing store, then finishes the data upload. The
+// refresh therefore lands inside the upload however the scheduler interleaves
+// the goroutines: a 50 ms sleep raced against a 10 ms ticker here failed
+// under -race on a loaded runner (#8828).
+type leaseTickDuringUploadProvider struct {
 	*mockProvider
-	delay    time.Duration
-	slowOnce sync.Once
+	t             *testing.T
+	ticks         chan<- time.Time
+	leaseUploaded chan struct{}
+	leaseOnce     sync.Once
+	dataOnce      sync.Once
+	// tickedPath is the data upload the tick was delivered inside; written
+	// once inside dataOnce, read after createSnapshotWithProgress returns.
+	tickedPath string
 }
 
-func (p *slowFirstUploadProvider) Upload(localPath, remotePath string) error {
-	p.slowOnce.Do(func() { time.Sleep(p.delay) })
+func newLeaseTickDuringUploadProvider(t *testing.T, backing *mockProvider, ticks chan<- time.Time) *leaseTickDuringUploadProvider {
+	return &leaseTickDuringUploadProvider{mockProvider: backing, t: t, ticks: ticks, leaseUploaded: make(chan struct{})}
+}
+
+func (p *leaseTickDuringUploadProvider) upload(localPath, remotePath string) error {
+	if strings.HasSuffix(remotePath, "/upload.lease") {
+		err := p.mockProvider.Upload(localPath, remotePath)
+		p.leaseOnce.Do(func() { close(p.leaseUploaded) })
+		return err
+	}
+	p.dataOnce.Do(func() {
+		p.tickedPath = remotePath
+		// t.Errorf, not t.Fatalf: this can run off the test goroutine.
+		select {
+		case p.ticks <- time.Now():
+		case <-time.After(10 * time.Second):
+			p.t.Errorf("lease-refresh goroutine never took a tick while %s was uploading", remotePath)
+			return
+		}
+		select {
+		case <-p.leaseUploaded:
+		case <-time.After(10 * time.Second):
+			p.t.Errorf("a lease tick during the upload of %s produced no upload.lease refresh", remotePath)
+		}
+	})
 	return p.mockProvider.Upload(localPath, remotePath)
 }
 
-func (p *slowFirstUploadProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
-	p.slowOnce.Do(func() { time.Sleep(p.delay) })
-	return p.mockProvider.Upload(localPath, remotePath)
+func (p *leaseTickDuringUploadProvider) Upload(localPath, remotePath string) error {
+	return p.upload(localPath, remotePath)
+}
+
+func (p *leaseTickDuringUploadProvider) UploadContext(_ context.Context, localPath, remotePath string) error {
+	return p.upload(localPath, remotePath)
 }
 
 func TestCreateSnapshot_UploadLease_RefreshedDuringUploadThenDeletedAfterPublish(t *testing.T) {
-	restore := setUploadLeaseIntervalForTest(10 * time.Millisecond)
-	defer restore()
+	ticks, requestedInterval := useManualLeaseTicksForTest(t)
 
 	tmpDir := t.TempDir()
 	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
 	backing := newMockProvider()
-	provider := &slowFirstUploadProvider{mockProvider: backing, delay: 50 * time.Millisecond}
+	provider := newLeaseTickDuringUploadProvider(t, backing, ticks)
 
 	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
 	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if got := requestedInterval(); got != uploadLeaseInterval {
+		t.Fatalf("lease ticker interval = %v, want uploadLeaseInterval (%v)", got, uploadLeaseInterval)
+	}
 
 	leaseKey := "snapshots/" + snap.ID + "/upload.lease"
-	sawLeaseUpload := false
-	for _, call := range backing.uploadCalls {
-		if call.remotePath == leaseKey {
-			sawLeaseUpload = true
+	dataKey := provider.tickedPath
+	if dataKey == "" {
+		t.Fatal("no data-file upload happened, so no lease tick was delivered")
+	}
+	leaseIdx, dataIdx := -1, -1
+	for i, call := range backing.uploadCalls {
+		switch call.remotePath {
+		case leaseKey:
+			if leaseIdx < 0 {
+				leaseIdx = i
+			}
+		case dataKey:
+			dataIdx = i
 		}
 	}
-	if !sawLeaseUpload {
-		t.Error("expected at least one upload.lease refresh during a slow upload")
+	if leaseIdx < 0 {
+		t.Error("expected at least one upload.lease refresh during the data upload")
+	}
+	if dataIdx < 0 {
+		t.Fatalf("expected the data file to be uploaded to %s, got %+v", dataKey, backing.uploadCalls)
+	}
+	if leaseIdx > dataIdx {
+		t.Errorf("upload.lease refresh (call %d) landed after the data upload finished (call %d), want during it", leaseIdx, dataIdx)
 	}
 	if _, stillThere := backing.files[leaseKey]; stillThere {
 		t.Error("expected upload.lease to be deleted after a successful publish")
@@ -2373,8 +2448,8 @@ func TestAbortSourceGone_StopsLeaseRefreshBeforeCleanup_NoOrphanLeaseAfterAbort(
 	// even once before stopLeaseRefresh stops it — that's a CORRECT outcome
 	// of the fix, not a broken heartbeat. The heartbeat firing at all is
 	// separately proven by TestCreateSnapshot_UploadLease_RefreshedDuring
-	// UploadThenDeletedAfterPublish (which uses a slow provider precisely
-	// so the ticker gets a chance to tick). leaseUploads() is logged here
+	// UploadThenDeletedAfterPublish (which delivers a manual lease tick
+	// mid-upload, #8828). leaseUploads() is logged here
 	// purely as a diagnostic (0 or 1 is both a legitimate outcome, so it is
 	// not asserted on) rather than left as dead instrumentation.
 	t.Logf("lease-key uploads observed during this run: %d", provider.leaseUploads())

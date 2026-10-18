@@ -1311,7 +1311,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
   // Delegant/inline tools. Google Tier-3 tools ARE headless-executable
   // (org-keyed connection, resolved by intent.orgId) as of Phase 2, and M365
-  // Tier-3 tools (m365_disable_user, m365_reset_password) ARE ALSO
+  // Tier-3 tools (the ten in M365_HEADLESS_ACTIONS, m365ToolsHeadless.ts) ARE ALSO
   // headless-executable as of Phase 2 via the control-plane
   // customer-graph-actions executor (executeM365ToolHeadless) — so gate the
   // session_required fail on "not a headless Google tool AND not a headless

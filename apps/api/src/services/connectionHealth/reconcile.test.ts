@@ -21,8 +21,12 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('../../db/lockTimeout', () => ({ tightenStatementTimeout: (...a: [unknown, number]) => tightenMock(...a) }));
 vi.mock('../opsAlerts', () => ({ sendOpsAlert: vi.fn() }));
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException: (...a: unknown[]) => captureExceptionMock(...a) }));
 vi.mock('../redis', () => ({ getRedis: vi.fn(() => null) }));
 vi.mock('./notifier', () => ({ deliverPendingNotices: vi.fn() }));
+const publishEventsMock = vi.hoisted(() => vi.fn(async () => ({ published: 0, failed: 0 })));
+vi.mock('./events', () => ({ publishPendingEvents: (...a: unknown[]) => publishEventsMock(...(a as [])) }));
 vi.mock('./sources', () => ({ HEALTH_SOURCES: [] }));
 vi.mock('./store', () => ({
   loadTracked: (...a: unknown[]) => loadTrackedMock(...a),
@@ -75,6 +79,51 @@ beforeEach(() => {
 });
 
 describe('runReconcile', () => {
+  it('publishes health events after notices and before retention, and reports them (W5)', async () => {
+    const order: string[] = [];
+    const r = await runReconcile({
+      sources: [src('a', 15)], redis: fakeRedis(), now: () => T0, alert: async () => true,
+      runKind: vi.fn(async () => { order.push('kind'); return okCounts; }),
+      deliver: vi.fn(async () => { order.push('deliver'); return { delivered: 0, failed: 0, zeroRecipients: 0 }; }),
+      publishEvents: vi.fn(async () => { order.push('events'); return { published: 2, failed: 1 }; }),
+      retention: vi.fn(async () => { order.push('retention'); return 0; }),
+    });
+    expect(order).toEqual(['kind', 'deliver', 'events', 'retention']);
+    expect(r.events).toEqual({ published: 2, failed: 1 });
+  });
+
+  it('an event publisher failure still runs retention, writes no heartbeat, and fails the job (W5)', async () => {
+    const redis = fakeRedis();
+    const retention = vi.fn().mockResolvedValue(0);
+    await expect(runReconcile({
+      sources: [], redis, now: () => T0, alert: async () => true, retention,
+      deliver: async () => ({ delivered: 0, failed: 0, zeroRecipients: 0 }),
+      publishEvents: vi.fn().mockRejectedValue(new Error('outbox scan failed')),
+    })).rejects.toThrow('outbox scan failed');
+    expect(retention).toHaveBeenCalledTimes(1);
+    expect(redis.store.has('connection-health:reconcile:heartbeat')).toBe(false);
+  });
+
+  it('reports a degraded event drain (failures and nothing published) to Sentry, once per run (W5)', async () => {
+    await runReconcile({
+      sources: [], redis: null, now: () => T0, ...noops,
+      publishEvents: async () => ({ published: 0, failed: 3 }),
+    });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(String(captureExceptionMock.mock.calls[0]![0])).toContain('connection_health_events_degraded');
+    captureExceptionMock.mockClear();
+    await runReconcile({
+      sources: [], redis: null, now: () => T0, ...noops,
+      publishEvents: async () => ({ published: 2, failed: 1 }),
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('defaults the event publisher to the outbox drain', async () => {
+    await runReconcile({ sources: [], redis: null, now: () => T0, ...noops });
+    expect(publishEventsMock).toHaveBeenCalledWith(T0);
+  });
+
   it('runs a due kind, records last-ok, and seeds on its first run only', async () => {
     const redis = fakeRedis();
     const runKind = vi.fn().mockResolvedValue({ opened: 1, resolved: 0, pending: 0, observations: 1 });

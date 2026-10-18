@@ -57,6 +57,7 @@ import { registerDRTools } from './aiToolsDR';
 
 // New domain modules
 import { registerDeviceTools } from './aiToolsDevice';
+import { registerRestorePointTools } from './aiToolsRestorePoints';
 import { registerNetworkTools } from './aiToolsNetwork';
 import { registerTopologyTools } from './aiToolsTopology';
 import { registerSentinelOneTools } from './aiToolsSentinelOne';
@@ -336,6 +337,7 @@ registerIntegrationTools(aiTools);
 registerMonitoringTools(aiTools);
 registerMonitorTools(aiTools);
 registerDeviceTools(aiTools);
+registerRestorePointTools(aiTools);
 registerNetworkTools(aiTools);
 registerTopologyTools(aiTools);
 registerSentinelOneTools(aiTools);
@@ -517,7 +519,7 @@ export function getToolAlwaysLoad(toolName: string): boolean {
  * headless `executeTool` path — i.e. it only runs via the inline chat path's
  * makeSessionAwareHandler, which threads a live SSE session id to reach the
  * per-tenant M365/Google OAuth connection. Covers the M365 mutation helpdesk
- * tools (m365_disable_user, m365_reset_password) and ALL Google tools (there is
+ * tools (m365_disable_user, m365_reset_password and the M1 identity write tools) and ALL Google tools (there is
  * no registerGoogleTools into the core map). The durable release worker uses
  * this to fail such intents with `session_required` instead of `Unknown tool`.
  * Phase 2 (headless dispatch) would make these executable and flip this to false.

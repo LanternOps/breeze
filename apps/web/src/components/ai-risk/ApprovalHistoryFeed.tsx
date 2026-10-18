@@ -31,6 +31,14 @@ const TIER3_TOOLS = new Set([
   "create_automation",
   "network_discovery",
   "m365_reset_password",
+  "m365_revoke_sessions",
+  "m365_remove_license",
+  "m365_assign_license",
+  "m365_remove_from_group",
+  "m365_add_to_group",
+  "m365_retire_intune_device",
+  "m365_create_user",
+  "m365_set_auto_reply",
 ]);
 const STATUS_BADGE: Record<
   string,

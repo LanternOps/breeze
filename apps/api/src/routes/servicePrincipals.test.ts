@@ -28,13 +28,15 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/servicePrincipals', () => {
   class ServicePrincipalNotFoundError extends Error {}
   class ApiKeyNotFoundError extends Error {}
+  class ServicePrincipalMcpDomainsConflictError extends Error {}
   return {
     createServicePrincipal: vi.fn(),
     rotateServicePrincipalKey: vi.fn(),
     disableServicePrincipal: vi.fn(),
     migrateHumanKeyToServicePrincipal: vi.fn(),
     ServicePrincipalNotFoundError,
-    ApiKeyNotFoundError
+    ApiKeyNotFoundError,
+    ServicePrincipalMcpDomainsConflictError
   };
 });
 

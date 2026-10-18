@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Dispositivos",
-        "devicesSub": "{{online}} de {{total}} online",
         "alerts": "Alertas abertos",
-        "alertsSub": "{{critical}} críticos · {{high}} altos",
         "tickets": "Chamados abertos",
-        "ticketsSub": "{{count}} aguardando o cliente",
         "contracts": "Contratos ativos",
         "contractsSub": "Próxima renovação {{date}}",
         "contractsNoRenewal": "Sem renovação futura",
-        "invoices": "Em aberto",
         "invoicesSub": "Próximo vencimento {{date}}",
         "invoicesOverdue_one": "{{count}} vencida",
         "invoicesOverdue_other": "{{count}} vencidas",
@@ -94,7 +90,23 @@
       },
       "lastActivity": "Última atividade {{date}}",
       "noSummary": "Os totais de resumo não estão disponíveis no momento.",
-      "archivedNotice": "Os dados de visão geral não são exibidos para organizações arquivadas."
+      "archivedNotice": "Os dados de visão geral não são exibidos para organizações arquivadas.",
+      "fleet": {
+        "title": "Saúde da frota",
+        "total": "No total",
+        "allOnline": "Todos online",
+        "noDevices": "Nenhum dispositivo",
+        "critical": "Críticos",
+        "high": "Altos",
+        "otherAlerts": "Outros",
+        "noAlerts": "Nenhum alerta aberto",
+        "awaitingCustomer": "Aguardando o cliente",
+        "noTickets": "Nenhum chamado aberto"
+      },
+      "account": {
+        "title": "Conta",
+        "invoices": "Faturas em aberto"
+      }
     },
     "archived": {
       "banner": "Esta organização está arquivada e é somente leitura. Restaure-a para fazer alterações.",
@@ -213,12 +225,56 @@
         "title": "Visão por framework"
       },
       "subprocessors": {
+        "description": "Terceiros que processam dados em nome do seu cliente. As ferramentas detectadas são apenas sugestões; nada é publicado até você publicar a página.",
+        "addDetected": "Adicionar das ferramentas detectadas",
+        "addManual": "Adicionar manualmente",
+        "noSuggestions": "Não há mais ferramentas detectadas para adicionar.",
+        "empty": "Nenhum subprocessador listado ainda.",
+        "name": "Nome",
+        "purpose": "Finalidade",
+        "location": "Localização",
+        "website": "Site",
+        "websiteInvalid": "Use um endereço https://.",
+        "moveUp": "Mover para cima",
+        "moveDown": "Mover para baixo",
+        "remove": "Remover",
+        "save": "Salvar subprocessadores",
+        "saved": "Subprocessadores salvos",
+        "saveFailed": "Não foi possível salvar os subprocessadores",
+        "loadFailed": "Não foi possível carregar os subprocessadores.",
+        "suggestionsFailed": "Não foi possível carregar as ferramentas detectadas. Feche e abra novamente para tentar de novo.",
+        "duplicate": "A mesma ferramenta detectada aparece mais de uma vez.",
+        "limit": "Limite de {{max}} subprocessadores atingido.",
         "title": "Subprocessadores"
       },
       "faq": {
+        "description": "Respostas às perguntas mais comuns de compradores e auditores. Publicadas junto com a página.",
+        "add": "Adicionar pergunta",
+        "question": "Pergunta",
+        "questionShort": "A pergunta precisa ter pelo menos {{min}} caracteres.",
+        "answer": "Resposta",
+        "answerTooLong": "Esta resposta é longa demais; encurte-a.",
+        "moveUp": "Mover para cima",
+        "moveDown": "Mover para baixo",
+        "remove": "Remover",
+        "save": "Salvar FAQ",
+        "saved": "FAQ salvo",
+        "saveFailed": "Não foi possível salvar o FAQ",
+        "loadFailed": "Não foi possível carregar o FAQ.",
+        "empty": "Nenhuma pergunta ainda.",
+        "limit": "Limite de {{max}} perguntas atingido.",
         "title": "Perguntas frequentes"
       },
       "history": {
+        "toggle": "Mostrar controles atendidos ao longo do tempo",
+        "description": "Adiciona um gráfico de 90 dias com quantos controles foram atendidos. Cada mudança é registrada quando o Breeze reavalia a página.",
+        "saved": "Configuração do histórico salva",
+        "saveFailed": "Não foi possível salvar a configuração do histórico",
+        "source": {
+          "page": "Definido nesta organização",
+          "template": "Do modelo do parceiro",
+          "default": "Padrão"
+        },
         "title": "Controles atendidos ao longo do tempo"
       },
       "access": {
@@ -487,6 +543,29 @@
         "copy": "Copiar trecho",
         "copied": "Trecho copiado",
         "copyFailed": "Não foi possível copiar o trecho."
+      },
+      "embed": {
+        "title": "Incorporar no seu site",
+        "description": "Mostre um cartão compacto e atualizado da postura de segurança no seu próprio site, dentro de um iframe. Apenas os sites listados aqui podem exibi-lo; a página de confiança completa nunca pode ser incorporada.",
+        "liveNote": "As alterações valem no próximo carregamento do cartão incorporado; não é preciso republicar.",
+        "unpublishedNote": "O cartão incorporado aparece depois que a página for publicada.",
+        "originLabel": "Endereço do site (somente https, sem caminho)",
+        "add": "Adicionar site",
+        "remove": "Remover",
+        "save": "Salvar sites",
+        "saved": "Sites de incorporação salvos",
+        "saveFailed": "Não foi possível salvar os sites de incorporação.",
+        "invalidOrigin": "Informe um endereço https exato, sem caminho, curinga ou endereço IP, por exemplo https://www.example.com",
+        "duplicateOrigin": "Esse site já está na lista.",
+        "maxReached": "Você pode permitir no máximo {{max}} sites.",
+        "preview": "Será salvo como",
+        "snippetLabel": "HTML de incorporação",
+        "frameTitle": "Cartão de postura de segurança",
+        "copy": "Copiar trecho",
+        "copied": "Trecho copiado",
+        "copyFailed": "Não foi possível copiar o trecho.",
+        "emptyNote": "Adicione pelo menos um site para permitir a incorporação.",
+        "mfaRequired": "Alterar os sites de incorporação exige autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
       }
     },
     "documents": {

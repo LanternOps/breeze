@@ -146,8 +146,8 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // #8742 W02: `send_endpoint_message (send/list/get)` on the Tickets line
     // took it to 6684. Paid for by tightening the scripts note's wording (same
     // guidance), not by raising the ceiling.
-    // Trust Center W02i: `get_trust_page_status` on the Security line (+23 bytes) is paid for by tightening the
-    // patching and scripts notes' wording (same guidance), not by raising the ceiling.
+    // Trust Center W02i (`get_trust_page_status`) and #8584 (`list_device_restore_point_attempts`, Automations line)
+    // are paid for by tightening the patching/scripts notes' wording (same guidance, same tools), not by raising the ceiling.
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.5 * 1024);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });

@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Cihazlar",
-        "devicesSub": "{{total}} cihazdan {{online}} çevrimiçi",
         "alerts": "Açık uyarılar",
-        "alertsSub": "{{critical}} kritik · {{high}} yüksek",
         "tickets": "Açık biletler",
-        "ticketsSub": "{{count}} müşteri yanıtı bekliyor",
         "contracts": "Aktif sözleşmeler",
         "contractsSub": "Sonraki yenileme {{date}}",
         "contractsNoRenewal": "Yaklaşan yenileme yok",
-        "invoices": "Bekleyen tutar",
         "invoicesSub": "Sonraki vade {{date}}",
         "invoicesOverdue_one": "{{count}} gecikmiş",
         "invoicesOverdue_other": "{{count}} gecikmiş",
@@ -94,7 +90,23 @@
       },
       "lastActivity": "Son etkinlik {{date}}",
       "noSummary": "Özet sayılar şu anda kullanılamıyor.",
-      "archivedNotice": "Arşivlenmiş kuruluşlar için genel bakış verileri gösterilmez."
+      "archivedNotice": "Arşivlenmiş kuruluşlar için genel bakış verileri gösterilmez.",
+      "fleet": {
+        "title": "Filo durumu",
+        "total": "Toplam",
+        "allOnline": "Tümü çevrimiçi",
+        "noDevices": "Cihaz yok",
+        "critical": "Kritik",
+        "high": "Yüksek",
+        "otherAlerts": "Diğer",
+        "noAlerts": "Açık uyarı yok",
+        "awaitingCustomer": "Müşteri yanıtı bekliyor",
+        "noTickets": "Açık bilet yok"
+      },
+      "account": {
+        "title": "Hesap",
+        "invoices": "Ödenmemiş faturalar"
+      }
     },
     "archived": {
       "banner": "Bu kuruluş arşivlendi ve salt okunur. Değişiklik yapmak için geri yükleyin.",
@@ -213,12 +225,56 @@
         "title": "Çerçeve görünümü"
       },
       "subprocessors": {
+        "description": "Müşterinizin adına veri işleyen üçüncü taraflar. Algılanan araçlar yalnızca öneridir; siz sayfayı yayımlayana kadar hiçbir şey yayımlanmaz.",
+        "addDetected": "Algılanan araçlardan ekle",
+        "addManual": "El ile ekle",
+        "noSuggestions": "Eklenecek başka algılanmış araç kalmadı.",
+        "empty": "Henüz alt veri işleyen listelenmedi.",
+        "name": "Ad",
+        "purpose": "Amaç",
+        "location": "Konum",
+        "website": "Web sitesi",
+        "websiteInvalid": "https:// adresi kullanın.",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "remove": "Kaldır",
+        "save": "Alt veri işleyenleri kaydet",
+        "saved": "Alt veri işleyenler kaydedildi",
+        "saveFailed": "Alt veri işleyenler kaydedilemedi",
+        "loadFailed": "Alt veri işleyenler yüklenemedi.",
+        "suggestionsFailed": "Algılanan araçlar yüklenemedi. Yeniden denemek için kapatıp tekrar açın.",
+        "duplicate": "Aynı algılanan araç birden fazla kez yer alıyor.",
+        "limit": "En fazla {{max}} alt veri işleyen sınırına ulaşıldı.",
         "title": "Alt işleyiciler"
       },
       "faq": {
+        "description": "Alıcıların ve denetçilerin en sık sorduğu soruların yanıtları. Sayfayla birlikte yayımlanır.",
+        "add": "Soru ekle",
+        "question": "Soru",
+        "questionShort": "Soru en az {{min}} karakter olmalıdır.",
+        "answer": "Yanıt",
+        "answerTooLong": "Bu yanıt çok uzun; kısaltın.",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "remove": "Kaldır",
+        "save": "SSS’yi kaydet",
+        "saved": "SSS kaydedildi",
+        "saveFailed": "SSS kaydedilemedi",
+        "loadFailed": "SSS yüklenemedi.",
+        "empty": "Henüz soru yok.",
+        "limit": "En fazla {{max}} soru sınırına ulaşıldı.",
         "title": "Sıkça sorulan sorular"
       },
       "history": {
+        "toggle": "Karşılanan kontrolleri zaman içinde göster",
+        "description": "Kaç kontrolün karşılandığını gösteren 90 günlük bir grafik ekler. Breeze sayfayı yeniden değerlendirdiğinde her değişiklik kaydedilir.",
+        "saved": "Geçmiş ayarı kaydedildi",
+        "saveFailed": "Geçmiş ayarı kaydedilemedi",
+        "source": {
+          "page": "Bu kuruluşta ayarlandı",
+          "template": "İş ortağı şablonundan",
+          "default": "Varsayılan"
+        },
         "title": "Zaman içinde karşılanan kontroller"
       },
       "access": {
@@ -487,6 +543,29 @@
         "copy": "Parçayı kopyala",
         "copied": "Parça kopyalandı",
         "copyFailed": "Parça kopyalanamadı."
+      },
+      "embed": {
+        "title": "Web sitenize yerleştirin",
+        "description": "Kendi web sitenizde bir iframe içinde kompakt, güncel bir güvenlik durumu kartı gösterin. Bunu yalnızca burada listelenen web siteleri görüntüleyebilir; tam güven sayfasının kendisi hiçbir zaman yerleştirilemez.",
+        "liveNote": "Değişiklikler, yerleştirilen kart bir sonraki yüklendiğinde geçerli olur; yeniden yayımlamaya gerek yoktur.",
+        "unpublishedNote": "Yerleştirilen kart, sayfa yayımlandıktan sonra görünür.",
+        "originLabel": "Web sitesi adresi (yalnızca https, yol olmadan)",
+        "add": "Web sitesi ekle",
+        "remove": "Kaldır",
+        "save": "Web sitelerini kaydet",
+        "saved": "Yerleştirme web siteleri kaydedildi",
+        "saveFailed": "Yerleştirme web siteleri kaydedilemedi.",
+        "invalidOrigin": "Yol, joker karakter veya IP adresi içermeyen tam bir https adresi girin; örneğin https://www.example.com",
+        "duplicateOrigin": "Bu web sitesi zaten listede.",
+        "maxReached": "En fazla {{max}} web sitesine izin verebilirsiniz.",
+        "preview": "Şu şekilde kaydedilecek:",
+        "snippetLabel": "Yerleştirme HTML kodu",
+        "frameTitle": "Güvenlik durumu kartı",
+        "copy": "Kodu kopyala",
+        "copied": "Kod kopyalandı",
+        "copyFailed": "Kod kopyalanamadı.",
+        "emptyNote": "Yerleştirmeyi etkinleştirmek için en az bir web sitesi ekleyin.",
+        "mfaRequired": "Yerleştirme web sitelerini değiştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirip yeniden deneyin."
       }
     },
     "documents": {

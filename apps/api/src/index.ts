@@ -46,6 +46,7 @@ import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { quoteRoutes } from './routes/quotes';
 import { quotesPublicRoutes } from './routes/quotesPublic';
+import { routeReferrerPolicyWins } from './middleware/routeReferrerPolicy';
 import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
@@ -527,9 +528,11 @@ const SECURE_HEADERS_OPTIONS = {
 app.use(
   '*',
   exceptTunnelHttp(
-    byTrustCrossOriginPath(
-      secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
-      secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+    routeReferrerPolicyWins(
+      byTrustCrossOriginPath(
+        secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
+        secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+      )
     )
   )
 );

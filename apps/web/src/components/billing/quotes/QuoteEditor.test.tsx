@@ -142,13 +142,13 @@ describe('QuoteEditor', () => {
       const input = screen.getByTestId('quote-footer') as HTMLInputElement;
       expect(input.value).toBe('');
       expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent('Partner footer line');
-      expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent('Using the partner invoice footer');
+      expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent('Using the partner document footer from Billing settings');
     });
 
-    it('labels a brand-kit source, and says so when no default footer exists', async () => {
+    it('labels the org footer source (#7510), and says so when no default footer exists', async () => {
       const brand: QuoteDetailData = { ...withInherited(), branding: { ...withInherited().branding!, inheritedFooter: { text: 'Footer X', source: 'brand' } } };
       const view = render(<QuoteEditor detail={brand} onChanged={vi.fn()} />);
-      expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent('Using the brand kit footer text');
+      expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent("Using this organization's footer text from its Portal settings");
       view.unmount();
       const none: QuoteDetailData = { ...withInherited(), branding: { ...withInherited().branding!, inheritedFooter: null } };
       render(<QuoteEditor detail={none} onChanged={vi.fn()} />);

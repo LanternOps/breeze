@@ -5,6 +5,9 @@ import { fetchWithAuth } from '../../stores/auth';
 import { FilterBuilder } from './FilterBuilder';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
+import { useFleetOrgOwner } from '@/hooks/useFleetOrgOwner';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
 
 interface SavedFilterListProps {
   onSelectFilter?: (filter: SavedFilter) => void;
@@ -37,6 +40,10 @@ export function SavedFilterList({
   });
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // Saved filters are org-owned (saved_filters.org_id NOT NULL), so a create must
+  // name its org in the body: a partner with 2+ orgs gets a 400 otherwise (#8330).
+  // Same hook as the peripheral policy, DNS integration and device group create forms.
+  const fleet = useFleetOrgOwner();
 
   const fetchFilters = useCallback(async () => {
     try {
@@ -97,6 +104,9 @@ export function SavedFilterList({
     setFormDescription(filter.description || '');
     setFormConditions(filter.conditions);
     setFormError(null);
+    // In the All-organizations view, start the copy in the source filter's org.
+    // The hook ignores a pick that is not in the current org list.
+    fleet.setOrgId(filter.orgId);
     setEditingFilter(null);
     setIsCreating(true);
   };
@@ -115,50 +125,60 @@ export function SavedFilterList({
       return;
     }
 
+    // A create carries its owning org; an edit keeps the filter's existing org.
+    if (!editingFilter && fleet.needsOrgSelection) {
+      setFormError(t('layout.orgRequired.title'));
+      return;
+    }
+
     setFormSubmitting(true);
     setFormError(null);
 
+    const url = editingFilter ? `/filters/${editingFilter.id}` : '/filters';
+    const method = editingFilter ? 'PATCH' : 'POST';
+    const body: Record<string, unknown> = {
+      name: trimmedName,
+      description: formDescription.trim() || null,
+      conditions: formConditions
+    };
+    if (!editingFilter) {
+      body.orgId = fleet.bodyOrgId;
+    }
+
     try {
-      const url = editingFilter ? `/filters/${editingFilter.id}` : '/filters';
-      const method = editingFilter ? 'PATCH' : 'POST';
-
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify({
-          name: trimmedName,
-          description: formDescription.trim() || null,
-          conditions: formConditions
-        })
+      await runAction({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
+        errorFallback: t('filters.saved.saveFailed')
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to save filter');
-      }
-
-      await fetchFilters();
-      handleCancel();
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Failed to save filter');
+      if (err instanceof ActionError && err.status === 401) return;
+      // runAction already toasted an ActionError; keep its text next to the form,
+      // which stays open so the user can correct and retry.
+      const message = err instanceof ActionError ? err.message : t('filters.saved.saveFailed');
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message });
+      setFormError(message);
+      return;
     } finally {
       setFormSubmitting(false);
     }
+
+    await fetchFilters();
+    handleCancel();
   };
 
   const handleDelete = async (id: string) => {
     try {
-      const response = await fetchWithAuth(`/filters/${id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () => fetchWithAuth(`/filters/${id}`, { method: 'DELETE' }),
+        errorFallback: t('filters.saved.deleteFailed')
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to delete filter');
-      }
-
-      await fetchFilters();
-      setDeleteConfirmId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete filter');
+      handleActionError(err, t('filters.saved.deleteFailed'));
+      return;
     }
+
+    setDeleteConfirmId(null);
+    await fetchFilters();
   };
 
   if (loading) {
@@ -186,6 +206,36 @@ export function SavedFilterList({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* All-organizations view: a new filter needs an owning org (#8330). */}
+          {!editingFilter && fleet.isFleetScope && (
+            <div>
+              <label className="text-sm font-medium" htmlFor="saved-filter-org">
+                {t('labels.organization')}
+              </label>
+              <select
+                id="saved-filter-org"
+                value={fleet.orgId}
+                onChange={(e) => fleet.setOrgId(e.target.value)}
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                data-testid="saved-filter-org-picker"
+              >
+                <option value="" disabled>
+                  {t('layout.org.noSelection')}
+                </option>
+                {fleet.organizations.map((org) => (
+                  <option key={org.id} value={org.id}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+              {!fleet.orgId && (
+                <p className="mt-1 text-xs text-muted-foreground" data-testid="saved-filter-org-hint">
+                  {t('filters.saved.ownerOrgHint')}
+                </p>
+              )}
+            </div>
+          )}
+
           <div>
             <label className="text-sm font-medium">{t('labels.name')}</label>
             <input
@@ -232,7 +282,10 @@ export function SavedFilterList({
             </button>
             <button
               type="submit"
-              disabled={formSubmitting}
+              // Disabled only where the picker and its hint explain why. In an
+              // unresolved org scope (loading, failed, empty) a click reaches the
+              // handleSubmit guard, which says to select an organization.
+              disabled={formSubmitting || (!editingFilter && fleet.isFleetScope && fleet.needsOrgSelection)}
               className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
             >
               {formSubmitting

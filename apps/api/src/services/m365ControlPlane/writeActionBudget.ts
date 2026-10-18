@@ -24,8 +24,11 @@ import { getRedis } from '../redis';
  * calls through — the safe direction is to deny and let the caller retry.
  */
 
-export const M365_WRITE_ACTIONS_PER_MINUTE = 10;
-export const M365_WRITE_ACTIONS_PER_DAY = 100;
+// Sized for one Operator offboarding (Recipe Library M1): ~9 M365 effects plus
+// their read-back probes land inside a minute, so 10/min would rate-limit a
+// recipe on its own first run.
+export const M365_WRITE_ACTIONS_PER_MINUTE = 30;
+export const M365_WRITE_ACTIONS_PER_DAY = 300;
 
 // Comfortably above the window each key bounds, so a key never expires
 // mid-window (which would silently reset a connection's count to zero) while

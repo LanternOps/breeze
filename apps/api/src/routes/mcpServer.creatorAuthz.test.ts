@@ -139,6 +139,7 @@ function mockApiKey(scopes: string[], principal?: { principalType: string; princ
         partnerId: null,
         name: 'test',
         keyPrefix: 'brz_test',
+        mcpDomains: null,
         scopes,
         rateLimit: 1000,
         createdBy: 'creator-user',

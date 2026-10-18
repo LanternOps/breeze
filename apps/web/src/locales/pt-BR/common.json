@@ -494,7 +494,10 @@
       "createFirst": "Crie seu primeiro filtro",
       "created": "Criado em {{date}}",
       "deleteConfirm": "Excluir este filtro?",
-      "duplicate": "Duplicar"
+      "duplicate": "Duplicar",
+      "saveFailed": "Não foi possível salvar o filtro",
+      "deleteFailed": "Não foi possível excluir o filtro",
+      "ownerOrgHint": "Os filtros salvos pertencem a uma organização. Escolha a qual organização este filtro pertence."
     },
     "targets": {
       "modes": {
@@ -1363,6 +1366,14 @@
           "migrationWindowClosed": {
             "description": "Acionado uma vez por organização quando uma janela de migração de tickets é encerrada, com as contagens importadas.",
             "label": "Janela de migração encerrada"
+          },
+          "integrationHealthOpened": {
+            "description": "Acionado quando um incidente de integridade é aberto na conexão de uma organização.",
+            "label": "Incidente de integridade da conexão aberto"
+          },
+          "integrationHealthResolved": {
+            "description": "Acionado quando um incidente de integridade de uma conexão é resolvido.",
+            "label": "Incidente de integridade da conexão resolvido"
           }
         },
         "fields": {
@@ -2633,6 +2644,34 @@
         "sending": "Enviando…",
         "send": "Enviar"
       }
+    },
+    "mcpDomains": {
+      "legend": "Acesso a ferramentas",
+      "allLabel": "Todas as ferramentas (incluindo áreas adicionadas depois)",
+      "selectedLabel": "Somente estas áreas",
+      "coreLabel": "Núcleo (sempre incluído)",
+      "error": "Selecione pelo menos uma área ou escolha Todas as ferramentas.",
+      "allEquivalentNote": "Todas as áreas estão selecionadas, então isso equivale a Todas as ferramentas, incluindo áreas adicionadas depois.",
+      "reconnectNote": "Vale para esta conexão. Para restringir uma conexão existente, revogue-a em Aplicativos conectados e conecte novamente.",
+      "apiKeyHint": "Escolha quais áreas de ferramentas esta chave pode usar pela interface de IA/MCP.",
+      "allTools": "Todas as ferramentas",
+      "areaCount_one": "{{count}} área",
+      "areaCount_other": "{{count}} áreas",
+      "labels": {
+        "devices": "Dispositivos",
+        "scripts": "Scripts e automação",
+        "patching": "Patches e software",
+        "monitoring": "Monitoramento e alertas",
+        "network": "Rede",
+        "security": "Segurança e conformidade",
+        "backup": "Backup e recuperação",
+        "tickets": "Chamados e tempo",
+        "billing": "Faturamento",
+        "accounts": "Contas",
+        "integrations": "Integrações",
+        "admin": "Administração",
+        "ai": "Agentes de IA"
+      }
     }
   },
   "whatsNew": {
@@ -2656,7 +2695,8 @@
     "dismiss": "Dispensar lembrete de autenticação de dois fatores"
   },
   "mfaPolicyOffBanner": {
-    "message": "A autenticação multifator não é obrigatória para a sua equipe. Sessões apenas com senha podem executar scripts, mover dispositivos e alterar políticas.",
+    "label": "Lembrete de MFA",
+    "message": "A MFA não é obrigatória para sua equipe. Sessões só com senha podem executar scripts.",
     "cta": "Exigir MFA",
     "dismiss": "Dispensar o lembrete da política de MFA por hoje"
   },

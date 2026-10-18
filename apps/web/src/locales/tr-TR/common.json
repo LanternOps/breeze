@@ -494,7 +494,10 @@
       "createFirst": "İlk filtrenizi oluşturun",
       "created": "Oluşturuldu {{date}}",
       "deleteConfirm": "Bu filtre silinsin mi?",
-      "duplicate": "Çoğalt"
+      "duplicate": "Çoğalt",
+      "saveFailed": "Filtre kaydedilemedi",
+      "deleteFailed": "Filtre silinemedi",
+      "ownerOrgHint": "Kayıtlı filtreler tek bir kuruluşa aittir. Bu filtrenin hangi kuruluşa ait olacağını seçin."
     },
     "targets": {
       "modes": {
@@ -1363,6 +1366,14 @@
           "migrationWindowClosed": {
             "description": "Bir bilet taşıma penceresi kapandığında, içe aktarılan sayılarla birlikte kuruluş başına bir kez tetiklenir.",
             "label": "Taşıma penceresi kapandı"
+          },
+          "integrationHealthOpened": {
+            "description": "Bir kuruluşun bağlantısı için sağlık olayı açıldığında tetiklenir.",
+            "label": "Bağlantı sağlık olayı açıldı"
+          },
+          "integrationHealthResolved": {
+            "description": "Bir bağlantının sağlık olayı çözüldüğünde tetiklenir.",
+            "label": "Bağlantı sağlık olayı çözüldü"
           }
         },
         "fields": {
@@ -2633,6 +2644,34 @@
         "sending": "Gönderiliyor…",
         "send": "Gönder"
       }
+    },
+    "mcpDomains": {
+      "legend": "Araç erişimi",
+      "allLabel": "Tüm araçlar (sonradan eklenen alanlar dahil)",
+      "selectedLabel": "Yalnızca bu alanlar",
+      "coreLabel": "Çekirdek (her zaman dahil)",
+      "error": "En az bir alan seçin veya Tüm araçlar seçeneğini işaretleyin.",
+      "allEquivalentNote": "Tüm alanlar seçili; bu, daha sonra eklenecek alanlar dahil Tüm araçlar ile aynıdır.",
+      "reconnectNote": "Bu bağlantı için geçerlidir. Mevcut bir bağlantıyı daraltmak için Bağlı uygulamalar bölümünden iptal edin, ardından yeniden bağlanın.",
+      "apiKeyHint": "Bu anahtarın yapay zekâ/MCP arayüzü üzerinden kullanabileceği araç alanlarını seçin.",
+      "allTools": "Tüm araçlar",
+      "areaCount_one": "{{count}} alan",
+      "areaCount_other": "{{count}} alan",
+      "labels": {
+        "devices": "Cihazlar",
+        "scripts": "Komut dosyaları ve otomasyon",
+        "patching": "Yama ve yazılım",
+        "monitoring": "İzleme ve uyarılar",
+        "network": "Ağ",
+        "security": "Güvenlik ve uyumluluk",
+        "backup": "Yedekleme ve kurtarma",
+        "tickets": "Destek kayıtları ve süre",
+        "billing": "Faturalama",
+        "accounts": "Hesaplar",
+        "integrations": "Entegrasyonlar",
+        "admin": "Yönetim",
+        "ai": "Yapay zekâ ajanları"
+      }
     }
   },
   "whatsNew": {
@@ -2656,7 +2695,8 @@
     "dismiss": "İki faktörlü kimlik doğrulama hatırlatıcısını kapat"
   },
   "mfaPolicyOffBanner": {
-    "message": "Ekibiniz için çok faktörlü kimlik doğrulama zorunlu değil. Yalnızca parola ile açılan oturumlar betik çalıştırabilir, cihazları taşıyabilir ve ilkeleri değiştirebilir.",
+    "label": "MFA hatırlatması",
+    "message": "Ekibiniz için MFA zorunlu değil. Yalnızca parolalı oturumlar betik çalıştırabilir.",
     "cta": "MFA'yı zorunlu kıl",
     "dismiss": "MFA ilkesi hatırlatmasını bugünlük kapat"
   },

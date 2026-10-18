@@ -331,6 +331,9 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `IP_HISTORY_RETENTION_DAYS` | `90` | Days to keep device IP-address history, clamped to 1–365 |
 | `IP_HISTORY_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `IP_HISTORY_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `RESTORE_POINT_ATTEMPT_RETENTION_DAYS` | `90` | Days to keep System Restore checkpoint attempts (the device's System Restore tab), clamped to 1–365. An attempt still awaiting the device is kept until its command can no longer report back, whatever this is set to |
+| `RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per sweep, per nightly run |
 | `SNMP_METRICS_RETENTION_DAYS` | `7` | Days to keep raw SNMP-polled metrics, clamped to 1–365 |
 | `SNMP_METRICS_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `SNMP_METRICS_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
@@ -837,6 +840,7 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Max concurrent SSE sessions per API key |
 | `MCP_REQUIRE_EXECUTE_ADMIN` | `true` | In production, Tier 3+ tools require the `ai:execute_admin` scope. Set to `false` to fall back to `ai:execute`. No effect outside production. |
 | `MCP_EXECUTE_TOOL_ALLOWLIST` | — | Comma-separated allowed Tier 3 tools (empty = deny all) |
+| `MCP_INSUFFICIENT_SCOPE_HTTP_403` | `false` | When `true`, an OAuth bearer's `tools/call` refused only for a missing tier scope (`ai:write` or `ai:execute`) returns HTTP 403 with an `insufficient_scope` `WWW-Authenticate` challenge (current plus required `mcp:*` scopes) instead of HTTP 200. Never applies to API-key callers, tool-domain, approval, MFA or RBAC denials, or the legacy HTTP+SSE transport. See [MCP Server](/features/mcp-server/#authentication-challenges). |
 | `MCP_UNATTENDED_TIER3_PRINCIPALS` | — | Operator opt-in, empty = nobody. By default every Tier 3 tool/action (and `collect_evidence`) is denied over MCP with `MCP_APPROVAL_REQUIRED` because MCP has no interactive approval step. Comma-separated `api_key:<api key id>` / `oauth_client_user:<client_id>/<user id>` / `partner_sp:<partner service principal id>` entries (OAuth binds client AND user; a shared client_id alone never qualifies; a `partner_sp` entry names the principal, so key rotation keeps it, and like an OAuth entry it applies in every org the principal reaches) lift only that deny, only for those principals (trusted unattended agents). `ai:execute`, `ai:execute_admin` (production), `MCP_EXECUTE_TOOL_ALLOWLIST` (production), RBAC, rate limits, the Tier 3 execution ledger and the audit log still apply, and `collect_evidence` is gated as Tier 3. Tier 4, tenant (BYO MCP) tools and the onboarding bootstrap tools stay approval-only. At startup the API logs a WARN listing the configured principals, and a separate WARN for any entry that is not well formed (it can never match). Each bypassed call's audit row carries `approvalBypass: "unattended_principal"` and `approvalBypassPrincipal` (the matched entry). |
 
 ## Cloudflare mTLS

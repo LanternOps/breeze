@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { errors } from 'oidc-provider';
+import type { McpGrantableDomain } from '@breeze/shared';
 import { and, eq, gte, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
@@ -44,7 +45,14 @@ const inMemory = new Map<string, Map<string, StoredPayload>>();
 // entry outlives its Grant's `revoked_at` transition, which made stale
 // in-memory state answerable as tenancy — and therefore as authority — on
 // paths that should have re-read the row. The DB row is the only store.
-type GrantBreezeMeta = { partner_id: string; org_id: string | null };
+// `mcp_domains` (B-W02 #6156): null = unrestricted; otherwise the non-empty,
+// normalized list of tool domains the user consented to. Written in the same
+// UPDATE as the tenancy columns so a grant never has tenancy without it.
+type GrantBreezeMeta = {
+  partner_id: string;
+  org_id: string | null;
+  mcp_domains: McpGrantableDomain[] | null;
+};
 
 export async function setGrantBreezeMeta(
   grantId: string,
@@ -60,7 +68,7 @@ export async function setGrantBreezeMeta(
   try {
     await asSystem(async () => {
       await db.update(oauthGrants)
-        .set({ partnerId: meta.partner_id, orgId: meta.org_id })
+        .set({ partnerId: meta.partner_id, orgId: meta.org_id, mcpDomains: meta.mcp_domains })
         .where(eq(oauthGrants.id, grantId));
     });
   } catch (err) {
@@ -95,7 +103,11 @@ export async function getGrantBreezeMetaAsync(
   let row;
   try {
     row = await asSystem(async () => {
-      const [r] = await db.select({ partnerId: oauthGrants.partnerId, orgId: oauthGrants.orgId })
+      const [r] = await db.select({
+        partnerId: oauthGrants.partnerId,
+        orgId: oauthGrants.orgId,
+        mcpDomains: oauthGrants.mcpDomains,
+      })
         .from(oauthGrants)
         .where(eq(oauthGrants.id, grantId));
       return r;
@@ -110,7 +122,13 @@ export async function getGrantBreezeMetaAsync(
     throw err;
   }
   if (!row || !row.partnerId) return undefined;
-  return { partner_id: row.partnerId, org_id: row.orgId };
+  // Returned as stored; callers that enforce it must validate (fail closed on
+  // unknown values) via the shared domain parser, not trust this cast.
+  return {
+    partner_id: row.partnerId,
+    org_id: row.orgId,
+    mcp_domains: (row.mcpDomains as McpGrantableDomain[] | null) ?? null,
+  };
 }
 
 function sha256(s: string): string {

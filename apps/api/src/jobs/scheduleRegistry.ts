@@ -102,6 +102,9 @@ export const JOB_SCHEDULES = {
   // AI device file read policy W03 (#8855): nightly scrub of AI tool outputs
   // past each org's retention window. Daily tier, minute ≡ 3 (mod 5).
   'ai-tool-output-retention': '33 4 * * *',
+  // #9050: per-process SDK transcript sweep, five minutes after the retention
+  // scrub so it sees the cleared sdk_session_id pointers. Daily tier.
+  'ai-transcript-sweeper': '38 4 * * *',
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
   // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
@@ -207,6 +210,12 @@ export const JOB_SCHEDULES = {
   // file runs stuck in `running` at 24 hours. Hour 22 held only the sub-daily
   // `user-risk-scan` at :57; :03 keeps the daily = 3 (mod 5) lane.
   'filesystem-cleanup-run-retention': '3 22 * * *',
+  // #8581 — daily prune of device_restore_point_attempts: terminal rows past
+  // RESTORE_POINT_ATTEMPT_RETENTION_DAYS (default 90) and orphaned `requested`
+  // rows past both that window and their command's deadline. Hour 22 held
+  // :03 (above) and the sub-daily `user-risk-scan` at :57; :08 keeps the
+  // daily = 3 (mod 5) lane.
+  'restore-point-attempt-retention': '8 22 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

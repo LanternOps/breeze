@@ -16,12 +16,18 @@ const store = vi.hoisted(() => ({
   markDeliveryFailed: vi.fn(),
 }));
 const resolvePartnerUsers = vi.hoisted(() => vi.fn());
+const resolveOrgUsers = vi.hoisted(() => vi.fn());
+const loadCustomerAdmins = vi.hoisted(() => vi.fn());
 const sendEmail = vi.hoisted(() => vi.fn());
 const emailService = vi.hoisted(() => ({ current: { sendEmail } as { sendEmail: typeof sendEmail } | null }));
 
 vi.mock('./digestStore', () => ({ ...store, ERROR_MAX: 500 }));
 vi.mock('../usersWithPermission', () => ({
   resolvePartnerUsersWithPermission: (...a: unknown[]) => resolvePartnerUsers(...a),
+  resolveUsersWithPermissionForOrg: (...a: unknown[]) => resolveOrgUsers(...a),
+}));
+vi.mock('./customerDelivery', () => ({
+  loadCustomerAdminsNotified: (...a: unknown[]) => loadCustomerAdmins(...a),
 }));
 vi.mock('../email', () => ({ getEmailService: () => emailService.current }));
 const captureException = vi.hoisted(() => vi.fn());
@@ -41,6 +47,8 @@ const ADMIN = '11111111-1111-4111-8111-111111111111';
 const SELECTED = '22222222-2222-4222-8222-222222222222';
 const OWNER = '33333333-3333-4333-8333-333333333333';
 const READONLY = '44444444-4444-4444-8444-444444444444';
+const CUSTOMER = '55555555-5555-4555-8555-555555555555';
+const ORG = 'org-a';
 
 const row = (over: Partial<DigestIncidentRow> = {}): DigestIncidentRow => ({
   id: 'inc-p',
@@ -75,7 +83,12 @@ const emails: Record<string, string> = {
   [SELECTED]: 'selected@example.test',
   [OWNER]: 'owner@example.test',
   [READONLY]: 'readonly@example.test',
+  [CUSTOMER]: 'customer@example.test',
 };
+/** Org-scope (customer) users: users.org_id is set. */
+const orgOf: Record<string, string> = { [CUSTOMER]: ORG };
+/** Org-resolver table (W5 widened audience): (permission text|orgId) → holders, org members included. */
+let orgHolders: Record<string, string[]> = {};
 
 let claimSeq = 0;
 
@@ -90,7 +103,11 @@ beforeEach(() => {
   store.deleteOldDeliveries.mockResolvedValue(0);
   store.loadCandidatePartners.mockResolvedValue([{ id: P, timezone: 'UTC' }]);
   store.loadPartnerIncidents.mockResolvedValue([row()]);
-  store.loadActiveUsers.mockImplementation(async (ids: string[]) => ids.filter((id) => emails[id]).map((id) => ({ id, email: emails[id]!, partnerId: P })));
+  store.loadActiveUsers.mockImplementation(async (ids: string[]) => ids.filter((id) => emails[id]).map((id) => ({ id, email: emails[id]!, partnerId: P, orgId: orgOf[id] ?? null, partnerName: 'Acme MSP' })));
+  orgHolders = {};
+  resolveOrgUsers.mockImplementation(async (orgId: string, perm: { resource: string; action: string }) =>
+    orgHolders[`${perm.resource}:${perm.action}|${orgId}`] ?? []);
+  loadCustomerAdmins.mockImplementation(async (ids: string[]) => new Map(ids.map((id) => [id, false])));
   store.loadOptedOut.mockResolvedValue(new Set());
   store.loadLedgerForDate.mockResolvedValue(new Set());
   store.loadRecentSent.mockResolvedValue(new Map());
@@ -396,5 +413,112 @@ describe('runDigest', () => {
   it('runs ledger retention with a 90-day cutoff', async () => {
     await runDigest(NOW);
     expect(store.deleteOldDeliveries).toHaveBeenCalledWith('2026-07-18', 1000);
+  });
+
+  describe('customerAdminsNotified (W5)', () => {
+    const orgRow = () => row({ id: 'inc-o', orgId: ORG, orgName: 'Org A', displayName: 'M365', fixHref: '/integrations#m365' });
+    const customerMsg = () => sendEmail.mock.calls
+      .map((c) => c[0] as { to: string; purpose: string; partnerId?: string; html: string; text: string })
+      .find((m) => m.to === 'customer@example.test');
+
+    beforeEach(() => {
+      store.loadPartnerIncidents.mockResolvedValue([orgRow()]);
+      setHolders({ [`organizations:write|${ORG}`]: [ADMIN], [`organizations:read|${ORG}`]: [ADMIN] });
+      orgHolders = {
+        [`organizations:write|${ORG}`]: [ADMIN, CUSTOMER],
+        [`organizations:read|${ORG}`]: [ADMIN, CUSTOMER],
+      };
+    });
+
+    it('off (default): customer org admins get nothing; the org-member resolver is never used', async () => {
+      await runDigest(NOW);
+      expect(loadCustomerAdmins).toHaveBeenCalledWith([ORG]);
+      expect(resolveOrgUsers).not.toHaveBeenCalled();
+      expect(sentTo()).toEqual(['admin@example.test']);
+    });
+
+    it('on: a customer admin holding repair + view gets the digest on the partner lane with customer copy', async () => {
+      loadCustomerAdmins.mockResolvedValue(new Map([[ORG, true]]));
+      await runDigest(NOW);
+      expect(sentTo().sort()).toEqual(['admin@example.test', 'customer@example.test']);
+      const staff = sendEmail.mock.calls.map((c) => c[0] as { to: string; purpose: string; partnerId?: string })
+        .find((m) => m.to === 'admin@example.test')!;
+      expect(staff.purpose).toBe('staff.connection_health_digest');
+      expect(staff.partnerId).toBeUndefined();
+      const msg = customerMsg()!;
+      expect(msg.purpose).toBe('customer.connection_health_digest');
+      expect(msg.partnerId).toBe(P);
+      expect((msg as { partnerName?: string }).partnerName).toBe('Acme MSP');
+      expect(msg.text).toContain('You receive this because you can fix these connections.');
+      expect(msg.text).not.toContain('in Breeze');
+    });
+
+    it('on: a customer user who lost the view permission is dropped (send-time recheck)', async () => {
+      loadCustomerAdmins.mockResolvedValue(new Map([[ORG, true]]));
+      orgHolders[`organizations:read|${ORG}`] = [ADMIN];
+      await runDigest(NOW);
+      expect(sentTo()).toEqual(['admin@example.test']);
+    });
+
+    it('on for the org: a partner-wide incident still reaches only orgAccess = all staff', async () => {
+      loadCustomerAdmins.mockResolvedValue(new Map([[ORG, true]]));
+      store.loadPartnerIncidents.mockResolvedValue([row()]);
+      setHolders({ 'organizations:write|': [ADMIN], 'organizations:read|': [ADMIN] });
+      await runDigest(NOW);
+      expect(loadCustomerAdmins).toHaveBeenCalledWith([]);
+      expect(resolveOrgUsers).not.toHaveBeenCalled();
+      expect(sentTo()).toEqual(['admin@example.test']);
+    });
+
+    it('mixed orgs in one run: on for A, off for B; the customer admin of both hears only about A', async () => {
+      const ORG_B = 'org-b';
+      store.loadPartnerIncidents.mockResolvedValue([
+        orgRow(),
+        row({ id: 'inc-b', orgId: ORG_B, orgName: 'Org B', displayName: 'DNS filter', fixHref: '/dns-security' }),
+      ]);
+      loadCustomerAdmins.mockResolvedValue(new Map([[ORG, true], [ORG_B, false]]));
+      setHolders({
+        [`organizations:write|${ORG}`]: [ADMIN], [`organizations:read|${ORG}`]: [ADMIN],
+        [`organizations:write|${ORG_B}`]: [ADMIN], [`organizations:read|${ORG_B}`]: [ADMIN],
+      });
+      orgHolders = {
+        ...orgHolders,
+        [`organizations:write|${ORG_B}`]: [ADMIN, CUSTOMER],
+        [`organizations:read|${ORG_B}`]: [ADMIN, CUSTOMER],
+      };
+      await runDigest(NOW);
+      expect(resolveOrgUsers.mock.calls.every((c) => c[0] === ORG)).toBe(true);
+      const customerClaim = store.claimDelivery.mock.calls.find((c) => c[0] === CUSTOMER)!;
+      expect(customerClaim[2]).toEqual(['inc-o']);
+      const adminClaim = store.claimDelivery.mock.calls.find((c) => c[0] === ADMIN)!;
+      expect([...adminClaim[2]].sort()).toEqual(['inc-b', 'inc-o']);
+    });
+
+    it('an org-scope grant owner gets the customer mail on the partner lane even with the setting off', async () => {
+      store.loadPartnerIncidents.mockResolvedValue([
+        orgRow(),
+        row({ id: 'inc-g', orgId: ORG, orgName: 'Org A', ownerUserId: CUSTOMER, displayName: 'Agent app',
+          condition: 'grant_revoked_reuse', fixHref: '/settings/connected-apps', ownerFixHref: '/account/connected-apps',
+          viewPermission: 'connected_apps:read', repairPermission: 'connected_apps:manage' }),
+      ]);
+      await runDigest(NOW);
+      expect(resolveOrgUsers).not.toHaveBeenCalled();
+      const msg = customerMsg()!;
+      expect(msg.purpose).toBe('customer.connection_health_digest');
+      expect(msg.partnerId).toBe(P);
+      expect(msg.text).toContain('/account/connected-apps');
+      expect(msg.text).not.toContain('M365'); // the org incident did not widen to them
+      expect(msg.text).not.toContain('in Breeze');
+    });
+
+    it('turning it off takes effect on the next send (recomputed, never snapshotted)', async () => {
+      loadCustomerAdmins.mockResolvedValue(new Map([[ORG, true]]));
+      await runDigest(NOW);
+      expect(customerMsg()).toBeDefined();
+      sendEmail.mockClear();
+      loadCustomerAdmins.mockResolvedValue(new Map([[ORG, false]]));
+      await runDigest(new Date('2026-10-17T08:09:00Z'));
+      expect(customerMsg()).toBeUndefined();
+    });
   });
 });

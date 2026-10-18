@@ -764,6 +764,34 @@ describe('configuration policy AI tools', () => {
     }
   });
 
+  // #8678: repointing a link with legacy app rules off a broken ring onto one
+  // that lacks them. The model must be told to put those rules on the ring.
+  it('surfaces RING_LACKS_POLICY_APP_RULES with a repair instruction', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID,
+      orgId: ORG_ID,
+      partnerId: null,
+      name: 'Org policy',
+    } as any);
+    vi.mocked(updateFeatureLink).mockRejectedValueOnce(
+      new PolicyApprovalFieldMovedError('RING_LACKS_POLICY_APP_RULES'),
+    );
+    mockSelectRows([{ featureType: 'patch' }]);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    const res = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      featurePolicyId: '00000000-0000-4000-8000-0000000000aa',
+    }, makeAuth()));
+
+    expect(res.code).toBe('RING_LACKS_POLICY_APP_RULES');
+    expect(res.error).toContain('manage_update_rings');
+    expect(res.error).toMatch(/add exactly these rules to the target ring/i);
+  });
+
   // #1724 regression: partner-OWNED policies (org_id NULL) were invisible to the
   // MCP/AI surface because the read tools used auth.orgCondition (org-axis only)
   // instead of the dual-axis policyAccessCondition the HTTP routes use. A

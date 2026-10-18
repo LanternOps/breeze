@@ -453,7 +453,11 @@ export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
 }
 
-const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
+// Delete-on-move disposition. A device-scoped table gets exactly one org-move disposition (restamp,
+// DEVICE_ORG_FK_CASCADE_TABLES, this list, or a reviewed exemption); moveOrg.coverage.test.ts
+// ('device org-move disposition (#8634)') enforces it from the schema, and requires each entry here to
+// carry a composite (x, org_id) FK to a source-org row.
+export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // Site location W2 (#7886): (matched_site_id, org_id) and assigned_site_id name SOURCE-org sites, so a
   // restamp is unrepresentable; the evaluator rebuilds the row in the target org.
   'topology_device_presence',

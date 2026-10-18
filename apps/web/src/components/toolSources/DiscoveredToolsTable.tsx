@@ -7,9 +7,19 @@ import { runClientAction } from '../../lib/runClientAction';
 import { ResponsiveTable, DataCard } from '../shared/ResponsiveTable';
 import { Switch } from '../pam/ui';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
-import { bulkTools, patchSourceTool, type ToolSourceToolDto, type ToolTier } from './api';
+import { bulkTools, patchSourceTool, type ToolSourceKind, type ToolSourceToolDto, type ToolTier } from './api';
 
 const TIERS: ToolTier[] = [1, 2, 3];
+
+/** The `{ method, path }` of an openapi tool's operation binding, or null.
+ *  Rows from before the openapi kind (or a malformed binding) have none. */
+function operationOf(tool: ToolSourceToolDto): { method: string; path: string } | null {
+  const op = (tool.annotations as { operation?: unknown } | null | undefined)?.operation;
+  if (!op || typeof op !== 'object') return null;
+  const { method, path } = op as { method?: unknown; path?: unknown };
+  if (typeof method !== 'string' || typeof path !== 'string') return null;
+  return { method: method.toUpperCase(), path };
+}
 
 /** A tool the assistant can never actually call: removed upstream, or carrying
  *  a name the resolver refuses (`name_not_addressable`, written by discovery).
@@ -27,11 +37,14 @@ function isUnusable(tool: ToolSourceToolDto): boolean {
  */
 export function DiscoveredToolsTable({
   sourceId,
+  kind = 'mcp',
   tools,
   onChanged,
   onTest,
 }: {
   sourceId: string;
+  /** Which columns to show; defaults to MCP (no method/path). */
+  kind?: ToolSourceKind;
   tools: ToolSourceToolDto[];
   onChanged: () => void;
   onTest: (tool: ToolSourceToolDto) => void;
@@ -40,6 +53,7 @@ export function DiscoveredToolsTable({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmingEnableReads, setConfirmingEnableReads] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const isOpenapi = kind === 'openapi';
 
   const patch = async (tool: ToolSourceToolDto, body: { tier?: ToolTier; enabled?: boolean }) => {
     setBusyId(tool.id);
@@ -217,6 +231,8 @@ export function DiscoveredToolsTable({
             <thead className="text-left text-xs text-muted-foreground">
               <tr>
                 <th className="p-2">{t('tools.name')}</th>
+                {isOpenapi && <th className="p-2">{t('tools.method')}</th>}
+                {isOpenapi && <th className="p-2">{t('tools.path')}</th>}
                 <th className="p-2">{t('tools.description')}</th>
                 <th className="p-2">{t('tools.proposedTier')}</th>
                 <th className="p-2">{t('tools.tier')}</th>
@@ -226,9 +242,23 @@ export function DiscoveredToolsTable({
               </tr>
             </thead>
             <tbody>
-              {tools.map((tool) => (
+              {tools.map((tool) => {
+                const op = isOpenapi ? operationOf(tool) : null;
+                return (
                 <tr key={tool.id} data-testid={`tool-row-${tool.id}`} className="border-t">
                   <td className="p-2 font-mono text-xs">{tool.qualifiedName}</td>
+                  {isOpenapi && (
+                    <td className="p-2 text-xs font-medium" data-testid={`tool-row-${tool.id}-method`}>{op?.method ?? ''}</td>
+                  )}
+                  {isOpenapi && (
+                    <td
+                      className="max-w-[16rem] truncate p-2 font-mono text-xs"
+                      title={op?.path}
+                      data-testid={`tool-row-${tool.id}-path`}
+                    >
+                      {op?.path ?? ''}
+                    </td>
+                  )}
                   <td className="max-w-xs truncate p-2" title={tool.description}>{tool.description}</td>
                   <td className="p-2" data-testid={`tool-row-${tool.id}-proposed`}>{tool.proposedTier}</td>
                   <td className="p-2">{tierSelect(tool)}</td>
@@ -236,7 +266,8 @@ export function DiscoveredToolsTable({
                   <td className="p-2">{flags(tool)}</td>
                   <td className="p-2">{testButton(tool)}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         }
@@ -246,6 +277,11 @@ export function DiscoveredToolsTable({
               <DataCard key={tool.id}>
                 <div className="space-y-2">
                   <p className="font-mono text-xs">{tool.qualifiedName}</p>
+                  {isOpenapi && operationOf(tool) && (
+                    <p className="break-all font-mono text-xs text-muted-foreground">
+                      {operationOf(tool)?.method} {operationOf(tool)?.path}
+                    </p>
+                  )}
                   <p className="text-sm text-muted-foreground">{tool.description}</p>
                   <div className="flex items-center gap-2">
                     {tierSelect(tool, 'card')}

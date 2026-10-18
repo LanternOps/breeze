@@ -32,6 +32,7 @@ import {
 } from '../../db/schema';
 import { buildDbAccessContext } from '../../middleware/auth';
 import { getRedis } from '../../services/redis';
+import { devicePolicyCacheKey } from '../../services/devicePolicyCache';
 import { filterToActiveWatches, loadActiveWatchKeys, watchKey } from '../../services/monitoringActiveWatches';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
@@ -70,7 +71,7 @@ afterEach(async () => {
   createdMonitors.length = 0;
 });
 
-const cacheKey = (deviceId: string) => `monitoring:settings:device:${deviceId}`;
+const cacheKey = (deviceId: string) => devicePolicyCacheKey('monitoring', deviceId);
 
 async function purgeCache(deviceId: string) {
   const redis = getRedis();
@@ -135,13 +136,13 @@ async function seedFixture() {
 }
 
 /** Mirrors the route: read results in the caller's context, then filter. */
-async function visibleActiveResults(ctx: DbAccessContext, deviceId: string) {
+async function visibleActiveResults(ctx: DbAccessContext, deviceId: string, orgId: string) {
   return withDbAccessContext(ctx, async () => {
     const rows = await db
       .select({ watchType: serviceProcessCheckResults.watchType, name: serviceProcessCheckResults.name })
       .from(serviceProcessCheckResults)
       .where(eq(serviceProcessCheckResults.deviceId, deviceId));
-    const keys = await loadActiveWatchKeys(deviceId);
+    const keys = await loadActiveWatchKeys(deviceId, orgId);
     return { keys, rows, filtered: filterToActiveWatches(rows, keys) };
   });
 }
@@ -151,7 +152,7 @@ describe('monitoring display watch set resolves in the caller context (#8287)', 
     const f = await seedFixture();
     await purgeCache(f.deviceId);
 
-    const { keys, rows, filtered } = await visibleActiveResults(orgUserCtx(f.orgId, f.partnerId), f.deviceId);
+    const { keys, rows, filtered } = await visibleActiveResults(orgUserCtx(f.orgId, f.partnerId), f.deviceId, f.orgId);
 
     expect(rows).toHaveLength(2); // both results are RLS-visible to the org user
     expect(keys).not.toBeNull();
@@ -163,7 +164,7 @@ describe('monitoring display watch set resolves in the caller context (#8287)', 
     const f = await seedFixture();
     await purgeCache(f.deviceId);
 
-    const { keys, rows, filtered } = await visibleActiveResults(partnerUserCtx(f.partnerId, [f.orgId]), f.deviceId);
+    const { keys, rows, filtered } = await visibleActiveResults(partnerUserCtx(f.partnerId, [f.orgId]), f.deviceId, f.orgId);
 
     expect(rows).toHaveLength(2);
     expect(keys).not.toBeNull();
@@ -176,7 +177,7 @@ describe('monitoring display watch set resolves in the caller context (#8287)', 
     await purgeCache(f.deviceId);
 
     // e.g. an organization-scope SSO session, which mints partnerId: null.
-    const { keys, filtered } = await visibleActiveResults(orgUserCtx(f.orgId, null), f.deviceId);
+    const { keys, filtered } = await visibleActiveResults(orgUserCtx(f.orgId, null), f.deviceId, f.orgId);
 
     expect(keys).toBeNull();
     expect(filtered.map((r) => r.name).sort()).toEqual(['LiveSpooler', 'RemovedWatch']);
@@ -188,7 +189,7 @@ describe('monitoring display watch set resolves in the caller context (#8287)', 
     const redis = getRedis();
     expect(redis).not.toBeNull(); // test-stack provides Redis; a null client would make this vacuous
 
-    const { keys } = await visibleActiveResults(orgUserCtx(f.orgId, f.partnerId), f.deviceId);
+    const { keys } = await visibleActiveResults(orgUserCtx(f.orgId, f.partnerId), f.deviceId, f.orgId);
 
     expect(keys).not.toBeNull(); // the resolver actually ran (cache miss → resolved)
     expect(await redis!.get(cacheKey(f.deviceId))).toBeNull();

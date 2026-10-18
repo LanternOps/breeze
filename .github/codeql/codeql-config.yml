@@ -1,0 +1,49 @@
+# CodeQL configuration for the `CodeQL SAST` workflow (.github/workflows/codeql.yml).
+#
+# Why this file exists (2026-10-16 tuning):
+#   - The JS/TS analysis took ~65 min per run and 57% of the TypeScript files it
+#     extracted were tests, fixtures and evidence scripts. Those produced most of
+#     the alert noise (16 of the 32 open alerts at the time) and no real findings.
+#   - `security-extended` adds lower-precision queries that are still worth a
+#     look on a security product (prototype pollution, unsafe deserialization,
+#     broader taint sources). Review new alert types once before trusting them.
+#   - `js/insufficient-password-hash` fired 33 times on SHA-256 fingerprints of
+#     API keys, argument digests and idempotency keys. Zero were passwords
+#     (passwords go through the dedicated auth hashing path). Filtered out.
+name: breeze
+disable-default-queries: false
+queries:
+  - uses: security-extended
+
+paths-ignore:
+  # Tests, fixtures and test harnesses. They are not reachable from production
+  # and they routinely contain deliberately bad regexes, fake secrets and
+  # stack-trace echoing.
+  - '**/*.test.ts'
+  - '**/*.test.tsx'
+  - '**/*.test.js'
+  - '**/*.test.mjs'
+  - '**/*.spec.ts'
+  - '**/__tests__/**'
+  - '**/__testutils__/**'
+  - '**/__fixtures__/**'
+  - '**/__mocks__/**'
+  - '**/fixtures/**'
+  - '**/test-utils/**'
+  - e2e-tests/**
+  # Generated and vendored output.
+  - '**/dist/**'
+  - '**/build/**'
+  - '**/.astro/**'
+  - '**/*.d.ts'
+  - '**/*.min.js'
+  - '**/coverage/**'
+  # Plan docs carry one-off evidence scripts (harness servers, summarizers)
+  # that never ship.
+  - docs/**
+
+query-filters:
+  # SHA-256 over API keys / digests / idempotency material for lookup and
+  # fingerprinting, not password storage. 33/33 historical hits were this.
+  - exclude:
+      id: js/insufficient-password-hash

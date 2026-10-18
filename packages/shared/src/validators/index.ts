@@ -56,6 +56,7 @@ export * from './customFieldImport';
 export * from './alertRuleConditions';
 export * from './eventLogProviders';
 export * from './complianceInlineSettings';
+export * from './mcpDomains';
 
 // ============================================
 // Device Roles
@@ -1408,3 +1409,4 @@ export * from './trustCenterDeclarations';
 export * from './trustCenterAccess';
 export * from './trustCenterContent';
 export * from './trustCenterTemplate';
+export * from './trustCenterEmbed';

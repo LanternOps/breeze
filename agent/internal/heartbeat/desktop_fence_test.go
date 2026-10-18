@@ -240,3 +240,49 @@ func TestParseDesktopTerminalGeneration(t *testing.T) {
 		t.Fatal("a numeric terminalGeneration must be reported as malformed")
 	}
 }
+
+// #8955: a newer start that has arrived but is not yet admitted (parked on its
+// resync) supersedes an older start deciding now. Once it is released the
+// fence forgets it: an admitted start is covered by the high-water mark, and a
+// refused one supersedes nothing.
+func TestDesktopFenceArrivingNewerGenerationSupersedesOlder(t *testing.T) {
+	f := syncedFence("s1")
+	older := desktopStartFenceInput{Generation: 1, HasGeneration: true, CommandID: "c1"}
+	newer := desktopStartFenceInput{Generation: 2, HasGeneration: true, CommandID: "c2"}
+
+	releaseNewer := f.beginAdmission("s1", newer)
+	releaseOlder := f.beginAdmission("s1", older)
+	d := f.admitStart("s1", older)
+	if d.Admitted || d.Reason != desktopFenceReasonSuperseded || d.HighWater != 2 {
+		t.Fatalf("an older start must lose to a newer one still arriving, got %#v", d)
+	}
+	releaseOlder()
+
+	// Same generation arriving twice (#3107 dual delivery) is not "newer".
+	releaseDup := f.beginAdmission("s1", newer)
+	if d := f.admitStart("s1", newer); !d.Admitted {
+		t.Fatalf("the newer start must be admitted alongside its own duplicate, got %#v", d)
+	}
+	releaseDup()
+	releaseNewer()
+	releaseNewer() // idempotent
+
+	if len(f.arriving) != 0 {
+		t.Fatalf("released admissions must not linger: %#v", f.arriving)
+	}
+	// Another session is unaffected by arrivals elsewhere.
+	g := syncedFence("s1", "s2")
+	defer g.beginAdmission("s2", desktopStartFenceInput{Generation: 9, HasGeneration: true})()
+	if d := g.admitStart("s1", older); !d.Admitted {
+		t.Fatalf("an arrival for another session must not fence this one, got %#v", d)
+	}
+}
+
+func TestDesktopFenceGenerationlessStartIsNotRecordedAsArriving(t *testing.T) {
+	f := syncedFence("s1")
+	release := f.beginAdmission("s1", desktopStartFenceInput{CommandID: "legacy"})
+	defer release()
+	if len(f.arriving) != 0 {
+		t.Fatalf("a generationless start has nothing to order and must not be recorded: %#v", f.arriving)
+	}
+}

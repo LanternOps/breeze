@@ -34,7 +34,11 @@ import {
 import {
   DELEGANT_BASE_URL, DELEGANT_SERVICE_TOKEN, DELEGANT_PRINCIPAL_SIGNING_KEY, DELEGANT_PRINCIPAL_KID,
 } from '../config/env';
-import { m365ReadActionSchema, type M365ReadAction } from '@breeze/shared/m365';
+import {
+  m365ReadActionSchema, m365WriteActionSchema, type M365ReadAction, type M365MutatingAction, type M365WriteActionId,
+} from '@breeze/shared/m365';
+import { executeM365WriteActionForAuth } from './m365ControlPlane/writeActionService';
+import { buildWriteAction } from './m365ToolsHeadless';
 import { executeM365ReadAction, type M365ReadActionServiceResult } from './m365ControlPlane/readActionService';
 import type { AiTool } from './aiTools';
 import type { SecretToolResult } from './actionIntents/secretBearingTools';
@@ -50,6 +54,17 @@ export const m365ToolTiers: Record<string, 1 | 3> = {
   m365_list_group_memberships: 1,
   m365_disable_user: 3,
   m365_reset_password: 3,
+  // Control-plane identity writes (Operator Recipe Library M1, spec §7.1).
+  // Session-only like the pair above (never in the shared aiTools map), but
+  // dispatched through the control plane, not Delegant.
+  m365_revoke_sessions: 3,
+  m365_remove_license: 3,
+  m365_assign_license: 3,
+  m365_remove_from_group: 3,
+  m365_add_to_group: 3,
+  m365_retire_intune_device: 3,
+  m365_create_user: 3,
+  m365_set_auto_reply: 3,
 };
 
 /** One-line tool-search hints for session-aware M365 tools. Keys mirror m365ToolTiers. */
@@ -59,6 +74,14 @@ export const m365ToolSearchHints: Readonly<Record<string, string>> = {
   m365_list_group_memberships: 'Microsoft 365 group memberships for a user, security groups and distribution lists',
   m365_disable_user: 'Disable a Microsoft 365 user account and block sign-in',
   m365_reset_password: 'Reset a Microsoft 365 user password and require a password change at next sign-in',
+  m365_revoke_sessions: 'Revoke all Microsoft 365 sign-in sessions and refresh tokens for a user',
+  m365_remove_license: 'Remove Microsoft 365 licenses (SKUs) from a user',
+  m365_assign_license: 'Assign Microsoft 365 licenses (SKUs) to a user, failing closed when no seat is free',
+  m365_remove_from_group: 'Remove a user from a Microsoft 365 or Entra group',
+  m365_add_to_group: 'Add a user to a Microsoft 365 or Entra group',
+  m365_retire_intune_device: 'Retire an Intune managed device (removes company data and unenrols it; not a full wipe)',
+  m365_create_user: 'Create a Microsoft 365 user with a temporary password the user must change at first sign-in',
+  m365_set_auto_reply: 'Set, schedule or disable a Microsoft 365 mailbox automatic reply (out of office)',
 };
 
 // v1 single-customer seeding: every action is attributed to one static acting
@@ -317,6 +340,92 @@ export async function m365ResetPasswordHandler(
     llmText: `Reset the password for ${identifier}. The temporary credential is available for one-time reveal; the user must change it at next sign-in.`,
     secrets: { temporaryPassword: temp },
     ...(typeof result.toolCallId === 'string' ? { meta: { delegantToolCallId: result.toolCallId } } : {}),
+  };
+}
+
+// ============================================
+// Control-plane identity writes (Operator Recipe Library M1)
+//
+// Unlike the Delegant-backed helpdesk handlers above, these never resolve a
+// session or a Delegant connection: the org comes from the caller's auth (or
+// an explicit orgId) and the whole authz ladder (site ceiling, org resolution,
+// consent, budget, audit) lives in executeM365WriteActionForAuth. The
+// `_sessionId` parameter is accepted only so the makeSessionAwareHandler
+// signature fits. The typed action is built by the SAME explicit-field builder
+// the durable release worker uses (buildWriteAction) and validated against the
+// strict shared schema — input is never spread.
+// ============================================
+type WriteRun =
+  | { ok: true; result: Record<string, unknown> }
+  | { ok: false; error: string };
+
+async function runWrite(
+  auth: AuthContext,
+  input: Record<string, unknown>,
+  actionId: M365WriteActionId,
+): Promise<WriteRun> {
+  // Same org-wide governance ceiling as the Delegant pair above.
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return { ok: false, error: ceiling };
+  if (!requireString(input, 'reason')) {
+    return { ok: false, error: errorString('missing_reason', 'A reason is required for this action.') };
+  }
+  const parsed = m365WriteActionSchema.safeParse(buildWriteAction(actionId, input));
+  // buildWriteAction stamps `type: actionId`; the equality check is the
+  // runtime proof that only the requested mutating arm can pass.
+  if (!parsed.success || parsed.data.type !== actionId) {
+    return { ok: false, error: errorString('invalid_arguments', 'Invalid parameters for this Microsoft 365 action.') };
+  }
+  const action = parsed.data as M365MutatingAction;
+  const outcome = await executeM365WriteActionForAuth(auth, action, inputOrgId(input));
+  return outcome.ok
+    ? { ok: true, result: outcome.result as Record<string, unknown> }
+    : { ok: false, error: errorString(outcome.code, outcome.message) };
+}
+
+function plainWriteHandler(actionId: M365WriteActionId) {
+  return async (
+    input: Record<string, unknown>,
+    auth: AuthContext,
+    _sessionId: string,
+  ): Promise<string> => {
+    const run = await runWrite(auth, input, actionId);
+    return run.ok ? JSON.stringify(run.result) : run.error;
+  };
+}
+
+export const m365RevokeSessionsHandler = plainWriteHandler('m365.user.revoke_sessions');
+export const m365RemoveLicenseHandler = plainWriteHandler('m365.user.license.remove');
+export const m365AssignLicenseHandler = plainWriteHandler('m365.user.license.assign');
+export const m365RemoveFromGroupHandler = plainWriteHandler('m365.group.membership.remove');
+export const m365AddToGroupHandler = plainWriteHandler('m365.group.membership.add');
+export const m365RetireIntuneDeviceHandler = plainWriteHandler('m365.intune.device.retire');
+export const m365SetAutoReplyHandler = plainWriteHandler('m365.user.mailbox.auto_reply');
+
+/**
+ * Secret-bearing: POST /users carries a passwordProfile, so the temporary
+ * credential goes ONLY in `secrets.temporaryPassword` (mirrors
+ * m365ResetPasswordHandler) and never in llmText.
+ */
+export async function m365CreateUserHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  _sessionId: string,
+): Promise<SecretToolResult> {
+  const run = await runWrite(auth, input, 'm365.user.create');
+  if (!run.ok) return { kind: 'error', llmText: run.error };
+  const temp = run.result.temporaryPassword;
+  if (typeof temp !== 'string' || temp.length === 0) {
+    return {
+      kind: 'error',
+      llmText: errorString('no_credential', 'The user was created but no temporary credential was returned.'),
+    };
+  }
+  const upn = typeof run.result.userPrincipalName === 'string' ? run.result.userPrincipalName : 'the new user';
+  return {
+    kind: 'success',
+    llmText: `Created M365 user ${upn}. The temporary credential is available for one-time reveal; the user must change it at first sign-in.`,
+    secrets: { temporaryPassword: temp },
   };
 }
 

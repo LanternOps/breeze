@@ -10,7 +10,7 @@
     "site": "Standort",
     "policy": "Richtlinie",
     "states": {
-      "not_reported": "Noch keine Zeitdaten — dafür ist ein Agent-Update mit Zeitsynchronisierung erforderlich",
+      "not_reported": "Noch keine Zeitdaten — Agent-Update für die Zeitsynchronisierung erforderlich",
       "unsupported_os": "Auf diesem Betriebssystem noch nicht unterstützt"
     },
     "health": {
@@ -384,6 +384,7 @@
     "hide": "ausblenden"
   },
   "deviceActions": {
+    "moreActions": "Weitere Aktionen",
     "unavailable": {
       "offline": "Gerät ist offline",
       "maintenance": "Gerät befindet sich im Wartungsmodus",
@@ -473,7 +474,7 @@
     },
     "runScript": "Skript ausführen",
     "remoteTools": "Remote-Tools",
-    "reRunAgentInventoryCollectorsSo": "Bestandsdatenerfassung des Agents erneut ausführen, damit die Benutzeroberfläche aktuelle Hardware-, Software- und Netzwerkdaten erhält, ohne auf den nächsten Heartbeat-Zyklus zu warten",
+    "reRunAgentInventoryCollectorsSo": "Bestandsdaten jetzt neu erfassen",
     "refresh": "Aktualisieren",
     "reboot": "Neu starten",
     "wake": "Aufwecken",
@@ -864,7 +865,10 @@
     "loadingDevice": "Gerät wird geladen...",
     "backToDevices": "Zurück zu den Geräten",
     "goBack": "Zurück",
-    "devices": "Geräte"
+    "devices": "Geräte",
+    "devicesCrumbOtherOrg": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation bleibt {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation ändert sich nicht",
+    "switchOrgFailed": "Organisation konnte nicht gewechselt werden. Bitte erneut versuchen."
   },
   "deviceDetails": {
     "overview": "Übersicht",
@@ -913,7 +917,7 @@
     "changeHistoryTitle": "Erfasste Konfigurations- und Inventaränderungen für dieses Gerät",
     "diskCleanup": "Datenträgerbereinigung",
     "diskUsageAnalysisAndCleanup": "Analyse und Bereinigung der Festplattennutzung",
-    "bootPerf": "Boot-Perf",
+    "bootPerf": "Startleistung",
     "systemRestore": "Systemwiederherstellung",
     "startupTimeAndBootProcessAnalysis": "Analyse der Startzeit und des Bootvorgangs",
     "backup": "Sicherung",
@@ -950,7 +954,13 @@
       "extensions": "Erweiterungen"
     },
     "workloads": "Workloads",
-    "workloadsTitle": "Container und virtuelle Maschinen auf diesem Host"
+    "workloadsTitle": "Container und virtuelle Maschinen auf diesem Host",
+    "offlineLastSeen": "Offline · zuletzt gesehen {{ago}}",
+    "locatedIn": "bei <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Sie sehen ein Gerät von {{org}}",
+      "switch": "Zu {{org}} wechseln"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -1509,7 +1519,8 @@
     "tags": "Schlagworte",
     "customFields": "Benutzerdefinierte Felder",
     "text2": "*",
-    "edit": "Bearbeiten"
+    "edit": "Bearbeiten",
+    "roleNotAssessed": "Rolle noch nicht bewertet"
   },
   "deviceIpHistoryTab": {
     "true": "wahr",
@@ -1591,6 +1602,7 @@
       "os": "Betriebssystem",
       "role": "Rolle",
       "status": "Status",
+      "attention": "Handlungsbedarf",
       "cpu": "CPU %",
       "ram": "RAM %",
       "lastSeen": "Zuletzt gesehen",
@@ -1766,6 +1778,26 @@
       "equalTooltip": "Entspricht der effektiven Version {{version}}",
       "aheadTooltip": "Vor dem Pin {{version}}",
       "behindTooltip": "Hinter dem Pin {{version}}"
+    },
+    "attention": {
+      "alerts": {
+        "critical_one": "{{count}} kritisch",
+        "critical_other": "{{count}} kritisch",
+        "high_one": "{{count}} hoch",
+        "high_other": "{{count}} hoch",
+        "medium_one": "{{count}} mittel",
+        "medium_other": "{{count}} mittel",
+        "low_one": "{{count}} niedrig",
+        "low_other": "{{count}} niedrig",
+        "info_one": "{{count}} Info",
+        "info_other": "{{count}} Infos"
+      },
+      "tickets_one": "{{count}} offenes Ticket",
+      "tickets_other": "{{count}} offene Tickets",
+      "alertsTitle": "Offene Warnungen: {{breakdown}}",
+      "none": "Nichts offen",
+      "unavailable": "Anzahl der Warnungen und Tickets nicht verfügbar",
+      "loading": "Anzahl der Warnungen und Tickets wird geladen"
     }
   },
   "deviceLogsTab": {
@@ -2022,13 +2054,15 @@
       "cpu": "CPU",
       "disk": "Festplatte",
       "download": "Herunterladen",
-      "ram": "Ram",
+      "ram": "Arbeitsspeicher",
       "readThroughput": "Lesedurchsatz",
       "upload": "Hochladen",
       "writeThroughput": "Schreibdurchsatz"
     },
     "networkBandwidth": "Netzwerkbandbreite",
-    "title": "Leistungsdiagramme"
+    "title": "Leistungsdiagramme",
+    "noSamples": "Keine Messwerte in den letzten {{range}}",
+    "offlineSince": "Gerät offline · zuletzt gesehen {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2105,7 +2139,7 @@
     "details": "Details",
     "disabled": "Die Zuverlässigkeitsbewertung ist für diese Organisation deaktiviert.",
     "distinctEvents": "Einzelne Ereignisse aus dem Jahr {{window}}.",
-    "empty": "Noch kein Zuverlässigkeits-Snapshot verfügbar.",
+    "empty": "Noch keine Zuverlässigkeitsdaten",
     "errors": {
       "loadDetail": "Zuverlässigkeitsdetails konnten nicht geladen werden",
       "loadScore": "Der Zuverlässigkeitswert konnte nicht geladen werden",
@@ -2451,7 +2485,7 @@
     "loadFailed": "Garantie konnte nicht geladen werden.",
     "lookupUnavailable": "Für diesen Hersteller ist keine Garantiesuche verfügbar",
     "manufacturer": "Hersteller",
-    "noInformation": "Keine Garantieinformationen",
+    "noInformation": "Keine Garantie hinterlegt",
     "renews": "Erneuert",
     "serialNumber": "Seriennummer",
     "source": "Quelle: {{source}}",
@@ -2477,7 +2511,8 @@
       "refreshing": "Garantie wird aktualisiert…",
       "stillInProgress": "Die Garantieaktualisierung ist noch im Gange; Die Karte wird aktualisiert, wenn der Vorgang abgeschlossen ist.",
       "updated": "Garantieinformationen aktualisiert."
-    }
+    },
+    "lookUp": "Abfragen"
   },
   "devicesPage": {
     "accessDenied": "Sie haben keine Berechtigung zum Anzeigen von Geräten.",
@@ -2612,6 +2647,21 @@
       "installAgent": "Agent installieren…",
       "addNetworkAsset": "Netzwerk-Asset hinzufügen…",
       "addManualAsset": "Asset manuell hinzufügen…"
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} wird an {{count}} Gerät(e) {{scope}} gesendet.",
+      "messageSplit": "{{action}} wird an {{count}} Gerät(e) {{scope}} gesendet: {{online}} jetzt online · {{queued}} für den nächsten Check-in vorgemerkt.",
+      "scopeMulti": "in {{count}} Organisationen ({{orgs}})",
+      "scopeSingle": "bei {{org}}",
+      "title": "{{action}}: {{count}} Gerät(e)?",
+      "verbs": {
+        "lock": "Sperren",
+        "maintenanceOff": "Wartung beenden",
+        "reboot": "Neustart",
+        "reboot_safe_mode": "Neustart im abgesicherten Modus",
+        "shutdown": "Herunterfahren",
+        "wake": "Aufwecken"
+      }
     }
   },
   "filterAddDropdown": {
@@ -4418,5 +4468,17 @@
     "updatesPaused": "Live-Aktualisierungen pausiert — neuer Versuch läuft",
     "closeNotAnnounced": "Der Chat ist hier geschlossen. Das Chatfenster des Benutzers bleibt möglicherweise geöffnet, bis sich sein Gerät erneut verbindet oder er antwortet.",
     "unavailable": "Dieser Chat ist nicht mehr verfügbar"
+  },
+  "deviceOverviewState": {
+    "label": "Gerätestatus",
+    "lastCheckIn": "Letzte Meldung {{ago}}",
+    "openAlerts_one": "{{count}} offene Warnung",
+    "openAlerts_other": "{{count}} offene Warnungen",
+    "openTickets_one": "{{count}} offenes Ticket",
+    "openTickets_other": "{{count}} offene Tickets",
+    "noOpenAlerts": "Keine offenen Warnungen",
+    "untitledAlert": "Warnung gemeldet",
+    "alertsUnavailable": "Offene Warnungen konnten nicht geladen werden",
+    "viewAlerts": "Warnungen anzeigen"
   }
 }

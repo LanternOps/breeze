@@ -66,6 +66,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_device_hardware_health', description: 'Get RAID, disk and hardware collector health', category: 'Devices & Hardware' },
       { name: 'query_device_workloads', description: 'List containers and VMs hosted on a device (Docker, Podman, Hyper-V, Proxmox)', category: 'Devices & Hardware' },
       { name: 'get_device_time_status', description: 'Get Windows time sync health and expected timezone', category: 'Devices & Hardware' },
+      { name: 'list_device_restore_point_attempts', description: 'List System Restore checkpoints requested before patches, scripts and installs', category: 'Devices & Hardware' },
       { name: 'list_time_sync_issues', description: 'List observed time synchronization findings', category: 'Devices & Hardware' },
       { name: 'analyze_metrics', description: 'Time-series metrics analysis', category: 'Devices & Hardware' },
       { name: 'get_active_users', description: 'Active user sessions', category: 'Devices & Hardware' },
@@ -340,6 +341,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'test_webhook', description: 'Test webhook delivery — sends a real outbound POST; route requires MFA', category: 'Integrations' },
       { name: 'trigger_agent_upgrade', description: 'Queue agent upgrade', category: 'Integrations' },
       { name: 'trigger_agent_restart', description: 'Restart a wedged/silent agent via the watchdog', category: 'Integrations' },
+      // Microsoft 365 identity writes (Operator Recipe Library M1) — Tier 3, four-eyes
+      { name: 'm365_revoke_sessions', description: 'Revoke all Microsoft 365 sessions for a user', category: 'Integrations' },
+      { name: 'm365_remove_license', description: 'Remove Microsoft 365 licenses from a user', category: 'Integrations' },
+      { name: 'm365_assign_license', description: 'Assign Microsoft 365 licenses to a user', category: 'Integrations' },
+      { name: 'm365_remove_from_group', description: 'Remove a user from a Microsoft 365 group', category: 'Integrations' },
+      { name: 'm365_add_to_group', description: 'Add a user to a Microsoft 365 group', category: 'Integrations' },
+      { name: 'm365_retire_intune_device', description: 'Retire an Intune device (removes company data; not a full wipe)', category: 'Integrations' },
+      { name: 'm365_create_user', description: 'Create a Microsoft 365 user with a one-time temporary password', category: 'Integrations' },
+      { name: 'm365_set_auto_reply', description: 'Set or clear a Microsoft 365 mailbox automatic reply', category: 'Integrations' },
       // Configuration Policies
       { name: 'manage_configuration_policy (create/update/delete)', description: 'Create, update, or delete config policies', category: 'Configuration Policies' },
       // Fleet Operations
@@ -515,6 +525,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_device_details: 'devices.read',
   get_device_hardware_health: 'devices.read',
   get_device_time_status: 'devices.read',
+  list_device_restore_point_attempts: 'devices.read',
   query_device_workloads: 'devices.read',
   list_time_sync_issues: 'devices.read',
   analyze_metrics: 'devices.read',

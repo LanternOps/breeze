@@ -126,10 +126,50 @@ export function useAlertActions<A extends ActionableAlert>({
 
       const revert = () => patchAlert(alert.id, { status: previousStatus });
 
+      // Resolves true once the server has accepted the suppress. Undo awaits it so
+      // an Undo clicked while the POST is still in flight cannot race ahead of it.
+      let resolveSuppressed: (ok: boolean) => void = () => {};
+      const suppressSettled = new Promise<boolean>((resolve) => {
+        resolveSuppressed = resolve;
+      });
+
+      // Undo must lift the mute SERVER-side, not just repaint the row (#8966).
+      let undone = false;
+      const undo = async () => {
+        if (undone) return; // double-click guard: a 2nd request would 409 confusingly
+        undone = true;
+        if (!(await suppressSettled)) return; // suppress failed — already reverted
+        try {
+          await runAction({
+            request: () => fetchWithAuth(`/alerts/${alert.id}/unsuppress`, { method: 'POST',
+              body: JSON.stringify(
+                previousStatus === 'active' || previousStatus === 'acknowledged'
+                  ? { restoreStatus: previousStatus }
+                  : {},
+              ),
+            }),
+            errorFallback: t('alertsPage.failedToRestoreAlert'),
+            onUnauthorized: () => void navigateTo('/login', { replace: true }),
+          });
+          revert();
+        } catch (err) {
+          // runAction already toasted any ActionError (and 401 -> login redirect).
+          if (err instanceof ActionError && err.status === 401) return;
+          if (!(err instanceof ActionError)) {
+            console.error('[alerts] unsuppress failed', alert.id, err);
+            showToast({ message: t('alertsPage.failedToRestoreAlert'), type: 'error' });
+          }
+        } finally {
+          // On success the row is restored; on failure the server is still the
+          // source of truth, so re-sync either way.
+          refresh();
+        }
+      };
+
       showToast({
         message: t('alertsPage.alertSuppressed', { title: alert.title }),
         type: 'undo',
-        onUndo: revert,
+        onUndo: () => void undo(),
         duration: 5000,
       });
 
@@ -147,6 +187,7 @@ export function useAlertActions<A extends ActionableAlert>({
           // resolved alert") rather than a generic message.
           const body = await response.json().catch(() => null);
           revert();
+          resolveSuppressed(false);
           console.error('[alerts] suppress failed', alert.id, response.status, body?.error);
           showToast({
             message: typeof body?.error === 'string' ? body.error : t('alertsPage.failedToSuppressAlert'),
@@ -156,9 +197,11 @@ export function useAlertActions<A extends ActionableAlert>({
           // (e.g. resolved concurrently) — re-sync from the server.
           if (response.status === 409) refresh();
         } else {
+          resolveSuppressed(true);
           refresh();
         }
       } catch (err) {
+        resolveSuppressed(false);
         // fetchWithAuth already redirects to /login on session expiry.
         if (err instanceof AuthSessionExpiredError) return;
         revert();

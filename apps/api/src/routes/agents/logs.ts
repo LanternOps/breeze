@@ -17,7 +17,7 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { envInt } from '../../utils/envInt';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { isPgDataException, pgErrorCode } from '../../utils/pgErrors';
 import { stripNul } from '../../utils/stripNul';
 import { recordAgentIngestSubmission } from '../metrics';
 import { captureException } from '../../services/sentry';
@@ -66,16 +66,6 @@ const MAX_AGENT_LOG_FUTURE_SKEW_MS = 10 * 60 * 1000;
 const DEVICE_LAST_LOG_AT_THROTTLE_MS = 5 * 60 * 1000;
 
 const INSERT_CHUNK_SIZE = 100;
-
-/**
- * SQLSTATE class 22 (data exception: 22P05 untranslatable character, 22001
- * string too long, ...) is a property of one row's VALUES, so retrying that
- * chunk row by row keeps every other row. Anything else (connection loss,
- * lock timeout) would fail the same way per row, so it is not retried.
- */
-function isPgDataException(err: unknown): boolean {
-  return pgErrorCode(err)?.startsWith('22') ?? false;
-}
 
 /**
  * Remove the two server-authored clamp-provenance keys from redacted agent

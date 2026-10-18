@@ -2,6 +2,8 @@ import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
+import type { McpGrantableDomain } from '@breeze/shared';
+import McpDomainPicker, { isMcpDomainSelectionValid } from '../shared/McpDomainPicker';
 
 export type ApiKeyScope = {
   id: string;
@@ -31,6 +33,8 @@ export type ApiKeyFormValues = {
   expiresAt: string | null;
   rateLimit: number | null;
   scopes: string[];
+  /** MCP tool areas (B-W02 #6156). `null` = every tool; always `null` unless an `ai:*` scope is checked. */
+  mcpDomains: McpGrantableDomain[] | null;
   /** Target org, set by the in-form selector when no org context is active. */
   orgId?: string;
 };
@@ -179,6 +183,7 @@ export default function ApiKeyForm({
   organizations
 }: ApiKeyFormProps) {
   const { t } = useTranslation('settings');
+  const { t: tc } = useTranslation('common');
   const [name, setName] = useState(initialValues?.name ?? '');
   const [expiresAt, setExpiresAt] = useState(initialValues?.expiresAt ?? '');
   const [neverExpires, setNeverExpires] = useState(!initialValues?.expiresAt);
@@ -186,9 +191,14 @@ export default function ApiKeyForm({
     initialValues?.rateLimit?.toString() ?? ''
   );
   const [scopes, setScopes] = useState<string[]>(initialValues?.scopes ?? []);
+  const [mcpDomains, setMcpDomains] = useState<McpGrantableDomain[] | null>(initialValues?.mcpDomains ?? null);
   const [orgId, setOrgId] = useState(initialValues?.orgId ?? '');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const needsOrgPick = !!organizations && organizations.length > 0;
+  // Tool domains only mean something for the AI/MCP interface, so the picker
+  // (and a non-null selection) exists only while an `ai:*` scope is checked.
+  const hasAiScope = scopes.some(s => s.startsWith('ai:'));
+  const mcpDomainsValid = !hasAiScope || isMcpDomainSelectionValid(mcpDomains);
 
   const handleScopeToggle = (scopeId: string) => {
     setScopes(prev =>
@@ -237,13 +247,14 @@ export default function ApiKeyForm({
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
 
-    if (!validate()) return;
+    if (!validate() || !mcpDomainsValid) return;
 
     await onSubmit({
       name: name.trim(),
       expiresAt: neverExpires ? null : expiresAt || null,
       rateLimit: rateLimit ? Number(rateLimit) : null,
       scopes,
+      mcpDomains: hasAiScope ? mcpDomains : null,
       ...(needsOrgPick ? { orgId } : {})
     });
   };
@@ -411,6 +422,19 @@ export default function ApiKeyForm({
             {errors.scopes && <p className="text-xs text-destructive">{errors.scopes}</p>}
           </div>
 
+          {/* MCP tool areas — only relevant when the key can reach the AI/MCP interface */}
+          {hasAiScope && (
+            <div className="space-y-2" data-testid="api-key-mcp-domains-section">
+              <McpDomainPicker
+                idPrefix="api-key"
+                value={mcpDomains}
+                onChange={setMcpDomains}
+                disabled={loading}
+              />
+              <p className="text-xs text-muted-foreground">{tc('longTail.mcpDomains.apiKeyHint')}</p>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
             <button
@@ -421,7 +445,7 @@ export default function ApiKeyForm({
               {t('apiKeyForm.cancel')}</button>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !mcpDomainsValid}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? t('apiKeyForm.creating') : t('apiKeyForm.createKey')}

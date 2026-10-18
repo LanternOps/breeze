@@ -40,7 +40,7 @@ describe('display watch-set resolution SQL error (#8287)', () => {
 
     const after = await withDbAccessContext(ctx, async () => {
       // Random device id: no cache hit, so the resolver (and its SQL error) runs.
-      const keys = await loadActiveWatchKeys('00000000-0000-4000-8000-000000000001');
+      const keys = await loadActiveWatchKeys('00000000-0000-4000-8000-000000000001', org!.id);
       expect(keys).toBeNull();
       // The route's next query on the same request transaction.
       return db.execute(sql`select 42 as v`);

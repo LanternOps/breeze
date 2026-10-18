@@ -278,6 +278,9 @@ describe('command queue service', () => {
     await expect(queueCommandForExecution('d1', 'script', {})).resolves.toMatchObject({
       error: 'TRUST_PROBATION',
       trust: { reason: 'probation_default_deny' },
+      // #8022: the refusal class rides beside the message, so a caller can
+      // report WHY without shipping the (scrubbed) error text.
+      refusal: 'trust_denied',
     });
   });
 
@@ -1247,6 +1250,7 @@ describe('command queue service', () => {
       const result = await queueCommandForExecution('dev-online', CommandTypes.FILE_LIST, { path: '/' });
 
       expect(result.error).toBe(cancelledCommandError('requester_inactive'));
+      expect(result.refusal).toBe('cancelled');
       expect(result.command?.status).toBe('cancelled');
       expect(sendCommandToAgent).not.toHaveBeenCalled();
     });
@@ -1989,6 +1993,7 @@ describe('command queue service', () => {
 
       // Matches the adjacent "Device not found" contract — no info leak.
       expect(result.error).toBe('Device not found');
+      expect(result.refusal).toBe('device_not_found');
       // Must not have proceeded to queue the command.
       expect(db.insert).not.toHaveBeenCalled();
     });
@@ -2006,6 +2011,7 @@ describe('command queue service', () => {
       );
 
       expect(result.error).toBe('Device is offline, cannot execute command');
+      expect(result.refusal).toBe('device_offline');
     });
 
     it('is unaffected when expectedOrgId is omitted (existing callers)', async () => {

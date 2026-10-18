@@ -494,7 +494,10 @@
       "createFirst": "Créez votre premier filtre",
       "created": "Créé {{date}}",
       "deleteConfirm": "Supprimer ce filtre ?",
-      "duplicate": "Duplique"
+      "duplicate": "Duplique",
+      "saveFailed": "Impossible d'enregistrer le filtre",
+      "deleteFailed": "Impossible de supprimer le filtre",
+      "ownerOrgHint": "Les filtres enregistrés appartiennent à une organisation. Choisissez celle à laquelle ce filtre appartient."
     },
     "targets": {
       "modes": {
@@ -1363,6 +1366,14 @@
           "migrationWindowClosed": {
             "description": "Déclenché une fois par organisation à la fermeture d'une fenêtre de migration de tickets, avec les nombres importés.",
             "label": "Fenêtre de migration fermée"
+          },
+          "integrationHealthOpened": {
+            "description": "Se déclenche lorsqu'un incident d'état est ouvert sur la connexion d'une organisation.",
+            "label": "Incident d'état de connexion ouvert"
+          },
+          "integrationHealthResolved": {
+            "description": "Se déclenche lorsqu'un incident d'état de connexion est résolu.",
+            "label": "Incident d'état de connexion résolu"
           }
         },
         "fields": {
@@ -2633,6 +2644,34 @@
         "sending": "Envoi…",
         "send": "Envoyer"
       }
+    },
+    "mcpDomains": {
+      "legend": "Accès aux outils",
+      "allLabel": "Tous les outils (y compris les domaines ajoutés ultérieurement)",
+      "selectedLabel": "Uniquement ces domaines",
+      "coreLabel": "Noyau (toujours inclus)",
+      "error": "Sélectionnez au moins un domaine ou choisissez Tous les outils.",
+      "allEquivalentNote": "Tous les domaines sont sélectionnés : cela équivaut à Tous les outils, y compris les domaines ajoutés ultérieurement.",
+      "reconnectNote": "S’applique à cette connexion. Pour restreindre une connexion existante, révoquez-la dans Applications connectées, puis reconnectez-vous.",
+      "apiKeyHint": "Choisissez les domaines d’outils que cette clé peut utiliser via l’interface IA/MCP.",
+      "allTools": "Tous les outils",
+      "areaCount_one": "{{count}} domaine",
+      "areaCount_other": "{{count}} domaines",
+      "labels": {
+        "devices": "Appareils",
+        "scripts": "Scripts et automatisation",
+        "patching": "Correctifs et logiciels",
+        "monitoring": "Supervision et alertes",
+        "network": "Réseau",
+        "security": "Sécurité et conformité",
+        "backup": "Sauvegarde et restauration",
+        "tickets": "Tickets et temps",
+        "billing": "Facturation",
+        "accounts": "Comptes",
+        "integrations": "Intégrations",
+        "admin": "Gestion administrative",
+        "ai": "Agents IA"
+      }
     }
   },
   "whatsNew": {
@@ -2656,7 +2695,8 @@
     "dismiss": "Ignorer le rappel d’authentification à deux facteurs"
   },
   "mfaPolicyOffBanner": {
-    "message": "L'authentification multifacteur n'est pas obligatoire pour votre équipe. Les sessions avec mot de passe seul peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
+    "label": "Rappel MFA",
+    "message": "MFA non obligatoire pour votre équipe : un mot de passe seul permet de lancer des scripts.",
     "cta": "Exiger la MFA",
     "dismiss": "Masquer le rappel de politique MFA pour aujourd'hui"
   },

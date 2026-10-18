@@ -23,7 +23,7 @@ var allowedRequests = map[string]map[string]bool{
 	"/_ping":           {"": true},
 	"/version":         {"": true},
 	"/containers/json": {"all=1": true},
-	"/images/json":     {"": true},
+	"/images/json":     {"": true, imageIdentityQuery: true},
 }
 
 // ReadOnlyTransport wraps a RoundTripper and refuses everything except GET or
