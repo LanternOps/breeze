@@ -32,6 +32,8 @@
     "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
     "upgrade:preflight": "tsx scripts/upgrade-preflight.ts",
     "upgrade:preflight:prod": "node dist/scripts/upgrade-preflight.cjs",
+    "acceptances:verify-hashes": "tsx scripts/verify-acceptance-hashes.ts",
+    "acceptances:verify-hashes:prod": "node dist/scripts/verify-acceptance-hashes.cjs",
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
     "start": "node dist/index.cjs",
     "test": "vitest",
