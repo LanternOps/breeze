@@ -46,7 +46,10 @@ vi.mock('../db', async () => {
 
 const precheckMock = vi.fn();
 const versionMock = vi.fn();
-vi.mock('./yaraPrecheck', () => ({
+vi.mock('./yaraPrecheck', async (importOriginal) => ({
+  // The real env rule (NODE_ENV + BREEZE_YARA_LINT_ONLY), so these tests keep
+  // exercising it through the publisher.
+  yaraLintOnlyAllowed: (await importOriginal<typeof import('./yaraPrecheck')>()).yaraLintOnlyAllowed,
   precheckYaraBundle: (json: string) => precheckMock(json),
   yaracVersion: () => versionMock(),
 }));

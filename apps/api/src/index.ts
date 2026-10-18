@@ -348,6 +348,7 @@ import {
   extensionRootsSnapshot,
 } from './extensions/faultAttribution';
 import { syncBinaries } from './services/binarySync';
+import { syncBuiltinYaraPack } from './services/yaraBuiltinPack';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
 import { webhookDeliveries } from './db/schema';
@@ -1918,6 +1919,18 @@ async function bootstrap(): Promise<void> {
     }
     console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
   }
+
+  // #6263 W03b: upsert the built-in YARA pack from this release's signed
+  // manifest. Deliberately NOT awaited: it fetches the release asset and runs
+  // the breeze-yarac pre-check (up to minutes), and a pack problem must never
+  // block or crash boot. It never rejects (every failure logs and returns
+  // 'skipped', leaving the published built-in set as it was) and opens its
+  // own system DB context outside any ambient one. Every replica runs it; an
+  // advisory lock plus the strictly-newer version check make that a no-op
+  // after the first.
+  void syncBuiltinYaraPack()
+    .then((outcome) => console.log(`[startup] Built-in YARA pack: ${outcome}`))
+    .catch((err) => console.error('[startup] Built-in YARA pack sync failed unexpectedly:', err));
 
   // Keeps the regular-MSI download cache (installerBuilder.ts) warm from a
   // background timer instead of the request path: the installer routes that

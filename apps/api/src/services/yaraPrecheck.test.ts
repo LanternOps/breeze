@@ -11,6 +11,7 @@ import {
   __resetYaracForTests,
   YARAC_TIMEOUT_MS,
   YARAC_MAX_STDOUT_BYTES,
+  yaraLintOnlyAllowed,
 } from './yaraPrecheck';
 
 interface FakeChild extends EventEmitter {
@@ -140,6 +141,21 @@ describe('precheckYaraBundle', () => {
     expect(child.kill).toHaveBeenCalledWith('SIGKILL');
   });
 
+  it('a caller-supplied timeout replaces the default (boot pre-check of the built-in pack)', async () => {
+    vi.useFakeTimers();
+    const child = fakeChild();
+    spawnMock.mockImplementationOnce(() => child);
+    const p = precheckYaraBundle(BUNDLE, { timeoutMs: YARAC_TIMEOUT_MS * 4 });
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(YARAC_TIMEOUT_MS + 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(YARAC_TIMEOUT_MS * 3);
+    vi.useRealTimers();
+    await expect(p).resolves.toEqual({ ok: false, unavailable: 'timeout' });
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
   it('stdout over the cap -> unavailable and the child is killed', async () => {
     const child = fakeChild();
     spawnMock.mockImplementationOnce(() => {
@@ -190,5 +206,30 @@ describe('yaracVersion', () => {
     await expect(yaracVersion()).resolves.toBeNull();
     respond(0, '{"engine":"e","policy":2,"format":1}');
     await expect(yaracVersion()).resolves.toEqual({ engine: 'e', policy: 2 });
+  });
+});
+
+describe('yaraLintOnlyAllowed', () => {
+  const saved = { NODE_ENV: process.env.NODE_ENV, LINT: process.env.BREEZE_YARA_LINT_ONLY };
+  afterEach(() => {
+    process.env.NODE_ENV = saved.NODE_ENV;
+    if (saved.LINT === undefined) delete process.env.BREEZE_YARA_LINT_ONLY;
+    else process.env.BREEZE_YARA_LINT_ONLY = saved.LINT;
+  });
+
+  it('only in development/test with BREEZE_YARA_LINT_ONLY=1; never in production or with NODE_ENV unset', () => {
+    for (const [env, flag, want] of [
+      ['development', '1', true],
+      ['test', '1', true],
+      ['test', undefined, false],
+      ['production', '1', false],
+      [undefined, '1', false],
+    ] as const) {
+      if (env === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = env;
+      if (flag === undefined) delete process.env.BREEZE_YARA_LINT_ONLY;
+      else process.env.BREEZE_YARA_LINT_ONLY = flag;
+      expect(yaraLintOnlyAllowed(), `${env}/${flag}`).toBe(want);
+    }
   });
 });

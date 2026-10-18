@@ -179,6 +179,16 @@ export function getGithubUserHelperUrl(os: string, arch: string, version?: strin
   return githubAssetDownloadUrl(filename, version);
 }
 
+/**
+ * The built-in YARA pack release asset (#6263 W03b) — server content built by
+ * release.yml for every release kind and covered by its signed manifest.
+ */
+export const YARA_BUILTIN_PACK_ASSET_NAME = 'breeze-yara-builtin.json';
+
+export function getGithubYaraBuiltinPackUrl(version?: string): string {
+  return githubAssetDownloadUrl(YARA_BUILTIN_PACK_ASSET_NAME, version);
+}
+
 export function getGithubRegularMsiUrl(): string {
   return githubAssetDownloadUrl('breeze-agent.msi');
 }

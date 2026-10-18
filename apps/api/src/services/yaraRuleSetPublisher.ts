@@ -33,7 +33,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { buildYaraBundleJson, type YaraBundleRuleInput, type YaraRuleSeverity } from '@breeze/shared';
 import { db, assertInTransaction } from '../db';
 import { yaraRuleSets, yaraRules } from '../db/schema';
-import { precheckYaraBundle, yaracVersion, type YaraPrecheckError } from './yaraPrecheck';
+import { precheckYaraBundle, yaraLintOnlyAllowed, yaracVersion, type YaraPrecheckError } from './yaraPrecheck';
 
 export class YaraRuleSetNotFoundError extends Error {
   constructor(ruleSetId: string) {
@@ -70,12 +70,6 @@ export interface PublishRuleSetResult {
 }
 
 const COMPILE_ERROR_MAX = 2000;
-
-/** Dev escape hatch only; an unset NODE_ENV is NOT a dev environment. */
-function lintOnlyAllowed(): boolean {
-  const env = process.env.NODE_ENV;
-  return (env === 'development' || env === 'test') && process.env.BREEZE_YARA_LINT_ONLY === '1';
-}
 
 /** The `autoQuarantine` and rules of a stored (already validated) bundle, or null. */
 function parsePublishedBundle(bytes: Buffer | null): { autoQuarantine: boolean; rules: YaraBundleRuleInput[] } | null {
@@ -182,7 +176,7 @@ export async function publishRuleSet(ruleSetId: string): Promise<PublishRuleSetR
   }));
 
   const unavailable = !check.ok && 'unavailable' in check ? check.unavailable : undefined;
-  const lintOnly = unavailable !== undefined && lintOnlyAllowed();
+  const lintOnly = unavailable !== undefined && yaraLintOnlyAllowed();
 
   if (!check.ok && !lintOnly) {
     if (unavailable !== undefined) {

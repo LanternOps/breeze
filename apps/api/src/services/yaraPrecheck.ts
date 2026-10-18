@@ -39,6 +39,17 @@ export type YaraPrecheckResult =
   | { ok: false; errors: YaraPrecheckError[] }
   | { ok: false; unavailable: string };
 
+/**
+ * Open Decision 9's dev escape hatch, shared by every publisher (custom sets
+ * and the boot upsert of the built-in pack): lint-only publishing when the
+ * pre-check is unavailable is allowed ONLY with NODE_ENV development/test AND
+ * BREEZE_YARA_LINT_ONLY=1. An unset NODE_ENV is NOT a dev environment.
+ */
+export function yaraLintOnlyAllowed(): boolean {
+  const env = process.env.NODE_ENV;
+  return (env === 'development' || env === 'test') && process.env.BREEZE_YARA_LINT_ONLY === '1';
+}
+
 export function yaracPath(): string {
   const configured = process.env.BREEZE_YARAC_PATH?.trim();
   return configured ? configured : YARAC_DEFAULT_PATH;
@@ -73,7 +84,7 @@ type RunResult =
   | { kind: 'exit'; code: number | null; stdout: string; stderr: string }
   | { kind: 'unavailable'; reason: string };
 
-function runYarac(args: string[], stdin: string | null): Promise<RunResult> {
+function runYarac(args: string[], stdin: string | null, timeoutMs = YARAC_TIMEOUT_MS): Promise<RunResult> {
   return new Promise<RunResult>((resolve) => {
     let settled = false;
     const finish = (r: RunResult) => {
@@ -94,7 +105,7 @@ function runYarac(args: string[], stdin: string | null): Promise<RunResult> {
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       finish({ kind: 'unavailable', reason: 'timeout' });
-    }, YARAC_TIMEOUT_MS);
+    }, timeoutMs);
 
     const out: Buffer[] = [];
     let outBytes = 0;
@@ -174,11 +185,19 @@ function parseJson(text: string): unknown {
   }
 }
 
-export async function precheckYaraBundle(json: string): Promise<YaraPrecheckResult> {
+export interface YaraPrecheckOptions {
+  /**
+   * Overrides YARAC_TIMEOUT_MS. The boot upsert of the 500-rule built-in pack
+   * runs outside any request and compiles far more rules than an edit does.
+   */
+  timeoutMs?: number;
+}
+
+export async function precheckYaraBundle(json: string, opts: YaraPrecheckOptions = {}): Promise<YaraPrecheckResult> {
   await acquire();
   let run: RunResult;
   try {
-    run = await runYarac(['validate'], json);
+    run = await runYarac(['validate'], json, opts.timeoutMs ?? YARAC_TIMEOUT_MS);
   } finally {
     release();
   }
