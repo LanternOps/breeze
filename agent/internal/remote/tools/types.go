@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/systemrestore"
 	"github.com/breeze-rmm/agent/internal/wire"
 )
 
@@ -332,6 +333,13 @@ type CommandResult struct {
 	// primary work began. Set by command handlers that care about the server-
 	// side reconstruction (e.g. software_install). Empty when not applicable.
 	StartedAt string `json:"startedAt,omitempty"`
+	// RestorePoint is the Windows System Restore checkpoint outcome for this
+	// command, when the server asked for one (#4609). A DEDICATED top-level
+	// field rather than a key inside Result/Stdout: script and software-install
+	// results already use Stdout for their own payloads with type-specific
+	// server-side parsers. The REST transport marshals this struct directly;
+	// toWSCommandResult (heartbeat.go) must copy it onto the WebSocket frame.
+	RestorePoint *systemrestore.Outcome `json:"restorePoint,omitempty"`
 }
 
 // NewSuccessResult creates a successful command result with data

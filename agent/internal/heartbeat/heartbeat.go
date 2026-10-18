@@ -7109,6 +7109,9 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		// only proof that closes a `cancelling` execution as `cancelled`.
 		Cancelled:            result.Cancelled,
 		CancelledByCommandID: result.CancelledByCommandID,
+		// #4609: carried verbatim. Never folded into Result -- see the field
+		// comment on tools.CommandResult.RestorePoint.
+		RestorePoint: result.RestorePoint,
 	}
 
 	// An explicitly-set Result wins. The stdout reparse below stays for the

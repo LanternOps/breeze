@@ -35,6 +35,13 @@ const (
 	// update, so no checkpoint was warranted. Produced by the caller (W07),
 	// never by Create.
 	StatusSkippedDefinitions Status = "skipped_definition_only"
+	// StatusSkippedNoMutation — the command stopped before its first
+	// mutation (an already-installed package, a validation or preflight
+	// rejection, an unreachable user helper), so no checkpoint was warranted.
+	// Produced by Checkpoint.Report, never by Create. Deliberately NOT
+	// skipped_disabled: mislabelling "we didn't need to" as "System Restore is
+	// off" would send a tech to fix the wrong thing.
+	StatusSkippedNoMutation Status = "skipped_no_mutation"
 	// StatusUnsupported — no srclient.dll, no SRSetRestorePointW entry point,
 	// no SystemRestore WMI provider, or a non-Windows platform. Determined by
 	// probing at runtime, NEVER by SKU (Open Decision 4).
@@ -54,13 +61,13 @@ const (
 	StatusFailed Status = "failed"
 )
 
-// Terminal reports whether s is one of the statuses this package can produce.
+// Terminal reports whether s is one of the statuses an agent can report.
 // The server also stores a non-terminal "requested" status on the ledger row it
 // writes at command-creation time; that value never originates here.
 func (s Status) Terminal() bool {
 	switch s {
 	case StatusCreated, StatusExistingAccepted, StatusSkippedDisabled,
-		StatusSkippedDefinitions, StatusUnsupported, StatusBusy,
+		StatusSkippedDefinitions, StatusSkippedNoMutation, StatusUnsupported, StatusBusy,
 		StatusInsufficientPrivs, StatusVerificationFailed, StatusFailed:
 		return true
 	}

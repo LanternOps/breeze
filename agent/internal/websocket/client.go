@@ -19,6 +19,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/systemrestore"
 	"github.com/breeze-rmm/agent/internal/wire"
 )
 
@@ -91,6 +92,9 @@ type CommandResult struct {
 	// mean the server only ever saw the marker on the HTTP fallback.
 	Cancelled            bool   `json:"cancelled,omitempty"`
 	CancelledByCommandID string `json:"cancelledByCommandId,omitempty"`
+	// #4609 System Restore checkpoint outcome, mirrored from
+	// tools.CommandResult. Top-level, never folded into Result.
+	RestorePoint *systemrestore.Outcome `json:"restorePoint,omitempty"`
 }
 
 // outboundResult pairs a marshalled command-result frame with the structured
