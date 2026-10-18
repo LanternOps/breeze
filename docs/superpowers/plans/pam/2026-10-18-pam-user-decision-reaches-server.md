@@ -73,12 +73,12 @@ Also covered: a new agent talking to an old self-hosted server. The route return
 - **Why not a heartbeat field:** heartbeat cadence adds up to a full interval of latency to a race whose loss is "launches the app"; and it couples a per-request state change into the hottest, most-versioned payload. **Why not a command result:** no command exists for a pending request — the agent is answering the server's *ingest* response, not a command. **Why not reuse submit:** the submit route creates rows; overloading it with a state transition muddies its rate limit and audit.
 - **Auth:** `requireAgentRole`; `agent.agentId === :id` else 403; `agent.claimTypeAllowlist` set → 403 `drain_restricted` (same guards as `routes/agents/pamReconciliation.ts:107-117`, #8206). Ownership is enforced in SQL: the row must match `id = :requestId AND org_id = agent.orgId AND device_id = agent.deviceId AND flow_type = 'uac_intercept'`; otherwise 404 (no existence oracle across devices).
 - **Idempotency:** a row already `withdrawn` returns 200 with the stored `withdrawnAt` (agent retries after a lost response are safe). Any other non-pending status → 409 `{ error: 'not_pending', status }`.
-- **DB context:** the path has three segments after `:id`, so it does **not** match `SELF_MANAGED_DB_CONTEXT_ACTIONS` / `SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS` (`apps/api/src/middleware/agentAuth.ts:371-405`) and runs inside the middleware's request-long org-scoped wrap. That is correct here: the handler does one short transaction and no Redis/network work before it. Mobile-approval expiry and event publish run via `runAfterDbContextExit` exactly as respond does (`routes/pam.ts:820-822`). No rate limiter (each call is one indexed row lock on the caller's own device; the agent backs off).
+- **DB context:** the path has three segments after `:id`, so it does **not** match `SELF_MANAGED_DB_CONTEXT_ACTIONS` / `SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS` (`apps/api/src/middleware/agentAuth.ts:371-405`). `'elevation-requests'` is in that set, but `isCoreAgentPath(..., CORE_AGENT_ACTION_INDEX + 1)` at `:1124-1127` anchors on exact path length. So the route runs inside the middleware's request-long org-scoped wrap. That is correct here: the handler does one short transaction and no Redis/network work before it. Mobile-approval expiry and event publish run via `runAfterDbContextExit` exactly as respond does (`routes/pam.ts:820-822`). No rate limiter (each call is one indexed row lock on the caller's own device; the agent backs off).
 - **Retry/ack, offline, restart:** the agent's decline record is the outbox (D2). Immediate attempt after Deny; then a drain loop retries with backoff until a *definitive* answer (200, 409, 404, 400); no give-up timer, max backoff 5 min. Offline at Deny → record persisted, drained on reconnect. Restart → record reloaded, drained.
 
 ### D2 — Agent-side safety: durable decline record (the part that closes the race)
 
-- **Home:** new package `agent/internal/pamdecline` (store only, no heartbeat imports), file `pam-declined-requests.json` next to `pam-lifetime-ledger.json` (`filepath.Dir(statePath)`, wired in `Heartbeat.SetStatePath`, `heartbeat.go:1624-1632`). Not the lifetime ledger: the ledger is keyed by actuation ID and its contract (`job_contract_test.go`, `store_test.go`) is about grants that exist; a decline is about one that must never exist. Atomic write pattern copied from `agent/internal/desktopfence/store.go` (temp file, fsync, `atomicrename.Replace`, `0600`, corrupt file moved to `<path>.corrupt`).
+- **Home:** new package `agent/internal/pamdecline` (store only, no heartbeat imports), file `pam-declined-requests.json` next to `pam-lifetime-ledger.json` (`filepath.Dir(statePath)`, wired in `Heartbeat.SetStatePath`, `heartbeat.go:1624-1632`). Not the lifetime ledger: the ledger is keyed by actuation ID and its contract (`job_contract_test.go`, `store_test.go`) is about grants that exist; a decline is about one that must never exist. Write pattern from `agent/internal/desktopfence/store.go:171-230` (temp file, `Chmod 0600`, `Sync`, replace, dir sync, corrupt file moved to `<path>.corrupt`), using `agent/internal/atomicrename.Replace` for the replace step.
 - **Entry states:** `awaiting` → `declined` | removed (on Approve). `RunPamFlow` persists `awaiting` right **before** the dialog is shown, for `pending` and `auto_approved`. On the dialog's answer:
   - Approve: the entry is removed. Approve is the only outcome that permits an apply.
   - Deny, timeout or error: the entry is flipped to `declined` **before** `denyConsent`, then delivery is kicked. Recording before the dismissal (up to 10 s) closes the window where an approval arrives mid-dismiss.
@@ -88,14 +88,14 @@ Also covered: a new agent talking to an old self-hosted server. The route return
   - Wait expires: the apply is refused with `user_decision_pending`.
   - Persistence: an `awaiting` entry found at **load** time belongs to a dialog that died with the previous process. It is converted to `declined/user_timeout` and queued for delivery if it was `pending`.
 - **Scope:** `pending` and `auto_approved` are recorded, because both can receive a remote apply. The submit route creates a `pam_apply_v2` actuation for `auto_approved` (`apps/api/src/routes/agents/elevationRequests.ts:655-667`). The withdraw is **delivered** only for `pending`. For `auto_approved`, the server row is not withdrawable, and the local refusal is the whole fix. `policy_denied` and `unexpected_status` show no dialog and write nothing.
-- **Residual:** a request with no dialog at all writes no entry and behaves exactly as today. That covers no helper session (`pam_flow.go:101-106`) and an offline-replayed event (`etwlua.go:339-345`). Requiring affirmative consent for those would change what a technician approval means, so it is out of scope.
+- **Residual:** a request with no dialog at all writes no entry and behaves exactly as today. That covers no helper session (`pam_flow.go:101-106`) and an offline-replayed event (`agent/internal/etwlua/etwlua.go:339-345`). Requiring affirmative consent for those would change what a technician approval means, so it is out of scope.
 - **Reason mapping** (no helper change needed): `err` from the dialog round trip and `errors.Is(err, sessionbroker.ErrCommandTimeout)` → `user_timeout`; any other `err` → `dialog_error`; helper result `Approved=false, DismissedByUser=false` (the helper's countdown expiry, `userhelper/pam_dialog_window_windows.go:517-520`) → `user_timeout`; otherwise → `user_denied`.
 - **Refusal points:** `lifecycleManager.apply` (`pamlifetime/manager.go:158`) right after `currentBootID` and **before** admission, `PinTarget`, `PrepareApply` and the `received` handoff — so a declined request leaves no ledger entry and no received observation, only a `failed` result (the server already accepts a `failed` result with a non-empty `failureCode` without a prior `received`: `services/pamActuationResult.ts:145`; `pam_disabled` is the precedent). Both handlers (`handlePamApplyV2` `:67`, legacy `handleActuateElevation` `:304`) first run the bounded `Await` on the request ID (outside any lock), then the manager re-checks non-blockingly inside its operation. The legacy handler refuses right after `parseActuatePayload`, before admission, and returns a success-shaped `actuateResult{Success:false, Reason:"user_declined"}` plus `writePAMActuationRefused`.
 - **Failure handling:**
   - Corrupt or unreadable file at load: the file is moved aside, an Error is logged, and `Check()` answers *refuse* for **every** request ID for 24 h (`user_decline_record_untrusted`). That covers the default 15-minute pending TTL plus the 5-minute sweep many times over, and a long approval window. The cost is one day without remote PAM on a device whose state file was damaged, and it is logged loudly.
   - Persist failure on any transition: the entry is kept in memory and still refuses until restart. An Error is logged and delivery is still attempted.
   - Missing file: empty store, normal operation.
-- **Fail-closed gate interaction:** none. The record is written whether or not the dismissal is proven. `denyConsent`, `pamDismissalUncertain`, the recovery probes and `actuateElevation`'s gate are untouched. Recovery probes use derived IPC IDs (`pam_flow.go:486`) and never create entries. The decline check runs before the gate check in both apply paths, so a declined request is reported as `user_declined`, not `dismissal_uncertain`.
+- **Fail-closed gate interaction:** none. The record is written whether or not the dismissal is proven. `denyConsent`, `pamDismissalUncertain`, the recovery probes and `actuateElevation`'s gate are untouched. Recovery probes use derived IPC IDs (`pam_flow.go:487`) and never create entries. The decline check runs before the gate check in both apply paths, so a declined request is reported as `user_declined`, not `dismissal_uncertain`.
 - **Retention:** an un-acked `declined` entry never ages out, so an offline device still refuses a queued approval when it reconnects days later. An acked entry is pruned 7 days after its ack. `Prune()` runs on every drain pass. Above 4096 entries, the oldest acked entries are evicted first, then the oldest overall, with an Error log.
 - **Permissions:** `0600`, in the same directory as `pam-lifetime-ledger.json`, so it inherits that directory's SYSTEM-only ACL on Windows.
 
@@ -119,10 +119,10 @@ Also covered: a new agent talking to an old self-hosted server. The route return
 
 ### D5 — Audit + evidence
 
-- `elevation_audit` row: `eventType 'withdrawn'`, `actor 'end_user'`, `details { cause: <reason>, agent_declined_at: <ISO or null> }`. General audit log action `pam.elevation_request.withdrawn` via `writeAuditEvent` (same call shape as respond, `routes/pam.ts:~786`).
+- `elevation_audit` row: `eventType 'withdrawn'`, `actor 'end_user'`, `details { cause: <reason>, agent_declined_at: <ISO or null> }`. General audit log action `pam.elevation_request.withdrawn` via `writeAuditEvent` (same call shape as respond, `routes/pam.ts:790`).
 - `PAM_AUDIT_WRITER_DETAIL_KEYS` (`services/pamAuditExport.ts:60`) gets an entry for the new writer file with `['cause', 'agent_declined_at']`; the freeze test then passes.
 - Export: `tenantExportPolicyRegistry.ts:481` `elevation_requests` → add `withdrawn_at`, `withdrawn_reason` to `included` (scalar, non-sensitive). Enum values need no registration (per-column policy). No new table → no cascade/merge registration.
-- Ownership-epoch evidence (`docs/superpowers/plans/pam/2026-10-06-pam-ownership-epoch.md`): unaffected. Epoch writers (`pamActuationLifecycle.ts`, `pamActuationResult.ts`, `2026-12-23-150000-pam-chain-epoch-anchor.sql`) act on actuations; a withdrawn row never has one. `pamDeviceMoveGuard.ts:164` lists non-terminal statuses; `withdrawn` is terminal and correctly absent. `pamEvidenceRetention.ts` is timestamp-driven, no status switch.
+- Ownership-epoch evidence (`docs/superpowers/plans/pam/2026-10-06-pam-ownership-epoch.md`): unaffected. Epoch writers (`pamActuationLifecycle.ts`, `pamActuationResult.ts`, `2026-12-23-150000-pam-chain-epoch-anchor.sql`) act on actuations; a withdrawn row never has one. `pamDeviceMoveGuard.ts:164` lists non-terminal statuses; `withdrawn` is terminal and correctly absent. `apps/api/src/jobs/pamEvidenceRetention.ts` is timestamp-driven, no status switch.
 
 ### D6 — Version gating: none (Todd decision T1)
 
@@ -226,7 +226,7 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
   - `linked pending mobile approvals become expired` after the route (exercise via the route handler so `runAfterDbContextExit` runs; reuse fixtures from `pam-mobile-bridge-sibling-expiry.integration.test.ts`).
   - `other device's request → not_found`; `other org → not_found`; `flow_type tech_jit_admin → not_found`; `expired row → not_pending expired`.
   - `device moved (pamDeviceMoveGuard expiry) then withdraw → not_pending expired`.
-- [ ] **Step 2: Write failing route unit tests** (`elevationWithdraw.test.ts`, pattern of `pamReconciliation.test.ts`): 403 when `agent.agentId !== :id`; 403 `drain_restricted`; 400 on `reason: 'other'` and non-uuid `requestId`; 200/409/404 mapping from mocked `withdrawElevationRequest`; `expireSupersededMobileApprovals` and `publishEvent('elevation.withdrawn', …)` called only on `kind:'withdrawn' && !replay`.
+- [ ] **Step 2: Write failing route unit tests** (`elevationWithdraw.test.ts`, pattern of `apps/api/src/routes/agents/pamReconciliation.test.ts`): 403 when `agent.agentId !== :id`; 403 `drain_restricted`; 400 on `reason: 'other'` and non-uuid `requestId`; 200/409/404 mapping from mocked `withdrawElevationRequest`; `expireSupersededMobileApprovals` and `publishEvent('elevation.withdrawn', …)` called only on `kind:'withdrawn' && !replay`.
 - [ ] **Step 3: Run both, verify FAIL** (module not found).
 - [ ] **Step 4: Implement** `withdrawElevationRequest` (D3 transaction; audit via the `elevationAudit` insert + `writeAuditEvent('pam.elevation_request.withdrawn')`) and the route (D1 guards; zod `{ reason: z.enum(PAM_WITHDRAW_REASONS), declinedAt: z.string().datetime().optional() }`; body cap 4 KB). Register mcp-coverage exemption, audit writer keys, event type.
 - [ ] **Step 5: Run** both test files → PASS; `apps/api/src/__tests__/mcp-coverage.test.ts` and `services/pamAuditExport.test.ts` → PASS.
@@ -237,7 +237,7 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
 **Files:**
 - Modify: `apps/api/src/routes/pam.ts:279-281` (list `status` zod enum), `:1380-1388` (`statusBreakdown` seed), `:769-775` (409 body adds `currentStatus`), list projection (add `withdrawnAt`, `withdrawnReason`)
 - Modify: `apps/api/src/services/aiToolSchemas.ts:294`
-- Test: `apps/api/src/routes/pam.test.ts`, `apps/api/src/services/aiToolSchemas.test.ts` (or the existing schema test for the PAM list tool)
+- Test: `apps/api/src/routes/pam.test.ts`; for the AI schema, extend `apps/api/src/services/aiToolSchemas.validateToolInput.test.ts` (no `aiToolSchemas.test.ts` exists)
 
 **Interfaces:** Produces list rows with `withdrawnAt: string|null`, `withdrawnReason: PamWithdrawReason|null`; respond 409 body `{ success:false, error, currentStatus }`.
 
@@ -326,7 +326,7 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
   - `TestRejectsNonCanonicalUUID`
   - File mode is `0600` on POSIX.
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/pamdecline/...` → FAIL (package missing).
-- [ ] **Step 3: Implement** using the `desktopfence/store.go` write path: temp file + fsync + `atomicrename.Replace`, `schemaVersion`, a mutex-guarded map, and one `chan struct{}` per awaiting entry, closed on resolve.
+- [ ] **Step 3: Implement** using the `desktopfence/store.go` write path (temp file, `0600`, fsync, dir sync) with `atomicrename.Replace` for the replace step, `schemaVersion`, a mutex-guarded map, and one `chan struct{}` per awaiting entry, closed on resolve.
 - [ ] **Step 4: Run** → PASS (`-race`).
 - [ ] **Step 5: Commit** `feat(agent): durable PAM decline record (#8971)`.
 
@@ -401,7 +401,7 @@ Merge order: **A → B → C** (B may precede A). No intermediate state is less 
     - `newElevationAccountManager` is never constructed.
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/pamlifetime/... ./internal/heartbeat/ -run 'Declin|OpenDialog|WaitTimesOut'` → FAIL.
 - [ ] **Step 3: Implement** using the D2 placement. Make the wait bound a `Heartbeat` field (default `pamDialogTimeout + pamDismissTimeout`) so tests can shorten it.
-- [ ] **Step 4: Verify the server tolerates the wait.** Check that `apps/api/src/jobs/staleCommandReaper.ts` does not reap a `pam_apply_v2` in `sent`/`running` sooner than 100 s + the 2-minute operation. Quote the constant in the PR. If it is shorter, lower the wait bound to fit and say so.
+- [ ] **Step 4: Verify the server tolerates the wait.** `getCommandTimeoutMs('pam_apply_v2')` (`apps/api/src/services/commandTimeouts.ts:215`) has no explicit entry today and falls back to `DEFAULT_TIMEOUT_MS` (30 min, with an "Unknown command type" warning). `staleCommandReaper.ts:569-572` consumes it. Confirm that is still so, and quote it in the PR. 100 s plus 2 min is well inside 30 min. Do not add a timeout entry in this wave.
 - [ ] **Step 5: Run** → PASS. Also run `GOOS=windows go vet ./internal/pamlifetime/... ./internal/heartbeat/...` and `GOOS=windows go build ./...`, because of the Windows build tags.
 - [ ] **Step 6: Commit** `fix(agent): never apply an elevation the user declined or has not answered (#8971)`.
 
@@ -480,7 +480,7 @@ Run on the Windows lab VM against a stack with PR A, recording results in the PR
 | `mcp-coverage.test.ts` | new route file under `routes/` | A |
 | tenant-export / org-cascade (Integration Tests job only) | new columns on `elevation_requests` | A |
 | `pamAuditExport` writer-key freeze | new `elevation_audit` writer file | A |
-| `migrationRlsScope.test.ts` | new migrations (no row writes → no scope line needed; suite must still pass) | A |
+| `apps/api/src/db/migrationRlsScope.test.ts` | new migrations (no row writes → no scope line needed; suite must still pass) | A |
 | `rls-coverage` | no new table — should be untouched; run anyway | A |
 | `partner-wide-write-coverage` | not relevant (no config/policy table) | — |
 | `localeParity`, `no-silent-mutations` | new keys; no new mutation | C |
