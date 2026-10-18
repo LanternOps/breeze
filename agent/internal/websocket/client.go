@@ -465,6 +465,17 @@ func (c *Client) reconnectLoop() {
 			sleep = backoff.afterDialFailure(err)
 			log.Warn("connection failed", "error", err.Error(), "retryIn", sleep)
 		} else {
+			// Stop may have run while the dial was in flight: closeCurrentConn
+			// found c.conn nil then, and connect stored the new socket after.
+			// Without this check readPump would sit on it for up to pongWait
+			// before the loop noticed, and Stop callers (tests, shutdown) hung.
+			select {
+			case <-c.done:
+				c.closeCurrentConn(true)
+				return
+			default:
+			}
+
 			// Run read/write pumps — track how long the connection lasted
 			connStart := time.Now()
 			pumpDone := make(chan struct{})

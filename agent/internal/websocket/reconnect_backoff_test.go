@@ -439,3 +439,48 @@ func TestReconnectLoop_StopInterruptsRetryAfterWait(t *testing.T) {
 		t.Fatalf("saw %d dial attempts, want 1 (the 30s Retry-After was not honoured)", n)
 	}
 }
+
+// TestStop_DuringDial_ExitsPromptly pins the Stop-during-connect race seen
+// as "reconnectLoop did not exit after Stop" in TestReconnectLoop_WaitsAfterServerClose4001
+// under -race on loaded runners: Stop closed nothing (c.conn was still nil
+// while the dial was in flight), connect then stored the new socket, and
+// readPump sat on it for up to pongWait.
+func TestStop_DuringDial_ExitsPromptly(t *testing.T) {
+	handshakeStarted := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case handshakeStarted <- struct{}{}:
+		default:
+		}
+		time.Sleep(300 * time.Millisecond) // keep the dial in flight while Stop runs
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for { // hold the connection until the client goes away
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	done := make(chan struct{})
+	go func() {
+		c.Start()
+		close(done)
+	}()
+	select {
+	case <-handshakeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dial never reached the server")
+	}
+	c.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconnectLoop did not exit within 2s of a Stop issued mid-dial")
+	}
+}
