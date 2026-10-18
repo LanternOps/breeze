@@ -47,6 +47,7 @@ export * from './manualAssets';
 export * from './mobile';
 export * from './maintenance';
 export * from './security';
+export * from './yara';
 export * from './software';
 export * from './softwarePolicies';
 export * from './deployments';
