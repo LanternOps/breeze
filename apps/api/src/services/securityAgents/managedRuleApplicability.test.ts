@@ -150,3 +150,38 @@ describe('loadManagedRuleApplicability', () => {
     expect(a.filterViolations('ghost', [missing(HUNTRESS_CATALOG)]).violations).toEqual([]);
   });
 });
+
+describe('loadManagedRuleApplicability — SentinelOne rule (#6960 W04, vendor-generic path)', () => {
+  const S1_CATALOG = 'cat-s1';
+  const S1_POLICY = {
+    id: 'policy-s1',
+    managedByLinkId: 'link-s1',
+    rules: { software: [{ name: 'Sentinel Agent*', catalogId: S1_CATALOG }], allowUnknown: true },
+  };
+  const s1Missing: SoftwarePolicyViolation = {
+    type: 'missing', rule: { name: 'Sentinel Agent*', catalogId: S1_CATALOG }, severity: 'high', detectedAt: '2026-01-01T00:00:00Z',
+  };
+
+  it("reads SentinelOne readiness for the DEVICE orgs; an unmapped org's violation becomes not_applicable/org_not_mapped", async () => {
+    prime({
+      catalog: [{ id: S1_CATALOG, integrationProvider: 'sentinelone' }],
+      link: [{ inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] } }],
+    });
+    orgReadiness.mockResolvedValueOnce(new Map([['org-mapped', { ok: true }], ['org-unmapped', { ok: false, reason: 'org_not_mapped' }]]));
+    const a = await loadManagedRuleApplicability(S1_POLICY, [
+      { deviceId: 'd-mapped', orgId: 'org-mapped', osType: 'windows' },
+      { deviceId: 'd-unmapped', orgId: 'org-unmapped', osType: 'windows' },
+      { deviceId: 'd-mac', orgId: 'org-mapped', osType: 'macos' },
+    ]);
+    expect(orgReadiness).toHaveBeenCalledWith('sentinelone', ['org-mapped', 'org-unmapped']);
+    expect(a.vendors()).toEqual(['sentinelone']);
+    expect(a.filterViolations('d-mapped', [s1Missing])).toEqual({ violations: [s1Missing], notApplicable: [] });
+    expect(a.filterViolations('d-unmapped', [s1Missing])).toEqual({
+      violations: [],
+      notApplicable: [{ catalogId: S1_CATALOG, vendor: 'sentinelone', reason: 'org_not_mapped' }],
+    });
+    expect(a.filterViolations('d-mac', [s1Missing]).notApplicable).toEqual([
+      { catalogId: S1_CATALOG, vendor: 'sentinelone', reason: 'platform_unsupported' },
+    ]);
+  });
+});

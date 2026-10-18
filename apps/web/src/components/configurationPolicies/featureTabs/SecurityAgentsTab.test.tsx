@@ -76,7 +76,80 @@ describe('SecurityAgentsTab', () => {
     );
   });
 
-  it.each(['sentinelone', 'controld', 'nextdns'])('does not allow %s to be enabled', async (vendor) => {
+  it('saves the exact payload when SentinelOne is toggled on (W04)', async () => {
+    render(<SecurityAgentsTab {...props} />);
+    const toggle = screen.getByTestId('security-agents-sentinelone-toggle') as HTMLInputElement;
+    expect(toggle.disabled).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(saveButton());
+    await waitFor(() =>
+      expect(m.save).toHaveBeenCalledWith(null, {
+        featureType: 'security_agents',
+        featurePolicyId: null,
+        inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] },
+      }),
+    );
+  });
+
+  it('shows a stored enabled SentinelOne entry as on (not hardcoded off)', () => {
+    render(
+      <SecurityAgentsTab
+        {...props}
+        existingLink={{
+          id: 'link-9',
+          featureType: 'security_agents',
+          featurePolicyId: null,
+          inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] },
+        }}
+      />,
+    );
+    expect((screen.getByTestId('security-agents-sentinelone-toggle') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('SentinelOne notes: Windows only, and the MSI must be uploaded first', () => {
+    render(<SecurityAgentsTab {...props} />);
+    expect(screen.getByTestId('security-agents-sentinelone-platform-windows')).toBeInTheDocument();
+    expect(screen.getByTestId('security-agents-sentinelone-platform-macos')).toHaveTextContent(/not supported/i);
+    expect(screen.getByTestId('security-agents-sentinelone-platform-linux')).toHaveTextContent(/not supported/i);
+    expect(screen.getByTestId('security-agents-sentinelone-msi-note')).toHaveTextContent(/upload the SentinelOne MSI.*Versions tab/i);
+  });
+
+  it('renders the binary-missing banner with a deep link to the package Versions tab', () => {
+    m.hook.error = 'SentinelOne cannot be enabled until its installer is uploaded';
+    m.hook.errorDetail = {
+      status: 400,
+      code: 'security_agents_binary_missing',
+      body: { code: 'security_agents_binary_missing', vendors: ['sentinelone'], setupPath: '/software#versions=cat-s1' },
+    };
+    render(<SecurityAgentsTab {...props} />);
+    expect(screen.getByTestId('security-agents-binary-missing')).toHaveTextContent(/SentinelOne/);
+    expect(screen.getByTestId('security-agents-binary-missing')).toHaveTextContent(/Versions tab/i);
+    const link = screen.getByTestId('security-agents-binary-missing-link');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/software#versions=cat-s1');
+    // Handled inline: the generic error banner is not shown as well.
+    expect(screen.queryByText('SentinelOne cannot be enabled until its installer is uploaded')).not.toBeInTheDocument();
+  });
+
+  it('the binary-missing deep link goes through the same off-site guard', () => {
+    m.hook.errorDetail = { status: 400, code: 'security_agents_binary_missing', body: { setupPath: '//evil.example/x' } };
+    render(<SecurityAgentsTab {...props} />);
+    expect(screen.getByTestId('security-agents-binary-missing-link')).toHaveAttribute('href', '/software');
+  });
+
+  it('the catalog-missing banner names the vendor the API refused (SentinelOne, not Huntress)', () => {
+    m.hook.errorDetail = {
+      status: 400,
+      code: 'security_agents_catalog_missing',
+      body: { vendors: ['sentinelone'], setupPath: '/integrations#sentinelone' },
+    };
+    render(<SecurityAgentsTab {...props} />);
+    expect(screen.getByTestId('security-agents-catalog-missing')).toHaveTextContent(/SentinelOne/);
+    expect(screen.getByTestId('security-agents-catalog-missing')).not.toHaveTextContent(/Huntress/);
+    expect(screen.getByTestId('security-agents-catalog-missing-link')).toHaveAttribute('href', '/integrations#sentinelone');
+  });
+
+  it.each(['controld', 'nextdns'])('does not allow %s to be enabled', async (vendor) => {
     render(<SecurityAgentsTab {...props} />);
     const toggle = screen.getByTestId(`security-agents-${vendor}-toggle`) as HTMLInputElement;
     expect(toggle.disabled).toBe(true);
@@ -86,7 +159,7 @@ describe('SecurityAgentsTab', () => {
     await waitFor(() => expect(m.save).toHaveBeenCalled());
     const payload = m.save.mock.calls[0][1] as { inlineSettings: { agents: Array<{ vendor: string; enabled: boolean }> } };
     expect(payload.inlineSettings.agents.some((a) => a.vendor === vendor && a.enabled)).toBe(false);
-    expect(screen.getAllByText(/coming soon/i).length).toBeGreaterThanOrEqual(3);
+    expect(screen.getAllByText(/coming soon/i)).toHaveLength(2);
   });
 
   it('preserves stored platforms and PATCHes the existing link on re-save', async () => {

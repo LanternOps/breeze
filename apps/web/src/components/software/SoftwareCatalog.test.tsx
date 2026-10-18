@@ -34,7 +34,9 @@ vi.mock('./DeploymentWizard', () => ({
     </div>
   ),
 }));
-vi.mock('./SoftwareVersionManager', () => ({ default: () => null }));
+vi.mock('./SoftwareVersionManager', () => ({
+  default: ({ catalogId }: { catalogId: string }) => <div data-testid="version-manager-probe">versions:{catalogId}</div>,
+}));
 vi.mock('./DeploymentList', () => ({
   default: (props: { onSelectDeployment?: (id: string) => void }) => (
     <div data-testid="deployment-list-probe">
@@ -442,6 +444,24 @@ describe('SoftwareCatalog deployments tab (hash-driven)', () => {
     expect(wizard).toHaveTextContent('devices:dev-a|dev-b');
     // Hash consumed so a refresh doesn't re-open the wizard.
     expect(window.location.hash).toBe('');
+  });
+
+  it('consumes #versions=<catalogId> (#6960 W04 deep link): opens that package on its Versions tab and clears the hash', async () => {
+    routeDeployments();
+    setHash('versions=cat-1');
+    render(<SoftwareCatalog />);
+
+    expect(await screen.findByTestId('version-manager-probe')).toHaveTextContent('versions:cat-1');
+    expect(window.location.hash).toBe('');
+  });
+
+  it('#versions=<unknown id> opens nothing and is cleared', async () => {
+    routeDeployments();
+    setHash('versions=cat-unknown');
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+    await waitFor(() => expect(window.location.hash).toBe(''));
+    expect(screen.queryByTestId('version-manager-probe')).not.toBeInTheDocument();
   });
 
   it('wizard "View deployment" closes the modal and jumps to that deployment', async () => {

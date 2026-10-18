@@ -1131,13 +1131,17 @@
         "platformWindows": "Windows: installed automatically.",
         "platformMacos": "macOS: requires MDM approval, so Breeze does not install it automatically. These devices show as not applicable.",
         "platformLinux": "Linux: not supported.",
-        "keysNotice": "Installs use the per-customer keys from the Huntress integration. Organizations that are not mapped in that integration are skipped and shown as not applicable, with no failed deployments. Turning a vendor off stops enforcement but never uninstalls the agent.",
+        "keysNotice": "Installs use the per-customer keys from the vendor's integration (Huntress organization keys, SentinelOne site tokens). Organizations that are not mapped in that integration are skipped and shown as not applicable, with no failed deployments. Turning a vendor off stops enforcement but never uninstalls the agent.",
         "closerWarning": "A configuration policy assigned closer to a device (site, group or device, or an inheriting child policy) that has its own Security Agents settings replaces these settings entirely for those devices. A vendor left out there is not enforced.",
         "partnerWideBadge": "Applies to all organizations",
         "noneEnabledNote": "No vendor is enabled: devices reached by this policy are opted out of every security agent.",
-        "catalogMissing": "Huntress is not set up for this partner yet. Connect the Huntress integration first, then save again.",
-        "catalogMissingLink": "Connect Huntress",
-        "executeRequired": "Turning on installs requires permission to run commands on devices, with MFA. Ask an administrator who has that permission to save this setting."
+        "catalogMissing": "{{vendors}} is not set up for this partner yet. Connect the integration first, then save again.",
+        "catalogMissingLink": "Connect the integration",
+        "executeRequired": "Turning on installs requires permission to run commands on devices, with MFA. Ask an administrator who has that permission to save this setting.",
+        "binaryMissing": "{{vendors}} cannot be turned on until its installer is uploaded. Upload the SentinelOne MSI to the built-in package's Versions tab first, then save again.",
+        "binaryMissingLink": "Open the Versions tab",
+        "platformMacosUnsupported": "macOS: not supported.",
+        "sentinelOneMsiNote": "Upload the SentinelOne MSI to the built-in SentinelOne package's Versions tab first. Breeze does not provide the installer, and SentinelOne cannot be turned on until it is uploaded."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Warranty alerting is opt-in: devices with no warranty policy assigned never alert. Thresholds below apply to fixed-term coverage only — active AppleCare subscriptions renew rather than expire, so their expiry alerts are always suppressed.",

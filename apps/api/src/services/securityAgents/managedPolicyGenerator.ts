@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   securityAgentsInlineSettingsSchema,
   type SecurityAgentsInlineSettings,
@@ -8,8 +8,6 @@ import { captureException } from '../sentry';
 import {
   configPolicyFeatureLinks,
   configurationPolicies,
-  organizations,
-  softwareCatalog,
   softwareComplianceStatus,
   softwarePolicies,
   softwarePolicyAudit,
@@ -18,6 +16,9 @@ import {
 } from '../../db/schema';
 import { getVendor, listVendors, type VendorKey } from './securityAgentVendors';
 import { SecurityAgentsLinkWriteError } from './securityAgentsLinkWrite';
+import { readOwnerCatalog, vendorRequiresUploadedBinary, type DbExecutor } from './managedPolicyOwnerCatalog';
+
+export { vendorRequiresUploadedBinary };
 
 /**
  * Generator for the software policy a `security_agents` feature link owns
@@ -38,6 +39,11 @@ import { SecurityAgentsLinkWriteError } from './securityAgentsLinkWrite';
  *    jobs queued under the old shape are refused at dispatch.
  *  - Only vendors that are enableable in the registry get a rule, so a stored
  *    blob can never arm a vendor whose install path is not wired.
+ *  - A vendor whose built-in package needs a partner-uploaded installer
+ *    (`BUILTIN_PACKAGES[provider].requiresBinaryUpload`, SentinelOne's MSI) gets
+ *    a rule only while the partner's package has a deployable version. The
+ *    write path refuses without one; the sweep drops the rule (enforcement
+ *    stops, nothing is installed with no binary) and reports it.
  *
  * Authorization lives with the callers, not here: this file is allowlisted in
  * the partner-wide and site-ceiling write-coverage contract tests on the
@@ -47,8 +53,6 @@ import { SecurityAgentsLinkWriteError } from './securityAgentsLinkWrite';
  * must gate the same way, or the allowlist reasons become false; the caller set
  * is pinned by managedPolicyGenerator.callers.contract.test.ts.
  */
-
-type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type ManagedConfigPolicy = {
   id: string;
@@ -73,16 +77,23 @@ const NAME_PREFIX = 'Security agents: ';
 const NAME_MAX = 200;
 
 export const SECURITY_AGENTS_CATALOG_MISSING_CODE = 'security_agents_catalog_missing' as const;
+export const SECURITY_AGENTS_BINARY_MISSING_CODE = 'security_agents_binary_missing' as const;
 
 /** Pure: the row the link's settings ask for. */
 export function desiredManagedPolicy(input: {
   configPolicy: ManagedConfigPolicy;
   settings: SecurityAgentsInlineSettings;
   catalogIdByVendor: ReadonlyMap<VendorKey, string>;
-}): { row: ManagedPolicyRow; vendors: VendorKey[]; missingCatalog: VendorKey[] } {
+  /**
+   * Vendors whose catalog package has a deployable partner-uploaded installer.
+   * Only consulted for vendors that need one; absent means none has (fail closed).
+   */
+  uploadedBinaryVendors?: ReadonlySet<VendorKey>;
+}): { row: ManagedPolicyRow; vendors: VendorKey[]; missingCatalog: VendorKey[]; missingBinary: VendorKey[] } {
   const enabled = new Set(input.settings.agents.filter((agent) => agent.enabled).map((agent) => agent.vendor));
   const vendors: VendorKey[] = [];
   const missingCatalog: VendorKey[] = [];
+  const missingBinary: VendorKey[] = [];
   const software: ManagedPolicyRow['rules']['software'] = [];
   // Registry order, so the rule list is stable whatever order the link lists vendors in.
   for (const vendor of listVendors()) {
@@ -90,6 +101,10 @@ export function desiredManagedPolicy(input: {
     const catalogId = input.catalogIdByVendor.get(vendor.key);
     if (!catalogId) {
       missingCatalog.push(vendor.key);
+      continue;
+    }
+    if (vendorRequiresUploadedBinary(vendor.key) && !input.uploadedBinaryVendors?.has(vendor.key)) {
+      missingBinary.push(vendor.key);
       continue;
     }
     vendors.push(vendor.key);
@@ -115,6 +130,7 @@ export function desiredManagedPolicy(input: {
     },
     vendors,
     missingCatalog,
+    missingBinary,
   };
 }
 
@@ -178,8 +194,13 @@ export type ManagedPolicySyncResult = {
   policyId: string | null;
   action: ManagedPolicySyncPlan['action'];
   vendors: VendorKey[];
-  /** Enabled vendors left without a rule because the partner has no catalog package (skip mode only). */
+  /**
+   * Enabled vendors left without a rule (skip mode only): the partner has no
+   * catalog package, or the package has no deployable uploaded installer.
+   */
   skippedVendors: VendorKey[];
+  /** The subset of `skippedVendors` whose package exists but has no deployable uploaded installer. */
+  missingBinaryVendors: VendorKey[];
 };
 
 /**
@@ -187,8 +208,9 @@ export type ManagedPolicySyncResult = {
  * caller's executor (the link-write transaction, or the sweep's).
  *
  * `onMissingCatalog: 'refuse'` (the write path) throws a 400
- * SecurityAgentsLinkWriteError naming where to connect the integration, so an
- * enable never silently produces nothing. `'skip'` (the sweep) leaves the
+ * SecurityAgentsLinkWriteError naming where to fix the prerequisite (connect
+ * the integration, or upload the installer to the package's Versions tab), so
+ * an enable never silently produces nothing. `'skip'` (the sweep) leaves the
  * vendor without a rule and reports it.
  */
 export async function syncManagedSoftwarePolicy(
@@ -221,8 +243,8 @@ export async function syncManagedSoftwarePolicy(
     .limit(1);
   if (!configPolicy) throw new Error(`Configuration policy ${link.configPolicyId} not found for security agents link ${link.id}`);
 
-  const catalogIdByVendor = await readOwnerCatalog(executor, configPolicy, settings);
-  const desired = desiredManagedPolicy({ configPolicy, settings, catalogIdByVendor });
+  const { catalogIdByVendor, uploadedBinaryVendors } = await readOwnerCatalog(executor, configPolicy, settings);
+  const desired = desiredManagedPolicy({ configPolicy, settings, catalogIdByVendor, uploadedBinaryVendors });
 
   if (desired.missingCatalog.length > 0 && options.onMissingCatalog !== 'skip') {
     const first = getVendor(desired.missingCatalog[0]!);
@@ -233,6 +255,18 @@ export async function syncManagedSoftwarePolicy(
         code: SECURITY_AGENTS_CATALOG_MISSING_CODE,
         vendors: desired.missingCatalog,
         setupPath: first.setupPath,
+      },
+    });
+  }
+  if (desired.missingBinary.length > 0 && options.onMissingCatalog !== 'skip') {
+    const firstCatalogId = catalogIdByVendor.get(desired.missingBinary[0]!);
+    throw new SecurityAgentsLinkWriteError({
+      status: 400,
+      body: {
+        error: `${desired.missingBinary.map((key) => getVendor(key).label).join(', ')} cannot be enabled until its installer is uploaded to the built-in package's Versions tab.`,
+        code: SECURITY_AGENTS_BINARY_MISSING_CODE,
+        vendors: desired.missingBinary,
+        setupPath: firstCatalogId ? `/software#versions=${firstCatalogId}` : '/software',
       },
     });
   }
@@ -256,7 +290,12 @@ export async function syncManagedSoftwarePolicy(
     .for('update');
 
   const plan = planManagedPolicySync(existing ? (existing as ExistingManagedRow) : null, desired.row);
-  const base = { vendors: desired.vendors, skippedVendors: desired.missingCatalog, action: plan.action };
+  const base = {
+    vendors: desired.vendors,
+    skippedVendors: [...desired.missingCatalog, ...desired.missingBinary],
+    missingBinaryVendors: desired.missingBinary,
+    action: plan.action,
+  };
 
   if (plan.action === 'none') return { ...base, policyId: existing?.id ?? null };
 
@@ -308,55 +347,6 @@ export async function syncManagedSoftwarePolicy(
     },
   });
   return { ...base, policyId: existing!.id };
-}
-
-/**
- * The partner's built-in catalog package per enabled vendor. The owner's
- * partner: the config policy's own for a partner-wide policy, its org's for an
- * org policy. Built-in packages are partner rows that every org of the partner
- * may read (software_catalog SELECT branch for integration packages).
- */
-async function readOwnerCatalog(
-  executor: DbExecutor,
-  configPolicy: ManagedConfigPolicy,
-  settings: SecurityAgentsInlineSettings,
-): Promise<Map<VendorKey, string>> {
-  const providers = settings.agents
-    .filter((agent) => agent.enabled)
-    .map((agent) => getVendor(agent.vendor).integrationProvider)
-    .filter((provider): provider is 'huntress' | 'sentinelone' => provider !== null);
-  const result = new Map<VendorKey, string>();
-  if (providers.length === 0) return result;
-
-  let partnerId = configPolicy.partnerId;
-  if (configPolicy.orgId) {
-    const [org] = await executor
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, configPolicy.orgId))
-      .limit(1);
-    partnerId = org?.partnerId ?? null;
-  }
-  if (!partnerId) return result;
-
-  const rows = await executor
-    .select({ id: softwareCatalog.id, integrationProvider: softwareCatalog.integrationProvider, createdAt: softwareCatalog.createdAt })
-    .from(softwareCatalog)
-    .where(and(
-      eq(softwareCatalog.partnerId, partnerId),
-      isNull(softwareCatalog.orgId),
-      isNull(softwareCatalog.deletedAt),
-      inArray(softwareCatalog.integrationProvider, providers),
-    ));
-  // Oldest first: ensureBuiltinPackage reuses the first row it finds, so the
-  // oldest is the one integration connects keep pointing at.
-  rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  for (const vendor of listVendors()) {
-    if (!vendor.integrationProvider || result.has(vendor.key)) continue;
-    const row = rows.find((candidate) => candidate.integrationProvider === vendor.integrationProvider);
-    if (row) result.set(vendor.key, row.id);
-  }
-  return result;
 }
 
 /**
@@ -433,18 +423,32 @@ export async function repairManagedSoftwarePolicies(): Promise<{ links: number; 
           action: result.action,
         });
       }
-      if (result.skippedVendors.length > 0) {
-        // Enforcement for these vendors has stopped (their rule is gone): an
-        // operator needs to see it, not only a log line.
+      // Enforcement for these vendors has stopped (their rule is gone): an
+      // operator needs to see it, not only a log line.
+      const missingBinary = new Set(result.missingBinaryVendors);
+      const missingCatalog = result.skippedVendors.filter((vendor) => !missingBinary.has(vendor));
+      if (missingCatalog.length > 0) {
         console.warn('[securityAgents] Enabled vendor has no catalog package; no rule generated', {
           linkId: id,
-          vendors: result.skippedVendors,
+          vendors: missingCatalog,
         });
         captureException(
           new Error('Security agents: enabled vendor has no catalog package; its rule was not generated'),
           undefined,
-          { area: 'security_agents_repair', vendors: result.skippedVendors.join(',') },
+          { area: 'security_agents_repair', vendors: missingCatalog.join(',') },
           { fingerprint: ['security_agents_repair', 'catalog_missing'] },
+        );
+      }
+      if (result.missingBinaryVendors.length > 0) {
+        console.warn('[securityAgents] Enabled vendor has no deployable uploaded installer; no rule generated', {
+          linkId: id,
+          vendors: result.missingBinaryVendors,
+        });
+        captureException(
+          new Error('Security agents: enabled vendor has no deployable uploaded installer; its rule was not generated'),
+          undefined,
+          { area: 'security_agents_repair', vendors: result.missingBinaryVendors.join(',') },
+          { fingerprint: ['security_agents_repair', 'binary_missing'] },
         );
       }
     } catch (error) {

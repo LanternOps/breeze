@@ -1131,13 +1131,17 @@
         "platformWindows": "Windows: installato automaticamente.",
         "platformMacos": "macOS: richiede l’approvazione MDM, quindi Breeze non lo installa automaticamente. Questi dispositivi risultano non applicabili.",
         "platformLinux": "Linux: non supportato.",
-        "keysNotice": "Le installazioni usano le chiavi per cliente dell’integrazione Huntress. Le organizzazioni non associate in tale integrazione vengono saltate e risultano non applicabili, senza distribuzioni non riuscite. Disattivare un fornitore interrompe l’applicazione ma non disinstalla mai l’agente.",
+        "keysNotice": "Le installazioni usano le chiavi per cliente dell’integrazione del fornitore (chiavi di organizzazione Huntress, token di sito SentinelOne). Le organizzazioni non mappate in quell’integrazione vengono saltate e mostrate come non applicabili, senza distribuzioni non riuscite. Disattivare un fornitore interrompe l’applicazione, ma non disinstalla mai l’agente.",
         "closerWarning": "Una policy di configurazione assegnata più vicino al dispositivo (sito, gruppo o dispositivo, oppure una policy figlia che eredita) con impostazioni proprie per gli agenti di sicurezza sostituisce interamente queste impostazioni per quei dispositivi. Un fornitore omesso lì non viene applicato.",
         "partnerWideBadge": "Si applica a tutte le organizzazioni",
         "noneEnabledNote": "Nessun fornitore è abilitato: i dispositivi raggiunti da questa policy sono esclusi da tutti gli agenti di sicurezza.",
-        "catalogMissing": "Huntress non è ancora configurato per questo partner. Collega prima l’integrazione Huntress, quindi salva di nuovo.",
-        "catalogMissingLink": "Collega Huntress",
-        "executeRequired": "Per attivare le installazioni serve l’autorizzazione a eseguire comandi sui dispositivi, con MFA. Chiedi a un amministratore con tale autorizzazione di salvare questa impostazione."
+        "catalogMissing": "{{vendors}} non è ancora configurato per questo partner. Collega prima l’integrazione, quindi salva di nuovo.",
+        "catalogMissingLink": "Collega l’integrazione",
+        "executeRequired": "Per attivare le installazioni serve l’autorizzazione a eseguire comandi sui dispositivi, con MFA. Chiedi a un amministratore con tale autorizzazione di salvare questa impostazione.",
+        "binaryMissing": "{{vendors}} non può essere attivato finché il suo programma di installazione non viene caricato. Carica prima l’MSI di SentinelOne nella scheda Versioni del pacchetto integrato, quindi salva di nuovo.",
+        "binaryMissingLink": "Apri la scheda Versioni",
+        "platformMacosUnsupported": "macOS: non supportato.",
+        "sentinelOneMsiNote": "Carica prima l’MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non viene caricato."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Gli avvisi di garanzia sono opt-in: i dispositivi senza un criterio di garanzia assegnato non generano mai avvisi. Le soglie sotto si applicano solo alle coperture a termine fisso: gli abbonamenti AppleCare attivi si rinnovano invece di scadere, quindi i relativi avvisi di scadenza vengono sempre soppressi.",

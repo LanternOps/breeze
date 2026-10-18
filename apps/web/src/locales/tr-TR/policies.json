@@ -1131,13 +1131,17 @@
         "platformWindows": "Windows: otomatik olarak yüklenir.",
         "platformMacos": "macOS: MDM onayı gerektirir, bu nedenle Breeze otomatik olarak yüklemez. Bu cihazlar uygulanamaz olarak gösterilir.",
         "platformLinux": "Linux: desteklenmiyor.",
-        "keysNotice": "Yüklemeler, Huntress entegrasyonundaki müşteriye özel anahtarları kullanır. Bu entegrasyonda eşlenmemiş kuruluşlar atlanır ve başarısız dağıtım olmadan uygulanamaz olarak gösterilir. Bir sağlayıcıyı kapatmak uygulamayı durdurur ancak aracıyı asla kaldırmaz.",
+        "keysNotice": "Yüklemeler, sağlayıcı entegrasyonundaki müşteriye özel anahtarları kullanır (Huntress kuruluş anahtarları, SentinelOne site belirteçleri). Bu entegrasyonda eşlenmemiş kuruluşlar atlanır ve başarısız dağıtım olmadan uygulanamaz olarak gösterilir. Bir sağlayıcıyı kapatmak uygulamayı durdurur ancak aracıyı asla kaldırmaz.",
         "closerWarning": "Cihaza daha yakın atanmış (site, grup veya cihaz ya da miras alan alt politika) ve kendi Güvenlik Aracıları ayarlarına sahip bir yapılandırma politikası, bu cihazlar için bu ayarların yerine tamamen geçer. Orada atlanan bir sağlayıcı uygulanmaz.",
         "partnerWideBadge": "Tüm kuruluşlara uygulanır",
         "noneEnabledNote": "Hiçbir sağlayıcı etkin değil: bu politikanın eriştiği cihazlar tüm güvenlik aracılarının dışında tutulur.",
-        "catalogMissing": "Huntress bu iş ortağı için henüz kurulmadı. Önce Huntress entegrasyonunu bağlayın, ardından tekrar kaydedin.",
-        "catalogMissingLink": "Huntress’i bağla",
-        "executeRequired": "Yüklemeleri açmak için cihazlarda komut çalıştırma izni (MFA ile) gerekir. Bu izne sahip bir yöneticiden bu ayarı kaydetmesini isteyin."
+        "catalogMissing": "Bu iş ortağı için şu sağlayıcı henüz kurulmadı: {{vendors}}. Önce entegrasyonu bağlayın, ardından tekrar kaydedin.",
+        "catalogMissingLink": "Entegrasyonu bağla",
+        "executeRequired": "Yüklemeleri açmak için cihazlarda komut çalıştırma izni (MFA ile) gerekir. Bu izne sahip bir yöneticiden bu ayarı kaydetmesini isteyin.",
+        "binaryMissing": "Yükleyici karşıya yüklenene kadar şu sağlayıcı açılamaz: {{vendors}}. Önce SentinelOne MSI dosyasını yerleşik paketin Sürümler sekmesine yükleyin, ardından tekrar kaydedin.",
+        "binaryMissingLink": "Sürümler sekmesini aç",
+        "platformMacosUnsupported": "macOS: desteklenmiyor.",
+        "sentinelOneMsiNote": "Önce SentinelOne MSI dosyasını yerleşik SentinelOne paketinin Sürümler sekmesine yükleyin. Breeze yükleyiciyi sağlamaz ve dosya yüklenene kadar SentinelOne açılamaz."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Garanti uyarısı isteğe bağlıdır: herhangi bir garanti politikası atanmamış cihazlar asla uyarı vermez. Aşağıdaki eşikler yalnızca sabit vadeli kapsam için geçerlidir; aktif AppleCare abonelikler sona ermek yerine yenilenir, dolayısıyla sona erme uyarıları her zaman bastırılır.",

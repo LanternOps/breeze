@@ -1,13 +1,37 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 
-// Mock the DB layer so this is a pure unit test of the substitution + guard logic.
+// Mock the DB layer so this is a pure unit test of the substitution + guard
+// logic. Each db.select() takes the next queued result set and records the
+// table it read, so a test can prove which vendor's tables were touched.
+const { queued, tablesRead, decrypt } = vi.hoisted(() => ({
+  queued: [] as unknown[][],
+  tablesRead: [] as unknown[],
+  decrypt: vi.fn(),
+}));
 vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
-  db: {},
+  db: {
+    select: () => {
+      const rows = queued.shift() ?? [];
+      const c: Record<string, unknown> = {};
+      c.from = (table: unknown) => { tablesRead.push(table); return c; };
+      c.where = () => c;
+      c.limit = () => Promise.resolve(rows);
+      return c;
+    },
+  },
 }));
+vi.mock('./secretCrypto', () => ({ decryptForColumn: (...args: unknown[]) => decrypt(...args) }));
 
-import { substituteHuntress, substituteS1 } from './edrInstallerResolver';
+import { huntressIntegrations, huntressOrgMappings } from '../db/schema';
+import { resolveEdrInstaller, substituteHuntress, substituteS1 } from './edrInstallerResolver';
+
+beforeEach(() => {
+  queued.length = 0;
+  tablesRead.length = 0;
+  decrypt.mockReset();
+});
 
 describe('substituteHuntress', () => {
   it('replaces account + org key placeholders', () => {
@@ -44,5 +68,39 @@ describe('resolveEdrInstaller provider dispatch (#6960)', () => {
       silentInstallArgsTemplate: '/S',
     });
     expect(result).toEqual({ error: expect.stringMatching(/unsupported/i) });
+  });
+});
+
+describe('resolveEdrInstaller — SentinelOne refusals (#6960 W04)', () => {
+  const ORG = '00000000-0000-4000-8000-0000000000a1';
+  const TPL = { downloadUrlTemplate: null, silentInstallArgsTemplate: 'SITE_TOKEN={s1_site_token} /q /NORESTART' };
+  const resolveS1 = () => resolveEdrInstaller({ provider: 'sentinelone', orgId: ORG, ...TPL });
+  const MAPPING = { tokenEncrypted: '<encrypted-site-token>', integrationId: 'int-1' };
+
+  it.each<[string, unknown[][], string]>([
+    ['the org has no site mapping', [[]], 'Organization not mapped to SentinelOne'],
+    ['the integration is disconnected', [[MAPPING], [{ isActive: false }]], 'SentinelOne integration is disconnected'],
+    ['the integration row is gone', [[MAPPING], []], 'SentinelOne integration is disconnected'],
+    ['the site token is empty', [[{ ...MAPPING, tokenEncrypted: '' }], [{ isActive: true }]], 'SentinelOne site token not synced — run Sync in Integrations'],
+    ['the site token is NULL', [[{ ...MAPPING, tokenEncrypted: null }], [{ isActive: true }]], 'SentinelOne site token not synced — run Sync in Integrations'],
+  ])('refuses when %s', async (_name, rows, message) => {
+    queued.push(...rows);
+    await expect(resolveS1()).resolves.toEqual({ error: message });
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
+  it('refuses an undecryptable site token without throwing', async () => {
+    queued.push([MAPPING], [{ isActive: true }]);
+    decrypt.mockImplementation(() => { throw new Error('bad ciphertext'); });
+    await expect(resolveS1()).resolves.toEqual({ error: 'SentinelOne site token could not be decrypted — reconnect the integration' });
+  });
+
+  it('decrypts the site token with the s1_org_mappings column binding and never reads Huntress tables', async () => {
+    queued.push([MAPPING], [{ isActive: true }]);
+    decrypt.mockReturnValue('<site-token>');
+    await expect(resolveS1()).resolves.toEqual({ downloadUrl: null, silentInstallArgs: 'SITE_TOKEN=<site-token> /q /NORESTART' });
+    expect(decrypt).toHaveBeenCalledWith('s1_org_mappings', 'registration_token', '<encrypted-site-token>');
+    expect(tablesRead).not.toContain(huntressOrgMappings);
+    expect(tablesRead).not.toContain(huntressIntegrations);
   });
 });

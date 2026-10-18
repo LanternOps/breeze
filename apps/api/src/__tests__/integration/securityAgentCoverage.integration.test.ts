@@ -31,19 +31,25 @@ import {
   alerts,
   configPolicyAssignments,
   configurationPolicies,
+  deviceCommands,
   devices,
   huntressAgents,
   huntressIntegrations,
   huntressOrgMappings,
+  s1Agents,
+  s1Integrations,
+  s1OrgMappings,
   securityAgentDeviceStatus,
   softwareComplianceStatus,
   softwareDeployments,
   softwarePolicies,
+  softwareVersions,
 } from '../../db/schema';
 import { encryptSecret } from '../../services/secretCrypto';
 import { ensureBuiltinPackage } from '../../services/builtinDeploymentPackages';
 import { addFeatureLink } from '../../services/configurationPolicy';
 import { processCheckPolicy } from '../../jobs/softwareComplianceWorker';
+import { processRemediateDeviceInstall } from '../../jobs/softwareRemediationWorker';
 import {
   listCoverageOrgsForPartner,
   listCoveragePartners,
@@ -532,5 +538,259 @@ describe('security agent coverage — live Postgres (#6960 W03)', () => {
     expect((await rowFor(f.dev.a))?.state).toBe('mismatched_org');
     expect(await coverageAlerts(f.dev.a, 'active')).toHaveLength(1);
     warn.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6960 W04 — SentinelOne. Same partner-wide fan-out shape, S1 tables:
+// partner P with an active, freshly synced S1 integration and the MSI uploaded
+//   org A — site mapped, registration token present → dA pending, one deployment
+//   org B — site mapped, NO token                  → dB not_applicable / org_key_missing
+//   org C — no site mapped                         → dC not_applicable / org_not_mapped
+// and partner Q (org Z / device dZ) untouched. Placeholder secrets only.
+// ---------------------------------------------------------------------------
+
+const S1_ENABLED = { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] };
+
+async function seedS1() {
+  const p = await createPartner();
+  const q = await createPartner();
+  const orgs = {
+    a: await createOrganization({ partnerId: p.id }),
+    b: await createOrganization({ partnerId: p.id }),
+    c: await createOrganization({ partnerId: p.id }),
+    z: await createOrganization({ partnerId: q.id }),
+  };
+  const dev: Record<'a' | 'b' | 'c' | 'z', string> = { a: '', b: '', c: '', z: '' };
+  const host: Record<'a' | 'b' | 'c' | 'z', string> = { a: '', b: '', c: '', z: '' };
+  for (const key of ['a', 'b', 'c', 'z'] as const) {
+    const site = await createSite({ orgId: orgs[key].id });
+    host[key] = `s1cov-${key}-${orgs[key].id.slice(0, 8)}`;
+    dev[key] = (await createDevice({ orgId: orgs[key].id, siteId: site.id, hostname: host[key] })).id;
+  }
+
+  return withSystemDbAccessContext(async () => {
+    const [integration] = await db.insert(s1Integrations).values({
+      partnerId: p.id,
+      name: 'SentinelOne (test)',
+      apiTokenEncrypted: encryptSecret('<s1-api-token>', { aad: 's1_integrations.api_token_encrypted' })!,
+      managementUrl: 'https://<s1-mgmt-url>.example.invalid',
+      isActive: true,
+      lastSyncAt: new Date(),
+    }).returning({ id: s1Integrations.id });
+    await db.insert(s1OrgMappings).values([
+      {
+        integrationId: integration!.id, partnerId: p.id, s1SiteId: `site-a-${orgs.a.id.slice(0, 8)}`, orgId: orgs.a.id,
+        registrationToken: encryptSecret('<site-token>', { aad: 's1_org_mappings.registration_token' })!,
+      },
+      { integrationId: integration!.id, partnerId: p.id, s1SiteId: `site-b-${orgs.b.id.slice(0, 8)}`, orgId: orgs.b.id, registrationToken: null },
+    ]);
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'sentinelone', partnerId: p.id });
+    await db.insert(softwareVersions).values({
+      catalogId,
+      version: '1.0.0',
+      // A stored URL rather than an uploaded object, so dispatch completes
+      // without S3 in the test stack. Placeholder host.
+      downloadUrl: 'https://downloads.example.invalid/placeholder-sentinelone.msi',
+      fileType: 'msi',
+      originalFileName: 'placeholder-sentinelone.msi',
+      supportedOs: ['windows'],
+      silentInstallArgs: 'SITE_TOKEN={s1_site_token} /q /NORESTART',
+      isLatest: true,
+    });
+
+    const [cp] = await db
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId: p.id, name: 'Partner-wide SentinelOne', status: 'active' })
+      .returning({ id: configurationPolicies.id });
+    await db.insert(configPolicyAssignments).values({ configPolicyId: cp!.id, level: 'partner', targetId: p.id });
+    const link = await addFeatureLink(cp!.id, 'security_agents', null, S1_ENABLED, undefined, undefined, {
+      securityAgentsArmAuthorized: true,
+    });
+    const [policy] = await db
+      .select({
+        id: softwarePolicies.id,
+        orgId: softwarePolicies.orgId,
+        partnerId: softwarePolicies.partnerId,
+        approvalGeneration: softwarePolicies.approvalGeneration,
+      })
+      .from(softwarePolicies)
+      .where(eq(softwarePolicies.managedByLinkId, link!.id));
+    return { p, q, orgs, dev, host, catalogId, integrationId: integration!.id, policy: policy! };
+  });
+}
+
+type S1Fixture = Awaited<ReturnType<typeof seedS1>>;
+
+async function addS1Agent(f: S1Fixture, values: { orgId: string; deviceId?: string | null; computerName?: string | null; status?: string }) {
+  const [row] = await withSystemDbAccessContext(() =>
+    db.insert(s1Agents).values({
+      orgId: values.orgId,
+      integrationId: f.integrationId,
+      s1AgentId: `s1-agent-${Math.random().toString(36).slice(2)}`,
+      deviceId: values.deviceId ?? null,
+      status: values.status ?? 'online',
+      metadata: { computerName: values.computerName ?? null },
+    }).returning({ id: s1Agents.id }),
+  );
+  return row!.id;
+}
+
+async function s1RowFor(deviceId: string) {
+  const [row] = await withSystemDbAccessContext(() =>
+    db.select().from(securityAgentDeviceStatus)
+      .where(and(eq(securityAgentDeviceStatus.deviceId, deviceId), eq(securityAgentDeviceStatus.vendor, 'sentinelone'))),
+  );
+  return row;
+}
+
+const s1CompliancePass = (f: S1Fixture) =>
+  withSystemDbAccessContext(() => processCheckPolicy({ type: 'check-policy', policyId: f.policy.id }));
+
+async function setS1Installed(f: S1Fixture, deviceId: string) {
+  await withSystemDbAccessContext(() =>
+    db.update(softwareComplianceStatus)
+      .set({ status: 'compliant', violations: [], installRemediationStatus: 'none' })
+      .where(and(eq(softwareComplianceStatus.policyId, f.policy.id), eq(softwareComplianceStatus.deviceId, deviceId))),
+  );
+}
+
+function s1InstallJob(f: S1Fixture, deviceId: string) {
+  return {
+    type: 'install-remediate-device' as const,
+    policyId: f.policy.id,
+    deviceId,
+    catalogIds: [f.catalogId],
+    generation: f.policy.approvalGeneration,
+    attempt: 1,
+  };
+}
+
+async function forceS1Missing(f: S1Fixture, deviceId: string) {
+  await withSystemDbAccessContext(() =>
+    db.update(softwareComplianceStatus)
+      .set({
+        status: 'violation',
+        violations: [{ type: 'missing', rule: { name: 'Sentinel Agent*', catalogId: f.catalogId }, severity: 'high', detectedAt: new Date().toISOString() }],
+        installRemediationStatus: 'pending',
+      })
+      .where(and(eq(softwareComplianceStatus.policyId, f.policy.id), eq(softwareComplianceStatus.deviceId, deviceId))),
+  );
+}
+
+const deploymentsIn = (orgId: string) => withSystemDbAccessContext(() =>
+  db.select({ id: softwareDeployments.id }).from(softwareDeployments).where(eq(softwareDeployments.orgId, orgId)),
+);
+
+describe('security agent coverage — SentinelOne on live Postgres (#6960 W04)', () => {
+  it('a partner-wide S1 link generates a PARTNER-owned policy (org_id NULL) with the S1 rule', async () => {
+    const f = await seedS1();
+    expect(f.policy).toMatchObject({ orgId: null, partnerId: f.p.id });
+  });
+
+  it("status rows land under each DEVICE's org with the readiness reason; one deployment for the ready org, none for the others", async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ orgId: f.orgs.a.id, vendor: 'sentinelone', state: 'pending', reasonCode: null, policyId: f.policy.id });
+    expect(await s1RowFor(f.dev.b)).toMatchObject({ orgId: f.orgs.b.id, state: 'not_applicable', reasonCode: 'org_key_missing' });
+    expect(await s1RowFor(f.dev.c)).toMatchObject({ orgId: f.orgs.c.id, state: 'not_applicable', reasonCode: 'org_not_mapped' });
+    expect(await s1RowFor(f.dev.z)).toBeUndefined();
+    expect((await statusRows()).some((r) => r.orgId === f.orgs.z.id)).toBe(false);
+
+    // The install job: the ready org queues exactly one deployment whose
+    // command carries ITS site token; the unready orgs queue none even with a
+    // (forced) cached missing violation.
+    const ready = await processRemediateDeviceInstall(s1InstallJob(f, f.dev.a));
+    expect(ready).toMatchObject({ deploymentsCreated: 1, errors: 0 });
+    expect(await deploymentsIn(f.orgs.a.id)).toHaveLength(1);
+    const commands = await withSystemDbAccessContext(() =>
+      db.select({ payload: deviceCommands.payload }).from(deviceCommands).where(eq(deviceCommands.deviceId, f.dev.a)),
+    );
+    expect(JSON.stringify(commands.map((c) => c.payload))).toContain('SITE_TOKEN=<site-token>');
+
+    for (const key of ['b', 'c'] as const) {
+      await forceS1Missing(f, f.dev[key]);
+      const notReady = await processRemediateDeviceInstall(s1InstallJob(f, f.dev[key]));
+      expect(notReady, key).toMatchObject({ deploymentsCreated: 0 });
+      expect(await deploymentsIn(f.orgs[key].id)).toEqual([]);
+    }
+    expect(await deploymentsIn(f.orgs.z.id)).toEqual([]);
+  });
+
+  it('an org-scoped session sees only its own org S1 rows; the other partner sees none', async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+    const visible = await withDbAccessContext(orgContext(f.orgs.b.id, f.p.id), () =>
+      db.select({ orgId: securityAgentDeviceStatus.orgId }).from(securityAgentDeviceStatus),
+    );
+    expect(visible.length).toBeGreaterThan(0);
+    expect(new Set(visible.map((r) => r.orgId))).toEqual(new Set([f.orgs.b.id]));
+    const otherPartner = await withDbAccessContext(orgContext(f.orgs.z.id, f.q.id), () =>
+      db.select({ id: securityAgentDeviceStatus.id }).from(securityAgentDeviceStatus),
+    );
+    expect(otherPartner).toEqual([]);
+  });
+
+  it('reconcile through the s1_agents source: covered, then vendor_offline when S1 reports it offline', async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+    const agentId = await addS1Agent(f, { orgId: f.orgs.a.id, deviceId: f.dev.a, computerName: f.host.a });
+
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ state: 'covered', vendorEndpointId: agentId });
+
+    await withSystemDbAccessContext(() => db.update(s1Agents).set({ status: 'offline' }).where(eq(s1Agents.id, agentId)));
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ state: 'vendor_offline' });
+    // not_applicable rows are never reconciled.
+    await reconcileOrgCoverage(f.orgs.b.id);
+    expect(await s1RowFor(f.dev.b)).toMatchObject({ state: 'not_applicable', reasonCode: 'org_key_missing' });
+  });
+
+  it("mismatched_org: an agent under org B's site carrying dA's computerName alerts and redeploys nothing", async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+    await setS1Installed(f, f.dev.a);
+    const before = await deploymentsIn(f.orgs.a.id);
+    await addS1Agent(f, { orgId: f.orgs.b.id, deviceId: null, computerName: f.host.a.toUpperCase() });
+
+    const result = await reconcileOrgCoverage(f.orgs.a.id);
+    expect(result.alertsRaised).toBe(1);
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ state: 'mismatched_org', reasonCode: 'vendor_org_mismatch' });
+    expect(await deploymentsIn(f.orgs.a.id)).toHaveLength(before.length);
+  });
+
+  it('an unlinked in-org S1 agent no Breeze device matches is vendor_only', async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+    const endpointId = await addS1Agent(f, { orgId: f.orgs.a.id, deviceId: null, computerName: 's1-ghost-not-enrolled' });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    const vendorOnly = (await statusRows()).filter((r) => r.vendor === 'sentinelone' && r.state === 'vendor_only' && r.orgId === f.orgs.a.id);
+    expect(vendorOnly).toEqual([expect.objectContaining({ vendorEndpointId: endpointId, deviceId: null })]);
+  });
+
+  it('a stale S1 sync makes the view unavailable: covered stays covered', async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+    await addS1Agent(f, { orgId: f.orgs.a.id, deviceId: f.dev.a, computerName: f.host.a });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect((await s1RowFor(f.dev.a))?.state).toBe('covered');
+
+    await withSystemDbAccessContext(() =>
+      db.update(s1Integrations).set({ lastSyncAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) }).where(eq(s1Integrations.id, f.integrationId)),
+    );
+    // The agent row is gone too: a fresh-but-empty view would downgrade dA.
+    await withSystemDbAccessContext(() => db.delete(s1Agents).where(eq(s1Agents.integrationId, f.integrationId)));
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect((await s1RowFor(f.dev.a))?.state).toBe('covered');
+  });
+
+  it('an installed device whose agent sits under an UNMAPPED site has no s1_agents row and stays pending', async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+    await setS1Installed(f, f.dev.a);
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ state: 'pending', reasonCode: 'awaiting_vendor_report' });
   });
 });

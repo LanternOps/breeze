@@ -78,6 +78,10 @@ const needsInstallerUpload = (item: SoftwareItem): boolean =>
  *                            wizard with those devices pre-selected, then the
  *                            hash is cleared via replaceState so a refresh
  *                            doesn't re-open the wizard.
+ *   #versions=<catalogId>  → consumed once the catalog has loaded (#6960):
+ *                            opens that package on its Versions tab (the
+ *                            Security Agents "upload the SentinelOne MSI" deep
+ *                            link), then the hash is cleared the same way.
  */
 type CatalogView =
   | { tab: "catalog" }
@@ -210,6 +214,25 @@ export default function SoftwareCatalog() {
     window.addEventListener("hashchange", consumeDeployHash);
     return () => window.removeEventListener("hashchange", consumeDeployHash);
   }, []);
+  // #6960: consume #versions=<catalogId> once the catalog is loaded — open that
+  // package on its Versions tab (an unknown id opens nothing), then clear the
+  // hash so a refresh doesn't re-open it.
+  useEffect(() => {
+    if (loading) return;
+    const consumeVersionsHash = () => {
+      const raw = window.location.hash.replace(/^#/, "");
+      if (!raw.startsWith("versions=")) return;
+      const id = raw.slice("versions=".length);
+      replaceUrl(window.location.pathname + window.location.search);
+      const item = catalogItems.find((candidate) => candidate.id === id);
+      if (!item) return;
+      setDetailTab("versions");
+      setSelectedSoftware(item);
+    };
+    consumeVersionsHash();
+    window.addEventListener("hashchange", consumeVersionsHash);
+    return () => window.removeEventListener("hashchange", consumeVersionsHash);
+  }, [loading, catalogItems]);
   // Summary cards for the Deployments tab. Re-runs whenever the list view
   // becomes active again (e.g. returning from a deployment's detail), so the
   // counts stay fresh without a manual refresh control.
