@@ -1,7 +1,7 @@
 # Dashboard click-through contract and Sites visibility
 
 **Date:** 2026-10-18
-**Status:** Draft. Awaiting Todd's decisions (§8).
+**Status:** Draft. Awaiting Todd's decisions (§7).
 **Issues:** #6721 (anchor), #6720 (co-anchor). Both were filed by Discord triage, and the reporters do not read GitHub.
 This spec does not depend on asking them anything. Every ambiguity is settled in the text or listed as an Open
 Decision.
@@ -168,27 +168,29 @@ remembered class (`resolveDeviceClass`), which may be "all" or "network".
 |---|---|---|---|---|
 | KPI **Total devices** | `/devices` | `/devices#deviceClass=agent` | count | W1 |
 | KPI **Online** | `/devices?status=online` (broken) | `/devices#deviceClass=agent&filtersV2=<status equals online>` | count | W1 |
-| KPI **Critical** (`bySeverity.critical + high`, active only) | `/alerts` | `/alerts`**`#status=active&severity=critical,high`** | count | W2 |
+| KPI **Critical** (`bySeverity.critical + high`, active only) | `/alerts` | `/alerts`**`#status=active&severity=critical,high`**. `AlertsPage` holds one `AlertSeverity`, so W2 makes severity multi-value | count | W2 |
 | KPI **Warnings** (`bySeverity.medium`, active only) | `/alerts` | `/alerts`**`#status=active&severity=medium`** | count | W2 |
 | KPI **Open tickets** | `/tickets` | unchanged. The queue already opens on the `open` tab | count | — |
 | KPI tickets sub-line "N unassigned" | text | stays text. The tile is already one link (§3.3) | exempt | — |
-| KPI **Patch compliance %** | `/patches` | unchanged, as a section link until Open Decision 5 aligns the metric | section | — |
+| KPI **Patch compliance %** | `/patches` | unchanged, as a section link until Open Decision 4 aligns the metric | section | — |
 | Alerts feed "View all", rows, hostname/org links | links | unchanged (#8985 W03) | — | — |
-| Alerts feed header counts | text | follow the KPI Critical/Warnings links when the count and status set match. Otherwise exempt | count / exempt | W2 |
+| Alerts feed header critical / warning counts | text | the same links as the KPI Critical / Warnings tiles. They read the same `bySeverity` object | count | W2 |
 | Fleet card title | `/devices` | `/devices#deviceClass=agent` | section | W1 |
 | Fleet header "N of M online" | text | stays text. The legend carries the same numbers as links | exempt | — |
-| Fleet bar legend: Online / Offline / Other | text | `#deviceClass=agent&filtersV2=` status equals online / offline / **in** the remaining `byStatus` keys | count | W1 |
+| Fleet bar legend: Online / Offline / Other | text | `#deviceClass=agent&filtersV2=` status equals online / offline / `in` the remaining `byStatus` keys (the filter engine supports `in`: `filterFields.ts`, `mergedListFilter.ts`) | count | W1 |
 | Fleet card offline rows | `/devices/:id` | unchanged | — | — |
 | Fleet card "View N offline" | `/devices?status=offline` (broken) | `/devices#deviceClass=agent&filtersV2=<status equals offline>` | count | W1 |
 | Security card title | `/security` | unchanged | section | — |
-| Security score `/100` | text | `/security/score`, after scope parity is fixed (below) | count | W2 |
-| Security 30-day sparkline | tooltip only | stays non-link. Its caption becomes a link to `/security/trends`, after scope parity is fixed | exempt (chart) + section | W2 |
-| Security "N at risk" | text | a device list with the same at-risk computation (note below), or exempt | count / exempt | W2 |
+| Security score `/100` | text | `/security/score`, after scope parity is fixed (below). A score is not an entity count | section | W2 |
+| Security 30-day sparkline | tooltip only | the chart stays non-interactive (exempt). Its caption becomes a section link to `/security/trends`, after scope parity is fixed | exempt + section | W2 |
+| Security "N at risk" | text | **exempt by default.** It becomes a count link only if the W2 plan finds a list with the same at-risk computation (note below) | exempt → count | W2 |
 | Security "N active threats" | text | `/security/vulnerabilities`**`#status=active`** | count | W2 |
 | Patch card "%" headline | text | same as the KPI tile | section | — |
-| Patch card "X of Y devices compliant" | text | two links: compliant → `/patches`**`#status=compliant`**, not compliant → **`#status=needs-patches`**. Needs the page's 200-device cap removed (W2) | count | W2 |
-| Patch bar Installed / Pending / Failed | text | stays text. These count device×patch rows, and no list shows that grain | exempt | — |
-| Patch "N critical patches pending" | text | text plus an affected link "View devices" → `/patches`**`#status=critical`** | affected | W2 |
+| Patch card "X of Y devices compliant" | text | two links: compliant → `/patches`**`#compliance&status=compliant`**, not compliant → **`#compliance&status=needs-patches`**. W2 makes the page take both its device list and its compliant/non-compliant split from `/patches/compliance` (`devicesNeedingPatches`, `compliantDevices`) instead of its client-side predicate over a 200-device fetch, so both sides use one server-side definition | count | W2 |
+| Patch bar Installed | text | stays text. It counts device×patch rows, and no list shows that grain | exempt | — |
+| Patch bar Pending | text | stays text, plus an affected link "View devices" → **`#compliance&status=needs-patches`** | affected | W2 |
+| Patch bar Failed | text | stays text, plus an affected link "View devices with failed patches" → **`#compliance&status=failed`**. W2 adds a `failed` status option, keyed on `devicesNeedingPatches[].failedMissing > 0` | affected | W2 |
+| Patch "N critical patches pending" | text | text plus an affected link "View devices" → `/patches`**`#compliance&status=critical`** | affected | W2 |
 | Patch "N unrated pending" | text | stays text. No list filters on unrated severity | exempt | — |
 | Patch "N images not checked" | text | stays text | exempt | — |
 | Vulns title | `/vulnerabilities` | unchanged | section | — |
@@ -209,6 +211,29 @@ destination scope first and adds the links after. *verified* for trends, *report
 the queried population has **no posture rows at all** does it fall back to counting agent status `at_risk`.
 *verified* The W2 plan must pick a list that uses the same computation (candidates: `/security/score`, or
 `/devices/posture` → `FleetPostureReport`). If neither does, the entry is exempt.
+
+### 3.2.1 Hash grammar
+
+The new shapes in §3.2 follow one grammar, so that tab tokens, sub-selections and filters can coexist:
+
+```
+#<tab>[/<selection>][&<key>=<value>[,<value>…]]…
+```
+
+- **The tab token comes first**, when the page has tabs (`compliance`, `cves`). It is optional when the link targets
+  the default tab. `PatchesPage` keeps an empty hash for `compliance`, so `#compliance&status=…` and `#status=…` must
+  parse the same way.
+- **`/<selection>`** stays the sub-selection slot (`#cves/<groupKey>`, `#anomalies/<id>`), exactly as today.
+- **Filters are `&`-joined `key=value` pairs.** Multi-value filters are comma-separated (`severity=critical,high`),
+  and booleans are `1`.
+- **Every writer preserves keys it does not own.** `filterUrl.ts` `writeFilterToHash` is the model: it rewrites only
+  its own key. `AlertsPage`'s `#hideAiNoise` writer, which clears the whole hash today, must merge instead.
+- **Parsers ignore unknown keys and invalid values.** They fall back to the default rather than throwing (the
+  `useHashState` contract).
+
+Today `PatchesPage` matches its hash against tab names exactly, and `VulnerabilityFleetPage` reads `#<tab>[/<id>]`.
+Both must move to this grammar in W2. Each move needs a test that existing bookmarks (`#patches`, `#cves/<id>`) still
+resolve.
 
 ### 3.3 Link anatomy and accessibility
 
@@ -240,7 +265,7 @@ injects that org into API calls. So a dashboard link has **no org to carry**. Le
 rule that "navigation must never silently change the working org" (2026-10-16 UI-flow spec, anti-goals).
 
 **Ambient scope is not automatic parity.** An API route can ignore the injected `orgId` (the security trends route
-above does). Every count link's arrival test (§7) must assert that the destination's fetch is scoped to the same org
+above does). Every count link's arrival test (§8) must assert that the destination's fetch is scoped to the same org
 as the dashboard's.
 
 Two existing deep links do carry an org, and they stay as they are:
@@ -310,7 +335,9 @@ It opens a **Sites list page** that:
 - with an org selected (or for an org-scoped user) lists that org's sites;
 - reuses `SiteList` (search at 6 or more, overflow menu from #9022) and `SiteModals`;
 - has **Add site**, gated on `sites:write`. In fleet view the modal requires an org pick first. With an org selected
-  it is pre-filled. The org is captured when the modal opens, so an org switch mid-edit cannot retarget the write;
+  it is pre-filled. The org is captured when the modal opens, so an org switch mid-edit cannot retarget the write.
+  `POST /orgs/sites` also runs `requireMfa()`. The page handles that the way the org record's Sites tab already does
+  through `SiteModals`, and the W3 tests cover an MFA-required response;
 - links each site's device count to `/devices#orgId=<org>&deviceClass=agent&filtersV2=<siteId equals id>`, through a
   `deviceCoverageLinks.ts`-style producer.
 
@@ -382,14 +409,19 @@ cap.
   PATCH.
 - **MCP**: classify it in `services/mcpCoverage.ts` (the metadata lives there; `mcp-coverage.test.ts` enforces it).
 
-Open Decision 4 weighs this against a client-side loop.
+Open Decision 5 weighs this against a client-side loop.
 
 ### 4.5 Getting from a site to its devices
 
 - `SiteDetailPage` shows a real device count, and "View all" goes to
   `/devices#orgId=<org>&deviceClass=agent&filtersV2=<siteId equals id>` (W1). The count comes from adding
-  `deviceCount` to `GET /orgs/sites/:id`, the same count `GET /orgs/sites` rows carry (the plan confirms the list
-  query), or from a scoped device count call. Either way it is site-scoped.
+  `deviceCount` to `GET /orgs/sites/:id`. Extract the list route's per-site count (`routes/orgs.ts`, the
+  `deviceCountBySite` query) into one helper that both routes call.
+- **Parity of the site count with the link.** That query counts `devices` rows, excluding ephemeral, parked and
+  decommissioned devices. The `devices` table holds agent devices only (manual assets live in `manualAssets`, and
+  network assets in discovered assets), and the list hides decommissioned rows by default. So the agent-class,
+  site-filtered list shows the same set. *verified* for the query and the manual-asset table. The W1 arrival test
+  must confirm that parked devices are absent from the list too.
 - The device list's Site cell already links to the site (`EntityLink kind="site"`).
 - No site switcher and no site breadcrumb segment in device views. The global site selection was removed on purpose
   (§1.3), and nothing here argues for bringing it back.
@@ -433,46 +465,10 @@ This route makes W5 a high-rigor wave (CLAUDE.md: auth and multi-tenant changes 
 - **Product analytics instrumentation**, unless Open Decision 3 says otherwise.
 - **The portal.**
 
-## 7. Test and rollout notes
+## 7. Open Decisions
 
-- **Registry and inventory tests (R1).** As in §3.1. They are the guard against the next card shipping dead numbers.
-- **Round-trip tests.** One per new hash param: producer encode → destination parse.
-- **Arrival tests.** For each count link's destination, mount with the hash set and assert two things: the filter
-  control shows the filter, and the fetch carries both the filter and the dashboard's org scope.
-  `DevicesPage.deepLink.test.tsx` is the pattern.
-- **Regression tests for the broken links.** Assert the Online tile and "View N offline" hrefs decode to the expected
-  `FilterConditionGroup` plus `deviceClass=agent`, not a `?status=` string.
-- **Gating test.** A metric whose destination predicate fails renders without an `<a>`. `KpiStrip.test.tsx` already
-  asserts an inert tile has no `href`.
-- **Bulk move.** The route tests in §5. Web test: a mixed-org selection disables the action and shows the reason, and
-  non-agent rows never offer it.
-- **Sites page.** Fleet view lists across orgs with the Organization column. Add site in fleet view requires an org
-  pick. An org-scoped session sees its own sites. A site-scoped session sees only its allowlist. `routeScope`
-  classifies the route `org-or-all`.
-- **i18n.** Every new string goes in all 8 locale folders (`en` plus 7). `localeParity.test.ts` enforces it.
-- **E2E.** `data-testid` selectors only (`e2e-tests/README.md`). One dashboard → filtered list journey per
-  destination family, and one Sites nav → add site → move a device journey.
-- **Rollout.** No flag, because each piece is additive and individually reversible. The bulk route ships with its UI
-  in one wave.
-
-### 7.1 How success is judged without telemetry
-
-The repo has no product analytics. `apps/web` has Sentry: error capture, 10% performance tracing, replays on 50% of
-error sessions and none otherwise, and Sentry's automatic breadcrumbs (`sentry.client.config.ts`). It records no
-product events and gives no click-through counts. The API has no usage counters. The UI-flow spec made "server-side
-tracking of any kind" a non-goal.
-
-So success is judged on correctness, not adoption:
-
-1. **Coverage:** every rendered number is registered. The inventory test enforces it.
-2. **Parity:** each count link's arrival test proves the destination applies the same predicate under the same scope.
-3. **Reachability:** an org-scoped user can open, add and edit a site from the nav. An E2E test proves it.
-4. **Recurrence:** no new Discord or GitHub report of "can't click through" or "can't find sites" in the 60 days after
-   release. This is weak evidence and is labelled that way.
-
-## 8. Open Decisions
-
-Todd-gated product and UX calls come first.
+Todd-gated product and UX calls come first (1–4). Decisions 5 and 6 are engineering defaults that a plan can carry
+unless Todd overrides them.
 
 **1. Where Sites lives in the nav (Todd).**
 - (a) **Fleet Management section, next to Device Groups**, with `/settings/sites` revived. Pros: it sits with the
@@ -493,7 +489,7 @@ Todd-gated product and UX calls come first.
 - **Recommend (a).**
 
 **3. Product analytics for click-through (Todd).**
-- (a) **No telemetry. Judge by §7.1.** Pros: no privacy surface, nothing new for self-hosters to disclose, no CSP or
+- (a) **No telemetry. Judge by §8.1.** Pros: no privacy surface, nothing new for self-hosters to disclose, no CSP or
   vendor changes. Cons: no usage numbers.
 - (b) Adopt a product-analytics SDK in `apps/web` (for example PostHog), off by default for self-hosted, with an
   opt-in env var. Pros: real usage data. Cons: a new vendor and data flow, consent and CSP work, and a public-repo
@@ -503,15 +499,7 @@ Todd-gated product and UX calls come first.
   metric. The UI-flow spec already ruled it out.
 - **Recommend (a)** for this feature, and decide (b) as a separate, product-wide question.
 
-**4. Bulk site move: new endpoint or client loop.**
-- (a) **`POST /devices/bulk/site`** sharing PATCH's move logic, with per-device outcomes. Pros: one round trip, one
-  place for checks, the cap and the audit, and usable by MCP and AI tools. Cons: a new route and its contract tests,
-  and a high-rigor wave.
-- (b) The web loops `PATCH /devices/:id`. Pros: no API work. Cons: N MFA-gated requests, partial failure assembled in
-  the browser, and not reusable by agents.
-- **Recommend (a).**
-
-**5. What "Patch compliance %" means (Todd).**
+**4. What "Patch compliance %" means (Todd).**
 The dashboard shows an **item** percentage: installed over installed plus pending, with image terms. The `/patches`
 page headline shows a **device** percentage: compliant devices over devices, from a 200-device fetch. One label, two
 metrics.
@@ -524,12 +512,63 @@ metrics.
 - (c) Keep everything as is. The KPI stays a section link.
 - **Recommend (a).**
 
+**5. Bulk site move: new endpoint or client loop.**
+- (a) **`POST /devices/bulk/site`** sharing PATCH's move logic, with per-device outcomes. Pros: one round trip, one
+  place for checks, the cap and the audit, and usable by MCP and AI tools. Cons: a new route and its contract tests,
+  and a high-rigor wave.
+- (b) The web loops `PATCH /devices/:id`. Pros: no API work. Cons: N MFA-gated requests, partial failure assembled in
+  the browser, and not reusable by agents.
+- **Recommend (a).**
+
 **6. Whether the Critical and Warnings tiles keep the active-only count.**
 `/alerts/summary` counts `bySeverity` over **active** alerts only. The dashboard's alert feed shows active plus
 acknowledged. The links in §3.2 match the tile (`status=active`).
 - (a) **Keep the tile active-only and link `status=active`.**
-- (b) Change the summary to active plus acknowledged. That changes a long-standing number for every user.
-- **Recommend (a).**
+- (b) Change the summary to active plus acknowledged. That changes a long-standing number for every user, and the
+  §3.2 links would then carry `status=active,acknowledged`.
+- **Recommend (a).** The §3.2 map is written to this default.
+
+## 8. Test and rollout notes
+
+- **Registry and inventory tests (R1).** As in §3.1. They are the guard against the next card shipping dead numbers.
+- **Round-trip tests.** One per new hash param: producer encode → destination parse.
+- **Arrival tests.** For each count link's destination, mount with the hash set and assert two things: the filter
+  control shows the filter, and the fetch carries both the filter and the dashboard's org scope.
+  `DevicesPage.deepLink.test.tsx` is the pattern.
+- **Regression tests for the broken links.** Assert the Online tile and "View N offline" hrefs decode to the expected
+  `FilterConditionGroup` plus `deviceClass=agent`, not a `?status=` string.
+- **Gating test.** A metric whose destination predicate fails renders without an `<a>`. `KpiStrip.test.tsx` already
+  asserts an inert tile has no `href`.
+- **Bulk move.** The route tests in §5, plus a batch over the cap (rejected whole) and a duplicate device id in one
+  batch (rejected whole, or deduplicated with one outcome; the plan picks one). Web test: a mixed-org selection
+  disables the action and shows the reason, and non-agent rows never offer it.
+- **Sites page.** Fleet view lists across orgs with the Organization column. Add site in fleet view requires an org
+  pick. An org-scoped session sees its own sites. A site-scoped session sees only its allowlist. `routeScope`
+  classifies the route `org-or-all`.
+- **i18n.** Every new string goes in all 8 locale folders (`en` plus 7). `localeParity.test.ts` enforces it. Expected
+  namespaces: `common.json` `dashboard.*` (link labels such as "View devices" and "View critical CVEs"),
+  `devices.json` (`deviceReliabilityPanel.*`, the row and bulk move actions, the mixed-org reason), and the
+  namespace that holds `SiteList`/`SiteDetailPage` strings (the Sites page title, Organization column, org picker).
+  Each plan lists its exact keys.
+- **E2E.** `data-testid` selectors only (`e2e-tests/README.md`). One dashboard → filtered list journey per
+  destination family, and one Sites nav → add site → move a device journey.
+- **Rollout.** No flag, because each piece is additive and individually reversible. The bulk route ships with its UI
+  in one wave.
+
+### 8.1 How success is judged without telemetry
+
+The repo has no product analytics. `apps/web` has Sentry: error capture, 10% performance tracing, replays on 50% of
+error sessions and none otherwise, and Sentry's automatic breadcrumbs (`sentry.client.config.ts`). It records no
+product events and gives no click-through counts. The API has no usage counters. The UI-flow spec made "server-side
+tracking of any kind" a non-goal.
+
+So success is judged on correctness, not adoption:
+
+1. **Coverage:** every rendered number is registered. The inventory test enforces it.
+2. **Parity:** each count link's arrival test proves the destination applies the same predicate under the same scope.
+3. **Reachability:** an org-scoped user can open, add and edit a site from the nav. An E2E test proves it.
+4. **Recurrence:** no new Discord or GitHub report of "can't click through" or "can't find sites" in the 60 days after
+   release. This is weak evidence and is labelled that way.
 
 ## 9. Wave sketch (no plans here)
 
@@ -538,10 +577,10 @@ acknowledged. The links in §3.2 match the tile (`status=active`).
 | Wave | Content | Path | Depends on |
 |---|---|---|---|
 | **W1** | `dashboardLinks.ts` producer, `DashboardMetric` helper, `DASHBOARD_METRICS` registry, and the registry and inventory tests. Fix the two broken `?status=` links and add `deviceClass=agent` to every devices link. Fleet legend links. Focus rings on tiles and links. Every not-yet-linked number registered as `section` or `exempt` with a reason (W2 flips them). SiteDetailPage real device count and site-filtered "View all". `OrgDevicesTab` paged site lookup | **Fast-track PR**, web only except the additive `deviceCount` on `GET /orgs/sites/:id` | — |
-| **W2** | Destinations learn hash filters: `/patches` `#status=` (and the 200-device cap removed), `/alerts` `#status=&severity=` (the dead `?severity=` writer removed), `/vulnerabilities` `#cves&status=&severity=&kev=&patchAvailable=`, `/security/vulnerabilities` `#status=`. Security destination scope parity (trends and score honor the selected org). The at-risk destination. The vulnerability open-findings count. Open Decision 5's metric change. Exported encoders, arrival tests, dashboard links | **Plan.** Several pages and metric definitions, not just parsers | W1, Open Decision 5 |
+| **W2** | The §3.2.1 hash grammar on each destination. `/patches` `#compliance&status=` (with a new `failed` option, the server-side compliance definition, and the 200-device cap removed). `/alerts` `#status=&severity=` (severity made multi-value, the dead `?severity=` writer removed, the `#hideAiNoise` writer merging). `/vulnerabilities` `#cves&status=&severity=&kev=&patchAvailable=`. `/security/vulnerabilities` `#status=`. Security destination scope parity (trends and score honor the selected org). The at-risk check. The vulnerability open-findings count. Open Decision 4's metric change. Exported encoders, arrival tests, dashboard links | **Plan.** Several pages and metric definitions, not just parsers | W1, Open Decision 4 |
 | **W3** | Sites nav item and the `/settings/sites` list page: fleet view, Organization column, `useSiteCrud` fleet mode, add-site with org capture, `routeScope` entries, site detail breadcrumbs | **Plan**, after Open Decisions 1 and 2 | — |
-| **W4** | Score factors: per-factor event log links, the event log tab's `#eventlog/<filter>` sub-hash, offender links | **Plan.** The event log filter is a new surface | — |
-| **W5** | Move to site: agent row action, bulk action, `POST /devices/bulk/site` with shared move logic | **Plan, high rigor** (auth, multi-tenant writes), after Open Decision 4 | — |
+| **W4** | Score factors: per-factor event log links, the event log tab's `#eventlog/<filter>` sub-hash, offender links. If the event log cannot filter by source, the §3.7 fallback ("Open event log") applies | **Plan.** The event log filter is a new surface | — |
+| **W5** | Move to site: agent row action, bulk action, `POST /devices/bulk/site` with shared move logic | **Plan, high rigor** (auth, multi-tenant writes), after Open Decision 5 | — |
 
 W1, W3, W4 and W5 are independent. W2 needs W1's registry.
 
@@ -555,16 +594,20 @@ orchestrator's call. W1's site-detail fixes serve #6720 but ride in W1 because t
 Every new link or control gets an id. Proposed names follow `e2e-tests/README.md` (`<page>-<section>-<thing>`):
 
 - **KPI:** the existing `dashboard-{total-devices,online,critical,warnings,tickets,patch}-card` (unchanged).
+- **Card titles** (existing links, which gain ids): `dashboard-{fleet,security,patch,vuln}-title-link`.
+- **Alerts feed:** `dashboard-alerts-critical-count-link`, `dashboard-alerts-warning-count-link`.
 - **Fleet:** `dashboard-fleet-legend-{online,offline,other}-link`, `dashboard-fleet-view-offline-link`.
-- **Security:** `dashboard-security-score-link`, `dashboard-security-trend-link`, `dashboard-security-at-risk-link`,
-  `dashboard-security-threats-link`.
+- **Security:** `dashboard-security-score-link`, `dashboard-security-trend-link`, `dashboard-security-at-risk-link`
+  (if it becomes a link), `dashboard-security-threats-link`.
 - **Patch:** `dashboard-patch-compliant-link`, `dashboard-patch-noncompliant-link`,
+  `dashboard-patch-pending-devices-link`, `dashboard-patch-failed-devices-link`,
   `dashboard-patch-critical-devices-link`.
 - **Vulns:** `dashboard-vuln-open-link`, `dashboard-vuln-critical-link`, `dashboard-vuln-kev-link`,
   `dashboard-vuln-patch-ready-link`.
 - **Score factors:** `reliability-factor-link-<factor>`, `reliability-offender-link-<key>`.
 - **Sites:** `nav-sites` (sidebar), `sites-page`, `sites-add-button`, `sites-org-picker`, `sites-row-<id>`,
-  `sites-device-count-link-<id>`, `site-detail-device-count`, `site-detail-devices-view-all-link`.
+  `sites-row-edit-<id>`, `sites-row-delete-<id>` (or the existing `SiteList` overflow-menu ids, if they already
+  exist), `sites-device-count-link-<id>`, `site-detail-device-count`, `site-detail-devices-view-all-link`.
 - **Move:** `device-row-move-site`, `devices-bulk-move-site`, `devices-bulk-move-site-disabled-reason`.
 
 ## 10. Design quorum record
@@ -578,7 +621,7 @@ the wave independence. Its required changes, each re-checked against the code an
   lists CVEs, so they became affected links. `totalFindings` counts every status, so it became a bug to fix (§1.1,
   §3.2).
 - **Patch metric.** The dashboard % and the `/patches` % are different metrics, and the page caps its device fetch at
-  200. This became Open Decision 5 and a W2 item.
+  200. This became Open Decision 4 and a W2 item.
 - **Enforcement.** An opt-in `data-metric` attribute cannot catch an unmarked number. Replaced with a
   `DashboardMetric` helper and an inventory test (§3.1). Alert-feed and fleet-header counts were added to the map.
 - **As-built corrections.** The KPI tiles have no focus ring. `AlertsFeed` rows keep a click handler (the anatomy
@@ -598,3 +641,23 @@ the wave independence. Its required changes, each re-checked against the code an
   linked to a chart that does not explain it.
 - **Factual fixes from the path verification pass.** `/tickets#open` is not a hash format (the queue tab is component
   state, and it already defaults to `open`). The topology `SiteMoveSuggestion` does not reuse `ChangeSiteModal`.
+
+### 10.1 Spec review round
+
+One independent Sonnet review read the spec and the code, and raised 15 findings. 14 were confirmed and acted on:
+
+- §3.2.1, a hash grammar that keeps tab tokens and sub-selections;
+- multi-value alert severity;
+- affected links for patch Pending and Failed;
+- score rows typed `section`;
+- a server-side patch compliance definition;
+- MFA on add site;
+- definite Alerts-feed and at-risk defaults;
+- one source for the site-detail count;
+- Open Decisions placed and tagged per the template;
+- the W4 fallback cross-referenced;
+- more test ids, bulk cap and duplicate tests, and i18n namespaces.
+
+One finding was rejected. It said the site device count includes network and manual assets, so `deviceClass=agent`
+breaks parity. In fact the count queries the `devices` table, which holds agent devices only, and manual assets live
+in `manualAssets` (§4.5).
