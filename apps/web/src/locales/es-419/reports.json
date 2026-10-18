@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Volver a Informes",
+      "backupPreview": {
+        "description": "Genera la instantánea de respaldos actual con las opciones anteriores. Solo se ejecuta cuando lo solicitas.",
+        "error": "No se pudo generar la vista previa.",
+        "run": "Generar vista previa",
+        "title": "Vista previa"
+      },
       "description": "Actualice la configuración de \"{{name}}\".",
       "errors": {
         "fetchReport": "No se pudo recuperar el informe",

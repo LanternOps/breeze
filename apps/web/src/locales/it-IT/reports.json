@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Torna ai report",
+      "backupPreview": {
+        "description": "Genera lo snapshot di backup corrente con le opzioni sopra. Viene eseguito solo su richiesta.",
+        "error": "Impossibile generare l'anteprima.",
+        "run": "Genera anteprima",
+        "title": "Anteprima"
+      },
       "description": "Aggiorna la configurazione per \"{{name}}\".",
       "errors": {
         "fetchReport": "Impossibile recuperare il report",
