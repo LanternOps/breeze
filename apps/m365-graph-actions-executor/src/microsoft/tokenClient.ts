@@ -48,7 +48,7 @@ export interface MicrosoftTokenClient {
 interface TokenClientConfig {
   clientId: string;
   // Required by exchangeAuthorizationCode (admin-consent identity proof via
-  // complete-consent / verify-identity); the operations factory always passes
+  // verify-identity); the operations factory always passes
   // the configured callback URL. Optional only for client-credentials-only
   // callers, which never send a redirect_uri.
   callbackUrl?: string;

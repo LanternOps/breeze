@@ -356,8 +356,7 @@ interface CallbackAuditInput {
   actorId?: string;
 }
 
-/** `legacy` = a correctly-signed cookie from the pre-identity-first flow. */
-type BindingVerification = M365ConsentBrowserBinding | 'expired' | 'legacy' | null;
+type BindingVerification = M365ConsentBrowserBinding | 'expired' | null;
 
 interface CallbackDependencies {
   profile: CallbackProfile;
@@ -560,7 +559,6 @@ function buildDefaultDependencies(
     verifyBindingCookie: (header) => {
       const inspected = binding.inspect(header);
       if (inspected.status === 'expired') return 'expired';
-      if (inspected.status === 'legacy') return 'legacy';
       return inspected.status === 'valid' ? inspected.binding : null;
     },
     buildBindingCookie: (bound) => binding.build(bound),
@@ -772,13 +770,10 @@ export function createM365ConsentCallbackRoutes(
     };
 
     const binding = dependencies.verifyBindingCookie(c.req.header('cookie'));
-    if (binding === 'expired' || binding === 'legacy') {
-      // A legacy cookie is an in-flight attempt from before the identity-first
-      // deploy; like an expired one, the only remedy is an explicit restart.
+    if (binding === 'expired') {
       console.warn('[m365ConsentCallback] browser binding expired', {
         profile: dependencies.profile,
         correlationId,
-        legacy: binding === 'legacy',
       });
       return terminalFailure('consent_expired');
     }

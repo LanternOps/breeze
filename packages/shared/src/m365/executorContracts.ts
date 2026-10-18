@@ -3,16 +3,6 @@ import { z } from 'zod';
 const guidSchema = z.string().guid();
 const timestampSchema = z.string().datetime({ offset: true });
 
-export const completeConsentRequestSchema = z.object({
-  correlationId: guidSchema,
-  consentAttemptId: guidSchema,
-  tenantHint: guidSchema,
-  authorizationCode: z.string().min(1).max(8192),
-  codeVerifier: z.string().min(43).max(128),
-  nonce: z.string().min(1).max(512),
-  redirectUri: z.string().url().max(2048),
-}).strict();
-
 export const retestRequestSchema = z.object({
   correlationId: guidSchema,
   tenantId: guidSchema,
@@ -102,19 +92,6 @@ const executorFailureResultSchema = z.object({
   errorCode: executorFailureCodeSchema,
 }).strict();
 
-const completeConsentVerifiedResultSchema = z.discriminatedUnion('grantReconciliation', [
-  z.object({
-    ...verifiedResultFields,
-    administratorObjectId: guidSchema,
-    ...completeReconciliationFields,
-  }).strict(),
-  z.object({
-    ...verifiedResultFields,
-    administratorObjectId: guidSchema,
-    ...unavailableReconciliationFields,
-  }).strict(),
-]);
-
 const retestVerifiedResultSchema = z.discriminatedUnion('grantReconciliation', [
   z.object({
     ...verifiedResultFields,
@@ -126,21 +103,14 @@ const retestVerifiedResultSchema = z.discriminatedUnion('grantReconciliation', [
   }).strict(),
 ]);
 
-export const completeConsentResultSchema = z.union([
-  completeConsentVerifiedResultSchema,
-  executorFailureResultSchema,
-]);
-
 export const retestResultSchema = z.union([
   retestVerifiedResultSchema,
   executorFailureResultSchema,
 ]);
 
-export type CompleteConsentRequest = z.infer<typeof completeConsentRequestSchema>;
 export type RetestRequest = z.infer<typeof retestRequestSchema>;
 export type VerifyConsentIdentityRequest = z.infer<typeof verifyConsentIdentityRequestSchema>;
 export type VerifyConsentIdentityResult = z.infer<typeof verifyConsentIdentityResultSchema>;
 export type IdentityFailureCode = z.infer<typeof identityFailureCodeSchema>;
 export type ExecutorFailureCode = z.infer<typeof executorFailureCodeSchema>;
-export type CompleteConsentResult = z.infer<typeof completeConsentResultSchema>;
 export type RetestResult = z.infer<typeof retestResultSchema>;

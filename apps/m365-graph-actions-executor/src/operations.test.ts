@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  completeConsentOperation,
+  createExecutorOperations,
   executeActionOperation,
   retestOperation,
   type ExecutorOperationDependencies,
@@ -75,48 +75,7 @@ describe('executeActionOperation', () => {
   });
 });
 
-describe('completeConsentOperation / retestOperation', () => {
-  it('preserves verified tenant proof when grant reconciliation is unavailable', async () => {
-    const result = await completeConsentOperation({
-      correlationId: '11111111-1111-4111-8111-111111111111',
-      consentAttemptId: '22222222-2222-4222-8222-222222222222',
-      tenantHint: TENANT,
-      authorizationCode: 'authorization-code',
-      codeVerifier: 'v'.repeat(43),
-      nonce: 'nonce',
-      redirectUri: CALLBACK_URL,
-    }, deps());
-
-    expect(result).toMatchObject({
-      success: true,
-      tenantId: TENANT,
-      applicationId: CLIENT_ID,
-      organizationDisplayName: 'Example',
-      manifestVersion: 3,
-      grantReconciliation: 'unavailable',
-      errorCode: 'grant_reconciliation_unavailable',
-      observedGrants: null,
-      missingGrants: null,
-      unexpectedGrants: null,
-      grantsVerifiedAt: null,
-      administratorObjectId: '55555555-5555-4555-8555-555555555555',
-    });
-  });
-
-  it('rejects a redirectUri that does not match the configured callback', async () => {
-    const result = await completeConsentOperation({
-      correlationId: '11111111-1111-4111-8111-111111111111',
-      consentAttemptId: '22222222-2222-4222-8222-222222222222',
-      tenantHint: TENANT,
-      authorizationCode: 'authorization-code',
-      codeVerifier: 'v'.repeat(43),
-      nonce: 'nonce',
-      redirectUri: 'https://attacker.example.test/callback',
-    }, deps());
-
-    expect(result).toEqual({ success: false, errorCode: 'identity_token_invalid' });
-  });
-
+describe('retestOperation', () => {
   it('reconciles observed grants against the fixed customer-graph-actions manifest', async () => {
     const observedGrants = [...getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!];
     const d = deps();
@@ -202,5 +161,13 @@ describe('completeConsentOperation / retestOperation', () => {
     }, d);
     expect(credential.certificatePem).toBe('');
     expect(credential.privateKeyPem).toBe('');
+  });
+});
+
+describe('createExecutorOperations', () => {
+  it('exposes no completeConsent operation', () => {
+    const operations = createExecutorOperations({} as unknown as Parameters<typeof createExecutorOperations>[0]);
+    expect(Object.keys(operations).sort()).toEqual(['executeAction', 'retest', 'verifyIdentity']);
+    expect(operations).not.toHaveProperty('completeConsent');
   });
 });

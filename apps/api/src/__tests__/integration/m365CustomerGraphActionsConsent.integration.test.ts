@@ -168,7 +168,7 @@ function buildApp(tenantId: string, retest: () => Promise<RetestResult>) {
   return app;
 }
 
-function completeConsentResult(input: {
+function retestResultFor(input: {
   tenantId: string;
   observedGrants: CanonicalAppRoleAssignment[];
 }): RetestResult {
@@ -258,7 +258,7 @@ async function driveToConsentPhase(
   return { consentState, consentCookie };
 }
 
-async function completeConsentPhase(
+async function returnFromConsentPhase(
   app: Hono,
   consentState: string,
   consentCookie: string,
@@ -276,7 +276,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
     const tenantId = randomUUID();
-    const app = buildApp(tenantId, async () => completeConsentResult({
+    const app = buildApp(tenantId, async () => retestResultFor({
       tenantId,
       observedGrants: [...REQUIRED_GRANTS],
     }));
@@ -284,7 +284,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const { consentState, consentCookie } = await driveToConsentPhase(
       app, token, env.organization.id, tenantId,
     );
-    const finalRes = await completeConsentPhase(app, consentState, consentCookie);
+    const finalRes = await returnFromConsentPhase(app, consentState, consentCookie);
     expect(finalRes.status).toBe(302);
     expect(redirectHash(finalRes.headers.get('location'))).toBe('#m365/customer-graph-actions/active');
 
@@ -306,7 +306,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
     const tenantId = randomUUID();
-    const app = buildApp(tenantId, async () => completeConsentResult({
+    const app = buildApp(tenantId, async () => retestResultFor({
       tenantId,
       observedGrants: REQUIRED_GRANTS.filter((grant) => grant !== GRANT_PASSWORD_RW),
     }));
@@ -314,7 +314,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const { consentState, consentCookie } = await driveToConsentPhase(
       app, token, env.organization.id, tenantId,
     );
-    const finalRes = await completeConsentPhase(app, consentState, consentCookie);
+    const finalRes = await returnFromConsentPhase(app, consentState, consentCookie);
     expect(finalRes.status).toBe(302);
     // The callback route redirects on connection status (active/degraded),
     // not the finer-grained lastErrorCode — the drift detail is asserted via
@@ -338,7 +338,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
     const tenantId = randomUUID();
-    const app = buildApp(tenantId, async () => completeConsentResult({
+    const app = buildApp(tenantId, async () => retestResultFor({
       tenantId,
       observedGrants: [...REQUIRED_GRANTS, EXTRA_GRANT],
     }));
@@ -346,7 +346,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const { consentState, consentCookie } = await driveToConsentPhase(
       app, token, env.organization.id, tenantId,
     );
-    const finalRes = await completeConsentPhase(app, consentState, consentCookie);
+    const finalRes = await returnFromConsentPhase(app, consentState, consentCookie);
     expect(finalRes.status).toBe(302);
     expect(redirectHash(finalRes.headers.get('location'))).toBe('#m365/customer-graph-actions/degraded');
 
@@ -415,7 +415,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
       status: 'verifying',
     }, {
       verifiedTenantId: tenantId,
-      result: completeConsentResult({ tenantId, observedGrants: [GRANT_USER_RW, GRANT_PASSWORD_RW] }),
+      result: retestResultFor({ tenantId, observedGrants: [GRANT_USER_RW, GRANT_PASSWORD_RW] }),
     })).rejects.toMatchObject({ code: 'stale_attempt' });
 
     const readRow = await withSystemDbAccessContext(() => db.select().from(m365Connections)

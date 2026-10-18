@@ -61,7 +61,6 @@ async function mint(operation: string, body: string, correlationId = CORRELATION
 function app(overrides: Partial<ExecutorAppDependencies> = {}) {
   const deps = {
     authenticator,
-    completeConsent: vi.fn(),
     retest: vi.fn(),
     readAction: vi.fn(),
     syncAction: vi.fn(),
@@ -102,7 +101,7 @@ describe('POST /v1/verify-identity', () => {
     },
   );
 
-  it.each(['complete-consent', 'retest', OTHER_OPERATION])(
+  it.each(['retest', OTHER_OPERATION])(
     'rejects a token minted for %s',
     async (operation) => {
       const { app: target, deps } = app();
@@ -113,17 +112,8 @@ describe('POST /v1/verify-identity', () => {
     },
   );
 
-  it('does not let a verify-identity token reach complete-consent or retest', async () => {
+  it('does not let a verify-identity token reach retest', async () => {
     const { app: target, deps } = app();
-    const completeBody = JSON.stringify({
-      ...VERIFY_REQUEST,
-      expectedTenantId: undefined,
-      tenantHint: TENANT_ID,
-    });
-    const complete = await post(target, '/v1/complete-consent', completeBody, await mint('verify-identity', completeBody));
-    expect(complete.status).toBe(401);
-    expect(deps.completeConsent).not.toHaveBeenCalled();
-
     const retestBody = JSON.stringify({ correlationId: CORRELATION_ID, tenantId: TENANT_ID });
     const retest = await post(target, '/v1/retest', retestBody, await mint('verify-identity', retestBody));
     expect(retest.status).toBe(401);
@@ -187,5 +177,18 @@ describe('POST /v1/verify-identity', () => {
   it('is POST-only', async () => {
     const { app: target } = app();
     expect((await target.request('/v1/verify-identity')).status).toBe(404);
+  });
+
+  it('has no /v1/complete-consent route: a correctly signed request is a 404 and reaches no dependency', async () => {
+    const { app: target, deps } = app();
+    const body = JSON.stringify({ ...VERIFY_REQUEST, expectedTenantId: undefined, tenantHint: TENANT_ID });
+    const response = await post(target, '/v1/complete-consent', body, await mint('complete-consent', body));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'not_found' });
+    for (const dependency of Object.values(deps)) {
+      if (typeof dependency === 'function' && 'mock' in dependency) {
+        expect(dependency).not.toHaveBeenCalled();
+      }
+    }
   });
 });

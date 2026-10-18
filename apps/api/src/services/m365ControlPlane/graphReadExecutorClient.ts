@@ -1,7 +1,5 @@
 import { createHash, randomUUID as nodeRandomUUID, type KeyObject } from 'node:crypto';
 import {
-  completeConsentRequestSchema,
-  completeConsentResultSchema,
   m365SyncActionResponseSchema,
   readActionRequestSchema,
   readActionResultSchema,
@@ -10,8 +8,6 @@ import {
   verifyConsentIdentityRequestSchema,
   verifyConsentIdentityResultSchema,
   syncActionRequestSchema,
-  type CompleteConsentRequest,
-  type CompleteConsentResult,
   type M365SyncActionResult,
   type M365SyncFailureCode,
   type ReadActionRequest,
@@ -33,7 +29,7 @@ const SYNC_ACTION_TIMEOUT_MS = 130_000;
 const SYNC_ACTION_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_SYNC_CAPACITY_RETRY_SECONDS = 30;
 
-type ExecutorOperation = 'complete-consent' | 'verify-identity' | 'retest' | 'read-action' | 'sync-action';
+type ExecutorOperation = 'verify-identity' | 'retest' | 'read-action' | 'sync-action';
 
 /**
  * An outcome the executor reported. Distinct from GraphReadExecutorClientError,
@@ -70,8 +66,7 @@ export class GraphReadExecutorClientError extends Error {
 }
 
 export interface GraphReadExecutorClient {
-  completeIdentityVerification(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
-  /** Identity-first consent, phase 1 (#7910). Not yet called by any route (W2). */
+  /** Identity-first consent, phase 1 (#7910). */
   verifyConsentIdentity(input: VerifyConsentIdentityRequest): Promise<VerifyConsentIdentityResult>;
   retestCustomerGraphRead(input: RetestRequest): Promise<RetestResult>;
   executeReadAction(input: ReadActionRequest): Promise<ReadActionResult>;
@@ -113,7 +108,6 @@ function exactExecutorOrigin(value: string): URL {
 }
 
 const OPERATION_ENDPOINT_PATHS: Record<ExecutorOperation, string> = {
-  'complete-consent': '/v1/complete-consent',
   'verify-identity': '/v1/verify-identity',
   retest: '/v1/retest',
   'read-action': '/v1/read-action',
@@ -225,7 +219,7 @@ export function createGraphReadExecutorClient(
 
   async function invoke<T>(
     operation: ExecutorOperation,
-    input: CompleteConsentRequest | VerifyConsentIdentityRequest | RetestRequest | ReadActionRequest,
+    input: VerifyConsentIdentityRequest | RetestRequest | ReadActionRequest,
     parseResponse: (value: unknown) => T,
     maxBytes: number = maxResponseBytes,
   ): Promise<T> {
@@ -241,11 +235,6 @@ export function createGraphReadExecutorClient(
   }
 
   return {
-    completeIdentityVerification(input) {
-      const parsed = completeConsentRequestSchema.safeParse(input);
-      if (!parsed.success) return Promise.reject(unavailable());
-      return invoke('complete-consent', parsed.data, (value) => completeConsentResultSchema.parse(value));
-    },
     verifyConsentIdentity(input) {
       const parsed = verifyConsentIdentityRequestSchema.safeParse(input);
       if (!parsed.success) return Promise.reject(unavailable());

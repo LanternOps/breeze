@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SyncActionRequest } from '@breeze/shared/m365';
-import { completeConsentOperation, readActionOperation, retestOperation, syncActionOperation } from './operations';
+import { createExecutorOperations, readActionOperation, retestOperation, syncActionOperation } from './operations';
 import { MicrosoftTokenClientError } from './microsoft/tokenClient';
 import { executeGraphReadAction } from './microsoft/readActions';
 import { renderMetrics, resetMetrics } from './metrics';
@@ -81,14 +81,9 @@ function validSyncRequest(): SyncActionRequest {
 
 describe('executor operations', () => {
   it('preserves verified tenant proof when grant reconciliation is unavailable', async () => {
-    const result = await completeConsentOperation({
+    const result = await retestOperation({
       correlationId: '11111111-1111-4111-8111-111111111111',
-      consentAttemptId: '22222222-2222-4222-8222-222222222222',
-      tenantHint: TENANT_ID,
-      authorizationCode: 'authorization-code',
-      codeVerifier: 'v'.repeat(43),
-      nonce: 'nonce',
-      redirectUri: CALLBACK_URL,
+      tenantId: TENANT_ID,
     }, dependencies());
 
     expect(result).toMatchObject({
@@ -103,7 +98,6 @@ describe('executor operations', () => {
       missingGrants: null,
       unexpectedGrants: null,
       grantsVerifiedAt: null,
-      administratorObjectId: '55555555-5555-4555-8555-555555555555',
     });
   });
 
@@ -246,5 +240,13 @@ describe('syncActionOperation', () => {
       ...baseDependencies(), sync: syncDependencies(),
     });
     expect(renderMetrics()).toContain('m365_sync_actions_total{action="m365.sync.skus",outcome="ok"}');
+  });
+});
+
+describe('createExecutorOperations', () => {
+  it('exposes no completeConsent operation', () => {
+    const operations = createExecutorOperations({} as unknown as Parameters<typeof createExecutorOperations>[0]);
+    expect(Object.keys(operations).sort()).toEqual(['readAction', 'retest', 'syncAction', 'verifyIdentity']);
+    expect(operations).not.toHaveProperty('completeConsent');
   });
 });

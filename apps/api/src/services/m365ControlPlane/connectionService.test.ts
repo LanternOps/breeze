@@ -564,7 +564,6 @@ describe('customer Graph-read connection lifecycle', () => {
       (set) => [row({ ...set })],
     );
     const executorClient = {
-      completeIdentityVerification: vi.fn(),
       verifyConsentIdentity: vi.fn(),
       executeReadAction: vi.fn(),
       syncAction: vi.fn(),
@@ -627,7 +626,6 @@ describe('customer Graph-read connection lifecycle', () => {
       return [row({ ...set })];
     });
     const slowExecutor = {
-      completeIdentityVerification: vi.fn(),
       verifyConsentIdentity: vi.fn(),
       executeReadAction: vi.fn(),
       syncAction: vi.fn(),
@@ -659,7 +657,6 @@ describe('customer Graph-read connection lifecycle', () => {
       orgId: ORG_ID,
       auth: auth(),
       executorClient: {
-        completeIdentityVerification: vi.fn(),
         verifyConsentIdentity: vi.fn(),
         executeReadAction: vi.fn(),
         syncAction: vi.fn(),

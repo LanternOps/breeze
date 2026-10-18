@@ -893,9 +893,9 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
     expect(markAttemptFailed).not.toHaveBeenCalled();
   });
 
-  it.each(['legacy', 'expired'] as const)('a %s browser binding restarts with consent_expired and touches nothing', async (state) => {
+  it('an expired browser binding restarts with consent_expired and touches nothing', async () => {
     const loadAttempt = vi.fn();
-    const res = await h.app({ verifyBindingCookie: () => state, loadAttempt })
+    const res = await h.app({ verifyBindingCookie: () => 'expired', loadAttempt })
       .request(`${h.path}?state=old&tenant=${TENANT_A}&admin_consent=True`, { headers: { cookie: 'x' } });
     expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_expired`);
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
@@ -1035,17 +1035,21 @@ describe('cross-profile isolation', () => {
     it.each([
       ['read', 'breeze_m365_graph_read_consent', 'breeze:m365-customer-graph-read:browser-binding:v1', m365ConsentCallbackRoutes, '/api/v1/m365/consent/callback', 'customer-graph-read'],
       ['actions', 'breeze_m365_graph_actions_consent', 'breeze:m365-customer-graph-actions:browser-binding:v1', m365ActionsConsentCallbackRoutes, '/api/v1/m365/actions-consent/callback', 'customer-graph-actions'],
-    ] as const)('a real in-flight v1 (%s) cookie from before the deploy restarts with consent_expired', async (_n, name, context, routes, path, profile) => {
+    ] as const)('a correctly-signed v1 (%s) cookie is no longer recognised: consent_state_mismatch (#7910 W04)', async (_n, name, context, routes, path, profile) => {
       const payload = Buffer.from(JSON.stringify({
         phase: 'admin_consent', rawState: 'old', connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID,
         tenantHint: null, expiresAt: Math.floor(Date.now() / 1000) + 300,
       })).toString('base64url');
       const mac = createHmac('sha256', KEY).update(`${context}.${payload}`).digest('base64url');
       const app = new Hono().route('/api/v1/m365', routes);
-      const response = await app.request(`${path}?state=old&tenant=${TENANT_A}&admin_consent=True`, {
-        headers: { cookie: `${name}=${payload}.${mac}` },
-      });
-      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_expired`);
+      // Both the v1 admin-consent return shape and a v2 code-shaped return.
+      for (const query of [`state=old&tenant=${TENANT_A}&admin_consent=True`, 'state=old&code=code']) {
+        const response = await app.request(`${path}?${query}`, {
+          headers: { cookie: `${name}=${payload}.${mac}` },
+        });
+        expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_state_mismatch`);
+        expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
+      }
     });
   });
 });
