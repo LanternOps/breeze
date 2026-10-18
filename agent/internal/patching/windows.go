@@ -3,7 +3,6 @@
 package patching
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	"github.com/go-ole/go-ole/oleutil"
 
 	"github.com/breeze-rmm/agent/internal/config"
-	"github.com/breeze-rmm/agent/internal/systemrestore"
 )
 
 // `var log` moved to the untagged log.go in #3197 — reboot_manager.go is
@@ -97,7 +95,7 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 			log.Warn("EULA acceptance failed", "patchId", patchID, "error", err)
 		}
 
-		// Retrieve title early for logging and restore point
+		// Retrieve title early for logging
 		title, _ := w.getStringProperty(update, "Title")
 
 		// Auto-download if not already downloaded
@@ -109,22 +107,10 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 			}
 		}
 
-		// Create restore point before install (best-effort, skip for definitions).
-		//
-		// Still PER UPDATE and still best-effort: #4609 W07 moves the
-		// checkpoint up to one per install_patches command, where the server's
-		// policy decision is available. This wave only changes which package
-		// makes the call.
-		category := w.mapCategory(update)
-		if category != "definitions" {
-			out := systemrestore.Create(context.Background(), systemrestore.Request{
-				Label: "Before install: " + title,
-			})
-			if out.Status != systemrestore.StatusCreated {
-				log.Debug("restore point not created (non-fatal)",
-					"status", string(out.Status), "message", out.Message)
-			}
-		}
+		// No restore point here: since #4609 W07 the install_patches handler
+		// (heartbeat.handleInstallPatches) takes ONE checkpoint per command,
+		// before the first install, where the server's policy decision is
+		// available.
 
 		installer, err := w.createInstaller(session, update)
 		if err != nil {

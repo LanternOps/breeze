@@ -7525,6 +7525,10 @@ type patchCommandRef struct {
 	ExternalID string
 	PackageID  string
 	Title      string
+	// Category is the catalog category the server sends alongside a stamped
+	// restore-point block (#4609 W07); "" when absent. Only the
+	// definitions-only checkpoint skip reads it.
+	Category string
 }
 
 func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback bool) tools.CommandResult {
@@ -7687,6 +7691,7 @@ func (h *Heartbeat) patchRefsFromPayload(payload map[string]any) []patchCommandR
 				ExternalID: tools.GetPayloadString(obj, "externalId", ""),
 				PackageID:  tools.GetPayloadString(obj, "packageId", ""),
 				Title:      tools.GetPayloadString(obj, "title", ""),
+				Category:   tools.GetPayloadString(obj, "category", ""),
 			}
 			key := fmt.Sprintf("%s|%s|%s", ref.ID, ref.Source, ref.ExternalID)
 			if key == "||" {

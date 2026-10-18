@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/systemrestore"
 )
 
 // Accepted bounds for the schedule_reboot deferral budget (#3207). They mirror
@@ -133,10 +135,10 @@ func filterPatchInventoryItemsBySource(items []map[string]any, source string) []
 	return filtered
 }
 
-func handleInstallPatches(h *Heartbeat, cmd Command) tools.CommandResult {
-	start := time.Now()
-
-	// Run pre-flight checks before install
+// patchInstallPreflight runs the install pre-flight checks and returns the
+// first failure, or nil. A var solely so tests can drive the "preflight
+// rejected the command" path without Windows Update.
+var patchInstallPreflight = func(h *Heartbeat) error {
 	opts := patching.PreflightOptionsFromConfig(h.config)
 	pfResult := patching.RunPreflight(opts)
 	for _, check := range pfResult.Checks {
@@ -146,11 +148,67 @@ func handleInstallPatches(h *Heartbeat, cmd Command) tools.CommandResult {
 			log.Warn("preflight failed", "check", check.Name, "message", check.Message)
 		}
 	}
-	if !pfResult.OK {
-		return tools.NewErrorResult(pfResult.FirstError(), time.Since(start).Milliseconds())
+	if pfResult.OK {
+		return nil
+	}
+	if err := pfResult.FirstError(); err != nil {
+		return err
+	}
+	return errors.New("patch install preflight failed")
+}
+
+func handleInstallPatches(h *Heartbeat, cmd Command) (result tools.CommandResult) {
+	start := time.Now()
+
+	// #4609 W07: ONE System Restore checkpoint per install_patches COMMAND,
+	// not per patch. The per-update call that used to live in
+	// patching/windows.go produced N "successes" for at most one real point
+	// under the Windows creation-frequency throttle. A missing block here
+	// means legacy best-effort enabled (Global Constraint 7).
+	refs := h.patchRefsFromPayload(cmd.Payload)
+	cp := newCommandCheckpoint(cmd.Payload, true, fmt.Sprintf("install %d update(s)", len(refs)))
+	// Every return path reports: a stamped request that never reached the
+	// checkpoint (preflight rejection, nothing installable) becomes
+	// skipped_no_mutation rather than vanishing.
+	defer func() { result.RestorePoint = cp.Report() }()
+
+	// Run pre-flight checks before install
+	if err := patchInstallPreflight(h); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
+	// Taken AFTER preflight and the same no-provider / no-patch checks
+	// executePatchInstallCommand makes first, so a command that cannot install
+	// anything does not consume the day's one restore point; and BEFORE that
+	// call, which is the first mutation.
+	if h.patchMgr != nil && len(h.patchMgr.ProviderIDs()) > 0 && len(refs) > 0 {
+		if allDefinitionsOnly(refs) {
+			cp.Skip(systemrestore.StatusSkippedDefinitions, "every patch in this command is a definitions update")
+		} else {
+			takeCheckpoint(cp)
+		}
 	}
 
 	return h.executePatchInstallCommand(cmd.Payload, false)
+}
+
+// allDefinitionsOnly reports whether every patch in the command is a
+// definitions update. UNKNOWN OR EMPTY CATEGORY COUNTS AS RISKY: an unlabelled
+// patch might be anything, so we fail toward taking the checkpoint. The server
+// sends `category` only alongside a stamped block (patchJobExecutor), so an
+// unstamped legacy payload is all-unknown and takes its one best-effort
+// attempt even when every patch is a definitions update (the removed
+// per-update code read the category from WUA instead).
+func allDefinitionsOnly(refs []patchCommandRef) bool {
+	if len(refs) == 0 {
+		return false
+	}
+	for _, r := range refs {
+		if !strings.EqualFold(strings.TrimSpace(r.Category), "definitions") {
+			return false
+		}
+	}
+	return true
 }
 
 func handleRollbackPatches(h *Heartbeat, cmd Command) tools.CommandResult {
