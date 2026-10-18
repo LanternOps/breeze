@@ -27,9 +27,10 @@ const TUNNEL_ENTER_PATH = '/__bz/enter';
 // encodeURIComponent output of an opaque ticket: unreserved chars + %XX.
 const TICKET_CHARS = /^[A-Za-z0-9._~%-]+$/;
 
+// A trailing dot names the same DNS host, so compare without it.
 function hostnameOf(raw: string): string | null {
   try {
-    return new URL(raw).hostname;
+    return new URL(raw).hostname.replace(/\.$/, '');
   } catch {
     return null;
   }
@@ -83,6 +84,10 @@ export function resolveProxyTarget(input: {
   if (parsed.username || parsed.password || parsed.hash || url.includes('#')) return null;
   if (parsed.pathname !== TUNNEL_ENTER_PATH) return null;
 
+  // The server never builds a fully-qualified (trailing-dot) host. It is the
+  // same DNS name under a different origin string, so it would dodge the
+  // "under the app host" comparison below: refuse it outright.
+  if (hostname.endsWith('.')) return null;
   const labels = hostname.split('.');
   if (labels.length < 3 || labels[0] !== tunnelId.toLowerCase()) return null;
   const tunnelSuffix = labels.slice(1).join('.');

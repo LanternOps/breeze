@@ -631,3 +631,97 @@ describe('ProxyTunnelPage host mode', () => {
     });
   });
 });
+
+// Review round on #9150.
+describe('ProxyTunnelPage host mode — review follow-ups', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(showToast).mockClear();
+  });
+
+  it('hides the "Connected" badge while the blocked notice is up', async () => {
+    hostModeFetch();
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    const frame = await screen.findByTestId('network-proxy-frame');
+    fireEvent.load(frame);
+    expect(await screen.findByTestId('proxy-status')).toHaveTextContent('Connected');
+    postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'cookie' });
+    await screen.findByTestId('proxy-cookie-blocked-notice');
+    expect(screen.queryByTestId('proxy-status')).toBeNull();
+  });
+
+  it('clears the blocked notice when the idle reconnect re-mints the frame', async () => {
+    let mints = 0;
+    hostModeFetch({
+      [`GET /tunnels/${HOST_ID}`]: () => makeResponse({ status: 'active', idleSeconds: mints > 1 ? 0 : 400 }),
+      [`POST /tunnels/${HOST_ID}/http-ticket`]: () => {
+        mints += 1;
+        return makeResponse({
+          ticket: { ticket: `TKT${mints}`, expiresInSeconds: 300 },
+          url: `${HOST_ORIGIN}/__bz/enter?t=TKT${mints}`,
+          mode: 'host',
+        });
+      },
+    });
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    const frame = await screen.findByTestId('network-proxy-frame');
+    postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' });
+    // The idle overlay covers the notice; Reconnect re-mints in place.
+    fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('network-proxy-frame').getAttribute('src')).toBe(`${HOST_ORIGIN}/__bz/enter?t=TKT2`),
+    );
+    expect(screen.queryByTestId('proxy-session-expired-overlay')).toBeNull();
+    expect(screen.queryByTestId('proxy-cookie-blocked-notice')).toBeNull();
+  });
+
+  it('keeps Close disabled while its DELETE is in flight', async () => {
+    let resolveDelete: (r: Response) => void = () => {};
+    hostModeFetch({
+      [`DELETE /tunnels/${HOST_ID}`]: () => new Promise<Response>((r) => { resolveDelete = r; }) as unknown as Response,
+    });
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    await screen.findByTestId('network-proxy-frame');
+    fireEvent.click(screen.getByTestId('proxy-close'));
+    await waitFor(() => expect(screen.getByTestId('proxy-close')).toBeDisabled());
+    await act(async () => { resolveDelete(makeResponse({ closed: true })); });
+    expect(await screen.findByTestId('proxy-session-expired-overlay')).toBeInTheDocument();
+  });
+
+  it('on a 401 Close leaves the session as it was and toasts nothing (the auth redirect handles it)', async () => {
+    hostModeFetch({
+      [`DELETE /tunnels/${HOST_ID}`]: () =>
+        ({ ok: false, status: 401, json: vi.fn().mockResolvedValue({ error: 'Unauthorized' }) }) as unknown as Response,
+    });
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    await screen.findByTestId('network-proxy-frame');
+    fireEvent.click(screen.getByTestId('proxy-close'));
+    await waitFor(() => expect(screen.getByTestId('proxy-close')).not.toBeDisabled());
+    expect(vi.mocked(showToast)).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('proxy-session-expired-overlay')).toBeNull();
+  });
+
+  it('logs the refused URL shape for operators, never the ticket', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    hostModeFetch({
+      [`POST /tunnels/${HOST_ID}/http-ticket`]: () =>
+        makeResponse({ ticket: { ticket: 'SECRET', expiresInSeconds: 300 }, url: 'http://localhost:3000/__bz/enter?t=SECRET', mode: 'host' }),
+    });
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    await screen.findByText('The server returned an invalid proxy address.');
+    expect(warn).toHaveBeenCalledWith(
+      '[network-proxy] refused the server-built proxy URL',
+      expect.objectContaining({ tunnelId: HOST_ID, context: 'frame', mode: 'host', host: 'localhost:3000' }),
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRET');
+  });
+
+  it('shows a structured API error as text, not [object Object]', async () => {
+    hostModeFetch({
+      [`POST /tunnels/${HOST_ID}/http-ticket`]: () => makeResponse({ error: { message: 'Proxy disabled by policy' } }, false),
+    });
+    render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
+    expect(await screen.findByText(/Proxy disabled by policy|Failed to obtain tunnel ticket/)).toBeInTheDocument();
+    expect(screen.queryByText('[object Object]')).toBeNull();
+  });
+});

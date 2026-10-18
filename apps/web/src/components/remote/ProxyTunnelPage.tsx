@@ -145,7 +145,7 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
     );
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || stableT('proxyTunnelPage.errors.obtainTicket'));
+      throw new Error(extractApiError(body, stableT('proxyTunnelPage.errors.obtainTicket')));
     }
     const body = await res.json();
     // The mint endpoint wraps the ticket: `{ ticket: { ticket, expiresInSeconds }, url, mode }`.
@@ -162,7 +162,16 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
       appOrigin: window.location.origin,
       apiBase: apiBase(),
     });
-    if (!resolved) throw new Error(stableT('proxyTunnelPage.errors.invalidProxyUrl'));
+    if (!resolved) {
+      // The user sees one generic message; leave operators the shape that was
+      // refused (never the URL itself: it carries the one-time ticket).
+      let host = typeof url === 'string' && url.startsWith('/') ? '(relative)' : '(unparseable)';
+      try { if (typeof url === 'string' && !url.startsWith('/')) host = new URL(url).host; } catch { /* keep */ }
+      console.warn('[network-proxy] refused the server-built proxy URL', {
+        tunnelId, context, mode: body.mode, host, appOrigin: window.location.origin, apiBase: apiBase(),
+      });
+      throw new Error(stableT('proxyTunnelPage.errors.invalidProxyUrl'));
+    }
     return resolved;
   }, [tunnelId, stableT]);
 
@@ -304,6 +313,7 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) {
+        console.error('[network-proxy] close failed', err);
         showToast({ type: 'error', message: t('proxyTunnelPage.errors.closeFailed') });
       }
     } finally {
@@ -352,8 +362,10 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
           <span className="truncate font-mono text-xs text-muted-foreground">{target || '—'}</span>
           {/* A badge left showing "Connected" here would be stale once the row is
               actually terminal or idle-expired — the overlay below is the source
-              of truth in that case, so the badge steps aside for it. */}
-          {!showExpiredOverlay && (
+              of truth in that case, so the badge steps aside for it. Likewise
+              for the cookie/storage-blocked notice: the iframe "loaded" (the
+              bootstrap page), but the embedded session cannot work. */}
+          {!showExpiredOverlay && !blockedReason && (
             <span data-testid="proxy-status" className={`shrink-0 text-xs font-medium ${statusColor}`}>{statusLabel}</span>
           )}
         </div>

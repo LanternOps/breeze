@@ -43,6 +43,10 @@ describe('resolveProxyTarget — host mode', () => {
     ['a subdomain of the app host', `https://${ID}.us.breeze-app.test/__bz/enter?t=T`],
     ['a tunnel suffix that is a parent of the app host', `https://${ID}.breeze-app.test/__bz/enter?t=T`],
     ['plain http on a public name', `http://${ID}.us.breezetunnel.test/__bz/enter?t=T`],
+    // A trailing dot is the same DNS name but a different origin string, so it
+    // would slip past the "under the app host" check (review of #9150).
+    ['a trailing-dot host under the app host', `https://${ID}.us.breeze-app.test./__bz/enter?t=T`],
+    ['a trailing-dot tunnel host', `https://${ID}.us.breezetunnel.test./__bz/enter?t=T`],
     ['userinfo', `https://u:p@${ID}.us.breezetunnel.test/__bz/enter?t=T`],
     ['a fragment', `${TUNNEL}/__bz/enter?t=T#x`],
     ['an empty fragment', `${TUNNEL}/__bz/enter?t=T#`],
@@ -80,6 +84,13 @@ describe('resolveProxyTarget — host mode', () => {
     });
     // A tunnel host under the dev app host is still refused.
     expect(resolve(`http://${ID}.app.localhost:18480/__bz/enter?t=T`, dev)).toBeNull();
+  });
+
+  it('compares against an app host configured with a trailing dot as the same name', () => {
+    expect(
+      resolve(`https://${ID}.us.breeze-app.test/__bz/enter?t=T`, { appOrigin: 'https://us.breeze-app.test.' }),
+    ).toBeNull();
+    expect(resolve(`${TUNNEL}/__bz/enter?t=T`, { appOrigin: 'https://us.breeze-app.test.' })?.mode).toBe('host');
   });
 
   it('refuses a host-mode URL whose origin equals the API base even when it differs from the app origin', () => {
