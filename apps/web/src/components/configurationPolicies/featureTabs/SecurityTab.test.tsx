@@ -124,9 +124,22 @@ describe('SecurityTab scan settings (#6263 W01)', () => {
 
     const inlineSettings = saveMock.mock.calls.at(-1)![1].inlineSettings;
     expect(Object.keys(inlineSettings).sort()).toEqual([
-      'autoQuarantine', 'exclusions', 'maxFileSizeMb', 'scanDayOfMonth', 'scanDayOfWeek',
+      'autoQuarantine', 'exclusions', 'maxFileSizeMb', 'ruleSetIds', 'scanDayOfMonth', 'scanDayOfWeek',
       'scanHour', 'scanMinute', 'scanTimeoutMinutes', 'scanType', 'scheduledScans',
     ]);
+  });
+
+  // #6263 W03: the tab has no rule-set picker yet (W04), so saving any other
+  // field must carry the policy's attached rule sets through unchanged.
+  it('round-trips attached YARA rule sets on save', async () => {
+    const ids = ['00000000-0000-4000-8000-00000000b001', '6f1d2c3b-0000-4000-8000-0000000000a1'];
+    render(<SecurityTab {...baseProps} existingLink={{
+      id: 'link-1', featureType: 'security', featurePolicyId: null,
+      inlineSettings: { autoQuarantine: false, ruleSetIds: ids },
+    } as never} />);
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(saveMock.mock.calls.at(-1)![1].inlineSettings.ruleSetIds).toEqual(ids);
   });
 
   it('renders no control for the five removed toggles', () => {

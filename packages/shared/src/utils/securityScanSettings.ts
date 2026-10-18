@@ -3,6 +3,7 @@ import {
   type SecurityScanSettings,
   type SecurityScanType,
 } from '../types/securityScan';
+import { YARA_MAX_RULE_SETS_PER_POLICY } from '../types/yara';
 
 export const SECURITY_SCAN_MAX_FILE_SIZE_MB_RANGE = [1, 512] as const;
 export const SECURITY_SCAN_TIMEOUT_MINUTES_RANGE = [5, 720] as const;
@@ -24,7 +25,24 @@ export const SECURITY_SCAN_SETTINGS_DEFAULTS: SecurityScanSettings = {
   exclusions: [],
   maxFileSizeMb: 50,
   scanTimeoutMinutes: 120,
+  ruleSetIds: [],
 };
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Unique lower-case UUIDs, first-seen order, capped at the per-policy max. */
+function parseRuleSetIds(raw: unknown): string[] {
+  const out: string[] = [];
+  if (!Array.isArray(raw)) return out;
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const id = item.trim().toLowerCase();
+    if (!UUID_PATTERN.test(id) || out.includes(id)) continue;
+    out.push(id);
+    if (out.length >= YARA_MAX_RULE_SETS_PER_POLICY) break;
+  }
+  return out;
+}
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -47,7 +65,7 @@ const oneOfOr = <T extends string>(v: unknown, options: readonly T[], fallback: 
  * field rather than poisoning a scan command.
  */
 export function parseSecurityScanSettings(raw: unknown): SecurityScanSettings {
-  if (!isRecord(raw)) return { ...SECURITY_SCAN_SETTINGS_DEFAULTS };
+  if (!isRecord(raw)) return { ...SECURITY_SCAN_SETTINGS_DEFAULTS, exclusions: [], ruleSetIds: [] };
   const d = SECURITY_SCAN_SETTINGS_DEFAULTS;
 
   const exclusions: string[] = [];
@@ -73,6 +91,7 @@ export function parseSecurityScanSettings(raw: unknown): SecurityScanSettings {
     scanTimeoutMinutes: clampedIntOr(
       raw.scanTimeoutMinutes, SECURITY_SCAN_TIMEOUT_MINUTES_RANGE, d.scanTimeoutMinutes,
     ),
+    ruleSetIds: parseRuleSetIds(raw.ruleSetIds),
   };
 }
 

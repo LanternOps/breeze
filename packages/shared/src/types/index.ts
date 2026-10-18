@@ -1000,6 +1000,7 @@ export * from './topologyInvestigation';
 export * from './topologyAi';
 
 export * from './securityScan';
+export * from './yara';
 
 // Metric anomaly episodes (spec 2026-09-21)
 export * from './metricAnomalyEpisodes';
