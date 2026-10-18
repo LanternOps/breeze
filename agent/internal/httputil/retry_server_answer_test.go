@@ -28,7 +28,7 @@ func TestDoKeepsServerAnswerWhenContextExpiresDuringRetryAfter(t *testing.T) {
 	cfg := RetryConfig{MaxRetries: 3, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond, BackoffFactor: 1}
 	resp, err := Do(ctx, ts.Client(), "POST", ts.URL, nil, nil, cfg)
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		t.Fatal("expected no response")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
