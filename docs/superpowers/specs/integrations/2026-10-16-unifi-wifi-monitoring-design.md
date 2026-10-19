@@ -547,14 +547,24 @@ Coverage/reason codes remain bounded lowercase topology reasons; implementation 
 - no new customer-portal surface appears;
 - loading/empty/error states remain complete, and translations cover all 8 web locales, as enforced by `localeParity`.
 
+### 14.6 Local-controller evidence (W1 acceptance)
+
+The fixtures in section 2.3 came through the Site Manager cloud connector, while the agent calls the local `/proxy/network/integration/v1` path. The W1 pull request is not complete until it attaches at least one sanitized, GET-only capture from a local controller on a supported Network version, covering:
+
+- device list and device detail with radios;
+- `statistics/latest`;
+- client list with `uplinkDeviceId`.
+
+The capture must confirm the same response shape as the cloud fixtures. Any difference is recorded in the pull request, and the parsers and fixtures are updated before merge. Identifiers, names, MAC addresses and IP addresses are removed.
+
 ## 15. Implementation sequence after spec approval
 
-This spec is the implementation plan; do not create a separate design document before coding unless the maintainer requests one.
+This spec is the implementation plan; do not create a separate design document before coding unless the maintainer requests one. Each numbered step is one implementation wave, named W1 to W4 in this document; the other sections use these names.
 
-1. **Contract + API compatibility:** shared v2 schemas/types/canonicalization/fixture, API dual-version parser/advertisement, topology v2 adapter support, DB migration and current-state materializer; keep v1 green.
-2. **Agent collection:** candidate decoding, radio detail parsing, bounded statistics rotation/cursor, v2 builder/negotiation and fixture parity.
-3. **Read model/UI:** extend `/unifi/telemetry`, Deep telemetry types/rendering and freshness labels.
-4. **Integration/rollout verification:** mixed-version paths, tenancy, request-count tests, failure isolation, docs/changelog as required by the implementation PR.
+1. **W1, contract + API compatibility:** shared v2 schemas/types/canonicalization/fixture, API dual-version parser/advertisement, topology v2 adapter support, DB migration and current-state materializer; keep v1 green. Acceptance includes the local-controller capture in section 14.6.
+2. **W2, agent collection:** candidate decoding, radio detail parsing, bounded statistics rotation/cursor, v2 builder/negotiation and fixture parity.
+3. **W3, read model/UI:** extend `/unifi/telemetry`, Deep telemetry types/rendering and freshness labels.
+4. **W4, integration/rollout verification:** mixed-version paths, tenancy, request-count tests, failure isolation, docs/changelog as required by the implementation PR.
 
 Deployment follows section 4.4: API support before an agent release that can emit v2.
 
