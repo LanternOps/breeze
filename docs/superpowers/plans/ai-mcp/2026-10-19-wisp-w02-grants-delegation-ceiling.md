@@ -25,8 +25,8 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Tenancy ceremony.** RLS enable + force + policies in the creating migration; composite FK to `organizations(id, partner_id)` is `DEFERRABLE INITIALLY IMMEDIATE`; `wisp_grants` (has an `org_id` column) is registered in `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, `CORE_TENANT_EXPORT_POLICY`, `PARTNER_TENANT_TABLES` and `ORG_AXIS_POLICY_EXCLUDED_TABLES`; `wisp_grant_revisions` in `PARTNER_TENANT_TABLES`; every `jsonb` column on an org-cascade table is `excludedOpen`. Org-cascade + export-policy suites run under **Integration Tests** before the PR.
 - **Migrations** are `2027-01-02-100100-wisp-grants.sql` and `2027-01-02-100110-ai-workspace-execute-permission.sql` (newest shipped at plan time: `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`; re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing). Idempotent, no inner `BEGIN`/`COMMIT`; a file that writes rows elects `SELECT set_config('breeze.scope', 'system', true);` first. Status/kind columns are `text` + CHECK, never `pgEnum`.
 - **Step-up, not `requireMfa()`.** Grant create/refresh consume a `wisp_grant` step-up grant (TTL 600 s; resource digest `sha256:` of `${grantorUserId}:${partnerId}:${orgId ?? '*'}:${requestedCeilingHash}`), the primitive `routes/partnerAiScriptPolicy.ts:140-167` uses.
-- **Grants are self-only.** INSERT only by the grantor; UPDATE by the grantor, or by a partner admin restricted to tighten/revoke; nobody substitutes the grantor or widens a revision. Refresh = new revision, never a mutated old one; existing work stays pinned to the revision it was admitted under.
-- **Defaults** (spec §4.2, §9, §16): `expires_at` = now + 90 days; `budget_cents_per_day` 200; `floor_tick_minutes` 15; `grantee` `'wisp'`. Plan-driven values arrive with W01/W05.
+- **Grants are self-only.** INSERT only by the grantor; UPDATE by the grantor, or by a partner admin restricted to tighten/revoke **plus the two operational settings `budget_cents_per_day` / `floor_tick_minutes` (w00 A6 — budget and tick are not authority)**; nobody substitutes the grantor or widens a revision. Refresh = new revision, never a mutated old one; existing work stays pinned to the revision it was admitted under.
+- **Defaults** (spec §4.2, §9, §16; w00 A6): `expires_at` = now + 90 days; `budget_cents_per_day` 200; `floor_tick_minutes` **30** (bounds 15–240); `grantee` `'wisp'`. Plan-driven values arrive with W01/W05.
 - **Tests** sit beside source; run one file with `cd apps/api && npx vitest run <path>`; never `pnpm --filter <pkg> test -- --run <path>`. Red first.
 - **No internal hosts/IPs/tokens** in code or examples. Identifiers `wisp_*` / `wisp*`; copy says "Wisp".
 
@@ -183,14 +183,14 @@ it('writes no rows, so it needs no system-scope election', () => { expect(sql).n
      revoked_by_user_id   uuid NULL REFERENCES users(id) ON DELETE SET NULL,
      expires_at           timestamptz NOT NULL,
      budget_cents_per_day integer NOT NULL DEFAULT 200,
-     floor_tick_minutes   integer NOT NULL DEFAULT 15,
+     floor_tick_minutes   integer NOT NULL DEFAULT 30,
      created_at           timestamptz NOT NULL DEFAULT now(),
      updated_at           timestamptz NOT NULL DEFAULT now(),
      CONSTRAINT wisp_grants_status_chk CHECK (status IN ('active','paused','revoked','expired')),
      CONSTRAINT wisp_grants_grantee_chk CHECK (grantee IN ('wisp')),
      CONSTRAINT wisp_grants_paused_reason_chk CHECK (paused_reason IS NULL OR paused_reason IN ('grantor_access_lost','grantor_suspended','factor_expired','entitlement_lost','budget_exhausted')),
      CONSTRAINT wisp_grants_paused_shape_chk CHECK ((status = 'paused') = (paused_reason IS NOT NULL)),
-     CONSTRAINT wisp_grants_budget_chk CHECK (budget_cents_per_day >= 0 AND floor_tick_minutes >= 15)
+     CONSTRAINT wisp_grants_budget_chk CHECK (budget_cents_per_day >= 0 AND floor_tick_minutes BETWEEN 15 AND 240)
    );
    ```
    Then (each `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT`): `wisp_grants_org_partner_fk FOREIGN KEY (org_id, partner_id) REFERENCES organizations (id, partner_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE`; `wisp_grants_grantor_partner_fk FOREIGN KEY (grantor_user_id, partner_id) REFERENCES users (id, partner_id) ON DELETE CASCADE`. Indexes: `wisp_grants_partner_idx (partner_id)`, `wisp_grants_grantor_idx (grantor_user_id)`, `wisp_grants_org_idx (org_id) WHERE org_id IS NOT NULL`, and the one-active-per-scope rule `CREATE UNIQUE INDEX IF NOT EXISTS wisp_grants_one_live_per_scope_uq ON wisp_grants (grantor_user_id, partner_id, COALESCE(org_id, '00000000-0000-0000-0000-000000000000'::uuid)) WHERE status IN ('active','paused')`.
@@ -218,7 +218,7 @@ it('writes no rows, so it needs no system-scope election', () => { expect(sql).n
 5. Trigger `wisp_grants_update_guard()` BEFORE UPDATE ON `wisp_grants`:
    - Always: `partner_id`, `org_id`, `grantor_user_id`, `grantee`, `created_at` immutable → `RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'wisp_grants: ownership columns are immutable'`.
    - Terminal: `OLD.status IN ('revoked','expired')` and `NEW.status <> OLD.status` → same ERRCODE, message `'wisp_grants: a revoked or expired grant cannot change status'`.
-   - When `breeze_current_scope() <> 'system' AND breeze_current_user_id() IS DISTINCT FROM OLD.grantor_user_id` (a partner admin): allowed changes are exactly `status` → `'paused'` or `'revoked'` with the matching `paused_reason/paused_at` or `revoked_at/revoked_by_user_id`, plus `updated_at`; any change to `current_revision_id`, `expires_at`, `budget_cents_per_day`, `floor_tick_minutes`, or `status` → `'active'` raises ERRCODE `42501`, message `'wisp_grants: a partner admin may only pause or revoke'`.
+   - When `breeze_current_scope() <> 'system' AND breeze_current_user_id() IS DISTINCT FROM OLD.grantor_user_id` (a partner admin): allowed changes are exactly `status` → `'paused'` or `'revoked'` with the matching `paused_reason/paused_at` or `revoked_at/revoked_by_user_id`, the two operational settings `budget_cents_per_day` and `floor_tick_minutes` (w00 A6; bounds enforced by `wisp_grants_budget_chk` and the plan limits in the service), plus `updated_at`; any change to `current_revision_id`, `expires_at`, or `status` → `'active'` raises ERRCODE `42501`, message `'wisp_grants: a partner admin may only pause, revoke, or change budget/tick'`.
    - `NEW.updated_at := now()`.
    Create the trigger with `DROP TRIGGER IF EXISTS … ; CREATE TRIGGER wisp_grants_update_guard BEFORE UPDATE ON wisp_grants FOR EACH ROW EXECUTE FUNCTION wisp_grants_update_guard();`.
 6. Trigger `wisp_grant_revisions_immutable_guard()` BEFORE UPDATE OR DELETE: raise ERRCODE `42501` unless `breeze_current_scope() = 'system' AND TG_OP = 'DELETE'`.
@@ -344,7 +344,7 @@ it('wisp_grant digest binds grantor, partner, scope and the requested ceiling', 
 - Consumes: `getUserPermissions(userId, { partnerId, scope: 'partner' }, { bypassCache: true })` (`services/permissions.ts:195`), `computeAccessibleOrgIds('partner', partnerId, null, userId)` (`middleware/auth.ts:406`), `permissionGrantMatches` (`services/permissionMatching.ts:14`), `AGENT_HUMAN_ONLY_TOOLS`, `AGENT_DENIED_READ_TOOLS` (`services/aiToolExposure.ts`), `wispGrants`, `wispGrantRevisions` (Task 2), `users.status` (`'active' | 'invited' | 'disabled'`).
 - Produces (exactly the w00 block):
   ```ts
-  export type GrantCeiling = { grantId; revisionId; partnerId; orgIds: ReadonlySet<string>; siteIds: ReadonlySet<string> | null; permissionKeys: ReadonlySet<string>; toolAllowlist: ReadonlySet<string> | null; deniedTools: ReadonlySet<string>; status: WispGrantStatus };
+  export type GrantCeiling = { grantId; revisionId; partnerId; grantorUserId: string /* w00 A3 — W03's broker and W05's watches read it; no second lookup */; orgIds: ReadonlySet<string>; siteIds: ReadonlySet<string> | null; permissionKeys: ReadonlySet<string>; toolAllowlist: ReadonlySet<string> | null; deniedTools: ReadonlySet<string>; status: WispGrantStatus };
   export async function resolveGrantCeiling(grantId: string, revisionId: string): Promise<GrantCeiling>; // throws GrantInactiveError when status !== 'active'
   export type CeilingCheck = { toolName?: string; permission?: string; orgId?: string | null; siteId?: string | null };
   export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck): void;
@@ -364,7 +364,7 @@ it('wisp_grant digest binds grantor, partner, scope and the requested ceiling', 
 
 ```ts
 const ceiling = (o: Partial<GrantCeiling> = {}): GrantCeiling => ({
-  grantId: 'g', revisionId: 'r', partnerId: 'p', status: 'active',
+  grantId: 'g', revisionId: 'r', partnerId: 'p', grantorUserId: 'u1', status: 'active',
   orgIds: new Set(['org-a']), siteIds: null, permissionKeys: new Set(['devices:read', 'tickets:write']),
   toolAllowlist: null, deniedTools: new Set([...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()]), ...o });
 it('passes a check inside every term', () => { expect(() => assertWithinCeiling(ceiling(), { toolName: 'get_device', permission: 'devices:read', orgId: 'org-a' })).not.toThrow(); });
@@ -402,7 +402,7 @@ it('resolveGrantCeiling returns status active but live term ok:false ⇒ throws 
 
 - [ ] **Step 2: Run** `npx vitest run src/services/wisp/grantAuthority.test.ts` → FAIL (module not found).
 
-- [ ] **Step 3: Implement `grantAuthority.ts`.** `assertWithinCeiling` evaluation order: `status !== 'active'` → `inactive`; `toolName` in `deniedTools` → `tool`; `toolAllowlist !== null && !toolAllowlist.has(toolName)` → `tool`; `orgId` given and `!orgIds.has(orgId)` → `org`; `siteIds !== null` and (`siteId == null || !siteIds.has(siteId)`) → `site` (only when `orgId` or `siteId` was supplied); `permission` given and no key in `permissionKeys` for which `permissionGrantMatches({resource, action}, reqResource, reqAction)` holds → `permission`. `resolveGrantCeiling` runs `runOutsideDbContext(() => withSystemDbAccessContext(…))`, loads grant + revision (asserting `revision.grantId === grantId`), throws `GrantInactiveError` unless `status === 'active'` and `expiresAt > now`, then `computeLiveHumanTerm(grant.grantorUserId, grant.partnerId)`; `ok:false` → `GrantInactiveError` (the reconciler, Task 8, persists the pause); `toolAllowlist` = snapshot's list as a Set or null; `deniedTools` = snapshot denies ∪ `AGENT_HUMAN_ONLY_TOOLS` ∪ `AGENT_DENIED_READ_TOOLS.keys()`. `computeLiveHumanTerm`: user row (`status`, `partnerId`), `getUserPermissions(userId, { partnerId, scope: 'partner' }, { bypassCache: true })`, require `hasPermission(perms, 'ai_sessions', 'use')`, `computeAccessibleOrgIds('partner', partnerId, null, userId)`; `permissionKeys = perms.permissions.map(permissionKey)`; `siteIds = perms.allowedSiteIds ?? null`. In `aiGuardrails.ts` add the exported `toolPermissionRequirements` wrapper returning `resolution.ok ? resolution.requirements : null`.
+- [ ] **Step 3: Implement `grantAuthority.ts`.** `assertWithinCeiling` evaluation order: `status !== 'active'` → `inactive`; `toolName` in `deniedTools` → `tool`; `toolAllowlist !== null && !toolAllowlist.has(toolName)` → `tool`; `orgId` given and `!orgIds.has(orgId)` → `org`; `siteIds !== null` and (`siteId == null || !siteIds.has(siteId)`) → `site` (only when `orgId` or `siteId` was supplied); `permission` given and no key in `permissionKeys` for which `permissionGrantMatches({resource, action}, reqResource, reqAction)` holds → `permission`. `resolveGrantCeiling` runs `runOutsideDbContext(() => withSystemDbAccessContext(…))`, loads grant + revision (asserting `revision.grantId === grantId`), throws `GrantInactiveError` unless `status === 'active'` and `expiresAt > now`, then `computeLiveHumanTerm(grant.grantorUserId, grant.partnerId)`; `ok:false` → `GrantInactiveError` (the reconciler, Task 8, persists the pause); `grantorUserId` = `grant.grantorUserId`; `toolAllowlist` = snapshot's list as a Set or null; `deniedTools` = snapshot denies ∪ `AGENT_HUMAN_ONLY_TOOLS` ∪ `AGENT_DENIED_READ_TOOLS.keys()`. `computeLiveHumanTerm`: user row (`status`, `partnerId`), `getUserPermissions(userId, { partnerId, scope: 'partner' }, { bypassCache: true })`, require `hasPermission(perms, 'ai_sessions', 'use')`, `computeAccessibleOrgIds('partner', partnerId, null, userId)`; `permissionKeys = perms.permissions.map(permissionKey)`; `siteIds = perms.allowedSiteIds ?? null`. In `aiGuardrails.ts` add the exported `toolPermissionRequirements` wrapper returning `resolution.ok ? resolution.requirements : null`.
 
 - [ ] **Step 4: Run the test file** → PASS. `npx vitest run src/services/aiGuardrails.workspaceToolSurface.contract.test.ts` still PASS (export is additive).
 
@@ -417,7 +417,7 @@ it('resolveGrantCeiling returns status active but live term ok:false ⇒ throws 
 - Test: `apps/api/src/services/wisp/grants.test.ts` (guards only; DB behaviour is Task 13)
 
 **Interfaces:**
-- Consumes: Task 4's `consumeStepUpGrant`, `wispGrantResourceDigest`; `getUserEpochs` (`services/authEpochs.ts`); `hasSatisfiedMfa` (`middleware/auth.ts`); `canManagePartnerWidePolicies` (`services/partnerWideAccess.ts:25`); Task 6's `computeLiveHumanTerm`, `ceilingSnapshotHash`; `createAuditLogAsync` (`services/auditService.ts:126`).
+- Consumes: Task 4's `consumeStepUpGrant`, `wispGrantResourceDigest`; `getUserEpochs` (`services/authEpochs.ts`); `hasSatisfiedMfa` (`middleware/auth.ts`); `canManagePartnerWidePolicies` (`services/partnerWideAccess.ts:25`); Task 6's `computeLiveHumanTerm`, `ceilingSnapshotHash`; `createAuditLogAsync` (`services/auditService.ts:126`); W01's `getEntitlementLimits(partnerId, 'wisp'): Promise<unknown | null>` (`services/entitlements.ts`, W01 Task 4) parsed with `wispLimitsSchema` (`@breeze/shared`, W01 Task 2) — imported lazily (`await import('../entitlements')`) and treated as `null` limits when the module or the row is absent, so W02 merges and runs before W01 without a cap.
 - Produces (w00 block verbatim, plus two W02 helpers the routes need):
   ```ts
   export type WispGrantScope = { partnerId: string; orgId: string | null };
@@ -430,9 +430,14 @@ it('resolveGrantCeiling returns status active but live term ok:false ⇒ throws 
   export async function revokeGrant(input: { auth: AuthContext; grantId: string }): Promise<void>;
   export async function getActiveGrantForUser(userId: string, scope: WispGrantScope): Promise<WispGrant | null>;
   // W02 helpers
-  export async function previewGrantCeiling(input: { auth: AuthContext; scope: WispGrantScope }): Promise<{ snapshot: WispCeilingSnapshot; requestedCeilingHash: string }>;
+  export async function previewGrantCeiling(input: { auth: AuthContext; scope: WispGrantScope }): Promise<{ scope: WispGrantScope; ceilingSnapshot: WispCeilingSnapshot; ceilingHash: string }>; // w00 A4 shape; ceilingHash = ceilingSnapshotHash(ceilingSnapshot) is the step-up resource the client mints against
   export async function listGrants(input: { auth: AuthContext; view: 'mine' | 'partner' }): Promise<WispGrant[]>;
-  export class WispGrantError extends Error { constructor(public readonly code: 'not_user_session' | 'partner_mismatch' | 'org_out_of_reach' | 'mfa_required' | 'step_up_required' | 'grantor_access_lost' | 'grantor_suspended' | 'not_found' | 'forbidden' | 'already_active' | 'not_active', message: string) }
+  export type GrantSettingsBounds = { budgetCentsPerDayMax: number; minFloorTickMinutes: number }; // W05 derives plan bounds from W01 entitlements; W02 alone uses the static { 5000, 15 }
+  export async function updateGrantSettings(input: { auth: AuthContext; grantId: string; patch: { budgetCentsPerDay?: number; floorTickMinutes?: number }; bounds?: GrantSettingsBounds }): Promise<WispGrant>; // w00 A6: grantor or canManagePartnerWidePolicies; ≥1 key; floorTickMinutes ∈ [bounds.minFloorTickMinutes, 240]; budgetCentsPerDay ∈ [0, bounds.budgetCentsPerDayMax]; never touches the revision
+  export async function wideningAvailable(grantId: string): Promise<boolean>; // spec §4.4: true when computeLiveHumanTerm has an org id or permission key the current revision's snapshot lacks (live ⊋ snapshot); false when equal, narrower, or the live term is ok:false
+  export class WispGrantError extends Error { constructor(public readonly code: 'not_user_session' | 'partner_mismatch' | 'org_out_of_reach' | 'mfa_required' | 'step_up_required' | 'grantor_access_lost' | 'grantor_suspended' | 'not_found' | 'forbidden' | 'already_active' | 'not_active' | 'settings_out_of_bounds', message: string) }
+  export class GrantLimitReachedError extends Error { readonly code = 'grant_limit_reached'; constructor(public readonly partnerId: string, public readonly maxGrants: number, public readonly active: number) } // W01 WispLimits.maxGrants; route → 409
+  export async function resolveMaxGrants(partnerId: string): Promise<number | null>; // wispLimitsSchema.safeParse(await getEntitlementLimits(partnerId, 'wisp')) → limits.maxGrants; null when the entitlements module is absent, the limits are null, or parsing fails (⇒ no cap)
   ```
   `createGrant`/`refreshGrant` run in the caller's request DB context (RLS INSERT-by-grantor is part of the contract); `pauseGrant`/`resumeGrant` run in system context (`runOutsideDbContext(withSystemDbAccessContext)`) because their callers are workers.
 
@@ -445,8 +450,14 @@ it('createGrant refuses an orgId the caller cannot reach (auth.canAccessOrg fals
 it('createGrant refuses when hasSatisfiedMfa(auth) is false with mfa_required', …);
 it('createGrant binds the consumed step-up to { userId: auth.user.id, operation: "wisp_grant", authEpoch, mfaEpoch, sid, resourceDigest: wispGrantResourceDigest({ grantorUserId, partnerId, orgId, requestedCeilingHash: ceilingSnapshotHash(liveSnapshot) }) } and maps a false consume to step_up_required', …);
 it('createGrant writes factor_proof as { method, verifiedAt } only — never the step-up grant id', …);
-it('createGrant sets expiresAt = now + 90 days, budgetCentsPerDay 200, floorTickMinutes 15, grantee wisp', …);
+it('createGrant sets expiresAt = now + 90 days, budgetCentsPerDay 200, floorTickMinutes 30, grantee wisp', …);
+it('createGrant throws GrantLimitReachedError (code grant_limit_reached) when the partner\'s count of status=active grants ≥ limits.maxGrants, before consuming the step-up and before any insert', …); // getEntitlementLimits mocked → { maxGrants: 2, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 }; count mocked 2
+it('createGrant admits when active count < maxGrants (count 1 of 2); paused/revoked/expired rows are not counted', …);
+it('createGrant applies no cap when getEntitlementLimits resolves null or the entitlements module cannot be imported (W01 not merged)', …); // vi.doMock('../entitlements', () => { throw … }) and a null-resolving variant
 it('refreshGrant inserts revision n+1 and never updates the previous revision row', …);
+it('updateGrantSettings: grantor may change budget/tick; a partner admin (canManagePartnerWidePolicies) may too; another tech → forbidden', …);
+it('updateGrantSettings rejects floorTickMinutes 14 and 241, budget above bounds.budgetCentsPerDayMax, and an empty patch (settings_out_of_bounds); currentRevisionId is untouched', …);
+it('wideningAvailable is true when live orgIds or permissionKeys exceed the current snapshot, false when equal or narrower, false when the live term is ok:false', …);
 it('revokeGrant by a non-grantor who is not canManagePartnerWidePolicies → forbidden', …);
 it('revokeGrant by a partner admin succeeds and stamps revoked_by_user_id = admin', …);
 it('pauseGrant is a no-op on a revoked grant (never resurrects a terminal row)', …);
@@ -455,11 +466,13 @@ it('resumeGrant only moves paused → active', …);
 
 - [ ] **Step 2: Run** `npx vitest run src/services/wisp/grants.test.ts` → FAIL.
 
-- [ ] **Step 3: Implement.** Order inside `createGrant`: principal/scope/org/mfa guards → `computeLiveHumanTerm(auth.user.id, scope.partnerId)` (`ok:false` → its reason as a `WispGrantError`) → build `snapshot` (`orgIds` = live orgIds ∩ (`scope.orgId ? [scope.orgId] : all`), `permissionKeys`, `siteIds`, `toolAllowlist: null`, `deniedTools: [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()]`) → `consumeStepUpGrant` with the digest built from `ceilingSnapshotHash(snapshot)` → one transaction: insert grant (`currentRevisionId: null`), insert revision 1 (`factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() }`), update `currentRevisionId`; a 23505 on `wisp_grants_one_live_per_scope_uq` → `already_active`. `refreshGrant`: same guards; the grant must be `active` or `paused` and `grantorUserId === auth.user.id`; new revision `max(revision)+1`; update `currentRevisionId`; a paused grant stays paused. `revokeGrant`: grantor or `canManagePartnerWidePolicies(auth)`; sets `status 'revoked'`, `revokedAt`, `revokedByUserId`. Every mutation calls `createAuditLogAsync({ partnerId, orgId: scope.orgId, actorType: 'user', actorId, action: 'wisp.grant.<created|refreshed|revoked|paused|resumed>', resourceType: 'wisp_grant', resourceId, details: { revisionId, reason? } })`. `previewGrantCeiling` returns the snapshot the create path would compute and its hash (the client mints the step-up against this hash; a reach change between preview and create fails the binding → `step_up_required`).
+- [ ] **Step 3: Implement.** Order inside `createGrant`: principal/scope/org/mfa guards → **grant cap**: `max = await resolveMaxGrants(scope.partnerId)`; when `max !== null`, `active = SELECT count(*) FROM wisp_grants WHERE partner_id = $1 AND status = 'active'` (request context; the partner SELECT branch sees every grant of the partner); `active >= max` → `throw new GrantLimitReachedError(partnerId, max, active)` (spec §10 `limits.maxGrants`; checked before the step-up is consumed so a refused attempt does not burn the proof) → `computeLiveHumanTerm(auth.user.id, scope.partnerId)` (`ok:false` → its reason as a `WispGrantError`) → build `snapshot` (`orgIds` = live orgIds ∩ (`scope.orgId ? [scope.orgId] : all`), `permissionKeys`, `siteIds`, `toolAllowlist: null`, `deniedTools: [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()]`) → `consumeStepUpGrant` with the digest built from `ceilingSnapshotHash(snapshot)` → one transaction: insert grant (`currentRevisionId: null`), insert revision 1 (`factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() }`), update `currentRevisionId`; a 23505 on `wisp_grants_one_live_per_scope_uq` → `already_active`. `refreshGrant`: same guards; the grant must be `active` or `paused` and `grantorUserId === auth.user.id`; new revision `max(revision)+1`; update `currentRevisionId`; a paused grant stays paused. `revokeGrant`: grantor or `canManagePartnerWidePolicies(auth)`; sets `status 'revoked'`, `revokedAt`, `revokedByUserId`. Every mutation calls `createAuditLogAsync({ partnerId, orgId: scope.orgId, actorType: 'user', actorId, action: 'wisp.grant.<created|refreshed|revoked|paused|resumed>', resourceType: 'wisp_grant', resourceId, details: { revisionId, reason? } })`. `previewGrantCeiling` returns the snapshot the create path would compute and its hash (the client mints the step-up against this hash; a reach change between preview and create fails the binding → `step_up_required`). `updateGrantSettings` runs in the request context (RLS + the update trigger allow the grantor and a partner admin), audits `wisp.grant.settings_changed` with `{ from, to }`, and defaults `bounds` to `{ budgetCentsPerDayMax: 5000, minFloorTickMinutes: 15 }` (W05 passes plan bounds). `wideningAvailable` compares the live term against `current_revision_id`'s `ceiling_snapshot` set-wise and runs in system context.
+
+- [ ] **Step 3b: Route step for the cap** (lands in `routes/wisp.ts`, created in Task 9 — add it to Task 9's error map when that file is written): `GrantLimitReachedError` → 409 `c.json({ error: \`This partner already has ${active} active Wisp grants (plan limit ${maxGrants}).\`, code: 'GRANT_LIMIT_REACHED' }, 409)`, and the Task 9 test `it('POST /grants maps GrantLimitReachedError to 409 GRANT_LIMIT_REACHED', …)`. (Concurrency note: two simultaneous creates at `max − 1` can both pass the count; the cap is a commercial limit, not an authority term, so a transient +1 is accepted and the next create refuses.)
 
 - [ ] **Step 4: Run the test file** → PASS.
 
-- [ ] **Step 5: Commit** — `feat(wisp): grants service — create/refresh/revoke with step-up, pause/resume for workers`
+- [ ] **Step 5: Commit** — `feat(wisp): grants service — create/refresh/revoke with step-up, maxGrants cap, pause/resume for workers`
 
 ---
 
@@ -513,10 +526,11 @@ it('resumeGrant only moves paused → active', …);
 **Interfaces:**
 - Consumes: Task 7 service; `authMiddleware`, `requirePermission`, `requireScope`, `requireMfa` (`middleware/auth.ts`); `zValidator` (`lib/validation`); `writeRouteAudit` (`services/auditEvents.ts:225`).
 - Produces: `export const wispRoutes = new Hono()` with
-  - `GET  /grants/preview?orgId=` → `{ snapshot, requestedCeilingHash }` (the step-up resource the client mints against)
+  - `GET  /grants/preview?orgId=` → `{ scope, ceilingSnapshot, ceilingHash }` (w00 A4; the client mints the `wisp_grant` step-up with resource `{ partnerId, orgId, requestedCeilingHash: ceilingHash }`)
   - `POST /grants` body `{ orgId: uuid | null, stepUpGrantId: string }` → 201 `WispGrantDto`
   - `POST /grants/:id/refresh` body `{ stepUpGrantId }` → 200
   - `POST /grants/:id/revoke` → 200 `{ success: true }`
+  - `PATCH /grants/:id/settings` body `z.strictObject({ budgetCentsPerDay: z.number().int().min(0).optional(), floorTickMinutes: z.number().int().min(15).max(240).optional() })` (≥ 1 key) → 200 `WispGrantDto` (w00 A6; calls `updateGrantSettings`; `settings_out_of_bounds` → 400 `{ error, code: 'SETTINGS_OUT_OF_BOUNDS' }`; `forbidden` → 403; no step-up — budget/tick are not authority)
   - `GET  /grants?view=mine|partner` → `{ grants: WispGrantDto[] }` (`partner` requires `canManagePartnerWidePolicies`, else 403)
   - Middleware order: `authMiddleware` → a first `use('*')` that returns `c.json({ error: 'Not found' }, 404)` when `!wispEnabled()` (evaluated per request) → `requireScope('partner')` → `requirePermission('ai_sessions', 'use')`; mutations additionally `requireMfa()`. `WispGrantError` codes map: `step_up_required`/`mfa_required` → 403 `{ error, code: 'STEP_UP_REQUIRED' | 'MFA_REQUIRED' }`; `forbidden` → 403; `not_found` → 404; `already_active` → 409; `org_out_of_reach`/`partner_mismatch` → 404 (non-enumerating); `grantor_*` → 409 with the code. `WispGrantDto` is field-by-field (never `{...row}`), no `factor_proof`, no snapshot.
   - Routes do NOT add `requireEntitlement('wisp')` (W01/W04); leave a one-line TODO naming W04.
@@ -531,11 +545,14 @@ it('POST /grants maps step_up_required to 403 STEP_UP_REQUIRED', …);
 it('POST /grants returns 201 with a DTO that has no factorProof/ceilingSnapshot keys', …);
 it('GET /grants?view=partner is 403 when canManagePartnerWidePolicies is false', …);
 it('POST /grants/:id/revoke with a non-uuid id is 404, not a 22P02', …);
+it('PATCH /grants/:id/settings { floorTickMinutes: 60 } → 200 for the grantor and for a partner admin; { } → 400; { floorTickMinutes: 10 } → 400; another tech → 403', …);
+it('POST /grants maps GrantLimitReachedError to 409 GRANT_LIMIT_REACHED', …);   // Task 7 Step 3b
+it('GET /grants/preview returns { scope, ceilingSnapshot, ceilingHash } with a 64-hex ceilingHash', …);
 ```
 
 - [ ] **Step 2: Run** `npx vitest run src/routes/wisp.test.ts` → FAIL.
 
-- [ ] **Step 3: Implement** `routes/wisp.ts` and the mount; `writeRouteAudit(c, { orgId, partnerId, action: 'wisp.grant.created' | 'wisp.grant.refreshed' | 'wisp.grant.revoked', resourceType: 'wisp_grant', resourceId })` on each mutation.
+- [ ] **Step 3: Implement** `routes/wisp.ts` and the mount; `writeRouteAudit(c, { orgId, partnerId, action: 'wisp.grant.created' | 'wisp.grant.refreshed' | 'wisp.grant.revoked' | 'wisp.grant.settings_changed', resourceType: 'wisp_grant', resourceId })` on each mutation.
 
 - [ ] **Step 4: Run the test file** → PASS; `npx vitest run src/index.agentAdmission.test.ts` unaffected.
 
@@ -552,7 +569,7 @@ it('POST /grants/:id/revoke with a non-uuid id is 404, not a 22P02', …);
 
 **Interfaces:**
 - Consumes: Task 6 `resolveGrantCeiling`, `assertWithinCeiling`, `toolPermissionRequirements`, `GrantInactiveError`, `CeilingViolationError`.
-- Produces: `CreateAgentRunInput.grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null }` (TRUSTED INTERNAL INPUT like `task`; `requestedByRunId` is the depth guard's input and is what W07's `requestSpecialist.requestedByRunId` forwards); skip reasons `'grant_inactive' | 'grant_org_out_of_ceiling'` (both in `PUBLISHED_SKIP_REASONS` — policy events); run row columns `grantId`, `grantRevisionId`.
+- Produces: `CreateAgentRunInput.grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null }` (TRUSTED INTERNAL INPUT like `task`; `requestedByRunId` is the depth guard's input and is what W07's `requestSpecialist.requestedByRunId` forwards); skip reasons `'grant_inactive' | 'grant_org_out_of_ceiling'` (both in `PUBLISHED_SKIP_REASONS` — policy events); `export class GrantDepthExceededError extends Error { readonly code = 'grant_depth_exceeded' }` (w00 A11: the depth guard **throws**, it is not a skip reason — a caller that reaches it is a bug, because W07's coordinator checks depth before admission); run row columns `grantId`, `grantRevisionId`.
 
 - [ ] **Step 1: Write failing admission tests** (`runService.grantAdmission.test.ts`; mock `../wisp/grantAuthority`):
 
@@ -564,14 +581,14 @@ it('1d intersects the allowlist: the inserted policySnapshot.effective.toolAllow
 it('with ceiling.toolAllowlist null the inserted allowlist is effective \ deniedTools', …);
 it('stamps grantId + grantRevisionId on the inserted row', …);
 it('without `grant` the inserted row has grantId null and resolveGrantCeiling is never called', …);
-it('depth guard: grant.requestedByRunId naming a run whose grant_id is set throws (caller bug), no skip, no insert', …);
-it('depth guard: requestedByRunId naming a run with grant_id null is admitted', …);
+it('depth guard: grant.requestedByRunId naming a run whose grant_id is null or ≠ grant.grantId throws GrantDepthExceededError (caller bug), no skip, no insert', …);
+it('depth guard: requestedByRunId naming a run under the same grant (Wisp\'s own assessment) is admitted — that run is depth 0; W07 tightens the predicate with the lineage columns', …);
 ```
 
 - [ ] **Step 2: Run** → FAIL.
 
 - [ ] **Step 3: Implement step 1d** directly after the 1c `workspace_unavailable` check:
-  - If `input.grant`: when `requestedByRunId` is set, read that run's `grantId` (system context); non-null → `throw new Error('createAndEnqueueAgentRun: a run admitted under a grant may not create grant-bearing work (depth 1)')`. Then `resolveGrantCeiling(grantId, grantRevisionId)`; `GrantInactiveError` → `skip('grant_inactive')`; `!ceiling.orgIds.has(orgId)` → `skip('grant_org_out_of_ceiling')`. Keep `ceiling` for the insert.
+  - If `input.grant`: when `requestedByRunId` is set, read that run's `grantId` and `orgId` (system context); `grantId` null or ≠ `grant.grantId`, or `orgId` ≠ `input.orgId` → `throw new GrantDepthExceededError('createAndEnqueueAgentRun: grant-bearing work may only be requested by Wisp\'s own run under the same grant and org (depth 1)')`. (W07 adds `depth === 0 && profile === 'assessment'` to this predicate once the lineage columns exist; the spec §4.5 rule is "no run created by Wisp may create further runs", and the assessment run IS Wisp.) Then `resolveGrantCeiling(grantId, grantRevisionId)`; `GrantInactiveError` → `skip('grant_inactive')`; `!ceiling.orgIds.has(orgId)` → `skip('grant_org_out_of_ceiling')`. Keep `ceiling` for the insert.
   - At insert: `grantId`, `grantRevisionId`, and `policySnapshot: ceiling ? { ...resolved, effective: { ...resolved.effective, toolAllowlist: intersectAllowlist(resolved.effective.toolAllowlist, ceiling) } } : resolved` where `intersectAllowlist` keeps entries `t` whose tool name (the part before `:`) is not in `deniedTools` and, when `ceiling.toolAllowlist !== null`, is in it. Later gates that read `effective.toolAllowlist` (e.g. the workspace capability check, line 1512) must read the intersected list, so compute it once right after step 2 and use it for both.
 
 - [ ] **Step 4: Write failing run-loop tests** (`runLoop.grantCeiling.test.ts`):
@@ -671,7 +688,8 @@ describe('wisp_grants RLS + ownership (2027-01-02-100100)', () => {
   it('org of another partner: composite (org_id, partner_id) FK rejects → 23503', …);
   it('second live grant for the same (grantor, scope) → 23505 on wisp_grants_one_live_per_scope_uq; a revoked one does not block', …);
   it('partner admin (userId ≠ grantor) may UPDATE status → revoked', …);
-  it('partner admin cannot widen: UPDATE expires_at / budget_cents_per_day / current_revision_id → 42501 from wisp_grants_update_guard', …);
+  it('partner admin cannot widen: UPDATE expires_at / current_revision_id → 42501 from wisp_grants_update_guard', …);
+  it('partner admin MAY update budget_cents_per_day and floor_tick_minutes (w00 A6); floor_tick_minutes 10 or 241 → 23514 from wisp_grants_budget_chk', …);
   it('partner admin cannot substitute the grantor: UPDATE grantor_user_id → 42501', …);
   it('partner admin cannot resume: UPDATE status paused → active → 42501', …);
   it('revisions are append-only: UPDATE ceiling_snapshot → 42501; DELETE as partner → 42501; system DELETE of the grant cascades the revisions', …);
@@ -683,7 +701,7 @@ describe('grant lifecycle through the service (real step-up in test Redis)', () 
   it('resolveGrantCeiling after the grantor role loses tickets:write drops the key from permissionKeys without pausing', …);
   it('reconcileGrantsForUser pauses with grantor_suspended after users.status = disabled, and resumes after re-activation', …);
   it('reconcileActiveGrants expires a grant whose expires_at passed', …);
-  it('a run admitted under the grant (createAndEnqueueAgentRun with grant) carries grant_id/grant_revision_id; admitting a child with requestedByRunId = that run throws', …);
+  it('a run admitted under the grant (createAndEnqueueAgentRun with grant) carries grant_id/grant_revision_id; admitting a child with requestedByRunId = that run (same grant, same org) is admitted; naming a run under another grant throws GrantDepthExceededError', …);
 });
 ```
 Mint the step-up with `mintStepUpGrant({ userId, operation: 'wisp_grant', authEpoch, mfaEpoch, sid, resourceDigest: wispGrantResourceDigest(...) })` (epochs from `db-utils.userEpochs`); build the `AuthContext` fixture with `principal: { kind: 'user_session' }`, `scope: 'partner'`, `partnerOrgAccess: 'all'`, `token: { sid, mfaVerified: true, … }` matching what `hasSatisfiedMfa` reads.
@@ -705,7 +723,7 @@ Mint the step-up with `mintStepUpGrant({ userId, operation: 'wisp_grant', authEp
 - [ ] **Step 3: Contract suites** — `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`; `pnpm --filter=@breeze/api test:rls`; the integration files named in Tasks 3 and 13.
 - [ ] **Step 4: Flag-off proof** — with `BREEZE_WISP_ENABLED` unset: `GET /api/v1/wisp/grants` → 404; `createAndEnqueueAgentRun` without `grant` inserts `grant_id NULL` (Task 10 test); `workspace_*` now require `ai_workspace:execute` (the one deliberate flag-independent change).
 - [ ] **Step 5: Tear down** — `pnpm test-stack down`; state what was left running.
-- [ ] **Step 6: PR body** states (orchestrator rule 7): flag off = no behaviour change except the §4.6 permission remap; tenancy registrations added (`PARTNER_TENANT_TABLES` ×2, `ORG_AXIS_POLICY_EXCLUDED_TABLES`, `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry`, `CORE_TENANT_EXPORT_POLICY` ×3 entries); contracts introduced: `wispEnabled`, `'wisp_grant'`, `ai_workspace:execute`, `grants.ts`/`grantAuthority.ts` exports, `CreateAgentRunInput.grant`, skip reasons, release error codes, `requesterAccessLost(…, effect)`; settings Rule 9: no setting added (defaults are column defaults; plan-driven values arrive with W01/W05). Commit: `chore(wisp): W02 verification notes` only if a doc changed.
+- [ ] **Step 6: PR body** states (orchestrator rule 7): flag off = no behaviour change except the §4.6 permission remap; tenancy registrations added (`PARTNER_TENANT_TABLES` ×2, `ORG_AXIS_POLICY_EXCLUDED_TABLES`, `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry`, `CORE_TENANT_EXPORT_POLICY` ×3 entries); contracts introduced: `wispEnabled`, `'wisp_grant'`, `ai_workspace:execute`, `grants.ts`/`grantAuthority.ts` exports (incl. `GrantCeiling.grantorUserId`, `updateGrantSettings`, `wideningAvailable`), `PATCH /wisp/grants/:id/settings`, `CreateAgentRunInput.grant`, skip reasons + `GrantDepthExceededError`, release error codes, `requesterAccessLost(…, effect)`; settings Rule 9: two operational settings added — budget/tick per grant: home = the grant (API `PATCH /wisp/grants/:id/settings`; web control lands in W04's thread header), level = grant inside partner, resolver = column value (plan bounds via W05), places configured before 0 → after 1. Commit: `chore(wisp): W02 verification notes` only if a doc changed.
 
 ---
 
@@ -721,8 +739,8 @@ Mint the step-up with `mintStepUpGrant({ userId, operation: 'wisp_grant', authEp
 2. **`users.status` has no `suspended`** (`active | invited | disabled`): `disabled` or a missing user maps to `grantor_suspended`; `grantor_access_lost` = no partner membership, no `ai_sessions:use`, or live ∩ snapshot orgs empty. Partial narrowing shrinks the ceiling silently (spec §4.4).
 3. **Second migration file** `2027-01-02-100110-ai-workspace-execute-permission.sql` for the permission row (keeps the W02 DDL file DML-free and mirrors the `ai_models:premium` precedent). Sorts between W02's and W03's slots.
 4. **`GET /api/v1/wisp/grants/preview`** added: the mint route (`routes/auth/mfa.ts`) only hashes client-supplied resources, so the client must learn `requestedCeilingHash` from the server first. The mint route never trusts a body `grantorUserId` — it uses `auth.user.id`.
-5. **Depth guard** is `grant.requestedByRunId` (optional, additive to the w00 `grant` shape) and a thrown caller-bug Error, not a new skip reason; W07's `requestSpecialist.requestedByRunId` is the producer.
-6. **Admin tighten-only is a trigger** (`wisp_grants_update_guard`, ERRCODE 42501); RLS cannot compare OLD/NEW. Spec §9's "partner admin may raise budget to 5×" conflicts with §4.2's "admin may only tighten/revoke"; W02 keeps the strict rule, W05 loosens the trigger for `budget_cents_per_day` when it owns budgets.
+5. **Depth guard** is `grant.requestedByRunId` (optional, additive to the w00 `grant` shape) and a thrown `GrantDepthExceededError` (code `grant_depth_exceeded`, w00 A11), not a skip reason; W07's `requestSpecialist.requestedByRunId` is the producer.
+6. **Admin tighten-only is a trigger** (`wisp_grants_update_guard`, ERRCODE 42501); RLS cannot compare OLD/NEW. w00 A6 resolved the §9 vs §4.2 reading: budget and tick are operational settings a partner admin may change (within bounds); the **ceiling** stays tighten/revoke-only. The trigger and `PATCH /grants/:id/settings` implement that split in W02.
 7. **`grant_inactive` at release is pausable** (generalising `pauseIntentForKillSwitch`); a ceiling violation is terminal.
 8. **Allowlist intersection is written into the run's `policySnapshot.effective.toolAllowlist`** (the snapshot records what authorised the run; narrower ⇒ release denies more ⇒ fail-closed).
 9. **Per-tool ceiling check inside the run loop** (Tier 1 included) with a 15 s memo — spec §4.3 "the read surface" cannot be enforced by allowlist alone because Tier-1 reads bypass it.
@@ -730,6 +748,17 @@ Mint the step-up with `mintStepUpGrant({ userId, operation: 'wisp_grant', authEp
 11. **Auto-resume** only for `grantor_access_lost` / `grantor_suspended`; `factor_expired` / `entitlement_lost` / `budget_exhausted` are left for their owning waves. Grants past `expires_at` go `expired` (terminal).
 12. **User-change hook** = a listener registry on `clearPermissionCache(userId)` (the choke point status, role, org-access and role-permission changes already pass through), installed at boot only when `wispEnabled()`.
 13. **Agent principal cannot pass `breeze_has_partner_access`** (org-scoped context, `userId: null`), so "the agent reads only the grant it is executing" is enforced by the code path (the grant id is pinned on the run/task; the evaluator runs in system context), not by a policy branch.
-14. Defaults `expires_at` +90 d, budget 200 ¢, floor 15 min as column defaults; partner-configurable expiry and plan-driven budgets are W01/W05.
+14. Defaults `expires_at` +90 d, budget 200 ¢, floor 30 min (w00 A6) as column defaults; partner-configurable expiry and plan-driven budgets are W01/W05.
 15. Worker placement `'global'` for the reconciler pending the closure tool's verdict.
-16. `GET /grants?view=partner` and admin revoke use `canManagePartnerWidePolicies` (partner scope with `org_access='all'`) as "partner admin".
+16. `GET /grants?view=partner`, admin revoke and admin settings changes use `canManagePartnerWidePolicies` (partner scope with `org_access='all'`) as "partner admin".
+
+### Reconciliation edits (reviewer)
+
+- `floor_tick_minutes` default 15 → **30**, CHECK widened to `BETWEEN 15 AND 240` (w00 A6, check b).
+- `GrantCeiling` gains `grantorUserId: string` (w00 A3); W03/W05 consume it instead of a second lookup.
+- Trigger `wisp_grants_update_guard` lets a partner admin change `budget_cents_per_day` / `floor_tick_minutes` (w00 A6); Task 13 tests split accordingly.
+- Added `updateGrantSettings`, `GrantSettingsBounds`, `wideningAvailable` (spec §4.4 widening offer — W04's `GET /wisp/thread` consumes it) to Task 7, plus tests.
+- Added `PATCH /grants/:id/settings` to Task 9 (w00 final route list, A6) and the `wisp.grant.settings_changed` audit action.
+- `previewGrantCeiling` / `GET /grants/preview` return `{ scope, ceilingSnapshot, ceilingHash }` (w00 A4 spelling; W04's modal consumes it).
+- Depth guard: throws `GrantDepthExceededError` (code `grant_depth_exceeded`, w00 A11); predicate corrected — the requesting run must be under the **same grant and org** (an assessment run is grant-bearing and is the legitimate requester), not "any grant-bearing run throws". W07 tightens with `depth`/`profile`.
+- Task 7: added the `WispLimits.maxGrants` cap — `createGrant` throws `GrantLimitReachedError` (code `grant_limit_reached`, route 409 `GRANT_LIMIT_REACHED`) when active grants ≥ `maxGrants` from W01's `getEntitlementLimits(partnerId, 'wisp')`; null limits / absent module ⇒ no cap (W02 can merge before W01).

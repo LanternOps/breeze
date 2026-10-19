@@ -48,14 +48,15 @@ depends_on: [W02, W03, W04]
 |---|---|---|
 | W02 | `wispEnabled()` (`config/env.ts`) | every entry point's early return |
 | W02 | `wisp_grants(id, partner_id, org_id, grantor_user_id, current_revision_id, status, budget_cents_per_day, floor_tick_minutes)`; Drizzle `wispGrants` | Tasks 1, 4, 5, 8, 9 |
-| W02 | `resolveGrantCeiling(grantId, revisionId)`, `assertWithinCeiling`, `GrantCeiling`, `GrantInactiveError`, `CeilingViolationError`, `getActiveGrantForUser` (`services/wisp/grantAuthority.ts`, `grants.ts`) | Tasks 3, 4, 7, 11 |
+| W02 | `resolveGrantCeiling(grantId, revisionId)`, `assertWithinCeiling`, `GrantCeiling` (incl. `grantorUserId`, w00 A3), `GrantInactiveError`, `CeilingViolationError`, `getActiveGrantForUser`, `pauseGrant`/`resumeGrant`, `updateGrantSettings(…, bounds)` + `GrantSettingsBounds` (`services/wisp/grantAuthority.ts`, `grants.ts`) | Tasks 3, 4, 5, 7, 9, 11 |
 | W02 | `createAndEnqueueAgentRun` input `grant?: { grantId; grantRevisionId }`; `ai_agent_runs.grant_id` / `grant_revision_id` (Drizzle `aiAgentRuns.grantId`, `.grantRevisionId`); admission step 1d skips `grant_inactive` / `grant_org_out_of_ceiling` | Tasks 1, 5, 7, 13 |
 | W02 | `apps/api/src/routes/wisp.ts` exporting `wispRoutes` (single file; mounted at `/wisp` in `apps/api/src/index.ts`; middleware order `authMiddleware` → 404 when `!wispEnabled()` → `requireScope('partner')` → `requirePermission('ai_sessions','use')`) | Task 11 |
-| W02 | `action_intents.grant_id` (or `metadata.grantId`) and `ai_operator_tasks.grant_id` stamps | Task 8 payloads |
+| W02 | `ai_agent_runs.grant_id` reachable from an intent through `action_intents.requesting_agent_run_id` (W02 adds **no** column to `action_intents`), and `ai_operator_tasks.grant_id` | Task 8 payloads |
+| W01 | `getEntitlements(partnerId)` → `{ plan, entitlements.wisp.{state,limits} }`, `hasEntitlement(partnerId, 'wisp')` (`services/entitlements.ts`) | Tasks 5, 7, 9 |
 | W03 | `rememberForGrant(ceiling, block)`, `MemoryBlockType 'concern_outcome'`, table `ai_memory_blocks` (Drizzle `aiMemoryBlocks`), broker-caller contract test allowlist | Tasks 3, 10 |
 | W04 | `getOrCreateThread(grantId)`, `updateThreadSummary(threadId, summary)` (≤ 4 000 chars), `seedContextForSession(threadId, ceiling)` (`services/wisp/threads.ts`) | Task 7 |
 | W04 | `AiChatSidebar.tsx` renders `<WispThreadHeader>` under its header when `wisp` (a `NonNullable<WispState>` carrying `grantId`/`threadId`) is set; `no-silent-mutations.test.ts:35` `TARGET_GLOBS` lists the Wisp web files; deep link `/ai/wisp/thread/:threadId#concern=:id` | Tasks 6, 12 |
-| W06 (consumer) | a callers-contract test that forbids `createNotification(` under `services/wisp/` outside W06's `notifyUser.ts`; W05 therefore funnels every in-app delivery through one file, `services/wisp/deliver.ts`, which W06 rewrites and allowlists | Tasks 3–7 |
+| W06 (consumer) | a callers-contract test that forbids `createNotification(` under `services/wisp/` outside **`services/wisp/deliver.ts`** (w00 A18); W05 therefore funnels every in-app delivery through `deliverInApp` in that one file; W06's `notifyUser` calls `deliverInApp` for its in-app row and replaces the finalizer's nudge step | Tasks 3–7 |
 | W01 | `requireEntitlement('wisp')` middleware (already applied on the W02 hub from W04 onward) | Task 11 (inherited from the hub) |
 
 ## File structure
@@ -176,11 +177,11 @@ git commit -m "feat(wisp): wisp_concerns, wisp_concern_recipients, wisp_watches 
   export type ConcernStatus = 'open'|'snoozed'|'resolved'|'dismissed';
   export type WatchKind = 'ticket_waiting'|'alert_pattern'|'backup_health'|'patch_compliance'|'security_findings'|'custom_query';
   export type WatchStatus = 'active'|'stopped';
-  export interface Concern { id; partnerId; orgId; subject: ConcernSubject; summary; severity: ConcernSeverity; status: ConcernStatus; evidence: Record<string, unknown>; outcome: string | null; createdAt: string; updatedAt: string; recipient?: { nudgeCount; nextEligibleNudgeAt: string | null; snoozedUntil: string | null; dismissedAt: string | null } }
+  export interface Concern { id; partnerId; orgId; subject: ConcernSubject; summary; severity: ConcernSeverity; status: ConcernStatus; evidence: Record<string, unknown>; outcome: string | null; approvalIntentId: string | null /* latest intent minted by propose_action({ concernId }); read from evidence.approvalIntentId; W06's mobile sheet and web page open the card from it */; createdAt: string; updatedAt: string; recipient?: { nudgeCount; nextEligibleNudgeAt: string | null; snoozedUntil: string | null; dismissedAt: string | null } }
   export interface Watch { id; partnerId; orgId: string | null; grantId; kind: WatchKind; params; cadenceMinutes; status: WatchStatus; lastRanAt: string | null; nextDueAt: string }
   export interface AssessmentOutcome { concernsRaised: RaiseConcernInput[]; concernsUpdated: UpdateConcernInput[]; nudges: NudgeInput[]; proposedActions: ProposeActionInput[]; specialistRequests: { kind: string; params: Record<string, unknown> }[] }
   ```
-- Produces (shared, `validators/wispConcerns.ts`): `raiseConcernSchema` (`subject`, `summary ≤ 2000`, `severity`, `evidence` object ≤ 20 keys), `updateConcernSchema` (`concernId`, optional `summary`/`severity`/`evidence`, `status?: 'resolved'` + `outcome`), `nudgeSchema` (`concernId`, `nextStep ≤ 300`, `approvalIntentId?`), `proposeActionSchema` (`toolName`, `input` object, `reason ≤ 500`, `concernId?`), `requestSpecialistSchema` (`kind`, `params`), `createWatchBodySchema` (`orgId` nullable uuid, `kind`, `params`, `cadenceMinutes` int 15–10080), `snoozeBodySchema` (`until` ISO datetime, ≤ 30 days ahead), `resolveBodySchema` (`outcome ≤ 1000`).
+- Produces (shared, `validators/wispConcerns.ts`): `raiseConcernSchema` (`subject`, `summary ≤ 2000`, `severity`, `evidence` object ≤ 20 keys), `updateConcernSchema` (`concernId`, optional `summary`/`severity`/`evidence`, `status?: 'resolved'` + `outcome`), `nudgeSchema` (`concernId`, `nextStep ≤ 300`, `approvalIntentId?`), `proposeActionSchema` (`toolName`, `input` object, `reason ≤ 500`, `concernId?`), `requestSpecialistSchema` (`kind`, `params`), `createWatchBodySchema` (`grantId` uuid, `orgId` nullable uuid, `kind`, `params`, `cadenceMinutes` int 15–10080), `snoozeBodySchema` (`grantId` uuid, `until` ISO datetime, ≤ 30 days ahead), `dismissBodySchema` (`grantId` uuid), `resolveBodySchema` (`grantId` uuid, `outcome ≤ 1000`) — `grantId` names the caller's recipient row; W06's web page and mobile sheet send it from the thread payload / push data. `requestSpecialistSchema` (`kind`, `params`, `reason` string 10–500) — W07 fills the body behind it.
 - Produces (`assessmentProfile.ts`):
   ```ts
   export const ASSESSMENT_MAX_TURNS = 15;
@@ -215,7 +216,7 @@ Expected: FAIL — module not found / `'assessment'` not assignable.
 
 - [ ] **Step 3: Implement**
 
-Add `'assessment'` to the enum; add the `assessment: 'triage'` arm (spec §14: assessments default to the registry's `triage` role). `ASSESSMENT_TOOL_ALLOWLIST` = the Tier-1 read tools an assessment needs to look at what changed. Verified base-tier-1 names in `aiAgentSdkTools.ts` `TOOL_TIERS` (:191+): `query_devices`, `get_device_details`, `query_audit_log`, `get_backup_status`, `query_backup_sla`, `list_incidents`, `get_incident_timeline`, `get_security_posture`, `list_edr_detections`, `get_vulnerability_report`, `get_device_vulnerabilities`. For ticket and alert reads copy the exact names `VERDICT_TOOL_ALLOWLIST` (`verdictProfile.ts`) and `ticketHelpdeskSubscriber`'s triage path already expose for reading (the `manage_alerts` / ticket tools are base tier 1 with action-based escalation in `aiGuardrails.ts`; the run-loop read-only guard at `runLoop.ts:1183` plus `maxActionsPerRun: 0` keep any escalated action out of an assessment). Do not list a name the step-1 test rejects. Mirror `triageProfile.ts` for shape and docstrings (`DESIGN_TOOL_ALLOWLIST` in `designProfile.ts:23` is the precedent for a non-empty read floor). In `runService.ts` add the three skip reasons (not in `PUBLISHED_SKIP_REASONS` — volume guards, same posture as the triage pair; `assessment_requires_grant` is a caller bug surfaced as a skip, not a throw, because the wake coordinator must never wedge on it) and the caps arm. `STREAK_NEUTRAL_PROFILES` gains `'assessment'` (an assessment that reports `needs_attention` is doing its job, not failing).
+Add `'assessment'` to the enum; add the `assessment: 'triage'` arm (spec §14: assessments default to the registry's `triage` role). `ASSESSMENT_TOOL_ALLOWLIST` = the Tier-1 read tools an assessment needs to look at what changed. Verified base-tier-1 names in `aiAgentSdkTools.ts` `TOOL_TIERS` (:191+): `query_devices`, `get_device_details`, `query_audit_log`, `get_backup_status`, `query_backup_sla`, `list_incidents`, `get_incident_timeline`, `get_security_posture`, `list_edr_detections`, `get_vulnerability_report`, `get_device_vulnerabilities`, plus W03's `recall` (T1; works because Task 6 stamps `wispGrant` on the run's agent auth). For ticket and alert reads copy the exact names `VERDICT_TOOL_ALLOWLIST` (`verdictProfile.ts`) and `ticketHelpdeskSubscriber`'s triage path already expose for reading (the `manage_alerts` / ticket tools are base tier 1 with action-based escalation in `aiGuardrails.ts`; the run-loop read-only guard at `runLoop.ts:1183` plus `maxActionsPerRun: 0` keep any escalated action out of an assessment). Do not list a name the step-1 test rejects. Mirror `triageProfile.ts` for shape and docstrings (`DESIGN_TOOL_ALLOWLIST` in `designProfile.ts:23` is the precedent for a non-empty read floor). In `runService.ts` add the three skip reasons (not in `PUBLISHED_SKIP_REASONS` — volume guards, same posture as the triage pair; `assessment_requires_grant` is a caller bug surfaced as a skip, not a throw, because the wake coordinator must never wedge on it) and the caps arm. `STREAK_NEUTRAL_PROFILES` gains `'assessment'` (an assessment that reports `needs_attention` is doing its job, not failing).
 
 - [ ] **Step 4: Typecheck and run**
 
@@ -258,8 +259,8 @@ git commit -m "feat(wisp): assessment run profile — enum, triage model role, p
   ```
 - Produces (`deliver.ts` — the one place under `services/wisp/` that imports `createNotification`; Tasks 4–7 call it, never `createNotification` directly):
   ```ts
-  export type InAppDelivery = { userId: string; orgId: string | null; title: string; body: string | null; link: string; dedupeKey: string; priority?: 'normal' | 'high'; concernId?: string | null; approvalIntentId?: string | null };
-  export async function deliverInApp(d: InAppDelivery): Promise<{ created: boolean }>; // runOutsideDbContext(withSystemDbAccessContext(() => createNotification({ type: 'ai', metadata: { concernId, approvalIntentId }, … })))
+  export type InAppDelivery = { userId: string; orgId: string | null; title: string; body: string | null; link: string; dedupeKey: string; priority?: 'normal' | 'high'; concernId?: string | null; approvalIntentId?: string | null; threadId?: string | null; grantId?: string | null; deepLink?: string | null };
+  export async function deliverInApp(d: InAppDelivery): Promise<{ created: boolean }>; // runOutsideDbContext(withSystemDbAccessContext(() => createNotification({ type: 'ai', metadata: { wispThreadId: threadId, concernId, grantId, intentId: approvalIntentId, deepLink }, … }))); created:false when createNotification returns null (dedupe collision). The metadata keys are what W06's web bell fallback (`buildHref`) reads — keep the spelling.
   ```
 - Rules: `upsertConcern` uses `INSERT … ON CONFLICT ON CONSTRAINT`-free form: `insert().onConflictDoNothing({ target: [...], where: sql\`status IN ('open','snoozed')\` }).returning()`, and on no row returned selects the live row and returns `{ created: false }` **without touching its status** (Review Focus 5). `resolveConcern` with `grantId` writes a `concern_outcome` block via `rememberForGrant(ceiling, { owner: { kind: 'org', orgId }, blockType: 'concern_outcome', subjectKey: \`concern:${subject.kind}:${subject.id}\`, content: { summary, outcome, severity, resolvedBy: 'wisp' }, confidence: 'medium' })` where `ceiling = await resolveGrantCeiling(grantId, currentRevisionId)`; with `userId` only, no memory block (W03 writes human-authored blocks elsewhere). All writes run under `runOutsideDbContext(() => withSystemDbAccessContext(fn, 'wisp.concerns'))` because callers are workers and routes alike.
 
@@ -318,18 +319,18 @@ git commit -m "feat(wisp): concerns service — upsert/resolve/snooze/dismiss, r
 - Test: `apps/api/src/services/wisp/watches.test.ts`
 
 **Interfaces:**
-- Consumes: `GrantCeiling`, `assertWithinCeiling` (W02); Task 3 `deliverInApp`; W02 `WispGrant` shape via a loader `loadGrant(grantId)` — if W02 exports `getGrantById`, use it; otherwise a local `select` from `wispGrants`.
+- Consumes: `GrantCeiling` (incl. `grantorUserId`, `partnerId`), `assertWithinCeiling` (W02); Task 3 `deliverInApp`; W04 `getOrCreateThread(grantId)` (for notice links); a local `select` of `wispGrants.orgId` for the partner-wide check.
 - Produces:
   ```ts
   export type { WatchKind, Watch } from '@breeze/shared';
-  export async function createWatch(ceiling: GrantCeiling, input: { orgId: string | null; kind: WatchKind; params: Record<string, unknown>; cadenceMinutes: number }): Promise<Watch>; // assertWithinCeiling(ceiling, { orgId }) when orgId set; orgId null requires ceiling to be partner-wide (ceiling.orgIds.size > 1 or grant.orgId === null) else CeilingViolationError('org'); owner_user_id = grant.grantorUserId; next_due_at = now + cadence
+  export async function createWatch(ceiling: GrantCeiling, input: { orgId: string | null; kind: WatchKind; params: Record<string, unknown>; cadenceMinutes: number }): Promise<Watch>; // assertWithinCeiling(ceiling, { orgId }) when orgId set; orgId null requires the grant to be partner-wide (wisp_grants.org_id IS NULL) else CeilingViolationError('org'); owner_user_id = ceiling.grantorUserId; next_due_at = now + cadence
   export async function listWatches(ceiling: GrantCeiling): Promise<Watch[]>; // grant_id = ceiling.grantId
   export async function deleteWatch(ceiling: GrantCeiling, watchId: string): Promise<boolean>; // only the owning grant's rows
   export async function claimDueWatches(now: Date, limit: number): Promise<Watch[]>; // status active AND next_due_at <= now, FOR UPDATE SKIP LOCKED; bumps next_due_at = now + cadence and last_ran_at = now in the same statement
   export async function stopWatchesForInactiveGrants(now: Date): Promise<{ stopped: number; grantsNotified: number }>; // UPDATE … SET status='stopped', stopped_reason = grant.status WHERE grant.status <> 'active'; then one in-app notice per affected partner admin listing the orphaned watches (dedupeKey `wisp-watches-orphaned-<grantId>`)
   export function watchPromptLines(w: Watch): string[]; // deterministic, used by Task 7's prompt: kind, params as sanitized key=value, cadence
   ```
-- Partner admins for the orphan notice: users of the partner holding `ai_agents:write` — reuse the resolver `resolveRecipientUserIds` (`services/aiAgents/recipients.ts:257`) if its input shape fits, else `partner_users` join on the Partner Admin role; delivered through Task 3's `deliverInApp({ orgId: null, link: '/ai/wisp', dedupeKey: \`wisp-watches-orphaned-${grantId}\` })` — partner-wide (`orgId: null`) so it is visible regardless of the admin's org narrowing.
+- Partner admins for the orphan notice: the partner's users that `canManagePartnerWidePolicies` would admit — `partner_users.org_access = 'all'` (w00 A1: partner-admin actions key on that predicate, not on `ai_agents:write`; read `services/partnerWideAccess.ts` for the column); delivered through Task 3's `deliverInApp({ orgId: null, link: '/approvals', title: 'Wisp: watches stopped', body: '<grantor name>\'s grant is <status>; N watches are no longer running: <kinds>', dedupeKey: \`wisp-watches-orphaned-${grantId}\` })` — partner-wide (`orgId: null`) so it is visible regardless of the admin's org narrowing. (`/ai/wisp` is not a page; the admin cannot open another tech's thread, so the link goes to an existing page and the body carries the facts.)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -369,15 +370,18 @@ git commit -m "feat(wisp): watches service — ceiling-checked create/list/delet
 - Test: `apps/api/src/services/wisp/budget.test.ts`
 
 **Interfaces:**
-- Consumes: `aiAgentRuns.grantId`, `aiAgentRuns.queuedAt`, `aiAgentRuns.costCents` (index from Task 1); W02 grant row (`budget_cents_per_day`, `grantor_user_id`, `partner_id`, `org_id`); Task 3 `deliverInApp`.
+- Consumes: `aiAgentRuns.grantId`, `aiAgentRuns.queuedAt`, `aiAgentRuns.costCents` (index from Task 1); W02 grant row (`budget_cents_per_day`, `grantor_user_id`, `partner_id`, `org_id`), W02 `createGrant` (one-line edit below) and `GrantSettingsBounds`; W01 `getEntitlements(partnerId)` (`plan`, `entitlements.wisp.limits`); W04 `getOrCreateThread(grantId)`; Task 3 `deliverInApp`.
 - Produces:
   ```ts
+  export const WISP_BUDGET_DEFAULT_BY_PLAN: Record<PartnerPlan, number>; // spec §16: pro 200, enterprise 500, unlimited 1000; free/starter/community 200 (only reachable through a manual entitlement)
+  export async function grantSettingsBounds(partnerId: string): Promise<GrantSettingsBounds>; // { budgetCentsPerDayMax: min(5 × WISP_BUDGET_DEFAULT_BY_PLAN[plan], limits.budgetCentsPerDayCeiling), minFloorTickMinutes: max(15, limits.minFloorTickMinutes) } from getEntitlements (spec §9 "raise to 5× within plan ceiling"); W02's PATCH /wisp/grants/:id/settings handler is edited to pass it
   export function utcDayWindow(now: Date): { start: Date; end: Date; key: string }; // key 'YYYY-MM-DD', same derivation as aiCostTracker.checkBudgetDetailed (:675)
   export async function spentUnderGrant(grantId: string, now?: Date): Promise<number>; // SUM(cost_cents) of ai_agent_runs WHERE grant_id = $1 AND queued_at >= window.start AND status NOT IN ('skipped')
   export async function chargeableUnderGrant(grantId: string, estimateCents: number): Promise<{ ok: true } | { ok: false; reason: 'budget_exhausted' }>; // ok when spent + estimate <= budget_cents_per_day
-  export async function notifyBudgetExhaustedOnce(grantId: string, now?: Date): Promise<boolean>; // deliverInApp({ userId: grantorUserId, orgId: grant.orgId, title, body, link: '/ai/wisp', dedupeKey: `wisp-budget-${grantId}-${window.key}` }).created
+  export async function notifyBudgetExhaustedOnce(grantId: string, now?: Date): Promise<boolean>; // deliverInApp({ userId: grantorUserId, orgId: grant.orgId, title: 'Wisp paused for today — budget reached', body: 'Raise the daily budget from the thread header to resume.', link: `/ai/wisp/thread/${thread.id}`, threadId, grantId, dedupeKey: `wisp-budget-${grantId}-${window.key}` }).created  — spec §9 "told once, with a one-tap raise": the link lands on the thread page whose header (W04) carries the budget control
   ```
 - `chargeableUnderGrant` never calls `pauseGrant` (w00). It runs under `runOutsideDbContext(withSystemDbAccessContext)`.
+- One-line edit to W02's `createGrant` (`services/wisp/grants.ts`): `budgetCentsPerDay = WISP_BUDGET_DEFAULT_BY_PLAN[(await getEntitlements(scope.partnerId)).plan]` instead of the column default (spec §16 plan defaults); W02's own test "budgetCentsPerDay 200" stays true for a `pro` fixture.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -393,6 +397,11 @@ describe('chargeableUnderGrant', () => {
 });
 describe('notifyBudgetExhaustedOnce', () => {
   it('second call in the same window returns false (dedupe key collides)', …);
+  it('links to the grant\'s thread page, not a bare path', …);
+});
+describe('plan defaults and bounds', () => {
+  it('createGrant on an enterprise partner stores budgetCentsPerDay 500; pro 200; unlimited 1000', …);   // getEntitlements mocked per plan
+  it('grantSettingsBounds is min(5 × plan default, limits.budgetCentsPerDayCeiling) and max(15, limits.minFloorTickMinutes)', …); // pro: { 1000, 15 }
 });
 ```
 
@@ -411,8 +420,8 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/wisp/budget.ts apps/api/src/services/wisp/budget.test.ts
-git commit -m "feat(wisp): per-grant UTC-day budget gate with once-per-window grantor notice (W05)"
+git add apps/api/src/services/wisp/budget.ts apps/api/src/services/wisp/budget.test.ts apps/api/src/services/wisp/grants.ts apps/api/src/services/wisp/grants.test.ts apps/api/src/routes/wisp.ts
+git commit -m "feat(wisp): per-grant UTC-day budget gate, plan budget defaults and settings bounds, once-per-window grantor notice (W05)"
 ```
 
 ---
@@ -444,7 +453,7 @@ git commit -m "feat(wisp): per-grant UTC-day budget gate with once-per-window gr
   export async function finalizeAssessment(ctx: RunContext, result: LoopResult): Promise<string | null>;
   ```
 - `buildAssessmentTaskPrompt` content (exact order): (1) `## Mode: assessment` + the five-outcome instruction ("stay quiet | update a concern | nudge | propose an action | request a specialist — call the matching tool; call nothing when nothing changed"); (2) `AGENT_PROMPT_AUTHORITY_DISCLAIMER`; (3) `wrapUntrustedData('wisp-thread-summary', ctx.assessment.threadSummary)`; (4) `wrapUntrustedData('wisp-open-concerns', <one line per concern: id | severity | subject kind:id | summary | recipient nudgeCount/nextEligible>)`; (5) `wrapUntrustedData('wisp-changes-since-watermark', <digest rendered as one line per row>)`; (6) when `ctx.assessment.watch` is set, `watchPromptLines(...)`; (7) `UNTRUSTED_TOOL_OUTPUT_RULE`; (8) the closing rule: "Nudge only when `recipient.nextEligibleNudgeAt` is null or in the past; never nudge a concern marked digest-only; one nudge names one person, one subject, one next step."
-- `finalizeAssessment` order, each step independently try/caught and logged (a failed nudge must not lose a raised concern): (1) `raise_concern` → `upsertConcern({ ..., raisedByGrantId: run.grantId, lastAssessedRunId: run.id })`, max 10 per run (overflow → `outcome.assessmentSkipped.push('raise_cap')`); (2) `update_concern` → `updateConcern` / `resolveConcern(id, { grantId }, outcome)`; **refuse** an id whose concern is outside `run.orgId` (`concern_not_in_org`); (3) `nudge` → load `recipientState`; skip when `snoozedUntil > now`, `dismissedAt` set, `nextEligibleNudgeAt > now`, or `isDigestOnly` (`outcome.assessmentSkipped.push('nudge_backoff' | 'nudge_digest_only' | 'nudge_snoozed')`); else `deliverInApp({ userId: grant.grantorUserId, orgId: run.orgId, title: 'Wisp: ' + concern.summary.slice(0, 80), body: nextStep, link: \`/ai/wisp/thread/${threadId}#concern=${concernId}\`, priority: severity === 'high' ? 'high' : 'normal', concernId, approvalIntentId, dedupeKey: \`wisp-nudge-${concernId}-${grantId}-${nudgeCount}\` })` then `recordNudge` (W06 replaces `deliverInApp`'s body with `notifyUser`; the call shape here is already `NudgePayload`-compatible); (4) `propose_action` → `createActionIntent(result.agentAuth, { toolName, input, source: 'ai_agent', orgId: run.orgId, reason: \`Proposed by Wisp assessment ${run.id}: ${reason}\` })`, push to `result.intentIds`, max `AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun`; a Tier-1 `toolName` is refused (`propose_tier1_refused`); (5) `request_specialist` entries are left in the outcome untouched (W07). Finally `touch wisp_concerns.last_assessed_run_id` for every concern read, and call Task 7's `rollupPartnerPicture(grantId)` (best-effort).
+- `finalizeAssessment` order, each step independently try/caught and logged (a failed nudge must not lose a raised concern): (1) `raise_concern` → `upsertConcern({ ..., raisedByGrantId: run.grantId, lastAssessedRunId: run.id })`, max 10 per run (overflow → `outcome.assessmentSkipped.push('raise_cap')`); (2) `update_concern` → `updateConcern` / `resolveConcern(id, { grantId }, outcome)`; **refuse** an id whose concern is outside `run.orgId` (`concern_not_in_org`); (3) `nudge` → load `recipientState`; skip when `snoozedUntil > now`, `dismissedAt` set, `nextEligibleNudgeAt > now`, or `isDigestOnly` (`outcome.assessmentSkipped.push('nudge_backoff' | 'nudge_digest_only' | 'nudge_snoozed')`); else `deliverInApp({ userId: ceiling.grantorUserId, orgId: run.orgId, title: 'Wisp: ' + concern.summary.slice(0, 80), body: nextStep, link: \`/ai/wisp/thread/${threadId}#concern=${concernId}\`, priority: severity === 'high' ? 'high' : 'normal', concernId, approvalIntentId, threadId, grantId, dedupeKey: \`wisp-nudge-${concernId}-${grantId}-${nudgeCount}\` })` then `recordNudge` (W06 Task 4 replaces this one `deliverInApp` call with `notifyUser({ userId, category: 'wisp_nudge', title, body, deepLink: mobileDeepLink(threadId, concernId), concernId, threadId, grantId, approvalIntentId })` and keeps `recordNudge`; `deliverInApp` itself stays the single `createNotification` site, w00 A18); (4) `propose_action` → `createActionIntent(result.agentAuth, { toolName, input, source: 'ai_agent', orgId: run.orgId, reason: \`Proposed by Wisp assessment ${run.id}: ${reason}\` })`, push to `result.intentIds`, max `AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun`; a Tier-1 `toolName` is refused (`propose_tier1_refused`); when `concernId` is given, `updateConcern(concernId, { evidence: { ...evidence, approvalIntentId: intentId } })` so the concern's `approvalIntentId` (Task 2 DTO) points at the card (spec §7.4 "the nudge carries the approval card id"); (5) `request_specialist` entries are left in the outcome untouched (W07). Finally `touch wisp_concerns.last_assessed_run_id` for every concern read, and call Task 7's `rollupPartnerPicture(grantId)` (best-effort).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -459,7 +468,7 @@ Expected: FAIL — unknown tool names / missing exports.
 
 - [ ] **Step 3: Implement**
 
-Follow the `triage` arms as the template at every listed line. In `runLoop.ts`: `loadRunContext` sets `assessment` by calling Task 7's `loadAssessmentContext(run)` when `isAssessmentProfile(run)` (null otherwise); `resolveRunProfileLimits` adds `if (isAssessmentProfile(run)) return assessmentLimits(limits);`; `resolveRunProfileToolAllowlist` adds the matching arm; the read-only guard list at :1183 gains `|| isAssessmentProfile(run)`; the capture switch appends to `outcome.assessment` lists; `finishRun` dispatches `finalizeAssessment` next to `finalizeTicketTriage`. `buildOutcomeSdkTools` arms use the Zod shapes from Task 2's validators and the descriptions: `raise_concern` "Record something Wisp should keep tracking for this org. One subject per call.", `update_concern` "Change severity/summary/evidence of an open concern, or resolve it with an outcome.", `nudge` "Tell the person Wisp works for about one concern with one suggested next step. Respect the eligibility shown in the concerns list.", `propose_action` "Propose a Tier-2/3 tool call for approval. Never executes directly.", `request_specialist` "Not available yet (W07). Calls are recorded and refused."
+Follow the `triage` arms as the template at every listed line. In `runLoop.ts`: when `run.grantId` is set, the run's agent `AuthContext` gets `wispGrant: { grantId: run.grantId, grantRevisionId: run.grantRevisionId }` (w00 A2 — W05 is the run-side populator; W03's `recall` inside an assessment depends on it; test: "a grant run's agentAuth carries wispGrant; a plain run's does not" in `runLoop.grantCeiling.test.ts` or a sibling); `loadRunContext` sets `assessment` by calling Task 7's `loadAssessmentContext(run)` when `isAssessmentProfile(run)` (null otherwise); `resolveRunProfileLimits` adds `if (isAssessmentProfile(run)) return assessmentLimits(limits);`; `resolveRunProfileToolAllowlist` adds the matching arm; the read-only guard list at :1183 gains `|| isAssessmentProfile(run)`; the capture switch appends to `outcome.assessment` lists; `finishRun` dispatches `finalizeAssessment` next to `finalizeTicketTriage`. `buildOutcomeSdkTools` arms use the Zod shapes from Task 2's validators and the descriptions: `raise_concern` "Record something Wisp should keep tracking for this org. One subject per call.", `update_concern` "Change severity/summary/evidence of an open concern, or resolve it with an outcome.", `nudge` "Tell the person Wisp works for about one concern with one suggested next step. Respect the eligibility shown in the concerns list.", `propose_action` "Propose a Tier-2/3 tool call for approval. Never executes directly.", `request_specialist` "Not available yet (W07). Calls are recorded and refused."
 
 - [ ] **Step 4: Typecheck and run**
 
@@ -494,8 +503,8 @@ git commit -m "feat(wisp): assessment outcome tools, prompt, run-loop wiring and
   export async function rollupPartnerPicture(grantId: string): Promise<string>; // deterministic; also calls updateThreadSummary
   export function renderPartnerPicture(input: { generatedAt: Date; orgs: { orgId: string; orgName: string; concerns: Concern[] }[] }): string; // pure; exported for the determinism test
   ```
-- `enqueueAssessment` algorithm (one line each, in order): `wispEnabled()` else `{ skipped: 'wisp_disabled' }`; `resolveGrantCeiling(grantId, grant.currentRevisionId)` — `GrantInactiveError` → `{ skipped: 'grant_inactive' }`; `orgId ∉ ceiling.orgIds` → `{ skipped: 'grant_org_out_of_ceiling' }` (same spelling as W02's admission skip); `chargeableUnderGrant(grantId, ASSESSMENT_BUDGET_CENTS_PER_RUN)` not ok → `notifyBudgetExhaustedOnce(grantId)`, run the **deterministic digest path** (`recordDeterministicDigest`, below) and return `{ skipped: 'budget_exhausted' }`; else `createAndEnqueueAgentRun({ orgId, kind: 'triage', triggerKind: 'schedule', deviceId: null, profile: 'assessment', dedupeKey: \`wisp-assess-${grantId}-${orgId}-${Date.now()}\`, triggerRef: { wisp: { grantId, grantRevisionId: ceiling.revisionId, reason, watermark: (await lastAssessmentWatermark(...))?.toISOString() ?? null } }, grant: { grantId, grantRevisionId: ceiling.revisionId } })` → `{ runId }` or `{ skipped: result.skipped }`. Called with **no ambient DB context** (the #1105 seam documented in `metricAnomalySubscriber.ts`).
-- `recordDeterministicDigest(grantId, orgId, reason)`: for an `event` reason whose `eventType` is `alert.triggered` / `integration.health_opened` / `ticket.stale` / `ai.operator.task.finished` with a `failed` outcome, `upsertConcern` a `severity: 'low'` concern on the event's subject with `summary = '<eventType> (recorded while Wisp\'s budget was exhausted)'` and `evidence: { eventId, recordedWithoutModel: true }`; then `deliverInApp` once per UTC day (`dedupeKey: wisp-digest-<grantId>-<utc day>`, `link: '/ai/wisp'`; later events in the same day create nothing — the concerns list is the digest). Tick/watch reasons record nothing.
+- `enqueueAssessment` algorithm (one line each, in order): `wispEnabled()` else `{ skipped: 'wisp_disabled' }`; `hasEntitlement(grant.partnerId, 'wisp')` else `{ skipped: 'not_entitled' }` (spec §10 claim-time re-check; W01 service); `resolveGrantCeiling(grantId, grant.currentRevisionId)` — `GrantInactiveError` → `{ skipped: 'grant_inactive' }`; `orgId ∉ ceiling.orgIds` → `{ skipped: 'grant_org_out_of_ceiling' }` (same spelling as W02's admission skip); `chargeableUnderGrant(grantId, ASSESSMENT_BUDGET_CENTS_PER_RUN)` not ok → `notifyBudgetExhaustedOnce(grantId)`, run the **deterministic digest path** (`recordDeterministicDigest`, below) and return `{ skipped: 'budget_exhausted' }`; else `createAndEnqueueAgentRun({ orgId, kind: 'triage', triggerKind: 'schedule', deviceId: null, profile: 'assessment', dedupeKey: \`wisp-assess-${grantId}-${orgId}-${Date.now()}\`, triggerRef: { wisp: { grantId, grantRevisionId: ceiling.revisionId, reason, watermark: (await lastAssessmentWatermark(...))?.toISOString() ?? null } }, grant: { grantId, grantRevisionId: ceiling.revisionId } })` → `{ runId }` or `{ skipped: result.skipped }`. Called with **no ambient DB context** (the #1105 seam documented in `metricAnomalySubscriber.ts`).
+- `recordDeterministicDigest(grantId, orgId, reason)`: for an `event` reason whose `eventType` is `alert.triggered` / `integration.health_opened` / `ticket.stale` / `ai.operator.task.finished` with a `failed` outcome, `upsertConcern` a `severity: 'low'` concern on the event's subject with `summary = '<eventType> (recorded while Wisp\'s budget was exhausted)'` and `evidence: { eventId, recordedWithoutModel: true }`; then `deliverInApp` once per UTC day (`dedupeKey: wisp-digest-<grantId>-<utc day>`, `link: \`/ai/wisp/thread/${thread.id}\``, `threadId`, `grantId`; later events in the same day create nothing — the concerns list is the digest). Tick/watch reasons record nothing.
 - `loadAssessmentContext`: `ceiling` (null on `GrantInactiveError`), `thread = getOrCreateThread(grantId)`, `threadSummary = seedContextForSession(thread.id, ceiling)` (already untrusted-wrapped memory inside; the prompt wraps the whole block again — double fences are harmless), `openConcerns = listConcernsForCeiling(ceiling, { status: ['open','snoozed'], orgId })` each with the grant's `recipientState`, `changedSince = triggerRef.wisp.watermark ?? now − 24 h`, digest = five bounded reads (`≤ 25` rows each, newest first) under `withSystemDbAccessContext`, every read `WHERE org_id = run.orgId` (the ceiling already admitted this org; the org pin is the second lock).
 - `renderPartnerPicture`: header `Wisp picture · <orgs with open concerns>/<orgs in ceiling> orgs · <N high / M medium / K low> · as of <ISO minute>`; then one line per org sorted by (max severity desc, open count desc, orgName asc, orgId asc): `<orgName>: <count> open — <up to 3 summaries, highest severity first, each ≤ 80 chars>`; orgs with zero concerns omitted; truncate to 4 000 chars on a line boundary with `…`. `rollupPartnerPicture` loads org names in one query, calls the renderer, then `updateThreadSummary(thread.id, text)`.
 
@@ -511,6 +520,7 @@ it('header counts match the body', …)
 `assessment.test.ts` (mock runService, grantAuthority, threads, budget, concerns):
 ```ts
 it('returns wisp_disabled without touching the DB when the flag is off', …)
+it('returns not_entitled when hasEntitlement(partnerId, "wisp") is false and never resolves the ceiling', …)
 it('returns grant_inactive on GrantInactiveError and never calls createAndEnqueueAgentRun', …)
 it('returns grant_org_out_of_ceiling for an org not in ceiling.orgIds', …)
 it('budget exhausted: notifies once, records a deterministic concern for alert.triggered, returns budget_exhausted, admits nothing', …)
@@ -557,7 +567,7 @@ git commit -m "feat(wisp): per-org assessment admission, bounded context, determ
   ```
   `'ai.agent.run.completed'` already exists (`eventBus.ts:594`, published by `runLoop.ts:3319`) — nothing to add.
 - **Connection health — conflict, decided:** w00 and spec §7.1 ask for a new `connection_health.incident.opened`, but the module already publishes `integration.health_opened` from a durable outbox (`services/connectionHealth/events.ts:73`, `eventPayload.ts:9-12`, merged in the 2026-10-15 connection-health W5). A second event for the same transition would double every webhook subscriber's delivery. **W05 subscribes to the existing `integration.health_opened` and adds no new type.** The orchestrator doc's name list should be corrected (see "Calls made by the planner").
-- `transitionIntent`: extend `.returning(...)` with `orgId`, `toolName`, `requestingAgentRunId`, and the W02 grant column if `action_intents` has one (W02 stamps `grant_id` on intents per spec §4.1 "stamped on every intent"; if W02 kept it in `metadata`, read `metadata.grantId`). After the `withSystemDbAccessContext` block returns a row **and** `to ∈ {'approved','rejected','expired','cancelled'}`, `void publishEvent('ai.intent.decided', row.orgId, payload, 'action-intents').catch(log)` — outside the DB context, never awaited inside it (#1105). Transitions to `executing`/`completed`/`failed` publish nothing (not decisions).
+- `transitionIntent`: extend `.returning(...)` with `orgId`, `toolName`, `requestingAgentRunId`; `grantId` in the payload is `ai_agent_runs.grant_id` of `requestingAgentRunId` (one extra select inside the same system block; null when the intent has no requesting run — W02 adds no column to `action_intents`; the grant is reachable through the run that minted the intent, which is how "stamped on every intent" is satisfied). After the `withSystemDbAccessContext` block returns a row **and** `to ∈ {'approved','rejected','expired','cancelled'}`, `void publishEvent('ai.intent.decided', row.orgId, payload, 'action-intents').catch(log)` — outside the DB context, never awaited inside it (#1105). Transitions to `executing`/`completed`/`failed` publish nothing (not decisions).
 - `settle`: after `committed === true`, `void publishEvent('ai.operator.task.finished', task.orgId, { taskId, orgId, state: nextTaskState(task.state, event), outcome, grantId: task.grantId ?? null }, 'ai-operator').catch(log)`.
 - `pollers.ts`:
   ```ts
@@ -656,7 +666,7 @@ export async function requestAssessment({ grantId, orgId, reason }) {
 // then requestAssessment({ grantId, orgId: picked, reason: { kind: 'tick' } }) — ONE org per grant per tick, so a quiet partner is charged once per floor tick, not N×
 ```
 
-Also per tick, in order: `stopWatchesForInactiveGrants(now)`; `claimDueWatches(now, 200)` → `requestAssessment({ grantId: w.grantId, orgId: w.orgId ?? pickRoundRobinOrg(ceiling orgs), reason: { kind: 'watch', watchId } })`; `pollStaleTickets(now)`. Every section is try/caught separately with a `console.error` naming the section; a failing section never stops the next one. `processAssessJob` calls `enqueueAssessment` and logs the skip reason at `info`.
+Also per tick, in order: **`reconcileEntitlements(now)`** (spec §10: for every `active` grant whose partner fails `hasEntitlement(partnerId, 'wisp')` → `pauseGrant(id, 'entitlement_lost')`; for every `paused` grant with `paused_reason = 'entitlement_lost'` whose partner is entitled again → `resumeGrant(id)`; one `getEntitlements` per distinct partner per tick — W02's reconciler deliberately leaves this reason alone because W02 cannot import W01); `stopWatchesForInactiveGrants(now)`; `claimDueWatches(now, 200)` → `requestAssessment({ grantId: w.grantId, orgId: w.orgId ?? pickRoundRobinOrg(ceiling orgs), reason: { kind: 'watch', watchId } })`; `pollStaleTickets(now)`. Every section is try/caught separately with a `console.error` naming the section; a failing section never stops the next one. `processAssessJob` calls `enqueueAssessment` and logs the skip reason at `info`. Also set W07's `setWispGrantsActive(count)` gauge here once W07 lands (W07 Task 8 adds the call).
 
 Worker lifecycle mirrors `initializeAiAgentSweepScheduler` (:808): remove any existing `tick` repeatable, add `{ jobId: 'wisp-wake-tick', repeat: { every: WISP_WAKE_TICK_INTERVAL_MS } }`, `concurrency: 4`. `initialize` is unconditional (registry-driven); the tick itself returns `{0,0,0,0}` when `!wispEnabled()`.
 
@@ -687,6 +697,7 @@ it('ticks only grants whose last_floor_tick_at is older than floor_tick_minutes 
 it('one assessment request per due grant per tick (not per org)', …);
 it('a due watch requests an assessment with reason watch and advances next_due_at', …);
 it('stops watches of a paused grant and notifies once', …);   // Review Focus 1
+it('pauses an active grant with entitlement_lost when the partner lost the wisp entitlement, and resumes a paused/entitlement_lost grant when it is back; never touches paused/grantor_suspended', …);
 it('a throwing section does not prevent the later sections', …);
 ```
 
@@ -768,17 +779,17 @@ git commit -m "feat(wisp): concern retention reaper with subject reconciliation 
 **Interfaces:**
 - Consumes: the hub's inherited middleware (W02: `authMiddleware` → 404 when `!wispEnabled()` → `requireScope('partner')` → `requirePermission('ai_sessions','use')`; W04 adds `requireEntitlement('wisp')` on the same hub); `requirePermission` (`middleware/auth.ts:1002`) for the extra write gate; `zValidator` (`lib/validation`); W02 `getActiveGrantForUser(userId, scope)` / `WispGrantDto` lookups, `resolveGrantCeiling`; Tasks 3–4 services; `runOutsideDbContext` for the service calls (they open system contexts internally).
 - Produces (all under `/api/v1/wisp`):
-  - `GET /concerns?grantId&status=open,snoozed&orgId` → `{ concerns: Concern[] }` — the grant must belong to `auth.user.id`, or the caller holds `ai_agents:write` (partner-admin read of another tech's grant); otherwise 404 (non-enumerating, as W02's `org_out_of_reach`).
-  - `POST /concerns/:id/snooze { until }` → `snoozeConcern(id, { grantId, userId }, until)` + `markAnswered`; grant ownership required (a snooze is personal state).
-  - `POST /concerns/:id/dismiss` → `dismissConcern` + `markAnswered`; grant ownership required.
-  - `POST /concerns/:id/resolve { outcome }` → `resolveConcern(id, { userId }, outcome)` + `markAnswered`; additionally `requirePermission('ai_agents','write')` (changes the shared, cross-grant fact).
-  - `GET /watches?grantId` → `{ watches: Watch[] }`; `POST /watches { grantId, orgId, kind, params, cadenceMinutes }` → `createWatch(ceiling, …)` 201; `DELETE /watches/:id` → 204 / 404. Create/delete: grant ownership + `requirePermission('ai_agents','write')`.
+  - `GET /concerns?grantId&status=open,snoozed&orgId` → `{ concerns: Concern[] }` — the grant must belong to `auth.user.id`, or `canManagePartnerWidePolicies(auth)` (partner-admin read of another tech's grant, w00 A1); otherwise 404 (non-enumerating, as W02's `org_out_of_reach`).
+  - `POST /concerns/:id/snooze { grantId, until }` → `snoozeConcern(id, { grantId, userId }, until)` + `markAnswered`; grant ownership required (a snooze is personal state).
+  - `POST /concerns/:id/dismiss { grantId }` → `dismissConcern` + `markAnswered`; grant ownership required.
+  - `POST /concerns/:id/resolve { grantId, outcome }` → `resolveConcern(id, { userId }, outcome)` + `markAnswered`; grant ownership required and the concern's org must be inside that grant's ceiling (any grant holder covering the org may resolve the shared fact — spec §7.3 "two techs … share it").
+  - `GET /watches?grantId` → `{ watches: Watch[] }`; `POST /watches { grantId, orgId, kind, params, cadenceMinutes }` → `createWatch(ceiling, …)` 201; `DELETE /watches/:id` → 204 / 404. Create/delete: grant ownership (a watch is "a standing check a user asked for", spec §7.2; owner = grantor).
   - Every route resolves `ceiling = resolveGrantCeiling(grant.id, grant.currentRevisionId)` and answers 409 `{ error, code: 'grant_inactive' }` on `GrantInactiveError` (coded `c.json`, W02's error-shape convention); a concern whose `org_id ∉ ceiling.orgIds` is 404.
-- Spec §4.2 names `ai_agents:use`; the permission table has only `ai_agents:read`/`write` (`packages/shared/src/constants/permissions.ts:223-224`) and W02 mapped the gate to the existing `ai_sessions:use`. W05 inherits that and adds `ai_agents:write` only where the shared fact changes.
+- Permissions (w00 A1): every route gates on `ai_sessions:use` (inherited from the hub) plus grant ownership; the only partner-admin branch (`GET /concerns` for another tech's grant) keys on `canManagePartnerWidePolicies`. No `ai_agents:*` gate is added.
 
 - [ ] **Step 1: Write the failing route tests**
 
-Pattern: `routes/wisp.test.ts` (W02) and `routes/aiOperatorTasks.test.ts:44-52` (auth fixture). Mount the sub-router under a test copy of the hub chain so the inherited gates are exercised. Cases: `GET /concerns` 404 when the flag is off; 403 without `ai_sessions:use`; a user asking for another user's grant without `ai_agents:write` → 404; `POST /concerns/:id/snooze` with `until` 31 days ahead → 400; snooze on a concern outside the ceiling → 404; resolve without `ai_agents:write` → 403; `POST /watches` with `cadenceMinutes: 14` → 400; `POST /watches` on a paused grant → 409 `grant_inactive`; `DELETE /watches/:id` for another grant's watch → 404.
+Pattern: `routes/wisp.test.ts` (W02) and `routes/aiOperatorTasks.test.ts:44-52` (auth fixture). Mount the sub-router under a test copy of the hub chain so the inherited gates are exercised. Cases: `GET /concerns` 404 when the flag is off; 403 without `ai_sessions:use`; a user asking for another user's grant without `canManagePartnerWidePolicies` → 404, with it → 200; `POST /concerns/:id/snooze` with `until` 31 days ahead → 400; a body without `grantId` → 400; snooze on a concern outside the ceiling → 404; resolve by a non-owner of the grant → 404; `POST /watches` with `cadenceMinutes: 14` → 400; `POST /watches` on a paused grant → 409 `grant_inactive`; `DELETE /watches/:id` for another grant's watch → 404.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -789,7 +800,7 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd apps/api && npx vitest run src/routes/wisp` (substring match — expect 3 files: the hub's test and the two new ones; a route-registry contract test, if `ls src/routes/*.contract.test.ts` shows one, must list the new paths)
+Run: `cd apps/api && npx vitest run src/routes/wisp` (substring match — it also picks up W02's hub test, W03's `routes/wisp/memory.test.ts` and W04's `wispThreads.test.ts`; check the reported file count rather than assuming 3; a route-registry contract test, if `ls src/routes/*.contract.test.ts` shows one, must list the new paths)
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -797,6 +808,54 @@ Expected: PASS.
 ```bash
 git add apps/api/src/routes/wisp.ts apps/api/src/routes/wispConcerns.ts apps/api/src/routes/wispConcerns.test.ts apps/api/src/routes/wispWatches.ts apps/api/src/routes/wispWatches.test.ts
 git commit -m "feat(wisp): concerns and watches routes under /api/v1/wisp (W05)"
+```
+
+---
+
+### Task 11b: Chat tools — `list_concerns`, `snooze_concern`, `resolve_concern`, `create_watch` (spec §7.4 reply-in-thread, §14 tool list)
+
+**Files:**
+- Create: `apps/api/src/services/wisp/concernTools.ts` (pattern: W03's `services/wisp/memoryTools.ts` / `registerWispMemoryTools`)
+- Modify: `apps/api/src/services/aiTools.ts` (call `registerWispConcernTools(aiTools)` beside `registerWispMemoryTools`), `apps/api/src/services/aiAgentSdkTools.ts` (`TOOL_TIERS` :191 block; MCP `tool()` in `createBreezeMcpServer`; `SESSION_TOOL_DESCRIPTIONS` if W03 found it necessary), `apps/api/src/services/aiToolSchemas.ts`, `apps/api/src/services/aiGuardrails.ts` (`TOOL_PERMISSIONS`), `apps/api/src/services/aiAgents/agentToolCatalog.ts` (`TOOL_CAPABILITY`), `apps/api/src/services/aiToolRateLimits.ts`
+- Test: `apps/api/src/services/wisp/concernTools.test.ts`
+
+**Interfaces:**
+- Consumes: `AuthContext.wispGrant` (W03 type; populated by W04 on chat turns and by Task 6 on assessment runs); W02 `resolveGrantCeiling`, `GrantInactiveError`, `CeilingViolationError`; Task 3 `listConcernsForCeiling`, `snoozeConcern`, `resolveConcern`, `markAnswered`; Task 4 `createWatch`; W03's `wisp_grant_required` / `grant_inactive` / `ceiling_violation` error-string conventions.
+- Produces: `registerWispConcernTools(aiTools: Map<string, AiTool>): void`; four tools, all six registries (model-callable), `TOOL_PERMISSIONS` `{ resource: 'ai_sessions', action: 'use' }` (w00 A1), `TOOL_CAPABILITY` `'tenancy'` as W03 chose for its tools, `domain: 'ai'`, `deviceArgs: []`:
+  - `list_concerns` (T1): `{ status?: ConcernStatus[]; orgId?: uuid }` → the concerns the grant's ceiling covers, one line each `id | severity | status | subject | summary | quiet until`, or `No concerns on Wisp's radar.`
+  - `snooze_concern` (T2): `{ concernId: uuid; until: ISO datetime ≤ 30 d }` → `snoozeConcern(id, { grantId, userId: ceiling.grantorUserId }, until)` + `markAnswered`.
+  - `resolve_concern` (T2): `{ concernId: uuid; outcome: string ≤ 1000 }` → `resolveConcern(id, { grantId }, outcome)` + `markAnswered` — the `grantId` form writes the `concern_outcome` memory block through W03's broker (spec §7.4 "records the answer as memory where appropriate").
+  - `create_watch` (T2, rate limit `{ limit: 10, windowSeconds: 3600 }`): `{ orgId: uuid | null; kind: WatchKind; params: object; cadenceMinutes: int 15..10080 }` → `createWatch(ceiling, …)`.
+  - Every handler: `auth.wispGrant` absent → `{"error":"wisp_grant_required"}`; `GrantInactiveError` → `{"error":"grant_inactive"}`; `CeilingViolationError` → `{"error":"ceiling_violation","code":<code>}` (W03's exact strings). Under an assessment run only `list_concerns` is in `ASSESSMENT_TOOL_ALLOWLIST` (the T2 three stay chat-only; assessments change concerns through outcome tools).
+
+- [ ] **Step 1: Write the failing tests** (mock `./concerns`, `./watches`, `./grantAuthority`):
+
+```ts
+it('registers the four tools in aiTools; list_concerns is tier 1, the other three tier 2; all four map to ai_sessions:use', …);
+it('every tool returns {"error":"wisp_grant_required"} without auth.wispGrant and calls nothing', …);
+it('list_concerns resolves the ceiling from auth.wispGrant and calls listConcernsForCeiling(ceiling, { status, orgId })', …);
+it('snooze_concern calls snoozeConcern with the grant + grantor and then markAnswered; a until 31 days ahead is rejected by the schema', …);
+it('resolve_concern calls resolveConcern(id, { grantId }, outcome) (memory-writing form) then markAnswered', …);
+it('create_watch surfaces CeilingViolationError as {"error":"ceiling_violation","code":"org"}', …);
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `cd apps/api && npx vitest run src/services/wisp/concernTools.test.ts`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Implement `concernTools.ts` and the six registry entries.**
+
+- [ ] **Step 4: Run the tool test and the registry contracts**
+
+Run: `cd apps/api && npx vitest run src/services/wisp/concernTools.test.ts src/services/aiAgentSdkTools.registryParity.contract.test.ts src/services/aiGuardrails.readonly.contract.test.ts src/services/aiToolSchemas.validateToolInput.test.ts src/__tests__/mcp-coverage.test.ts src/services/aiAgents/assessmentProfile.test.ts`
+Expected: PASS (add the four names to `mcpCoverage.ts` under `'wisp/concerns.ts'` if `mcp-coverage` demands it).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/api/src/services/wisp/concernTools.ts apps/api/src/services/wisp/concernTools.test.ts apps/api/src/services/aiTools.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiToolSchemas.ts apps/api/src/services/aiGuardrails.ts apps/api/src/services/aiAgents/agentToolCatalog.ts apps/api/src/services/aiToolRateLimits.ts apps/api/src/services/mcpCoverage.ts
+git commit -m "feat(wisp): list/snooze/resolve concern and create_watch chat tools under the grant ceiling (W05)"
 ```
 
 ---
@@ -908,10 +967,22 @@ State: flag off = no behaviour change; tenancy registrations added (3 tables × 
 6. **Assessment watermark = `MAX(finished_at)` of the last completed assessment run for (grant, org)** — no cursor table; a partial index on `ai_agent_runs (grant_id, org_id, profile, queued_at)` serves it and the budget sum.
 7. **`ticket.stale` is a stateless sliding-window poller** (72 h default, 5-minute window, deterministic `eventId`), scanning only orgs under an active grant; a long outage misses crossings, which the floor tick covers.
 8. **Budget counts `ai_agent_runs.cost_cents` by `queued_at`** for runs carrying `grant_id`. W04 chat turns under a grant are not counted in W05 (W04 would need to stamp `ai_sessions`); flagged as a follow-up, not a blocker.
-9. **Permissions:** spec says `ai_agents:use`, the table has only `ai_agents:read`/`write`; W02's hub already gates on `ai_sessions:use`, so W05 inherits that for reads/snooze/dismiss (+ grant ownership) and adds `ai_agents:write` for resolve and watch create/delete.
+9. **Permissions:** spec says `ai_agents:use`, the table has only `ai_agents:read`/`write`; w00 A1 fixes every Wisp route and tool on `ai_sessions:use` and partner-admin actions on `canManagePartnerWidePolicies`. W05 inherits the hub gate and adds grant ownership; no `ai_agents:write` gates.
 10. **Retention:** resolved/dismissed concerns 90 days; `concern_outcome` memory 180 days (w00), deleted directly by the reaper with a W03 contract-allowlist entry if required.
 11. **W05 nudge delivery** = `deliverInApp` (`services/wisp/deliver.ts`, the single `createNotification` call site under `services/wisp/`, `type: 'ai'`, `link: '/ai/wisp/thread/:threadId#concern=:id'`, `dedupeKey: wisp-nudge-<concern>-<grant>-<n>`); the budget notice, orphan-watch notice and exhausted-budget digest go through the same function, so W06's `notifyUser` swap and its callers-contract test touch one file.
 12. **Watch kinds** are stored and fed to the assessment prompt (`watchPromptLines`); W05 implements no per-kind evaluator beyond `ticket_waiting`'s threshold feeding the poller — the model reads live data for the rest.
 13. **`request_specialist`** is registered as an outcome tool whose SDK handler answers `{ refused: 'not_available_until_w07' }`; calls are kept in the outcome for W07's audit.
 14. **Web mount point** is `AiChatSidebar.tsx`'s `wisp`-set branch, directly beneath W04's `<WispThreadHeader>` (W04 Task 8), and the two new web files join `no-silent-mutations` `TARGET_GLOBS` as W04's did.
 15. **`wisp_watches` tenancy shape** copies `connection_health_incidents` (partner-anchored, org-optional, `DUAL_AXIS_TENANT_TABLES`, no `breeze_current_partner_id()` branch); `wisp_concerns`/`wisp_concern_recipients` are plain shape 1 with `partner_id` denormalised and a deferrable composite FK.
+
+### Reconciliation edits (reviewer)
+
+- Permissions per w00 A1: dropped every `ai_agents:write` gate (routes, orphan-notice recipients); partner-admin branches key on `canManagePartnerWidePolicies`.
+- `GrantCeiling.grantorUserId` (w00 A3) replaces the `loadGrant` lookup in `createWatch` and the finalizer's nudge recipient.
+- `deliver.ts` is the single `createNotification` site (w00 A18): `InAppDelivery` gains `threadId`/`grantId`/`deepLink` so W06's `notifyUser` can route through it; metadata keys fixed (`wispThreadId`, `concernId`, `grantId`, `intentId`, `deepLink`).
+- Route bodies for snooze/dismiss/resolve carry `grantId` (the recipient row cannot be found without it; W06 web/mobile send it); `Concern` DTO gains `approvalIntentId` (stamped by `propose_action({ concernId })`) for W06's "Review approval".
+- `ai.intent.decided.grantId` is read through `requesting_agent_run_id → ai_agent_runs.grant_id` (W02 adds no `action_intents` column).
+- Spec §10 "entitlement lost ⇒ grants paused with `entitlement_lost`": added `reconcileEntitlements` to the wake tick (Task 9) and a claim-time `hasEntitlement` check in `enqueueAssessment` (Task 7).
+- Spec §9/§16: plan budget defaults (`WISP_BUDGET_DEFAULT_BY_PLAN`, one-line `createGrant` edit), `grantSettingsBounds` for W02's `PATCH /grants/:id/settings`, and the budget-exhausted notice now links to the thread page (the one-tap raise lives in W04's header). `/ai/wisp` was not a page; all notice links now point at real pages.
+- Spec §7.4 reply-in-thread / §14 tool list: added Task 11b (`list_concerns`, `snooze_concern`, `resolve_concern`, `create_watch`, six registries, `ai_sessions:use`); `recall` added to the assessment allowlist; Task 6 stamps `AuthContext.wispGrant` on grant-bearing runs (w00 A2).
+- Task 11's file-count expectation corrected (W03/W04 test files share the `src/routes/wisp` substring).

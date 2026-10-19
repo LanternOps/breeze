@@ -37,7 +37,7 @@ tracking_issue: (sub-issue assigned by register_feature)
 ## Review Focus
 
 1. **Grant paused or revoked between approval and release.** A `wisp_specialist_request` card approved at 09:00 and released at 09:05 after the grantor was suspended must *not* admit a child; the release terminalizes `failed` with `grant_inactive`. Pinned in Task 4.
-2. **Approver without the kind's permission.** Any org member holding `ai_agents:write` can be an eligible approver of an agent-minted card (`resolveAgentIntentApprovers`), but an `analysis` request also needs `ai_workspace:execute`; release re-checks the *approver's* permissions and refuses `workspace_execute_required` rather than admitting under the grantor's. Pinned in Task 4.
+2. **Approver without the kind's permission.** Any org member holding the carrier's RBAC mapping (`ai_sessions:use`, w00 A1) can be an eligible approver of an agent-minted card (`resolveAgentIntentApprovers`), but every kind needs `ai_agents:write` and an `analysis` request also needs `ai_workspace:execute`; release re-checks the *approver's* permissions (coordinator gate 8) and refuses `permission_missing` / `workspace_execute_required` rather than admitting under the grantor's. Pinned in Task 4.
 3. **Duplicate dispatch of one request id** (finalizer retried, release job redelivered): exactly one child row exists afterwards, and the second call returns `admitted` with the same `runId`/`taskId`. Pinned in Task 3.
 4. **Specialist for an org outside the ceiling** (an assessment anchored on org A naming org B, or a one-org grant naming another org): `refused: 'org_out_of_ceiling'` before any admission call. Pinned in Task 3.
 5. **Exhausted grant budget.** No specialist is admitted while `chargeableUnderGrant` says `budget_exhausted`, even for auto-admit kinds; the refusal is recorded on the assessment outcome so the digest can say why. Pinned in Task 3.
@@ -48,7 +48,8 @@ tracking_issue: (sub-issue assigned by register_feature)
 - **Approval card minting.** `operator_plan` is minted under the task *requester* (a human, `buildTaskActorAuthContext`), which makes the requester ineligible to approve it. Wisp's card must be one-tap for the grantor, so `wisp_specialist_request` is minted under the **assessment run's agent principal** (`source: 'ai_agent'`), decided by `resolveAgentIntentApprovers` (org/partner members holding the tool's RBAC mapping). The grantor qualifies whenever `ai_agents:write` is in their ceiling.
 - **`launch_analysis`** is listed as a registered tool in spec §14 but as a coordinator-only path in w00; w00 wins. The registered chat tool is `launch_specialist` (kind-multiplexed).
 - **Partner Admin backfill is unnecessary.** The seeded Partner Admin role holds `'*:*'` (`db/seed.ts:343`), `partnerCreate.ts:159` copies that row, and `permissionMatching.ts:20` matches `resource === '*'`. The rollout checklist carries a verification query instead of a migration.
-- **Depth guard input.** W02's `grant` admission input has no field naming the requesting run; W07 extends it additively with `requestedByRunId` (Task 2). If W02 already shipped an equivalent, reuse its name and skip reason.
+- **Depth guard input.** W02 ships `grant.requestedByRunId` and a **thrown** `GrantDepthExceededError` (code `grant_depth_exceeded`, w00 A11 — not a skip reason) whose W02 predicate is "requesting run under the same grant and org". W07 tightens that predicate with the lineage columns (`depth === 0 && profile === 'assessment'`) and stamps lineage (Task 2). The coordinator checks depth itself before admission, so reaching the throw is a caller bug.
+- **Permissions (w00 A1).** Every Wisp tool gates on `ai_sessions:use` in `TOOL_PERMISSIONS`; the per-kind `requiredPermissions` in `SPECIALIST_KIND_POLICY` are *ceiling* terms the coordinator checks against the grantor's (and approver's) concrete permission keys, not route/tool gates.
 
 ---
 
@@ -155,18 +156,16 @@ git commit -m "feat(wisp): specialist kind policy and run/task lineage columns (
 - Test: `apps/api/src/services/aiAgents/runService.test.ts`, `apps/api/src/services/aiAgents/analysisAdmission.test.ts`, `apps/api/src/services/aiOperator/taskService.recipeAdmission.test.ts`, `apps/api/src/__tests__/integration/agentRunAdmission.integration.test.ts`
 
 **Interfaces:**
-- Consumes (W02): `CreateAgentRunInput.grant?: { grantId: string; grantRevisionId: string }`, admission step 1d, skips `grant_inactive | grant_org_out_of_ceiling`; `ai_operator_tasks.grant_id/grant_revision_id`.
+- Consumes (W02): `CreateAgentRunInput.grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null }`, admission step 1d, skips `grant_inactive | grant_org_out_of_ceiling`, thrown `GrantDepthExceededError` (code `grant_depth_exceeded`); `ai_operator_tasks.grant_id/grant_revision_id`; `AdmitServiceRecoveryTaskInput.grant?: { grantId; grantRevisionId }`.
 - Produces:
   ```ts
-  // runService.ts — additive to W02's field
-  grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null };
-  // AgentRunSkipReason gains
-  | 'grant_depth_exceeded'
-  // taskService.ts
+  // runService.ts — the W02 depth-guard predicate is tightened (no new field, no new skip reason — w00 A11)
+  //   throw GrantDepthExceededError unless requesting run has depth === 0 && profile === 'assessment' && grantId === grant.grantId && orgId === input.orgId
+  // taskService.ts — additive
   grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null };
   // analysisAdmission.ts
   AdmitAnalysisRunInput.grant?: CreateAgentRunInput['grant'];
-  AnalysisAdmissionRefusal gains 'grant_refused'  // all three grant_* skips collapse onto it
+  AnalysisAdmissionRefusal gains 'grant_refused'  // grant_inactive + grant_org_out_of_ceiling skips map onto it; a GrantDepthExceededError is caught and mapped onto it too
   ```
 - Stamping rule (both inserts): when `grant.requestedByRunId` is set → `requested_by_run_id = it`, `parent_grant_revision_id = grant.grantRevisionId`, `depth = 1`; when `grant` is set without a requesting run → `depth = 0`, lineage NULL (an assessment).
 
@@ -174,23 +173,22 @@ git commit -m "feat(wisp): specialist kind policy and run/task lineage columns (
 
 ```ts
 // runService.test.ts (uses the file's existing db mock helpers)
-it('skips grant_depth_exceeded when the requesting run is itself a child', async () => {
+it('throws GrantDepthExceededError when the requesting run is itself a child', async () => {
   mockRunRow({ id: 'child', depth: 1, profile: 'sweep', grantId: 'g' });
-  const r = await createAndEnqueueAgentRun(baseInput({ grant: { grantId: 'g', grantRevisionId: 'rev', requestedByRunId: 'child' } }));
-  expect(r).toEqual({ created: false, skipped: 'grant_depth_exceeded' });
+  await expect(createAndEnqueueAgentRun(baseInput({ grant: { grantId: 'g', grantRevisionId: 'rev', requestedByRunId: 'child' } }))).rejects.toMatchObject({ code: 'grant_depth_exceeded' });
 });
-it('skips grant_depth_exceeded when the requesting run is grant-bearing but not an assessment', async () => {
+it('throws GrantDepthExceededError when the requesting run is grant-bearing but not an assessment', async () => {
   mockRunRow({ id: 'r', depth: 0, profile: 'sweep', grantId: 'g' });
-  expect((await createAndEnqueueAgentRun(baseInput({ grant: { grantId: 'g', grantRevisionId: 'rev', requestedByRunId: 'r' } }))).skipped).toBe('grant_depth_exceeded');
+  await expect(createAndEnqueueAgentRun(baseInput({ grant: { grantId: 'g', grantRevisionId: 'rev', requestedByRunId: 'r' } }))).rejects.toMatchObject({ code: 'grant_depth_exceeded' });
 });
 it('stamps depth 1 + lineage for a child and depth 0 for an assessment', async () => { /* assert the insert values */ });
 ```
 ```ts
 // analysisAdmission.test.ts
-it('maps every grant_* skip onto grant_refused', () => {
+it('maps the grant_* skips onto grant_refused and catches GrantDepthExceededError as grant_refused', () => {
   expect(SKIP_REASON_REFUSALS.grant_inactive).toBe('grant_refused');
   expect(SKIP_REASON_REFUSALS.grant_org_out_of_ceiling).toBe('grant_refused');
-  expect(SKIP_REASON_REFUSALS.grant_depth_exceeded).toBe('grant_refused');
+  /* createAndEnqueueAgentRun mocked to throw GrantDepthExceededError → { refused: 'grant_refused' } */
 });
 it('forwards grant to createAndEnqueueAgentRun', async () => { /* spy on createAndEnqueueAgentRun; expect grant in the call */ });
 ```
@@ -202,15 +200,15 @@ it('writes grant lineage columns on the task row', async () => { /* expect inser
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `cd apps/api && npx vitest run src/services/aiAgents/runService.test.ts src/services/aiAgents/analysisAdmission.test.ts src/services/aiOperator/taskService.recipeAdmission.test.ts`
-Expected: FAIL (type error on `requestedByRunId`; `grant_depth_exceeded` not a skip; `satisfies Record<AgentRunSkipReason, …>` compile error until the map is total).
+Expected: FAIL (the W02 guard admits a same-grant `sweep` requester; lineage columns not stamped; `grant_refused` absent).
 
 - [ ] **Step 3: Implement**
 
-In `runService.ts`, inside step 1d after W02's ceiling checks: when `grant.requestedByRunId` is set, load `{ depth, profile, grantId, orgId }` of that run (system context, same org); `skip('grant_depth_exceeded')` unless `depth === 0 && profile === 'assessment' && grantId === grant.grantId && orgId === input.orgId`. Stamp the three columns in both insert sites. In `analysisAdmission.ts` add the three map entries and forward `input.grant`. In `taskService.ts` thread `grant` to the insert.
+In `runService.ts`, inside W02's depth guard (step 1d): extend the loaded row to `{ depth, profile, grantId, orgId }` and throw `GrantDepthExceededError` unless `depth === 0 && profile === 'assessment' && grantId === grant.grantId && orgId === input.orgId`. Stamp the three columns in both insert sites. In `analysisAdmission.ts` add the two map entries, catch `GrantDepthExceededError` → `grant_refused`, and forward `input.grant`. In `taskService.ts` thread `grant` to the insert.
 
 - [ ] **Step 4: Integration case**
 
-Append to `agentRunAdmission.integration.test.ts`: create an `assessment` run row with `grant_id`, then admit a `sweep` child with `grant.requestedByRunId` → created, `depth = 1`, `parent_grant_revision_id` set; then admit a grandchild naming the child → `skipped: 'grant_depth_exceeded'`.
+Append to `agentRunAdmission.integration.test.ts`: create an `assessment` run row with `grant_id`, then admit a `sweep` child with `grant.requestedByRunId` → created, `depth = 1`, `parent_grant_revision_id` set; then admit a grandchild naming the child → rejects with `GrantDepthExceededError` and no row.
 
 - [ ] **Step 5: Verify**
 
@@ -236,7 +234,7 @@ git commit -m "feat(wisp): admission depth guard and lineage stamping for specia
 - Modify: `apps/api/src/jobs/aiAgentSweepScheduler.ts` (`SweepJobData`, `buildAdmission()` ~710–760)
 
 **Interfaces:**
-- Consumes: W02 `resolveGrantCeiling`, `assertWithinCeiling`, `GrantCeiling`, `GrantInactiveError`, `CeilingViolationError`, `getActiveGrantForUser`; W05 `chargeableUnderGrant(grantId, estimateCents)`; W01 entitlement service read (the function `requireEntitlement('wisp')` wraps — pass `partnerId`, key `'wisp'`); `createAndEnqueueAgentRun` (Task 2 shape); `admitAnalysisRun`; `admitServiceRecoveryTask`; `resolveEffectiveAgentSystem(orgId, kind)` (`aiAgents/effectivePolicy.ts`); `getRecipe(workflowKey, workflowVersion)` (`aiOperator/recipes/index.ts:59`); `getAiAgentSweepQueue`, `loadEnabledBaselineCadences`/`resolveEffectiveSchedulesForPartner` (`aiAgents/scheduleService.ts:839/892`).
+- Consumes: W02 `resolveGrantCeiling`, `assertWithinCeiling`, `GrantCeiling` (incl. `grantorUserId`, `partnerId`), `GrantInactiveError`, `CeilingViolationError`; W05 `chargeableUnderGrant(grantId, estimateCents)`; W01 `hasEntitlement(partnerId, 'wisp')` (`services/entitlements.ts`); `createAndEnqueueAgentRun` (Task 2 shape); `admitAnalysisRun`; `admitServiceRecoveryTask`; `resolveEffectiveAgentSystem(orgId, kind)` (`aiAgents/effectivePolicy.ts`); `getRecipe(workflowKey, workflowVersion)` (`aiOperator/recipes/index.ts:59`); `getAiAgentSweepQueue`, `loadEnabledBaselineCadences`/`resolveEffectiveSchedulesForPartner` (`aiAgents/scheduleService.ts:839/892`).
 - Produces (w00-exact first parameter and return; second parameter additive):
   ```ts
   export type SpecialistRequester =
@@ -270,7 +268,7 @@ git commit -m "feat(wisp): admission depth guard and lineage stamping for specia
 
 ```
 1. wispEnabled()                                  else refused 'wisp_disabled'
-2. entitlement('wisp', partnerId) enabled         else refused 'not_entitled'
+2. hasEntitlement(partnerId, 'wisp')              else refused 'not_entitled'   (partnerId from the grant row)
 3. ceiling = resolveGrantCeiling(grantId, rev)    GrantInactiveError → 'grant_inactive'
 4. orgId ∈ ceiling.orgIds                         else 'org_out_of_ceiling'
 5. requester 'run' ⇒ requestedByRunId required; requesting run must be depth 0 + profile 'assessment' + same grant (else 'depth_exceeded')
@@ -355,7 +353,7 @@ git commit -m "feat(wisp): specialist coordinator with auto-admit vs approval sp
 - Modify: `apps/api/src/services/aiToolExposure.ts:15` (`HUMAN_ONLY_TOOLS` entry)
 - Modify: `apps/api/src/services/aiGuardrails.ts` (`TIER3_SUPERVISED_TOOLS` :664, `TOOL_PERMISSIONS` :911, `buildApprovalDescription` :3060)
 - Modify: `apps/api/src/services/aiToolSchemas.ts:192`, `apps/api/src/services/aiAgents/agentToolCatalog.ts:97`
-- Modify: W05 `apps/api/src/services/aiAgents/assessmentProfile.ts` — append `WISP_SPECIALIST_REQUEST_TOOL` to the assessment policy allowlist constant (release authority re-checks the run's snapshot allowlist, `agentReleaseAuthority.ts`)
+- Modify: W05 `apps/api/src/services/aiAgents/assessmentProfile.ts` — add `export const ASSESSMENT_CARRIER_TOOLS = [WISP_SPECIALIST_REQUEST_TOOL] as const` and union it into `assessmentToolAllowlist(...)`'s result (release authority re-checks the run's snapshot allowlist, `agentReleaseAuthority.ts`). Keep it out of `ASSESSMENT_TOOL_ALLOWLIST` itself: W05's test asserts every name in that list has a Tier-1 `TOOL_TIERS` entry, and the carrier is untiered.
 - Test: `apps/api/src/services/aiAgentSdkTools.registryParity.contract.test.ts` (human-only rule), `apps/api/src/services/actionIntents/effectDigestCoverage.contract.test.ts` (unaffected — supervised, not four_eyes), `apps/api/src/jobs/intentReleaseWorker.durable.contract.test.ts`
 
 **Interfaces:**
@@ -369,7 +367,7 @@ git commit -m "feat(wisp): specialist coordinator with auto-admit vs approval sp
   export async function wispSpecialistRequestHandler(input: Record<string, unknown>, auth: AuthContext, context?: { actionIntentId?: string }): Promise<string>;
   export function registerWispTools(aiTools: Map<string, AiTool>): void;
   ```
-- Registry decisions: `HUMAN_ONLY_TOOLS.set('wisp_specialist_request', 'Approval carrier minted only by the Wisp coordinator under an assessment run; releasing it admits one specialist under the approver\'s authority, so it is never declared to chat, Helper or agents (Wisp spec §7.5).')`; `TIER3_SUPERVISED_TOOLS.add(...)` (one approver, no four-eyes, no effect-digest pin); `TOOL_PERMISSIONS.wisp_specialist_request = { resource: 'ai_agents', action: 'write' }`; `TOOL_CAPABILITY.wisp_specialist_request = 'ai'` with the same "mapped for completeness, never reachable" comment as `operator_plan` (`agentToolCatalog.ts:386`); `toolInputSchemas.wisp_specialist_request = z.strictObject({ requestId: uuid, kind: enum(SPECIALIST_KINDS), orgId: uuid, grantId: uuid, grantRevisionId: uuid, params: record, reason: string.max(500) })`; **no** `TOOL_TIERS` entry and **no** MCP `tool()` (human-only means never tiered — `registryParity.contract.test.ts:humanOnlyProblems`). Not added to `AGENT_HUMAN_ONLY_TOOLS` (creation and release run under the assessment run's agent principal).
+- Registry decisions: `HUMAN_ONLY_TOOLS.set('wisp_specialist_request', 'Approval carrier minted only by the Wisp coordinator under an assessment run; releasing it admits one specialist under the approver\'s authority, so it is never declared to chat, Helper or agents (Wisp spec §7.5).')`; `TIER3_SUPERVISED_TOOLS.add(...)` (one approver, no four-eyes, no effect-digest pin); `TOOL_PERMISSIONS.wisp_specialist_request = { resource: 'ai_sessions', action: 'use' }` (w00 A1; the kind's `requiredPermissions` are re-checked against the approver in coordinator gate 8); `TOOL_CAPABILITY.wisp_specialist_request = 'ai'` with the same "mapped for completeness, never reachable" comment as `operator_plan` (`agentToolCatalog.ts:386`); `toolInputSchemas.wisp_specialist_request = z.strictObject({ requestId: uuid, kind: enum(SPECIALIST_KINDS), orgId: uuid, grantId: uuid, grantRevisionId: uuid, params: record, reason: string.max(500) })`; **no** `TOOL_TIERS` entry and **no** MCP `tool()` (human-only means never tiered — `registryParity.contract.test.ts:humanOnlyProblems`). Not added to `AGENT_HUMAN_ONLY_TOOLS` (creation and release run under the assessment run's agent principal).
 - `buildApprovalDescription` case: `Wisp wants to run ${kind label} at ${org name or id}: ${reason}`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -400,7 +398,7 @@ it('is human-only: in aiTools, in HUMAN_ONLY_TOOLS, in TIER3_SUPERVISED_TOOLS, n
 Run: `cd apps/api && npx vitest run src/services/wisp/specialistIntent.test.ts src/services/aiToolsWisp.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement** `specialistIntent.ts` (load agent/run/org system-scoped exactly as `checkAgentReleaseAuthority` does, build the agent auth, call `createActionIntent` with `actionLabel`, `reason`, `orgId`; catch the duplicate-idempotency path and return the live intent id), `aiToolsWisp.ts` (handler: require `context.actionIntentId`; load the intent system-scoped; require `actionName === WISP_SPECIALIST_REQUEST_TOOL`, `arguments.requestId === input.requestId`, `decidedByUserId`; `buildApproverAuthContextForIntent(intent)` null → error `approver_invalid`; call `requestSpecialist(args, { requester: { kind: 'approval', intentId, auth }, requestId })`; `{ refused }` → `JSON.stringify({ error: refused })`, else the admitted JSON), the registry entries, and the allowlist append in `assessmentProfile.ts`.
+- [ ] **Step 3: Implement** `specialistIntent.ts` (load agent/run/org system-scoped exactly as `checkAgentReleaseAuthority` does, build the agent auth, call `createActionIntent` with `actionLabel`, `reason`, `orgId`; catch the duplicate-idempotency path and return the live intent id), `aiToolsWisp.ts` (handler: require `context.actionIntentId`; load the intent system-scoped; require `actionName === WISP_SPECIALIST_REQUEST_TOOL`, `arguments.requestId === input.requestId`, `decidedByUserId`; `buildApproverAuthContextForIntent(intent)` null → error `approver_invalid`; call `requestSpecialist(args, { requester: { kind: 'approval', intentId, auth }, requestId })`; `{ refused }` → `JSON.stringify({ error: refused })`, else the admitted JSON), the registry entries, and `ASSESSMENT_CARRIER_TOOLS` in `assessmentProfile.ts`.
 
 - [ ] **Step 4: Verify contracts still hold**
 
@@ -419,37 +417,36 @@ git commit -m "feat(wisp): wisp_specialist_request approval carrier released und
 ### Task 5: `request_specialist` outcome tool body and post-run dispatch
 
 **Files:**
-- Modify: W05 `apps/api/src/services/aiAgents/assessmentProfile.ts` (replace the `request_specialist` stub body) and W05's assessment outcome type (add `specialistRequests`)
+- Modify: W05 `apps/api/src/services/aiAgents/outcomeTools.ts` — the `request_specialist` arm of `buildOutcomeSdkTools` (replace the `{ refused: 'not_available_until_w07' }` stub body; the SDK handler lives here in W05, not in `assessmentProfile.ts`) and its description string
+- Modify: W05 `packages/shared/src/types/wispConcerns.ts` (`AssessmentOutcome.specialistRequests` item type gains `reason`; add `specialistResults`) and `packages/shared/src/validators/wispConcerns.ts` (`requestSpecialistSchema` already carries `kind`, `params`, `reason` 10–500 after reconciliation — export `validateRequestSpecialist` beside it)
 - Create: `apps/api/src/services/wisp/specialistDispatch.ts`
 - Create: `apps/api/src/services/wisp/specialistDispatch.test.ts`
 - Modify: `apps/api/src/services/aiAgents/runLoop.ts` (finalizer block ~3045–3095: call `dispatchSpecialistRequests` after W05's `finalizeAssessment`)
-- Modify: `apps/api/src/services/aiAgents/runLoopTypes.ts:139` (`AgentRunOutcome.specialistResults`)
-- Test: `apps/api/src/services/aiAgents/assessmentProfile.test.ts` (W05 file; extend)
+- Test: `apps/api/src/services/aiAgents/outcomeTools.test.ts` (W05 file; extend)
 
 **Interfaces:**
-- Consumes: W05 outcome-tool capture (validate-only handler, post-hook capture — the `submit_task_step` posture, `aiAgents/tools/submitTaskStep.ts` header); `RunContext`, `LoopResult` (`runLoopTypes.ts:413/536`); `requestSpecialist`, `deriveRequestId`, `MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT`.
+- Consumes: W05 outcome-tool capture (validate-only handler, post-hook capture into `outcome.assessment.specialistRequests` — the `submit_task_step` posture, `aiAgents/tools/submitTaskStep.ts` header); `RunContext`, `LoopResult` (`runLoopTypes.ts:413/536`); `requestSpecialist`, `deriveRequestId`, `MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT`.
 - Produces:
   ```ts
-  // request_specialist SDK shape (model-facing)
+  // request_specialist SDK shape (model-facing) = W05's requestSpecialistSchema
   { kind: z.enum(SPECIALIST_KINDS), params: z.record(z.unknown()), reason: z.string().min(10).max(500) }
-  export const REQUEST_SPECIALIST_SHAPE: ZodRawShape; export function validateRequestSpecialist(input: unknown): SpecialistRequest;
+  export function validateRequestSpecialist(input: unknown): SpecialistRequest;   // packages/shared validators, beside requestSpecialistSchema
   export interface SpecialistRequest { kind: SpecialistKind; params: Record<string, unknown>; reason: string }
-  // AgentRunOutcome gains
-  specialistRequests?: SpecialistRequest[];                       // captured, in call order
+  // AssessmentOutcome (W05 shared type) — specialistRequests: SpecialistRequest[] (captured, in call order; W05's item type widened with `reason`); gains
   specialistResults?: Array<{ requestId: string; kind: SpecialistKind } & ({ admitted: true; runId?: string; taskId?: string } | { needsApproval: true; intentId: string } | { refused: string })>;
   // specialistDispatch.ts
-  export async function dispatchSpecialistRequests(ctx: RunContext, result: LoopResult): Promise<void>; // no-op unless run.profile === 'assessment' && run.grantId; caps at MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT (extra → refused 'too_many_requests'); requestId = deriveRequestId(run.id, ordinal); writes specialistResults onto the persisted outcome
+  export async function dispatchSpecialistRequests(ctx: RunContext, result: LoopResult): Promise<void>; // no-op unless run.profile === 'assessment' && run.grantId; caps at MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT (extra → refused 'too_many_requests'); requestId = deriveRequestId(run.id, ordinal); writes outcome.assessment.specialistResults onto the persisted outcome
   ```
 - The handler stays validate-only and returns `{ status: 'recorded' }`; it never calls the coordinator (spec §7.5: the deterministic coordinator admits, after the model's turn).
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-// assessmentProfile.test.ts
+// outcomeTools.test.ts (W05 file)
 it('request_specialist validates kind/params/reason and no longer returns not_available_until_w07', async () => {
-  const out = await handlerFor('request_specialist')({ kind: 'sweep', params: {}, reason: 'Backups failed twice at Greenwood' });
+  const out = await handlerFor(buildOutcomeSdkTools(['request_specialist'], …), 'request_specialist')({ kind: 'sweep', params: {}, reason: 'Backups failed twice at Greenwood' });
   expect(JSON.parse(out.content[0].text)).toEqual({ status: 'recorded' });
-  await expect(handlerFor('request_specialist')({ kind: 'run_script', params: {}, reason: 'x' })).rejects.toThrow();
+  await expect(handlerFor(…)({ kind: 'run_script', params: {}, reason: 'x' })).rejects.toThrow();
 });
 // specialistDispatch.test.ts
 it('dispatches captured requests in order with deterministic request ids', async () => { /* 2 requests → requestSpecialist called with deriveRequestId(run.id, 0) and (run.id, 1), requestedByRunId run.id, grantId/revision from the run */ });
@@ -460,20 +457,20 @@ it('persists specialistResults on the outcome, including refusals', ...);
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd apps/api && npx vitest run src/services/aiAgents/assessmentProfile.test.ts src/services/wisp/specialistDispatch.test.ts`
+Run: `cd apps/api && npx vitest run src/services/aiAgents/outcomeTools.test.ts src/services/wisp/specialistDispatch.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement** the shape/validator, the capture into `outcome.specialistRequests` (same post-hook mechanism W05 uses for `raise_concern`), `dispatchSpecialistRequests`, and the one call in `runLoop.ts` after `finalizeAssessment` (errors are caught and recorded as `refused: 'dispatch_failed'`; a dispatch failure never fails the assessment run).
+- [ ] **Step 3: Implement** the validator export, the handler body (the capture into `outcome.assessment.specialistRequests` is W05's and stays), `dispatchSpecialistRequests`, and the one call in `runLoop.ts` after `finalizeAssessment` (errors are caught and recorded as `refused: 'dispatch_failed'`; a dispatch failure never fails the assessment run).
 
 - [ ] **Step 4: Verify**
 
-Run: `cd apps/api && npx vitest run src/services/aiAgents/assessmentProfile.test.ts src/services/wisp/specialistDispatch.test.ts src/services/aiAgents/runLoop.test.ts src/services/aiAgents/outcomeTools.test.ts`
+Run: `cd apps/api && npx vitest run src/services/aiAgents/outcomeTools.test.ts src/services/wisp/specialistDispatch.test.ts src/services/aiAgents/runLoop.test.ts src/services/aiAgents/assessmentProfile.test.ts src/services/aiAgents/runFinalizers.assessment.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/aiAgents/assessmentProfile.ts apps/api/src/services/aiAgents/assessmentProfile.test.ts apps/api/src/services/wisp/specialistDispatch.ts apps/api/src/services/wisp/specialistDispatch.test.ts apps/api/src/services/aiAgents/runLoop.ts apps/api/src/services/aiAgents/runLoopTypes.ts
+git add apps/api/src/services/aiAgents/outcomeTools.ts apps/api/src/services/aiAgents/outcomeTools.test.ts packages/shared/src/types/wispConcerns.ts packages/shared/src/validators/wispConcerns.ts apps/api/src/services/wisp/specialistDispatch.ts apps/api/src/services/wisp/specialistDispatch.test.ts apps/api/src/services/aiAgents/runLoop.ts
 git commit -m "feat(wisp): request_specialist outcome tool body with post-run coordinator dispatch (W07)"
 ```
 
@@ -484,15 +481,15 @@ git commit -m "feat(wisp): request_specialist outcome tool body with post-run co
 **Files:**
 - Modify: `apps/api/src/services/aiToolsWisp.ts` (add the handler + `aiTools.set('launch_specialist', …)`)
 - Modify: `apps/api/src/services/aiAgentSdkTools.ts` (`TOOL_TIERS` :191 → `launch_specialist: 2`; MCP `tool()` in `createBreezeMcpServer` beside `send_endpoint_message` ~:2453; `SESSION_TOOL_DESCRIPTIONS`)
-- Modify: `apps/api/src/services/aiToolSchemas.ts:192`, `apps/api/src/services/aiAgents/agentToolCatalog.ts:97` (`'ai'`), `apps/api/src/services/aiGuardrails.ts:911` (`{ resource: 'ai_agents', action: 'write' }`), `apps/api/src/services/aiToolExposure.ts:40` (`AGENT_HUMAN_ONLY_TOOLS.add('launch_specialist')` with a comment citing spec §7.5)
+- Modify: `apps/api/src/services/aiToolSchemas.ts:192`, `apps/api/src/services/aiAgents/agentToolCatalog.ts:97` (`'ai'`), `apps/api/src/services/aiGuardrails.ts:911` (`{ resource: 'ai_sessions', action: 'use' }`, w00 A1), `apps/api/src/services/aiToolExposure.ts:40` (`AGENT_HUMAN_ONLY_TOOLS.add('launch_specialist')` with a comment citing spec §7.5)
 - Test: `apps/api/src/services/aiToolsWisp.test.ts` (extend), `apps/api/src/services/aiGuardrails.agentPrincipal.contract.test.ts`, `apps/api/src/services/aiAgentSdkTools.registryParity.contract.test.ts`
 
 **Interfaces:**
-- Consumes: W02 `getActiveGrantForUser(userId, scope)`; `requestSpecialist` with `requester: { kind: 'user', auth }`.
+- Consumes: `AuthContext.wispGrant?: { grantId; grantRevisionId }` (W03 type; W04 stamps it on every chat turn under a grant — w00 A2); `requestSpecialist` with `requester: { kind: 'user', auth }`.
 - Produces:
   ```ts
   export async function launchSpecialistHandler(input: { orgId: string; kind: SpecialistKind; params?: Record<string, unknown>; reason: string }, auth: AuthContext): Promise<string>;
-  // resolution: grant = getActiveGrantForUser(auth.user.id, { partnerId, orgId }) ?? getActiveGrantForUser(auth.user.id, { partnerId, orgId: null }); none → { error: 'no_active_grant' }
+  // resolution: auth.wispGrant absent → '{"error":"wisp_grant_required"}' (W03's string; the tool only works inside a Wisp session — spec §7.5 "a human chat turn under a grant"); else requestSpecialist({ grantId, grantRevisionId, orgId: input.orgId, kind, params, requestedByRunId: null }, { requester: { kind: 'user', auth }, requestId })
   // requestId = randomUUID() (a human asking twice means twice — routes/patchPlan.ts:74 posture)
   ```
 - Input schema: `z.strictObject({ orgId: uuid, kind: enum(SPECIALIST_KINDS), params: record.optional(), reason: string.min(5).max(500) })`. Rate limit: add `launch_specialist: { limit: 10, windowSeconds: 3600 }` to `TOOL_RATE_LIMITS` (`services/aiToolRateLimits.ts:45`).
@@ -500,18 +497,17 @@ git commit -m "feat(wisp): request_specialist outcome tool body with post-run co
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-it('launch_specialist is tiered 2, agent-denied, permissioned ai_agents:write, declared to MCP, schema present', () => {
+it('launch_specialist is tiered 2, agent-denied, permissioned ai_sessions:use, declared to MCP, schema present', () => {
   expect(TOOL_TIERS.launch_specialist).toBe(2);
   expect(AGENT_HUMAN_ONLY_TOOLS.has('launch_specialist')).toBe(true);
-  expect(TOOL_PERMISSIONS.launch_specialist).toEqual({ resource: 'ai_agents', action: 'write' });
+  expect(TOOL_PERMISSIONS.launch_specialist).toEqual({ resource: 'ai_sessions', action: 'use' });
   expect(toolInputSchemas.launch_specialist).toBeDefined();
   expect(TOOL_CAPABILITY.launch_specialist).toBe('ai');
   const server = createBreezeMcpServer(() => ({}) as never);
   expect((server.instance as any)._registeredTools.launch_specialist).toBeDefined();
 });
-it('refuses no_active_grant when the caller holds no grant covering the org', ...);
-it('resolves a partner-wide grant when no one-org grant exists', ...);
-it('passes requester user + the session auth to requestSpecialist', ...);
+it('returns {"error":"wisp_grant_required"} and calls nothing when auth.wispGrant is absent', ...);
+it('passes auth.wispGrant\'s grantId/grantRevisionId, requester user + the session auth, requestedByRunId null to requestSpecialist', ...);
 it('checkAgentGuardrails denies launch_specialist to an ai_agent principal above the allowlist', ...); // in agentPrincipal.contract.test
 ```
 
@@ -593,7 +589,7 @@ git commit -m "feat(wisp): 'Wisp for <user>' provenance on run and task detail (
 **Files:**
 - Create: `apps/api/src/services/wispMetrics.ts` (leaf: imports only `./metricsRegistry`, like `aiWorkspaceMetrics.ts`)
 - Create: `apps/api/src/services/wispMetrics.test.ts`
-- Modify (one `inc*` call each): W02 `services/wisp/grants.ts` `pauseGrant`; W05 `services/wisp/assessment.ts` `enqueueAssessment`, `services/wisp/budget.ts` `chargeableUnderGrant`, `services/wisp/concerns.ts` `upsertConcern`/`resolveConcern`; W06 `services/wisp/notifyUser.ts`; Task 3 `coordinator.ts`
+- Modify (one `inc*` call each): W02 `services/wisp/grants.ts` `pauseGrant`; W05 `services/wisp/assessment.ts` `enqueueAssessment`, `services/wisp/budget.ts` `chargeableUnderGrant`, `services/wisp/concerns.ts` `upsertConcern`/`resolveConcern`, `jobs/wispWakeScheduler.ts` `processWakeTick` (`setWispGrantsActive`); W06 `services/wisp/notifyUser.ts`; Task 3 `coordinator.ts`
 
 **Interfaces:**
 ```ts
@@ -784,7 +780,7 @@ git commit -m "docs(wisp): feature page, rollout checklist, release-notes draft 
 - [ ] Integration (test stack up): `npx vitest run --config vitest.integration.config.ts src/__tests__/integration/agentRunAdmission.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts` and `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage` → PASS.
 - [ ] Integration case this wave owns (add to `agentRunAdmission.integration.test.ts` in Task 2 or a new `wispSpecialists.integration.test.ts`): a grant-bearing `assessment` run requesting `analysis` whose grantor's ceiling lacks `ai_workspace:execute` → `refused: 'workspace_execute_required'` and **no** `ai_agent_runs` row with `dedupe_key = wisp-specialist-<id>`.
 - [ ] `pnpm test-stack down`; `pnpm db:check-drift` clean.
-- [ ] PR body states: flag off = no behaviour change; tenancy registrations (export-policy columns on `ai_agent_runs`/`ai_operator_tasks`; no new tables); contract names consumed (W02 grants/ceiling/`grant` admission input, W05 `assessment` profile + `chargeableUnderGrant`, W06 `notifyUser`) and introduced (`requestSpecialist`, `SpecialistKind`, `wisp_specialist_request`, `launch_specialist`, `grant_depth_exceeded`, the three lineage columns); settings rule 9 — this wave adds no setting (the auto-admit set is code-owned; count of places configured: 0 → 0).
+- [ ] PR body states: flag off = no behaviour change; tenancy registrations (export-policy columns on `ai_agent_runs`/`ai_operator_tasks`; no new tables); contract names consumed (W02 grants/ceiling/`grant` admission input/`GrantDepthExceededError`, W03 `AuthContext.wispGrant`, W05 `assessment` profile + `chargeableUnderGrant` + `requestSpecialistSchema`, W06 `notifyUser`) and introduced (`requestSpecialist`, `SpecialistKind`, `wisp_specialist_request`, `launch_specialist`, `ASSESSMENT_CARRIER_TOOLS`, the three lineage columns); settings rule 9 — this wave adds no setting (the auto-admit set is code-owned; count of places configured: 0 → 0).
 
 ## Calls made by the planner
 
@@ -793,10 +789,20 @@ git commit -m "docs(wisp): feature page, rollout checklist, release-notes draft 
 3. **"Under the approver's session"** is implemented as "under the approver's authority" (`buildApproverAuthContextForIntent`); the durable release worker has no chat session.
 4. **Human chat turns admit every kind directly** (the human is present and the session's own approval mode applies to the Tier-2 tool); the specialist's internal effects still mint their own intents.
 5. **Lineage as columns** (`requested_by_run_id`, `parent_grant_revision_id`, `depth`) on both `ai_agent_runs` and `ai_operator_tasks`; `ai_agent_runs` has no metadata column and `trigger_ref` is caller-forwarded jsonb, so columns are the only trustworthy, exportable home.
-6. **Depth guard input** added as `grant.requestedByRunId` (additive to W02's shape) with skip `grant_depth_exceeded`; reuse W02's name if it already shipped one.
+6. **Depth guard input** is W02's `grant.requestedByRunId` with W02's thrown `GrantDepthExceededError` (w00 A11); W07 only tightens the predicate with the lineage columns.
 7. **Sweep specialists go through the sweep queue** (one-off occurrence with `grant` in the job data) rather than a bare run admission, so system-collected evidence still precedes the run.
 8. **No Partner Admin backfill migration**: the seeded role is `*:*`; the rollout doc carries the verification query.
 9. **No partner label on Prometheus series**; per-partner counts live on the platform-admin page.
 10. **Release-notes draft goes to `docs/release-notes/next-release-draft.md`** (the in-repo file `/release` reads); the marketing-site file lives in another repository and is written at release time.
 11. **Gap-finder is a CLI** (`apps/api/scripts/wisp-gap-finder.ts`), one Agent SDK `query()` with no tools, reports under `internal/wisp-gap-reports/`; never a route or a tool.
 12. **Specialist budget estimates** (25/100/50/50/50 ¢) and `MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT = 3` are planner defaults; admission's own reservations remain the real meter.
+
+### Reconciliation edits (reviewer)
+
+- Depth guard: W02 already ships `grant.requestedByRunId` and throws `GrantDepthExceededError` (w00 A11); Task 2 no longer adds a `grant_depth_exceeded` skip reason — it tightens W02's predicate, catches the error in `analysisAdmission` as `grant_refused`, and the integration case expects a rejection.
+- `request_specialist` body lives in W05's `outcomeTools.ts` `buildOutcomeSdkTools` arm (not `assessmentProfile.ts`); the capture target is W05's existing `outcome.assessment.specialistRequests`; the Zod shape is W05's `requestSpecialistSchema` (reason 10–500) rather than a second `REQUEST_SPECIALIST_SHAPE`; test moved to `outcomeTools.test.ts`.
+- The carrier joins the assessment allowlist through a separate `ASSESSMENT_CARRIER_TOOLS` constant so W05's "every allowlisted name is Tier 1" test keeps passing.
+- `TOOL_PERMISSIONS` for `launch_specialist` and `wisp_specialist_request` → `ai_sessions:use` (w00 A1); per-kind `requiredPermissions` remain ceiling terms (gate 8). Review Focus 2 reworded.
+- `launch_specialist` reads `AuthContext.wispGrant` (w00 A2; stamped by W04) instead of `getActiveGrantForUser`, returning W03's `wisp_grant_required` outside a Wisp session; tests rewritten.
+- Task 3 consumes W01's `hasEntitlement(partnerId, 'wisp')` by name; `getActiveGrantForUser` dropped from its consumes list.
+- Task 8 adds the `setWispGrantsActive` call site (W05's wake tick) that the gauge's comment promised.

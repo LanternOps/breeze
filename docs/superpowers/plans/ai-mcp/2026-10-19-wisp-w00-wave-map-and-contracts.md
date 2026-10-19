@@ -103,7 +103,7 @@ export async function attachSession(threadId: string, sessionId: string): Promis
 export async function updateThreadSummary(threadId: string, summary: string): Promise<void>; // ≤ 4_000 chars, deterministic truncation
 export async function seedContextForSession(threadId: string, ceiling: GrantCeiling): Promise<string>; // summary + renderMemoryForPrompt(recallForGrant(...)) — the only thing a new SDK session inherits
 ```
-- Chat: `routes/ai.ts` session create accepts `wispGrantId`; when present the session is a Wisp turn: `makeSessionAwareHandler` consults `resolveGrantCeiling` + `assertWithinCeiling` **before every tool call including Tier 1**; `seedContextForSession` is appended to the system prompt; the session is attached to the thread. Session limits (24 h / 2 h) unchanged.
+- Chat: `routes/ai.ts` session create accepts `wispGrantId`; when present the session is a Wisp turn: `createSessionPreToolUse` (`aiAgentSdk.ts:809`, see A14) consults `resolveGrantCeiling` + `assertWithinCeiling` **before every tool call including Tier 1**; `seedContextForSession` is appended to the system prompt; the session is attached to the thread. Session limits (24 h / 2 h) unchanged.
 - Web: `apps/web/src/components/ai/` gains `WispToggle` (create grant via step-up modal), `WispThreadHeader`; chat sidebar shows "Wisp" mode; `useEntitlement('wisp')` + `FeatureLock` wrap the toggle.
 
 ### Triage engine (W05) — `apps/api/src/services/wisp/`
@@ -189,7 +189,9 @@ Seven planners verified the contracts against the checkout. The following correc
 - W02 hub `routes/wisp.ts`: `POST /wisp/grants`, `GET /wisp/grants`, `GET /wisp/grants/preview`, `POST /wisp/grants/:id/refresh|revoke`, `PATCH /wisp/grants/:id/settings` (budget/tick).
 - W04 `routes/wispThreads.ts`: `GET /wisp/thread?orgId=`, `GET /wisp/thread/:id/sessions`; W06 adds `GET /wisp/thread/:id`.
 - W05: `GET /wisp/concerns`, `POST /wisp/concerns/:id/snooze|dismiss|resolve`, `GET/POST/DELETE /wisp/watches`.
-- W06: `GET/PUT /wisp/nudge-preferences`.
+- W06: `GET/PUT /wisp/nudge-preferences` (per user); `GET/PUT /wisp/nudge-settings` (partner: urgent-capable concern kinds; `canManagePartnerWidePolicies`) — added by the reconciliation review, spec §7.4.
+- A21. `createGrant` enforces the `wisp` entitlement limit `maxGrants` per partner (`GrantLimitReachedError`, HTTP 409 `grant_limit_reached`); null limits (entitlements service absent) ⇒ no cap.
+- A22. Spec §9 metering in the first launch counts assessments, runs and tasks against the grant's daily budget; **Wisp chat turns are metered through the existing AI-credit path only** (follow-up to add them to the grant window). Spec §8.3 "deleted with the owner" means hard delete (FK cascade); a disabled user's blocks persist unreachable (no active grant) until hard delete.
 
 **Mobile / web**
 - A19. Mobile tests are **Vitest, `.ts` only** (no Jest, no screen render tests); behaviour is pinned in pure sibling modules. Mobile has no i18n (inline copy). No `breeze://` scheme exists today; W06 adds `scheme` to `app.json` and routes from push `data`.

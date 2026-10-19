@@ -11,7 +11,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 
 **Goal:** Wisp reaches one named person on their phone with a short, specific nudge that deep-links into a mobile Wisp thread screen, honouring quiet hours, per-user preferences and the W05 backoff, with every nudge mirrored in the in-app bell.
 
-**Architecture:** One delivery primitive, `services/wisp/notifyUser.ts`, resolves the grant behind a thread, consults W05 `recipientState` for backoff, `wisp_nudge_preferences` for channels/quiet override, `mobile_devices.quiet_hours` per device, writes the in-app row through `createNotification` under `runOutsideDbContext(withSystemDbAccessContext)`, then pushes after the context closes (the two-phase shape `ticketPush.ts` uses). W05's `nudge` outcome tool and a new 15-minute digest sweep are its only callers. Mobile learns the `wisp_nudge` push category, gains a `HomeStack` with `WispThreadScreen` (concerns from W05 routes, reply box on the existing chat transport with `wispGrantId`) and `WispConcernSheet`, and approval-card taps open the existing `ApprovalScreen` takeover over the thread. Web gets the thread page the in-app link points at.
+**Architecture:** One delivery primitive, `services/wisp/notifyUser.ts`, takes the grant in its payload (w00 A20) and cross-checks it against the thread, consults W05 `recipientState` for backoff, `wisp_nudge_preferences` for channels/quiet override, `mobile_devices.quiet_hours` per device, writes the in-app row through W05's `deliverInApp` (`services/wisp/deliver.ts` — the single `createNotification` site under `services/wisp/`, w00 A18) under `runOutsideDbContext(withSystemDbAccessContext)`, then pushes after the context closes (the two-phase shape `ticketPush.ts` uses). W05's assessment finalizer nudge step and a new 15-minute digest sweep are its only callers. Mobile learns the `wisp_nudge` push category, gains a `HomeStack` with `WispThreadScreen` (concerns from W05 routes, reply box on the existing chat transport with `wispGrantId`) and `WispConcernSheet`, and approval-card taps open the existing `ApprovalScreen` takeover over the thread. Web gets the thread page the in-app link points at.
 
 **Tech Stack:** Hono + Drizzle + hand-written SQL (API), BullMQ (digest), APNs/FCM/Expo via `expoPush.ts`, React Native + Expo + Redux Toolkit (mobile, Vitest `.ts`-only), Astro + React + react-i18next (web), Zod in `@breeze/shared`.
 
@@ -30,7 +30,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Mobile tests are Vitest, `.ts` only** (`apps/mobile/vitest.config.ts` `include: ['src/**/*.test.ts']`, `environment: 'node'`). Screens are not render-tested; every decision a screen makes lives in a sibling `.ts` module with its own test (pattern: `approvalCopy.ts`, `pushRouting.ts`).
 - **Mobile has no i18n layer** (no `locales/`, no `useTranslation` in `apps/mobile/src`); copy is inline strings, as in `SettingsSheet.tsx`. **Web** new `en` keys go into all 8 `apps/web/src/locales/*/pages.json` (`en`, `de-DE`, `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR`, `tr-TR`); `localeParity.test.ts` enforces it.
 - **Web mutations** go through `runAction` (`apps/web/src/lib/runAction.ts:91`); every new web file with a mutating `fetchWithAuth` is added to `TARGET_GLOBS` in `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35` (a literal file list, not directory-wide). Web Wisp copy lives in `ai.json` under `wisp.*` (W04's convention); page titles in `pages.json` `titles.*`.
-- **Sibling-wave file names (verified against the W04 plan in this tree):** W02's route file is `apps/api/src/routes/wisp.ts` exporting `wispRoutes` with `wispRoutes.use('*', requireEntitlement('wisp'))`; W04's thread routes are `apps/api/src/routes/wispThreads.ts` mounted at `/thread` (`GET /api/v1/wisp/thread?orgId=` → `{ data: { thread, grant: { id, status, orgId, expiresAt, currentRevisionId }, wideningAvailable } }`, `GET /thread/:id/sessions`), guarded by `requireScope('partner')` + `requireAiUse`. W04's `createSession` refuses `wispGrantId` with `grant_scope_mismatch` when the grant is org-scoped and the session org differs, so a client creating a Wisp session passes `orgId: grant.orgId ?? undefined` (web `enterWispMode` does; mobile must too).
+- **Sibling-wave file names (verified against the W04 plan in this tree):** W02's route file is `apps/api/src/routes/wisp.ts` exporting `wispRoutes` with `wispRoutes.use('*', requireEntitlement('wisp'))`; W04's thread routes are `apps/api/src/routes/wispThreads.ts` mounted at `/thread` (`GET /api/v1/wisp/thread?orgId=` → `{ data: { thread, grant: { id, status, orgId, expiresAt, currentRevisionId, budgetCentsPerDay, floorTickMinutes }, wideningAvailable } }`, `GET /thread/:id/sessions`), guarded by `requireScope('partner')` + `requirePermission(ai_sessions:use)` (w00 A1; `requireAiUse` is module-private to `routes/ai.ts`, not importable). W05's concern routes take `grantId` (`GET /concerns?grantId=&status=`, `POST /concerns/:id/snooze { grantId, until }`, `POST /concerns/:id/dismiss { grantId }`) and the `Concern` DTO carries `approvalIntentId` and `recipient.snoozedUntil`. W04's `createSession` refuses `wispGrantId` with `grant_scope_mismatch` when the grant is org-scoped and the session org differs, so a client creating a Wisp session passes `orgId: grant.orgId ?? undefined` (web `enterWispMode` does; mobile must too).
 - **Tests**: `cd apps/api && npx vitest run <path>`; `cd apps/mobile && npx vitest run <path>`; `cd apps/web && npx vitest run <path>`; `cd packages/shared && npx vitest run <path>`. Never `pnpm --filter <pkg> test -- --run`.
 - **Copy**: product name "Wisp"; identifiers `wisp_*` / `wisp*`.
 
@@ -55,7 +55,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - `src/services/wisp/nudgeDigest.ts` + `src/jobs/wispNudgeDigest.ts` — digest selection and BullMQ wiring.
 - `src/services/expoPush.ts` — `buildWispNudgePush`.
 - `src/routes/wispNudgePreferences.ts` (new, mounted in W02's `src/routes/wisp.ts`) and W04's `src/routes/wispThreads.ts` (gains `GET /thread/:id`).
-- W05's `src/services/aiAgents/assessmentProfile.ts` — `nudge` tool handler swaps delivery.
+- W05's `src/services/aiAgents/runFinalizers.ts` — `finalizeAssessment` step (3), the `nudge` delivery, swaps `deliverInApp` for `notifyUser`.
 
 **Shared (`packages/shared/src/validators/wispNudgePreferences.ts`)** — Zod + defaults + resolver.
 
@@ -182,7 +182,7 @@ export function buildWispNudgePush(args: { threadId: string; concernId: string |
 - Create: `apps/api/src/services/wisp/notifyUser.ts` (+ `.test.ts`)
 
 **Interfaces:**
-- Consumes: W04 `wisp_threads` (`id`, `grant_id`, `partner_id`); W05 `recipientState(concernId, grantId)`, `wisp_concerns` (`id`, `org_id`, `severity`); `createNotification` (`services/userNotifications.ts:64`); `userPushTargetsQuery` + `isInQuietHours` pattern (`services/ticketPush.ts:201-307`); `dispatchPushToTokens` (`services/expoPush.ts:353`); `checkNotificationThrottle` (`services/notificationThrottle.ts:40`); `runOutsideDbContext` (`db/index.ts:1226`), `withSystemDbAccessContext` (`db/index.ts:1005`).
+- Consumes: W04 `wisp_threads` (`id`, `grant_id`, `partner_id`); W05 `recipientState(concernId, grantId)`, `wisp_concerns` (`id`, `org_id`, `severity`), **`deliverInApp(d: InAppDelivery)`** (`services/wisp/deliver.ts`, the single `createNotification` site, w00 A18; `InAppDelivery` carries `threadId`, `grantId`, `deepLink`, `concernId`, `approvalIntentId`, `dedupeKey`, `priority` and returns `{ created }`); `userPushTargetsQuery` + `isInQuietHours` pattern (`services/ticketPush.ts:201-307`); `dispatchPushToTokens` (`services/expoPush.ts:353`); `checkNotificationThrottle` (`services/notificationThrottle.ts:40`); `runOutsideDbContext` (`db/index.ts:1226`), `withSystemDbAccessContext` (`db/index.ts:1005`).
 - Produces:
 ```ts
 // nudgeLinks.ts
@@ -196,8 +196,8 @@ export async function upsertNudgePrefs(userId: string, partnerId: string, patch:
 export async function loadUrgentCapableSeverities(partnerId: string): Promise<ConcernSeverity[]>; // missing row = []
 export async function upsertUrgentCapableSeverities(partnerId: string, severities: ConcernSeverity[], byUserId: string): Promise<ConcernSeverity[]>;
 
-// notifyUser.ts — EXACT w00 export
-export type NudgePayload = { userId: string; category: 'wisp_nudge'; title: string; body: string; deepLink: string; concernId: string | null; threadId: string; approvalIntentId?: string | null };
+// notifyUser.ts — EXACT w00 export (+ grantId per w00 A20)
+export type NudgePayload = { userId: string; category: 'wisp_nudge'; title: string; body: string; deepLink: string; concernId: string | null; threadId: string; grantId: string; approvalIntentId?: string | null };
 export async function notifyUser(p: NudgePayload): Promise<{ inApp: boolean; pushed: number; suppressed: 'quiet_hours' | 'prefs' | 'backoff' | null }>;
 // exported for tests / the digest
 export type NudgeSuppressedReason = 'quiet_hours' | 'prefs' | 'backoff' | null;
@@ -207,12 +207,13 @@ export function decideNudgeDelivery(input: { prefs: WispNudgePreferences; urgent
 
 Decisions the implementer cannot make alone:
 - **Dedupe key**: concern nudge → `wisp.nudge:${concernId}:${grantId}:${nextEligibleNudgeAt?.toISOString() ?? 'first'}`; digest (`concernId === null`) → `wisp.digest:${threadId}:${bucketIso}` where `bucketIso` is `now` floored to `digestCadenceMinutes` (UTC). This is what makes the call idempotent per (concernId, grantId, nextEligibleNudgeAt) through `user_notifications_user_dedupe_key_uq`.
-- **Backoff**: when `concernId` is set and `recipientState(...).nextEligibleNudgeAt > now`, or `dismissedAt` is set, or `snoozedUntil > now` → return `{ inApp: false, pushed: 0, suppressed: 'backoff' }` before any write. Same when `createNotification` returns `null` (key already existed) — nothing is pushed either.
+- **Grant/thread consistency**: `wisp_threads.grant_id` must equal `p.grantId`; a mismatch throws (caller bug — one thread per grant, spec §6). The grantor is `p.userId`.
+- **Backoff**: when `concernId` is set and `recipientState(...).nextEligibleNudgeAt > now`, or `dismissedAt` is set, or `snoozedUntil > now` → return `{ inApp: false, pushed: 0, suppressed: 'backoff' }` before any write. Same when `deliverInApp` returns `{ created: false }` (dedupe key already existed) — nothing is pushed either.
 - **Throttle**: `checkNotificationThrottle('wisp-nudge', \`user:${userId}\`, 12, 3600)` not allowed → `'backoff'` (the in-app row is still written; only push is throttled).
 - **Prefs**: `channels.inApp === false && channels.push === false` → `'prefs'`, no write, no push. `push === false` → in-app only, `suppressed: 'prefs'`. `inApp === false` → push only (`inApp: false`).
 - **Quiet hours**: per device (`isInQuietHours(row.quietHours, now)`); a device breaks through only when `urgentCapable && prefs.quietOverride === 'urgent_only'`. `urgentCapable = concern.severity ∈ loadUrgentCapableSeverities(thread.partnerId)`; `false` for digests. If every token-bearing device is quiet → `'quiet_hours'` (in-app still written). No devices at all → `pushed: 0`, `suppressed: null`.
-- **In-app row**: `createNotification({ userId, orgId: concern?.orgId ?? null, type: 'ai', title, message: body, link: webDeepLink(threadId, concernId), priority: severity === 'high' ? 'high' : 'normal', metadata: { wispThreadId, concernId, grantId, intentId: approvalIntentId ?? undefined, deepLink }, dedupeKey })`. `type: 'ai'` is an existing `NOTIFICATION_TYPES` member (`packages/shared/src/constants/notificationTypes.ts:12`); no enum migration.
-- **Context shape**: `runOutsideDbContext(() => withSystemDbAccessContext(async () => { thread, concern, recipientState, prefs, urgent set, device rows, createNotification }))` returns the push tokens; `dispatchPushToTokens(tokens, buildWispNudgePush(...), 'wisp-nudge')` runs **after** that promise resolves. `getUserPushTokens` (`expoPush.ts:137`) is not used because it drops `quiet_hours`; reuse `userPushTargetsQuery([userId])` from `ticketPush.ts:201`.
+- **In-app row**: `deliverInApp({ userId, orgId: concern?.orgId ?? null, title, body, link: webDeepLink(threadId, concernId), priority: severity === 'high' ? 'high' : 'normal', concernId, approvalIntentId, threadId, grantId, deepLink, dedupeKey })` — W05's `deliver.ts` writes `type: 'ai'` and `metadata: { wispThreadId, concernId, grantId, intentId, deepLink }` (an existing `NOTIFICATION_TYPES` member, `packages/shared/src/constants/notificationTypes.ts:12`; no enum migration). `notifyUser.ts` never imports `createNotification` (w00 A18).
+- **Context shape**: `runOutsideDbContext(() => withSystemDbAccessContext(async () => { thread, concern, recipientState, prefs, urgent set, device rows }))` then `deliverInApp` (it opens its own system context) returns the push tokens; `dispatchPushToTokens(tokens, buildWispNudgePush(...), 'wisp-nudge')` runs **after** that promise resolves. `getUserPushTokens` (`expoPush.ts:137`) is not used because it drops `quiet_hours`; reuse `userPushTargetsQuery([userId])` from `ticketPush.ts:201`.
 
 - [ ] **Step 1: Write failing tests for `nudgeLinks`** (`nudgeLinks.test.ts`):
 
@@ -287,26 +288,27 @@ it('digest key floors now to the cadence', () => {
 });
 ```
 
-- [ ] **Step 5: Write failing tests for `notifyUser`** with `vi.mock` on `../../db` (`runOutsideDbContext: (fn) => fn()`, `withSystemDbAccessContext: (fn) => fn()`), `../userNotifications` (`createNotification`), `../expoPush` (`dispatchPushToTokens`), `./concerns` (`recipientState`), `./nudgePreferences`, `../notificationThrottle`, and a `db.select` chain yielding the thread (`grantId: 'g1', partnerId: 'p1'`), concern (`orgId: 'o1', severity: 'high'`) and device rows:
+- [ ] **Step 5: Write failing tests for `notifyUser`** with `vi.mock` on `../../db` (`runOutsideDbContext: (fn) => fn()`, `withSystemDbAccessContext: (fn) => fn()`), `./deliver` (`deliverInApp`), `../expoPush` (`dispatchPushToTokens`), `./concerns` (`recipientState`), `./nudgePreferences`, `../notificationThrottle`, and a `db.select` chain yielding the thread (`grantId: 'g1', partnerId: 'p1'`), concern (`orgId: 'o1', severity: 'high'`) and device rows:
 
 ```ts
-const payload: NudgePayload = { userId: 'u1', category: 'wisp_nudge', title: 'Ticket 4021 stale', body: '3 days, printer driver', deepLink: 'breeze://wisp/thread/t1?concern=c1', concernId: 'c1', threadId: 't1', approvalIntentId: 'i1' };
+const payload: NudgePayload = { userId: 'u1', category: 'wisp_nudge', title: 'Ticket 4021 stale', body: '3 days, printer driver', deepLink: 'breeze://wisp/thread/t1?concern=c1', concernId: 'c1', threadId: 't1', grantId: 'g1', approvalIntentId: 'i1' };
 it('Review Focus 2: a future nextEligibleNudgeAt short-circuits as backoff with no writes', async () => {
   recipientState.mockResolvedValue({ nudgeCount: 1, nextEligibleNudgeAt: new Date(Date.now() + 60_000), snoozedUntil: null, dismissedAt: null });
   await expect(notifyUser(payload)).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'backoff' });
-  expect(createNotification).not.toHaveBeenCalled(); expect(dispatchPushToTokens).not.toHaveBeenCalled();
+  expect(deliverInApp).not.toHaveBeenCalled(); expect(dispatchPushToTokens).not.toHaveBeenCalled();
 });
-it('an existing dedupe key (createNotification → null) pushes nothing', async () => {
-  createNotification.mockResolvedValue(null);
+it('an existing dedupe key (deliverInApp → { created: false }) pushes nothing', async () => {
+  deliverInApp.mockResolvedValue({ created: false });
   await expect(notifyUser(payload)).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'backoff' });
   expect(dispatchPushToTokens).not.toHaveBeenCalled();
 });
+it('a thread whose grant_id differs from payload.grantId throws (caller bug) and writes nothing', …);
 it('happy path writes the in-app row, then pushes after the context closes', async () => {
   const order: string[] = [];
-  createNotification.mockImplementation(async () => { order.push('inApp'); return 'n1'; });
+  deliverInApp.mockImplementation(async () => { order.push('inApp'); return { created: true }; });
   dispatchPushToTokens.mockImplementation(async () => { order.push('push'); return { tokensFound: 2, dispatched: 2, errors: 0 }; });
   await expect(notifyUser(payload)).resolves.toEqual({ inApp: true, pushed: 2, suppressed: null });
-  expect(createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', orgId: 'o1', type: 'ai', priority: 'high', link: '/ai/wisp/thread/t1#concern=c1', dedupeKey: expect.stringMatching(/^wisp\.nudge:c1:g1:/), metadata: expect.objectContaining({ wispThreadId: 't1', concernId: 'c1', grantId: 'g1', intentId: 'i1' }) }));
+  expect(deliverInApp).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', orgId: 'o1', priority: 'high', link: '/ai/wisp/thread/t1#concern=c1', dedupeKey: expect.stringMatching(/^wisp\.nudge:c1:g1:/), threadId: 't1', concernId: 'c1', grantId: 'g1', approvalIntentId: 'i1', deepLink: 'breeze://wisp/thread/t1?concern=c1' }));
   expect(dispatchPushToTokens).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ data: expect.objectContaining({ type: 'wisp_nudge', threadId: 't1', grantId: 'g1', approvalIntentId: 'i1' }) }), 'wisp-nudge');
   expect(order).toEqual(['inApp', 'push']);
 });
@@ -317,7 +319,7 @@ it('throttle denied → in-app written, push withheld, reported as backoff', asy
 it('digest payload (concernId null) skips recipientState and uses the digest key', async () => {
   await notifyUser({ ...payload, concernId: null, approvalIntentId: null, deepLink: 'breeze://wisp/thread/t1' });
   expect(recipientState).not.toHaveBeenCalled();
-  expect(createNotification).toHaveBeenCalledWith(expect.objectContaining({ orgId: null, link: '/ai/wisp/thread/t1', dedupeKey: expect.stringMatching(/^wisp\.digest:t1:/) }));
+  expect(deliverInApp).toHaveBeenCalledWith(expect.objectContaining({ orgId: null, link: '/ai/wisp/thread/t1', dedupeKey: expect.stringMatching(/^wisp\.digest:t1:/) }));
 });
 ```
 - [ ] **Step 6: Run** `npx vitest run src/services/wisp/notifyUser.test.ts src/services/wisp/nudgePreferences.test.ts` — FAIL (modules missing).
@@ -327,21 +329,21 @@ it('digest payload (concernId null) skips recipientState and uses the digest key
 
 ---
 
-### Task 4: Swap the W05 `nudge` outcome tool onto `notifyUser`
+### Task 4: Swap the W05 `nudge` delivery onto `notifyUser`
 
 **Files:**
-- Modify: W05's `apps/api/src/services/aiAgents/assessmentProfile.ts` — the `nudge` outcome tool handler only (schema untouched)
-- Test: `apps/api/src/services/aiAgents/assessmentProfile.nudge.test.ts` (new) and `apps/api/src/services/wisp/notifyUser.callers.contract.test.ts` (new)
+- Modify: W05's `apps/api/src/services/aiAgents/runFinalizers.ts` — `finalizeAssessment` step (3) only (the `nudge` outcome tool's schema and the capture in `outcomeTools.ts` are untouched)
+- Test: `apps/api/src/services/aiAgents/runFinalizers.assessment.test.ts` (W05 file; extend the nudge cases) and `apps/api/src/services/wisp/notifyUser.callers.contract.test.ts` (new)
 
 **Interfaces:**
-- Consumes: `notifyUser(p: NudgePayload)` (Task 3); `mobileDeepLink` (Task 3); W05's recipient-row update (whatever W05 named it — the function that bumps `nudge_count`, `last_nudged_at`, `next_eligible_nudge_at` via `nextBackoff`).
-- Produces: no new names. Contract: the handler builds `NudgePayload` with `category: 'wisp_nudge'`, `deepLink: mobileDeepLink(threadId, concernId)`, `approvalIntentId` passed through from the tool input when present; it bumps the recipient row **only when** `suppressed !== 'backoff'`.
+- Consumes: `notifyUser(p: NudgePayload)` (Task 3); `mobileDeepLink` (Task 3); W05's `recordNudge(concernId, grantId, at)` (`services/wisp/concerns.ts`).
+- Produces: no new names. Contract: step (3) builds `NudgePayload` with `category: 'wisp_nudge'`, `userId: ceiling.grantorUserId`, `grantId: run.grantId`, `threadId`, `deepLink: mobileDeepLink(threadId, concernId)`, `approvalIntentId` passed through from the tool input when present; it calls `recordNudge` **only when** `suppressed !== 'backoff'`; W05's eligibility pre-checks (snooze/dismiss/backoff/digest-only) stay in front of the call.
 
-- [ ] **Step 1: Write the failing handler test**: with `notifyUser` mocked to `{ inApp: true, pushed: 1, suppressed: null }`, the recipient bump is called once and `createNotification` is **not** imported/called by the handler; with `suppressed: 'backoff'`, the bump is not called and the tool result reports `{ delivered: false, reason: 'backoff' }` in whatever result shape W05 already returns (extend, don't rename).
-- [ ] **Step 2: Write the failing callers contract test**: read `apps/api/src/services` recursively; assert `createNotification(` appears in no file under `services/wisp/` or `services/aiAgents/assessmentProfile.ts` other than `services/wisp/notifyUser.ts`; assert `notifyUser(` is called only from `assessmentProfile.ts` and `services/wisp/nudgeDigest.ts` (allowlist in the test).
-- [ ] **Step 3: Run** `npx vitest run src/services/aiAgents/assessmentProfile.nudge.test.ts src/services/wisp/notifyUser.callers.contract.test.ts` — FAIL.
-- [ ] **Step 4: Replace the delivery** in the handler; leave `toolInputSchemas` / `OUTCOME_TOOL_NAMES` / `TOOL_TIERS` untouched (w00 reconciliation 4).
-- [ ] **Step 5: Run** the two suites plus W05's `assessmentProfile.test.ts` — PASS.
+- [ ] **Step 1: Write the failing finalizer cases**: with `notifyUser` mocked to `{ inApp: true, pushed: 1, suppressed: null }`, `recordNudge` is called once and `deliverInApp` is no longer called from step (3); with `suppressed: 'backoff'`, `recordNudge` is not called and `outcome.assessmentSkipped` gains `'nudge_backoff'`.
+- [ ] **Step 2: Write the failing callers contract test**: read `apps/api/src/services` recursively; assert `createNotification(` appears in exactly one file under `services/wisp/` — `services/wisp/deliver.ts` (w00 A18) — and nowhere under `services/aiAgents/`; assert `notifyUser(` is called only from `services/aiAgents/runFinalizers.ts` and `services/wisp/nudgeDigest.ts` (allowlist in the test); assert `deliverInApp(` is called only from `services/wisp/{notifyUser,budget,watches,assessment}.ts` (W05's non-nudge notices keep using it directly).
+- [ ] **Step 3: Run** `npx vitest run src/services/aiAgents/runFinalizers.assessment.test.ts src/services/wisp/notifyUser.callers.contract.test.ts` — FAIL.
+- [ ] **Step 4: Replace the delivery** in step (3); leave `toolInputSchemas` / `OUTCOME_TOOL_NAMES` / `TOOL_TIERS` untouched (w00 reconciliation 4).
+- [ ] **Step 5: Run** the two suites plus W05's `assessmentProfile.test.ts` and `deliver.test.ts` — PASS.
 - [ ] **Step 6: Commit** — `refactor(wisp): nudge outcome tool delivers through notifyUser (W06 T4)`.
 
 ---
@@ -364,7 +366,7 @@ export type DigestCandidate = { grantId: string; threadId: string; userId: strin
 export function digestDue(prefs: WispNudgePreferences, lastDigestAt: Date | null, now: Date): boolean;      // lastDigestAt null or now - last ≥ cadence
 export function buildDigestText(concerns: DigestCandidate['concerns']): { title: string; body: string };   // title `Wisp: ${n} concern${n===1?'':'s'} waiting`; body = up to 3 summaries joined by ' · ', each ≤ 40 chars
 export async function selectDigestCandidates(now: Date): Promise<DigestCandidate[]>;                      // system ctx; active grants; recipients with nudge_count >= 2, status 'open', not snoozed/dismissed; ≥ 2 concerns per grant
-export async function runNudgeDigest(now?: Date): Promise<{ candidates: number; sent: number; suppressed: number }>; // for each due candidate: notifyUser({ concernId: null, … }); on inApp||pushed set last_digest_at = now
+export async function runNudgeDigest(now?: Date): Promise<{ candidates: number; sent: number; suppressed: number }>; // for each due candidate: notifyUser({ userId, category: 'wisp_nudge', concernId: null, threadId, grantId: candidate.grantId, deepLink: mobileDeepLink(threadId, null), …buildDigestText }); on inApp||pushed set last_digest_at = now
 // jobs/wispNudgeDigest.ts
 export const WISP_NUDGE_DIGEST_QUEUE = 'wisp-nudge-digest';
 export async function initializeWispNudgeDigestWorker(): Promise<void>;  // returns immediately when !wispEnabled(); otherwise exactly the shape of connectionHealthDigest.ts:26-55 with REPEAT_JOB_ID 'wisp-nudge-digest'
@@ -372,7 +374,7 @@ export async function shutdownWispNudgeDigestWorker(): Promise<void>;
 ```
 
 - [ ] **Step 1: Write failing pure tests**: `digestDue` — `lastDigestAt: null` → true; 239 min ago with cadence 240 → false; 240 → true. `buildDigestText` — 1 concern singular title; 5 concerns → body has 3 entries; a 90-char summary truncated to 40 with `…`.
-- [ ] **Step 2: Write failing `runNudgeDigest` test** with `selectDigestCandidates` and `notifyUser` mocked: two candidates, one not due → `notifyUser` called once with `concernId: null`, `threadId` of the due candidate, `deepLink: mobileDeepLink(threadId, null)`; `last_digest_at` update issued only for the delivered one; a `suppressed: 'prefs'` result counts in `suppressed` and does not update `last_digest_at`.
+- [ ] **Step 2: Write failing `runNudgeDigest` test** with `selectDigestCandidates` and `notifyUser` mocked: two candidates, one not due → `notifyUser` called once with `concernId: null`, `threadId` and `grantId` of the due candidate, `deepLink: mobileDeepLink(threadId, null)`; `last_digest_at` update issued only for the delivered one; a `suppressed: 'prefs'` result counts in `suppressed` and does not update `last_digest_at`.
 - [ ] **Step 3: Write failing job test**: with `wispEnabled` mocked false, `initializeWispNudgeDigestWorker()` constructs no `Worker` and adds no repeatable job (mock `bullmq`); with it true, `queue.add` is called with `{ jobId: 'wisp-nudge-digest', repeat: { pattern: '13,28,43,58 * * * *' } }`.
 - [ ] **Step 4: Run** `npx vitest run src/services/wisp/nudgeDigest.test.ts src/jobs/wispNudgeDigest.test.ts` — FAIL.
 - [ ] **Step 5: Implement** both modules and the three registry edits.
@@ -389,7 +391,7 @@ export async function shutdownWispNudgeDigestWorker(): Promise<void>;
 - Modify: W02's `apps/api/src/routes/wisp.ts` — `wispRoutes.route('/nudge-preferences', wispNudgePreferenceRoutes); wispRoutes.route('/nudge-settings', wispNudgeSettingsRoutes);` after W04's `wispRoutes.route('/thread', wispThreadRoutes)`
 
 **Interfaces:**
-- Consumes: `wispEnabled()` 404 gate and `requireEntitlement('wisp')` (both already on `wispRoutes`, W02/W04); `requireScope('partner')` + `requireAiUse` (W04's thread-route guards — reuse the same pair on every route here); `canManagePartnerWidePolicies(auth)` (`services/partnerWideAccess.ts`); `writeRouteAudit` (pattern `routes/users.ts:721-728`); `zValidator`; Task 3 `nudgePreferences.ts`; W04 `readOwnPartnerAxisRows` (`db/partnerAxisRead.ts:101`) for the thread read.
+- Consumes: `wispEnabled()` 404 gate, `requireScope('partner')`, `requirePermission(ai_sessions:use)` and `requireEntitlement('wisp')` (all already on `wispRoutes`, W02/W04 — inherited by these sub-routers; w00 A1); `canManagePartnerWidePolicies(auth)` (`services/partnerWideAccess.ts`); `writeRouteAudit` (pattern `routes/users.ts:721-728`); `zValidator`; Task 3 `nudgePreferences.ts`; W04 `readOwnPartnerAxisRows` (`db/partnerAxisRead.ts:101`) for the thread read.
 - Produces:
 ```ts
 export const wispNudgePreferenceRoutes = new Hono();  // GET /, PUT /
@@ -460,17 +462,17 @@ describe('GET /wisp/thread/:id', () => {
 - Modify: `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35` — `TARGET_GLOBS` += `'src/components/wisp/WispThreadPage.tsx'`
 
 **Interfaces:**
-- Consumes: `GET /api/v1/wisp/thread/:id` (Task 6, `{ data: { thread, grant } }`); W05 `GET /api/v1/wisp/concerns?status=open,snoozed,resolved,dismissed`; W04 `WispThreadHeader` (default export, props `{ wisp: NonNullable<WispState>; orgName: string | null; wideningAvailable: boolean }`) and `useAiStore` `enterWispMode(w: NonNullable<WispState>)` + `open()` where `WispState = { grantId; threadId; scopeOrgId: string | null; status; expiresAt; summary } | null` (`apps/web/src/stores/aiStore.ts`); `fetchWithAuth` (`apps/web/src/stores/auth.ts:1335`); `runAction`; `useOrgStore` for `orgName`.
+- Consumes: `GET /api/v1/wisp/thread/:id` (Task 6, `{ data: { thread, grant } }`); W05 `GET /api/v1/wisp/concerns?grantId=<grant.id>&status=open,snoozed,resolved,dismissed` and `POST /api/v1/wisp/concerns/:id/snooze { grantId, until }` / `…/dismiss { grantId }`; W04 `WispThreadHeader` (default export, props `{ wisp: NonNullable<WispState>; orgName: string | null; wideningAvailable: boolean }`) and `useAiStore` `enterWispMode(w: NonNullable<WispState>)` + `open()` where `WispState = { grantId; threadId; scopeOrgId: string | null; status; expiresAt; summary } | null` (`apps/web/src/stores/aiStore.ts`); `fetchWithAuth` (`apps/web/src/stores/auth.ts:1335`); `runAction`; `useOrgStore` for `orgName`.
 - Produces:
 ```ts
 // wispThreadHash.ts
 export function concernIdFromHash(hash: string): string | null;             // '#concern=abc' → 'abc'; '' → null
 export function hashForConcern(concernId: string | null): string;            // inverse
-export function wispStateFromThreadPayload(p: { thread: WispThread; grant: { id: string; status: WispGrantStatus; orgId: string | null; expiresAt: string } }): NonNullable<WispState>; // { grantId: grant.id, threadId: thread.id, scopeOrgId: grant.orgId, status: grant.status, expiresAt: grant.expiresAt, summary: thread.summary }
+export function wispStateFromThreadPayload(p: { thread: WispThread; grant: { id: string; status: WispGrantStatus; orgId: string | null; expiresAt: string; budgetCentsPerDay: number; floorTickMinutes: number } }): NonNullable<WispState>; // { grantId: grant.id, threadId: thread.id, scopeOrgId: grant.orgId, status: grant.status, expiresAt: grant.expiresAt, summary: thread.summary, budgetCentsPerDay, floorTickMinutes }
 // WispThreadPage.tsx
 export default function WispThreadPage(props: { threadId: string }): JSX.Element;
 ```
-  Page behaviour: loads thread + concerns; renders `<WispThreadHeader wisp={wispStateFromThreadPayload(p)} orgName={…} wideningAvailable={false} />`; concern list with the hash-selected row expanded (`window.location.hash`, per the repo URL-state rule); "Open in chat" (`wisp.thread.openChat`) calls `enterWispMode(wispStateFromThreadPayload(p))` then `open()`; snooze/dismiss buttons call W05's `POST /api/v1/wisp/concerns/:id/snooze` / `…/dismiss` through `runAction`; a concern with `approvalIntentId` links to `/approvals#intent-${id}` (`wisp.thread.reviewApproval`). Locale keys (en): `wisp.thread.concerns` "Concerns", `wisp.thread.empty` "Nothing needs you right now.", `wisp.thread.openChat` "Open in chat", `wisp.thread.snooze` "Snooze", `wisp.thread.dismiss` "Dismiss", `wisp.thread.reviewApproval` "Review approval", `wisp.thread.status.open` "Open", `wisp.thread.status.snoozed` "Snoozed", `wisp.thread.status.resolved` "Resolved", `wisp.thread.status.dismissed` "Dismissed".
+  Page behaviour: loads thread + concerns; renders `<WispThreadHeader wisp={wispStateFromThreadPayload(p)} orgName={…} wideningAvailable={false} />`; concern list with the hash-selected row expanded (`window.location.hash`, per the repo URL-state rule); "Open in chat" (`wisp.thread.openChat`) calls `enterWispMode(wispStateFromThreadPayload(p))` then `open()`; snooze/dismiss buttons call W05's `POST /api/v1/wisp/concerns/:id/snooze { grantId, until }` / `…/dismiss { grantId }` through `runAction` (`grantId` = the thread payload's `grant.id`); a concern with `approvalIntentId` (W05 DTO) links to `/approvals#intent-${id}` (`wisp.thread.reviewApproval`). Locale keys (en): `wisp.thread.concerns` "Concerns", `wisp.thread.empty` "Nothing needs you right now.", `wisp.thread.openChat` "Open in chat", `wisp.thread.snooze` "Snooze", `wisp.thread.dismiss` "Dismiss", `wisp.thread.reviewApproval` "Review approval", `wisp.thread.status.open` "Open", `wisp.thread.status.snoozed` "Snoozed", `wisp.thread.status.resolved` "Resolved", `wisp.thread.status.dismissed` "Dismissed".
   `buildHref` fallback: inside `case 'ai'`, before `runId`: `const wispThreadId = getString(metadata.wispThreadId); const concernId = getString(metadata.concernId); if (wispThreadId) return \`/ai/wisp/thread/${wispThreadId}${concernId ? \`#concern=${concernId}\` : ''}\`;` — reached only when the row carries no `link` (`normalizeNotification` prefers `raw.link`, :227-232).
 
 - [ ] **Step 1: Write failing tests**:
@@ -478,13 +480,13 @@ export default function WispThreadPage(props: { threadId: string }): JSX.Element
 ```ts
 // wispThreadHash.test.ts
 it('round-trips the concern hash', () => { expect(concernIdFromHash('#concern=c1')).toBe('c1'); expect(concernIdFromHash('')).toBeNull(); expect(hashForConcern('c1')).toBe('#concern=c1'); expect(hashForConcern(null)).toBe(''); });
-it('maps the thread payload onto WispState', () => { expect(wispStateFromThreadPayload(payload)).toEqual({ grantId: 'g1', threadId: 't1', scopeOrgId: null, status: 'active', expiresAt: '2027-01-17T00:00:00.000Z', summary: 'All quiet.' }); });
+it('maps the thread payload onto WispState', () => { expect(wispStateFromThreadPayload(payload)).toEqual({ grantId: 'g1', threadId: 't1', scopeOrgId: null, status: 'active', expiresAt: '2027-01-17T00:00:00.000Z', summary: 'All quiet.', budgetCentsPerDay: 200, floorTickMinutes: 30 }); });
 // NotificationCenter buildHref (new describe in NotificationCenter.test.tsx or buildHref.test.tsx)
 it('routes an ai notification with wispThreadId metadata to the thread page', () => { expect(hrefFor({ type: 'ai', metadata: { wispThreadId: 't1', concernId: 'c1' } })).toBe('/ai/wisp/thread/t1#concern=c1'); });
 it('prefers a stored link over the metadata fallback', () => { expect(hrefFor({ type: 'ai', link: '/ai/wisp/thread/t1', metadata: { wispThreadId: 'other' } })).toBe('/ai/wisp/thread/t1'); });
 // WispThreadPage.test.tsx (mock @/stores/auth fetchWithAuth, @/stores/aiStore, ../ai/WispThreadHeader)
 it('renders concern summaries and expands the row named by the hash', …);      // window.location.hash = '#concern=c1' before render
-it('snooze posts to /api/v1/wisp/concerns/c1/snooze through runAction', …);
+it('snooze posts { grantId: "g1", until } to /api/v1/wisp/concerns/c1/snooze through runAction', …);
 it('Open in chat calls enterWispMode with the thread’s grant then open()', …);
 ```
 
@@ -513,10 +515,10 @@ export type WispConcernSeverity = 'info' | 'low' | 'medium' | 'high';
 export interface WispConcern { id: string; orgId: string; subject: { kind: string; id: string }; summary: string; severity: WispConcernSeverity; status: WispConcernStatus; snoozedUntil: string | null; approvalIntentId: string | null; updatedAt: string }
 export interface WispThread { id: string; grantId: string; summary: string; summaryUpdatedAt: string | null; grant: { id: string; status: 'active' | 'paused' | 'revoked' | 'expired'; orgId: string | null; expiresAt: string } }
 export async function getWispThread(threadId: string): Promise<WispThread>;                       // GET /wisp/thread/:id → unwraps { data: { thread, grant } }
-export async function listWispConcerns(): Promise<WispConcern[]>;                                 // GET /wisp/concerns?status=open,snoozed,resolved,dismissed
-export async function snoozeWispConcern(id: string, until: string): Promise<void>;                // POST /wisp/concerns/:id/snooze
-export async function dismissWispConcern(id: string): Promise<void>;                              // POST /wisp/concerns/:id/dismiss
-export function normalizeConcern(raw: unknown): WispConcern | null;                               // total: drops rows without id/summary; unknown status → 'open'
+export async function listWispConcerns(grantId: string): Promise<WispConcern[]>;                  // GET /wisp/concerns?grantId=<id>&status=open,snoozed,resolved,dismissed (W05 route shape)
+export async function snoozeWispConcern(id: string, grantId: string, until: string): Promise<void>; // POST /wisp/concerns/:id/snooze { grantId, until }
+export async function dismissWispConcern(id: string, grantId: string): Promise<void>;             // POST /wisp/concerns/:id/dismiss { grantId }
+export function normalizeConcern(raw: unknown): WispConcern | null;                               // total: drops rows without id/summary; unknown status → 'open'; snoozedUntil from raw.recipient?.snoozedUntil (W05 nests per-person state under `recipient`); approvalIntentId from raw.approvalIntentId
 // services/wispNudgePrefs.ts — mirrors ticketPushPrefs.ts
 export interface WispNudgePreferences { channels: { inApp: boolean; push: boolean }; quietOverride: 'never' | 'urgent_only'; digestCadenceMinutes: number }
 export const WISP_NUDGE_PREFERENCE_DEFAULTS: WispNudgePreferences;
@@ -536,9 +538,10 @@ it('normalizeConcern drops rows without id/summary and defaults an unknown statu
   expect(normalizeConcern({ id: 'c1' })).toBeNull();
   expect(normalizeConcern({ id: 'c1', summary: 's', severity: 'weird', status: 'odd', orgId: 'o1', subject: { kind: 'ticket', id: 't' } })).toMatchObject({ status: 'open', severity: 'info', approvalIntentId: null });
 });
-it('listWispConcerns asks for every status and normalises', async () => { await listWispConcerns(); expect(coreRequest).toHaveBeenCalledWith('/wisp/concerns?status=open,snoozed,resolved,dismissed'); });
+it('listWispConcerns asks for every status under the grant and normalises', async () => { await listWispConcerns('g1'); expect(coreRequest).toHaveBeenCalledWith('/wisp/concerns?grantId=g1&status=open,snoozed,resolved,dismissed'); });
+it('normalizeConcern lifts recipient.snoozedUntil to the top level', () => { expect(normalizeConcern({ id: 'c1', summary: 's', severity: 'low', status: 'snoozed', orgId: 'o1', subject: { kind: 'ticket', id: 't' }, recipient: { snoozedUntil: '2026-10-20T09:00:00.000Z' } })?.snoozedUntil).toBe('2026-10-20T09:00:00.000Z'); });
 it('getWispThread unwraps { data: { thread, grant } }', async () => { coreRequest.mockResolvedValue({ data: { thread: { id: 't1', grantId: 'g1', summary: '', summaryUpdatedAt: null }, grant: { id: 'g1', status: 'active', orgId: null, expiresAt: 'x' } } }); expect((await getWispThread('t1')).grant.status).toBe('active'); });
-it('snoozeWispConcern POSTs { until }', async () => { await snoozeWispConcern('c1', '2026-10-20T09:00:00.000Z'); expect(coreRequest).toHaveBeenCalledWith('/wisp/concerns/c1/snooze', expect.objectContaining({ method: 'POST', body: JSON.stringify({ until: '2026-10-20T09:00:00.000Z' }) })); });
+it('snoozeWispConcern POSTs { grantId, until }', async () => { await snoozeWispConcern('c1', 'g1', '2026-10-20T09:00:00.000Z'); expect(coreRequest).toHaveBeenCalledWith('/wisp/concerns/c1/snooze', expect.objectContaining({ method: 'POST', body: JSON.stringify({ grantId: 'g1', until: '2026-10-20T09:00:00.000Z' }) })); });
 // wispNudgePrefs.test.ts
 it('normalises a truncated body to defaults', async () => { coreRequest.mockResolvedValue({ data: { settings: { channels: { push: false } } } }); expect(await getWispNudgePrefs()).toEqual({ channels: { inApp: true, push: false }, quietOverride: 'never', digestCadenceMinutes: 240 }); });
 it('updateWispNudgePrefs uses PUT with only the patch', …);
@@ -646,7 +649,7 @@ export function severityLabel(s: WispConcernSeverity): string;                  
 export function snoozeOptions(now: Date): Array<{ label: string; until: string }>;              // '1 hour', 'Tomorrow 9:00', 'Next Monday 9:00' (local time), ISO strings
 export function concernActionFailureCopy(status: number): string;                               // 404/409 → 'Already handled elsewhere.'; else 'Could not update this concern.'
 ```
-  Screen behaviour (`WispThreadScreen`): header title "Wisp"; on mount `getWispThread(params.threadId)` + `listWispConcerns()`; summary card (plus a one-line "Wisp is paused/revoked/expired" banner when `thread.grant.status !== 'active'`, reply box disabled); `concernSections` list; tapping a row opens `WispConcernSheet` (RN `Modal`, like `SettingsSheet`) with snooze (options from `snoozeOptions`), dismiss, and — when `approvalOpenTarget` returns an id — "Review approval", which does `dispatch(setFocus(id)); dispatch(fetchOne(id)).unwrap().catch(() => undefined)` so `ApprovalGate`'s takeover Modal opens **over** the thread (the thread is the back target by construction; `ApprovalGate.tsx:40-48`). On mount with `params.approvalIntentId` set, the screen does the same once. Reply box: `Composer`; first send → `createAiSession({ wispGrantId: params.grantId, orgId: thread.grant.orgId ?? undefined })` then `streamChat({ sessionId, content, onEvent, onError, onDone })` feeding `wispSessionReducer`; messages render through `ConversationList` with `inFlightTool: null`. Sheet actions call Task 8 services and refetch concerns; failures toast `concernActionFailureCopy(status)`.
+  Screen behaviour (`WispThreadScreen`): header title "Wisp"; on mount `getWispThread(params.threadId)` + `listWispConcerns(params.grantId)`; sheet actions call `snoozeWispConcern(id, params.grantId, until)` / `dismissWispConcern(id, params.grantId)`; summary card (plus a one-line "Wisp is paused/revoked/expired" banner when `thread.grant.status !== 'active'`, reply box disabled); `concernSections` list; tapping a row opens `WispConcernSheet` (RN `Modal`, like `SettingsSheet`) with snooze (options from `snoozeOptions`), dismiss, and — when `approvalOpenTarget` returns an id — "Review approval", which does `dispatch(setFocus(id)); dispatch(fetchOne(id)).unwrap().catch(() => undefined)` so `ApprovalGate`'s takeover Modal opens **over** the thread (the thread is the back target by construction; `ApprovalGate.tsx:40-48`). On mount with `params.approvalIntentId` set, the screen does the same once. Reply box: `Composer`; first send → `createAiSession({ wispGrantId: params.grantId, orgId: thread.grant.orgId ?? undefined })` then `streamChat({ sessionId, content, onEvent, onError, onDone })` feeding `wispSessionReducer`; messages render through `ConversationList` with `inFlightTool: null`. Sheet actions call Task 8 services and refetch concerns; failures toast `concernActionFailureCopy(status)`.
 
 - [ ] **Step 1: Write failing tests**:
 
@@ -743,10 +746,20 @@ export function cadenceValueFor(minutes: number): 60 | 240 | 1440;              
 2. **Mobile has no i18n**; copy is inline, as everywhere else in `apps/mobile`.
 3. **No `breeze://` scheme exists today** (`app.json` has only `webcredentials` associated domains; `navigationRef.ts:9-10` states no linking config is wired). The plan registers `"scheme": "breeze"` and routes taps from the push `data` payload (which also carries `deepLink`); a `Linking` URL listener is deferred — flagged for W07's docs as "deep links open from Breeze pushes and in-app only".
 4. **Partner "urgent-capable" home**: no partner settings table exists for Wisp, so the plan adds `wisp_partner_nudge_settings` (partner-axis, one row per partner, `canManagePartnerWidePolicies` write gate, API only, no web UI this wave). Default `'{}'` = spec's "default: none".
-5. **W05 route names are not in w00.** The plan assumes `GET /api/v1/wisp/concerns?status=…`, `POST /api/v1/wisp/concerns/:id/snooze { until }`, `POST /api/v1/wisp/concerns/:id/dismiss`; the W05 plan must confirm or this plan's Task 7/8 paths are corrected. w00 also names no **`nudge` tool input schema**; Task 4 swaps only the handler's delivery call. **W04 (plan read in this tree) exposes `GET /wisp/thread?orgId=` (mine, by scope) and `GET /wisp/thread/:id/sessions` but no read by thread id**, which a push tap needs; W06 adds `GET /wisp/thread/:id` into W04's `routes/wispThreads.ts` with W04's payload shape (Task 6). W02's route file is `routes/wisp.ts`, not `routes/wisp/index.ts` as w00's wording suggested.
-6. **`NudgePayload` carries no `grantId`**, yet idempotency is per (concernId, grantId, nextEligibleNudgeAt); `notifyUser` resolves the grant through `wisp_threads.grant_id` (one thread per grant, spec §6). The push `data` and in-app `metadata` carry `grantId` so the mobile screen can create its session with `wispGrantId` without a second lookup.
+5. **W05 route shapes (reconciled):** `GET /api/v1/wisp/concerns?grantId=&status=…`, `POST /api/v1/wisp/concerns/:id/snooze { grantId, until }`, `POST /api/v1/wisp/concerns/:id/dismiss { grantId }` — `grantId` names the caller's recipient row. w00 names no **`nudge` tool input schema**; Task 4 swaps only the finalizer's delivery call. W06 adds `GET /wisp/thread/:id` into W04's `routes/wispThreads.ts` with W04's payload shape (Task 6; w00 final route list). W02's route file is `routes/wisp.ts`.
+6. **`NudgePayload` carries `grantId`** (w00 A20); `notifyUser` cross-checks it against `wisp_threads.grant_id` (one thread per grant, spec §6) and throws on mismatch. The push `data` and in-app `metadata` carry `grantId` so the mobile screen can create its session with `wispGrantId` without a second lookup.
 7. **In-app `type` is the existing `'ai'`** value, not a new `notification_type` enum member; the Wisp identity travels in `metadata.wispThreadId` and `link`.
 8. **Web nudge-preferences UI is not built** (Settings rule 9: one home — mobile Settings is the home for a phone-notification preference; the API is shared). The web gets only the thread page and bell routing.
 9. **Home tab becomes a stack** (`HomeStack`) to push `WispThreadScreen`; `ApprovalGate`'s Modal takeover already renders over any screen, which is what makes "thread as back target" free.
 10. **Digest cadence floor is 15 min** (sweep lane `13,28,43,58 * * * *`); a user's `digest_cadence_minutes` is honoured to the nearest sweep. Mobile offers 60/240/1440 only; the API accepts 15–1440.
 11. **Throttle** of 12 pushes/user/hour on channel `wisp-nudge` reports as `'backoff'` (the only matching reason in w00's return type).
+
+### Reconciliation edits (reviewer)
+
+- `NudgePayload` gains `grantId: string` (w00 A20); the thread is a cross-check, not the source. Tests and the digest call updated.
+- `notifyUser` writes its in-app row through W05's `deliverInApp` (`services/wisp/deliver.ts`), never `createNotification` directly (w00 A18); the callers-contract test now pins `deliver.ts` as the single `createNotification` site and lists W05's direct `deliverInApp` callers.
+- Task 4 targets W05's real nudge site — `runFinalizers.ts` `finalizeAssessment` step (3) — and W05's `recordNudge`, not `assessmentProfile.ts`.
+- `requireAiUse` is module-private to `routes/ai.ts`; routes use the hub-inherited `requirePermission(ai_sessions:use)` (w00 A1).
+- W05 concern routes carry `grantId` (query on list, body on snooze/dismiss); web page, mobile service, screen and tests updated; `normalizeConcern` reads `recipient.snoozedUntil` and the DTO's `approvalIntentId`.
+- `wispStateFromThreadPayload` carries `budgetCentsPerDay`/`floorTickMinutes` (W04's header now has the budget control; the grant payload grew in W04).
+- `/wisp/nudge-settings` is an addition beyond w00's final route list (spec §7.4 needs a home for the partner "urgent-capable" mark) — flagged to the orchestrator; kept.

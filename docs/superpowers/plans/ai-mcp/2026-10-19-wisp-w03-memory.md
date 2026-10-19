@@ -102,7 +102,8 @@ export interface AuthContext { /* … */ wispGrant?: { grantId: string; grantRev
 - Tools: `recall` (T1, `ai_sessions:use`), `remember` (T2, `ai_sessions:use`, rate limit 20 / 300 s), `confirm_memory` / `retract_memory` (`HUMAN_ONLY_TOOLS`, `ai_sessions:use`). All four return the string `{"error":"wisp_grant_required"}` when `auth.wispGrant` is absent (the two human-only ones additionally require `auth.principal.kind === 'user_session'`).
 - Routes (`/api/v1/wisp/memory`, 404 unless `wispEnabled()`, `requirePermission('ai_sessions','use')`): `GET /?scope=mine|org|partner&orgId=`, `GET /users/:userId`, `POST /:id/confirm`, `POST /:id/retract`.
 - Table columns (exact): `id`, `tenant_partner_id`, `owner_kind`, `owner_user_id`, `owner_org_id`, `block_type`, `subject_key`, `content`, `confidence`, `status`, `authored_by_grant_id`, `authored_by_grant_revision_id`, `superseded_by_id`, `created_at`, `updated_at`.
-- Grantor resolution: `GrantCeiling` (W02) carries no grantor user id. The broker reads `(ceiling as { grantorUserId?: string }).grantorUserId` when present and otherwise looks it up once per call with `SELECT grantor_user_id FROM wisp_grants WHERE id = $1` under the same system context. **Recommendation to the orchestrator:** add `grantorUserId: string` to `GrantCeiling` in W02; the lookup then never fires. Either way the broker signature is unchanged.
+- Grantor resolution: `GrantCeiling.grantorUserId: string` (W02, w00 A3) is the grantor; the broker reads it directly and never queries `wisp_grants`. User-owned blocks are readable/writable only when `owner_user_id === ceiling.grantorUserId`.
+- Entitlement: W03 depends on W02 only; `requireEntitlement('wisp')` is attached to `routes/wisp/memory.ts` by W04 (the first W01 consumer), which also extends its "every /wisp/* route carries the middleware" contract to this file.
 
 ---
 
@@ -287,10 +288,10 @@ Expected: FAIL — cannot find module `./memoryBroker`.
 Seed blocks under `SYSTEM_CTX` (import the fixture helpers from Task 1's test, or lift them into `__tests__/integration/aiMemoryBlocksFixtures.ts` — do the lift; both suites then share it). Build ceilings as plain objects:
 
 ```ts
-const ceiling = (over: Partial<GrantCeiling> & { grantorUserId?: string }): GrantCeiling & { grantorUserId?: string } => ({
-  grantId: randomUUID(), revisionId: randomUUID(), partnerId: f.partnerA,
+const ceiling = (over: Partial<GrantCeiling> = {}): GrantCeiling => ({
+  grantId: randomUUID(), revisionId: randomUUID(), partnerId: f.partnerA, grantorUserId: f.uA1,
   orgIds: new Set([f.orgA1]), siteIds: null, permissionKeys: new Set(), toolAllowlist: null, deniedTools: new Set(),
-  status: 'active', grantorUserId: f.uA1, ...over,
+  status: 'active', ...over,
 });
 
 describe('memoryBroker (system context, ceiling-filtered)', () => {
@@ -299,7 +300,6 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
   it('throws GrantInactiveError when the ceiling is paused', ...);
   it('q.orgId outside the ceiling throws CeilingViolationError code org', ...);
   it('grantor outside the anchor partner yields zero user blocks', ...);  // grantorUserId = uB1
-  it('falls back to wisp_grants.grantor_user_id when the ceiling carries no grantorUserId', ...); // seed a wisp_grants row with raw SQL under system scope using the §4.2 columns; extend the seed if W02 added NOT NULL columns — do not change the broker
   it('rememberForGrant writes status unconfirmed with grant + revision stamped and tenant_partner_id = ceiling.partnerId', ...);
   it('rememberForGrant refuses an org owner outside the ceiling before writing (CeilingViolationError, no row)', ...);
   it('rememberForGrant refuses a user owner who is not the grantor (CeilingViolationError code permission, no row)', ...);
@@ -316,7 +316,7 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 5: Implement `memoryBroker.ts`**
 
-Every DB touch is `runOutsideDbContext(() => withSystemDbAccessContext(fn, 'wisp.memoryBroker'))` (the sanctioned pattern for partner-axis reads, `db/partnerAxisRead.ts:55`; the broker is called from inside a request in W04, so the outside-context hop is required). `recallForGrant`: throw `GrantInactiveError` unless `status === 'active'`; if `q.orgId` is set, `assertWithinCeiling(ceiling, { orgId: q.orgId })`; WHERE `tenant_partner_id = ceiling.partnerId AND status <> 'retracted' AND superseded_by_id IS NULL AND (` user branch `owner_user_id = grantorUserId` `OR` org branch `owner_org_id IN (q.orgId ?? [...ceiling.orgIds])` `OR` partner branch `owner_kind='partner'` `)`, narrowed by `q.owners` / `q.blockTypes` / `subject_key LIKE prefix%`; `ORDER BY (status='confirmed') DESC, updated_at DESC LIMIT clamp(q.limit, 1, 200, default 50)`. `rememberForGrant`: same status check; owner validation (user ⇒ `userId === grantorUserId` else `CeilingViolationError('permission')`; org ⇒ `assertWithinCeiling({ orgId })`); size checks; in one transaction insert the row then `UPDATE … SET superseded_by_id = new.id WHERE` same owner/blockType/subjectKey `AND id <> new.id AND status <> 'retracted' AND superseded_by_id IS NULL`. `renderMemoryForPrompt`: one line per block `- [${blockType}/${status}/${confidence}] ${subjectKey}: ${sanitizeUntrustedToolText(JSON.stringify(content))}`, confirmed first, then `${UNTRUSTED_TOOL_OUTPUT_RULE}\n${wrapUntrustedData('wisp_memory', lines.join('\n'))}`.
+Every DB touch is `runOutsideDbContext(() => withSystemDbAccessContext(fn, 'wisp.memoryBroker'))` (the sanctioned pattern for partner-axis reads, `db/partnerAxisRead.ts:55`; the broker is called from inside a request in W04, so the outside-context hop is required). `recallForGrant`: throw `GrantInactiveError` unless `status === 'active'`; if `q.orgId` is set, `assertWithinCeiling(ceiling, { orgId: q.orgId })`; WHERE `tenant_partner_id = ceiling.partnerId AND status <> 'retracted' AND superseded_by_id IS NULL AND (` user branch `owner_user_id = ceiling.grantorUserId` `OR` org branch `owner_org_id IN (q.orgId ?? [...ceiling.orgIds])` `OR` partner branch `owner_kind='partner'` `)`, narrowed by `q.owners` / `q.blockTypes` / `subject_key LIKE prefix%`; `ORDER BY (status='confirmed') DESC, updated_at DESC LIMIT clamp(q.limit, 1, 200, default 50)`. `rememberForGrant`: same status check; owner validation (user ⇒ `userId === ceiling.grantorUserId` else `CeilingViolationError('permission')`; org ⇒ `assertWithinCeiling({ orgId })`); size checks; in one transaction insert the row then `UPDATE … SET superseded_by_id = new.id WHERE` same owner/blockType/subjectKey `AND id <> new.id AND status <> 'retracted' AND superseded_by_id IS NULL`. `renderMemoryForPrompt`: one line per block `- [${blockType}/${status}/${confidence}] ${subjectKey}: ${sanitizeUntrustedToolText(JSON.stringify(content))}`, confirmed first, then `${UNTRUSTED_TOOL_OUTPUT_RULE}\n${wrapUntrustedData('wisp_memory', lines.join('\n'))}`.
 
 - [ ] **Step 6: Run both suites green**
 
@@ -599,7 +599,7 @@ State: flag off = no behaviour change; tenancy registrations added (`PARTNER_TEN
 
 1. **Partner-axis registration with FK-cascaded owners** (Task 2), because the cascade/export/merge engines key on literal `org_id`/`partner_id` column names and the orchestrator fixes ours as `tenant_partner_id`/`owner_org_id`. Org-owned blocks are therefore not org-exportable; nothing exportable is lost (content is `jsonb`).
 2. **No partner-wide SELECT branch** for org tokens: memory is private data, not config.
-3. **Grantor identity**: `GrantCeiling` has no `grantorUserId`; broker reads an optional `grantorUserId` on the ceiling and otherwise looks it up in `wisp_grants` under system context. Recommend W02 add the field.
+3. **Grantor identity**: `GrantCeiling.grantorUserId` (W02, w00 A3) — the broker reads it directly; no lookup.
 4. **`AuthContext.wispGrant`** is how tools learn the grant; W04/W05 populate it. Without it the four tools return `wisp_grant_required`.
 5. **Superseded blocks are excluded from recall** alongside retracted ones; `rememberForGrant` supersedes the prior block with the same (owner, blockType, subjectKey) in the same transaction.
 6. **No FK on `authored_by_grant_id` / `authored_by_grant_revision_id`** (provenance pointers; avoids a test-time dependency on W02's column set and an import cycle), mirroring `ai_agent_runs.grant_id`'s "SQL-only" treatment in spirit.
@@ -609,3 +609,9 @@ State: flag off = no behaviour change; tenancy registrations added (`PARTNER_TEN
 10. **Web gate** `requiresWisp` fed by a computed `wispEnabled` on `/orgs/partners/me`, because W01's `useEntitlement`/`FeatureLock` is not a W03 dependency.
 11. **`UNTRUSTED_TOOL_OUTPUT_RULE`** is imported from `services/aiAgentSystemPrompt.ts:16` (where it actually lives), not from `aiInputSanitizer.ts`.
 12. **Partner-owned blocks** can be confirmed/retracted only by `canManagePartnerWidePolicies` holders (epic #2135 rule applied even though the write-coverage walker cannot see a `tenant_partner_id` column).
+
+### Reconciliation edits (reviewer)
+
+- `GrantCeiling.grantorUserId` is now a W02 contract field (w00 A3): removed the optional-field cast and the `wisp_grants` fallback lookup, and the integration case that exercised it (Task 3).
+- Noted that W04 attaches `requireEntitlement('wisp')` to `routes/wisp/memory.ts` (W03 cannot depend on W01); no W03 change.
+- W05's `jobs/wispConcernRetention.ts` deletes `concern_outcome` blocks older than 180 d directly (w00 Memory block "reaper in W05"); it adds itself to Task 5's `AI_MEMORY_BLOCKS_ACCESS_ALLOWLIST` with the reason "retention delete, not an agent-side write" — the single-caller contract's wording in Task 5 ("W05 adds nothing here") is superseded by that one entry.

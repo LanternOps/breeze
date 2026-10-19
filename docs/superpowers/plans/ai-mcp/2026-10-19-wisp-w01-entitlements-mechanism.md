@@ -753,3 +753,8 @@ Expected: all PASS. If `tenantCascade`/`tenant-export-policy` demand an entry, t
 12. **Plan & features page sits in the Billing catalog group**, not in the sidebar's five-item subset (`SIDEBAR_SETTINGS_IDS` unchanged); reachable from `/settings` and the catalog search, which satisfies `settingsPageRegistry.test.ts`.
 13. **Locale count:** the repo has 8 locale directories (en + 7); every new key lands in all 8.
 14. **Spec line-number drift noted (code wins):** `PARTNER_PLANS` is at `constants/index.ts:92` (spec: 70), `PlanType` at `types/index.ts:25` (spec: 16), `requirePermission` at `middleware/auth.ts:1002` (spec: 827), `PARTNER_TENANT_TABLES` map at `rls-coverage.integration.test.ts:235` with the `time_suggestion_decisions` entry at `:279` (spec: 186), partnerGuard exemption at `middleware/partnerGuard.ts:27` (spec: `index.ts:723`), `AiUsagePage.tsx` contains no lock affordance to extract (spec §10) — `FeatureLock` is written fresh.
+
+### Reconciliation edits (reviewer)
+
+- No content changes to W01. Downstream plans were corrected to W01's actual names: `requireEntitlement` lives in `middleware/entitlement.ts` (W04 said `auth.ts`); `hasEntitlement(partnerId, 'wisp')` is the claim-time read W05/W07 call; `getEntitlements(partnerId).plan` + `entitlements.wisp.limits` feed W05's plan budget defaults and settings bounds; `FeatureLock` props are `{ locked, why, upgradeHref?, testId?, children }` (W04 assumed `ctaLabel`/`ctaHref`).
+- Consumers now rely on `WispLimits` = `{ maxGrants, budgetCentsPerDayCeiling, minFloorTickMinutes }` exactly as Task 2 pins it; `maxGrants` has no enforcer in W01–W07 (see the reviewer's report).

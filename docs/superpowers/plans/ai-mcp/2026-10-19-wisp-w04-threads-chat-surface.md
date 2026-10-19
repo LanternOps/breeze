@@ -375,7 +375,7 @@ export type WispCeilingRefusal = { code: 'wisp_grant_inactive' | 'wisp_outside_c
 export const WISP_REFUSAL_MESSAGES: Record<WispCeilingRefusal['detail'], string>; // user-visible copy, e.g. org: "Wisp can't act on that organization under your current grant."
 export function requiredPermissionKeys(toolName: string, input: Record<string, unknown>): string[];   // `${resource}:${action}` from resolveToolPermissionRequirements; [] when the tool has no mapping (the RBAC step still denies it later)
 export function targetOrgIdFor(input: Record<string, unknown>, sessionOrgId: string): string;       // typeof input.orgId === 'string' ? input.orgId : sessionOrgId
-export function narrowAuthToCeiling(auth: AuthContext, ceiling: GrantCeiling): AuthContext;       // accessibleOrgIds ∩ ceiling.orgIds (null → ceiling.orgIds), rebuilt closures via buildOrgAccessClosures; allowedSiteIds ∩ ceiling.siteIds when both set
+export function narrowAuthToCeiling(auth: AuthContext, ceiling: GrantCeiling): AuthContext;       // accessibleOrgIds ∩ ceiling.orgIds (null → ceiling.orgIds), rebuilt closures via buildOrgAccessClosures; allowedSiteIds ∩ ceiling.siteIds when both set; ALSO sets wispGrant = { grantId: ceiling.grantId, grantRevisionId: ceiling.revisionId } (w00 A2 — this is how W03's recall/remember and W07's launch_specialist learn the grant on a chat turn)
 export async function enforceWispCeiling(args: { grant: WispSessionGrant; toolName: string; input: Record<string, unknown>; sessionOrgId: string; toolAuth: AuthContext }): Promise<{ ok: true; toolAuth: AuthContext; ceiling: GrantCeiling } | { ok: false; refusal: WispCeilingRefusal }>;
 export async function wispSeedForSession(sessionId: string, grant: WispSessionGrant): Promise<string>; // seedContextForSession(grant.threadId, await resolveGrantCeiling(...)); '' on GrantInactiveError
 ```
@@ -384,7 +384,7 @@ export async function wispSeedForSession(sessionId: string, grant: WispSessionGr
 
 **Placement (the one place).** w00 names `makeSessionAwareHandler`, but that wrapper only covers the M365/Google tools (`aiAgentSdkTools.ts:1250-1392`); every registry tool runs through `makeHandler` (`:745`). Both call the same `onPreToolUse`, which is `createSessionPreToolUse(session)` (`aiAgentSdk.ts:809`, bound at `streamingSessionManager.ts:1152`). The gate therefore goes into `createSessionPreToolUse`, immediately after the session-allowlist check (`:859-878`) and **before** `checkGuardrails` (`:885`), so Tier 1 is covered and a refusal never reaches the tier-2 live-authority branch. On `ok`, `session.toolAuth = result.toolAuth` for this call (the tier-2 branch may later replace it with `live.toolAuth`; re-narrow there too: after `session.toolAuth = live.toolAuth` at `:962` apply `narrowAuthToCeiling(live.toolAuth, ceiling)` when `session.wispGrant` is set). On refusal: `writeAuditEvent(..., { action: 'wisp.ceiling_refused', resourceType: 'ai_session', resourceId: session.breezeSessionId, result: 'failure', errorMessage: refusal.message, details: { toolName, code: refusal.code, detail: refusal.detail, grantId } })` when `session.auditSnapshot` exists, and `return { allowed: false, error: refusal.message }` — the existing `preToolUseDenialResult` path streams it to the chat as the tool's result, which is the user-visible reason.
 
-`ActiveSession` gains `wispGrant: WispSessionGrant | null` (readonly); `getOrCreate`'s `dbSession` gains `wispGrant?: WispSessionGrant | null`; `routes/ai.ts` passes `{ grantId: dbSession.wispGrantId, revisionId: dbSession.wispGrantRevisionId, threadId }` where `threadId` is read once per turn through a new `threadIdForSession(sessionId)` export in `threads.ts`? — No: keep `threads.ts` to the four w00 exports; read it in `chatCeiling.ts` via a small `lookupWispGrant(dbSession)` that returns `null` when `wisp_grant_id` is null and otherwise joins `wisp_thread_sessions`. Preflight re-seed: at `aiAgentSdk.ts:567`, when `sanitizedPageContext` is set and `session.wispGrantId` is set, `systemPrompt = [await buildSystemPrompt(auth, ctx), await wispSeedForSession(sessionId, grant)].filter(Boolean).join('\n')`.
+`ActiveSession` gains `wispGrant: WispSessionGrant | null` (readonly); `getOrCreate`'s `dbSession` gains `wispGrant?: WispSessionGrant | null`; `routes/ai.ts` passes `await lookupWispGrant(dbSession)` — a `chatCeiling.ts` export that returns `null` when `wisp_grant_id` is null and otherwise `{ grantId, revisionId, threadId }` by joining `wisp_thread_sessions` on the session id (`threads.ts` stays at the four w00 exports). Preflight re-seed: at `aiAgentSdk.ts:567`, when `sanitizedPageContext` is set and `session.wispGrantId` is set, `systemPrompt = [await buildSystemPrompt(auth, ctx), await wispSeedForSession(sessionId, grant)].filter(Boolean).join('\n')`.
 
 - [ ] **Step 1: Write the failing unit tests**
 
@@ -394,9 +394,10 @@ export async function wispSeedForSession(sessionId: string, grant: WispSessionGr
 it('refuses with wisp_grant_inactive when resolveGrantCeiling throws GrantInactiveError', ...);
 it('refuses a Tier-1 tool whose orgId input is outside ceiling.orgIds with detail "org"', ...);       // toolName 'get_device_details', input { orgId: 'orgB' }
 it('refuses when a required permission key is missing with detail "permission"', ...);              // requiredPermissionKeys → ['devices:read'], ceiling.permissionKeys = ∅
-it('narrows toolAuth.accessibleOrgIds to the ceiling and rebuilds closures', () => {
+it('narrows toolAuth.accessibleOrgIds to the ceiling, rebuilds closures, and stamps wispGrant', () => {
   const out = narrowAuthToCeiling({ ...auth, accessibleOrgIds: ['a', 'b', 'c'] }, { ...ceiling, orgIds: new Set(['b']) });
   expect(out.accessibleOrgIds).toEqual(['b']); expect(out.canAccessOrg('c')).toBe(false);
+  expect(out.wispGrant).toEqual({ grantId: ceiling.grantId, grantRevisionId: ceiling.revisionId });
 });
 it('a null accessibleOrgIds (unrestricted) becomes exactly the ceiling orgs', ...);
 it('requiredPermissionKeys maps an action-dependent tool by input.action', ...);                    // e.g. manage_alerts { action: 'resolve' }
@@ -512,19 +513,19 @@ git commit -m "feat(wisp): deterministic thread summary on session close/expiry 
 - Test: `apps/api/src/routes/wispThreads.test.ts`, extend W02's `apps/api/src/routes/wisp.test.ts`
 
 **Interfaces:**
-- Consumes: `requireEntitlement(key)` (W01 `middleware/auth.ts`, denial `403 { code: 'entitlement_required', featureKey }`, resolver failure `503 { code: 'entitlement_check_failed' }`); `getActiveGrantForUser(userId, scope)` (W02); `wispEnabled()`; `getOrCreateThread` (Task 2); `wispThreads`, `wispThreadSessions`, `aiSessions` tables; `readOwnPartnerAxisRows(partnerId, fn)` (`db/partnerAxisRead.ts:101`) for the thread reads from a partner-scope token.
+- Consumes: `requireEntitlement(key)` (W01 **`middleware/entitlement.ts`**, denial `403 { code: 'entitlement_required', featureKey }`, resolver failure `503 { code: 'entitlement_check_failed' }`); `getActiveGrantForUser(userId, scope)` and `wideningAvailable(grantId)` (W02 `services/wisp/grants.ts`); `wispEnabled()`; `getOrCreateThread` (Task 2); `wispThreads`, `wispThreadSessions`, `aiSessions` tables; `readOwnPartnerAxisRows(partnerId, fn)` (`db/partnerAxisRead.ts:101`) for the thread reads from a partner-scope token; W03's `routes/wisp/memory.ts` (`wispMemoryRoutes`, mounted separately at `/wisp/memory` in `index.ts` because org-scoped tokens may read their own org's memory).
 - Produces:
 
 ```ts
 export const wispThreadRoutes = new Hono();
 // GET /api/v1/wisp/thread?orgId=<uuid|omitted>  (mine)
-//   200 { data: { thread: WispThread; grant: { id, status, orgId, expiresAt, currentRevisionId }; wideningAvailable: false } }
+//   200 { data: { thread: WispThread; grant: { id, status, orgId, expiresAt, currentRevisionId, budgetCentsPerDay, floorTickMinutes }; wideningAvailable: boolean } }   -- wideningAvailable = await wideningAvailable(grant.id) (W02; spec §4.4)
 //   404 { code: 'no_active_grant' } when getActiveGrantForUser returns null
 // GET /api/v1/wisp/thread/:id/sessions?limit=20&cursor=
 //   200 { data: Array<{ sessionId, orgId, attachedAt, title: string | null, status }>, nextCursor }   -- only the caller's own grant's thread (403 otherwise, existence-neutral 404)
 ```
 
-Both routes: `requireScope('partner')` (grants are partner-staff only, spec §4.2), `requireAiUse` (`ai_sessions:use`, the same gate as `/ai/sessions`), `requireEntitlement('wisp')`. `wideningAvailable` is a literal `false` in W04 (see "Calls made by the planner" #7). Mount in `routes/wisp.ts`: `wispRoutes.use('*', requireEntitlement('wisp'))` after W02's `wispEnabled()` 404 gate and before its grant routes, then `wispRoutes.route('/thread', wispThreadRoutes)`.
+Both routes: `requireScope('partner')` (grants are partner-staff only, spec §4.2), `requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action)` (`ai_sessions:use`, w00 A1 — the `requireAiUse` const in `routes/ai.ts:215` is module-private, so re-declare, do not import), `requireEntitlement('wisp')`. Both are inherited from W02's hub chain; declare them again only if the sub-router is ever mounted elsewhere. Mount in `routes/wisp.ts`: `wispRoutes.use('*', requireEntitlement('wisp'))` after W02's `wispEnabled()` 404 gate and before its grant routes, then `wispRoutes.route('/thread', wispThreadRoutes)`. Also in this task: `wispMemoryRoutes.use('*', requireEntitlement('wisp'))` in W03's `routes/wisp/memory.ts`, directly after its own `wispEnabled()` 404 gate (spec §10: every `/api/v1/wisp/*` route is entitlement-gated; the memory routes are mounted outside the hub).
 
 - [ ] **Step 1: Write the failing route tests** (pattern: `routes/ai_sessions_use_permission.test.ts`; mock `config/env`, `services/entitlements`, `services/wisp/grants`, `services/wisp/threads`, Drizzle):
 
@@ -532,10 +533,10 @@ Both routes: `requireScope('partner')` (grants are partner-staff only, spec §4.
 it('GET /wisp/thread is 404 when wispEnabled() is false (entitled or not)', ...);
 it('GET /wisp/thread is 403 entitlement_required when the partner lacks wisp', ...);
 it('GET /wisp/thread is 404 no_active_grant when the user has no grant for the scope', ...);
-it('GET /wisp/thread returns the thread for the caller's own active grant (getOrCreateThread called with grant.id)', ...);
+it('GET /wisp/thread returns the thread for the caller's own active grant (getOrCreateThread called with grant.id) and wideningAvailable from W02', ...);   // wideningAvailable mocked true → payload true; mocked false → false
 it('GET /wisp/thread/:id/sessions lists attached sessions newest first and refuses another user's thread', ...);
 it('org-scoped tokens get 403 from requireScope', ...);
-it('every /wisp/* route (W02 grants + W04 thread) runs requireEntitlement — contract: wispRoutes.routes all carry the middleware', ...);
+it('every /wisp/* route (W02 grants + W04 thread + W03 memory) runs requireEntitlement — contract: wispRoutes.routes and wispMemoryRoutes.routes all carry the middleware', ...);
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -543,11 +544,11 @@ it('every /wisp/* route (W02 grants + W04 thread) runs requireEntitlement — co
 Run: `cd apps/api && npx vitest run src/routes/wispThreads.test.ts src/routes/wisp.test.ts`
 Expected: FAIL — module not found / middleware absent.
 
-- [ ] **Step 3: Implement** `wispThreads.ts` and the two-line mount + middleware in `wisp.ts`.
+- [ ] **Step 3: Implement** `wispThreads.ts`, the two-line mount + middleware in `wisp.ts`, and the one-line `requireEntitlement('wisp')` in `routes/wisp/memory.ts`.
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `cd apps/api && npx vitest run src/routes/wispThreads.test.ts src/routes/wisp.test.ts`
+Run: `cd apps/api && npx vitest run src/routes/wispThreads.test.ts src/routes/wisp.test.ts src/routes/wisp/memory.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -569,7 +570,7 @@ git commit -m "feat(wisp): thread routes; requireEntitlement('wisp') on every /w
 - Test: `apps/web/src/components/ai/WispToggle.test.tsx`, `apps/web/src/components/ai/WispGrantStepUpModal.test.tsx`, `apps/web/src/stores/aiStore.wisp.test.ts`
 
 **Interfaces:**
-- Consumes: `useEntitlement('wisp')` → `{ state: 'loading' | 'enabled' | 'locked'; limits; source; reload }` and `FeatureLock` (W01, `apps/web/src/hooks/useEntitlement.ts`, `apps/web/src/components/shared/FeatureLock.tsx`); `mintStepUpGrant({ operation: 'wisp_grant', resource, reauth })` (`apps/web/src/lib/mfaStepUp.ts:64`); `pickReauthTier` (`components/settings/StepUpPrompt.tsx`) and the `discoverTier()` shape from `components/topology/TopologyArmStepUp.tsx`; `runAction` / `ActionError` / `handleActionError`; `useJwtClaims()` (`lib/authScope.ts:92`) for `partnerId`/`scope`; W02 routes `POST /wisp/grants { scope: { partnerId, orgId }, stepUpGrantId }` and the server-driven `403 { code: 'step_up_required' }` on a first submit without `stepUpGrantId`; Task 6 `GET /wisp/thread?orgId=`.
+- Consumes: `useEntitlement('wisp')` → `{ state: 'loading' | 'enabled' | 'locked'; limits; source; why; reload }` and `FeatureLock` with props `{ locked, why, upgradeHref?, testId?, children }` (W01, `apps/web/src/hooks/useEntitlement.ts`, `apps/web/src/components/shared/FeatureLock.tsx` — the CTA label is W01's `common:featureLock.upgrade`, not a prop); `mintStepUpGrant({ operation: 'wisp_grant', resource, reauth })` (`apps/web/src/lib/mfaStepUp.ts:64`); `pickReauthTier` (`components/settings/StepUpPrompt.tsx`) and the `discoverTier()` shape from `components/topology/TopologyArmStepUp.tsx`; `runAction` / `ActionError` / `handleActionError`; `useJwtClaims()` (`lib/authScope.ts:92`) for `partnerId`/`scope`; W02 routes `GET /wisp/grants/preview?orgId=` → `{ scope, ceilingSnapshot, ceilingHash }` (w00 A4) and `POST /wisp/grants { orgId: uuid | null, stepUpGrantId }` (W02 Task 9 body — the step-up is minted **before** the first submit; W02 answers `403 { code: 'STEP_UP_REQUIRED' }` when the grant id is missing/stale, which the modal treats as "re-mint and retry once"); step-up resource `{ partnerId, orgId, requestedCeilingHash: ceilingHash }` (W02 `wispGrantStepUpResource`); Task 6 `GET /wisp/thread?orgId=`.
 - Produces:
 
 ```ts
@@ -581,14 +582,14 @@ exitWispMode: () => Promise<void>;                               // closes the c
 createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext; model?: AiModelChoice; wispGrantId?: string; orgId?: string }) => Promise<void>;
 
 // WispToggle.tsx — default export; props { className?: string }
-//   state loading → disabled button; locked → <FeatureLock why={t('wisp.locked.why')} ctaLabel={t('wisp.locked.cta')} ctaHref="/settings/plan">…</FeatureLock> around a disabled toggle, data-testid="wisp-toggle-locked"
+//   state loading → disabled button; locked → <FeatureLock locked why={t('wisp.locked.why')} upgradeHref="/settings/plan" testId="wisp-toggle-locked">…</FeatureLock> around a disabled toggle (W01 props; CTA copy comes from FeatureLock itself)
 //   enabled → button data-testid="wisp-toggle" → opens WispGrantStepUpModal
 // WispGrantStepUpModal.tsx — props { open: boolean; defaultOrgId: string | null; onClose(): void; onGranted(w: NonNullable<WispState>): void }
 //   scope radio: 'org' (current org) | 'partner' ("All organizations", only when claims.scope === 'partner'); data-testid="wisp-scope-org" / "wisp-scope-partner"
-//   submit flow: POST /wisp/grants via runAction without stepUpGrantId → on ActionError 403 step_up_required → discoverTier → StepUpPrompt → mintStepUpGrant({ operation: 'wisp_grant', resource: { partnerId, orgId } , reauth }) → re-POST with stepUpGrantId → GET /wisp/thread?orgId= → onGranted
+//   submit flow (w00 A4): GET /wisp/grants/preview?orgId= → { ceilingHash } → discoverTier → StepUpPrompt → mintStepUpGrant({ operation: 'wisp_grant', resource: { partnerId, orgId, requestedCeilingHash: ceilingHash }, reauth }) → POST /wisp/grants { orgId, stepUpGrantId } via runAction → GET /wisp/thread?orgId= → onGranted; a 403 STEP_UP_REQUIRED on the POST (reach changed between preview and create) re-runs preview + mint once, then surfaces wisp.modal.stepUpUnavailable
 ```
 
-Locale keys (en; every other locale gets a translation of the same keys): `wisp.title` "Wisp", `wisp.toggle.turnOn` "Turn on Wisp", `wisp.toggle.turningOn` "Turning on Wisp…", `wisp.locked.why` "Wisp is available on Pro and higher plans.", `wisp.locked.cta` "See plans", `wisp.modal.title` "Turn on Wisp", `wisp.modal.scopeOrg` "This organization", `wisp.modal.scopePartner` "All organizations", `wisp.modal.explain` "Wisp works within what you are allowed to do. Confirm it is you to continue.", `wisp.modal.confirm` "Confirm", `wisp.modal.cancel` "Cancel", `wisp.modal.stepUpUnavailable` "Could not verify your factor. Try again.", `wisp.toast.on` "Wisp is on", `wisp.toast.onFailed` "Could not turn on Wisp", `wisp.header.scopeAll` "All organizations", `wisp.header.status.active` "Active", `wisp.header.status.paused` "Paused", `wisp.header.status.revoked` "Revoked", `wisp.header.status.expired` "Expired", `wisp.header.refresh` "Refresh grant", `wisp.header.revoke` "Turn off Wisp", `wisp.header.revokeConfirm` "Turn off Wisp for this scope? Open threads stay readable.", `wisp.toast.off` "Wisp is off", `wisp.toast.offFailed` "Could not turn off Wisp", `wisp.toast.refreshed` "Grant refreshed", `wisp.toast.refreshFailed` "Could not refresh the grant".
+Locale keys (en; every other locale gets a translation of the same keys): `wisp.title` "Wisp", `wisp.toggle.turnOn` "Turn on Wisp", `wisp.toggle.turningOn` "Turning on Wisp…", `wisp.locked.why` "Wisp is available on Pro and higher plans.", `wisp.modal.title` "Turn on Wisp", `wisp.modal.scopeOrg` "This organization", `wisp.modal.scopePartner` "All organizations", `wisp.modal.explain` "Wisp works within what you are allowed to do. Confirm it is you to continue.", `wisp.modal.confirm` "Confirm", `wisp.modal.cancel` "Cancel", `wisp.modal.stepUpUnavailable` "Could not verify your factor. Try again.", `wisp.toast.on` "Wisp is on", `wisp.toast.onFailed` "Could not turn on Wisp", `wisp.header.scopeAll` "All organizations", `wisp.header.status.active` "Active", `wisp.header.status.paused` "Paused", `wisp.header.status.revoked` "Revoked", `wisp.header.status.expired` "Expired", `wisp.header.refresh` "Refresh grant", `wisp.header.revoke` "Turn off Wisp", `wisp.header.revokeConfirm` "Turn off Wisp for this scope? Open threads stay readable.", `wisp.toast.off` "Wisp is off", `wisp.toast.offFailed` "Could not turn off Wisp", `wisp.toast.refreshed` "Grant refreshed", `wisp.toast.refreshFailed` "Could not refresh the grant", `wisp.header.widening` "You can do more than this grant allows — refresh it to let Wisp keep up.", `wisp.settings.title` "Budget and check-in", `wisp.settings.budget` "Daily budget (¢)", `wisp.settings.tick` "Check-in every (minutes)", `wisp.settings.save` "Save", `wisp.toast.settingsSaved` "Wisp settings saved", `wisp.toast.settingsFailed` "Could not save Wisp settings".
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -612,8 +613,8 @@ it('opens the step-up modal when enabled and clicked', ...);
 `WispGrantStepUpModal.test.tsx` (mock `@/lib/mfaStepUp`, `@/stores/auth` fetchWithAuth, `@/lib/runAction`):
 
 ```ts
-it('first submit posts /wisp/grants without stepUpGrantId', ...);
-it('on 403 step_up_required it discovers the tier, mints a wisp_grant step-up for { partnerId, orgId } and re-submits with stepUpGrantId', ...);
+it('submit fetches /wisp/grants/preview?orgId= first, then mints a wisp_grant step-up with resource { partnerId, orgId, requestedCeilingHash: ceilingHash }, then posts /wisp/grants { orgId, stepUpGrantId }', ...);
+it('a 403 STEP_UP_REQUIRED on the POST re-runs preview + mint once, then shows wisp.modal.stepUpUnavailable', ...);
 it('then fetches /wisp/thread?orgId= and calls onGranted with grant + thread', ...);
 it('hides the "All organizations" option for an org-scoped token', ...);
 it('a non-step-up failure toasts through runAction and keeps the modal open', ...);
@@ -650,15 +651,17 @@ git commit -m "feat(web/wisp): Wisp toggle with step-up grant modal, locked stat
 - Test: `apps/web/src/components/ai/WispThreadHeader.test.tsx`, extend `apps/web/src/components/ai/AiChatSidebar.test.tsx`
 
 **Interfaces:**
-- Consumes: store `wisp`, `exitWispMode`, `enterWispMode` (Task 7); W02 `POST /wisp/grants/:id/revoke` and `POST /wisp/grants/:id/refresh { stepUpGrantId }` (same server-driven step-up handshake as the create); `ConfirmDialog` (`components/shared/ConfirmDialog.tsx`).
+- Consumes: store `wisp`, `exitWispMode`, `enterWispMode` (Task 7); W02 `POST /wisp/grants/:id/revoke`, `POST /wisp/grants/:id/refresh { stepUpGrantId }` (same preview → mint → submit handshake as the create), `PATCH /wisp/grants/:id/settings { budgetCentsPerDay?, floorTickMinutes? }` (w00 A6); `useEntitlement('wisp').limits` as `{ budgetCentsPerDayCeiling, minFloorTickMinutes }` (W01); `ConfirmDialog` (`components/shared/ConfirmDialog.tsx`).
 - Produces:
 
 ```ts
 // WispThreadHeader.tsx — default export; props { wisp: NonNullable<WispState>; orgName: string | null; wideningAvailable: boolean }
+//   WispState gains budgetCentsPerDay: number; floorTickMinutes: number (from GET /wisp/thread's grant)
 //   renders: scope label (orgName, or t('wisp.header.scopeAll')), status badge data-testid="wisp-grant-status" (text from wisp.header.status.*),
-//   "Refresh grant" button data-testid="wisp-refresh-grant" — always rendered; visually emphasised (primary) when wideningAvailable, secondary otherwise;
+//   "Refresh grant" button data-testid="wisp-refresh-grant" — always rendered; primary + the wisp.header.widening line (data-testid="wisp-widening") when wideningAvailable (spec §4.4 "one-tap refresh my grant"), secondary otherwise;
 //   "Turn off Wisp" button data-testid="wisp-revoke" → ConfirmDialog → runAction POST /wisp/grants/:id/revoke → exitWispMode()
-//   refresh: runAction POST /wisp/grants/:id/refresh (step-up handshake as Task 7) → updates wisp.status/expiresAt
+//   refresh: preview → mint → runAction POST /wisp/grants/:id/refresh { stepUpGrantId } → updates wisp.status/expiresAt
+//   settings popover data-testid="wisp-settings" (spec §9 "one-tap raise within plan ceiling"): budget number input bounded [0, limits.budgetCentsPerDayCeiling], tick input bounded [max(15, limits.minFloorTickMinutes), 240]; Save → runAction PATCH /wisp/grants/:id/settings → updates wisp.budgetCentsPerDay/floorTickMinutes; the server is the authority on the 5× plan-default bound (a 400 SETTINGS_OUT_OF_BOUNDS toasts through runAction)
 // AiChatSidebar.tsx: when `wisp` is set the header title reads t('wisp.title') and the panel shows <WispThreadHeader> under the header; when unset and not showHistory, <WispToggle> sits in the header's right-hand control group before the History button. Mode is hidden for helper/client surfaces (the sidebar already gates on ai_sessions:use).
 ```
 
@@ -670,7 +673,8 @@ git commit -m "feat(web/wisp): Wisp toggle with step-up grant modal, locked stat
 it('shows "All organizations" for a partner-wide grant and the org name for an org grant', ...);
 it('shows the status badge text for each status', ...);
 it('revoke asks for confirmation, posts /wisp/grants/:id/revoke through runAction and exits Wisp mode', ...);
-it('refresh button is primary when wideningAvailable and secondary otherwise', ...);
+it('refresh button is primary with the widening line when wideningAvailable and secondary without it otherwise', ...);
+it('settings popover PATCHes /wisp/grants/:id/settings through runAction with only the changed keys and clamps inputs to the entitlement limits', ...);
 ```
 
 `AiChatSidebar.test.tsx` additions (extend `baseState` with `wisp: null, enterWispMode: noop, exitWispMode: noop`; mock `./WispToggle`, `./WispThreadHeader`):
@@ -740,7 +744,7 @@ Expected: PASS. Then `pnpm test-stack down`.
 3. **`wisp_thread_sessions` column list.** w00 names `(thread_id, session_id, org_id, attached_at)`; shape 3 needs `partner_id` on the row for `breeze_has_partner_access`. Added, nothing renamed.
 4. **Continuations (#7603)** have no grant carry; refused for Wisp sessions in W04.
 5. **`wisp_grants` `UNIQUE (id, partner_id)`** is assumed from W02 (needed for the composite thread FK); Task 1 adds it idempotently if absent.
-6. **Step-up resource shape** for `wisp_grant` is W02's (`routes/auth/schemas.ts`); this plan assumes `{ partnerId, orgId: string | null }` with the server deriving the ceiling hash from the caller's live authority, and assumes `POST /wisp/grants` answers `403 { code: 'step_up_required' }` when `stepUpGrantId` is absent (the `TopologyArmStepUp` contract). If W02 shipped a different handshake, Task 7's modal follows W02.
+6. **Step-up resource shape** for `wisp_grant` is W02's (`routes/auth/schemas.ts`): `{ partnerId, orgId, requestedCeilingHash }`, with the hash obtained from `GET /wisp/grants/preview` (w00 A4). Resolved by the reviewer: Task 7's modal follows W02 (preview → mint → submit); there is no "submit without a step-up first" handshake.
 
 ## Calls made by the planner
 
@@ -750,9 +754,19 @@ Expected: PASS. Then `pnpm test-stack down`.
 4. Refusal surfaces as the tool's result text (`preToolUseDenialResult`) with fixed copy per `detail`, plus an audit event `wisp.ceiling_refused`; no new SSE event type.
 5. Grant columns live on `ai_sessions` (`wisp_grant_id`, `wisp_grant_revision_id`, FKs in SQL only) rather than in `context_snapshot`; thread linkage stays in the join table (spec §14 left this open; w00 chose the join table).
 6. Deterministic summary = last paragraph of the last assistant message, replaced (not appended) on each close/expiry, ≤ 4 000 chars; stored summary unchanged when the session produced no assistant text.
-7. `wideningAvailable` is a literal `false` in W04's `GET /wisp/thread` payload; the "Refresh grant" CTA is always present (secondary) so a user can refresh after a role change without a detector. A live-reach-vs-snapshot detector needs W02's `ceiling_snapshot` shape and is deferred to W05/W07.
+7. `wideningAvailable` in `GET /wisp/thread` is W02's `wideningAvailable(grantId)` (live reach ⊋ current snapshot); the "Refresh grant" CTA is always present and becomes the primary action with an explanatory line when it is true (spec §4.4).
 8. Threads/thread-sessions service functions run under `withSystemDbAccessContext` after caller authorisation (partner-axis rows are invisible to org-scoped request contexts); route reads use `readOwnPartnerAxisRows`.
 9. Thread routes are `requireScope('partner')` + `ai_sessions:use` + `requireEntitlement('wisp')`; no partner-admin "all threads" listing in this wave.
 10. Session finalize is best-effort and idempotent on all three end paths (close, eviction, preflight expiry); it never fails the close.
 11. Locale block lives in `ai.json` under `wisp.*` (no new namespace); eight locale files.
 12. Web scope choice lives in the step-up modal (org vs all organizations); partner-wide sessions anchor to the current org through the unchanged `createSession` chain.
+
+### Reconciliation edits (reviewer)
+
+- `narrowAuthToCeiling` now stamps `AuthContext.wispGrant = { grantId, grantRevisionId }` (w00 A2): W04 is the chat-side populator that W03's tools and W07's `launch_specialist` rely on; test added.
+- Task 6 consumes `requireEntitlement` from W01's `middleware/entitlement.ts` (not `auth.ts`); `requireAiUse` is module-private in `routes/ai.ts` → use `requirePermission(ai_sessions:use)` (w00 A1).
+- Task 6 also attaches `requireEntitlement('wisp')` to W03's `routes/wisp/memory.ts` and extends the route contract test to it (spec §10: every `/wisp/*` route).
+- `wideningAvailable` is W02's real detector (spec §4.4), no longer a literal `false`; header shows the widening line; `GET /wisp/thread` grant payload gains `budgetCentsPerDay`/`floorTickMinutes`.
+- Task 7: `FeatureLock` call uses W01's actual props (`locked`, `why`, `upgradeHref`, `testId`); `wisp.locked.cta` key dropped (CTA copy is W01's). Modal follows W02's handshake: `GET /wisp/grants/preview` → mint with `requestedCeilingHash: ceilingHash` → `POST /wisp/grants { orgId, stepUpGrantId }` (w00 A4; W02 body shape). Tests rewritten to match.
+- Task 8: refresh uses the same handshake; added the budget/tick settings popover calling `PATCH /wisp/grants/:id/settings` with bounds from `useEntitlement('wisp').limits` (spec §9 one-tap raise; w00 A6), plus locale keys and a test.
+- Removed the "threadIdForSession? — No" aside in Task 4; `lookupWispGrant(dbSession)` in `chatCeiling.ts` is the decision.
