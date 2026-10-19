@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { fetchWithAuth } from "../../stores/auth";
 import { formatTimeAgo } from "../../lib/formatTime";
+import { claimSamePageHashClick } from "../../lib/samePageHashClick";
 
 export const KNOWN_CONDITIONS = [
   "sync_failed",
@@ -186,6 +187,9 @@ export default function ConnectionHealthPanel() {
                     {isSafeHref(inc.fixHref) ? (
                       <a
                         href={inc.fixHref}
+                        // Same-page fix links (/integrations#huntress) must fire a
+                        // real hashchange or the Integrations tab never switches.
+                        onClick={(e) => claimSamePageHashClick(e, inc.fixHref)}
                         className="shrink-0 text-xs font-medium text-primary hover:underline"
                       >
                         {t("connectionHealthPanel.fix")}

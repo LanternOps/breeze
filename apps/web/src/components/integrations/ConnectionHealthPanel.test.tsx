@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ConnectionHealthPanel, { KNOWN_CONDITIONS } from "./ConnectionHealthPanel";
 import { fetchWithAuth } from "../../stores/auth";
+import { installAstroClientRouterStandIn } from "../../__tests__/astroClientRouterStandIn";
 
 vi.mock("../../stores/auth", () => ({
   fetchWithAuth: vi.fn(),
@@ -66,6 +67,27 @@ describe("ConnectionHealthPanel", () => {
     expect(link?.getAttribute("href")).toBe("/integrations#psa");
     expect(fetchMock).toHaveBeenCalledWith("/connection-health/incidents?status=open");
     expect(fetchMock).toHaveBeenCalledWith("/connection-health/incidents?status=recent");
+  });
+
+  it("a same-page fix link fires hashchange under the Astro router so the Integrations tab switches", async () => {
+    window.history.replaceState({}, "", "/integrations");
+    mockBoth([incident({ fixHref: "/integrations#huntress" })]);
+    const router = installAstroClientRouterStandIn();
+    const onHashChange = vi.fn();
+    window.addEventListener("hashchange", onHashChange);
+    try {
+      render(<ConnectionHealthPanel />);
+      const rows = await screen.findAllByTestId("connection-health-open-row");
+      fireEvent.click(rows[0].querySelector("a") as HTMLAnchorElement);
+      expect(window.location.hash).toBe("#huntress");
+      await waitFor(() => expect(onHashChange).toHaveBeenCalledTimes(1));
+      // The panel claimed the click, so the router stood down.
+      expect(router.intercepted).toHaveLength(0);
+    } finally {
+      window.removeEventListener("hashchange", onHashChange);
+      router.uninstall();
+      window.history.replaceState({}, "", "/");
+    }
   });
 
   it("omits the fix link for unsafe hrefs", async () => {
