@@ -17,7 +17,7 @@
     "@breeze/shared": "workspace:*",
     "@hono/node-server": "^2.1.4",
     "hono": "^4.13.13",
-    "jose": "^6.2.3",
+    "jose": "^6.2.12",
     "zod": "^4.4.3"
   },
   "devDependencies": {
