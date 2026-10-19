@@ -147,9 +147,11 @@ export default function RecordSignedAgreementDialog({
     return () => { cancelled = true; };
   }, [open]);
 
-  // Contract-only embed: resolve the org (and a display name) from the contract.
+  // Locked contract: resolve the display name, and (contract-only embed) the org.
+  // Runs with a locked org too — `orgId` prefers lockedOrgId, so the org from
+  // this lookup is ignored there, but the locked field still needs the name.
   useEffect(() => {
-    if (!open || !lockedContractId || lockedOrgId) return;
+    if (!open || !lockedContractId) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -168,7 +170,7 @@ export default function RecordSignedAgreementDialog({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, lockedContractId, lockedOrgId]);
+  }, [open, lockedContractId]);
 
   // Optional contract picker for the chosen org.
   useEffect(() => {

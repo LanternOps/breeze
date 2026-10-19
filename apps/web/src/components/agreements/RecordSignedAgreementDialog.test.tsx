@@ -124,6 +124,18 @@ describe('RecordSignedAgreementDialog', () => {
     expect(screen.getByTestId('agreements-record-submit')).toBeDisabled();
   });
 
+  it('locked org + locked contract: the contract field shows its name, not its id', async () => {
+    const CONTRACT_ID = '5b0f3a52-8c1e-4d7a-9a3b-0c6d2f1e7b44';
+    contractsApi.getContract.mockResolvedValue(
+      resp({ data: { contract: { id: CONTRACT_ID, orgId: 'org-1', name: 'G4 Monthly active' } } }),
+    );
+    renderDialog({ lockedOrgId: 'org-1', lockedContractId: CONTRACT_ID });
+    const select = (await screen.findByTestId('agreements-record-contract')) as HTMLSelectElement;
+    await waitFor(() => expect(select.selectedOptions[0]?.textContent).toBe('G4 Monthly active'));
+    expect(select.value).toBe(CONTRACT_ID);
+    expect(select.textContent).not.toContain(CONTRACT_ID);
+  });
+
   it('does not override a method the user already chose', async () => {
     renderDialog();
     const method = (await screen.findByTestId('agreements-record-method')) as HTMLSelectElement;
