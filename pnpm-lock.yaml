@@ -387,8 +387,8 @@ importers:
         specifier: ^16.3.3
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@types/office-js':
-        specifier: ^1.0.611
-        version: 1.0.611
+        specifier: ^1.0.612
+        version: 1.0.612
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -789,8 +789,8 @@ importers:
         specifier: ^16.3.3
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@types/office-js':
-        specifier: ^1.0.611
-        version: 1.0.611
+        specifier: ^1.0.612
+        version: 1.0.612
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -929,8 +929,8 @@ importers:
         specifier: ^16.3.3
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@types/office-js':
-        specifier: ^1.0.611
-        version: 1.0.611
+        specifier: ^1.0.612
+        version: 1.0.612
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -1235,8 +1235,8 @@ importers:
         specifier: ^16.3.3
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@types/office-js':
-        specifier: ^1.0.611
-        version: 1.0.611
+        specifier: ^1.0.612
+        version: 1.0.612
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -1408,8 +1408,8 @@ importers:
         specifier: ^16.3.3
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@types/office-js':
-        specifier: ^1.0.611
-        version: 1.0.611
+        specifier: ^1.0.612
+        version: 1.0.612
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -2974,6 +2974,12 @@ packages:
 
   '@hono/node-server@2.1.4':
     resolution: {integrity: sha512-2g1qeHl4BduwDn6L8nkAvDrPUWPMlkQ//a5NhP/zIyaXKMjZNRV+cG9Csu+BiJFf6+68pqzjf4Hi5sJGKHuS1g==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      hono: ^4 || ^5.0.0-0
+
+  '@hono/node-server@2.1.5':
+    resolution: {integrity: sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q==}
     engines: {node: '>=20'}
     peerDependencies:
       hono: ^4 || ^5.0.0-0
@@ -5766,8 +5772,8 @@ packages:
   '@types/nodemailer@8.0.2':
     resolution: {integrity: sha512-c7M5ox8p0nEOfbJ2E9Qcmt8/QCu/VzsiAhzBiZbvky2PhKZDHpKB3sQHBM5MEZNkCfBOaS6S9//AGPRTNB7IaA==}
 
-  '@types/office-js@1.0.611':
-    resolution: {integrity: sha512-C5jSOZXboSRbo+OYiIzeh/w/g4Hm5jGmrO0PsFleVio98uXHIVllhE8H1SkyrbFlon1U1vUDFxyF43QGNVN+dw==}
+  '@types/office-js@1.0.612':
+    resolution: {integrity: sha512-DSzRuv/6vBw63izl5yLOEW8lzn9aPBw6RtfpjFGqohxrQvTtRPnzlHIeonFYNfsjK0zRoGGwj3tiqzqI9+365Q==}
 
   '@types/oidc-provider@9.12.1':
     resolution: {integrity: sha512-qRJksCw0I+VloInJxMV/4L4gLL5Qrws9Np9+rW+MZeBKauEz5WqKO99OVCpnj4LKB/o1+utkHoQq1c3GBhuE5g==}
@@ -10266,6 +10272,10 @@ packages:
     resolution: {integrity: sha512-h6fhOIaRrID2CbEY2fqs+7t+UXZo+MLAnU5gRIq85uFtdiUPCdsApMlHhXogKVM4HM2DVbIjGNTTYH2OcmP1vA==}
     engines: {node: '>=0.6'}
 
+  qs@6.16.1:
+    resolution: {integrity: sha512-5Px6J7rfHBAGUhNQ3es4YzcOdBBw0SDcVtThJml4RdnKw4tKs2epA0kPZ+K8X+WiHktT93RHVcQ/3ym5aTCgtg==}
+    engines: {node: '>=0.6'}
+
   queue-microtask@1.2.3:
     resolution: {integrity: sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A==}
 
@@ -14241,6 +14251,10 @@ snapshots:
     dependencies:
       hono: 4.13.13
 
+  '@hono/node-server@2.1.5(hono@4.13.13)':
+    dependencies:
+      hono: 4.13.13
+
   '@hono/node-ws@1.3.1(patch_hash=b4b72f402e69a3a8dabfa42c13383019cadf0fea6c580e8f08e662a327e8a454)(@hono/node-server@2.1.4(hono@4.13.13))(hono@4.13.13)':
     dependencies:
       '@hono/node-server': 2.1.4(hono@4.13.13)
@@ -14465,7 +14479,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(zod@4.4.3)':
     dependencies:
-      '@hono/node-server': 2.1.4(hono@4.13.13)
+      '@hono/node-server': 2.1.5(hono@4.13.13)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -17004,7 +17018,7 @@ snapshots:
     dependencies:
       '@types/node': 26.6.5
 
-  '@types/office-js@1.0.611': {}
+  '@types/office-js@1.0.612': {}
 
   '@types/oidc-provider@9.12.1':
     dependencies:
@@ -17892,7 +17906,7 @@ snapshots:
       http-errors: 2.0.1
       iconv-lite: 0.7.3
       on-finished: 2.4.1
-      qs: 6.16.0
+      qs: 6.16.1
       raw-body: 3.0.2
       type-is: 2.1.0
     transitivePeerDependencies:
@@ -19271,7 +19285,7 @@ snapshots:
       once: 1.4.0
       parseurl: 1.3.3
       proxy-addr: 2.0.8
-      qs: 6.16.0
+      qs: 6.16.1
       range-parser: 1.3.0
       router: 2.2.0
       send: 1.2.1
@@ -22501,6 +22515,11 @@ snapshots:
       yargs: 15.4.1
 
   qs@6.16.0:
+    dependencies:
+      es-define-property: 1.0.1
+      side-channel: 1.1.1
+
+  qs@6.16.1:
     dependencies:
       es-define-property: 1.0.1
       side-channel: 1.1.1
