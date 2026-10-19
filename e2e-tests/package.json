@@ -23,7 +23,7 @@
     "@types/pngjs": "^6.0.5",
     "pg": "^8.23.1",
     "pixelmatch": "^8.0.0",
-    "playwright": "^1.63.0",
+    "playwright": "^1.64.1",
     "pngjs": "^7.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
