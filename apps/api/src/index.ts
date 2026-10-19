@@ -4,6 +4,8 @@ loadDotenv({ quiet: true });
 // on `NODE_ENV === 'production'` at import time). Must stay directly after
 // dotenv so .env is loaded first. See #917 (L-6).
 import './config/normalizeNodeEnv';
+// An empty CLAUDE_CONFIG_DIR (compose `${VAR:-}`) must read as unset for the Agent SDK. #9133.
+import './config/normalizeClaudeConfigDir';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { installPerRouteMaxPayload } from './services/wsMaxPayload';
