@@ -1,0 +1,23 @@
+diff --git a/apple/scripts/build-xcframework.sh b/apple/scripts/build-xcframework.sh
+index 4c506533866d411b18799e5441f02c2b3e9a0c44..8877b0c321f152b3506b9e81f03b75b0741ecb76 100755
+--- a/apple/scripts/build-xcframework.sh
++++ b/apple/scripts/build-xcframework.sh
+@@ -297,6 +297,9 @@ build_slice() {
+   # Strip declarations from public .swiftinterface that external consumers can't resolve:
+   # - C++ type extensions (__ObjC) — entire blocks including their closing braces
+   #   e.g. "extension __ObjC.expo.CppError : Swift.Error { ... }"
++  #   Swift 6.4 (Xcode 27.1) prints the module selector with `::` instead:
++  #   "extension __ObjC::expo.__ObjC::CppError : Swift::Error { ... }"
++  #   (upstream fix: https://github.com/expo/expo/pull/50569)
+   # - Package-internal conformances (_ConstraintThatIsNotPartOfTheAPIOfThisLibrary)
+   #   e.g. "extension Swift.Optional : where Wrapped : _Constraint... {}"
+   # - @usableFromInline attributes preceding the _Constraint protocol definition
+@@ -309,7 +312,7 @@ build_slice() {
+   # filename, failing with "can't read …: No such file or directory".
+   while IFS= read -r swiftinterface; do
+     local stripped_swiftinterface="${swiftinterface}.stripped"
+-    sed '/^extension __ObjC\./,/^}/d;/^@usableFromInline$/{N;/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d;};/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d' "$swiftinterface" > "$stripped_swiftinterface"
++    sed -E '/^extension __ObjC(\.|::)/,/^}/d;/^@usableFromInline$/{N;/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d;};/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d' "$swiftinterface" > "$stripped_swiftinterface"
+     mv "$stripped_swiftinterface" "$swiftinterface"
+   done < <(find "${modules_dir}/${PACKAGE_NAME}.swiftmodule" -name '*.swiftinterface')
+ 

@@ -23,6 +23,7 @@
     "@sentry/react-native": "^8.30.0",
     "babel-preset-expo": "~57.0.13",
     "expo": "~57.0.26",
+    "expo-build-properties": "~57.0.22",
     "expo-constants": "~57.0.20",
     "expo-crypto": "~57.0.3",
     "expo-device": "~57.0.2",

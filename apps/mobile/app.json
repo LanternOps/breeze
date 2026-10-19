@@ -81,6 +81,15 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "enableSceneSupport": true,
+            "usePrecompiledModules": false
+          }
+        }
+      ],
       "expo-secure-store",
       [
         "expo-splash-screen",

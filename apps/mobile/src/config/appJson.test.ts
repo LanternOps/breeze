@@ -36,3 +36,26 @@ describe('app.json location config (foreground only)', () => {
     expect(modes).not.toContain('location');
   });
 });
+
+// iOS 27 refuses to launch an app linked against the iOS 27 SDK unless it
+// adopts the UIScene life cycle (build 1.0.1 (84) was rejected for exactly
+// this: EXC_BREAKPOINT in UIApplicationEvaluateRuntimeIssueForNoSceneLifecycle-
+// Adoption on every review device, while iOS 26 TestFlight devices were fine).
+// Expo wires the scene delegate in from expo-build-properties; this guards the
+// flag against being dropped in a plugin reshuffle. See STORE_SUBMISSION.md.
+describe('app.json iOS scene lifecycle (iOS 27 launch requirement)', () => {
+  const entry = expo.plugins.find(
+    (p: unknown) => Array.isArray(p) && p[0] === 'expo-build-properties'
+  );
+
+  it('enables scene support through expo-build-properties', () => {
+    expect(entry).toBeDefined();
+    expect(entry[1].ios.enableSceneSupport).toBe(true);
+  });
+
+  it('runs expo-build-properties before any plugin that could edit AppDelegate', () => {
+    // The plugin refuses a non-template AppDelegate.swift, so it must see the
+    // file before anything else touches it.
+    expect(expo.plugins[0]).toBe(entry);
+  });
+});
