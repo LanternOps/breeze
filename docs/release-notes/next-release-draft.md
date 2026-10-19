@@ -22,7 +22,7 @@ Last release: **v0.123.0** (2026-10-17).
 - **New web env (optional):** `PUBLIC_ABUSE_CONTACT`, `PUBLIC_SECURITY_CONTACT`, `PUBLIC_SECURITY_POLICY_URL` (#8873) — auth-page footer + `/.well-known/security.txt`; set them on EU/US.
 - **`CALLER_VERIFICATION_ENABLED` now defaults to `true`** (compose `${…:-true}`); `CALLER_VERIFICATION_WORKSTATION_ENABLED` stays `false`.
 - Step 0.3: agent fuzz GREEN at `7727a0bd39`; tenant-isolation PASS via local run 3×6/6 (CI red = #9252 second-tab `refresh_raced` logout, pre-existing); pentest quick set + chapter legs owed to a breeze-security session (`remediation/pre-tag/v0.124.md`).
-- Non-superuser migration check OK at the freeze; 27/27 new migrations idempotent on re-apply.
+- Non-superuser migration check OK at the freeze; 27/27 new migrations idempotent on re-apply. **Tag candidate `8f240ddbe8`** (main after #9270): three PRs landed after the freeze — #9245 (agent-only, reconnect-loop stop), #9250 (agreements W1c "record an agreement signed elsewhere": new `/contracts/agreement-requests` routes + dialog, no migration), #9251 (SentinelOne absent-agent marking: 28th migration `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`, nullable column add, applied + re-applied clean on the sweep stack). Tenant-isolation spec re-run locally at `8f240ddbe8`: 6/6 PASS. The scheduled CI run at the same SHA is red on the #9252 fixture pattern (`sniffToken`), not a probe.
 - AI model registry W08b (#9130): take the DO backup / PITR point BEFORE deploy; after deploy run G3 (archive query in `deploy/upgrades.mdx` vs the G2 counts held by the features-work session, zero blocking rows on both regions 10-17).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
