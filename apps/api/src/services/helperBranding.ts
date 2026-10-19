@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isReadableBrandColor } from './helperBrandingContrast';
 
 /**
  * Runtime Helper branding: validation, field merge and the effective
@@ -45,8 +46,9 @@ export function validateBrandingValues(input: unknown): BrandingValidation {
       continue;
     }
     if ((COLOR_FIELDS as readonly string[]).includes(key)) {
-      if (HEX_COLOR.test(raw)) value[key as BrandingColorField] = raw;
-      else errors.push(`color:${key}`);
+      if (!HEX_COLOR.test(raw)) errors.push(`color:${key}`);
+      else if (!isReadableBrandColor(raw)) errors.push(`contrast:${key}`);
+      else value[key as BrandingColorField] = raw;
       continue;
     }
     if (raw.length === 0) {
