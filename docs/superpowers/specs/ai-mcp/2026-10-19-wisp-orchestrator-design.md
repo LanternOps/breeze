@@ -1,6 +1,6 @@
 ---
 title: Wisp — the persistent orchestrator agent that runs an MSP's day
-status: draft for Todd's approval (brainstormed 2026-10-19; Codex quorum AGREE WITH CHANGES folded in, builder check folded in — §15, §16)
+status: approved by Todd 2026-10-19 ("accept recommendations" on §16; Codex quorum AGREE WITH CHANGES and builder check folded in — §15, §16); plan next
 date: 2026-10-19
 builds_on:
   - 2026-08-22-ai-agents-program-and-wave1-design.md (policy snapshot, "an agent acts as itself")
@@ -226,7 +226,7 @@ Every assessment, chat turn, run and task Wisp causes is metered through the exi
 **Hosted, paid, visible.** Wisp does **not** invent a gating mechanism. It adopts the drafted **Partner Entitlements** design (`docs/superpowers/specs/billing/2026-09-07-partner-entitlements-design.md`: typed registry in `@breeze/shared`, `partner_entitlements` table with one row per source and read-time precedence, `requireEntitlement()`, claim-time checks for queued work, `GET /partner/me/entitlements`, `useEntitlement()` + `FeatureLock` "locked with an upsell, never hidden"). Quorum Q4 found that a Wisp-only matrix would be a fifth competing gate beside the boolean column, the ML-flag chain, the remote billing check and that draft.
 
 - **Prerequisite**: Partner Entitlements **W1 (mechanism)** ships before Wisp's first gated surface. Its open question 1 (the shared `PlanType` lists four plans; the pg enum has six: `free`, `starter`, `community`, `pro`, `enterprise`, `unlimited`) is fixed there, not here.
-- **Key**: `wisp` is added to `ENTITLEMENT_KEYS` with defaults per all six plans (`free`/`starter`/`community` → disabled; `pro`/`enterprise`/`unlimited` → enabled; Todd confirms the split, §16) and a `limits` shape `{ maxGrants, budgetCentsPerDayCeiling, minFloorTickMinutes }`.
+- **Key**: `wisp` is added to `ENTITLEMENT_KEYS` with defaults per all six plans (`free`/`starter`/`community` → disabled; `pro`/`enterprise`/`unlimited` → enabled; decided §16) and a `limits` shape `{ maxGrants, budgetCentsPerDayCeiling, minFloorTickMinutes }`.
 - **Server**: `wispEnabled()` = `isHosted() && BREEZE_AI_AGENTS_ENABLED && BREEZE_WISP_ENABLED` (same pattern as `aiWorkspaceEnabled()`) is the **deployment** switch; the entitlement is the **commercial** switch. An entitlement never overrides a deployment or kill switch. Routes use `requireEntitlement('wisp')`; assessments and watches re-check at claim time, and a partner that loses the entitlement has its grants paused (not revoked) with reason `entitlement_lost`, so reconciliation and the memory page still work.
 - **Web/mobile**: `useEntitlement('wisp')` + `FeatureLock`; free tier keeps today's chat untouched and sees Wisp affordances locked.
 - **Self-hosted**: capability absent, not locked (D-I).
@@ -289,7 +289,7 @@ Non-obvious constraints a builder must honour (verified in code): the `ai_agent`
 
 Builder check (fresh reviewer, 2026-10-19) raised seven; five were answerable from the conversation or the code and are folded in above (§6 thread linkage, §7.1 events and per-org assessments, §7.3 shared concerns, §7.5 specialist requests, §4.2 step-up). Two are Todd's:
 
-1. **Which plans get Wisp?** The pg enum has six plans. Proposed: `pro`/`enterprise`/`unlimited` on; `free`/`starter`/`community` off, with `community` partners (iFinance is a paid Community partner) handled by a manual entitlement override when wanted. Confirm or change.
-2. **Default daily Wisp budget per grant, by plan.** Proposed: pro 200 ¢/day, enterprise 500 ¢/day, unlimited 1 000 ¢/day; partner admin may raise to 5× within plan. Numbers only; the mechanism is §9.
+1. **Which plans get Wisp?** — **Decided (Todd, 2026-10-19: "accept recommendations"):** `pro`/`enterprise`/`unlimited` on; `free`/`starter`/`community` off; Community partners (iFinance is a paid Community partner) get a manual entitlement override when wanted.
+2. **Default daily Wisp budget per grant, by plan.** — **Decided (same):** pro 200 ¢/day, enterprise 500 ¢/day, unlimited 1 000 ¢/day; partner admin may raise to 5× within plan. Mechanism is §9.
 
 Calls I made that Todd should glance at while reading: grants are self-only (no admin minting for others) §4.2; grant step-up is a new `StepUpOperation`, 10 min TTL, 90-day expiry §4.2; assessments never launch runs directly — typed requests through a coordinator, auto-approved T2 kinds admitted, the rest become approval cards §7.5; concerns are shared per org with per-person nudge state §7.3; the mobile thread screen is in the first launch §5; new `ai_memory_blocks` table rather than retrofitting the EE one §8.2; Partner Entitlements W1 becomes a prerequisite wave §10.
