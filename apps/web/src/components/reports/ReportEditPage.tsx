@@ -262,6 +262,12 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     config.schedule && typeof config.schedule === 'object' && !Array.isArray(config.schedule)
       ? (config.schedule as Record<string, unknown>)
       : {};
+  // The extra email addresses a template dialog (or the builder) stored. The
+  // builder owns this key and PUT replaces `config`, so not hydrating it here
+  // would empty the list on the first save.
+  const storedEmailRecipients = Array.isArray(config.emailRecipients)
+    ? config.emailRecipients.filter((email): email is string => typeof email === 'string')
+    : [];
   const defaultValues: Partial<ReportBuilderFormValues> = {
     name: report.name,
     type: report.type as ReportType,
@@ -270,6 +276,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     ...(typeof scheduleDetail.day === 'string' ? { scheduleDay: scheduleDetail.day } : {}),
     ...(typeof scheduleDetail.date === 'string' ? { scheduleDate: scheduleDetail.date } : {}),
     format: report.format,
+    emailRecipients: storedEmailRecipients,
     // Business types select by their own period and owner scope; the server
     // REFUSES a dateRange/filters on them, so none is defaulted here.
     ...(isBusiness
