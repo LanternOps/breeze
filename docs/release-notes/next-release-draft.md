@@ -14,8 +14,15 @@ Last release: **v0.123.0** (2026-10-17).
 
 ## Release to-do (pre-cut gates — see `/release` Step 0.2)
 
-- Lab checks OWED before the tag (merged on Todd's instruction with checks outstanding): #8919 viewer on NVIDIA Linux, #8921 bcdboot failure path, #8935 caller-verify absolute deadline, #8912 Windows DHCP in-process read, #8878 WinRT toasts (Win11 real-helper check per PR body), #8755 macOS permission probe (checks per PR body).
-- YARA W02 (#9112) ships dark; Windows benchmark on the lab Windows Server VM is owed before the W03 sidecar decision, not a release blocker.
+- **Sweep + lab pass done 2026-10-19 at freeze `7727a0bd39`** — `docs/testing/release-sweeps/2026-10-19-v0.123.0-to-v0.124.0-sweep.md` (branch `qa/sweep-v0.124.0`). Lab checks cleared on the KIT rigs: #8912 DHCP in-process, #8878/#9207 WinRT toasts (incl. the real-desktop `get_Setting` question — Enabled on the active console session), #9138 desktop fence, #9145 WS back-off, #9146 watchdog overload, #9237 trickle ICE over relay, #9148 CIM NULs, #9186 VPN detection (faked process). **Still no rig for:** #8919 NVIDIA Linux viewer, #8921 bcdboot (no Hyper-V on the guest), #8755 macOS probe, #8265 restore checkpoint on Win10/Server 2025, #9238 Win10 1507, iOS #8885 — carry into the release body's known-gaps note by name.
+- **Known gap to name in the release body: #9253** — the YARA-X engine never starts when the agent runs as a Windows service (`GetFileType /dev/stderr: The handle is invalid`); scans on Windows fall back to `engine=legacy` with `rule_set_errors=[engine_unavailable]`. YARA ships dark (no rule UI until W04 #6267), so not a cut blocker; Linux scans with `engine=yara`.
+- **Endpoint messaging / live chat agent gates lifted to `0.124.0`** (`ENDPOINT_MESSAGING_MIN_AGENT_VERSION`, `ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION`, `ENDPOINT_CHAT_MIN_AGENT_VERSION`; commit on the sweep branch). Until the fleet is promoted to 0.124.0 every send/chat still returns `agent_unsupported`; the UI stays behind `PUBLIC_ENABLE_ENDPOINT_MESSAGING` and the device policy switch. Delivery needs Breeze Assist on the device (lab: `no_helper` without it).
+- **Fleet promote:** the fleet is still on 0.122.1 (the v0.123.0 promote never ran) — promote straight to 0.124.0 after this cut; two agent generations land at once.
+- **SentinelOne (#9244):** manual S1 deploys whose version install args lack `{s1_site_token}` are now refused at dispatch (previously installed unregistered / enrolled every org into one site) — release-note line.
+- **New web env (optional):** `PUBLIC_ABUSE_CONTACT`, `PUBLIC_SECURITY_CONTACT`, `PUBLIC_SECURITY_POLICY_URL` (#8873) — auth-page footer + `/.well-known/security.txt`; set them on EU/US.
+- **`CALLER_VERIFICATION_ENABLED` now defaults to `true`** (compose `${…:-true}`); `CALLER_VERIFICATION_WORKSTATION_ENABLED` stays `false`.
+- Step 0.3: agent fuzz GREEN at `7727a0bd39`; tenant-isolation PASS via local run 3×6/6 (CI red = #9252 second-tab `refresh_raced` logout, pre-existing); pentest quick set + chapter legs owed to a breeze-security session (`remediation/pre-tag/v0.124.md`).
+- Non-superuser migration check OK at the freeze; 27/27 new migrations idempotent on re-apply.
 - AI model registry W08b (#9130): take the DO backup / PITR point BEFORE deploy; after deploy run G3 (archive query in `deploy/upgrades.mdx` vs the G2 counts held by the features-work session, zero blocking rows on both regions 10-17).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
