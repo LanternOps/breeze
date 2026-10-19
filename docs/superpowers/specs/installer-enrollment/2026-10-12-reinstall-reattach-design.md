@@ -19,7 +19,7 @@ related:
 
 - **§6.4 stale callers:** today no agent write re-checks the agent id after authentication
   (F21). Wave 1b adds a fence and agent-id predicates, and the section lists every
-  agent-credential write site.
+  agent-credential write site. Revision 3 narrows both.
 - **§6.3 and §3:** a second staged set is refused and cancels the intent. A human requests again.
   §3 now names the holder of a copy of the source's credentials.
 - **§4.1 and §4.2:** the stamping race is restated (an insert that waits behind confirm stamps
@@ -35,6 +35,22 @@ related:
 - **Also fixed:** `rebind-confirm` is routed through `AGENT_AUTH_SKIP_ACTIONS`, which is the set
   for `/:id/<action>` routes. F13 now says the pool ledger refuses non-system reads as well as
   writes.
+
+**Revision 3 (2026-10-19): the maintainer's answers to the two open questions** (#8529 review,
+2026-10-18):
+
+- **§6.4, the 1b stale-caller rules, are narrowed.** The shared advisory lock and the `agent_id`
+  re-read that revision 2 put in every agent transaction are dropped, along with confirm's
+  exclusive acquisition, the SECURITY DEFINER fence helper and the lock-ordering text that existed
+  only for them. What stays:
+  - the `agent_id` predicate on own-row `devices` updates, behind one helper on the agent auth
+    context, with a contract test that fails when an update site bypasses it;
+  - the incarnation check on command claim and result.
+
+  Inserts keyed by `device_id` from a stale request are an accepted residual. The site inventory
+  keeps only what 1b changes, and §1, §3, §5.2, §6.5, §11, §14 and F21 follow.
+- **§10.3, F22 and §13 decision 10:** eligibility applies `billingStatusContradictsPayment` as a
+  veto, not a requirement, as partner activation and the admin unsuspend route do.
 
 ## 1. Summary
 
@@ -72,9 +88,12 @@ Four pieces, shippable in this order (§11):
    decision.
 2. **Nothing changes until confirm** (#8318). The new install cannot act as the target before the
    confirm, and a crash, lost response or expiry at any point leaves either the old state or the
-   new one, never a mix. The "never a mix" half rests on the stale-caller fence that wave 1b adds
-   (§6.4); today agent writes check the agent id only at authentication (F21). Until 1b ships, no
-   other install can take over a row, so the window that fence closes does not exist yet.
+   new one, never a mix. For the device row and for commands, that rests on two checks wave 1b
+   adds (§6.4): the agent-id predicate on own-row `devices` updates and the incarnation check on
+   claim and result. Today agent writes check the agent id only at authentication (F21); until 1b
+   ships no other install can take over a row, so the gap cannot open. One residual is accepted:
+   an insert keyed by `device_id` from a request authenticated just before confirm, at worst a
+   stray metric or log row (§6.4).
 3. **Preserved history is not executable authority** (#8318). Keeping the id keeps history, groups,
    policies, tickets and schedules as configuration. It must not keep work, grants or secrets
    intended for the previous installation.
@@ -90,7 +109,7 @@ Four pieces, shippable in this order (§11):
 8. **Crash safety of credentials** (#2621). The agent never holds only credentials the server has
    not accepted; at every instant at least one credential set on disk authenticates.
 
-## 2. Repo facts this design is built on (F1–F20 verified 2026-10-12 against `origin/main` 3c05066d7; F21–F22 and every citation added in revision 2 verified 2026-10-16 against `origin/main` c59c9eadb)
+## 2. Repo facts this design is built on (F1–F20 and the original citations verified 2026-10-12 against `origin/main` 3c05066d7; F21–F22 and every citation added in revisions 2–3 verified 2026-10-19 against `origin/main` 8f240ddbe)
 
 Paths are under `apps/api/src/` unless they start with `agent/` or `apps/web/`; `migrations/` is `apps/api/migrations/`.
 
@@ -116,8 +135,8 @@ Paths are under `apps/api/src/` unless they start with `agent/` or `apps/web/`; 
 | F18 | The #8320 identity assertion is a server-signed (Ed25519 deployment key), nonce-bound statement of `agentId, deviceId, orgId, siteId`, verified by the agent against pinned keys. It never changes the deviceId. | `services/agentIdentityAssertion.ts:28,83-135`; `agent/internal/heartbeat/identity_sync.go:140-176` |
 | F19 | There is no TPM code. `services/attestation/*` serves the mobile authenticator only. | `routes/security/compliance.ts:191`; `services/authenticatorAttestation.ts:11-16` |
 | F20 | Step-up grants are bound to an operation and, for resource-bound operations, a resource digest. They live in Redis and are consumed by `GETDEL`, outside the DB transaction, so a rollback after the consume does not restore the grant. The actor and session are locked (`lockActorAssurance`, `lockLiveUserSession`) inside the write transaction. | `services/mfaStepUpGrant.ts:567-577`; `services/stepUpActorAssurance.ts:19-32`; `services/unassignedPool/assignParkedDeviceSteps.ts:128`; `services/unassignedPool/incidentActions.ts:30-55` |
-| F21 | Agent writes re-check nothing after authentication. Agent auth reads the row by `agent_id` once, in its own system-context read with no lock, before the request's DB work; the WS does the same at its handshake, then re-checks on a 30 s lease. After that, the REST `devices` updates filter on `devices.id` only, some with a status guard; the WS ones filter on `agent_id`, but hold no lock. The command claim filters on `device_commands.device_id`, and result acceptance on `(id, device_id, target_role)`. Many writes run in their own transactions, after the request commits, or in queue workers. Only the PAM result gate re-checks `devices.agent_id` inside its transaction. §6.4 lists every site. | `middleware/agentAuth.ts:627-662`; `routes/agents/heartbeat.ts:841-843,1560-1567`; `routes/agentWs.ts:1041-1100,1361-1370`; `services/commandDispatch.ts:476-486`; `routes/agents/commands.ts:520-525`; `services/pamActuationResult.ts:98-111` |
-| F22 | The eligibility columns already exist on `partners`: `trust_state` (enum `probation`, `trusted`, `restricted`; default `trusted`), `deploy_key_enrollment_enabled` (default false) and `payment_method_attached_at`. The payment stamp is written by the breeze-billing service, which an instance has only when `BREEZE_BILLING_URL` is set. | `db/schema/orgs.ts:11,63,83,97`; `services/partnerActivation.ts:23-33`; `config/validate.ts:1826` |
+| F21 | Agent writes re-check nothing after authentication. Agent auth reads the row by `agent_id` once, in its own system-context read with no lock, before the request's DB work; the WS does the same at its handshake, then re-checks on a 30 s lease. After that, the REST `devices` updates filter on `devices.id` only, some with a status guard; the WS ones filter on `agent_id`. The command claim filters on `device_commands.device_id`, and result acceptance on `(id, device_id, target_role)`. Only the PAM result gate re-checks `devices.agent_id` inside its transaction. Inserts keyed by `device_id` run in the request, in separate or deferred transactions, or in queue workers, with no credential check. §6.4 lists the sites wave 1b changes. | `middleware/agentAuth.ts:627-662`; `routes/agents/heartbeat.ts:847-849,1570-1577`; `routes/agentWs.ts:1050-1109,1369-1379`; `services/commandDispatch.ts:476-486`; `routes/agents/commands.ts:506-531`; `services/pamActuationResult.ts:98-111` |
+| F22 | The eligibility columns already exist on `partners`: `trust_state` (enum `probation`, `trusted`, `restricted`; default `trusted`), `deploy_key_enrollment_enabled` (default false), `payment_method_attached_at` and `billing_subscription_status`, a mirror of the Stripe subscription status. Both billing columns are written by the breeze-billing service, which an instance has only when `BREEZE_BILLING_URL` is set. The payment stamp is not trusted on its own: it was once backfilled for subscriptions that never captured. `billingStatusContradictsPayment` returns true only for a mirror in a non-entitled set (`incomplete`, `incomplete_expired`, `canceled`, `unpaid`, `paused`). It is a veto, not a requirement: a NULL or unknown mirror passes. Partner activation and the admin unsuspend route both use it that way. | `db/schema/orgs.ts:11,63,83,97,117`; `services/partnerActivation.ts:23-33,52-68,101-107,119-123,131-141`; `routes/admin/abuse.ts:23,467-471`; `config/validate.ts:1829` |
 
 ## 3. Threat model
 
@@ -126,7 +145,7 @@ Paths are under `apps/api/src/` unless they start with `agent/` or `apps/web/`; 
 | Holder of a leaked image deploy key | Park devices in the holding area, up to the key's sub-cap, the partner cap and the rate buckets | Create orgs/sites, see candidate records, assign or reattach, learn anything about existing devices, starve the partner's other keys (§10) |
 | Device that forges hints (a known serial is printed on the chassis) | Appear as a candidate for an existing record | Reattach without a human, or receive anything before confirm |
 | The old install, still alive | Keep working until confirm | Be displaced: any use of any of its credentials since the intent was requested, or within the quiet period, aborts the reattach (§6.5) |
-| A request the old install authenticated just before confirm commits | Finish its request | Write to the row or any device-keyed table, claim work or deliver a result after the commit (§6.4, the stale-caller fence wave 1b adds) |
+| A request the old install authenticated just before confirm commits | Finish its request. An insert keyed by `device_id` (a metric, a log row) can still land after the commit: the accepted residual (§6.4) | Update the device row, claim work or deliver a result after the commit (§6.4) |
 | Holder of the old install's credentials (copied disk image) | Nothing after confirm | Authenticate as the target after confirm; deliver results for the old install's work |
 | Holder of a copy of the **source's** credentials (a cloned image of the new install, a stolen token) | Receive the rebind directive, as the source does. If it stages and confirms before the genuine install stages, the server cannot tell it from the source, as with any bearer credential | Replace a staged set the genuine install already sent, or confirm once the genuine install has staged: a second, different staged set cancels the intent (§6.3), and only a human can request the reattach again, with a new step-up. Cancelling intents this way is a denial of service; it is audited and shown to the technician as a sign the source's credentials were copied |
 | A technician acting in haste | Confirm a wrong match | Do so without seeing the evidence level, typing the target's name for hint-only matches and passing step-up |
@@ -176,9 +195,6 @@ proving its own credentials.
   - **It reads past RLS.** The trigger function is `SECURITY DEFINER`, so an inserter that cannot
     see the device row still stamps the right value, and a missing row raises instead of stamping
     null.
-  - **An explicit stamp is checked.** An inserter acting for one specific install (the helper's
-    AI tools, §6.4) passes the incarnation it holds; the trigger raises if it is not the current
-    one.
 - **The race with a confirm.** Confirm runs at READ COMMITTED and holds the target row
   `FOR UPDATE` (§6.4), which conflicts with `FOR KEY SHARE`. There are two orders, and both are
   safe:
@@ -240,19 +256,19 @@ UNIQUE partial (target_device_id) WHERE state IN ('requested','staged')
     breeze_has_org_access(source_org_id)))`.
 - **Why the second policy.** Partner-axis RLS alone admits every partner-scope user, including
   technicians limited to selected orgs, because every partner-scope context gets its partner in
-  `accessible_partner_ids` (`computeAccessiblePartnerIds`, `middleware/auth.ts:522-529`).
+  `accessible_partner_ids` (`computeAccessiblePartnerIds`, `middleware/auth.ts:523-530`).
   - **The org floor is in the database.** A technician reads or writes only intents whose target
     org, and real source org, are among their accessible orgs. CLAUDE.md allows no
     app-layer-only isolation.
   - **Parked sources.** They pass on `source_parked`, because the holding org is in no user's
-    accessible orgs (`middleware/auth.ts:483-484,500-501`). Whether a technician may act on a
+    accessible orgs (`middleware/auth.ts:484-485,501-502`). Whether a technician may act on a
     parked source is the §9 switch, which the service checks.
   - **`source_parked` is derived, never written.** A `BEFORE INSERT OR UPDATE` trigger
     (`SECURITY DEFINER`, since the holding org is invisible to the writer) sets it from the
     `type` of `source_org_id`. The same trigger checks that both orgs' `partner_id` equals
     `partner_id`. A writer therefore cannot set the flag to pass the org floor.
   - **What partner users do not see.** Accessible orgs hold only `active` and `trial`, undeleted
-    orgs (`middleware/auth.ts:475-504`). So an intent or ledger row that touches a suspended,
+    orgs (`middleware/auth.ts:476-505`). So an intent or ledger row that touches a suspended,
     churned or deleted org is invisible in a user context, like every other row of those orgs.
     The full-admin history view reads the ledger in system scope, scoped to `auth.partnerId`, as
     the holding-area ledger already does
@@ -361,8 +377,8 @@ install as fresh work, not as replays.
   commands (`patch_jobs.devices_queued`, script executions, …), as decommission and org move do.
 - **Refuse stale work.** Claim (heartbeat, REST poll, WS push) and **result acceptance** refuse a
   row whose `device_incarnation` differs from the device's current incarnation (§4.2; a null
-  stamp counts as 1, §4.1). From wave 1b they also require the caller's `agent_id` (§6.4, stale
-  callers). This closes the late-result path of F6:
+  stamp counts as 1, §4.1), and from wave 1b also one that differs from the incarnation the caller
+  authenticated under (§6.4, stale callers). This closes the late-result path of F6:
   - none of the three reopen paths (server timeout, completed backup-queue ack, processing
     failure) can reopen a row from an earlier incarnation;
   - a replayed agent outbox from the old install can no longer write a result.
@@ -534,7 +550,7 @@ human (step-up)            source agent (new install)                      serve
 
 **Routing and authentication.**
 
-- **Routing:** `rebind-confirm` joins `AGENT_AUTH_SKIP_ACTIONS` (`routes/agents/index.ts:48`),
+- **Routing:** `rebind-confirm` joins `AGENT_AUTH_SKIP_ACTIONS` (`routes/agents/index.ts:49`),
   the set for routes of the exact shape `/:id/<action>` that skip agent auth; otherwise the
   `/:id/*` mount would run agent auth on it.
 - **Authentication:** the route's own middleware compares the `brz_rbc_…` token in constant time
@@ -555,16 +571,15 @@ human (step-up)            source agent (new install)                      serve
 lock, to learn the device ids. Then:
 
 1. the partner's holding-area advisory lock (`lockPartnerHoldingArea`), unconditionally;
-2. the stale-caller fence lock of both devices, exclusive, in ascending id order (below);
-3. the two device rows, `FOR UPDATE`, in ascending id order;
-4. the intent row, `FOR UPDATE`. It is re-read and must still name the same devices;
-5. the `partners` row, last, through `admitPartnerDeviceCapacity`, and only when
+2. the two device rows, `FOR UPDATE`, in ascending id order;
+3. the intent row, `FOR UPDATE`. It is re-read and must still name the same devices;
+4. the `partners` row, last, through `admitPartnerDeviceCapacity`, and only when
    `restore_decommissioned` is set.
 
-Nothing that writes an intent takes a device lock after the intent's, except phase 1, which holds
-the source's fence lock throughout, so confirm cannot be holding a device row at the same time
-(**Lock order**, below). There is no inversion. The target-revival path does not write the intent
-at all (§6.5).
+Nothing that writes an intent takes a device lock after the intent's. Phase 1 takes both device
+rows `FOR KEY SHARE`, in ascending id order, before the intent, so the FK of the pending
+certificate it inserts on the target needs no new lock. There is no inversion. The target-revival
+path does not write the intent at all (§6.5).
 
 **Atomic revalidation**, any failure → 409 with a reason and the intent `cancelled`:
 
@@ -627,189 +642,107 @@ at all (§6.5).
 **Stale callers.** A request that the old install authenticated just before the commit still runs
 after it.
 
-*Today (F21) nothing stops its writes.* Agent auth reads the row by `agent_id` once, in its own
-system-context read with no lock, before the request's DB work begins
-(`middleware/agentAuth.ts:627-662`). What follows does not check again:
+*Today (F21) nothing re-checks the credential.* Agent auth reads the row by `agent_id` once, with
+no lock, before the request's DB work begins (`middleware/agentAuth.ts:627-662`). After that:
 
 - the REST `devices` updates filter on `devices.id` only, some with a status guard. The WS ones
-  filter on `agent_id`, but hold no lock;
+  filter on `agent_id`;
 - the command claim filters on `device_commands.device_id`;
 - result acceptance filters on `(id, device_id, target_role)`.
 
-So a request that authenticated before confirm can still write to the target after confirm
-commits.
+*Wave 1b adds two things, both in place before `rebind-confirm` is reachable.*
 
-*Wave 1b adds three things.*
+1. **Own-row `devices` updates go through one helper.** `updateOwnDeviceRow(agent, set,
+   extraWhere?)` takes the agent auth context and always applies `id = agent.deviceId AND
+   agent_id = agent.agentId`, plus any extra predicate the caller keeps (a status guard, a
+   throttle). It returns the updated rows, so callers keep their 0-row handling.
+   - The context can be the REST `c.get('agent')`, the WS socket's cached identity, or the
+     `renew-cert` bearer context.
+   - Confirm changes the target's `agent_id`, so a stale update from the old install matches 0
+     rows.
+   - The source keeps its `agent_id`, but it is retired at confirm. A late update there touches
+     only the retired row, and the main beat's terminal-status guard skips even that.
+2. **The incarnation check on claim and result.** Agent auth (REST and the WS handshake) loads
+   `install_incarnation` with the row it authenticates against. Claim and result acceptance take a row only when its stamp (null
+   counts as 1, §4.1) equals both that value and the device's current `install_incarnation`, read
+   in the same statement. So:
+   - **Claims:** commands enqueued after confirm carry `n+1` and never reach a caller that
+     authenticated under `n`. The old install's open rows were cancelled at confirm (§5.2).
+   - **Results:** a late result from the old install is refused, reopen paths included, because
+     the device's current incarnation is `n+1`.
+   - **The server push** compares the stamp with the incarnation it reads in the claim, and
+     pushes to the `agent_id` read in that same claim, not to one read before it.
 
-1. **The fence.** Every DB transaction that runs for an agent credential is opened by one helper,
-   `withAgentDbContext(agent, fn)`. Its first two statements are:
+**The accepted residual.** Everything else a stale request writes is a row keyed by `device_id`,
+or by an id the request carries. That covers inventory, telemetry, logs, event logs, WS frames,
+helper rows, and the separate and deferred transactions those requests open. Wave 1b adds no
+check for it.
 
-   ```sql
-   SELECT pg_advisory_xact_lock_shared(<agent-fence key>, hashtext($deviceId::text));
-   SELECT install_incarnation FROM devices          -- through a SECURITY DEFINER helper
-    WHERE id = $deviceId AND agent_id = $agentId
-      AND (status <> 'decommissioned' OR $uninstallDraining);
-   ```
+- **Where it lands.** A stale-credential insert after confirm lands on the same device row the
+  operator just reattached. The worst case is a stray metric or log row for a device that was
+  already silent for the 10-minute quiet period (§6.5).
+- **How it ends.** Revocation closes the credential on the next auth round-trip: the REST
+  lookup, the WS lease re-check, or the revocation broadcast.
+- **Server-side work.** Work a stale request started (a helper AI turn, a queued job) runs
+  against the device as it is when it runs. Anything it enqueues carries the new incarnation, so
+  it reaches the new install, never the old one.
+- **Why it is accepted.** A lock in every agent transaction would cost more at 10k agents than
+  this residual is worth: one per heartbeat, plus the pgbouncer, lock-table and lock-ordering
+  questions it brings.
 
-   - **Confirm's side.** Confirm takes the same advisory lock in exclusive mode for both devices,
-     in ascending id order, after the holding-area lock and before any row lock (step 2 of
-     **Locks** above).
-   - **The two orders:**
-     - a fenced transaction that took its shared lock first finishes first, because confirm
-       waits for it; the boundary (§5) then handles what it wrote;
-     - one that asks after confirm waits for confirm to commit. Its re-read is a new statement
-       under READ COMMITTED, so it sees the new row (a new `agent_id` on the target,
-       `decommissioned` on the source) and rolls back.
-   - **No row:** the transaction rolls back with the same opaque 401 as a stale token. The re-read
-     bypasses the request's RLS, so an ordinary org move, which RLS would hide, is not taken for a
-     replaced credential: a row whose `agent_id` still matches but whose org changed gets the
-     answer the route gives today.
-   - **Why an advisory lock, not a row lock.** A `FOR KEY SHARE` on the device row would write the
-     tuple and WAL on every agent transaction, and create MultiXacts when one device has
-     concurrent requests. It would also make every agent transaction wait, holding a pooled
-     connection, behind every server `FOR UPDATE` on `devices` (org move, tenant offboarding). The
-     shared advisory lock lives in memory, conflicts only with confirm, and confirm is short.
-   - **The incarnation** it returns is what the claim and result checks compare against.
-   - **What it wraps:**
-     - agent auth's request-long transaction (`middleware/agentAuth.ts:1147`), so every wrapped
-       route, agent-authenticated extension routes included;
-     - each context the self-managed routes open (`middleware/agentAuth.ts:371-386,399-406`, and
-       the storage sessions);
-     - the system transactions a request opens of its own: through `runOutsideDbContext`, or
-       through `withSystemDbAccessContext` where no context is open yet. Inside an open context,
-       `withSystemDbAccessContext` reuses that transaction (`db/index.ts:907-909`), which the
-       fence already covers;
-     - every WS message handler, with the socket's cached identity;
-     - helper-token routes, and every transaction the helper's AI turn opens, its tools'
-       included. The fence runs inside the same transaction as each write or enqueue, never as a
-       separate check before it;
-     - the `renew-cert` routes, which run their own bearer check (`routes/agents/mtls.ts:285-316`);
-     - work a request defers past its commit (`runAfterDbContextCommit`, `db/index.ts:858`);
-     - queue jobs that carry an agent-reported payload. The job carries the `agentId`, and the
-       worker fences before it writes.
-2. **Statement predicates.**
-   - Every `UPDATE devices` of the caller's own row that is reached from an agent credential also
-     gains `AND agent_id = $agentId`. That includes the fire-and-forget update that no fence wraps
-     (`last_seen_ip`). The one update of other devices' rows, the discovery worker's
-     `device_role` (`jobs/discoveryWorker.ts:1472-1500`), is an allow-listed exception: it runs
-     under the reporting device's fence.
-   - The claim and result acceptance compare `coalesce(device_incarnation, 1)` with the fenced
-     incarnation.
-   - The WS push sends to the agent id that the claim read from the row, not one read before the
-     claim.
-   - Commands enqueued for a specific install (the helper's AI tools) pass the incarnation the
-     caller holds, and the stamping trigger refuses a stale one (§4.2).
-   - The F3 re-enroll update gains the agent id it matched, and it refuses, rather than minting a
-     row, when that matches nothing.
-3. **What stays unfenced, on purpose:**
-   - `audit_logs` inserts (`services/auditService.ts:95`), which record what the old install did
-     and stay true whenever they land;
-   - recomputations that read only server state, inline or queued: group re-evaluation,
-     reliability scoring (including its inline fallback, `services/reliabilityScoring.ts:1741-1747`),
-     recovery readiness (`routes/backup/readinessCalculator.ts:330-347`), warranty sync and alert
-     correlation.
+**Contract test.** It is an AST scan in the style of
+`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`: TypeScript compiler API, call-local,
+imports resolved through symbols.
 
-**Lock order.**
+- **What it collects:** every `update(devices)` call and every raw `UPDATE devices` statement in
+  `apps/api/src`.
+- **Which sites must use the helper:** those in a file reachable through imports from an agent
+  entry point:
+  - `routes/agents/**`, which is mounted under `agentAuthMiddleware`, as
+    `__tests__/helpers/routeScan.ts:713-719` already assumes;
+  - `routes/agentWs.ts`, `routes/helper/**` and `middleware/agentAuth.ts`.
+- **When it fails:** a site in a reachable file is neither the helper's own statement nor
+  allow-listed with a reason. The allowlist holds two kinds of entry:
+  - **Non-agent paths in shared files:** the offline sweep, org move, enrollment's fresh-row
+    path, and server-side certificate issuance from enroll and provisioning.
+  - **The two agent paths that cannot use the helper.** Each carries the predicate itself:
+    - the F3 re-enroll, which is not on the agent auth context;
+    - `transitionDeviceOffline`, which it shares with the offline sweep.
+- **Proof that it bites:** a fixture with a bare `update(devices)` in a file under
+  `routes/agents/` must fail it.
 
-- **The fence is the first lock** an agent transaction takes, and no fenced transaction takes the
-  holding-area lock.
-- **No inversion with confirm.** Confirm takes both fence locks before any device row. So while a
-  fenced transaction for either device runs, confirm holds no device row, and the fenced
-  transaction may lock rows in any order without inverting against it.
-- **Phase 1 relies on this.** It holds the source's fence, then locks the intent and inserts the
-  target's pending certificate. That certificate's FK takes `KEY SHARE` on the target row.
-- **Unchanged locks.** Row locks that agent paths already take, such as `FOR UPDATE` in
-  `services/timeSync/ingest.ts:119-123`, are unaffected: the fence holds no row lock.
+**What wave 1b changes** on main (8f240ddbe).
 
-**Tests.**
+*(a) Own-row `devices` updates that move behind the helper.*
 
-- **Source scan.** In the style of `routes/agents/parkedRouteClassification.test.ts`, it scans the
-  agent entry points: `routes/agents/**`, `routes/agentWs.ts`, `routes/helper/**`, the `renew-cert`
-  routes and the helper's AI turn. Shared services take the fence context as a parameter, so
-  their non-agent callers are not flagged. It fails when either of these appears without an
-  allow-list entry and a reason:
-  - a DB transaction opened outside `withAgentDbContext`;
-  - an own-row `update(devices)` without the agent-id predicate.
-- **Integration.**
-  - A request authenticated as the old install is paused after auth while a confirm commits, then
-    resumed: it gets 401 and writes nothing. The same runs for a WS result frame, a REST poll
-    claim, a parked beat and a `renew-cert`.
-  - An org move during a request does not answer 401.
+| Site | Writes | Filter today |
+|---|---|---|
+| `middleware/agentAuth.ts:866-869`, every agent route, fire-and-forget | `last_seen_ip` | `id` |
+| `routes/agents/heartbeat.ts:1570-1577`, main beat | liveness, inventory columns | `id`, not `decommissioned`/`quarantined` |
+| `routes/agents/heartbeat.ts:847-849`, watchdog beat | watchdog columns | `id` only |
+| `routes/agents/heartbeatParked.ts:116-119`, parked beat | liveness columns | `id`, non-terminal status |
+| `services/agentTokenPromotion.ts:60-88`, from the beat (`heartbeatCredentialMaintenance.ts:97`), the parked beat (`heartbeatParked.ts:123`) and `/rotate-token/confirm` (`token.ts:434`) | pending hashes → current | `id`, presented hash = pending, current hash as read |
+| `routes/agents/token.ts:229-244`, `/rotate-token` | `pending_*` hashes | `id`, current hash = presented |
+| `routes/agents/uninstallIntent.ts:47-50` | `uninstall_intent_at` | `id` |
+| `routes/agents/security.ts:143`, `PUT /management/posture` | `management_posture` | `id` |
+| `routes/agents/inventory.ts:254-257`, `PUT /network` | `active_vpns` | `id` |
+| `services/workloads/ingest.ts:278-281`, `PUT /workloads` | `hosts_workloads`, `workload_runtimes` | `id`, `org_id` |
+| `routes/agents/logs.ts:273-282`, `POST /logs` | `last_log_at` | `id`, a throttle |
+| `services/agentEditionAutoMigrate.ts:462,597`, detached from the beat (`heartbeat.ts:2013-2014`) | edition-migration claim | `id`, `org_id`, not decommissioned / `id` |
+| `routes/agentWs.ts:1369-1379` (open, `heartbeat`) and `:3569-3587` (`update_status`) | status, `last_seen_at` | `agent_id`, non-terminal status |
+| `middleware/agentAuth.ts:302` (`suspendAgentToken`), from the WS (`routes/agentWs.ts:4973`) | `agent_token_suspended_at` | `id`, not yet suspended |
+| `routes/agents/mtls.ts:841-852`, `/renew-cert` with an expired certificate | `status = 'quarantined'` | `id` |
+| `services/deviceMtlsCertificateIssuance.ts:120-130` (`activateIssuedCertificateCore`, from `/renew-cert`, `mtls.ts:1133-1144`) and `mtls.ts:1403-1415` (`/renew-cert/confirm`) | `mtls_cert_*` | `id` |
+| Allow-listed, predicate added in place: `jobs/offlineDetector.ts:512-518` (`transitionDeviceOffline`, from WS close and error, `routes/agentWs.ts:4459-4517`) | status → offline | `id`, `org_id`, `online`, the observed `last_seen_at`; row read by `agent_id` |
+| Allow-listed, predicate added in place: `routes/agents/enrollment.ts:828-871`, F3 re-enroll (token matched without a lock, `:498-510`) | new `agent_id` and hashes | `id`; it gains `agent_id` = the matched row's, and refuses rather than minting a row when that matches nothing |
 
-**Until wave 1b.** None of this is on main, and none of it is needed yet. No install can take over
-another's row before 1b, which is the wave that adds the rebind. The only in-place rewrite of a
-row's agent id today is F3's token-authenticated re-enroll. That is the same install proving its
-own credentials, so a late write from its previous agent id is still that install's own data.
-Within 1b, `rebind-confirm` is not mounted until the fence and the predicates are in.
+*(b) Command sites that get the incarnation check.*
 
-**Every agent-credential write site** on main (c59c9eadb). "Fence" means the site needs no
-statement change because the fenced context it runs in covers it.
-
-*(a) `devices` updates: the agent-id predicate, plus the fence where one wraps them.*
-
-| Site | Writes | Filter today | Wave 1b |
-|---|---|---|---|
-| `middleware/agentAuth.ts:865-869`, every agent route, fire-and-forget | `last_seen_ip` | `id` | predicate (no fence wraps it) |
-| `routes/agents/heartbeat.ts:1560-1567`, main beat | liveness, inventory columns | `id`, not `decommissioned`/`quarantined` | predicate + fence (beat context, `:775`) |
-| `routes/agents/heartbeat.ts:841-843`, watchdog beat | watchdog columns | `id` only, no status guard | predicate + fence; the fence also refuses a row that is already decommissioned |
-| `routes/agents/heartbeatParked.ts:116-119`, parked beat | liveness columns | `id`, non-terminal status | predicate + fence |
-| `services/agentTokenPromotion.ts:60-88`, from the beat (`heartbeatCredentialMaintenance.ts:97`), the parked beat (`heartbeatParked.ts:123`) and `/rotate-token/confirm` (`token.ts:434`) | pending hashes → current | `id`, presented hash = pending, current hash as read | predicate + fence |
-| `routes/agents/token.ts:229-244`, `/rotate-token` | `pending_*` hashes | `id`, current hash = presented | predicate + fence |
-| `routes/agents/uninstallIntent.ts:47-50` | `uninstall_intent_at` | `id` only | predicate + fence |
-| `routes/agents/security.ts:143`, `PUT /management/posture` | `management_posture` | `id` (row read by `agent_id = :id` without a lock, `:134`) | predicate + fence |
-| `routes/agents/inventory.ts:254-257`, `PUT /network` | `active_vpns` | `id` only | predicate + fence |
-| `services/workloads/ingest.ts:278-281`, `PUT /workloads` | `hosts_workloads`, `workload_runtimes` | `id`, `org_id` | predicate + fence |
-| `routes/agents/logs.ts:284-293`, `POST /logs` | `last_log_at` | `id`, a throttle | predicate + fence |
-| `services/agentEditionAutoMigrate.ts:462,597`, detached from the beat (`heartbeat.ts:2003`) | edition-migration claim | `id`, `org_id`, not decommissioned / `id` only | predicate + fence in its own system context |
-| `middleware/agentAuth.ts:302` (`suspendAgentToken`), from the WS (`routes/agentWs.ts:4917`) | `agent_token_suspended_at` | `id`, not yet suspended | predicate, so a late frame from the old install cannot suspend the new one |
-| `routes/agents/mtls.ts:841-852`, `/renew-cert` with an expired certificate | `status = 'quarantined'` | `id` only | predicate + fence |
-| `services/deviceMtlsCertificateIssuance.ts:69-130` (`activateIssuedCertificateCore`, from `/renew-cert`, `mtls.ts:1133-1144`) and `mtls.ts:1393-1415` (`/renew-cert/confirm`) | `mtls_cert_*` and `device_mtls_certificates` | `id`; certificate `id` and state | predicate + fence |
-| `routes/agents/enrollment.ts:828-871`, F3 re-enroll (token matched without a lock, `:498-510`) | new `agent_id` and hashes | `id` only | `AND agent_id` = the matched row's; no row → refuse, never mint |
-
-*(b) Commands.*
-
-| Site | Writes | Filter today | Wave 1b |
-|---|---|---|---|
-| `services/commandDispatch.ts:476-486`, the claim from the beat (`heartbeat.ts:1900`, `:911`, `:610`), the parked beat (`heartbeatParked.ts:139-151`) and the REST poll (`routes/agents/commands.ts:216`) | `device_commands` → `sent` | `id`, `device_id`, `pending`, `target_role` | stamp = fenced incarnation; fence |
-| `services/commandDispatch.ts:96-121,176-188` with `services/dispatchDeviceCommand.ts:185,312`, the server push | `device_commands` → `sent`, then a WS frame | `id`, `pending`, `deliver_by`; pushed to a `device.agentId` read before the claim | stamp = `devices.install_incarnation` read in the claim; push to the `agent_id` the claim read |
-| `routes/agents/commands.ts:500-525` (REST result), `routes/agentWs.ts:2366,2398,2605` (WS result), `services/commandResultProcessingFailure.ts:52-81` | result CAS (and the lookups that share its condition) | `id`, `device_id`, `target_role`, `commandAcceptsAgentResultCondition()` (`services/commandResultAcceptance.ts:121`) | the stamp check inside that shared condition; fence |
-| Per-type result writers dispatched from the result route: `routes/agents/helpers.ts:560-1567`, `services/commandResultHandlers.ts`, `services/backupResultPersistence.ts`, `services/restoreResultPersistence.ts:201`, `services/softwareDeploymentResult.ts:87`, `services/filesystemAnalysis.ts`, `services/pamActuationResult.ts:159-209` and the rest | security, CIS, sensitive-data, backup, restore, script, deployment, PAM rows | the command's ids; only PAM checks `devices.agent_id`, in its gate (`services/pamActuationResult.ts:98-111`) | fence (they run in the result's savepoint) |
-| Claim side effects: `services/commandClaimEligibility.ts:582`, `services/commandCancelPropagation.ts:147-188`, `services/commandDispatch.ts:326-350`, the delivery refreshers (`services/scriptSecretDelivery.ts:244-403`, `services/backupStorageWriteSessions.ts:562-623`, `services/restorePointRequest.ts:123-373`) | cancels and their owners, peripheral states, script rows, storage sessions | ids of the claimed rows | fence |
-
-*(c) Ingest inside a fenced request context.*
-
-| Site | Writes | Filter today | Wave 1b |
-|---|---|---|---|
-| Main beat, in its context (`heartbeat.ts:775`): `:1450-1459`, `:1753-1780`, `:1841-1868`; `services/deviceIpHistory.ts:220-290`; `services/reliabilityBaselines.ts:104-117`; `routes/agents/helpers.ts:1703`; `services/filesystemAnalysis.ts:528`; topology through `:2271` | `bare_metal_recoveries`, `device_metrics`, `onedrive_device_state`, `device_ip_history`, `device_reliability_baselines`, `device_commands`, `device_filesystem_scan_state`, `topology_*` | device id from auth | fence |
-| Watchdog beat `heartbeat.ts:878-894`; `PUT /monitoring-results` `heartbeat.ts:2997` (context `:2968`) | `agent_logs`; `service_process_check_results` | device id; `agent_id = :id` read without a lock | fence |
-| `PUT /hardware`, `/disks`, `/network`, `/warranty-info` (`routes/agents/inventory.ts:36-300`, `services/inventoryChildSync.ts`, `services/warrantySync.ts:414-453`) | `device_hardware`, `device_memory_modules`, `device_disks`, `device_network`, `topology_site_state`, `device_warranty`, `alerts` | row read by `agent_id = :id` without a lock (`inventory.ts:40-44`) | fence (request wrap) |
-| `routes/agents/state.ts:35-128`, `patches.ts:197-574`, `connections.ts:72-94`, `changes.ts:210-216`, `peripherals.ts:127-131`, `bootPerformance.ts:50-91`, `processSample.ts:44-50`, `logs.ts:258-265`, `sessions.ts:98-141`, `recoveryKeys.ts:31` (`services/recoveryKeyEscrow.ts:79-86`); `services/hardwareHealth/ingest.ts:131-176`; `services/timeSync/ingest.ts:119-176`; `services/workloads/ingest.ts:69-142` | registry/config state, patches, connections, change log, peripheral events, boot metrics, process samples, agent logs, sessions, recovery keys, hardware health, time, workloads, `alerts` | `device_id` from auth or an unlocked `agent_id` read | fence (request wrap) |
-| Self-managed: `eventlogs.ts:304` (context `:290`), `reliability.ts:75-86` (context `:63`), `topologyAdjacency.ts:56-63`, `elevationRequests.ts:555-650` (context `:339`), storage sessions (`routes/agents/storageSessions.ts:74`, `services/backupStorageSessionStore.ts:185-276`, `services/backupStorageWriteSessions.ts:656-1641`) | event logs, reliability history, topology, elevation requests and PAM actuations, storage sessions and uploads | device id; topology sources already bind to the current token hash (`services/topology/collectionAuthority.ts:27-28`) | fence in each context |
-
-*(d) Writes in their own transactions: the fence runs in each.*
-
-| Site | Writes | Filter today | Wave 1b |
-|---|---|---|---|
-| `PUT /software` (`services/softwareInventoryObservations.ts:356-502`) | `software_inventory`, observations, state, `device_vulnerabilities` | own system transaction; device `FOR KEY SHARE` by `id` (`:363-369`) | that lock gains the agent id and becomes the fence |
-| `POST /unifi-telemetry` (`routes/agents/unifiTelemetry.ts:120`) | `topology_*`, `unifi_controller_sites` | collector owned by the device; token-hash-bound revision | fence |
-| After the beat's commit: `services/agentHealthObservations.ts:65-94` (`heartbeat.ts:2352`), `services/agentRollbackResult.ts:177,203` (`:2374`) | health observations, rollback events | device id | fence |
-| Result side effects that commit on their own: `services/automationActionResults.ts:1025`, `services/scriptCancellation.ts:188-217`, `services/peripheralPolicyState.ts:362-380`, `services/restorePointIngest.ts:102`, `services/topology/diagnosticResults.ts:256-292`, `routes/agents/elevationRequests.ts:211` | automation ledgers, script cancels, peripheral policy state, restore points, diagnostic runs, approval requests | the command's or device's ids | fence |
-| Queued with an agent payload: `jobs/unifiTelemetryWorker.ts:31` (`services/unifi/unifiTelemetryService.ts:176-236`) | `unifi_device_telemetry`, `unifi_clients`, `unifi_collectors` | the device id stamped at request time | the job carries the agent id; the worker fences |
-
-*(e) The agent WebSocket and the helper.*
-
-| Site | Writes | Filter today | Wave 1b |
-|---|---|---|---|
-| WS handshake (`routes/agentWs.ts:1158-1272`) and every frame's DB work, which opens its own short context through `runWithAgentOrgDbAccess` (`:2162-2186`) | — | `agent_id` and token hash at the handshake; a lease re-check every 30 s (`:1041-1100`) | the fence goes into that helper and into each `runOutsideDbContext` system context a frame opens |
-| `routes/agentWs.ts:1361-1370` (open, `heartbeat`), `:3514-3531` (`update_status`) | `devices` status, `last_seen_at` | `agent_id`, non-terminal status: these already carry the predicate | fence |
-| `jobs/offlineDetector.ts:512-518`, from `onClose` and `onError` (`routes/agentWs.ts:4403,4443-4461`) | `devices` → offline, `offline_transition_effects` | `id`, `org_id`, `online`, the observed `last_seen_at`; row read by `agent_id` | predicate + fence; `onError` also checks that the socket is still current |
-| WS results: the CAS at `routes/agentWs.ts:2583-2608` in one transaction (`:2579`), the per-type writers of (b), and the side effects that commit on their own (automation ledger, script cancel, peripheral state, restore points, topology diagnostics) | as (b) | as (b) | fence in `:2579` and in each side effect's own transaction |
-| Remote-session frames: `services/remoteDesktopTerminalIntent.ts:195-202,273-282`, `routes/agentWs.ts:3868-3883`, `services/desktopStreamStartActivation.ts:93-96`, `services/remoteRevocationLease.ts:534-546` | `remote_sessions` | session id, most also `device_id`; the terminal-start failure and the lease revoke check the device only in memory | fence; those two gain `device_id` |
-| Progress and IP history: `services/backupProgress.ts:284-288`, `services/commandProgress.ts:79-91`, `services/deviceIpHistory.ts:220-290` | `backup_jobs`, command progress, `device_ip_history` | job or command id with the device | fence |
-| Results with no command row: `routes/agentWs.ts:187-189,1426-1450,1789-1847`, `services/assetProbe.ts:93-106`, `services/backupProgress.ts:380-394` | tunnels, SNMP devices, discovery jobs, probes, backup acks | object ids, some checked only in memory | fence |
-| Queued from WS results: `jobs/discoveryWorker.ts:1472-1500`, `jobs/backupWorker.ts:2001-2015`, `jobs/snmpWorker.ts:741-763`, `jobs/monitorWorker.ts:510-622` | discovery, backup, SNMP and monitor rows; discovery also sets `devices.device_role` on **other** devices it matched | object ids | the job carries the agent id; the worker fences on the reporting device. The `device_role` update is the allow-listed exception to the predicate |
-| Helper routes: auth by helper token hash (`middleware/helperAuth.ts:71-117`), request transaction `:226-228`; writes in `routes/helper/index.ts:155-902`, `services/aiBudgetReservations.ts:853,1812`, `services/screenshotStorage.ts:187-198` | `ai_sessions`, `ai_messages`, `ai_screenshots`, budget reservations | helper hash at auth; session ids | fence, with the agent id read at helper auth |
-| The helper's AI turn, which runs after the response (`services/streamingSessionManager.ts`, `services/aiAgentSdk.ts`), and its tool calls | AI rows; tools can queue commands | session id; no credential check after auth | fence inside every transaction it opens, tools' included; commands it enqueues carry the turn's incarnation (§4.2); a turn whose fence fails stops |
+| Site | Writes | Filter today |
+|---|---|---|
+| `services/commandDispatch.ts:476-486`, the claim from the beat (`heartbeat.ts:616`, `:917`, `:1910`), the parked beat (`heartbeatParked.ts:141`) and the REST poll (`routes/agents/commands.ts:222`) | `device_commands` → `sent` | `id`, `device_id`, `pending`, `target_role` |
+| `services/commandDispatch.ts:96-121,176-188` with `services/dispatchDeviceCommand.ts:185,312`, the server push | `device_commands` → `sent`, then a WS frame | `id`, `pending`, `deliver_by`; pushed to a `device.agentId` read before the claim |
+| `routes/agents/commands.ts:506-531` (REST result), `routes/agentWs.ts:2375,2407,2614` (WS result), `services/commandResultProcessingFailure.ts:52-81` | result CAS and the lookups that share its condition | `id`, `device_id`, `target_role`, `commandAcceptsAgentResultCondition()` (`services/commandResultAcceptance.ts:121`); the check goes into that shared condition |
 
 ### 6.5 Liveness, competition, expiry
 
@@ -826,7 +759,9 @@ statement change because the fenced context it runs in covers it.
 The target counts as silent only when the newest signal is older than
 `min(intent.requested_at, now − 10 min)`. If Redis is unavailable, confirm refuses with
 `liveness_unknown` (fail closed). The residual window, a request authenticated after the read and
-before the commit, is closed by the stale-caller fence that wave 1b adds (§6.4).
+before the commit, is handled by the stale-caller rules (§6.4). The agent-id predicate and the
+incarnation check close it for the device row and for commands; what remains is the accepted
+residual of inserts keyed by `device_id`.
 
 **Target revival.** If the target turns out to be live, confirm cancels the intent with
 `target_alive`, and the web dialog shows it. No heartbeat path writes the intent, which keeps the
@@ -1111,8 +1046,13 @@ Mint and rotate take the partner's holding-area lock and refuse a third active k
   columns only (F22):
   - `partners.trust_state = 'trusted'` **and** `partners.deploy_key_enrollment_enabled`;
   - where billing is configured (the breeze-billing integration, `BREEZE_BILLING_URL`, which is
-    what writes the payment column), also `partners.payment_method_attached_at IS NOT NULL`;
-  - on a self-hosted instance with no billing, the payment clause is skipped;
+    what writes the payment column), also `partners.payment_method_attached_at IS NOT NULL`
+    **and not** `billingStatusContradictsPayment(partners.billing_subscription_status)`
+    (`services/partnerActivation.ts:119`). That is a veto, not a requirement, used exactly as
+    partner activation (`:131-141`) and the admin unsuspend route (`routes/admin/abuse.ts:467-471`)
+    use it. A NULL or unknown status mirror passes; only a non-entitled status (`incomplete`,
+    `incomplete_expired`, `canceled`, `unpaid`, `paused`) blocks eligibility;
+  - on a self-hosted instance with no billing, both payment clauses are skipped;
   - no new column.
 
   Mint and rotate check it, and so does every deploy-key enrollment (§10.6).
@@ -1176,7 +1116,7 @@ customer row. Install: `breeze-agent enroll <deploy-key>` for images and scripts
 |---|---|---|
 | **0 — spec** | This document | — |
 | **1a — incarnation boundary** | §4.1 incarnation columns; §4.2 stamping trigger and the claim/result refusals; the §5 handlers as a service; the §5.8 contract, parity and all-category integration tests (driven directly, no external trigger yet) | 0 |
-| **1b — bounded rebind** | §4.3–§4.5 tables and CHECKs (the `reattached` exit, D4); `rebind_protocol_version` at enroll and in both beats; §6 protocol, server and agent: the signed directive, agent-generated staged set, pending certificate, `rebind-confirm`, idempotent replay and the #2773 discard rule; the liveness marker; the stale-caller fence and predicates over every F21 write site, in place before `rebind-confirm` is reachable (§6.4); the intent table's org-access policy (§4.3); the WS lease identity comparison (F5); full-hash revocation on F3's re-enroll; the §6.5 tests | 1a |
+| **1b — bounded rebind** | §4.3–§4.5 tables and CHECKs (the `reattached` exit, D4); `rebind_protocol_version` at enroll and in both beats; §6 protocol, server and agent: the signed directive, agent-generated staged set, pending certificate, `rebind-confirm`, idempotent replay and the #2773 discard rule; the liveness marker; the own-row `devices` update helper with its contract test, and the incarnation check on claim and result, both in place before `rebind-confirm` is reachable (§6.4); the intent table's org-access policy (§4.3); the WS lease identity comparison (F5); full-hash revocation on F3's re-enroll; the §6.5 tests | 1a |
 | **2 — hints + manual reattach** | §7 agent and API; candidates; §8 action and step-up `device_reattach`; web; E2E | 1b |
 | **H — technician triage** (independent) | §9: the partner switch, the access rule in the pre-assignment routes and `assignParkedDevice`, the list and assign UI for technicians, the contract tests. Reattach from a parked source by technicians lands with wave 2 | — |
 | **D — deploy keys** (independent) | §10 table, routes, UI, enrollment branch, limits, parked certificates, controls | — |
@@ -1250,8 +1190,9 @@ the same review refined one, the decision says so.
    lifetime, with no renewal (§10.4).
 10. **The eligibility predicate. Confirmed:** `partners.trust_state = 'trusted'` and
     `partners.deploy_key_enrollment_enabled`; where billing is configured, also
-    `partners.payment_method_attached_at IS NOT NULL`; on a self-hosted instance with no billing
-    the payment clause is skipped; no new column (§10.3, F22).
+    `partners.payment_method_attached_at IS NOT NULL`, with `billingStatusContradictsPayment` as a
+    veto, not a requirement (confirmed 2026-10-18); on a self-hosted instance with no billing the
+    payment clauses are skipped; no new column (§10.3, F22).
 11. **Intent TTLs. Confirmed:** 60 minutes `requested`, 15 minutes `staged` (§6.5).
 
 ## 14. Risks
@@ -1264,10 +1205,11 @@ the same review refined one, the decision says so.
   confirmation and a step-up are required.
 - **The boundary list must keep up.** A new device-referencing table holding work or grants that
   is not classified would carry over. The §5.8 contract test makes that a red suite.
-- **The fence must cover every agent write.** A new agent route, WS handler or after-commit job
-  that opens its own DB context outside `withAgentDbContext`, or a new `devices` update without
-  the agent-id predicate, would write past a confirm. The source-scan test (§6.4) makes that a red
-  suite.
+- **A new own-row `devices` update outside the helper** would write past a confirm. The contract
+  test (§6.4) makes that a red suite.
+- **Late inserts from the old install.** A request authenticated just before confirm can still
+  insert rows keyed by `device_id` after it. This is accepted (§6.4): at worst a stray metric or
+  log row for a device that was silent for the 10-minute quiet period.
 - **Deploy-key availability.** A leaked key can burn its uses (about 17 h at 10 per 600 s) and its
   sub-cap, so new installs from that image fail until the key is rotated. It cannot fill the
   partner cap or touch other keys, but it does take up to 40% of the partner-wide rate bucket
