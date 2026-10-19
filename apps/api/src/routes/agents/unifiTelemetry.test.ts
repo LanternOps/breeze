@@ -51,6 +51,7 @@ import * as authority from '../../services/topology/unifiAuthority';
 import * as flagsModule from '../../services/topology/flags';
 import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
 import vectors from '../../../../../packages/shared/src/testing/topology-unifi-v1.json';
+import v2Vectors from '../../../../../packages/shared/src/testing/topology-unifi-v2.json';
 
 const AGENT_ID = 'agent-1';
 
@@ -243,6 +244,74 @@ describe('agent unifi telemetry routes', () => {
     const enqueued = (worker.enqueueUnifiTelemetry as any).mock.calls[0][0] as { error: string };
     expect(enqueued.error).toContain('[PRIVATE_KEY_REDACTED]');
     expect(enqueued.error).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+
+  describe('topologyV2 companion (Wi-Fi monitoring)', () => {
+    const legacy = { collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true, devices: [], clients: [] };
+    const reportV2 = v2Vectors.vectors[0]!.report;
+    const reportV1 = vectors.vectors[0]!.report;
+    const post = (body: unknown) => appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-telemetry`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const collector = { id: 'c1', collectorDeviceId: 'dev-1', orgId: 'org-1' };
+    const enqueued = () => (worker.enqueueUnifiTelemetry as any).mock.calls[0][0];
+
+    it('ingests a v2 companion through the same synchronous path and marks the legacy payload as v2-owned', async () => {
+      (authority.loadUnifiCollector as any).mockResolvedValue(collector);
+      (adapter.adaptUnifiTopology as any).mockResolvedValue({ accepted: true, producerEpoch: 'e', reportSequence: '4', resources: [] });
+      const res = await post({ ...legacy, topologyV2: reportV2 });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toMatchObject({ accepted: true, topology: { accepted: true } });
+      expect((adapter.adaptUnifiTopology as any).mock.calls[0][2]).toMatchObject({ version: 2, sequence: '4' });
+      expect(enqueued()).toMatchObject({ topologyV2Present: true });
+      expect(enqueued()).not.toHaveProperty('topologyV2');
+    });
+
+    it('leaves the legacy payload untouched when no v2 companion is sent', async () => {
+      const res = await post(legacy);
+      expect(res.status).toBe(202);
+      expect(enqueued()).not.toHaveProperty('topologyV2Present');
+    });
+
+    it('cannot be told by the client that the v2 materializer owns a request', async () => {
+      const res = await post({ ...legacy, topologyV2Present: true });
+      expect(res.status).toBe(202);
+      expect(enqueued()).not.toHaveProperty('topologyV2Present');
+      expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
+    });
+
+    it('rejects both companions in one request as ambiguous, still delivers legacy telemetry, and keeps the v2 fence on', async () => {
+      const res = await post({ ...legacy, topologyV1: reportV1, topologyV2: reportV2 });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ accepted: true, topology: { accepted: false, reason: 'ambiguous_topology_companion', resources: [] } });
+      expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
+      expect(authority.loadUnifiCollector).not.toHaveBeenCalled();
+      expect(worker.enqueueUnifiTelemetry).toHaveBeenCalledTimes(1);
+      expect(enqueued()).toMatchObject({ topologyV2Present: true });
+    });
+
+    it('rejects a malformed v2 companion in its receipt, still delivers legacy telemetry, and keeps the v2 fence on', async () => {
+      const res = await post({ ...legacy, topologyV2: { ...reportV2, resources: 'nope' } });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ accepted: true, topology: { accepted: false, reason: 'invalid_report', reportSequence: '4', resources: [] } });
+      expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
+      expect(enqueued()).toMatchObject({ topologyV2Present: true });
+    });
+
+    it('is version-bound: topologyV2 refuses a v1 report and topologyV1 refuses a v2 report', async () => {
+      const asV2 = await post({ ...legacy, topologyV2: reportV1 });
+      expect((await asV2.json()).topology).toMatchObject({ accepted: false, reason: 'unsupported_major_version' });
+      const asV1 = await post({ ...legacy, topologyV1: reportV2 });
+      expect((await asV1.json()).topology).toMatchObject({ accepted: false, reason: 'unsupported_major_version' });
+      expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
+    });
+
+    it('refuses a v2 companion for a collector owned by another device', async () => {
+      (authority.loadUnifiCollector as any).mockResolvedValue({ ...collector, collectorDeviceId: 'someone-else' });
+      const res = await post({ ...legacy, topologyV2: reportV2 });
+      expect((await res.json()).topology).toMatchObject({ accepted: false, reason: 'collector_not_owned' });
+      expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
+    });
   });
 
   describe('topologyV1 companion (M2 Task 5)', () => {

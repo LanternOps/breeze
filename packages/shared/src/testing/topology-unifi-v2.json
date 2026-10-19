@@ -1,0 +1,506 @@
+{
+  "canonicalizationVersion": 1,
+  "vectors": [
+    {
+      "name": "wifi-aps-real-evidence",
+      "sourceIdentity": "fixture-org:fixture-site:unifi:fixture-device:fixture-collector",
+      "report": {
+        "version": 2,
+        "producerEpoch": "fixture-epoch-2",
+        "snapshotId": "30000000-0000-4000-8000-000000000002",
+        "sequence": "4",
+        "capturedAt": "2026-10-15T12:00:00Z",
+        "captureAgeAtSendMs": 0,
+        "expectedIntervalSeconds": 300,
+        "resources": [
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "device_list",
+            "contentDigest": "5bec62d920cbc0086cc309ae78c8a5b67a861c69b493cd61de213808de4969c4",
+            "outcome": "complete",
+            "rowCount": 6,
+            "rows": [
+              {
+                "rowKey": "ap-u6lr-online",
+                "deviceId": "ap-u6lr-online",
+                "mac": "02:00:00:00:04:01",
+                "name": "AP U6 LR",
+                "model": "U6LR",
+                "ipAddress": "192.0.2.41",
+                "state": "ONLINE",
+                "features": [
+                  "accessPoint"
+                ],
+                "interfaces": [
+                  "ports",
+                  "radios"
+                ]
+              },
+              {
+                "rowKey": "ap-e7-online",
+                "deviceId": "ap-e7-online",
+                "mac": "02:00:00:00:04:02",
+                "name": "AP E7",
+                "model": "E7",
+                "ipAddress": "192.0.2.42",
+                "state": "ONLINE",
+                "features": [
+                  "accessPoint"
+                ],
+                "interfaces": [
+                  "ports",
+                  "radios"
+                ]
+              },
+              {
+                "rowKey": "ap-u6lite-offline",
+                "deviceId": "ap-u6lite-offline",
+                "mac": "02:00:00:00:04:03",
+                "name": "AP U6 Lite offline",
+                "model": "U6Lite",
+                "ipAddress": "192.0.2.43",
+                "state": "OFFLINE",
+                "features": [
+                  "accessPoint"
+                ],
+                "interfaces": [
+                  "ports",
+                  "radios"
+                ]
+              },
+              {
+                "rowKey": "ap-u6lite-online",
+                "deviceId": "ap-u6lite-online",
+                "mac": "02:00:00:00:04:04",
+                "name": "AP U6 Lite",
+                "model": "U6Lite",
+                "ipAddress": "192.0.2.44",
+                "state": "ONLINE",
+                "features": [
+                  "accessPoint"
+                ],
+                "interfaces": [
+                  "ports",
+                  "radios"
+                ]
+              },
+              {
+                "rowKey": "sw-1",
+                "deviceId": "sw-1",
+                "mac": "02:00:00:00:04:0a",
+                "name": "Switch",
+                "model": "USL8LP",
+                "ipAddress": "192.0.2.20",
+                "state": "ONLINE",
+                "features": [
+                  "switching"
+                ],
+                "interfaces": [
+                  "ports"
+                ]
+              },
+              {
+                "rowKey": "legacy-1",
+                "deviceId": "legacy-1",
+                "mac": "02:00:00:00:04:0b",
+                "name": "Legacy",
+                "model": null,
+                "ipAddress": null,
+                "state": "ONLINE",
+                "features": null,
+                "interfaces": null
+              }
+            ]
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "client_list",
+            "contentDigest": "544e6d34d8dde47513eec808723a2b6edab20237d92ae794d9c67b04e86b790e",
+            "outcome": "complete",
+            "rowCount": 10,
+            "rows": [
+              {
+                "rowKey": "client-1",
+                "clientId": "client-1",
+                "mac": "02:00:00:00:04:65",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-u6lr-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-2",
+                "clientId": "client-2",
+                "mac": "02:00:00:00:04:66",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-u6lr-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-3",
+                "clientId": "client-3",
+                "mac": "02:00:00:00:04:67",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-u6lr-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-4",
+                "clientId": "client-4",
+                "mac": "02:00:00:00:04:68",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-e7-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-5",
+                "clientId": "client-5",
+                "mac": "02:00:00:00:04:69",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-e7-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-6",
+                "clientId": "client-6",
+                "mac": "02:00:00:00:04:6a",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-e7-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-7",
+                "clientId": "client-7",
+                "mac": "02:00:00:00:04:6b",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-e7-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-8",
+                "clientId": "client-8",
+                "mac": "02:00:00:00:04:6c",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-e7-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-9",
+                "clientId": "client-9",
+                "mac": "02:00:00:00:04:6d",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "ap-u6lite-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-10",
+                "clientId": "client-10",
+                "mac": "02:00:00:00:04:6e",
+                "clientType": "WIRED",
+                "uplinkDeviceId": "ap-u6lr-online",
+                "name": null,
+                "ipAddress": null,
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              }
+            ]
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "device_details",
+            "contentDigest": "06dfb84735a34fef43e18daed605100ef59b758824ac7f98d06abfbf305266cc",
+            "outcome": "complete",
+            "rowCount": 6,
+            "rows": [
+              {
+                "rowKey": "ap-u6lr-online",
+                "deviceId": "ap-u6lr-online",
+                "uplinkDeviceId": null,
+                "uplinkPortIndex": null,
+                "ports": [],
+                "radios": [
+                  {
+                    "frequencyGHz": 2.4,
+                    "channel": 6,
+                    "channelWidthMHz": 20,
+                    "wlanStandard": "802.11n"
+                  },
+                  {
+                    "frequencyGHz": 5,
+                    "channel": 44,
+                    "channelWidthMHz": 40,
+                    "wlanStandard": "802.11ax"
+                  }
+                ]
+              },
+              {
+                "rowKey": "ap-e7-online",
+                "deviceId": "ap-e7-online",
+                "uplinkDeviceId": null,
+                "uplinkPortIndex": null,
+                "ports": [],
+                "radios": [
+                  {
+                    "frequencyGHz": 6,
+                    "channel": 197,
+                    "channelWidthMHz": 160,
+                    "wlanStandard": "802.11be"
+                  },
+                  {
+                    "frequencyGHz": 2.4,
+                    "channel": 11,
+                    "channelWidthMHz": 20,
+                    "wlanStandard": "802.11be"
+                  },
+                  {
+                    "frequencyGHz": 5,
+                    "channel": 44,
+                    "channelWidthMHz": 80,
+                    "wlanStandard": "802.11be"
+                  }
+                ]
+              },
+              {
+                "rowKey": "ap-u6lite-offline",
+                "deviceId": "ap-u6lite-offline",
+                "uplinkDeviceId": null,
+                "uplinkPortIndex": null,
+                "ports": [],
+                "radios": [
+                  {
+                    "frequencyGHz": 2.4,
+                    "channel": null,
+                    "channelWidthMHz": 20,
+                    "wlanStandard": "802.11n"
+                  },
+                  {
+                    "frequencyGHz": 5,
+                    "channel": null,
+                    "channelWidthMHz": 40,
+                    "wlanStandard": "802.11ax"
+                  }
+                ]
+              },
+              {
+                "rowKey": "ap-u6lite-online",
+                "deviceId": "ap-u6lite-online",
+                "uplinkDeviceId": null,
+                "uplinkPortIndex": null,
+                "ports": [],
+                "radios": [
+                  {
+                    "frequencyGHz": 2.4,
+                    "channel": 11,
+                    "channelWidthMHz": 20,
+                    "wlanStandard": "802.11n"
+                  },
+                  {
+                    "frequencyGHz": 5,
+                    "channel": 149,
+                    "channelWidthMHz": 40,
+                    "wlanStandard": "802.11ax"
+                  }
+                ]
+              },
+              {
+                "rowKey": "sw-1",
+                "deviceId": "sw-1",
+                "uplinkDeviceId": null,
+                "uplinkPortIndex": null,
+                "ports": [],
+                "radios": null
+              },
+              {
+                "rowKey": "legacy-1",
+                "deviceId": "legacy-1",
+                "uplinkDeviceId": null,
+                "uplinkPortIndex": null,
+                "ports": [],
+                "radios": []
+              }
+            ]
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "statistics",
+            "contentDigest": "ebf8f4a0860837f6df20402b40c040195dcc8e3fb49bdbfcbc5493339089b7ce",
+            "outcome": "complete",
+            "rowCount": 5,
+            "rows": [
+              {
+                "rowKey": "ap-u6lr-online",
+                "deviceId": "ap-u6lr-online",
+                "uptimeSeconds": 3604448,
+                "cpuUtilizationPct": 1.2,
+                "memoryUtilizationPct": 37.5,
+                "uplinkRxRateBps": 712,
+                "uplinkTxRateBps": 2072,
+                "lastHeartbeatAt": "2026-10-15T11:59:50Z",
+                "nextHeartbeatAt": "2026-10-15T12:00:20Z",
+                "radios": [
+                  {
+                    "frequencyGHz": 2.4,
+                    "txRetriesPct": 26
+                  },
+                  {
+                    "frequencyGHz": 5,
+                    "txRetriesPct": 0
+                  }
+                ]
+              },
+              {
+                "rowKey": "ap-e7-online",
+                "deviceId": "ap-e7-online",
+                "uptimeSeconds": 3863772,
+                "cpuUtilizationPct": 6.8,
+                "memoryUtilizationPct": 32.9,
+                "uplinkRxRateBps": null,
+                "uplinkTxRateBps": null,
+                "lastHeartbeatAt": null,
+                "nextHeartbeatAt": null,
+                "radios": [
+                  {
+                    "frequencyGHz": 6,
+                    "txRetriesPct": 5
+                  },
+                  {
+                    "frequencyGHz": 2.4,
+                    "txRetriesPct": 0
+                  },
+                  {
+                    "frequencyGHz": 5,
+                    "txRetriesPct": 0
+                  }
+                ]
+              },
+              {
+                "rowKey": "ap-u6lite-offline",
+                "deviceId": "ap-u6lite-offline",
+                "uptimeSeconds": null,
+                "cpuUtilizationPct": null,
+                "memoryUtilizationPct": null,
+                "uplinkRxRateBps": 1724576,
+                "uplinkTxRateBps": 53711480,
+                "lastHeartbeatAt": null,
+                "nextHeartbeatAt": null,
+                "radios": [
+                  {
+                    "frequencyGHz": 2.4,
+                    "txRetriesPct": null
+                  },
+                  {
+                    "frequencyGHz": 5,
+                    "txRetriesPct": null
+                  }
+                ]
+              },
+              {
+                "rowKey": "ap-u6lite-online",
+                "deviceId": "ap-u6lite-online",
+                "uptimeSeconds": 97436,
+                "cpuUtilizationPct": 0.4,
+                "memoryUtilizationPct": 30,
+                "uplinkRxRateBps": 407952,
+                "uplinkTxRateBps": 3861104,
+                "lastHeartbeatAt": "2026-10-15T11:59:55Z",
+                "nextHeartbeatAt": "2026-10-15T12:00:25Z",
+                "radios": [
+                  {
+                    "frequencyGHz": 2.4,
+                    "txRetriesPct": 0
+                  },
+                  {
+                    "frequencyGHz": 5,
+                    "txRetriesPct": 0
+                  }
+                ]
+              },
+              {
+                "rowKey": "sw-1",
+                "deviceId": "sw-1",
+                "uptimeSeconds": 1000,
+                "cpuUtilizationPct": 0,
+                "memoryUtilizationPct": 20,
+                "uplinkRxRateBps": 0,
+                "uplinkTxRateBps": 0,
+                "lastHeartbeatAt": null,
+                "nextHeartbeatAt": null,
+                "radios": null
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "resources": [
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "device_list",
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"unifi_topology_v2\",\"producerEpoch\":\"fixture-epoch-2\",\"resource\":{\"controllerSiteId\":\"88f7af54-98f8-306a-a1c7-c9349722b1f6\",\"kind\":\"device_list\",\"outcome\":\"complete\",\"rowCount\":6,\"rows\":[{\"deviceId\":\"ap-e7-online\",\"features\":[\"accessPoint\"],\"interfaces\":[\"ports\",\"radios\"],\"ipAddress\":\"192.0.2.42\",\"mac\":\"02:00:00:00:04:02\",\"model\":\"E7\",\"name\":\"AP E7\",\"rowKey\":\"ap-e7-online\",\"state\":\"ONLINE\"},{\"deviceId\":\"ap-u6lite-offline\",\"features\":[\"accessPoint\"],\"interfaces\":[\"ports\",\"radios\"],\"ipAddress\":\"192.0.2.43\",\"mac\":\"02:00:00:00:04:03\",\"model\":\"U6Lite\",\"name\":\"AP U6 Lite offline\",\"rowKey\":\"ap-u6lite-offline\",\"state\":\"OFFLINE\"},{\"deviceId\":\"ap-u6lite-online\",\"features\":[\"accessPoint\"],\"interfaces\":[\"ports\",\"radios\"],\"ipAddress\":\"192.0.2.44\",\"mac\":\"02:00:00:00:04:04\",\"model\":\"U6Lite\",\"name\":\"AP U6 Lite\",\"rowKey\":\"ap-u6lite-online\",\"state\":\"ONLINE\"},{\"deviceId\":\"ap-u6lr-online\",\"features\":[\"accessPoint\"],\"interfaces\":[\"ports\",\"radios\"],\"ipAddress\":\"192.0.2.41\",\"mac\":\"02:00:00:00:04:01\",\"model\":\"U6LR\",\"name\":\"AP U6 LR\",\"rowKey\":\"ap-u6lr-online\",\"state\":\"ONLINE\"},{\"deviceId\":\"legacy-1\",\"features\":null,\"interfaces\":null,\"ipAddress\":null,\"mac\":\"02:00:00:00:04:0b\",\"model\":null,\"name\":\"Legacy\",\"rowKey\":\"legacy-1\",\"state\":\"ONLINE\"},{\"deviceId\":\"sw-1\",\"features\":[\"switching\"],\"interfaces\":[\"ports\"],\"ipAddress\":\"192.0.2.20\",\"mac\":\"02:00:00:00:04:0a\",\"model\":\"USL8LP\",\"name\":\"Switch\",\"rowKey\":\"sw-1\",\"state\":\"ONLINE\"}]},\"sourceIdentity\":\"fixture-org:fixture-site:unifi:fixture-device:fixture-collector\",\"version\":2}"
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "client_list",
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"unifi_topology_v2\",\"producerEpoch\":\"fixture-epoch-2\",\"resource\":{\"controllerSiteId\":\"88f7af54-98f8-306a-a1c7-c9349722b1f6\",\"kind\":\"client_list\",\"outcome\":\"complete\",\"rowCount\":10,\"rows\":[{\"clientId\":\"client-1\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:65\",\"name\":null,\"rowKey\":\"client-1\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-u6lr-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-10\",\"clientType\":\"WIRED\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:6e\",\"name\":null,\"rowKey\":\"client-10\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-u6lr-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-2\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:66\",\"name\":null,\"rowKey\":\"client-2\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-u6lr-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-3\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:67\",\"name\":null,\"rowKey\":\"client-3\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-u6lr-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-4\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:68\",\"name\":null,\"rowKey\":\"client-4\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-e7-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-5\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:69\",\"name\":null,\"rowKey\":\"client-5\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-e7-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-6\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:6a\",\"name\":null,\"rowKey\":\"client-6\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-e7-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-7\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:6b\",\"name\":null,\"rowKey\":\"client-7\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-e7-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-8\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:6c\",\"name\":null,\"rowKey\":\"client-8\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-e7-online\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-9\",\"clientType\":\"WIRELESS\",\"ipAddress\":null,\"mac\":\"02:00:00:00:04:6d\",\"name\":null,\"rowKey\":\"client-9\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"ap-u6lite-online\",\"uplinkPortIndex\":null,\"vlan\":null}]},\"sourceIdentity\":\"fixture-org:fixture-site:unifi:fixture-device:fixture-collector\",\"version\":2}"
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "device_details",
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"unifi_topology_v2\",\"producerEpoch\":\"fixture-epoch-2\",\"resource\":{\"controllerSiteId\":\"88f7af54-98f8-306a-a1c7-c9349722b1f6\",\"kind\":\"device_details\",\"outcome\":\"complete\",\"rowCount\":6,\"rows\":[{\"deviceId\":\"ap-e7-online\",\"ports\":[],\"radios\":[{\"channel\":11,\"channelWidthMHz\":20,\"frequencyGHz\":2.4,\"wlanStandard\":\"802.11be\"},{\"channel\":44,\"channelWidthMHz\":80,\"frequencyGHz\":5,\"wlanStandard\":\"802.11be\"},{\"channel\":197,\"channelWidthMHz\":160,\"frequencyGHz\":6,\"wlanStandard\":\"802.11be\"}],\"rowKey\":\"ap-e7-online\",\"uplinkDeviceId\":null,\"uplinkPortIndex\":null},{\"deviceId\":\"ap-u6lite-offline\",\"ports\":[],\"radios\":[{\"channel\":null,\"channelWidthMHz\":20,\"frequencyGHz\":2.4,\"wlanStandard\":\"802.11n\"},{\"channel\":null,\"channelWidthMHz\":40,\"frequencyGHz\":5,\"wlanStandard\":\"802.11ax\"}],\"rowKey\":\"ap-u6lite-offline\",\"uplinkDeviceId\":null,\"uplinkPortIndex\":null},{\"deviceId\":\"ap-u6lite-online\",\"ports\":[],\"radios\":[{\"channel\":11,\"channelWidthMHz\":20,\"frequencyGHz\":2.4,\"wlanStandard\":\"802.11n\"},{\"channel\":149,\"channelWidthMHz\":40,\"frequencyGHz\":5,\"wlanStandard\":\"802.11ax\"}],\"rowKey\":\"ap-u6lite-online\",\"uplinkDeviceId\":null,\"uplinkPortIndex\":null},{\"deviceId\":\"ap-u6lr-online\",\"ports\":[],\"radios\":[{\"channel\":6,\"channelWidthMHz\":20,\"frequencyGHz\":2.4,\"wlanStandard\":\"802.11n\"},{\"channel\":44,\"channelWidthMHz\":40,\"frequencyGHz\":5,\"wlanStandard\":\"802.11ax\"}],\"rowKey\":\"ap-u6lr-online\",\"uplinkDeviceId\":null,\"uplinkPortIndex\":null},{\"deviceId\":\"legacy-1\",\"ports\":[],\"radios\":[],\"rowKey\":\"legacy-1\",\"uplinkDeviceId\":null,\"uplinkPortIndex\":null},{\"deviceId\":\"sw-1\",\"ports\":[],\"radios\":null,\"rowKey\":\"sw-1\",\"uplinkDeviceId\":null,\"uplinkPortIndex\":null}]},\"sourceIdentity\":\"fixture-org:fixture-site:unifi:fixture-device:fixture-collector\",\"version\":2}"
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "statistics",
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"unifi_topology_v2\",\"producerEpoch\":\"fixture-epoch-2\",\"resource\":{\"controllerSiteId\":\"88f7af54-98f8-306a-a1c7-c9349722b1f6\",\"kind\":\"statistics\",\"outcome\":\"complete\",\"rowCount\":5,\"rows\":[{\"cpuUtilizationPct\":6.8,\"deviceId\":\"ap-e7-online\",\"lastHeartbeatAt\":null,\"memoryUtilizationPct\":32.9,\"nextHeartbeatAt\":null,\"radios\":[{\"frequencyGHz\":2.4,\"txRetriesPct\":0},{\"frequencyGHz\":5,\"txRetriesPct\":0},{\"frequencyGHz\":6,\"txRetriesPct\":5}],\"rowKey\":\"ap-e7-online\",\"uplinkRxRateBps\":null,\"uplinkTxRateBps\":null,\"uptimeSeconds\":3863772},{\"cpuUtilizationPct\":null,\"deviceId\":\"ap-u6lite-offline\",\"lastHeartbeatAt\":null,\"memoryUtilizationPct\":null,\"nextHeartbeatAt\":null,\"radios\":[{\"frequencyGHz\":2.4,\"txRetriesPct\":null},{\"frequencyGHz\":5,\"txRetriesPct\":null}],\"rowKey\":\"ap-u6lite-offline\",\"uplinkRxRateBps\":1724576,\"uplinkTxRateBps\":53711480,\"uptimeSeconds\":null},{\"cpuUtilizationPct\":0.4,\"deviceId\":\"ap-u6lite-online\",\"lastHeartbeatAt\":\"2026-10-15T11:59:55Z\",\"memoryUtilizationPct\":30,\"nextHeartbeatAt\":\"2026-10-15T12:00:25Z\",\"radios\":[{\"frequencyGHz\":2.4,\"txRetriesPct\":0},{\"frequencyGHz\":5,\"txRetriesPct\":0}],\"rowKey\":\"ap-u6lite-online\",\"uplinkRxRateBps\":407952,\"uplinkTxRateBps\":3861104,\"uptimeSeconds\":97436},{\"cpuUtilizationPct\":1.2,\"deviceId\":\"ap-u6lr-online\",\"lastHeartbeatAt\":\"2026-10-15T11:59:50Z\",\"memoryUtilizationPct\":37.5,\"nextHeartbeatAt\":\"2026-10-15T12:00:20Z\",\"radios\":[{\"frequencyGHz\":2.4,\"txRetriesPct\":26},{\"frequencyGHz\":5,\"txRetriesPct\":0}],\"rowKey\":\"ap-u6lr-online\",\"uplinkRxRateBps\":712,\"uplinkTxRateBps\":2072,\"uptimeSeconds\":3604448},{\"cpuUtilizationPct\":0,\"deviceId\":\"sw-1\",\"lastHeartbeatAt\":null,\"memoryUtilizationPct\":20,\"nextHeartbeatAt\":null,\"radios\":null,\"rowKey\":\"sw-1\",\"uplinkRxRateBps\":0,\"uplinkTxRateBps\":0,\"uptimeSeconds\":1000}]},\"sourceIdentity\":\"fixture-org:fixture-site:unifi:fixture-device:fixture-collector\",\"version\":2}"
+          }
+        ]
+      }
+    }
+  ]
+}

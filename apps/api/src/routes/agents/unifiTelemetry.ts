@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
-import { parseUnifiTopologyV1 } from '@breeze/shared';
+import { parseUnifiTopologyV1, parseUnifiTopologyV2 } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   agentCollectorAbsenceCache,
@@ -75,6 +75,8 @@ const telemetrySchema = z.object({
   // unifiTopologyV1 wire schema (size-bounded) so a malformed companion is
   // rejected in its own receipt and never costs the legacy telemetry.
   topologyV1: z.unknown().optional(),
+  // Wi-Fi monitoring companion (v2). Same rules; an agent sends AT MOST ONE companion per poll.
+  topologyV2: z.unknown().optional(),
 });
 
 type AgentContext = { deviceId?: string; orgId?: string; siteId?: string };
@@ -108,11 +110,11 @@ async function resolveAgentTopologyFlags(agent: AgentContext): Promise<{ orgId: 
  * failure is reported in the receipt; the caller always continues to the
  * legacy enqueue.
  */
-async function ingestTopologyCompanion(agent: AgentContext & { deviceId: string }, collectorId: string, value: unknown): Promise<UnifiTopologyReceipt> {
+async function ingestTopologyCompanion(agent: AgentContext & { deviceId: string }, collectorId: string, value: unknown, version: 1 | 2 = 1): Promise<UnifiTopologyReceipt> {
   const deviceId = agent.deviceId;
   const claimed = value && typeof value === 'object' && 'sequence' in value ? (value as { sequence: unknown }).sequence : undefined;
   const reportSequence = typeof claimed === 'string' && /^(0|[1-9]\d{0,19})$/.test(claimed) ? { reportSequence: claimed } : {};
-  const parsed = parseUnifiTopologyV1(value);
+  const parsed = version === 2 ? parseUnifiTopologyV2(value) : parseUnifiTopologyV1(value);
   if (!parsed.accepted) return { accepted: false, reason: parsed.reason, ...reportSequence, resources: [] };
   const resolved = await resolveAgentTopologyFlags(agent);
   if (!resolved) return { accepted: false, reason: 'collection_unavailable', ...reportSequence, resources: [] };
@@ -166,8 +168,15 @@ unifiTelemetryRoutes.get('/:id/unifi-collectors', async (c) => {
 unifiTelemetryRoutes.post('/:id/unifi-telemetry', zValidator('json', telemetrySchema), async (c) => {
   const agent = c.get('agent') as AgentContext | undefined;
   if (!agent?.deviceId) return c.json({ error: 'agent device context missing' }, 403);
-  const { topologyV1, ...payload } = c.req.valid('json');
-  const topology = topologyV1 === undefined ? undefined : await ingestTopologyCompanion({ ...agent, deviceId: agent.deviceId }, payload.collectorId, topologyV1);
+  const { topologyV1, topologyV2, ...payload } = c.req.valid('json');
+  const companionAgent = { ...agent, deviceId: agent.deviceId };
+  // Both companions in one request have no defined precedence: reject the topology companion, keep the legacy telemetry.
+  const ambiguous = topologyV1 !== undefined && topologyV2 !== undefined;
+  const topology: UnifiTopologyReceipt | undefined = ambiguous
+    ? { accepted: false, reason: 'ambiguous_topology_companion', resources: [] }
+    : topologyV2 !== undefined ? await ingestTopologyCompanion(companionAgent, payload.collectorId, topologyV2, 2)
+      : topologyV1 !== undefined ? await ingestTopologyCompanion(companionAgent, payload.collectorId, topologyV1, 1)
+        : undefined;
   // Stamp the token-resolved deviceId server-side (never trust a client value);
   // the worker enforces it matches the collector's owner before any write.
   //
@@ -179,6 +188,9 @@ unifiTelemetryRoutes.post('/:id/unifi-telemetry', zValidator('json', telemetrySc
     ...payload,
     error: redactOptionalSecretText(payload.error),
     deviceId: agent.deviceId,
+    // Server-derived from the companion field, never from a client flag: the v2 materializer owns uptime/cpu/mem/
+    // num_clients for this request, so the legacy reconcile must not null them (even if the v2 companion was rejected).
+    ...(topologyV2 !== undefined ? { topologyV2Present: true } : {}),
   });
   return c.json({ accepted: true, ...(topology ? { topology } : {}) }, 202);
 });

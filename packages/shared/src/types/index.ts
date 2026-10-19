@@ -996,6 +996,7 @@ export * from './topologyDiagnostics';
 
 // Physical topology collection contracts (M2 #5998)
 export * from './topologyPhysical';
+export * from './topologyUnifiV2';
 
 // Interface measurement telemetry contracts (M3 #5999)
 export * from './topologyTelemetry';
