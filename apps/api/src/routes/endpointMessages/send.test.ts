@@ -423,6 +423,25 @@ describe('POST /endpoint-messages (#8741)', () => {
     expect(h.branding.mock.calls.map((c) => c[0]).sort()).toEqual([ORG_A, ORG_B].sort());
   });
 
+  it('uses the Helper branding identity already resolved for the send when it is set (no extra query)', async () => {
+    h.flag.mockResolvedValue({
+      endpointMessaging: { enabled: true },
+      branding: { state: 'set', scopeId: 'scope-a', values: { companyName: 'Example MSP', displayName: 'Example Assist', primaryColor: '#2255AA' } },
+    });
+    const { json } = await post(baseBody());
+    expect(json.results[0]).toMatchObject({ status: 'queued' });
+    const [, , payload] = h.queue.mock.calls[0]!;
+    expect(payload.branding).toEqual({ companyName: 'Example MSP', displayName: 'Example Assist', accent: '#2255AA' });
+    expect(h.branding).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the partner fallback identity when Helper branding is cleared', async () => {
+    h.flag.mockResolvedValue({ endpointMessaging: { enabled: true }, branding: { state: 'cleared' } });
+    await post(baseBody());
+    const [, , payload] = h.queue.mock.calls[0]!;
+    expect(payload.branding).toEqual({ companyName: 'Acme IT', displayName: 'Acme IT', accent: '#112233' });
+  });
+
   // --- queue outcomes ---------------------------------------------------------
   it('per-device failure isolation: a throw for one device is failed:queue_failed and the others are still queued', async () => {
     h.groups = [group(ORG_A, [1, 2, 3])];

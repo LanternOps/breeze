@@ -10,6 +10,8 @@ import { CommandTypes } from '../../services/commandTypes';
 import { deliveryTtlMs } from '../../services/commandOfflinePolicy';
 import { agentSupportsMessaging } from '../../services/commandMinVersion';
 import { buildHelperConfigUpdate } from '../../services/helperSettings';
+import type { BrandingDecision } from '../../services/helperBranding';
+import { endpointMessageIdentity } from '../../services/helperBrandingEndpointIdentity';
 import { writeAuditEventAsync, type RequestLike } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { resolveMessageBranding, type MessageBranding } from '../../services/endpointMessaging/brandingSnapshot';
@@ -120,11 +122,14 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
   // both sides: this runs inside the request's held DB transaction (#1105),
   // and a cached entry written before the flag existed would read as "off".
   const flagOn = new Map<string, boolean | 'error'>();
+  // Helper branding is partner/org-only, so one decision per org serves every device in it.
+  const helperBrandingByOrg = new Map<string, BrandingDecision>();
   for (let i = 0; i < resolvedDevices.length; i += FLAG_CONCURRENCY) {
     const chunk = resolvedDevices.slice(i, i + FLAG_CONCURRENCY);
     const settled = await Promise.all(chunk.map(async (d) => {
       try {
         const s = await buildHelperConfigUpdate(d.id, d.orgId, { skipCacheRead: true, skipCacheWrite: true });
+        if (s.branding && !helperBrandingByOrg.has(d.orgId)) helperBrandingByOrg.set(d.orgId, s.branding);
         return s.endpointMessaging?.enabled === true;
       } catch (err) {
         console.error('[endpoint-messages] helper settings resolution failed', { deviceId: d.id, error: err instanceof Error ? err.message : String(err) });
@@ -145,6 +150,13 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
   // Sender identity, once per org, from the org itself (never the request).
   const brandingByOrg = new Map<string, { partnerId: string; branding: MessageBranding } | null>();
   for (const g of groups) brandingByOrg.set(g.orgId, await resolveMessageBranding(g.orgId));
+  // Sender identity per org: the partner fallback, overridden by the Helper branding already
+  // resolved for this send (no extra query). Cleared or absent branding keeps the fallback.
+  const identityByOrg = new Map<string, MessageBranding | null>();
+  for (const g of groups) {
+    const brand = brandingByOrg.get(g.orgId);
+    identityByOrg.set(g.orgId, brand ? endpointMessageIdentity(helperBrandingByOrg.get(g.orgId), brand.branding) : null);
+  }
 
   // Pre-queue classification: which devices are eligible for delivery at all.
   const failures = new Map<string, SendErrorCode>();
@@ -202,7 +214,7 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
     resendOfId: ctx.resendOfId,
     orgGroups: groups.map((g) => ({
       orgId: g.orgId,
-      branding: { ...(brandingByOrg.get(g.orgId)?.branding ?? {}) },
+      branding: { ...(identityByOrg.get(g.orgId) ?? {}) },
     })),
     devices: persistDevices,
   });
@@ -305,14 +317,14 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
   for (const g of groups) {
     const orgResults: DeviceSendResult[] = [];
     perOrg.set(g.orgId, orgResults);
-    const brand = brandingByOrg.get(g.orgId);
+    const identity = identityByOrg.get(g.orgId);
     for (const d of g.devices) {
       const failure = failures.get(d.id);
       let result: DeviceSendResult;
-      if (failure || !brand) {
+      if (failure || !identity) {
         result = { deviceId: d.id, orgId: g.orgId, status: 'failed', errorCode: failure ?? 'queue_failed' };
       } else {
-        result = await queueOne(d.id, g.orgId, brand.branding);
+        result = await queueOne(d.id, g.orgId, identity);
         result = await recordQueueOutcome(deliveryByDevice.get(d.id), result, d.agentVersion);
       }
       results.push(result);
