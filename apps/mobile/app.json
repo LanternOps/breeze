@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.breeze.rmm",
-      "buildNumber": "8",
+      "buildNumber": "85",
       "entitlements": {
         "com.apple.developer.devicecheck.appattest-environment": "production"
       },
@@ -81,15 +81,6 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      [
-        "expo-build-properties",
-        {
-          "ios": {
-            "enableSceneSupport": true,
-            "usePrecompiledModules": false
-          }
-        }
-      ],
       "expo-secure-store",
       [
         "expo-splash-screen",
@@ -157,7 +148,16 @@
           "project": "breeze-mobile"
         }
       ],
-      "./src/config/androidUploadSigning.js"
+      "./src/config/androidUploadSigning.js",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "enableSceneSupport": true,
+            "usePrecompiledModules": false
+          }
+        }
+      ]
     ]
   }
 }

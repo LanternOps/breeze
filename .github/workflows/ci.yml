@@ -995,6 +995,20 @@ jobs:
         working-directory: apps/mobile
         run: pnpm exec expo prebuild --platform ios --no-install
 
+      # iOS 27 refuses to launch an app linked against the iOS 27 SDK without
+      # the UIScene lifecycle (App Review 2.1(a) on 1.0.1 (84)). The simulator
+      # build below runs on an older iOS runtime and cannot detect the
+      # omission, and the app.json unit test only proves the flag is set, not
+      # that prebuild honoured it. Check the generated project directly.
+      - name: Assert UIScene lifecycle adoption in the generated project
+        working-directory: apps/mobile/ios
+        run: |
+          set -euo pipefail
+          plutil -extract UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName raw BreezeRMM/Info.plist | grep -qx EXExpoAppSceneDelegate \
+            || { echo "::error::Info.plist has no UIApplicationSceneManifest pointing at EXExpoAppSceneDelegate — iOS 27 will refuse to launch this build (see STORE_SUBMISSION.md)"; exit 1; }
+          grep -q 'class AppDelegate: ExpoAppDelegate, ExpoReactNativeFactoryProvider' BreezeRMM/AppDelegate.swift \
+            || { echo "::error::AppDelegate.swift does not conform to ExpoReactNativeFactoryProvider — scene support was not applied by expo-build-properties"; exit 1; }
+
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
         run: pod install

@@ -5,7 +5,7 @@
 - iOS bundle ID: `com.breeze.rmm`
 - Android application ID: `com.breeze.rmm`
 - Store version: `1.0.0`
-- Build numbers: iOS `buildNumber` and Android `versionCode` in `app.json` — bump the one you are shipping before every upload (Play rejects a reused `versionCode`).
+- Build numbers: Android `versionCode` in `app.json` — bump before every Play upload (Play rejects a reused `versionCode`). iOS: Xcode Cloud assigns its own build number and ignores `ios.buildNumber`; that value only matters for a local Product → Archive, where it must exceed the last uploaded number (see "iOS 27 — UIScene lifecycle" below).
 - The release path uses the local Xcode project; no Expo/EAS account is required. A committed `eas.json` exists so build-time config has a named home, but no EAS build has ever been run for this app.
 - Apple Team ID: `D8W6N2JYMA` (LanternOps LLC)
 
@@ -460,7 +460,9 @@ not a build-time error.
 
 React Native core has not migrated, so the scene delegate comes from Expo:
 `expo-build-properties` with `ios.enableSceneSupport: true` (in `app.json`,
-listed **first** in `plugins`). At prebuild it makes `AppDelegate` conform to
+listed **last** in `plugins` — Expo runs config-plugin mods in reverse
+registration order, so last-registered runs first and sees the stock
+AppDelegate before any other plugin edits it). At prebuild it makes `AppDelegate` conform to
 `ExpoReactNativeFactoryProvider`, drops the `UIWindow` creation from
 `didFinishLaunchingWithOptions`, and writes a `UIApplicationSceneManifest`
 pointing at Expo's built-in `EXExpoAppSceneDelegate` — no `SceneDelegate.swift`
@@ -479,6 +481,13 @@ is generated. Requires `expo@57.0.23` or newer.
   there and prebuild warns that the flag is a no-op.
 - Verify a candidate build on an **iOS 27** simulator or device before
   uploading. An iOS 26 device proves nothing about this class of failure.
+- **Build numbers:** build 84 came from Xcode Cloud, which assigns its own
+  sequential number and ignores `ios.buildNumber` in `app.json`. The
+  `app.json` value only governs a local Product → Archive and must exceed the
+  last uploaded number (bumped to 85 here for that path).
+- CI (`Build Mobile iOS (Simulator)`) greps the generated `Info.plist` and
+  `AppDelegate.swift` after prebuild so a plugin that silently no-ops is caught
+  before a build ever reaches App Review.
 
 ## Xcode 27.1 (Swift 6.4) — two build breaks, both handled in the repo
 
@@ -497,9 +506,12 @@ Xcode 27.1 ships Swift 6.4; Expo SDK 57 was published against Swift 6.3.1
    `extension __ObjC::expo…` and the package's `build-xcframework.sh` only
    stripped the `__ObjC.` spelling. Carried as a pnpm patch
    (`patches/expo-modules-jsi@57.1.1.patch`, upstream
-   https://github.com/expo/expo/pull/50569, not in any 57.x release). Drop
-   the patch when `expo-modules-jsi` moves to a version that contains it;
-   `pnpm install` will say so.
+   https://github.com/expo/expo/pull/50569, not in any 57.x release). The
+   patch is keyed to the exact transitive version; because the root
+   `allowUnusedPatches: true` turns drift into a buried warning,
+   `appJson.test.ts` asserts every `expo-modules-jsi` version in the lockfile
+   has a patch entry. When the version moves, either re-key the patch or, if
+   the new version contains #50569, delete the patch and the test block.
 
 If either error reappears after an Xcode update, check the toolchain's Swift
 version against these notes before touching app code. A stale cached slice can
