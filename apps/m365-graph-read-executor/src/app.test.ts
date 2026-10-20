@@ -541,6 +541,34 @@ describe('executor HTTP app: failure logging (#9322)', () => {
     expectNoSecrets(logs.serialized());
   });
 
+  it('a sync capacity refusal (expected backpressure) logs nothing; an interactive capacity refusal does', async () => {
+    const logs = captureLogs();
+    const verify = vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' });
+    const gate = { acquire: vi.fn(() => null) };
+    const app = createExecutorApp({ ...deps(verify), gate } as unknown as Parameters<typeof createExecutorApp>[0]);
+    const post = (path: string, body: unknown) => app.request(path, {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const sync = await post('/v1/sync-action', {
+      correlationId: '11111111-1111-4111-8111-111111111111',
+      tenantId: '22222222-2222-4222-8222-222222222222',
+      action: { type: 'm365.sync.signin_activity' },
+    });
+    expect(sync.status).toBe(503);
+    expect(logs.lines()).toEqual([]);
+
+    const interactive = await post('/v1/read-action', {
+      correlationId: '11111111-1111-4111-8111-111111111111',
+      tenantId: '22222222-2222-4222-8222-222222222222',
+      action: { type: 'm365.org.get' },
+    });
+    expect(interactive.status).toBe(503);
+    expect(logs.lines()).toEqual([expect.objectContaining({ operation: 'read-action', status: 503, error: 'capacity' })]);
+  });
+
   it('a 2xx response logs nothing', async () => {
     const logs = captureLogs();
     const app = createExecutorApp(deps(vi.fn()));

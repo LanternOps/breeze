@@ -633,6 +633,56 @@ describe('Graph-read executor client: failure classification (#9322)', () => {
       .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'response_too_large', operation: 'retest' });
   });
 
+  it('a signing key that cannot sign is signing_failed and never reaches the executor', async () => {
+    const fetchMock = vi.fn();
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: { kty: 'OKP', crv: 'Ed25519', x: 'not-a-key' },
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+    });
+    await expect(client.verifyConsentIdentity(verifyInput))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'signing_failed', operation: 'verify-identity' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a body stream that fails mid-read is network, still the client error', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"success":'));
+      },
+      pull(controller) {
+        controller.error(new TypeError('socket hang up'));
+      },
+    });
+    const client = await clientFor(vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'application/json' } })));
+    const error = await client.verifyConsentIdentity(verifyInput).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GraphReadExecutorClientError);
+    expect(error).toMatchObject({ cause: 'network', operation: 'verify-identity' });
+  });
+
+  it.each([
+    ['a non-JSON 503', () => new Response('<html>busy</html>', { status: 503, headers: { 'content-type': 'text/html' } })],
+    ['a malformed JSON 503', () => json('{not-json', 503)],
+    ['a 503 that is not a capacity refusal', () => json('{"error":"unavailable"}', 503)],
+  ])('sync-action: %s is http_status 503, not a body problem', async (_label, respond) => {
+    const client = await clientFor(vi.fn().mockImplementation(async () => respond()));
+    await expect(client.syncAction(syncInput()))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'http_status', httpStatus: 503, operation: 'sync-action' });
+  });
+
+  it('a body read aborted by the request timeout is timeout, not network', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new DOMException('The operation timed out.', 'TimeoutError'));
+      },
+    });
+    const client = await clientFor(vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'application/json' } })));
+    await expect(client.verifyConsentIdentity(verifyInput))
+      .rejects.toMatchObject({ cause: 'timeout', operation: 'verify-identity' });
+  });
+
   it('a request that fails its own schema is request_invalid and never reaches the executor', async () => {
     const fetchMock = vi.fn();
     const client = await clientFor(fetchMock);

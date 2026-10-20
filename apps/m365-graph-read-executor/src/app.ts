@@ -167,12 +167,12 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
     const state: RequestFailureState = {};
     const response = await execute(context, operation, state);
     if (!response.ok) {
-      logRequestFailure({
-        operation,
-        status: response.status,
-        error: await responseErrorCode(response),
-        ...state,
-      });
+      const error = await responseErrorCode(response);
+      // A sync capacity refusal is expected backpressure the API handles as a
+      // typed back-off, not a failure; logging each one would bury real ones.
+      if (error !== 'sync_capacity') {
+        logRequestFailure({ operation, status: response.status, error, ...state });
+      }
     }
     return response;
   }

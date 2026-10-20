@@ -1052,6 +1052,83 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
     logs.restore();
   });
 
+  it('an internal throw is logged by class, driver code and stack frames — never by message', async () => {
+    const logs = captureFailureLogs();
+    // Drizzle's query error embeds the failed query's bound params in its message.
+    const drizzleShaped = Object.assign(
+      new Error('Failed query: update "m365_consent_sessions" set ... params: raw-state-secret,identity-nonce'),
+      { name: 'DrizzleQueryError', cause: Object.assign(new Error('deadlock detected'), { code: '40P01' }) },
+    );
+    await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockResolvedValue(identityOk(TENANT_A)),
+      transitionIdentityToConsent: vi.fn().mockRejectedValue(drizzleShaped),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=${SECRET_CODE}`, { headers: { cookie: 'x' } });
+
+    const lines = logs.lines();
+    expect(lines).toEqual([expect.objectContaining({
+      failureCause: 'internal_error', errorName: 'DrizzleQueryError', errorCode: '40P01', errorStack: expect.stringContaining('at '),
+    })]);
+    const serialized = JSON.stringify(logs.raw());
+    expect(serialized).not.toContain('raw-state-secret');
+    expect(serialized).not.toContain('Failed query');
+    expect(serialized).not.toContain('deadlock detected');
+    logs.restore();
+  });
+
+  it('a runtime-config failure stays a retryable 503 but is now logged as internal_error', async () => {
+    const logs = captureFailureLogs();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      loadConfig: vi.fn(() => { throw new Error('M365_CLIENT_ID missing'); }),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=${SECRET_CODE}`, { headers: { cookie: 'x' } });
+
+    expect(res.status).toBe(503);
+    expect(logs.lines()).toEqual([expect.objectContaining({
+      correlationId: CORRELATION_ID, consentAttemptId: ATTEMPT_ID, failureCause: 'internal_error', errorName: 'Error',
+    })]);
+    expect(JSON.stringify(logs.raw())).not.toContain('M365_CLIENT_ID missing');
+    logs.restore();
+  });
+
+  it('a non-lifecycle failure starting finalization stays a retryable 503 but is logged', async () => {
+    const logs = captureFailureLogs();
+    const res = await h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockRejectedValue(new Error('pool exhausted')),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.status).toBe(503);
+    expect(logs.lines()).toEqual([expect.objectContaining({ phase: 'admin_consent', failureCause: 'internal_error' })]);
+    logs.restore();
+  });
+
+  it('a failure to record the failed attempt is logged, and the original diagnosis still audited', async () => {
+    const logs = captureFailureLogs();
+    const audit = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockRejectedValue(executorError(h.profile, { cause: 'timeout', operation: 'verify-identity' })),
+      markAttemptFailed: vi.fn().mockRejectedValue(new Error('write failed')),
+      audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=${SECRET_CODE}`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      outcome: 'consent_state_mismatch', failureCause: 'executor_timeout',
+    }));
+    const recordFailure = logs.raw().find((call) => call[0] === '[m365ConsentCallback] could not record the failed consent attempt');
+    expect(recordFailure?.[1]).toMatchObject({ correlationId: CORRELATION_ID, intendedOutcome: 'executor_unavailable', errorName: 'Error' });
+    expect(JSON.stringify(logs.raw())).not.toContain('write failed');
+    logs.restore();
+  });
+
   it('a transitionIdentityToConsent that throws a plain Error is audited as internal_error and logged with its stack', async () => {
     const logs = captureFailureLogs();
     const audit = vi.fn();
@@ -1075,8 +1152,11 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
       failureCause: 'internal_error',
     }));
     const lines = logs.lines();
-    expect(lines).toEqual([expect.objectContaining({ correlationId: CORRELATION_ID, failureCause: 'internal_error' })]);
-    expect(JSON.stringify(logs.raw())).toContain('connection terminated unexpectedly');
+    expect(lines).toEqual([expect.objectContaining({
+      correlationId: CORRELATION_ID, failureCause: 'internal_error', errorName: 'Error', errorStack: expect.stringContaining('at '),
+    })]);
+    // The stack frames are kept; the message (which can carry query params) is not.
+    expect(JSON.stringify(logs.raw())).not.toContain('connection terminated unexpectedly');
     expectNoSecrets(audit, logs);
     logs.restore();
   });

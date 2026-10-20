@@ -325,11 +325,33 @@ interface FailureDiagnostic {
   /** A stored connection error code with no public outcome (log only; server-written, bounded). */
   unmappedErrorCode?: string | null;
   /**
-   * An API-side throw (not an executor client error), logged with its stack;
+   * An API-side throw (not an executor client error). Only its class name,
+   * driver code and stack frames are logged — never its message — and it is
    * never audited. Executor client errors are not attached: their bounded
    * fields above are the whole diagnosis.
    */
   error?: unknown;
+}
+
+/**
+ * What an internal throw may contribute to a log line: its class name, a
+ * bounded driver code (e.g. a Postgres SQLSTATE), and its stack FRAMES. The
+ * message is dropped on purpose — a Drizzle query error embeds the failed
+ * query's bound parameters there, and the consent bookkeeping binds state,
+ * session and verified-identity values.
+ */
+export function sanitizedErrorFields(error: unknown): Record<string, string> {
+  if (!(error instanceof Error)) return { errorName: typeof error };
+  const fields: Record<string, string> = {
+    errorName: /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name) ? error.name : 'Error',
+  };
+  const driverCode = [error, (error as { cause?: unknown }).cause]
+    .map((candidate) => (candidate && typeof candidate === 'object' ? (candidate as { code?: unknown }).code : undefined))
+    .find((code): code is string => typeof code === 'string' && /^[A-Za-z0-9_]{1,40}$/.test(code));
+  if (driverCode) fields.errorCode = driverCode;
+  const frames = (error.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line)).slice(0, 15);
+  if (frames.length > 0) fields.errorStack = frames.map((line) => line.trim()).join('\n');
+  return fields;
 }
 
 function failureCauseForStatus(status: number | undefined): M365ConsentFailureCause {
@@ -801,11 +823,12 @@ export function createM365ConsentCallbackRoutes(
     /**
      * One structured line per diagnosed failure (#9322), keyed by correlation
      * ID. Carries only bounded labels — never the code, PKCE verifier, nonce,
-     * a token, or a response body. An internal throw is appended with its
-     * stack so the bug can be found.
+     * a token, a response body, or an error message. An internal throw adds
+     * its class name, driver code and stack frames (sanitizedErrorFields).
      */
     const reportFailure = (diagnostic: FailureDiagnostic, attempt?: CallbackAttemptSnapshot) => {
       const line = {
+        ...(diagnostic.error === undefined ? {} : sanitizedErrorFields(diagnostic.error)),
         profile: dependencies.profile,
         phase: currentPhase,
         correlationId,
@@ -816,9 +839,7 @@ export function createM365ConsentCallbackRoutes(
         ...(diagnostic.executorCause === undefined ? {} : { executorCause: diagnostic.executorCause }),
         ...(diagnostic.unmappedErrorCode === undefined ? {} : { unmappedErrorCode: diagnostic.unmappedErrorCode }),
       };
-      if (diagnostic.error !== undefined) {
-        console.error(FAILURE_LOG_MESSAGE, line, diagnostic.error);
-      } else if (diagnostic.failureCause === 'internal_error') {
+      if (diagnostic.error !== undefined || diagnostic.failureCause === 'internal_error') {
         console.error(FAILURE_LOG_MESSAGE, line);
       } else {
         console.warn(FAILURE_LOG_MESSAGE, line);
@@ -851,7 +872,8 @@ export function createM365ConsentCallbackRoutes(
       }
       return terminalRedirect(outcome);
     };
-    const temporarilyUnavailable = () => {
+    const temporarilyUnavailable = (error: unknown, attempt: CallbackAttemptSnapshot) => {
+      reportFailure({ failureCause: 'internal_error', error }, attempt);
       dependencies.metric(dependencies.events.verificationFailed, 'executor_unavailable');
       return c.json({ error: 'M365 consent callback temporarily unavailable' }, 503);
     };
@@ -871,8 +893,18 @@ export function createM365ConsentCallbackRoutes(
       if (!isUpgrade) {
         try {
           await dependencies.markAttemptFailed(attempt, outcome);
-        } catch {
-          // The original diagnosis still explains why we got here.
+        } catch (error) {
+          // Recording the failure itself failed. Report that (it is why the
+          // outcome becomes consent_state_mismatch); the original diagnosis
+          // still explains why we got here.
+          console.error('[m365ConsentCallback] could not record the failed consent attempt', {
+            profile: dependencies.profile,
+            phase: currentPhase,
+            correlationId,
+            consentAttemptId: attempt.consentAttemptId,
+            intendedOutcome: outcome,
+            ...sanitizedErrorFields(error),
+          });
           return terminalFailure('consent_state_mismatch', attempt, actorId, diagnostic);
         }
       }
@@ -962,8 +994,8 @@ export function createM365ConsentCallbackRoutes(
       let config: CallbackRuntimeConfig;
       try {
         config = dependencies.loadConfig();
-      } catch {
-        return temporarilyUnavailable();
+      } catch (error) {
+        return temporarilyUnavailable(error, attempt);
       }
 
       const session = await dependencies.consumeSession({
@@ -1131,7 +1163,7 @@ export function createM365ConsentCallbackRoutes(
       if (lifecycleCode(error) === null) {
         // Nothing was consumed (the consume and the CAS share a rolled-back
         // transaction), so the same callback stays retryable.
-        return temporarilyUnavailable();
+        return temporarilyUnavailable(error, attempt);
       }
       return terminalFailure(errorOutcome(error), attempt);
     }

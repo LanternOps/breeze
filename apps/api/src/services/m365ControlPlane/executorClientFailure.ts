@@ -77,7 +77,8 @@ export function exactJsonContentType(response: Response): boolean {
 
 /**
  * Reads at most `maxBytes` of the body. Throws `response_too_large` past the
- * cap and `network` when the stream itself fails mid-read.
+ * cap, and `timeout` or `network` when the stream itself fails mid-read (the
+ * request's timeout signal also aborts the body).
  */
 export async function readBoundedResponse<Operation extends string>(
   response: Response,
@@ -101,8 +102,8 @@ export async function readBoundedResponse<Operation extends string>(
       let chunk: ReadableStreamReadResult<Uint8Array>;
       try {
         chunk = await reader.read();
-      } catch {
-        throw fail({ cause: 'network', operation });
+      } catch (error) {
+        throw fail({ cause: transportFailureCause(error), operation });
       }
       if (chunk.done) break;
       total += chunk.value.byteLength;
