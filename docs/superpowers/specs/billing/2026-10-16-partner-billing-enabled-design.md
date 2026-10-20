@@ -1,8 +1,8 @@
 # Partner billing toggle (`billingEnabled`) — Design Spec
 
-**Status:** Revised after second maintainer review (CHANGES_REQUESTED on PR #8916, 2026-10-18), with the corrections of the 2026-10-20 review. Awaiting re-review.
+**Status:** Revised for maintainer re-review. Factual corrections verified on `e274f6825` (2026-10-20); Q7/Q8 decided by @ToddHebebrand on 2026-10-20. Final spec approval is pending.
 **Discussion:** LanternOps/breeze#8807 ("Add a Native RMM + Ticketing Mode Without Billing").
-**Maintainer decisions:** Discussion #8807 comment (2026-10-15) and PR #8916 reviews by @ToddHebebrand (2026-10-17, 2026-10-18).
+**Maintainer decisions:** Discussion #8807 (2026-10-15); PR #8916 reviews (2026-10-17, 2026-10-18, 2026-10-20) and [Q7/Q8 decision](https://github.com/LanternOps/breeze/pull/8916#issuecomment-6302493661) (2026-10-20).
 
 ---
 
@@ -59,10 +59,18 @@ is out of scope (PR #8916, 2026-10-17).
 3.10. Turning billing off must not turn off staff's ability to stop autopay. The turn-off direction of
 `PATCH` on autopay stays open (PR #8916, 2026-10-18).
 
-3.11. Proposal, not a maintainer decision: customers can always stop autopay, even with billing off. Confirm in review.
+3.11. Customer `POST /autopay/stop` remains available with billing off; the 2026-10-20 review confirmed that this is the actual portal route, and Q8 keeps `autopay_stopped` notices.
 
 3.12. `tenantCascade` forced PSA un-wires must **not** change `billing_enabled`. Automatic re-enabling was ruled
 out (PR #8916, 2026-10-18, §9.2).
+
+3.13. Q7 (2026-10-20): skipped contract billing periods are persisted in a small org-scoped ledger with forced
+RLS, cascade/merge/export coverage, a unique (contract, period start) constraint, and **no automatic billing**
+from ledger rows. Manual resolution is flag + note only (§6.1).
+
+3.14. Q8 (2026-10-20): stop new money movement while Billing is off, keep existing obligations visible and
+communicated, and split safe state work from blocked customer messages. Renewal's absence of financial side
+effects must be **tested in the implementation PR**, not noted for later (§6 and §6.2).
 
 ## 4. Configuration (CLAUDE.md rule 9)
 
@@ -92,59 +100,99 @@ its DML, as the other data migrations in `apps/api/migrations/` do.
 
 5.6. A column, not a JSON field in `partners.settings`, because the gates and the job predicates query it.
 
+5.7. The separate, **org-scoped skipped-period ledger** approved in Q7 is specified in §6.1. Unlike the partner flag column, it requires its own RLS, organization cascade/merge/export registrations, and integration tests. Its SQL migration follows `apps/api/migrations/README.md` and `docs/agents/tenancy-rls.md`; no existing shipped migration is edited.
+
 ## 6. Scheduled jobs
 
-Gating happens **per partner inside each job's due-rows query**, the same way
-`buildAutomationEligibleOrgPredicate` does, not by stopping the whole job. Behaviour with `billing_enabled = false`:
+**Approved principle (Q8, 2026-10-20): no new money movement while billing is off; obligations that already
+exist stay visible and communicated.** Gate new billing work **per partner inside each job's due-rows query**,
+following `buildAutomationEligibleOrgPredicate`, rather than stopping a worker for all partners. Recheck the
+current flag at the service/side-effect boundary so work queued before disablement cannot create an invoice,
+send a new quote, or initiate a charge afterward. Keep reconciliation, previously issued invoice collection
+through public payment links, and existing-obligation notices available. Where a worker mixes bookkeeping and
+customer messages, split the effects; do not disable the entire worker. Behaviour with `billing_enabled = false`:
 
 | Job | Behaviour with billing off |
 |---|---|
 | `invoiceWorker` → `render-pdf` | **Keep.** PDFs of existing documents. |
 | `invoiceWorker` → `overdue-sweep` | **Keep.** Status of existing invoices. |
 | `contractWorker` → `billing-sweep`, billing step | **Stop.** No new contract periods are billed, invoiced or emailed. |
-| `contractWorker` → `billing-sweep`, renewal step | **Keep** (proposal). Contract lifecycle, creates no invoice. |
-| `contractWorker` → `billing-sweep`, hour-block close-out | **Keep** (proposal). Internal bookkeeping. |
-| `contractWorker` → `billing-sweep`, alerts | **Keep** (proposal). Internal alerts. |
+| `contractWorker` → `billing-sweep`, renewal step | **Keep only without financial side effects.** The implementation PR **must test** that renewal under billing-off never creates an invoice, a charge, or another billable output; this is an acceptance gate, not a later verification note. |
+| `contractWorker` → `billing-sweep`, hour-block close-out | **Keep only non-billing state work.** `runHourBlockCloseOutSweep` currently can call `createManualInvoice` for block-hour overage. The implementation must separate or defer that invoice-producing path while billing is off; do not silently mark work completed or create a draft invoice. |
+| `contractWorker` → `billing-sweep`, alerts | **Keep**, if the alert is internal and does not trigger financial work. |
 | `autopayWorker` → `collection-run` | **Stop.** No charges, including work already queued. |
 | `autopayWorker` → `control-reconcile` | **Keep.** Reconciles existing state. |
 | `autopayWorker` → `notice-dispatch`, per notice kind | See §6.2. |
 | `autopayWorker` → `notice-dispatch`, payment-method detaches | **Keep.** Drains detaches already requested. |
-| `autopayWorker` → `reminder-sweep` | **Keep** (proposal). Payment reminder and overdue emails for existing unpaid invoices (§3.8). |
-| `autopayWorker` → `card-expiry-check`, status update | **Keep** (proposal). Marks saved cards as expiring. |
-| `autopayWorker` → `card-expiry-check`, `card_expiring` notice | **Stop** (proposal). See §6.2. |
+| `autopayWorker` → `reminder-sweep` | **Keep.** `runInvoiceReminderSweep` sends `payment_reminder` / `payment_overdue` for already-issued unpaid invoices (§3.8). |
+| `autopayWorker` → `card-expiry-check` | **Stop** `card_expiring` notice creation (§6.2). Current `checkExpiringAutopayCards` checks dates and enqueues this notice; it has **no independent stored-card status update** to preserve. Any separately existing card-state maintenance remains available, not this send path. |
 | `quoteSendQueue` | **Stop.** Queued sends are not delivered. |
 | `quoteExpiryReaper` | **Keep.** Maintainer. |
 | `stripeReconcileSweep.ts` | **Keep.** Maintainer. |
 | Cleanup jobs | **Keep.** |
 
-Items marked "proposal" are our suggestions and need the maintainer's confirmation.
+**Decision trace:** the Keep/Stop policy and notice matrix were accepted by the maintainer in Q8. The
+`runHourBlockCloseOutSweep` draft-invoice path and `checkExpiringAutopayCards` behaviour above are confirmed
+from current code and constrain implementation to the accepted no-new-billing rule; they do not add product
+scope. Tests must prove mixed-effect workers preserve safe state changes without an invoice, charge or
+blocked notice.
 
-### 6.2 Notice kinds in `notice-dispatch` (per kind, with billing off)
+### 6.1 Re-enabling billing — skipped periods (Q1 and Q7, decided)
 
-Kinds from `apps/api/src/services/autopay/enrollmentNotices.ts` and `renderBillingNotice.ts`.
+A contract with `nextBillingAt` in the past is eligible for the next billing sweep when Billing is re-enabled.
+Simply turning the flag back on would allow old periods to be charged. **No automatic catch-up** is permitted:
+
+- On a partner transition from `billing_enabled = false` to `true`, capture the switch time `T`. Under the
+  existing contract billing-period arithmetic, identify only genuinely eligible skipped periods of active
+  contracts. Paused, cancelled or otherwise ineligible periods are **not** invented as billing obligations.
+- **Persist each eligible skipped period before advancing the contract pointer.** For an eligible contract with
+  `nextBillingAt` before `T`, advance it to the first contractual period boundary at or after `T`; the
+  ledger insertion and pointer update must be coordinated transactionally with the billing gate to prevent a
+  concurrent sweep from invoicing the backlog.
+- The skipped-period ledger is a **small persistent org-owned table**, not a view over mutable contracts.
+  Minimal stored facts: `contract_id`, `org_id`, `period_start`, `period_end`, the `billing_disabled`
+  reason and manual resolution as a **boolean flag and optional note**. The partner is derived through the
+  contract/organization relationship; no duplicate partner configuration or second billing engine.
+  Uniqueness is enforced on `(contract_id, period_start)` and period boundaries must be valid.
+- The creating migration provides **RLS enabled and forced**, org-access policies, and same-org referential
+  integrity to the contract. It registers the table in `CORE_ORG_CASCADE_DELETE_ORDER` (`services/tenantCascade.ts`),
+  `services/orgMergeRegistry.ts`, and `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts`) according to
+  `docs/agents/tenancy-rls.md`. Composite org FKs follow the project's
+  `DEFERRABLE INITIALLY IMMEDIATE` merge convention. The table is operational customer history, **not**
+  a partner-wide configuration table; the partner flag itself still needs no org-cascade registration (§5).
+- Show these records on the org Billing tab for **manual review and resolution** (flag + note only in this
+  delivery). A skipped-period record **never** generates an invoice, charge or autopay attempt, whether
+  unresolved, marked resolved, or later reprocessed. It is not an automatic or bulk catch-up queue.
+- Previously issued invoices remain payable and reconcilable after the switch (§3.8). Multiple enable/disable
+  cycles and retries must not duplicate ledger rows or revive skipped-period collections.
+
+The existing contract date/billing-period helpers are the source for period boundaries; do not derive history
+from the current `nextBillingAt` after it is advanced. This records the approved decision, not permission to
+add a new manual invoicing workflow or a second billing-period calculator.
+
+### 6.2 Notice kinds in `notice-dispatch` (Q8, decided)
+
+The maintainer accepted the per-kind matrix on 2026-10-20. The dispatcher stays running; check eligibility
+by notice kind and partner **before sending**, including notices queued before Billing was switched off.
+Existing obligations stay communicated, but an obsolete offer to initiate new billing must not be sent.
 
 | Notice kind | Behaviour with billing off |
 |---|---|
-| `payment_receipt` | **Keep.** Receipt for a payment already made. |
-| `payment_failed` | **Keep** (proposal). Outcome of a charge attempted before the switch. |
-| `autopay_stopped` | **Keep.** Tells the client that autopay stopped. |
-| `autopay_request` | **Stop** (proposal). New enrolment is blocked (§7.1). |
-| `autopay_enrolled` | **Keep** (proposal). Confirms an enrolment already completed. |
-| `autopay_paused`, `autopay_resumed` | **Keep** (proposal). Describes the state of existing autopay. |
-| `card_expiring` | **Stop** (proposal). Asks the client to update a card for autopay that is off. |
+| `payment_receipt` | **Keep.** Receipt for a completed payment. |
+| `payment_failed` | **Keep only for attempts initiated before disablement.** No new collection attempts. |
+| `autopay_stopped` | **Keep.** The customer must be able to stop autopay. |
+| `autopay_request` | **Stop.** No new enrollment requests. |
+| `autopay_enrolled` | **Keep for a previously completed enrollment.** |
+| `autopay_paused`, `autopay_resumed` | **Keep for valid existing-state changes.** |
+| `card_expiring` | **Stop.** Suppress the client-facing request to update a card for disabled autopay. |
 
-### 6.1 Re-enabling billing (proposal, needs confirmation)
-
-Contracts whose `nextBillingAt` is in the past would be billed on the next sweep. Without a rule, re-enabling
-could bill several periods at once. Proposed mechanism:
-
-- When `billing_enabled` changes from `false` to `true`, record the switch time `T`.
-- For each contract with `nextBillingAt < T`, advance `nextBillingAt` to the first period boundary at or after `T`.
-- Each skipped period is listed on the org Billing tab for the admin to bill manually. Nothing is billed automatically.
-- No autopay charge is created for a skipped period.
-- Invoices already issued before `T` remain collectable.
-
-Where the list is stored (derived from contracts, or a small table) is open: Q7.
+**Full-dispatcher coverage (implementation mapping, not an additional product decision):**
+`BILLING_NOTICE_KINDS` also includes `payment_reminder` and `payment_overdue` (keep for existing unpaid
+issued invoices, §6 `reminder-sweep`) and `invoice_autopay` (do not send a pre-charge notice for a new
+automatic charge that Billing-off now forbids). The implementation must cover every defined notice kind,
+including queued work, without silencing allowed reminders, receipts, failure outcomes or stop notices.
+Where a job mixes a safe internal state update with a blocked notice, preserve the state update and suppress
+only the notice.
 
 ## 7. Enforcement points
 
@@ -175,7 +223,7 @@ check. The list below is what the tests check (PR #8916, 2026-10-18).
 |---|---|---|
 | Public issued invoices (`invoicesPublic`) | view, `/pdf`, `/pay`, `/settle-return` | §3.8 |
 | Invoice reads and PDF (`invoices/payments.ts` GET, `invoices/pdf.ts`) | list, get, payments list, PDF | §3.8 |
-| Recording a payment (`invoices/payments.ts` POST, DELETE) | record and remove a payment on an issued invoice | Reconciliation of money already received (our proposal) |
+| Recording a payment (`invoices/payments.ts` POST, DELETE) | record and remove a payment on an issued invoice | Reconciliation of money already received; does not initiate a new automatic collection (§3.8) |
 | Stripe, QuickBooks, Xero webhooks | all | §3.8 |
 | Quote reads and PDF (`quotes/quotes.ts` GET), quote images and contract-file reads | reads | No new billing |
 | Quote decline (`quotesPublic` `/decline`, `decline-on-behalf`) | decline | Creates nothing |
@@ -225,32 +273,55 @@ Anchors in this spec use file and symbol names, not line numbers, because line n
 9.2. `tenantCascade.ts` forced PSA un-wires (merge and reset): **do not change `billing_enabled`**. Test that the
 flag is untouched in both paths (§3.12).
 
-## 10. Open questions
+## 10. Maintainer decision log — Q1–Q8 resolved
 
-Answered by the maintainer (PR #8916, 2026-10-18, second review). Recorded here for traceability:
+The choices below are **decisions**, not outstanding proposals. These Q1–Q8 are the **follow-up questions**
+from the 2026-10-18 review cycle, distinct from the four original questions answered on 2026-10-17 (§3).
+Q1–Q6 were answered in the 2026-10-18 review; Q7–Q8 were decided in the
+[2026-10-20 maintainer comment](https://github.com/LanternOps/breeze/pull/8916#issuecomment-6302493661).
 
-- Q1, catch-up: accepted as a manual list of missed periods, no bulk automatic billing on re-enable.
-- Q2, public quote acceptance: blocked while billing is off.
-- Q3, billing profiles: configuration, reads and writes open, same rule as templates.
-- Q4, Stripe Connect: open.
-- Q5, contract templates: editable.
-- Q6, autopay: keep customer `skip`, block `confirm`.
+| Decision | Maintainer answer | Contract |
+|---|---|---|
+| Q1 — Catch-up | Manual list; no automatic bulk billing of missed periods on re-enable | §6.1 |
+| Q2 — Public quote acceptance | Block while Billing is off | §7.1 |
+| Q3 — Billing profiles | Configuration reads and writes remain open | §7.2 |
+| Q4 — Stripe Connect | Keep connection management open | §7.2 |
+| Q5 — Contract templates | Remain editable | §7.2 |
+| Q6 — Customer autopay | Keep `skip`; block `confirm` | §7.1–§7.2 |
+| Q7 — Skipped-period storage | **Persistent org-scoped table**, not a derived view; forced RLS/policies, org cascade/merge/export registration, unique (contract, period start); manual resolution **flag + note**; ledger rows never invoice/charge/autopay | §§5.7, 6.1 |
+| Q8 — Jobs and notices | **Accepted** the §6 Keep/Stop proposal and §6.2 notice matrix; no new money movement, existing obligations still communicated; test renewal's lack of financial effects and split mixed worker effects | §§6, 6.2, 11 |
 
-Still open:
-
-- **Q7, re-enable list (§6.1):** store the skipped-period list as a derived view over contracts, or as a small table?
-- **Q8, job proposals (§6):** confirm the rows marked "proposal".
+**Implementation boundary:** the code-level split needed for a mixed worker (for example the draft-overage
+invoice path in `runHourBlockCloseOutSweep`) is a technical acceptance condition of Q8, **not** permission
+to introduce a new billing workflow. The spec is awaiting final maintainer approval before an implementation
+PR begins.
 
 ## 11. Testing
 
 - Nav gate and Sidebar: billing visible or hidden for each combination of mode and `billing_enabled`.
 - Routes and services: each blocked operation in §7 returns 404 with `billing_enabled = false` and succeeds with `true`.
   Each kept operation in §7.2 is unaffected in both states.
-- Jobs: each row in §6 behaves as stated in both states. Reconciliation and webhooks run in both states.
-- Migration: nullable → backfill → `DEFAULT`/`NOT NULL` order; backfill matches §5 for native, external and off, with
-  and without live billing; a re-run keeps an admin's changed value.
+- Jobs: each row in §6 behaves as specified under both states. Per-partner predicates do not stop unrelated
+  partners. Retries and pre-queued work recheck Billing before any invoice, quote send, charge or blocked notice.
+  Reconciliation, existing-invoice payment links and webhooks remain operational in both states.
+- **Q8 financial side-effect gate:** with Billing off, test that renewal produces **no new invoice, charge or
+  other financial side effect**, and that the hour-block close-out does **not** reach `createManualInvoice` or
+  mark a period closed as if its financial branch ran. Safe bookkeeping and permitted internal alerts still run.
+  Test `card-expiry-check` does not enqueue `card_expiring` even for an existing card; do not assert an
+  independent status update that the current function does not perform.
+- **Notice matrix:** test each §6.2 kind, including already queued and pre-disablement outcomes; keep
+  `payment_reminder`/`payment_overdue` for issued invoices, and prevent `invoice_autopay` from announcing a
+  charge suppressed by Billing-off. No silencing of receipts, eligible failures or stop messages.
+- Migration: nullable → backfill → `DEFAULT`/`NOT NULL` order; backfill matches §5 for native, external and off,
+  with and without live billing; a re-run keeps an admin's changed value.
+- **Q7 new table (real PostgreSQL):** RLS enabled + forced with cross-org read/write rejection as `breeze_app`;
+  same-org contract FK, period boundary and duplicate-period constraints; idempotent migration; required
+  `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts` and `CORE_TENANT_EXPORT_POLICY` coverage; full
+  delete, org merge and tenant export/erasure tests. Run the integration suites, not only API unit tests.
 - Cascades: forced PSA un-wires leave `billing_enabled` unchanged.
-- Re-enable: contracts with `nextBillingAt` in the past are advanced and listed, not billed (§6.1).
+- **Re-enable:** skipped periods of eligible contracts are recorded exactly once and the pointer is advanced
+  without automatically billing them; paused/cancelled periods do not become obligations. Test repeat toggles,
+  replays, concurrent sweep versus re-enable, and manual flag/note updates that never create charges.
 
 ## 12. Out of scope
 
@@ -258,3 +329,6 @@ Still open:
 - Per-organisation overrides.
 - Changes to the Service Desk gate or to ticket routing.
 - Bulk catch-up of missed billing periods.
+- Automatic invoicing, payment collection or autopay directly from skipped-period ledger rows.
+- A new manual skipped-period invoicing workflow; this delivery records and displays the history with a
+  resolution flag and note only (§6.1).
