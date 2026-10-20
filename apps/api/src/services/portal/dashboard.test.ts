@@ -232,5 +232,7 @@ describe('dashboardForOrg backup tile gate (#9351)', () => {
     const tile = { status: 'not_configured', completedAt: null, verificationType: null, configured: 0, total: 3, asOf: '2026-10-15T12:00:00.000Z' };
     const dto = await run(tile);
     expect(dto.backup).toEqual(tile);
+    // ETag hashes JSON.stringify (order-sensitive): backup keeps its slot.
+    expect(Object.keys(dto).indexOf('backup')).toBe(Object.keys(dto).indexOf('patchesApplied') + 1);
   });
 });

@@ -73,6 +73,10 @@ export async function dashboardForOrg(
     securityScore,
     devicesProtected,
     patchesApplied,
+    // Same rule for enable_backups (#9351): absent, not null. Kept in its
+    // original key position — the ETag hashes JSON.stringify, which is
+    // order-sensitive — so Backups-on orgs keep their exact ETag.
+    ...(backup ? { backup } : {}),
     support,
     actionItems,
     awaitingYou,
@@ -81,8 +85,5 @@ export async function dashboardForOrg(
     // had before this wave (routes/portal/dashboard.ts builds the validator
     // from the payload).
     ...(service ? { service } : {}),
-    // Same rule for enable_backups (#9351): absent, not null, so an org with
-    // Backups on keeps its exact payload and ETag.
-    ...(backup ? { backup } : {}),
   };
 }
