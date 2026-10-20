@@ -7,6 +7,7 @@ import DeliverableForm from '../deliverables/DeliverableForm';
 import DeliverableTable from '../deliverables/DeliverableTable';
 import OccurrenceDrawer from '../deliverables/OccurrenceDrawer';
 import ApplyTemplateModal from '../deliverables/ApplyTemplateModal';
+import { MoveHereDialog } from '../deliverables/MoveDeliverablesDialogs';
 import { Dialog } from '../shared/Dialog';
 
 interface Props {
@@ -26,6 +27,7 @@ export default function ContractDeliverablesSection({ contractId, orgId, contrac
   const { t } = useTranslation('deliverables');
   const [adding, setAdding] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
+  const [movingHere, setMovingHere] = useState(false);
   const [selected, setSelected] = useState<Deliverable | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((n) => n + 1);
@@ -35,6 +37,14 @@ export default function ContractDeliverablesSection({ contractId, orgId, contrac
       <div className="flex items-center justify-between border-b px-3 py-2">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('section.title')}</h3>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMovingHere(true)}
+            className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+            data-testid="contract-deliverables-move-here"
+          >
+            {t('move.hereAction')}
+          </button>
           <button
             type="button"
             onClick={() => setApplyingTemplate(true)}
@@ -86,6 +96,19 @@ export default function ContractDeliverablesSection({ contractId, orgId, contrac
           deliverable={selected}
           onClose={() => setSelected(null)}
           onChanged={refresh}
+        />
+      )}
+
+      {movingHere && (
+        <MoveHereDialog
+          fetcher={fetchWithAuth}
+          orgId={orgId}
+          targetContractId={contractId}
+          onClose={() => setMovingHere(false)}
+          onMoved={() => {
+            setMovingHere(false);
+            refresh();
+          }}
         />
       )}
 

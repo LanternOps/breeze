@@ -31,6 +31,7 @@ const serviceMocks = vi.hoisted(() => ({
   createDeliverable: vi.fn(),
   updateDeliverable: vi.fn(),
   deactivateDeliverable: vi.fn(),
+  moveDeliverables: vi.fn(),
   listOccurrences: vi.fn(),
   deliverOccurrence: vi.fn(),
   waiveOccurrence: vi.fn(),
@@ -61,7 +62,7 @@ import { serviceDeliverableRoutes } from './serviceDeliverables';
 const {
   listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable,
   listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence,
-  addEvidence, removeEvidence,
+  addEvidence, removeEvidence, moveDeliverables,
 } = serviceMocks;
 
 const ORG = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -112,6 +113,40 @@ describe('service deliverable routes (#5573 W01)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: DEL }] });
     expect(listDeliverables).toHaveBeenCalledWith(ORG, { contractId: DEL, includeInactive: true }, ACTOR);
+  });
+
+  describe('POST /:orgId/deliverables/move (#9302)', () => {
+    const body = { deliverableIds: [DEL], contractId: null };
+    it('401 unauthenticated', async () =>
+      expect((await app.request(`/${ORG}/deliverables/move`, { method: 'POST', body: JSON.stringify(body) })).status).toBe(401));
+    it('403 with read-only permission', async () => {
+      const res = await app.request(`/${ORG}/deliverables/move`, {
+        method: 'POST', headers: { ...NO_PERM, 'x-allow': 'contracts:read', 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(403);
+      expect(moveDeliverables).not.toHaveBeenCalled();
+    });
+    it('200 passes org, body and actor to the service (not captured by /:id)', async () => {
+      moveDeliverables.mockResolvedValue({ moved: 1 });
+      const res = await post(`/${ORG}/deliverables/move`, body);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: { moved: 1 } });
+      expect(moveDeliverables).toHaveBeenCalledWith(ORG, body, ACTOR);
+    });
+    it('400 on empty, oversized, or non-uuid id lists', async () => {
+      expect((await post(`/${ORG}/deliverables/move`, { deliverableIds: [], contractId: null })).status).toBe(400);
+      expect((await post(`/${ORG}/deliverables/move`, { deliverableIds: Array(201).fill(DEL), contractId: null })).status).toBe(400);
+      expect((await post(`/${ORG}/deliverables/move`, { deliverableIds: ['x'], contractId: null })).status).toBe(400);
+      expect(moveDeliverables).not.toHaveBeenCalled();
+    });
+    it('maps service errors (404 cross-org / 409 with names)', async () => {
+      moveDeliverables.mockRejectedValueOnce(Object.assign(new Error('Not found'), { status: 404, code: 'NOT_FOUND' }));
+      expect((await post(`/${ORG}/deliverables/move`, body)).status).toBe(404);
+      moveDeliverables.mockRejectedValueOnce(Object.assign(new Error('dup'), { status: 409, code: 'DUPLICATE_NAME', details: { names: ['A'] } }));
+      const res = await post(`/${ORG}/deliverables/move`, body);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'DUPLICATE_NAME', details: { names: ['A'] } });
+    });
   });
 
   it('GET one → 200 { data }', async () => {

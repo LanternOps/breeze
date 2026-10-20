@@ -1134,6 +1134,8 @@ export {
   waiveOccurrenceSchema,
   rescheduleOccurrenceSchema,
   listOccurrencesQuerySchema,
+  moveDeliverablesSchema,
+  type MoveDeliverablesInput,
   type CreateDeliverableInput,
   type UpdateDeliverableInput,
   type DeliverOccurrenceInput,

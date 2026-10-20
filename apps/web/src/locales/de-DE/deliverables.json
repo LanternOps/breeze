@@ -242,5 +242,19 @@
       "itemDeleted": "Leistung entfernt",
       "applied": "Vorlagenset angewendet"
     }
+  },
+  "move": {
+    "action": "Zu Vertrag verschieben…",
+    "toTitle": "Leistungen zu einem Vertrag verschieben",
+    "selected": "Ausgewählt: {{count}}",
+    "selectRow": "{{name}} auswählen",
+    "target": "Zielvertrag",
+    "confirm": "Verschieben",
+    "moved": "Leistungen verschoben",
+    "hereAction": "Leistungen hierher verschieben aus…",
+    "hereTitle": "Leistungen hierher verschieben",
+    "hereHelp": "Wählen Sie Leistungen aus den anderen Verträgen dieser Organisation aus, die auf diesen Vertrag verschoben werden sollen.",
+    "hereEmpty": "In dieser Organisation gibt es keine weiteren Leistungen.",
+    "collision": "Es wurde nichts verschoben. Diese Namen existieren bereits im Zielvertrag: {{names}}"
   }
 }

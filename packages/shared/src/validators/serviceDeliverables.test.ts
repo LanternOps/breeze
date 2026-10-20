@@ -3,6 +3,7 @@ import {
   addEvidenceSchema,
   createDeliverableSchema,
   deliverOccurrenceSchema,
+  moveDeliverablesSchema,
   rescheduleOccurrenceSchema,
   updateDeliverableSchema,
 } from './serviceDeliverables';
@@ -76,5 +77,19 @@ describe('serviceDeliverables validators', () => {
     expect(createDeliverableSchema.safeParse({ ...base, checklistTemplateId: 'nope' }).success).toBe(false);
     expect(updateDeliverableSchema.safeParse({ checklistTemplateId: 'nope' }).success).toBe(false);
     expect(createDeliverableSchema.safeParse({ ...base, instructions: 'x'.repeat(10001) }).success).toBe(false);
+  });
+});
+
+describe('moveDeliverablesSchema (#9302)', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  it('accepts 1..200 ids with a contract id or null', () => {
+    expect(moveDeliverablesSchema.safeParse({ deliverableIds: [id], contractId: id }).success).toBe(true);
+    expect(moveDeliverablesSchema.safeParse({ deliverableIds: Array(200).fill(id), contractId: null }).success).toBe(true);
+  });
+  it('rejects empty, oversized, non-uuid, and missing contractId', () => {
+    expect(moveDeliverablesSchema.safeParse({ deliverableIds: [], contractId: null }).success).toBe(false);
+    expect(moveDeliverablesSchema.safeParse({ deliverableIds: Array(201).fill(id), contractId: null }).success).toBe(false);
+    expect(moveDeliverablesSchema.safeParse({ deliverableIds: ['x'], contractId: null }).success).toBe(false);
+    expect(moveDeliverablesSchema.safeParse({ deliverableIds: [id] }).success).toBe(false);
   });
 });

@@ -14,7 +14,7 @@ import { ticketChecklistItems, ticketChecklistTemplateItems } from '../db/schema
 import { checklistCountsForTickets } from './ticketChecklistService';
 import { ticketComments } from '../db/schema/portal';
 import type {
-  CreateDeliverableInput, UpdateDeliverableInput, DeliverOccurrenceInput, WaiveOccurrenceInput,
+  CreateDeliverableInput, UpdateDeliverableInput, MoveDeliverablesInput, DeliverOccurrenceInput, WaiveOccurrenceInput,
   RescheduleOccurrenceInput, EvidenceRef,
 } from '@breeze/shared';
 import { transition, InvalidTransitionError, type OccurrenceStatus } from './serviceDeliverableState';
@@ -187,9 +187,13 @@ type RefInput = Pick<UpdateDeliverableInput, 'contractId' | 'ownerUserId' | 'tic
  *  reference never re-validates it (and a null clears it without a lookup). */
 async function validateReferences(orgId: string, input: RefInput, executor: DbExecutor = db): Promise<void> {
   if (input.contractId != null) {
-    const [c] = await executor.select({ id: contracts.id }).from(contracts)
+    const [c] = await executor.select({ id: contracts.id, status: contracts.status }).from(contracts)
       .where(and(eq(contracts.id, input.contractId), eq(contracts.orgId, orgId))).limit(1);
     if (!c) throw new DeliverableServiceError('Contract does not belong to this organization', 400, 'CONTRACT_NOT_IN_ORG');
+    // #9302. Cancelling a contract end-dates its deliverables
+    // (applyContractCancelledToDeliverables); attaching one afterwards would
+    // resurrect work against a dead contract.
+    if (c.status === 'cancelled') throw new DeliverableServiceError('Deliverables cannot be assigned to a cancelled contract', 400, 'CONTRACT_NOT_ASSIGNABLE');
   }
   if (input.ownerUserId != null || input.ticketCategoryId != null || input.checklistTemplateId != null) {
     const [org] = await executor.select({ partnerId: organizations.partnerId }).from(organizations)
@@ -360,6 +364,59 @@ export async function updateDeliverable(orgId: string, id: string, patch: Update
   }
   if (!row) throw notFound();
   return loadWrittenSummary(orgId, row.id);
+}
+
+/**
+ * #9302 bulk move. All-or-nothing: every id must belong to `orgId` (else 404,
+ * nothing changes), and any name collision in the target — against its
+ * existing deliverables or between the moved ones — fails the whole batch with
+ * 409 `details.names`. Only `service_deliverables.contract_id` is written;
+ * occurrences and evidence are history and stay untouched.
+ */
+export async function moveDeliverables(
+  orgId: string, input: MoveDeliverablesInput, actor: DeliverableActor,
+): Promise<{ moved: number }> {
+  requireOrgAccess(actor, orgId);
+  const ids = [...new Set(input.deliverableIds)];
+  const targetId = input.contractId;
+  await validateReferences(orgId, { contractId: targetId });
+  let movedCount = 0;
+  try {
+    // Savepoint: see assertNameAvailable — keeps a 23505 from poisoning the request transaction.
+    await db.transaction(async (tx) => {
+      const found = await tx.select({ id: serviceDeliverables.id, name: serviceDeliverables.name })
+        .from(serviceDeliverables)
+        .where(and(eq(serviceDeliverables.orgId, orgId), inArray(serviceDeliverables.id, ids)));
+      if (found.length !== ids.length) throw notFound();
+
+      const seen = new Set<string>();
+      const colliding = new Set<string>();
+      for (const r of found) { if (seen.has(r.name)) colliding.add(r.name); seen.add(r.name); }
+      const existing = await tx.select({ name: serviceDeliverables.name }).from(serviceDeliverables)
+        .where(and(
+          eq(serviceDeliverables.orgId, orgId),
+          targetId === null ? isNull(serviceDeliverables.contractId) : eq(serviceDeliverables.contractId, targetId),
+          inArray(serviceDeliverables.name, [...seen]),
+          sql`${serviceDeliverables.id} NOT IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})`,
+        ));
+      for (const e of existing) colliding.add(e.name);
+      if (colliding.size > 0) {
+        throw new DeliverableServiceError(
+          'A deliverable with this name already exists for the target contract', 409, 'DUPLICATE_NAME',
+          { names: [...colliding].sort() },
+        );
+      }
+
+      const updated = await tx.update(serviceDeliverables)
+        .set({ contractId: targetId, updatedAt: new Date() })
+        .where(and(eq(serviceDeliverables.orgId, orgId), inArray(serviceDeliverables.id, ids)))
+        .returning({ id: serviceDeliverables.id });
+      movedCount = updated.length;
+    });
+  } catch (err) {
+    mapUniqueViolation(err);
+  }
+  return { moved: movedCount };
 }
 
 export async function deactivateDeliverable(orgId: string, id: string, actor: DeliverableActor): Promise<void> {

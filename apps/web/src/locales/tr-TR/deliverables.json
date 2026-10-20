@@ -242,5 +242,19 @@
       "itemDeleted": "Çıktı kaldırıldı",
       "applied": "Şablon seti uygulandı"
     }
+  },
+  "move": {
+    "action": "Sözleşmeye taşı…",
+    "toTitle": "Teslimatları bir sözleşmeye taşı",
+    "selected": "Seçilen: {{count}}",
+    "selectRow": "{{name}} öğesini seç",
+    "target": "Hedef sözleşme",
+    "confirm": "Taşı",
+    "moved": "Teslimatlar taşındı",
+    "hereAction": "Teslimatları buraya taşı…",
+    "hereTitle": "Teslimatları buraya taşı",
+    "hereHelp": "Bu kuruluşun diğer sözleşmelerinden, bu sözleşmeye taşınacak teslimatları seçin.",
+    "hereEmpty": "Bu kuruluşta başka teslimat yok.",
+    "collision": "Hiçbir şey taşınmadı. Bu adlar hedef sözleşmede zaten var: {{names}}"
   }
 }

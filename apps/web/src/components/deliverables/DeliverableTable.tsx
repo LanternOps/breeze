@@ -13,6 +13,8 @@ import { handleActionError } from '../../lib/runAction';
 import { formatDate } from '../billing/shared/format';
 import { Dialog } from '../shared/Dialog';
 import DeliverableForm from './DeliverableForm';
+import { MoveToContractDialog } from './MoveDeliverablesDialogs';
+import { useContractOptions } from './useContractOptions';
 import { runClientAction } from '../../lib/runClientAction';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -27,6 +29,8 @@ export interface DeliverableTableProps {
   groupByContract?: boolean;
   /** Bump to force a reload (e.g. after the parent's Add form saved). */
   refreshKey?: number;
+  /** Row checkboxes + a "Move to contract…" bulk action (#9302). */
+  selectable?: boolean;
 }
 
 const STATUS_PILL: Record<DeliverableStatus, string> = {
@@ -69,6 +73,7 @@ export default function DeliverableTable({
   onSelect,
   groupByContract = false,
   refreshKey = 0,
+  selectable = false,
 }: DeliverableTableProps) {
   const { t } = useTranslation('deliverables');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
@@ -79,6 +84,10 @@ export default function DeliverableTable({
   const [editing, setEditing] = useState<Deliverable | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [moving, setMoving] = useState(false);
+  // Contract options are only needed once the edit dialog is open (#9302).
+  const contractChoices = useContractOptions(fetcher, orgId, editing !== null);
 
   const reload = useCallback(() => setReloadTick((n) => n + 1), []);
 
@@ -136,6 +145,14 @@ export default function DeliverableTable({
     }
   };
 
+  const toggleSelected = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
   const groups = groupRows(rows, groupByContract);
 
   return (
@@ -154,9 +171,23 @@ export default function DeliverableTable({
         </div>
       ) : (
         <div className="overflow-x-auto">
+          {selectable && selectedIds.size > 0 && (
+            <div className="flex items-center gap-3 border-b bg-muted/40 px-3 py-2 text-sm" data-testid="deliverables-bulk-bar">
+              <span>{t('move.selected', { count: selectedIds.size })}</span>
+              <button
+                type="button"
+                onClick={() => setMoving(true)}
+                className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                data-testid="deliverables-move-open"
+              >
+                {t('move.action')}
+              </button>
+            </div>
+          )}
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+                {selectable && <th className="w-8 px-3 py-2" />}
                 <th className="px-3 py-2 font-medium">{t('table.name')}</th>
                 <th className="px-3 py-2 font-medium">{t('table.cadence')}</th>
                 <th className="px-3 py-2 font-medium">{t('table.nextDue')}</th>
@@ -172,6 +203,9 @@ export default function DeliverableTable({
                   key={group.key}
                   group={group}
                   showHeading={groupByContract}
+                  selectable={selectable}
+                  selectedIds={selectedIds}
+                  onToggleSelected={toggleSelected}
                   busyId={busyId}
                   confirmingId={confirmingId}
                   onSelect={onSelect}
@@ -199,7 +233,9 @@ export default function DeliverableTable({
             <DeliverableForm
               fetcher={fetcher}
               orgId={orgId}
-              contractId={contractId ?? editing.contractId}
+              contractId={contractId}
+              contractOptions={contractChoices.options}
+              contractsState={contractChoices.state === 'ready' ? undefined : contractChoices.state}
               initial={editing}
               onSaved={(saved) => {
                 replaceRow(saved);
@@ -211,6 +247,20 @@ export default function DeliverableTable({
           </>
         )}
       </Dialog>
+
+      {moving && (
+        <MoveToContractDialog
+          fetcher={fetcher}
+          orgId={orgId}
+          deliverableIds={[...selectedIds]}
+          onClose={() => setMoving(false)}
+          onMoved={() => {
+            setMoving(false);
+            setSelectedIds(new Set());
+            reload();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -218,6 +268,9 @@ export default function DeliverableTable({
 interface GroupRowsProps {
   group: Group;
   showHeading: boolean;
+  selectable: boolean;
+  selectedIds: Set<string>;
+  onToggleSelected: (id: string) => void;
   busyId: string | null;
   confirmingId: string | null;
   onSelect?: (d: Deliverable) => void;
@@ -230,6 +283,9 @@ interface GroupRowsProps {
 function GroupRows({
   group,
   showHeading,
+  selectable,
+  selectedIds,
+  onToggleSelected,
   busyId,
   confirmingId,
   onSelect,
@@ -243,7 +299,7 @@ function GroupRows({
     <>
       {showHeading && (
         <tr className="border-t bg-muted/40" data-testid={`deliverable-group-${group.key}`}>
-          <th colSpan={7} scope="rowgroup" className="px-3 py-1.5 text-left text-xs font-semibold text-muted-foreground">
+          <th colSpan={selectable ? 8 : 7} scope="rowgroup" className="px-3 py-1.5 text-left text-xs font-semibold text-muted-foreground">
             {group.label ?? t('group.noContract')}
           </th>
         </tr>
@@ -253,6 +309,17 @@ function GroupRows({
         const confirming = confirmingId === row.id;
         return (
           <tr key={row.id} className="border-t align-top" data-testid={`deliverable-row-${row.id}`}>
+            {selectable && (
+              <td className="px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(row.id)}
+                  onChange={() => onToggleSelected(row.id)}
+                  aria-label={t('move.selectRow', { name: row.name })}
+                  data-testid={`deliverable-select-${row.id}`}
+                />
+              </td>
+            )}
             <td className="px-3 py-2">
               <button
                 type="button"

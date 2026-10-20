@@ -2,6 +2,7 @@
  * Service deliverable routes (#5573 W01), mounted at `/orgs`:
  *
  *   /orgs/:orgId/deliverables[/:id[/occurrences]]
+ *   /orgs/:orgId/deliverables/move
  *   /orgs/:orgId/deliverables/occurrences/:oId/{deliver,waive,reopen,reschedule,evidence[/:eId]}
  *
  * A sibling `/orgs` router in the orgSummary / orgArchive style: it owns its
@@ -23,10 +24,10 @@ import {
   applyTemplateSetSchema,
   createDeliverableSchema, updateDeliverableSchema, listDeliverablesQuerySchema,
   deliverOccurrenceSchema, waiveOccurrenceSchema, rescheduleOccurrenceSchema,
-  addEvidenceSchema, listOccurrencesQuerySchema,
+  addEvidenceSchema, listOccurrencesQuerySchema, moveDeliverablesSchema,
 } from '@breeze/shared';
 import {
-  listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable,
+  listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable, moveDeliverables,
   listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence,
   addEvidence, removeEvidence, getOccurrenceOr404,
   type DeliverableActor,
@@ -233,6 +234,19 @@ serviceDeliverableRoutes.post(
         ),
       });
     } catch (err) { return handleTemplateError(c, err); }
+  },
+);
+
+// ── Bulk move onto another contract (#9302; literal segment — MUST precede `/:id`) ──
+
+serviceDeliverableRoutes.post(
+  '/:orgId/deliverables/move',
+  scopes, writePerm,
+  zValidator('param', orgParam), zValidator('json', moveDeliverablesSchema),
+  async (c) => {
+    try {
+      return c.json({ data: await moveDeliverables(c.req.valid('param').orgId, c.req.valid('json'), deliverableActorFrom(c)) });
+    } catch (err) { return handleDeliverableError(c, err); }
   },
 );
 

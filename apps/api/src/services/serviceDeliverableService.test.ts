@@ -53,7 +53,7 @@ import { db } from '../db';
 import {
   addEvidence, createDeliverable, deactivateDeliverable, deliverOccurrence, getDeliverable, listOccurrences,
   materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange, markDueOccurrencesMissedForDeliverable,
-  openDueOccurrencesForDeliverable, periodLabel, applyContractCancelledToDeliverables,
+  openDueOccurrencesForDeliverable, periodLabel, applyContractCancelledToDeliverables, moveDeliverables,
   removeEvidence, reopenOccurrence, rescheduleOccurrence, summarizeStatus, updateDeliverable, waiveOccurrence,
   DeliverableServiceError, getOccurrenceOr404,
 } from './serviceDeliverableService';
@@ -142,6 +142,13 @@ describe('serviceDeliverableService', () => {
       queueResult([]); // contract lookup returns nothing
       await expect(createDeliverable('org1', { ...base, contractId: CONTRACT_ID }, actor))
         .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
+    });
+
+    it('rejects a cancelled contract on create (CONTRACT_NOT_ASSIGNABLE)', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'cancelled' }]);
+      await expect(createDeliverable('org1', { ...base, contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_ASSIGNABLE' });
       expect(chain.insert.mock.calls).toHaveLength(0);
     });
 
@@ -283,6 +290,22 @@ describe('serviceDeliverableService', () => {
       expect(out).toMatchObject({ contractId: CONTRACT_ID, contractName: 'Managed Services', status: 'missed', nextDue: '2020-01-01', openCount: 1 });
     });
 
+    it('rejects moving onto a cancelled contract (CONTRACT_NOT_ASSIGNABLE)', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]);
+      queueResult([{ id: CONTRACT_ID, status: 'cancelled' }]);
+      await expect(updateDeliverable('org1', 'd1', { contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_ASSIGNABLE' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('rejects moving onto a contract in another org (CONTRACT_NOT_IN_ORG)', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]);
+      queueResult([]);
+      await expect(updateDeliverable('org1', 'd1', { contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
     it('a PATCH that deactivates still resolves the summary (includeInactive) and reports inactive', async () => {
       queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]); // existing
       queueResult([{ id: 'd1' }]); // update returning
@@ -310,6 +333,86 @@ describe('serviceDeliverableService', () => {
       queueResult([]); // pre-check clear
       queueError({ code: '23505' });
       await expect(updateDeliverable('org1', 'd1', { name: 'dup' }, actor)).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
+    });
+  });
+
+  describe('moveDeliverables (#9302)', () => {
+    const ID1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+    const ID2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+    const rows = [{ id: ID1, name: 'Backups' }, { id: ID2, name: 'Patching' }];
+
+    it('moves every deliverable in one UPDATE and touches nothing else', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'draft' }]); // target contract
+      queueResult(rows); // deliverables in org
+      queueResult([]); // no name collision in target
+      queueResult([{ id: ID1 }, { id: ID2 }]); // update returning
+      const out = await moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor);
+      expect(out).toEqual({ moved: 2 });
+      expect(chain.transaction.mock.calls).toHaveLength(1);
+      expect(chain.update.mock.calls).toHaveLength(1);
+      expect(lastSet()).toMatchObject({ contractId: CONTRACT_ID });
+      expect(lastSet().updatedAt).toBeInstanceOf(Date);
+      // occurrences/evidence are history — only the deliverable rows are written
+      expect(Object.keys(lastSet()).sort()).toEqual(['contractId', 'updatedAt']);
+    });
+
+    it('moves to "no contract" (null) without a contract lookup', async () => {
+      queueResult(rows);
+      queueResult([]);
+      queueResult([{ id: ID1 }, { id: ID2 }]);
+      await moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: null }, actor);
+      expect(lastSet()).toMatchObject({ contractId: null });
+    });
+
+    it('404s and writes nothing when any id is outside the org', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult([rows[0]]); // only one of two found in org
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('404s an actor without access to the org', async () => {
+      await expect(moveDeliverables('org2', { deliverableIds: [ID1], contractId: null }, actor))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.select.mock.calls).toHaveLength(0);
+    });
+
+    it('409s listing the colliding names and writes nothing', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult(rows);
+      queueResult([{ name: 'Patching' }]); // target already has Patching
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME', details: { names: ['Patching'] } });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('409s when two moved deliverables share a name', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult([{ id: ID1, name: 'Backups' }, { id: ID2, name: 'Backups' }]);
+      queueResult([]);
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME', details: { names: ['Backups'] } });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('maps a concurrent 23505 to 409 DUPLICATE_NAME', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult(rows);
+      queueResult([]);
+      queueError({ code: '23505' });
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
+    });
+
+    it('rejects a cancelled target and a foreign-org target', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'cancelled' }]);
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_ASSIGNABLE' });
+      queueResult([]);
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
+      expect(chain.update.mock.calls).toHaveLength(0);
     });
   });
 

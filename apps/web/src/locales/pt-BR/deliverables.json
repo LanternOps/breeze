@@ -242,5 +242,19 @@
       "itemDeleted": "Entrega removida",
       "applied": "Conjunto de modelos aplicado"
     }
+  },
+  "move": {
+    "action": "Mover para contrato…",
+    "toTitle": "Mover entregáveis para um contrato",
+    "selected": "Selecionados: {{count}}",
+    "selectRow": "Selecionar {{name}}",
+    "target": "Contrato de destino",
+    "confirm": "Mover",
+    "moved": "Entregáveis movidos",
+    "hereAction": "Mover entregáveis para cá de…",
+    "hereTitle": "Mover entregáveis para cá",
+    "hereHelp": "Escolha entregáveis dos outros contratos desta organização para movê-los para este.",
+    "hereEmpty": "Não há outros entregáveis nesta organização.",
+    "collision": "Nada foi movido. Estes nomes já existem no contrato de destino: {{names}}"
   }
 }

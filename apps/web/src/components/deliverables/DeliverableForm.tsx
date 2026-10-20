@@ -174,8 +174,16 @@ export default function DeliverableForm({
   }, [fetcher]);
 
   // The picker is always offered when no contract is pinned — an empty list
-  // still lets the user confirm "not tied to a contract" deliberately.
-  const showContractPicker = !fixedContractId;
+  // still lets the user confirm "not tied to a contract" deliberately. When
+  // EDITING it is offered even if the table pinned a contract (#9302): the pin
+  // only fixes where a NEW deliverable lands; an existing one must be movable.
+  const showContractPicker = isEdit || !fixedContractId;
+  // The current contract stays selectable even if the caller's list omits it
+  // (e.g. paused/expired), so opening the dialog never silently re-files the row.
+  const pickerOptions = [...(contractOptions ?? [])];
+  if (initial?.contractId && !pickerOptions.some((c) => c.id === initial.contractId)) {
+    pickerOptions.push({ id: initial.contractId, name: initial.contractName ?? initial.contractId });
+  }
   const contractsFailed = showContractPicker && contractsState === 'failed';
   const contractsLoading = showContractPicker && contractsState === 'loading';
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
@@ -230,8 +238,8 @@ export default function DeliverableForm({
   }, [fetcher, orgId]);
 
   const resolvedContractId = (): string | null | undefined => {
-    if (fixedContractId) return fixedContractId;
     if (showContractPicker) return form.contractId || null;
+    if (fixedContractId) return fixedContractId;
     return isEdit ? undefined : null;
   };
 
@@ -329,7 +337,7 @@ export default function DeliverableForm({
             data-testid="deliverable-form-contract"
           >
             <option value="">{t('form.noContract')}</option>
-            {contractOptions?.map((c) => (
+            {pickerOptions.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>

@@ -242,5 +242,19 @@
       "itemDeleted": "Entregable eliminado",
       "applied": "Conjunto de plantillas aplicado"
     }
+  },
+  "move": {
+    "action": "Mover a contrato…",
+    "toTitle": "Mover entregables a un contrato",
+    "selected": "Seleccionados: {{count}}",
+    "selectRow": "Seleccionar {{name}}",
+    "target": "Contrato de destino",
+    "confirm": "Mover",
+    "moved": "Entregables movidos",
+    "hereAction": "Mover entregables aquí desde…",
+    "hereTitle": "Mover entregables aquí",
+    "hereHelp": "Elija entregables de los otros contratos de esta organización para moverlos a este.",
+    "hereEmpty": "No hay otros entregables en esta organización.",
+    "collision": "No se movió nada. Estos nombres ya existen en el contrato de destino: {{names}}"
   }
 }

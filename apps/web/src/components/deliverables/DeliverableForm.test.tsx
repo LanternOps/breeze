@@ -144,6 +144,45 @@ describe('DeliverableForm effectiveFrom default (#9308)', () => {
   });
 });
 
+describe('DeliverableForm edit-mode contract move (#9302)', () => {
+  const editing: Deliverable = { ...saved, id: 'd-1', contractId: 'ct-1' };
+  const MOVE_OPTIONS = [{ id: 'ct-1', name: 'Acme MSA' }, { id: 'ct-2', name: 'Acme Onboarding' }];
+
+  it('shows the picker preselected to the current contract even when a contract is pinned', () => {
+    render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" contractOptions={MOVE_OPTIONS}
+        initial={editing} onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    const picker = screen.getByTestId('deliverable-form-contract') as HTMLSelectElement;
+    expect(picker.value).toBe('ct-1');
+    expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'ct-1', 'ct-2']);
+  });
+
+  it('keeps the current contract selectable when it is missing from the options', () => {
+    render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[]} initial={editing}
+        onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    const picker = screen.getByTestId('deliverable-form-contract') as HTMLSelectElement;
+    expect(picker.value).toBe('ct-1');
+    expect(picker.options[picker.selectedIndex].textContent).toBe('Acme MSA');
+  });
+
+  it('PATCHes the newly chosen contract id', async () => {
+    const fetcher = makeFetcher();
+    render(
+      <DeliverableForm fetcher={fetcher} orgId="org-1" contractOptions={MOVE_OPTIONS} initial={editing}
+        onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByTestId('deliverable-form-contract'), { target: { value: 'ct-2' } });
+    fireEvent.click(screen.getByTestId('deliverable-form-save'));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const [path, init] = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH') as unknown as [string, RequestInit];
+    expect(path).toBe('/orgs/org-1/deliverables/d-1');
+    expect(JSON.parse(String(init.body))).toMatchObject({ contractId: 'ct-2' });
+  });
+});
+
 describe('DeliverableForm auto-evidence report picker', () => {
   it('renders the evidence report picker bound to empty when None', () => {
     render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[]} onSaved={vi.fn()} onCancel={vi.fn()} />);

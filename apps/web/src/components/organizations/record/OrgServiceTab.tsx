@@ -215,6 +215,7 @@ export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgF
         fetcher={orgFetch}
         orgId={orgId}
         groupByContract
+        selectable
         onSelect={setSelected}
         refreshKey={refreshKey}
       />

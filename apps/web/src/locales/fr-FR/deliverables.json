@@ -242,5 +242,19 @@
       "itemDeleted": "Livrable retiré",
       "applied": "Ensemble de modèles appliqué"
     }
+  },
+  "move": {
+    "action": "Déplacer vers un contrat…",
+    "toTitle": "Déplacer des livrables vers un contrat",
+    "selected": "Sélectionnés : {{count}}",
+    "selectRow": "Sélectionner {{name}}",
+    "target": "Contrat cible",
+    "confirm": "Déplacer",
+    "moved": "Livrables déplacés",
+    "hereAction": "Déplacer ici des livrables depuis…",
+    "hereTitle": "Déplacer des livrables ici",
+    "hereHelp": "Choisissez des livrables parmi les autres contrats de cette organisation pour les déplacer vers celui-ci.",
+    "hereEmpty": "Il n'y a aucun autre livrable dans cette organisation.",
+    "collision": "Rien n'a été déplacé. Ces noms existent déjà dans le contrat cible : {{names}}"
   }
 }

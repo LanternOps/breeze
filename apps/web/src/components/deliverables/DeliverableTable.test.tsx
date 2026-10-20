@@ -62,6 +62,9 @@ function makeFetcher(rows: Deliverable[]) {
   return vi.fn(async (path: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     if (method === 'GET' && path.startsWith('/orgs/org-1/deliverables')) return jsonResp(200, { data: rows });
+    if (method === 'GET' && path.startsWith('/contracts')) {
+      return jsonResp(200, { data: [{ id: 'ct-1', name: 'Acme MSA', status: 'active' }, { id: 'ct-2', name: 'Acme Onboarding', status: 'draft' }, { id: 'ct-x', name: 'Old', status: 'cancelled' }] });
+    }
     if (method === 'DELETE') return jsonResp(204, {});
     if (method === 'PATCH') {
       // The API answers PATCH/POST with the full summary shape (`Deliverable`),

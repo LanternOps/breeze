@@ -242,5 +242,19 @@
       "itemDeleted": "Deliverable rimosso",
       "applied": "Set di modelli applicato"
     }
+  },
+  "move": {
+    "action": "Sposta in un contratto…",
+    "toTitle": "Sposta i deliverable in un contratto",
+    "selected": "Selezionati: {{count}}",
+    "selectRow": "Seleziona {{name}}",
+    "target": "Contratto di destinazione",
+    "confirm": "Sposta",
+    "moved": "Deliverable spostati",
+    "hereAction": "Sposta qui i deliverable da…",
+    "hereTitle": "Sposta qui i deliverable",
+    "hereHelp": "Scegli i deliverable degli altri contratti di questa organizzazione da spostare su questo.",
+    "hereEmpty": "Non ci sono altri deliverable in questa organizzazione.",
+    "collision": "Non è stato spostato nulla. Questi nomi esistono già nel contratto di destinazione: {{names}}"
   }
 }

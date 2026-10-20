@@ -87,6 +87,12 @@ export const documentEvidenceRefSchema = z.object({
 export const evidenceRefSchema = z.discriminatedUnion('kind', [reportRunEvidenceRefSchema, documentEvidenceRefSchema]);
 export const addEvidenceSchema = evidenceRefSchema;
 
+// #9302. Bulk move of deliverables onto another contract (null = standalone).
+export const moveDeliverablesSchema = z.object({
+  deliverableIds: z.array(z.string().guid()).min(1).max(200),
+  contractId: z.string().guid().nullable(),
+});
+
 export const deliverOccurrenceSchema = z.object({
   note: z.string().max(4000).optional(),
   evidence: z.array(evidenceRefSchema).max(20).optional(),
@@ -99,6 +105,7 @@ export const listOccurrencesQuerySchema = z.object({
 
 export type CreateDeliverableInput = z.infer<typeof createDeliverableSchema>;
 export type UpdateDeliverableInput = z.infer<typeof updateDeliverableSchema>;
+export type MoveDeliverablesInput = z.infer<typeof moveDeliverablesSchema>;
 export type DeliverOccurrenceInput = z.infer<typeof deliverOccurrenceSchema>;
 export type WaiveOccurrenceInput = z.infer<typeof waiveOccurrenceSchema>;
 export type RescheduleOccurrenceInput = z.infer<typeof rescheduleOccurrenceSchema>;
