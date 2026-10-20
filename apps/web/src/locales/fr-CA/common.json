@@ -873,7 +873,10 @@
         "invoice": "Nouvelle facture",
         "contract": "Nouveau contrat",
         "script": "Nouveau script"
-      }
+      },
+      "charKeysOn": "Les raccourcis à touche unique sont activés.",
+      "charKeysOff": "Les raccourcis à touche unique sont désactivés. Seuls les raccourcis Ctrl/Cmd fonctionnent.",
+      "charKeysManage": "Modifier dans les paramètres du profil"
     }
   },
   "migrationBanner": {

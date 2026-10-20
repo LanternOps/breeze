@@ -873,7 +873,10 @@
         "invoice": "Nova fatura",
         "contract": "Novo contrato",
         "script": "Novo script"
-      }
+      },
+      "charKeysOn": "Os atalhos de tecla única estão ativados.",
+      "charKeysOff": "Os atalhos de tecla única estão desativados. Apenas atalhos com Ctrl/Cmd funcionam.",
+      "charKeysManage": "Alterar nas configurações do perfil"
     }
   },
   "migrationBanner": {

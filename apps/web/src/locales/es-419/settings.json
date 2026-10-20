@@ -6866,5 +6866,13 @@
     "loadFailed": "No se pudieron cargar las preferencias de correo.",
     "saveFailed": "No se pudieron guardar las preferencias de correo.",
     "retry": "Reintentar"
+  },
+  "characterKeyShortcuts": {
+    "title": "Atajos de una sola tecla",
+    "description": "Atajos de una sola tecla como g y luego d, c y luego c, /, ? y las teclas de la cola de tickets. Desactívalos si entran en conflicto con un lector de pantalla o la entrada por voz. Ctrl/Cmd+K no se ve afectado.",
+    "label": "Activar los atajos de una sola tecla",
+    "enabledToast": "Atajos de una sola tecla activados",
+    "disabledToast": "Atajos de una sola tecla desactivados",
+    "saveFailed": "No se pudieron guardar los atajos de una sola tecla."
   }
 }

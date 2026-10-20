@@ -894,6 +894,9 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
       if (validationError) {
         return c.json({ error: validationError }, 400);
       }
+      if ('characterKeyShortcuts' in prefs && typeof prefs.characterKeyShortcuts !== 'boolean') {
+        return c.json({ error: 'Invalid characterKeyShortcuts value. Must be true or false.' }, 400);
+      }
       const mergedPreferences = {
         ...(isPreferenceRecord(self.preferences) ? self.preferences : {}),
         ...prefs

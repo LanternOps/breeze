@@ -6866,5 +6866,13 @@
     "loadFailed": "E-Mail-Einstellungen konnten nicht geladen werden.",
     "saveFailed": "E-Mail-Einstellungen konnten nicht gespeichert werden.",
     "retry": "Erneut versuchen"
+  },
+  "characterKeyShortcuts": {
+    "title": "Einzeltasten-Kürzel",
+    "description": "Kürzel mit einer einzelnen Taste wie g dann d, c dann c, /, ? und die Tasten der Ticketwarteschlange. Deaktivieren, wenn sie mit einem Screenreader oder der Spracheingabe kollidieren. Strg/Cmd+K ist nicht betroffen.",
+    "label": "Einzeltasten-Kürzel aktivieren",
+    "enabledToast": "Einzeltasten-Kürzel aktiviert",
+    "disabledToast": "Einzeltasten-Kürzel deaktiviert",
+    "saveFailed": "Einzeltasten-Kürzel konnten nicht gespeichert werden."
   }
 }

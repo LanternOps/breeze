@@ -873,7 +873,10 @@
         "invoice": "New invoice",
         "contract": "New contract",
         "script": "New script"
-      }
+      },
+      "charKeysOn": "Character-key shortcuts are on.",
+      "charKeysOff": "Character-key shortcuts are off. Only Ctrl/Cmd shortcuts work.",
+      "charKeysManage": "Change in profile settings"
     }
   },
   "migrationBanner": {

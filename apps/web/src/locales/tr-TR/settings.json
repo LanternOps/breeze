@@ -6866,5 +6866,13 @@
     "loadFailed": "E-posta tercihleri yüklenemedi.",
     "saveFailed": "E-posta tercihleri kaydedilemedi.",
     "retry": "Yeniden dene"
+  },
+  "characterKeyShortcuts": {
+    "title": "Tek tuşlu kısayollar",
+    "description": "g ardından d, c ardından c, /, ? ve bilet kuyruğu tuşları gibi tek tuşlu kısayollar. Ekran okuyucu veya sesle girişle çakışıyorsa kapatın. Ctrl/Cmd+K etkilenmez.",
+    "label": "Tek tuşlu kısayolları etkinleştir",
+    "enabledToast": "Tek tuşlu kısayollar açıldı",
+    "disabledToast": "Tek tuşlu kısayollar kapatıldı",
+    "saveFailed": "Tek tuşlu kısayollar kaydedilemedi."
   }
 }

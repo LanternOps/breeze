@@ -6866,5 +6866,13 @@
     "loadFailed": "Impossibile caricare le preferenze email.",
     "saveFailed": "Impossibile salvare le preferenze email.",
     "retry": "Riprova"
+  },
+  "characterKeyShortcuts": {
+    "title": "Scorciatoie a tasto singolo",
+    "description": "Scorciatoie a tasto singolo come g poi d, c poi c, /, ? e i tasti della coda ticket. Disattivale se entrano in conflitto con uno screen reader o con l'input vocale. Ctrl/Cmd+K non è interessato.",
+    "label": "Attiva le scorciatoie a tasto singolo",
+    "enabledToast": "Scorciatoie a tasto singolo attivate",
+    "disabledToast": "Scorciatoie a tasto singolo disattivate",
+    "saveFailed": "Impossibile salvare le scorciatoie a tasto singolo."
   }
 }

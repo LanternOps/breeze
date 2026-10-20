@@ -6866,5 +6866,13 @@
     "loadFailed": "Could not load email preferences.",
     "saveFailed": "Could not save email preferences.",
     "retry": "Retry"
+  },
+  "characterKeyShortcuts": {
+    "title": "Character-key shortcuts",
+    "description": "Single-key shortcuts such as g then d, c then c, /, ? and the ticket queue keys. Turn off if they conflict with a screen reader or speech input. Ctrl/Cmd+K is not affected.",
+    "label": "Enable character-key shortcuts",
+    "enabledToast": "Character-key shortcuts turned on",
+    "disabledToast": "Character-key shortcuts turned off",
+    "saveFailed": "Could not save character-key shortcuts."
   }
 }

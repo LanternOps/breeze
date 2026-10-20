@@ -873,7 +873,10 @@
         "invoice": "Neue Rechnung",
         "contract": "Neuer Vertrag",
         "script": "Neues Skript"
-      }
+      },
+      "charKeysOn": "Einzeltasten-Kürzel sind aktiviert.",
+      "charKeysOff": "Einzeltasten-Kürzel sind deaktiviert. Nur Strg/Cmd-Kürzel funktionieren.",
+      "charKeysManage": "In den Profileinstellungen ändern"
     }
   },
   "migrationBanner": {

@@ -13,6 +13,7 @@ import TicketPushoverSettings from './TicketPushoverSettings';
 import EmailNotificationSettings from './EmailNotificationSettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
+import CharacterKeyShortcutsSettings from './CharacterKeyShortcutsSettings';
 import { pickReauthTier, type ReauthTier } from './StepUpPrompt';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
 import { createPasskeyCredential, fetchWithAuth, getPasskeyCredential, useAuthStore } from '../../stores/auth';
@@ -1870,6 +1871,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       {/* Approval security (Breeze Authenticator) */}
       <ApproverDevicesSection passkeyCount={passkeys.length} mfaMethod={user?.mfaMethod ?? null} />
       <ThemingSettings
+        preferences={user?.preferences}
+        onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
+      />
+      <CharacterKeyShortcutsSettings
         preferences={user?.preferences}
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
       />

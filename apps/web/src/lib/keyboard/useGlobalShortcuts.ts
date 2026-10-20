@@ -4,6 +4,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { CREATE_BY_KEY, GO_TO_BY_KEY, type ChordPrefix } from './goToShortcuts';
 import { requestCreate } from './createIntent';
 import {
+  areCharacterKeyShortcutsEnabled,
   isFormDirtyBlocking,
   isTypingContext,
   resetTypingCadence,
@@ -94,7 +95,7 @@ export function useGlobalShortcuts(): ChordPrefix | null {
       // `?` stays reachable inside its own cheat-sheet dialog and ignores
       // cadence and dirty-form state, but never fires while typing in a field.
       if (event.key === '?') {
-        if (isTypingContext(event)) return;
+        if (!areCharacterKeyShortcutsEnabled() || isTypingContext(event)) return;
         event.preventDefault();
         useUiStore.getState().toggleShortcutsHelp();
         return;

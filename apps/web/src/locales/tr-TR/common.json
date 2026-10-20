@@ -873,7 +873,10 @@
         "invoice": "Yeni fatura",
         "contract": "Yeni sözleşme",
         "script": "Yeni betik"
-      }
+      },
+      "charKeysOn": "Tek tuşlu kısayollar açık.",
+      "charKeysOff": "Tek tuşlu kısayollar kapalı. Yalnızca Ctrl/Cmd kısayolları çalışır.",
+      "charKeysManage": "Profil ayarlarından değiştir"
     }
   },
   "migrationBanner": {

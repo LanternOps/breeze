@@ -873,7 +873,10 @@
         "invoice": "Nueva factura",
         "contract": "Nuevo contrato",
         "script": "Nuevo script"
-      }
+      },
+      "charKeysOn": "Los atajos de una sola tecla están activados.",
+      "charKeysOff": "Los atajos de una sola tecla están desactivados. Solo funcionan los atajos con Ctrl/Cmd.",
+      "charKeysManage": "Cambiar en la configuración del perfil"
     }
   },
   "migrationBanner": {

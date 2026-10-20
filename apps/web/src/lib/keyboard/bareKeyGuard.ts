@@ -1,3 +1,4 @@
+import { useAuthStore } from '../../stores/auth';
 import { useUiStore } from '../../stores/uiStore';
 
 /** A bare key (chord prefix, `/`, queue single key) only starts an action when
@@ -42,6 +43,14 @@ export function isTypingContext(event: KeyboardEvent): boolean {
   );
 }
 
+/** WCAG 2.1.4 (#9348): the user's "Character-key shortcuts" preference, stored
+ *  in `user.preferences.characterKeyShortcuts`. Default on; only an explicit
+ *  `false` turns every bare-key shortcut off. Modified keys (Cmd/Ctrl+K) and
+ *  Escape are not character-key shortcuts and are unaffected. */
+export function areCharacterKeyShortcutsEnabled(): boolean {
+  return useAuthStore.getState().user?.preferences?.characterKeyShortcuts !== false;
+}
+
 export function isPrintableKey(event: KeyboardEvent): boolean {
   return event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
 }
@@ -79,6 +88,11 @@ export function shouldHandleBareKey(event: KeyboardEvent, opts: BareKeyOptions =
   // Compute once per event (so two hooks share one keystroke and the clock is
   // read before it is advanced), but keep the options out of the cache: the
   // verdict a caller gets must not depend on which hook ran first.
+  if (!areCharacterKeyShortcutsEnabled()) {
+    // Still feed the cadence clock so toggling the setting mid-typing is safe.
+    noteKeydown(event);
+    return false;
+  }
   let v = verdicts.get(event);
   if (!v) {
     const previous = lastPrintableAt;

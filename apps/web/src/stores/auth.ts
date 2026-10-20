@@ -42,6 +42,11 @@ export interface UserPreferences {
    * falls back to the tenant default server-side rather than failing a launch.
    */
   remoteAccessProviderId?: string;
+  /**
+   * #9348 (WCAG 2.1.4): single-character keyboard shortcuts (`g`/`c` chords,
+   * `/`, `?`, `[`, ticket-queue keys). Absent = on; only `false` disables.
+   */
+  characterKeyShortcuts?: boolean;
 }
 
 /** A single permission grant ({ resource, action }), mirroring the API. */

@@ -873,7 +873,10 @@
         "invoice": "Nuova fattura",
         "contract": "Nuovo contratto",
         "script": "Nuovo script"
-      }
+      },
+      "charKeysOn": "Le scorciatoie a tasto singolo sono attive.",
+      "charKeysOff": "Le scorciatoie a tasto singolo sono disattivate. Funzionano solo le scorciatoie con Ctrl/Cmd.",
+      "charKeysManage": "Modifica nelle impostazioni del profilo"
     }
   },
   "migrationBanner": {

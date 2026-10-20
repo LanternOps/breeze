@@ -6866,5 +6866,13 @@
     "loadFailed": "Não foi possível carregar as preferências de e-mail.",
     "saveFailed": "Não foi possível salvar as preferências de e-mail.",
     "retry": "Tentar novamente"
+  },
+  "characterKeyShortcuts": {
+    "title": "Atalhos de tecla única",
+    "description": "Atalhos de uma única tecla, como g e depois d, c e depois c, /, ? e as teclas da fila de tickets. Desative se entrarem em conflito com um leitor de tela ou entrada por voz. Ctrl/Cmd+K não é afetado.",
+    "label": "Ativar atalhos de tecla única",
+    "enabledToast": "Atalhos de tecla única ativados",
+    "disabledToast": "Atalhos de tecla única desativados",
+    "saveFailed": "Não foi possível salvar os atalhos de tecla única."
   }
 }

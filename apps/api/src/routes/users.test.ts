@@ -1698,6 +1698,17 @@ describe('user routes', () => {
       expect(body.error).toMatch(message);
     });
 
+    it('rejects a non-boolean characterKeyShortcuts preference (#9348)', async () => {
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ preferences: { characterKeyShortcuts: 'off' } })
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/Invalid characterKeyShortcuts value/i);
+    });
+
     it('rejects an invalid locale preference', async () => {
       const res = await app.request('/users/me', {
         method: 'PATCH',

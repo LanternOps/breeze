@@ -6866,5 +6866,13 @@
     "loadFailed": "Impossible de charger les préférences d'e-mail.",
     "saveFailed": "Impossible d'enregistrer les préférences d'e-mail.",
     "retry": "Réessayer"
+  },
+  "characterKeyShortcuts": {
+    "title": "Raccourcis à touche unique",
+    "description": "Raccourcis à une seule touche comme g puis d, c puis c, /, ? et les touches de la file de tickets. Désactivez-les s'ils entrent en conflit avec un lecteur d'écran ou la saisie vocale. Ctrl/Cmd+K n'est pas concerné.",
+    "label": "Activer les raccourcis à touche unique",
+    "enabledToast": "Raccourcis à touche unique activés",
+    "disabledToast": "Raccourcis à touche unique désactivés",
+    "saveFailed": "Impossible d'enregistrer les raccourcis à touche unique."
   }
 }
