@@ -13,7 +13,7 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "useDefineForClassFields": true,
-    "types": ["vitest/globals", "vite/client"]
+    "types": ["node", "vitest/globals", "vite/client"]
   },
   "include": ["src"]
 }
