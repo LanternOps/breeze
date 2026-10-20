@@ -139,6 +139,7 @@ function envelope(overrides: Record<string, unknown> = {}) {
         { domain: "ca_policies", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
         { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
         { domain: "secure_score", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "signin_events", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
       ],
     },
     ...overrides,
@@ -1201,11 +1202,93 @@ describe("M365CustomerGraphReadCard", () => {
       expect(screen.queryByTestId("m365-sync-summary")).not.toBeInTheDocument();
     });
 
-    it("rejects an envelope whose sync block has an unknown domain", async () => {
+    // #9392: the API's domain list (M365_SYNC_DOMAINS) grew `signin_events` in
+    // v0.124.0 while this card kept its own six-entry allowlist, and the
+    // fail-closed parser hid the whole connected tenant.
+    it("keeps the connected tenant visible when the summary includes signin_events (#9392)", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5,
+          domains: [
+            { domain: "users", status: "success", asOf: "2026-09-08T11:30:00.000Z", truncated: false, unlicensed: false },
+            { domain: "signin_events", status: "error", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(screen.queryByText("Connection details are unavailable.")).not.toBeInTheDocument();
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual(["Sign-in events: error"]);
+    });
+
+    // The guard against the next domain: a domain this bundle does not know
+    // degrades to an "unknown" label instead of nulling the envelope.
+    it("keeps the connected tenant visible and labels a domain it does not know as unknown (#9392)", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5,
+          domains: [
+            { domain: "mailboxes", status: "error", asOf: null, truncated: false, unlicensed: false },
+            { domain: "teams_calls", status: "success", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(screen.queryByText("Connection details are unavailable.")).not.toBeInTheDocument();
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual(["Unrecognized data type: error"]);
+      // The raw wire name is never shown to the operator.
+      expect(screen.queryByText(/mailboxes/)).not.toBeInTheDocument();
+    });
+
+    it("shows one chip when several domains produce the same label (#9392)", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5,
+          domains: [
+            { domain: "signin_activity", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "signin_events", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "future_a", status: "error", asOf: null, truncated: false, unlicensed: false },
+            { domain: "future_b", status: "error", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual([
+        "Sign-in activity needs Entra ID P1",
+        "Unrecognized data type: error",
+      ]);
+    });
+
+    it("accepts more domains than this bundle knows about (#9392)", async () => {
+      const known = ["users", "signin_activity", "intune_devices", "ca_policies", "skus", "secure_score", "signin_events"];
+      const domains = [...known, "future_a", "future_b"].map((domain) => (
+        { domain, status: "success", asOf: null, truncated: false, unlicensed: false }
+      ));
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: { lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5, domains },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(await screen.findByTestId("m365-sync-summary")).toHaveTextContent("10 users");
+    });
+
+    it("rejects an envelope whose sync block has a non-string domain", async () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
         sync: {
           lastSuccessAt: null, users: null, devices: null,
-          domains: [{ domain: "mailboxes", status: "success", asOf: null, truncated: false, unlicensed: false }],
+          domains: [{ domain: 42, status: "success", asOf: null, truncated: false, unlicensed: false }],
         },
       })));
       render(<M365CustomerGraphReadCard />);

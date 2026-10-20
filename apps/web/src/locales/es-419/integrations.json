@@ -83,7 +83,9 @@
         "intune_devices": "Dispositivos de Intune",
         "ca_policies": "Acceso condicional",
         "skus": "Licencias",
-        "secure_score": "Puntuación de seguridad"
+        "secure_score": "Puntuación de seguridad",
+        "signin_events": "Eventos de inicio de sesión",
+        "unknown": "Tipo de datos no reconocido"
       }
     },
     "errors": {

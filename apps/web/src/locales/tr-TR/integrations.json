@@ -83,7 +83,9 @@
         "intune_devices": "Intune cihazları",
         "ca_policies": "Koşullu Erişim",
         "skus": "Lisanslar",
-        "secure_score": "Güvenlik Puanı"
+        "secure_score": "Güvenlik Puanı",
+        "signin_events": "Oturum açma olayları",
+        "unknown": "Tanınmayan veri türü"
       }
     },
     "errors": {

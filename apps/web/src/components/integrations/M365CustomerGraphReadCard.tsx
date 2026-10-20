@@ -12,7 +12,8 @@ import {
   Unplug,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { M365_PERMISSION_PROFILES } from "@breeze/shared";
+import { M365_PERMISSION_PROFILES, isM365SyncDomain } from "@breeze/shared";
+import type { M365SyncDomain } from "@breeze/shared";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "../../lib/authScope";
@@ -67,10 +68,13 @@ const GRANT_HEALTH_STATES = [
 ] as const;
 type GrantHealthState = (typeof GRANT_HEALTH_STATES)[number];
 
-const SYNC_DOMAINS = [
-  "users", "signin_activity", "intune_devices", "ca_policies", "skus", "secure_score",
-] as const;
-type SyncDomain = (typeof SYNC_DOMAINS)[number];
+// The domain vocabulary comes from @breeze/shared (M365_SYNC_DOMAINS), the same
+// list the API's summary is built from, so the two cannot drift. A domain this
+// bundle still does not know (a newer API, a rolling deploy) degrades to an
+// "unknown" label; it must never fail the envelope and hide the tenant (#9392).
+const SYNC_DOMAIN_WIRE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+// Bounds the parse, not the vocabulary: well above the real domain count.
+const MAX_SYNC_DOMAINS = 64;
 
 const SYNC_STATUSES = [
   "success", "partial", "needs_consent", "throttled", "error", "never",
@@ -78,7 +82,10 @@ const SYNC_STATUSES = [
 type SyncStatus = (typeof SYNC_STATUSES)[number];
 
 type SyncDomainState = {
-  domain: SyncDomain;
+  /** The wire name, kept for React keys only; never rendered. */
+  wireDomain: string;
+  /** `null` when this bundle does not know the domain. */
+  domain: M365SyncDomain | null;
   status: SyncStatus;
   asOf: string | null;
   truncated: boolean;
@@ -284,14 +291,15 @@ function parseSyncDomain(value: unknown): SyncDomainState | null {
   if (!isRecord(value) || !hasExactKeys(value, ["domain", "status", "asOf", "truncated", "unlicensed"])) return null;
   const asOf = parseTimestamp(value.asOf);
   if (
-    typeof value.domain !== "string" || !(SYNC_DOMAINS as readonly string[]).includes(value.domain)
+    typeof value.domain !== "string" || !SYNC_DOMAIN_WIRE_PATTERN.test(value.domain)
     || typeof value.status !== "string" || !(SYNC_STATUSES as readonly string[]).includes(value.status)
     || asOf === undefined
     || typeof value.truncated !== "boolean"
     || typeof value.unlicensed !== "boolean"
   ) return null;
   return {
-    domain: value.domain as SyncDomain,
+    wireDomain: value.domain,
+    domain: isM365SyncDomain(value.domain) ? value.domain : null,
     status: value.status as SyncStatus,
     asOf,
     truncated: value.truncated,
@@ -307,7 +315,7 @@ function parseSync(value: unknown): SyncSummary | null | undefined {
   const users = parseCount(value.users);
   const devices = parseCount(value.devices);
   if (
-    !Array.isArray(value.domains) || value.domains.length > SYNC_DOMAINS.length
+    !Array.isArray(value.domains) || value.domains.length > MAX_SYNC_DOMAINS
     || lastSuccessAt === undefined || users === undefined || devices === undefined
   ) return undefined;
   const domains = value.domains.map(parseSyncDomain);
@@ -722,24 +730,30 @@ export default function M365CustomerGraphReadCard({
   const syncChips = useMemo(() => {
     const chips: { key: string; label: string }[] = [];
     for (const entry of data?.sync?.domains ?? []) {
-      const domain = t(/* i18n-dynamic */ `m365CustomerGraphRead.sync.domains.${entry.domain}`);
+      const domain = entry.domain
+        ? t(/* i18n-dynamic */ `m365CustomerGraphRead.sync.domains.${entry.domain}`)
+        : t("m365CustomerGraphRead.sync.domains.unknown");
       if (entry.unlicensed) {
         // Its own sentence, not "{{domain}}: unlicensed": the actionable fact is
         // that the TENANT needs Entra ID P1, not that a sync went wrong.
-        chips.push({ key: `${entry.domain}:unlicensed`, label: t("m365CustomerGraphRead.sync.chips.unlicensed") });
+        chips.push({ key: `${entry.wireDomain}:unlicensed`, label: t("m365CustomerGraphRead.sync.chips.unlicensed") });
       } else if (entry.status === "throttled") {
-        chips.push({ key: `${entry.domain}:throttled`, label: t("m365CustomerGraphRead.sync.chips.throttled", { domain }) });
+        chips.push({ key: `${entry.wireDomain}:throttled`, label: t("m365CustomerGraphRead.sync.chips.throttled", { domain }) });
       } else if (entry.status === "needs_consent") {
-        chips.push({ key: `${entry.domain}:needs-consent`, label: t("m365CustomerGraphRead.sync.chips.needsConsent", { domain }) });
+        chips.push({ key: `${entry.wireDomain}:needs-consent`, label: t("m365CustomerGraphRead.sync.chips.needsConsent", { domain }) });
       } else if (entry.status === "error") {
-        chips.push({ key: `${entry.domain}:error`, label: t("m365CustomerGraphRead.sync.chips.error", { domain }) });
+        chips.push({ key: `${entry.wireDomain}:error`, label: t("m365CustomerGraphRead.sync.chips.error", { domain }) });
       } else if (entry.status === "partial" || entry.truncated) {
-        chips.push({ key: `${entry.domain}:partial`, label: t("m365CustomerGraphRead.sync.chips.partial", { domain }) });
+        chips.push({ key: `${entry.wireDomain}:partial`, label: t("m365CustomerGraphRead.sync.chips.partial", { domain }) });
       }
       // 'success' and 'never' get no chip: the summary line already says whether
       // anything has ever synced, and a chip per healthy domain is noise.
     }
-    return chips;
+    // Two domains can produce the same sentence (signin_activity and
+    // signin_events both need Entra ID P1; two unrecognized domains share one
+    // label). One chip per distinct sentence.
+    const seen = new Set<string>();
+    return chips.filter((chip) => !seen.has(chip.label) && !!seen.add(chip.label));
   }, [data, t]);
   const callbackCopy = callbackResult === "active"
     ? t("m365CustomerGraphRead.callback.active")

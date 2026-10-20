@@ -83,7 +83,9 @@
         "intune_devices": "Intune devices",
         "ca_policies": "Conditional Access",
         "skus": "Licenses",
-        "secure_score": "Secure Score"
+        "secure_score": "Secure Score",
+        "signin_events": "Sign-in events",
+        "unknown": "Unrecognized data type"
       }
     },
     "errors": {
