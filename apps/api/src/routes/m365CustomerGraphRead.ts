@@ -30,7 +30,7 @@ import {
 } from '../services/m365ControlPlane/connectionService';
 import { buildM365ConsentBindingCookie } from '../services/m365ControlPlane/browserBinding';
 import type { M365Availability } from '../services/m365ControlPlane/availability';
-import { isM365CustomerGraphReadOnboardingEnabledForOrg,m365CustomerGraphReadOnboardingAvailability } from '../services/m365ControlPlane/runtimeConfig';
+import { isM365CustomerGraphReadOnboardingEnabledForOrg, m365CustomerGraphReadOnboardingAvailability } from '../services/m365ControlPlane/runtimeConfig';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,

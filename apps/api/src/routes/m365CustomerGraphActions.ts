@@ -33,7 +33,7 @@ import {
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { buildM365ActionsConsentBindingCookie } from '../services/m365ControlPlane/browserBinding';
 import type { M365Availability } from '../services/m365ControlPlane/availability';
-import { isM365CustomerGraphActionsOnboardingEnabledForOrg,m365CustomerGraphActionsOnboardingAvailability } from '../services/m365ControlPlane/writeActionRuntimeConfig';
+import { isM365CustomerGraphActionsOnboardingEnabledForOrg, m365CustomerGraphActionsOnboardingAvailability } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,

@@ -263,12 +263,11 @@ describe('GET /m365/connections', () => {
 
   it('reports which switch is off via onboardingAvailability (#9319)', async () => {
     mocks.onboardingEnabled.mockReturnValue(false);
-    mocks.onboardingAvailability.mockReturnValue('org_not_enabled');
+    mocks.onboardingAvailability.mockReturnValueOnce('org_not_enabled');
     const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
     expect(body.onboardingEnabled).toBe(false);
     expect(body.onboardingAvailability).toBe('org_not_enabled');
     expect(mocks.onboardingAvailability).toHaveBeenCalledWith(ORG_ID);
-    mocks.onboardingAvailability.mockReturnValue('enabled');
   });
 
   it('reports onboarding disabled without hiding an existing connection', async () => {

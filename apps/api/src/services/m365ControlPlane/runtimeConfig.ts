@@ -265,6 +265,7 @@ export function m365GraphReadToolsAvailability(
   return allowlist === '*' || allowlist.includes(orgId) ? 'enabled' : 'org_not_enabled';
 }
 
+/** Boolean gate over {@link m365GraphReadToolsAvailability}; same cheap, env-only evaluation. */
 export function isM365GraphReadToolsEnabledForOrg(
   orgId: string,
   source: Environment = process.env,

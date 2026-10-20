@@ -268,6 +268,7 @@ export function m365GraphActionsAvailability(
   return allowlist === '*' || allowlist.includes(orgId) ? 'enabled' : 'org_not_enabled';
 }
 
+/** Boolean gate over {@link m365GraphActionsAvailability}; same cheap, env-only evaluation. */
 export function isM365GraphActionsEnabledForOrg(
   orgId: string,
   source: Environment = process.env,

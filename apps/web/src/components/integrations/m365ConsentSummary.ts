@@ -25,8 +25,10 @@ export function parseOnboardingAvailability(
   onboardingEnabled: boolean,
 ): M365OnboardingAvailability | null {
   if (value === undefined) return onboardingEnabled ? "enabled" : "instance_disabled";
-  if (value === "enabled" || value === "instance_disabled" || value === "org_not_enabled") return value;
-  return null;
+  if (value !== "enabled" && value !== "instance_disabled" && value !== "org_not_enabled") return null;
+  // The two fields describe the same gate; a disagreeing payload is malformed.
+  if ((value === "enabled") !== onboardingEnabled) return null;
+  return value;
 }
 
 export type M365ConsentStepSummary = {
