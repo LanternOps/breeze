@@ -139,7 +139,7 @@ export default function KeyboardShortcutsHelp() {
 
       <p className="mt-5 text-xs text-muted-foreground">{t('layout.shortcuts.typingNote')}</p>
       <p className="mt-2 text-xs text-muted-foreground" data-testid="char-key-state">
-        {t(charKeysOn ? 'layout.shortcuts.charKeysOn' : 'layout.shortcuts.charKeysOff')}{' '}
+        {charKeysOn ? t('layout.shortcuts.charKeysOn') : t('layout.shortcuts.charKeysOff')}{' '}
         <a href="/settings/profile#character-key-shortcuts" className="underline hover:text-foreground">
           {t('layout.shortcuts.charKeysManage')}
         </a>
