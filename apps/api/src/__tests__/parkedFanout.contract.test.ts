@@ -137,6 +137,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/reportSeries/targets.ts': 'report: multi-org series target orgs (org-level report definitions, not devices; hidden org types excluded)',
   'services/backupProviders/mapping.ts': 'vendor-customer to org mapping: which org a backup customer is shown under; the holding org and Quick Support are never candidates',
   'services/edrProviders/mapping.ts': 'vendor-tenant to org mapping: the holding org and Quick Support are never candidates',
+  'services/flows/ownedReferences.ts': 'validation: checks that device ids named literally in a flow draft belong to the flow owner org (#5218); selects no targets and dispatches nothing',
   'services/timeSuggestionService.ts': 'billing: time suggestions',
   'jobs/patchComplianceReportWorker.ts': 'report: patch compliance summary for the requesting org',
   'services/patchOutstandingDevices.ts': 'listing: devices that still need a patch, shown on the approval list (#8728); excludes parked and Quick Support devices like the compliance view',
