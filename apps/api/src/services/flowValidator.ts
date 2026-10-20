@@ -26,7 +26,7 @@ import {
   FLOW_LIMITS,
   flowDocumentV1Schema,
   isFlowBuiltin,
-  templatedPointers,
+  templateLeafKinds,
   type FlowDocumentV1,
   type FlowIssue,
   type FlowStepSummary,
@@ -77,11 +77,20 @@ function toPointer(path: ReadonlyArray<PropertyKey>): string {
   return path.map((s) => `/${escapePointerSegment(typeof s === 'symbol' ? s.toString() : (s as string | number))}`).join('');
 }
 
-function underTemplated(pointer: string, templated: ReadonlySet<string>): boolean {
-  for (const t of templated) {
-    if (pointer === t || pointer.startsWith(`${t}/`)) return true;
+type LeafKinds = ReadonlyMap<string, 'exact' | 'partial'>;
+
+/**
+ * Which templated leaf, if any, an issue at `pointer` sits under. An exact
+ * leaf can render to any JSON type, so it covers its descendants too; a
+ * partial leaf always renders to a string, which has none.
+ */
+function templateKindAt(pointer: string, kinds: LeafKinds): 'exact' | 'partial' | null {
+  const own = kinds.get(pointer);
+  if (own) return own;
+  for (const [t, kind] of kinds) {
+    if (kind === 'exact' && pointer.startsWith(`${t}/`)) return 'exact';
   }
-  return false;
+  return null;
 }
 
 function containsTemplate(value: unknown): boolean {
@@ -132,6 +141,21 @@ const MASKABLE_AJV_KEYWORDS: ReadonlySet<string> = new Set([
   'type', 'format', 'pattern', 'enum', 'const', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
   'minLength', 'maxLength', 'minItems', 'maxItems', 'multipleOf', 'anyOf', 'oneOf',
 ]);
+
+/** Under a PARTIAL template (always a string at run time) only string-level checks are unknown. */
+const PARTIAL_MASKABLE_AJV_KEYWORDS: ReadonlySet<string> = new Set(['format', 'pattern', 'enum', 'const', 'minLength', 'maxLength']);
+
+function zodIssueMasked(zi: LooseZodIssue, kind: 'exact' | 'partial' | null): boolean {
+  if (kind === 'exact') return MASKABLE_ZOD_CODES.has(zi.code);
+  if (kind !== 'partial') return false;
+  switch (zi.code) {
+    case 'invalid_format': return true;
+    case 'invalid_value': return Array.isArray(zi.values) && zi.values.some((v) => typeof v === 'string');
+    case 'too_small':
+    case 'too_big': return zi.origin === 'string';
+    default: return false;
+  }
+}
 
 const FORMAT_PLACEHOLDERS: Readonly<Record<string, string>> = {
   uuid: '00000000-0000-4000-8000-000000000000',
@@ -212,14 +236,14 @@ function setAtPath(root: Record<string, unknown>, path: ReadonlyArray<PropertyKe
 }
 
 function zodInputIssues(schema: z.ZodType, input: Record<string, unknown>, stepId: string, base: string): FlowIssue[] {
-  const templated = templatedPointers(input);
+  const kinds = templateLeafKinds(input);
   const seen = new Set<string>();
   const out: FlowIssue[] = [];
   const collect = (issues: LooseZodIssue[]): LooseZodIssue[] => {
     const masked: LooseZodIssue[] = [];
     for (const zi of issues) {
       const pointer = toPointer(zi.path);
-      if (MASKABLE_ZOD_CODES.has(zi.code) && underTemplated(pointer, templated)) {
+      if (zodIssueMasked(zi, templateKindAt(pointer, kinds))) {
         masked.push(zi);
         continue;
       }
@@ -231,12 +255,9 @@ function zodInputIssues(schema: z.ZodType, input: Record<string, unknown>, stepI
     return masked;
   };
 
-  let working: Record<string, unknown>;
-  try {
-    working = structuredClone(input);
-  } catch {
-    working = { ...input };
-  }
+  // A deep copy, so placeholders never leak into the caller's document. The
+  // input is parsed JSON, so structuredClone cannot fail on it.
+  const working: Record<string, unknown> = structuredClone(input);
   let parsed = schema.safeParse(working);
   let masked = parsed.success ? [] : collect(parsed.error.issues as LooseZodIssue[]);
   for (let round = 0; round < 5 && masked.length > 0; round++) {
@@ -253,12 +274,14 @@ function zodInputIssues(schema: z.ZodType, input: Record<string, unknown>, stepI
 }
 
 function ajvInputIssues(entry: Extract<FlowCatalogEntry, { source: 'tenant' }>, input: Record<string, unknown>, stepId: string, base: string): FlowIssue[] {
-  const templated = templatedPointers(input);
+  const kinds = templateLeafKinds(input);
   if (entry.validate(input)) return [];
   const errors: ErrorObject[] = entry.validate.errors ?? [];
   const out: FlowIssue[] = [];
   for (const e of errors) {
-    if (MASKABLE_AJV_KEYWORDS.has(e.keyword) && underTemplated(e.instancePath, templated)) continue;
+    const kind = templateKindAt(e.instancePath, kinds);
+    if (kind === 'exact' && MASKABLE_AJV_KEYWORDS.has(e.keyword)) continue;
+    if (kind === 'partial' && PARTIAL_MASKABLE_AJV_KEYWORDS.has(e.keyword)) continue;
     const detail = e.keyword === 'additionalProperties' && e.params && 'additionalProperty' in e.params
       ? ` ('${String((e.params as { additionalProperty: unknown }).additionalProperty)}')`
       : '';
@@ -405,8 +428,15 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       if (step.tool === 'run_script' && Object.hasOwn(input, 'proposalId')) {
         issues.push(issue('input_not_supported', 'Flows run library scripts only; use scriptId, not proposalId.', { stepId: step.id, pointer: `${base}/proposalId` }));
       }
+      // Fail closed: without a schema neither rule 2 nor the reference-field
+      // contract (referenceFields.contract.test.ts) covers the tool's inputs.
       const schema = toolInputSchemas[step.tool];
-      if (schema) issues.push(...zodInputIssues(schema, input, step.id, base));
+      if (!schema) {
+        issues.push(issue('tool_not_allowed', `Tool '${step.tool}' cannot be used in a flow.`, { stepId: step.id, pointer: `/steps/${i}/tool` }));
+        summaries.push({ id: step.id, tool: step.tool, source: 'core', tier: null, approval: step.approval });
+        return;
+      }
+      issues.push(...zodInputIssues(schema, input, step.id, base));
       const t = coreStepTier(step.tool, input, step.id, base);
       issues.push(...t.issues);
       tier = t.tier;

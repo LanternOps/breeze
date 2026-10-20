@@ -14,6 +14,8 @@ import { resolveTenantToolsForOwner, type TenantToolDescriptor } from './toolSou
 import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
 import { validateFlowDocument } from './flowValidator';
 import { FLOW_LIMITS, type FlowIssue } from '@breeze/shared';
+import { toolInputSchemas } from './aiToolSchemas';
+import { m365ToolTiers } from './aiToolsM365';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -100,6 +102,28 @@ describe('validateFlowDocument', () => {
     expect(r2.issues.some((i) => i.code === 'input_invalid' && /exactly one/.test(i.message))).toBe(true);
   });
 
+  it('a PARTIAL template always renders to a string, so a type mismatch under it is never masked', async () => {
+    const partial = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: '5{{inputs.r}}' } }]), ORG_OWNER);
+    expect(codes(partial.issues)).toEqual(['input_invalid']);
+    const exact = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: '{{inputs.r}}' } }]), ORG_OWNER);
+    expect(exact.issues).toEqual([]);
+  });
+
+  it('tenant tool: a partial template keeps an Ajv type error but masks a string format error', async () => {
+    vi.mocked(resolveTenantToolsForOwner).mockResolvedValue([
+      tenantTool('halo__create_ticket', 3, {
+        type: 'object',
+        properties: { summary: { type: 'string', format: 'uuid' }, count: { type: 'integer' } },
+      }),
+    ]);
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'halo__create_ticket', input: {
+      summary: 'id-{{trigger.org.id}}', count: 'n{{inputs.r}}',
+    } }]), ORG_OWNER);
+    const inv = r.issues.filter((i) => i.code === 'input_invalid');
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.pointer).toBe('/steps/0/input/count');
+  });
+
   it('tenant tool: a missing Ajv required key is kept while a templated format:uuid leaf is masked', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'halo__create_ticket', input: { clientId: '{{trigger.org.id}}' } }]), ORG_OWNER);
     const inv = r.issues.filter((i) => i.code === 'input_invalid');
@@ -121,6 +145,26 @@ describe('validateFlowDocument', () => {
   it('manage_ai_agents is tool_not_allowed', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'manage_ai_agents', input: { action: 'list' } }]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['tool_not_allowed']);
+  });
+
+  it('a session-only (M365) tool is tool_not_allowed — flows run without a chat session', async () => {
+    const m365 = Object.keys(m365ToolTiers)[0]!;
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: m365, input: {} }]), ORG_OWNER);
+    // M365 tools are not in the core execution registry at all (session-aware).
+    expect(codes(r.issues)).toEqual(['tool_not_found']);
+    expect(r.valid).toBe(false);
+  });
+
+  it('a flow-eligible core tool without a Zod schema fails closed (tool_not_allowed)', async () => {
+    const saved = toolInputSchemas.get_device_details;
+    delete toolInputSchemas.get_device_details;
+    try {
+      const r = await validateFlowDocument(doc([{ id: 'a', tool: 'get_device_details', input: { deviceId: 'anything' } }]), ORG_OWNER);
+      expect(codes(r.issues)).toEqual(['tool_not_allowed']);
+      expect(r.effectiveTier).toBeNull();
+    } finally {
+      toolInputSchemas.get_device_details = saved!;
+    }
   });
 
   it('notify is builtin_not_available', async () => {

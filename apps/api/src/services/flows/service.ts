@@ -28,6 +28,7 @@ import { flows, organizations, type FlowRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { captureException } from '../sentry';
 import { validateFlowDocument } from '../flowValidator';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
 import type { ToolOwnerRef } from '../toolSources/resolver';
@@ -159,6 +160,7 @@ function auditDraftSave(auth: AuthContext, row: FlowRow, stepCount: number): voi
     });
   } catch (err) {
     console.error('[flows] audit write failed', err);
+    captureException(err, undefined, { service: 'flows', flowId: row.id });
   }
 }
 

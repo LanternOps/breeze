@@ -75,6 +75,10 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
     expect(aiTools.get('run_script')?.deviceArgs).toContain('deviceIds');
   });
 
+  it('every flow-eligible core tool has a Zod input schema (the validator refuses one that does not)', () => {
+    expect(listFlowEligibleCoreTools().filter((name) => !toolInputSchemas[name])).toEqual([]);
+  });
+
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [

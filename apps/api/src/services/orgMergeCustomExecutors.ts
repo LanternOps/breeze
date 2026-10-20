@@ -1867,10 +1867,16 @@ const mergeToolSourceTools: CustomMergeExecutor = async (loser, survivor) => ({
 // ---------------------------------------------------------------------------
 const FLOW_SLUG_MAX = 48;
 
+/**
+ * Rows out of a driver result. Deliberately NOT lenient (same rule as
+ * db/rowCount.ts): degrading an unexpected shape to [] would make resolveFlows
+ * skip the tool-reference rewrite silently.
+ */
 function resultRows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   const rows = (result as { rows?: unknown } | null)?.rows;
-  return Array.isArray(rows) ? (rows as T[]) : [];
+  if (Array.isArray(rows)) return rows as T[];
+  throw new Error('[orgMerge] unexpected driver result shape (no rows array)');
 }
 
 /** `<base>_m<n>` within 48 chars; the cut base loses trailing `_` so no `__` forms. */

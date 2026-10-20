@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractTemplates, renderTemplates, templatedPointers, TEMPLATE_RE } from './templates';
+import { extractTemplates, renderTemplates, templatedPointers, templateLeafKinds, TEMPLATE_RE } from './templates';
 
 const scope = {
   trigger: { device: { id: 'd1', count: 7, tags: ['a', 'b'], meta: { k: 1 } } },
@@ -71,9 +71,26 @@ describe('extractTemplates', () => {
     expect(() => extractTemplates(v)).not.toThrow();
     expect(extractTemplates(v).refs).toHaveLength(1);
   });
-  it('TEMPLATE_RE matches template bodies', () => {
+  it('TEMPLATE_RE matches template bodies (untrimmed; whitespace is trimmed by the parser)', () => {
     const m = [...'a {{ x.y }} b'.matchAll(TEMPLATE_RE)];
-    expect(m[0]![1]).toBe('x.y');
+    expect(m[0]![1]!.trim()).toBe('x.y');
+  });
+  it('an unterminated {{ followed by a long whitespace run is linear, not catastrophic backtracking', () => {
+    const hostile = { a: '{{' + ' '.repeat(2500) + 'x', b: '{{' + ' '.repeat(50_000) };
+    const t0 = performance.now();
+    const out = extractTemplates(hostile);
+    const regexMatches = [...hostile.a.matchAll(TEMPLATE_RE)].length;
+    expect(performance.now() - t0).toBeLessThan(200);
+    expect(regexMatches).toBe(0);
+    expect(out.errors.map((e) => e.pointer).sort()).toEqual(['/a', '/b']);
+  });
+});
+
+describe('templateLeafKinds', () => {
+  it('marks a leaf that is exactly one template as exact and any other templated leaf as partial', () => {
+    expect(templateLeafKinds({ a: '{{ inputs.x }}', b: 'n {{inputs.x}}', c: '{{inputs.x}}{{inputs.y}}', d: 'plain', e: ['{{inputs.x}}0'], f: '{{ nope }}' })).toEqual(
+      new Map([['/a', 'exact'], ['/b', 'partial'], ['/c', 'partial'], ['/e/0', 'partial'], ['/f', 'partial']]),
+    );
   });
 });
 

@@ -1,8 +1,14 @@
 import { FLOW_LIMITS } from '../validators/flows';
 import { parsePath, resolveFlowPath, type FlowPath, type FlowScope, type FlowValue } from './expr';
 
-/** `{{ path }}` — template bodies are paths only (spec §6.2), never expressions. Browser safe. */
-export const TEMPLATE_RE = /\{\{\s*([^{}]*?)\s*\}\}/g;
+/**
+ * `{{ path }}` — template bodies are paths only (spec §6.2), never expressions. Browser safe.
+ * The body is captured untrimmed and trimmed by the parser: a pattern with
+ * `\s*` on both sides of a lazy body backtracks cubically on an unterminated
+ * `{{` followed by a whitespace run (a Tier-1 validate_flow call could pin the
+ * API event loop for minutes). This form has no overlapping quantifiers.
+ */
+export const TEMPLATE_RE = /\{\{([^{}]*)\}\}/g;
 
 export interface TemplateRef { pointer: string; path: FlowPath; exact: boolean }
 
@@ -49,7 +55,7 @@ function parseTemplateString(s: string): Parsed {
   let exact = false;
   for (const m of s.matchAll(TEMPLATE_RE)) {
     const idx = m.index!;
-    const body = m[1]!;
+    const body = m[1]!.trim();
     const p = parsePath(body);
     if (!p.ok) return { parts, exact: false, error: `invalid template '{{ ${body} }}': ${p.error}` };
     const text = s.slice(last, idx);
@@ -92,7 +98,23 @@ export function templatedPointers(value: unknown): Set<string> {
   return out;
 }
 
-type RenderFailure = { ok: false; error: 'render_too_large' | 'template_parse_error'; pointer?: string };
+/**
+ * Templated string leaves by kind. An `exact` leaf (the whole string is one
+ * template) renders to the referenced value with its type preserved, so it can
+ * stand for any JSON type; a `partial` leaf always renders to a string. The
+ * flow validator masks type-level schema issues only under exact leaves.
+ */
+export function templateLeafKinds(value: unknown): Map<string, 'exact' | 'partial'> {
+  const out = new Map<string, 'exact' | 'partial'>();
+  for (const { pointer, value: leaf } of walk(value)) {
+    if (typeof leaf !== 'string' || !leaf.includes('{{')) continue;
+    const parsed = parseTemplateString(leaf);
+    out.set(pointer, !parsed.error && parsed.exact ? 'exact' : 'partial');
+  }
+  return out;
+}
+
+type RenderFailure ={ ok: false; error: 'render_too_large' | 'template_parse_error'; pointer?: string };
 
 function stringify(v: FlowValue): string {
   if (v === null) return '';

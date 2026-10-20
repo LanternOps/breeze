@@ -365,7 +365,8 @@ export async function resolveTenantToolsForOwner(owner: ToolOwnerRef): Promise<T
 export function compileTenantInputSchema(schema: Record<string, unknown>): ValidateFunction | null {
   try {
     return newAjv().compile(schema);
-  } catch {
+  } catch (err) {
+    console.warn(`[toolSources.resolver] compileTenantInputSchema: uncompilable schema skipped: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
