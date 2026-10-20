@@ -217,7 +217,7 @@ Stored as `flows.definition jsonb`; validated by a Zod schema in `packages/share
     { "id": "wait", "tool": "wait", "input": { "minutes": 5 } },
     { "id": "recheck", "tool": "get_device_metrics",
       "input": { "deviceId": "{{trigger.device.id}}", "metric": "disk_free_pct" } },
-    { "id": "ticket", "when": "steps.recheck.output.value < 10", "tool": "halo.create_ticket",
+    { "id": "ticket", "when": "steps.recheck.output.value < 10", "tool": "halo__create_ticket",
       "input": { "clientId": "{{trigger.org.externalIds.halo}}", "summary": "Disk still low on {{trigger.device.hostname}}" } },
     { "id": "resolve", "when": "steps.recheck.output.value >= 10", "tool": "resolve_alert",
       "input": { "alertId": "{{trigger.alert.id}}" } }
@@ -228,6 +228,8 @@ Stored as `flows.definition jsonb`; validated by a Zod schema in `packages/share
 Step fields: `id` (`^[a-z][a-z0-9_]{0,31}$`, unique), `tool` (catalog name), `input` (object; values may contain templates), `when` (expression), `forEach` (`{ items, as, maxItems ≤ 500, concurrency ≤ 10 }`), `approval` (`default` | `pre_approved`), `onFailure` (`stop` | `continue`; default `stop`), `timeoutSec` (default 300, max 3600).
 
 Built-in step tools (registered in core, Tier 1, only meaningful inside flows): `wait` (minutes ≤ 1440; implemented as a delayed re-enqueue, never a sleeping worker), `set` (compute a value from templates for later steps), `ai` (question, tool allowlist, required JSON output schema; runs a bounded agent turn under the flow's budget and returns structured output; the only step that costs tokens), `notify` (existing notification channels), `http_request` (generic; goes through the egress guard; Tier 3 unless method is GET).
+
+**Amendment (W3 plan, 2026-10-17):** built-in step tools are not registered in core. They live in a shared `FLOW_BUILTIN_STEPS` registry (`packages/shared/src/flows/builtins.ts`: name, Zod input schema, tier 1, description) that the validator consults before the catalog and the W04 runner dispatches in-process. They never enter `aiTools`, so chat, MCP, tool-parity contracts and the tool index never see them; a contract test keeps their names (including the reserved later ones) disjoint from every core tool name and free of `__`. W3 ships `wait` and `set` only; `notify`, `ai` and `http_request` are refused with `builtin_not_available` until W04/W05. The example's tenant tool is written `halo__create_ticket` (§5.4 qualified-name form).
 
 Triggers:
 
@@ -256,6 +258,8 @@ The API validator (`services/flowValidator.ts`) runs against the owner's resolve
 6. Partner-wide flows may only reference partner-wide or core assets (scripts, notification channels), never an org's asset; reuses the ownership check `automation_resource_bindings` performs today.
 7. Enabling re-runs validation, and additionally checks the enabling user holds every permission the steps need (`checkToolPermission` per step, as if in chat). This is the delegation decision; runs do not re-check the user (§6.5).
 
+**Amendment (W3 plan, 2026-10-17):** rules split by wave. W3 runs rules 1, 2, 3, 5 and 6 at save. Rule 4 as written has no satisfiable case: `run_script` is excluded from `POLICY_DECIDABLE_TIER3` (one lane per asset class), no `assetArgs` concept exists on `AiTool`, and the policy-decidable entries that do exist carry `requiresEffectPin`/`maxTargetCardinality`, not asset ids. So **every `approval: 'pre_approved'` is refused in W3** (`pre_approval_not_available`); the tech sets pre-approval on the detail page at enable time (§6.8). W04 owns rule 4 end to end and must first choose the lane explicitly, without widening `POLICY_DECIDABLE_TIER3` incidentally: the act-mode `actAssets` lane (script asset plus content digest) or the policy-decidable effect-pin lane. Rule 7 and the event-dispatch-mode prerequisite also land in W04, at enable. Further refinements: rule 2 uses partial validation that masks only value-level issues under templated leaves, so a missing required key, an unknown key or a cross-field refinement next to a template still fails. Rule 6 is an ownership-reference check on every step, independent of approval mode (literal `run_script.scriptId`/`groupId` must be owned by the flow owner; literal device ids must belong to the owner org and never appear in a partner-wide flow), not a sub-rule of pre-approval. Flows reference library scripts only; `proposalId` is refused.
+
 ### 6.4 Data model
 
 `flows` (dual-owned)
@@ -270,6 +274,8 @@ The API validator (`services/flowValidator.ts`) runs against the owner's resolve
 | created_by_user_id, ai_session_id null, managed_by_agent_id null | provenance |
 | webhook_secret_encrypted text null, webhook_token_fingerprint | webhook trigger only |
 | created_at, updated_at | |
+
+**Amendment (W3 plan, 2026-10-17):** `webhook_secret_encrypted` and `webhook_token_fingerprint` are not created in W3; W05 adds them together with their encryptor, AAD domain, rotation and export classification. `enabled_by_user_id`, `enabled_at` and `paused_reason` ship in W3 (plain, non-secret; W04 writes them).
 
 `flow_runs`
 
@@ -329,6 +335,8 @@ Limits: 50 steps per flow; 500 items per for-each; run wall-clock 1 h excluding 
 
 On enable, a flow with `manual` trigger registers `flow.<slug>` in the resolver for its owner: description from the flow, input schema from `inputs`, tier = `effective_tier`. Calling it requires the caller to hold the flow's effective-tier permission (so a Tier 3 flow is itself Tier 3 for the caller) and to have access to the target org. The run still executes as the flow principal: the caller gains exactly what the enabler authorised for that flow and nothing else of the enabler's authority. It creates a run with `trigger_kind = tool`, returns the run id immediately, and (in chat) the AI can poll `get_flow_run`. Agents may include `flow.*` names in `toolAllowlist`.
 
+**Amendment (W3 plan, 2026-10-17):** the qualified name is `flow__<slug>`, not `flow.<slug>` (the Anthropic tool-name grammar rejects dots; same reasoning as §5.4). `flow` is a reserved source slug, so it cannot collide with a tenant source, and `splitQualifiedToolName` yields `{ slug: 'flow', name: <flowSlug> }`. The flow slug matches `^[a-z][a-z0-9_]{1,47}$` and may not contain `__`, which keeps the name within 64 characters and every later `__` split unambiguous. W3 fixes only the slug rule (a table CHECK); registering `flow__<slug>` in the resolver is W05.
+
 ### 6.7 Budgets and observability
 
 - `ai` steps draw from the owner's existing AI budget (per-partner budgets and alerts already exist); a flow with an `ai` step cannot be enabled if the owner has no budget.
@@ -339,6 +347,8 @@ On enable, a flow with `manual` trigger registers `flow.<slug>` in the resolver 
 
 New core AI tools (all Tier 1 except `run_flow`, which inherits the flow's tier, and `enable_flow`, which is Tier 3):
 `draft_flow` (natural-language description → validated document saved as `draft`, returns the document plus the validator's per-step tier summary), `validate_flow`, `list_flows`, `get_flow`, `run_flow`, `get_flow_run`, `explain_flow_run` (turns the step ledger into prose), `suggest_tools_to_enable` (reads a goal and the disabled tools of the owner's sources, returns a suggestion; never enables).
+
+**Amendment (W3 plan, 2026-10-17):** `draft_flow` is **Tier 2**, not Tier 1: it writes a row, and Tier 1 is treated as read-only by headless agents and reachable with an MCP `ai:read` key, whereas Tier 2 maps to `ai:write` and gets the audit-ledger row. It is also in `AGENT_HUMAN_ONLY_TOOLS` in W3, so an operator agent cannot author flows without the `managed_by_agent_id` story. `validate_flow`, `get_flow` and `list_flows` stay Tier 1.
 
 Chat renders a **Flow card** for `draft_flow` results: name, trigger, steps with tool + tier + approval mode, "Review and enable" link to the web page.
 
@@ -404,5 +414,6 @@ Codex `xhigh` (gpt-6-astra, read-only, 2026-09-07) was asked five questions with
 | D5 | Repo-contract obligations | **Agree on shapes**; adds: cross-reference tenancy beyond FKs, `PARENT_FK_JOIN_POLICY_TABLES` exists as an alternative to denormalising (we keep denormalising so children stay dual-axis), event dispatch mode defaults off (`eventBus.ts:340`), loop/feedback prevention, webhook replay. | Accepted: §6.5 event prerequisite + loop prevention, §8 cross-reference tenancy. |
 | — | Plan amendments (W1) | N/A — as-built findings from implementing the plan (`docs/superpowers/plans/ai-mcp/2026-09-07-tool-catalog-w1-tool-sources-mcp.md`, Task A0), not a quorum question. | Accepted: `__` separator replaces the dot, slug loses `_`/`-` (§5.2, §5.4); resolver reads in a system DB context with explicit owner predicates because org tokens cannot pass `breeze_has_partner_access` (§5.4); v1 ships with no descriptor cache (§5.4); descriptors never enter the process-global `aiTools`/`TOOL_TIERS`/`TOOL_PERMISSIONS` maps (§5.5); the real closed-set seams are two (chat `createSessionPreToolUse`, `mcpServer.ts` list/call), not four — `aiGuardrails.ts` and `mcpExecutionOrg.ts` are untouched (§5.6). |
 | — | Plan amendments (W2) | N/A — as-built decisions from the W2 plan (`docs/superpowers/plans/ai-mcp/2026-09-21-tool-catalog-w2-openapi-source-kind.md`), not a quorum question. Codex `medium` was consulted on D17 (where skip reasons persist) and agreed. | Accepted: `spec_url` column replaces `spec_document`/`base_url_override` (§5.2); `last_discovery_summary` jsonb holds skip reasons + warnings (§5.2); `endpoint_url` is the API base URL for openapi sources so credential pinning is unchanged (§5.2, §5.5); `servers[]` never routes and redirects are never followed (§5.5); tier mapping via annotations reuses `proposeTier` (§5.3); unsupported parameter styles/bodies/security locations are skipped with a reason rather than approximated (§5.3); 3.0.x/3.1.x only; refresh is manual in W2 (§5.3). |
+| — | Plan amendments (W3) | Codex `xhigh` (2026-10-17) on the `flows` table shape, the validator split and the tool tiers; agreed on the split, built-ins outside `aiTools`, reject-invalid, live re-validation and tiers/permissions, and disagreed on pre-approval (the pre-approval intersection is empty, `policyDecidableKeys.ts`) and on blanket masking of schema issues under templated leaves. Plan: `docs/superpowers/plans/ai-mcp/2026-10-17-tool-catalog-w3-flows-document-validator.md` (Open Decisions 1–6, Quorum). | Accepted (Todd approved all six decisions, 2026-10-20): `flow__<slug>` naming (§6.6); built-ins in shared `FLOW_BUILTIN_STEPS` (§6.1); every `pre_approved` refused in W3, rules 1, 2, 3, 5, 6 at save and rules 4, 7 in W04, partial value-level masking, ownership check on every step (§6.3); webhook columns deferred to W05 (§6.4); `draft_flow` Tier 2 + agent human-only (§6.8); tool-index budget raised to 6.75 KB (6912 B) with a second flag-on assertion. |
 
 Codex's top three implementation risks, each now addressed in the text: remote success followed by worker death before checkpoint (§6.5 unknown outcome); approved revisions drifting before resume (§6.5 drift); partner-wide credentials reaching another customer's data in the external system (§5.6 known limitation, UI warning, per-org recommendation).
