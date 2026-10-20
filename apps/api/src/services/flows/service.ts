@@ -27,6 +27,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { flows, organizations, type FlowRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { validateFlowDocument } from '../flowValidator';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
 import type { ToolOwnerRef } from '../toolSources/resolver';
@@ -161,11 +162,6 @@ function auditDraftSave(auth: AuthContext, row: FlowRow, stepCount: number): voi
   }
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
-  return e?.code === '23505' || e?.cause?.code === '23505';
-}
-
 // ── save ───────────────────────────────────────────────────────────────────
 
 export async function saveDraftFlow(auth: AuthContext, input: SaveDraftFlowInput): Promise<SaveDraftFlowResult> {
@@ -211,7 +207,7 @@ async function createDraft(auth: AuthContext, input: SaveDraftFlowInput): Promis
       })
       .returning();
   } catch (err) {
-    if (isUniqueViolation(err)) return { saved: false, error: 'slug_conflict', validation: stripDocument(validation) };
+    if (isPgUniqueViolation(err)) return { saved: false, error: 'slug_conflict', validation: stripDocument(validation) };
     throw err;
   }
   if (!row) throw new Error('Failed to save flow');

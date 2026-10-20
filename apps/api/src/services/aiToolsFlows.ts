@@ -152,7 +152,7 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
         properties: {
           orgId: { type: 'string', description: 'Only this organization and its partner-wide flows (UUID).' },
           status: { type: 'string', enum: ['draft', 'enabled', 'paused', 'disabled'] },
-          limit: { type: 'integer', description: 'Maximum flows to return (1-100, default 50).' },
+          limit: { type: 'integer', description: 'Maximum flows to return (default 50, max 100)' },
         },
       },
     },
