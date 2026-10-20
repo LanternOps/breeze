@@ -179,6 +179,15 @@ describe('serviceOverview', () => {
     expect(dto.groups[0]!.deliverables[0]!.lastDelivered!.artifactState).toBe('attached');
   });
 
+  it('excludes deliverables on a draft or cancelled contract, keeping standalone ones (#9307)', async () => {
+    seed({ enableReports: true, evidence: [] });
+    await serviceOverview(ORG_ID, { timezone: 'UTC', now: NOW });
+    // wheres[0] is the branding read; wheres[1] is the deliverable list.
+    const q = new PgDialect().sqlToQuery(state.wheres[1] as SQL);
+    expect(q.sql).toMatch(/"service_deliverables"\."contract_id" is null or "contracts"\."status" not in/);
+    expect(q.params).toEqual(expect.arrayContaining(['draft', 'cancelled']));
+  });
+
   it('orders contract groups before the standalone group and carries key dates', async () => {
     state.rows.push([{ enableReports: true }]);
     state.rows.push([
@@ -216,6 +225,14 @@ describe('deliverableOccurrences', () => {
     state.rows.push([]);  // deliverable lookup finds nothing (RLS or portal_visible=false)
     await expect(deliverableOccurrences(ORG_ID, 'other-org-deliverable', { timezone: 'UTC', now: NOW }))
       .resolves.toBeNull();
+  });
+
+  it('treats a deliverable on a draft or cancelled contract as not found (#9307)', async () => {
+    state.rows.push([]);
+    await deliverableOccurrences(ORG_ID, 'd1', { timezone: 'UTC', now: NOW });
+    const q = new PgDialect().sqlToQuery(state.wheres[0] as SQL);
+    expect(q.sql).toMatch(/"service_deliverables"\."contract_id" is null or "contracts"\."status" not in/);
+    expect(q.params).toEqual(expect.arrayContaining(['draft', 'cancelled']));
   });
 
   it('caps the history at 24 and marks a rescheduled occurrence', async () => {
@@ -353,6 +370,19 @@ describe('serviceTile', () => {
     const onTime = new PgDialect().sqlToQuery(compiled.onTime as SQL);
     expect(onTime.sql).toContain('at time zone');
     expect(onTime.params).toContain('America/Los_Angeles');
+  });
+
+  it('leaves deliverables on a draft or cancelled contract out of the counts and next due (#9307)', async () => {
+    state.rows.push([{ enableService: true }]);
+    state.rows.push([{ onTime: 0, late: 0, missed: 0 }]);
+    state.rows.push([]);
+    await serviceTile(ORG_ID, { timezone: 'UTC', now: NOW });
+    // wheres[0] is the branding read; [1] the counts; [2] the next-due read.
+    for (const where of [state.wheres[1], state.wheres[2]]) {
+      const q = new PgDialect().sqlToQuery(where as SQL);
+      expect(q.sql).toMatch(/"service_deliverables"\."contract_id" is null or "contracts"\."status" not in/);
+      expect(q.params).toEqual(expect.arrayContaining(['draft', 'cancelled']));
+    }
   });
 
   it('is ok with zero counts when something is still scheduled ahead', async () => {

@@ -184,6 +184,28 @@ function groupEvidence(
   return byOccurrence;
 }
 
+/** Contract statuses whose deliverables the customer has not agreed to (draft)
+ *  or no longer has (cancelled). Matches the contract-end key-date filter. */
+const HIDDEN_CONTRACT_STATUSES = ['draft', 'cancelled'] as const;
+
+/** #9307: a deliverable publishes when it is standalone or its contract is
+ *  past draft and not cancelled. Callers left-join `contracts` with
+ *  `deliverableContractJoin()`; a contract row the join cannot see comes back
+ *  NULL, and NULL `NOT IN` is not true, so it fails closed. */
+function contractPublishable() {
+  return or(
+    isNull(serviceDeliverables.contractId),
+    notInArray(contracts.status, [...HIDDEN_CONTRACT_STATUSES]),
+  );
+}
+
+function deliverableContractJoin() {
+  return and(
+    eq(contracts.id, serviceDeliverables.contractId),
+    eq(contracts.orgId, serviceDeliverables.orgId),
+  );
+}
+
 interface OccurrenceRow {
   id: string;
   deliverableId: string;
@@ -222,14 +244,12 @@ export async function serviceOverview(
       contractName: contracts.name,
     })
     .from(serviceDeliverables)
-    .leftJoin(contracts, and(
-      eq(contracts.id, serviceDeliverables.contractId),
-      eq(contracts.orgId, serviceDeliverables.orgId),
-    ))
+    .leftJoin(contracts, deliverableContractJoin())
     .where(and(
       eq(serviceDeliverables.orgId, orgId),
       eq(serviceDeliverables.portalVisible, true),
       eq(serviceDeliverables.active, true),
+      contractPublishable(),
       lte(serviceDeliverables.effectiveFrom, today),
       or(
         isNull(serviceDeliverables.effectiveUntil),
@@ -309,7 +329,7 @@ export async function serviceOverview(
       eq(contracts.orgId, orgId),
       sql`${contracts.endDate} IS NOT NULL`,
       gte(contracts.endDate, today),
-      notInArray(contracts.status, ['draft', 'cancelled']),
+      notInArray(contracts.status, [...HIDDEN_CONTRACT_STATUSES]),
     ))
     .orderBy(asc(contracts.endDate)) as unknown as Array<{
       id: string; name: string; endDate: string;
@@ -424,10 +444,12 @@ export async function deliverableOccurrences(
       artifactRequired: serviceDeliverables.artifactRequired,
     })
     .from(serviceDeliverables)
+    .leftJoin(contracts, deliverableContractJoin())
     .where(and(
       eq(serviceDeliverables.orgId, orgId),
       eq(serviceDeliverables.id, deliverableId),
       eq(serviceDeliverables.portalVisible, true),
+      contractPublishable(),
     ))
     .limit(1) as unknown as Array<{
       id: string; name: string; cadence: PortalDeliverableCadence; artifactRequired: boolean;
@@ -526,9 +548,11 @@ export async function serviceTile(
       eq(serviceDeliverables.id, serviceDeliverableOccurrences.deliverableId),
       eq(serviceDeliverables.orgId, serviceDeliverableOccurrences.orgId),
     ))
+    .leftJoin(contracts, deliverableContractJoin())
     .where(and(
       eq(serviceDeliverableOccurrences.orgId, orgId),
       eq(serviceDeliverables.portalVisible, true),
+      contractPublishable(),
       gte(serviceDeliverableOccurrences.dueAt, windowStart),
     )) as unknown as Array<{ onTime: number; late: number; missed: number }>;
 
@@ -542,9 +566,11 @@ export async function serviceTile(
       eq(serviceDeliverables.id, serviceDeliverableOccurrences.deliverableId),
       eq(serviceDeliverables.orgId, serviceDeliverableOccurrences.orgId),
     ))
+    .leftJoin(contracts, deliverableContractJoin())
     .where(and(
       eq(serviceDeliverableOccurrences.orgId, orgId),
       eq(serviceDeliverables.portalVisible, true),
+      contractPublishable(),
       inArray(serviceDeliverableOccurrences.status, [...LIVE_STATUSES]),
       gte(serviceDeliverableOccurrences.dueAt, today),
     ))

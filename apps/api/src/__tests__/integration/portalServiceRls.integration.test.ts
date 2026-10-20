@@ -273,6 +273,49 @@ describe('portal service RLS', () => {
     });
   });
 
+  it('hides a draft or cancelled contract and its deliverables until the contract is active (#9307)', async () => {
+    const admin = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const seeded = await seedOrgService(admin, org.id, partner.id, 'juliet');
+    await admin.update(contracts).set({ name: 'juliet DO NOT ACTIVATE', status: 'draft' })
+      .where(eq(contracts.id, seeded.contractId));
+    // A standalone deliverable (no contract) must be unaffected.
+    await admin.insert(serviceDeliverables).values({
+      orgId: org.id, contractId: null, name: 'juliet standalone review',
+      cadence: 'monthly', anchorDueDate: '2026-10-31', effectiveFrom: '2026-01-01',
+      portalVisible: true,
+    });
+
+    for (const status of ['draft', 'cancelled'] as const) {
+      await admin.update(contracts).set({ status }).where(eq(contracts.id, seeded.contractId));
+      await withDbAccessContext(portalContext(org.id), async () => {
+        const overview = await serviceOverview(org.id, ARGS);
+        const serialized = JSON.stringify(overview);
+        // Positive control: the page still renders the standalone deliverable.
+        expect(overview.groups.map((g) => g.source)).toEqual(['standalone']);
+        expect(serialized).toContain('juliet standalone review');
+        expect(serialized).not.toContain('DO NOT ACTIVATE');
+        expect(serialized).not.toContain('juliet sign-in log review');
+
+        await expect(deliverableOccurrences(org.id, seeded.deliverableId, ARGS)).resolves.toBeNull();
+        // The draft contract's only occurrence must not count on the tile.
+        await expect(serviceTile(org.id, ARGS)).resolves.toMatchObject({ status: 'no_data' });
+      });
+    }
+
+    await admin.update(contracts).set({ name: 'juliet plan', status: 'active' })
+      .where(eq(contracts.id, seeded.contractId));
+    await withDbAccessContext(portalContext(org.id), async () => {
+      const overview = await serviceOverview(org.id, ARGS);
+      expect(overview.groups.map((g) => g.source)).toEqual(['contract', 'standalone']);
+      expect(overview.groups[0]!.contract).toEqual({ id: seeded.contractId, name: 'juliet plan' });
+      expect(overview.groups[0]!.deliverables.map((d) => d.name)).toEqual(['juliet sign-in log review']);
+      expect((await deliverableOccurrences(org.id, seeded.deliverableId, ARGS))!.occurrences).toHaveLength(1);
+      await expect(serviceTile(org.id, ARGS)).resolves.toMatchObject({ status: 'ok', deliveredOnTime: 1 });
+    });
+  });
+
   it('returns no tile at all when enable_service is off', async () => {
     const admin = getTestDb();
     const partner = await createPartner();
