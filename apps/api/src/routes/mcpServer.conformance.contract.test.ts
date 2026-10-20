@@ -171,7 +171,7 @@ function appWithMcpRoutes() {
   return new Hono().route('/mcp', mcpServerRoutes);
 }
 
-import { SUPPORTED_MCP_PROTOCOL_VERSIONS, LATEST_MCP_PROTOCOL_VERSION } from '../services/mcpProtocol';
+import { LEGACY_MCP_PROTOCOL_VERSIONS, LATEST_LEGACY_MCP_PROTOCOL_VERSION } from '../services/mcpProtocol';
 
 import { API_VERSION } from '../version';
 
@@ -209,7 +209,7 @@ const TOOLS: ReturnType<typeof import('../services/aiTools').getToolDefinitions>
   { name: 'manage_services', description: 'd', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'restart'] } } } },
 ];
 
-describe.each([...SUPPORTED_MCP_PROTOCOL_VERSIONS])('MCP conformance for protocol %s', (version) => {
+describe.each([...LEGACY_MCP_PROTOCOL_VERSIONS])('MCP conformance for protocol %s', (version) => {
   beforeEach(() => {
     vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '0');
     mocks.getToolDefinitions.mockReturnValue(TOOLS);
@@ -314,7 +314,7 @@ describe('MCP conformance — negotiation edge cases', () => {
   it('an unsupported requested version gets the latest supported one', async () => {
     const app = appWithMcpRoutes();
     const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2026-07-28' } }) });
-    expect((await init.json()).result.protocolVersion).toBe(LATEST_MCP_PROTOCOL_VERSION);
+    expect((await init.json()).result.protocolVersion).toBe(LATEST_LEGACY_MCP_PROTOCOL_VERSION);
   });
   it('an unsupported MCP-Protocol-Version header on a later request is a 400 with -32600', async () => {
     const app = appWithMcpRoutes();
