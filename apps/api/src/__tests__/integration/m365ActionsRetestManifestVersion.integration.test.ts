@@ -58,6 +58,7 @@ vi.mock('../../services/m365ControlPlane/writeActionRuntimeConfig', async (impor
     ...actual,
     loadM365CustomerGraphActionsRuntimeConfig: () => FAKE_ACTIONS_CONFIG,
     isM365CustomerGraphActionsOnboardingEnabledForOrg: () => true,
+    m365CustomerGraphActionsOnboardingAvailability: () => 'enabled' as const,
   };
 });
 
@@ -92,6 +93,7 @@ vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
     onboardingOrgIds: '*',
   }),
   isM365CustomerGraphReadOnboardingEnabledForOrg: () => true,
+  m365CustomerGraphReadOnboardingAvailability: () => 'enabled',
 }));
 
 const READ_CLIENT_ID = '55555555-5555-4555-8555-555555555555';

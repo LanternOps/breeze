@@ -52,6 +52,8 @@ vi.mock('../../services/m365ControlPlane/writeActionRuntimeConfig', async (impor
     ...actual,
     loadM365CustomerGraphActionsRuntimeConfig: () => FAKE_ACTIONS_CONFIG,
     isM365CustomerGraphActionsOnboardingEnabledForOrg: () => onboardingState.enabled,
+    m365CustomerGraphActionsOnboardingAvailability: () =>
+      (onboardingState.enabled ? 'enabled' : 'org_not_enabled') as 'enabled' | 'org_not_enabled',
   };
 });
 
@@ -70,6 +72,7 @@ vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
     executorSigningKid: 'key-1',
     onboardingOrgIds: '*',
   }),
+  m365CustomerGraphReadOnboardingAvailability: () => 'enabled',
 }));
 
 const FAKE_ACTIONS_CONFIG = {
