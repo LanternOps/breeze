@@ -38,7 +38,9 @@ describe('validateBrandingValues', () => {
   it.each([
     ['U+202E right-to-left override', 'Acme\u202Eytiruces tfosorciM'],
     ['U+200B zero-width space', 'Mic\u200Brosoft'],
-    ['U+200D zero-width joiner', 'Acme\u200DIT'],
+    ['U+202A left-to-right embedding', 'Acme\u202AIT'],
+    ['U+2069 pop directional isolate', 'Acme\u2069IT'],
+    ['U+2060 word joiner', 'Mic\u2060rosoft'],
     ['U+FEFF zero-width no-break space', '\uFEFFAcme'],
     ['U+2066 left-to-right isolate', 'Acme\u2066IT'],
     ['U+E000 private use', 'Acme\uE000'],
@@ -49,6 +51,22 @@ describe('validateBrandingValues', () => {
     for (const field of Object.keys(TEXT_LIMITS)) {
       expect(validateBrandingValues({ [field]: payload })).toEqual({ ok: false, errors: [`control:${field}`] });
     }
+  });
+
+  // Allowlist: ZWNJ/ZWJ are required by Persian and Indic scripts and by emoji
+  // sequences; unassigned code points are allowed so a Unicode table older than
+  // the emoji does not refuse it.
+  it.each([
+    ['ZWNJ in a Persian name', 'می\u200Cخواهم'],
+    ['ZWNJ in a Hindi/Devanagari name', 'क्\u200Cष'],
+    ['emoji ZWJ sequence', 'Acme 👩\u200D💻'],
+    ['unassigned code point', 'Acme \u0378'],
+  ])('accepts %s', (_label, name) => {
+    expect(validateBrandingValues({ companyName: name })).toEqual({ ok: true, value: { companyName: name } });
+  });
+
+  it('still rejects an RLO payload alongside an allowed ZWNJ', () => {
+    expect(validateBrandingValues({ companyName: 'می\u200Cخواهم\u202E' })).toEqual({ ok: false, errors: ['control:companyName'] });
   });
 
   it('still accepts ordinary non-ASCII names', () => {
