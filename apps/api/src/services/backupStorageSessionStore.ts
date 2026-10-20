@@ -17,7 +17,12 @@ import {
 } from '../db/schema';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { resolveBackupProviderConfig } from './backupProviderConfig';
-import { attestationJoinColumns, boundIndexCondition, joinedAttestation } from './backupRestoreIntegrity';
+import {
+  attestationJoinColumns,
+  boundIndexCondition,
+  joinedAttestation,
+  snapshotPredatesDeviceIncarnationSql,
+} from './backupRestoreIntegrity';
 import { evaluateStorageSessionBudget } from './backupStorageSessionBudget';
 import { loadOriginKeyRootRows, type KeyRootPair } from './backupOriginKeyRoots';
 import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
@@ -39,6 +44,8 @@ const snapshotColumns = () => ({
   fileIndexManifestSha256: backupSnapshots.fileIndexManifestSha256,
   fileIndexError: backupSnapshots.fileIndexError,
   integrityStatus: backupSnapshots.integrityStatus,
+  // #8318 §5.4: read in the same statement as the attestation it qualifies.
+  producedBeforeDeviceIncarnation: snapshotPredatesDeviceIncarnationSql(),
   metadata: backupSnapshots.metadata,
   // One row per snapshot at most (unique on snapshot_db_id).
   attestation: attestationJoinColumns(),

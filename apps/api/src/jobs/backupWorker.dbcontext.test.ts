@@ -187,7 +187,7 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
         rows = []; label = 'baseFallbackProbeSelect';
       } else if (keys.length === 1 && keys[0] === 'id') {
         rows = []; label = 'baseLockOrRetirementSelect';
-      } else if (keys.length === 1 && keys[0] === 'integrityVersion') {
+      } else if (keys.length === 2 && keys[0] === 'integrityVersion' && keys[1] === 'incarnationStartedAt') {
         // stampDispatchPinAndIdentity's helper-capability read: an older
         // helper, so the legacy base selection runs.
         rows = []; label = 'deviceIntegritySelect';

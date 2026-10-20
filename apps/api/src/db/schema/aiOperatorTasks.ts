@@ -99,6 +99,9 @@ export const AI_OPERATOR_TARGET_DETACH_REASONS = [
   'device_deleted',
   'org_merged',
   'scope_invalidated',
+  // #8318 §5.6: the install incarnation boundary detaches live work when a
+  // new agent install takes over the device row.
+  'device_reinstalled',
 ] as const;
 export type AiOperatorTargetDetachReason = (typeof AI_OPERATOR_TARGET_DETACH_REASONS)[number];
 

@@ -65,7 +65,7 @@ export const AI_OPERATOR_TASK_OUTCOMES = [
 export type AiOperatorTaskOutcome = (typeof AI_OPERATOR_TASK_OUTCOMES)[number];
 
 export const AI_OPERATOR_TARGET_DETACH_REASONS = [
-  'device_moved', 'device_deleted', 'org_merged', 'scope_invalidated',
+  'device_moved', 'device_deleted', 'org_merged', 'scope_invalidated', 'device_reinstalled',
 ] as const;
 export type AiOperatorTargetDetachReason = (typeof AI_OPERATOR_TARGET_DETACH_REASONS)[number];
 

@@ -117,6 +117,7 @@ import {
   commandAcceptsAgentResultCondition,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
 } from '../services/commandResultAcceptance';
+import { commandIncarnationIsCurrentCondition } from '../services/commandIncarnation';
 import { markCommandResultProcessingFailed } from '../services/commandResultProcessingFailure';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
@@ -2249,6 +2250,9 @@ async function applyLateCallerVerifyRejection(
           eq(devices.agentId, agentId),
           eq(deviceCommands.type, 'caller_verify'),
           eq(deviceCommands.targetRole, 'agent'),
+          // #8318 §5.2: never for a command of an earlier install incarnation
+          // (the REST twin refuses it before its late-receipt branch).
+          commandIncarnationIsCurrentCondition(),
         ))
         .limit(1),
     'callerVerification.wsLateRejection.owner'),
@@ -2372,9 +2376,17 @@ async function processCommandResult(
               eq(deviceCommands.deviceId, did),
               eq(deviceCommands.targetRole, 'agent'),
               or(
+                // Carries the #8318 incarnation check itself.
                 commandAcceptsAgentResultCondition(),
-                and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
-                and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                // #8318 §5.2: the cleanup-evidence branches never take an
+                // earlier install incarnation's row either.
+                and(
+                  commandIncarnationIsCurrentCondition(),
+                  or(
+                    and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                    and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                  ),
+                ),
               )
             )
           )
@@ -2405,8 +2417,13 @@ async function processCommandResult(
                 eq(deviceCommands.targetRole, 'agent'),
                 or(
                   commandAcceptsAgentResultCondition(),
-                  and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
-                  and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                  and(
+                    commandIncarnationIsCurrentCondition(),
+                    or(
+                      and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                      and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                    ),
+                  ),
                 )
               )
             )

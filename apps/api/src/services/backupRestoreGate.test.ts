@@ -84,6 +84,17 @@ describe('decideRestoreGate', () => {
     expect(decideRestoreGate({ ...base, integrity: attested('producer_only') })).toEqual({ kind: 'allow' });
   });
 
+  it('#8318 §5.4: a producer-only snapshot an EARLIER install of the device took loses the free pass', () => {
+    const earlier = (trust: 'server_verified' | 'producer_only'): RestoreIntegrity => ({
+      ...(attested(trust) as Extract<RestoreIntegrity, { mode: 'attested' }>),
+      producedByEarlierIncarnation: true,
+    });
+    expect(decideRestoreGate({ ...base, integrity: earlier('producer_only') }))
+      .toEqual({ kind: 'authorization_required', reason: 'producer_only_other_target' });
+    // Server-verified trust does not depend on the producer.
+    expect(decideRestoreGate({ ...base, integrity: earlier('server_verified') })).toEqual({ kind: 'allow' });
+  });
+
   it('requires an authorization to restore a device-local snapshot onto another device', () => {
     expect(decideRestoreGate({ ...base, targetDeviceId: OTHER, integrity: attested('producer_only') }))
       .toEqual({ kind: 'authorization_required', reason: 'producer_only_other_target' });

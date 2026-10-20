@@ -849,7 +849,7 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
         // #6351: stampDispatchPinAndIdentity's fallback-reason probe — runs
         // only when no base was selected, and only feeds the log line.
         rows = [];
-      } else if (keys.length === 1 && keys[0] === 'integrityVersion') {
+      } else if (keys.length === 2 && keys[0] === 'integrityVersion' && keys[1] === 'incarnationStartedAt') {
         rows = []; // helper-capability read: an older helper (legacy base selection)
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
@@ -1398,7 +1398,7 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
         rows = [];
       } else if (keys.length === 1 && keys[0] === 'id') {
         rows = [];
-      } else if (keys.length === 1 && keys[0] === 'integrityVersion') {
+      } else if (keys.length === 2 && keys[0] === 'integrityVersion' && keys[1] === 'incarnationStartedAt') {
         rows = []; // helper-capability read: an older helper (legacy base selection)
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);

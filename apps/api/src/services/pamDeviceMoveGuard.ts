@@ -137,6 +137,12 @@ export async function assertPamDeviceOrgMoveAllowed(
 export const OWNERSHIP_CHANGED_CAUSE = 'ownership_changed';
 
 /**
+ * `details.cause` of the `expired` audit row the install incarnation boundary
+ * writes (#8318 §5.3). Same binding rule as {@link OWNERSHIP_CHANGED_CAUSE}.
+ */
+export const DEVICE_REINSTALLED_CAUSE = 'device_reinstalled';
+
+/**
  * OD4 (spec §13): an ownership change expires every still-live elevation
  * request that never reached actuation — the approval was made under the
  * departing org's policy. Status `expired`, plus an `expired` elevation_audit
@@ -154,7 +160,43 @@ export async function expireUnactuatedElevationRequests(
   executor: SqlExecutor,
   input: { orgId: string; deviceId?: string },
 ): Promise<number> {
+  const ids = await expireLiveElevationRequests(executor, {
+    orgId: input.orgId,
+    deviceId: input.deviceId,
+    cause: OWNERSHIP_CHANGED_CAUSE,
+    unactuatedOnly: true,
+  });
+  return ids.length;
+}
+
+/**
+ * Install incarnation boundary (#8318 §5.3, §13 decision 2): the install the
+ * grants were made for is gone, so EVERY still-live elevation request of the
+ * device in its current org expires — actuated ones included (their
+ * actuations are failed by the boundary in the same transaction) — with an
+ * `expired` audit row, details.cause `device_reinstalled`. Returns the ids
+ * expired, so the caller can expire their pending approval requests too.
+ */
+export async function expireElevationRequestsForReinstall(
+  executor: SqlExecutor,
+  input: { orgId: string; deviceId: string },
+): Promise<string[]> {
+  return expireLiveElevationRequests(executor, {
+    orgId: input.orgId,
+    deviceId: input.deviceId,
+    cause: DEVICE_REINSTALLED_CAUSE,
+    unactuatedOnly: false,
+  });
+}
+
+async function expireLiveElevationRequests(
+  executor: SqlExecutor,
+  input: { orgId: string; deviceId?: string; cause: string; unactuatedOnly: boolean },
+): Promise<string[]> {
   const deviceFilter = input.deviceId ? sql`AND r.device_id = ${input.deviceId}::uuid` : sql``;
+  const actuationFilter = input.unactuatedOnly
+    ? sql`AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)`
+    : sql``;
   const expired = rows<{ id: string }>(await executor.execute(sql`
     WITH due AS (
       SELECT r.id, r.status::text AS prior_status
@@ -162,7 +204,7 @@ export async function expireUnactuatedElevationRequests(
        WHERE r.org_id = ${input.orgId}::uuid
          ${deviceFilter}
          AND r.status IN ('pending', 'approved', 'auto_approved', 'actuating')
-         AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)
+         ${actuationFilter}
        FOR NO KEY UPDATE OF r
     ), flipped AS (
       UPDATE elevation_requests e
@@ -173,12 +215,12 @@ export async function expireUnactuatedElevationRequests(
     ), audited AS (
       INSERT INTO elevation_audit (org_id, elevation_request_id, event_type, actor, details, occurred_at)
       SELECT f.org_id, f.id, 'expired', 'system',
-             jsonb_build_object('cause', ${OWNERSHIP_CHANGED_CAUSE}::text, 'prior_status', f.prior_status),
+             jsonb_build_object('cause', ${input.cause}::text, 'prior_status', f.prior_status),
              now()
         FROM flipped f
       RETURNING elevation_request_id
     )
     SELECT elevation_request_id AS id FROM audited
   `));
-  return expired.length;
+  return expired.map((row) => row.id);
 }

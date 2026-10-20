@@ -26,7 +26,7 @@ import {
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
-import { eq, ne, and, or, desc, gt, sql, isNull, lt, inArray } from 'drizzle-orm';
+import { eq, ne, and, or, desc, gt, gte, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
@@ -1207,7 +1207,10 @@ async function stampDispatchPinAndIdentity(params: {
     // to check the downloaded bytes against. No such candidate means a full
     // run. Older helpers keep the unrestricted selection.
     const [deviceRow] = await tx
-      .select({ integrityVersion: devices.backupIntegrityProtocolVersion })
+      .select({
+        integrityVersion: devices.backupIntegrityProtocolVersion,
+        incarnationStartedAt: devices.incarnationStartedAt,
+      })
       .from(devices)
       .where(eq(devices.id, params.deviceId))
       .limit(1);
@@ -1264,6 +1267,13 @@ async function stampDispatchPinAndIdentity(params: {
       or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, dispatchedAt)),
       inArray(backupJobs.status, INCREMENTAL_BASE_JOB_STATUSES),
       isNull(backupSnapshotRetirements.id),
+      // #8318 §5.4: a snapshot taken before the device's current install
+      // incarnation began was produced by an earlier install, so the chain
+      // stops there and the first backup of the new install is a full one.
+      // NULL (never reattached) adds no filter.
+      deviceRow?.incarnationStartedAt
+        ? gte(backupSnapshots.timestamp, deviceRow.incarnationStartedAt)
+        : undefined,
     );
     const retirementJoin = and(
       eq(backupSnapshotRetirements.storageIdentity, storageIdentity),

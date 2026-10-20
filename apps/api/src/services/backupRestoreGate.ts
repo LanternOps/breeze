@@ -135,7 +135,12 @@ export function decideRestoreGate(input: {
   if (!integrity) return refuse('snapshot_unresolved');
   if (integrity.mode === 'attested') {
     if (integrity.trust === 'server_verified') return { kind: 'allow' };
-    return integrity.sourceDeviceId === input.targetDeviceId
+    // The producer-only free pass is for the install that produced the
+    // snapshot. #8318 §5.4 (§13 decision 3): one taken before the target's
+    // current install incarnation began was produced by an EARLIER install of
+    // the same device row, so it goes through the same confirmed approval as a
+    // restore to another device.
+    return integrity.sourceDeviceId === input.targetDeviceId && integrity.producedByEarlierIncarnation !== true
       ? { kind: 'allow' }
       : { kind: 'authorization_required', reason: 'producer_only_other_target' };
   }
