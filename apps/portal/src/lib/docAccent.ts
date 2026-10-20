@@ -13,7 +13,7 @@
  * and instead delivers the accent through ONE nonced `<style>` ELEMENT emitted
  * by the layout, which is where `Astro.locals.cspNonce` lives. Documents then
  * consume `var(--doc-accent)` through the `.doc-accent-*` classes in
-  * document.css/globals.css, which are ordinary stylesheet rules and never blocked.
+ * document.css/globals.css, which are ordinary stylesheet rules and never blocked.
  */
 
 /**
