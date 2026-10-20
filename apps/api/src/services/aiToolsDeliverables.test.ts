@@ -220,7 +220,7 @@ describe('list_deliverables paging (#9313)', () => {
     expect(out.hasMore).toBe(true);
     expect(out.nextCursor).toEqual(expect.any(String));
     expect(out.showing).toBe(out.deliverables.length);
-    expect(out.deliverables[0]).toEqual(expect.objectContaining({ id: all[0].id, name: all[0].name, cadence: 'quarterly', contractName: 'Managed Services Agreement', nextDue: '2026-12-15', status: 'on_track', openCount: 1, portalVisible: true, active: true }));
+    expect(out.deliverables[0]).toEqual(expect.objectContaining({ id: all[0]!.id, name: all[0]!.name, cadence: 'quarterly', contractName: 'Managed Services Agreement', nextDue: '2026-12-15', status: 'on_track', openCount: 1, portalVisible: true, active: true }));
     expect(out.deliverables[0]).toHaveProperty('lastDelivered');
     expect(out.deliverables[0]).not.toHaveProperty('description');
     expect(out.deliverables[0]).not.toHaveProperty('instructions');
