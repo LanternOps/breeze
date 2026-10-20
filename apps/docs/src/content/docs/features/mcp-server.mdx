@@ -88,9 +88,9 @@ The hints are for the client's cache. Breeze keeps no server-side result cache.
 
 | Condition | HTTP | JSON-RPC code |
 |---|---|---|
-| Header and body disagree | 400 | `-32020` |
+| A routing header is missing or disagrees with the body | 400 | `-32020` |
 | Unknown `_meta` protocol version (`data.supported` and `data.requested` are returned) | 400 | `-32022` |
-| `clientCapabilities` missing | 400 | `-32602` |
+| `clientCapabilities` missing or not an object | 400 | `-32602` |
 | Stateless envelope while the flag is off, a legacy version inside a stateless envelope, or `initialize` carrying a stateless `_meta` | 400 | `-32600` |
 | Unknown or legacy-only method in the stateless era | 404 | `-32601` |
 
@@ -724,6 +724,7 @@ Every JSON-RPC request is recorded in the Breeze audit log with:
 
 - The API key ID as the actor
 - The JSON-RPC method (e.g., `mcp.tools.call`)
+- Whether a verified legacy session was active (`details.hasSession`; always `false` for stateless requests)
 - Success or failure result
 - Error message (if any)
 - A server-minted per-request UUID as the resource id. Request and tool-call audit rows use it; the client never supplies it.
@@ -755,7 +756,7 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 | `MCP_SESSION_TTL_SECONDS` | `660` | Idle lifetime, in seconds, of a minted streamable-HTTP session principal in Redis (11 minutes). |
 | `MCP_INSUFFICIENT_SCOPE_HTTP_403` | `false` | When `true`, an OAuth bearer's `tools/call` refused only for a missing tier scope (`ai:write` or `ai:execute`) returns HTTP 403 with an `insufficient_scope` `WWW-Authenticate` challenge instead of HTTP 200. Never applies to API-key callers, domain, approval, MFA or RBAC denials, or the legacy HTTP+SSE transport. See [Authentication challenges](#authentication-challenges). |
 | `MCP_STATELESS_ENABLED` | `false` | When `true`, `POST /api/v1/mcp/sse` also speaks the stateless `2026-07-28` protocol alongside the legacy `initialize` + `Mcp-Session-Id` era. Off by default; a stateless request is then refused with HTTP 400 (`-32600`) and dual-era clients fall back to `initialize`. The API refuses to boot on a non-boolean value. See [Protocol 2026-07-28 (stateless)](#protocol-2026-07-28-stateless). |
-| `MCP_HEADER_MISMATCH_ALERT_THRESHOLD` | `50` | Stateless requests whose `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header disagrees with the body are refused with `-32020`. When the mismatch count reaches this value, the API sends one Sentry warning per minute. |
+| `MCP_HEADER_MISMATCH_ALERT_THRESHOLD` | `50` | Stateless requests whose `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header is missing or disagrees with the request body are refused with `-32020`. Per API process and per 60-second window: when this many true header/body mismatches occur within one window, one Sentry warning is raised for that window. Read at startup. |
 
 ### OAuth 2.1
 

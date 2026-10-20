@@ -5,7 +5,7 @@ vi.mock('./sentry', () => ({ captureMessage: captureMessageMock }));
 
 import {
   MCP_CACHE_TTL_MS, __resetMcpHeaderMismatchWindowForTests, buildDiscoverResult, decorateModernResult,
-  recordMcpHeaderMismatch, resolveMcpHttpStatus,
+  recordMcpEraRejection, recordMcpHeaderMismatch, resolveMcpHttpStatus,
 } from './mcpModernResult';
 import { MCP_SERVER_INSTRUCTIONS } from './mcpGuidance';
 import { API_VERSION } from '../version';
@@ -84,6 +84,38 @@ describe('mcpModernResult', () => {
       vi.advanceTimersByTime(60_000);
       recordMcpHeaderMismatch();
       expect(captureMessageMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recordMcpEraRejection', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-20T00:00:00Z'));
+      __resetMcpHeaderMismatchWindowForTests();
+      captureMessageMock.mockReset();
+      warn.mockClear();
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it('logs the first rejection per reason per window, with a boot total', () => {
+      recordMcpEraRejection('modern_disabled');
+      recordMcpEraRejection('modern_disabled');
+      recordMcpEraRejection('unsupported_version');
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls[0]![1]).toEqual({ reason: 'modern_disabled', windowSeconds: 60, totalSinceBoot: 1 });
+      expect(warn.mock.calls[1]![1]).toEqual({ reason: 'unsupported_version', windowSeconds: 60, totalSinceBoot: 1 });
+      vi.advanceTimersByTime(60_000);
+      recordMcpEraRejection('modern_disabled');
+      expect(warn).toHaveBeenCalledTimes(3);
+      expect(warn.mock.calls[2]![1]).toEqual({ reason: 'modern_disabled', windowSeconds: 60, totalSinceBoot: 3 });
+    });
+
+    it('only a true header/body mismatch feeds the smuggling tripwire', () => {
+      for (let i = 0; i < 60; i++) recordMcpEraRejection('header_modern_without_meta');
+      expect(captureMessageMock).not.toHaveBeenCalled();
+      for (let i = 0; i < 50; i++) recordMcpEraRejection('header_mismatch');
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -103,6 +103,12 @@ describe('decodeMcpHeaderValue', () => {
     expect(decodeMcpHeaderValue('get\u0001weather')).toEqual({ ok: false });
     expect(decodeMcpHeaderValue('café')).toEqual({ ok: false });
   });
+  it('does not strip a leading BOM (a BOM-prefixed name is a different name)', () => {
+    const v = `=?base64?${Buffer.from('\uFEFFget_weather').toString('base64')}?=`;
+    expect(decodeMcpHeaderValue(v)).toEqual({ ok: true, value: '\uFEFFget_weather' });
+    expect(classify({ name: 'get_weather' }, { name: v }))
+      .toMatchObject({ era: 'reject', rejection: { error: { code: MCP_HEADER_MISMATCH } } });
+  });
   it('the sentinel is case-sensitive', () => {
     // '=?BASE64?...?=' is not the sentinel; it is a literal value.
     expect(decodeMcpHeaderValue('=?BASE64?YQ==?=')).toEqual({ ok: true, value: '=?BASE64?YQ==?=' });

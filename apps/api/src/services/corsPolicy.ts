@@ -11,10 +11,20 @@ import type { Context } from 'hono';
 import type { cors } from 'hono/cors';
 import { createCorsOriginResolver } from './corsOrigins';
 
-export const resolveCorsOrigin = createCorsOriginResolver({
-  configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
-  nodeEnv: process.env.NODE_ENV,
-});
+// Built on first use, NOT at import: index.ts loads `.env` in its body, which
+// runs after every import has evaluated. Reading CORS_ALLOWED_ORIGINS /
+// NODE_ENV at import would see a .env-only deployment as development.
+let cachedResolver: ((origin?: string) => string | null) | null = null;
+
+export function resolveCorsOrigin(origin?: string): string | null {
+  if (!cachedResolver) {
+    cachedResolver = createCorsOriginResolver({
+      configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
+      nodeEnv: process.env.NODE_ENV,
+    });
+  }
+  return cachedResolver(origin);
+}
 
 export const CORS_ALLOW_HEADERS: readonly string[] = Object.freeze([
   'Content-Type',
@@ -47,27 +57,23 @@ export const CORS_MIDDLEWARE_OPTIONS: Parameters<typeof cors>[0] = {
   maxAge: 86400,
 };
 
-// Legacy-era disallowed-Origin counter: one aggregated log line per window.
+// Legacy-era disallowed-Origin counter (per process). Logs the FIRST
+// occurrence in each 60 s window with the process boot total, so a single
+// stray request still produces a line; the enforcement follow-up reads
+// `totalSinceBoot` per instance.
 const LEGACY_ORIGIN_LOG_WINDOW_MS = 60_000;
 let legacyRejectTotal = 0;
 let legacyWindowStart = 0;
-let legacyWindowCount = 0;
 
 function countLegacyOriginReject(): void {
   legacyRejectTotal += 1;
   const now = Date.now();
-  if (now - legacyWindowStart < LEGACY_ORIGIN_LOG_WINDOW_MS) {
-    legacyWindowCount += 1;
-    return;
-  }
-  // At most one line per window while it is happening; the running total is
-  // what the "30 days of zero" enforcement decision reads from logs.
+  if (legacyWindowStart !== 0 && now - legacyWindowStart < LEGACY_ORIGIN_LOG_WINDOW_MS) return;
+  legacyWindowStart = now;
   console.warn('[MCP] legacy-era request with a disallowed Origin (log-only; enforcement is a follow-up)', {
-    previousWindowCount: legacyWindowCount,
+    windowSeconds: 60,
     totalSinceBoot: legacyRejectTotal,
   });
-  legacyWindowStart = now;
-  legacyWindowCount = 1;
 }
 
 /** Process-lifetime count of legacy-era requests whose Origin would be refused. */
@@ -95,5 +101,5 @@ export function checkMcpOrigin(c: Context, era: 'legacy' | 'modern'): Response |
 export function __resetMcpOriginCountersForTests(): void {
   legacyRejectTotal = 0;
   legacyWindowStart = 0;
-  legacyWindowCount = 0;
+  cachedResolver = null;
 }

@@ -24,6 +24,26 @@ describe('corsPolicy', () => {
     }
   });
 
+  it('reads CORS env on first use, not at import (index.ts loads .env after imports run)', async () => {
+    const saved = { NODE_ENV: process.env.NODE_ENV, CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS };
+    vi.resetModules();
+    delete process.env.CORS_ALLOWED_ORIGINS;
+    process.env.NODE_ENV = 'development';
+    const fresh = await import('./corsPolicy');
+    // dotenv runs here in production, after every import has evaluated.
+    process.env.NODE_ENV = 'production';
+    process.env.CORS_ALLOWED_ORIGINS = 'https://app.example.com';
+    try {
+      expect(fresh.resolveCorsOrigin('https://app.example.com')).toBe('https://app.example.com');
+      expect(fresh.resolveCorsOrigin('http://10.0.0.5:4321')).toBeNull();
+      expect(fresh.resolveCorsOrigin('http://localhost:4321')).toBeNull();
+    } finally {
+      process.env.NODE_ENV = saved.NODE_ENV;
+      if (saved.CORS_ALLOWED_ORIGINS === undefined) delete process.env.CORS_ALLOWED_ORIGINS;
+      else process.env.CORS_ALLOWED_ORIGINS = saved.CORS_ALLOWED_ORIGINS;
+    }
+  });
+
   it('resolveCorsOrigin keeps the dev defaults (non-production test env)', () => {
     expect(resolveCorsOrigin('http://localhost:4321')).toBe('http://localhost:4321');
     expect(resolveCorsOrigin('https://evil.example.net')).toBeNull();
@@ -89,8 +109,9 @@ describe('corsPolicy', () => {
       expect(mcpLegacyOriginRejectCount()).toBe(1);
       await run('legacy', 'https://evil.example.net');
       expect(mcpLegacyOriginRejectCount()).toBe(2);
-      // One aggregated log line per window, not one per request.
+      // One line per window (on its first occurrence), not one per request.
       expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![1]).toEqual({ windowSeconds: 60, totalSinceBoot: 1 });
     });
 
     it('legacy request with an allowed or absent Origin is not counted', async () => {

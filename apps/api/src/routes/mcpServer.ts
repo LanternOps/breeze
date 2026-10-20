@@ -72,9 +72,9 @@ import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
-import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpStatelessEnabled, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader, type McpProtocolVersion } from '../services/mcpProtocol';
-import { classifyMcpRequest, validateJsonRpcEnvelope, MCP_HEADER_MISMATCH, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
-import { buildDiscoverResult, decorateModernResult, recordMcpHeaderMismatch, resolveMcpHttpStatus } from '../services/mcpModernResult';
+import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, isModernMcpProtocolVersion, mcpStatelessEnabled, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader, type McpProtocolVersion } from '../services/mcpProtocol';
+import { classifyMcpRequest, validateJsonRpcEnvelope, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
+import { buildDiscoverResult, decorateModernResult, recordMcpEraRejection, resolveMcpHttpStatus } from '../services/mcpModernResult';
 import { buildMcpRequestCorrelation, correlationAuditDetails, type McpRequestCorrelation } from '../services/mcpRequestCorrelation';
 import { checkMcpOrigin } from '../services/corsPolicy';
 import {
@@ -514,6 +514,10 @@ mcpServerRoutes.get(
       apiKey.orgId ?? (apiKey.partnerId ? await resolveDefaultOrgId(apiKey.partnerId) : null);
     writeAuditEvent(c, {
       orgId: openAuditOrgId,
+      // Explicit: this route runs no auth-context middleware, so the audit
+      // writer could not derive the partner, and a partner-scoped key whose
+      // default org fails to resolve would otherwise write an unattributed row.
+      partnerId: apiKey.partnerId ?? null,
       actorType: 'api_key',
       actorId: apiKey.id,
       action: 'mcp.transport.http_sse.open',
@@ -793,9 +797,17 @@ function readMcpRequestHeaders(c: Context) {
   };
 }
 
+/** Body carries the stateless `_meta` version, or the header names a modern version. */
+function presentsAsStateless(c: Context, body: JsonRpcRequest): boolean {
+  const meta = body.params?._meta;
+  const metaHasVersion = typeof meta === 'object' && meta !== null && !Array.isArray(meta)
+    && (meta as Record<string, unknown>)['io.modelcontextprotocol/protocolVersion'] !== undefined;
+  return metaHasVersion || isModernMcpProtocolVersion(c.req.header('MCP-Protocol-Version'));
+}
+
 /** A pre-dispatch era rejection (D-B13/D-B15): its own status, never dispatched. */
 function mcpRejectionResponse(c: Context, body: JsonRpcRequest, rejection: McpRejection): Response {
-  if (rejection.error.code === MCP_HEADER_MISMATCH) recordMcpHeaderMismatch();
+  recordMcpEraRejection(rejection.reason);
   return c.json({ jsonrpc: '2.0', id: body.id ?? null, error: rejection.error }, rejection.status);
 }
 
@@ -998,6 +1010,13 @@ mcpServerRoutes.post(
     const pre = await preflightMcpRequest(c, undefined);
     if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
 
+    // D-B23: an invalid Origin is 403 for anything that presents as the
+    // stateless era — checked BEFORE classification so a malformed stateless
+    // request from a bad Origin still gets 403, not a 400. Legacy-looking
+    // requests are log-only (Open Decision 4, default A).
+    const originDenied = checkMcpOrigin(c, presentsAsStateless(c, pre.body) ? 'modern' : 'legacy');
+    if (originDenied) return originDenied;
+
     // B-W03 (#6157, D-B13): one era decision per request. The flag is read
     // once here and that snapshot drives both classification and every
     // advertised version list.
@@ -1008,10 +1027,6 @@ mcpServerRoutes.post(
       endpoint: 'streamable',
     });
     if (decision.era === 'reject') return mcpRejectionResponse(c, pre.body, decision.rejection);
-    // D-B23: an invalid Origin is 403 in the stateless era; log-only in legacy
-    // (Open Decision 4, default A).
-    const originDenied = checkMcpOrigin(c, decision.era);
-    if (originDenied) return originDenied;
     if (decision.era === 'modern') return handleModernStreamableRequest(c, pre.body, decision.meta);
 
     const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;

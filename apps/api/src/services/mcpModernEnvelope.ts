@@ -3,10 +3,11 @@
  *
  * - `validateJsonRpcEnvelope` — the JSON-RPC shape every request (both eras)
  *   must have before any field is dereferenced (D-B15).
- * - `classifyMcpRequest` — the one era decision per request (D-B13). Its
- *   decision table is the authority; rows are evaluated in order and the first
- *   match wins. See the plan: docs/superpowers/plans/ai-mcp/
- *   2026-10-18-mcp-modernization-b03-stateless-cimd.md, Task 2.
+ * - `classifyMcpRequest` — the one era decision per request. The numbered
+ *   "Row N" comments in the function are the decision table: rows are
+ *   evaluated in order and the first match wins. (Design history: plan
+ *   docs/superpowers/plans/ai-mcp/2026-10-18-mcp-modernization-b03-stateless-cimd.md,
+ *   decision D-B13.)
  * - `decodeMcpHeaderValue` — SEP-2243 header value decoding (`=?base64?…?=`).
  *
  * No I/O, no env reads: the caller snapshots `MCP_STATELESS_ENABLED` once per
@@ -107,7 +108,9 @@ export function decodeMcpHeaderValue(raw: string): { ok: true; value: string } |
   const encoded = match[1] ?? '';
   if (!STRICT_BASE64.test(encoded)) return { ok: false };
   try {
-    const value = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'base64'));
+    // ignoreBOM: a BOM-prefixed name is a different name; stripping it would
+    // let the header and body disagree byte-wise yet compare equal.
+    const value = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.from(encoded, 'base64'));
     return { ok: true, value };
   } catch {
     return { ok: false };

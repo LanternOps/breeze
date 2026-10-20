@@ -359,11 +359,16 @@ describe('stateless 2026-07-28 on POST /sse', () => {
 
   it('modern path ignores and never echoes Mcp-Session-Id', async () => {
     const owned = await legacyInit();
+    const storedBefore = [...__sessionStore.entries()];
     mocks.writeAuditEvent.mockReset();
     redisState.get.mockClear();
+    redisState.setex.mockClear();
     const res = await modern('tools/list', { headers: { 'Mcp-Session-Id': owned } });
     expect(res.status).toBe(200);
     expect(res.headers.get('mcp-session-id')).toBeNull();
+    expect(redisState.get).not.toHaveBeenCalled();
+    expect(redisState.setex).not.toHaveBeenCalled();
+    expect([...__sessionStore.entries()]).toEqual(storedBefore);
     const [row] = requestAuditRows();
     expect(row!.details.correlation.sessionId).toBeNull();
     expect(row!.details.correlation.era).toBe('modern');
@@ -697,6 +702,63 @@ describe('legacy HTTP+SSE deprecation and Origin (B-W03 Task 6)', () => {
     });
     expect(res.status).toBe(200);
     warn.mockRestore();
+  });
+
+  it('a disallowed Origin is 403 even when the stateless request is also malformed', async () => {
+    const res = await modern('tools/call', {
+      params: { name: 'list_devices', arguments: {} },
+      headers: { Origin: 'https://evil.example.net', 'Mcp-Name': 'other_tool' },
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe(-32600);
+  });
+
+  it('POST /message with a disallowed Origin is not enforced (log-only)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const res = await app().request('/mcp/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', Origin: 'https://evil.example.net' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(200);
+    warn.mockRestore();
+  });
+
+  it('GET /sse open audit names the partner explicitly for partner-scoped keys', async () => {
+    mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+      setApiKeyContext(c);
+      c.set('apiKey', { ...c.get('apiKey'), orgId: null, partnerId: '0d0d0d0d-0000-4000-8000-00000000000d' });
+      return next();
+    });
+    const res = await app().request('/mcp/sse', { method: 'GET', headers: { 'X-API-Key': 'k' } });
+    await res.body?.cancel();
+    const open = mocks.writeAuditEvent.mock.calls
+      .map((call) => call[1] as Record<string, any>)
+      .find((e) => e.action === 'mcp.transport.http_sse.open');
+    expect(open!.partnerId).toBe('0d0d0d0d-0000-4000-8000-00000000000d');
+  });
+});
+
+describe('Mcp-Name base64 sentinel through the route (Review Focus 2)', () => {
+  const b64 = (v: string) => `=?base64?${Buffer.from(v).toString('base64')}?=`;
+
+  it('a correctly encoded non-ASCII Mcp-Name dispatches', async () => {
+    mocks.getToolTier.mockReturnValue(1);
+    mocks.executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
+    const res = await modern('tools/call', { params: { name: 'résumé_tool', arguments: {} }, headers: { 'Mcp-Name': b64('résumé_tool') } });
+    expect(res.status).toBe(200);
+    expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    expect(mocks.executeTool.mock.calls[0]![0]).toBe('résumé_tool');
+  });
+
+  it.each([
+    ['bad base64', '=?base64?!!!?='],
+    ['decoded mismatch', `=?base64?${Buffer.from('other_tool').toString('base64')}?=`],
+  ])('%s → 400 -32020, not dispatched', async (_label, header) => {
+    const res = await modern('tools/call', { params: { name: 'get_weather', arguments: {} }, headers: { 'Mcp-Name': header } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe(-32020);
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 });
 

@@ -12,6 +12,7 @@
 import { API_VERSION } from '../version';
 import { envInt } from '../utils/envInt';
 import { MCP_SERVER_INSTRUCTIONS } from './mcpGuidance';
+import type { McpRejectReason } from './mcpModernEnvelope';
 import { supportedMcpProtocolVersions } from './mcpProtocol';
 import { captureMessage } from './sentry';
 
@@ -114,9 +115,33 @@ export function recordMcpHeaderMismatch(): void {
   });
 }
 
-/** Test-only: reset the per-process tripwire window. */
+// Pre-dispatch era rejections write no audit row (nothing was dispatched), so
+// count them per reason and log the first one per reason per window. This is
+// what sizes the rollout (e.g. `modern_disabled` = clients trying stateless
+// while the flag is off) and makes probing visible.
+const ERA_REJECTION_LOG_WINDOW_MS = 60_000;
+const eraRejectionTotals = new Map<McpRejectReason, number>();
+const eraRejectionWindowStart = new Map<McpRejectReason, number>();
+
+export function recordMcpEraRejection(reason: McpRejectReason): void {
+  const total = (eraRejectionTotals.get(reason) ?? 0) + 1;
+  eraRejectionTotals.set(reason, total);
+  const now = Date.now();
+  const windowStart = eraRejectionWindowStart.get(reason);
+  if (windowStart === undefined || now - windowStart >= ERA_REJECTION_LOG_WINDOW_MS) {
+    eraRejectionWindowStart.set(reason, now);
+    console.warn('[MCP] request rejected before dispatch', { reason, windowSeconds: 60, totalSinceBoot: total });
+  }
+  // Only a true header/body disagreement suggests a rewriting gateway or
+  // smuggling; a modern header without `_meta` is client misconfiguration.
+  if (reason === 'header_mismatch') recordMcpHeaderMismatch();
+}
+
+/** Test-only: reset the per-process tripwire and rejection windows. */
 export function __resetMcpHeaderMismatchWindowForTests(): void {
   mismatchWindowStart = 0;
   mismatchWindowCount = 0;
   mismatchWindowAlerted = false;
+  eraRejectionTotals.clear();
+  eraRejectionWindowStart.clear();
 }

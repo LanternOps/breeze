@@ -370,5 +370,10 @@ describe('cacheable results', () => {
     expect(names(monitoring)).not.toContain('list_patches');
     expect(names(monitoring)).toContain('get_alert_summary');
     expect(names(all)).not.toEqual(names(monitoring));
+    // A, B, A: a module-level cache keyed on anything coarser than the
+    // principal would hand A's third call B's list.
+    current = PRINCIPALS[0]!;
+    const allAgain = await modernCall('tools/list');
+    expect(names(allAgain)).toEqual(names(all));
   });
 });
