@@ -7,3 +7,4 @@ export * from './reportTypes';
 export * from './types/remediationTrigger';
 export * from './validators/remediationTrigger';
 export * from './trustCenter';
+export * from './flows';
