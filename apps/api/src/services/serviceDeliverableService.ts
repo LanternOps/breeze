@@ -122,7 +122,7 @@ function buildSummary(row: ServiceDeliverableRow, contractName: string | null, o
   // #9308: with no live occurrence, report the planned due date (the sweep has not
   // materialized it yet). `occ` carries every status so a waived/delivered slot is
   // never re-planned.
-  const nextDue = liveNext ?? (row.active
+  const nextDue = liveNext ?? (row.active && (row.effectiveUntil === null || today <= row.effectiveUntil)
     ? nextPlannedDueDate({
       anchorDueDate: row.anchorDueDate, cadence: row.cadence as Cadence,
       effectiveFrom: row.effectiveFrom, effectiveUntil: row.effectiveUntil,

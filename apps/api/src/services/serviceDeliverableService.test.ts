@@ -749,6 +749,13 @@ describe('serviceDeliverableService', () => {
       expect(s.nextDue).toBe('2999-01-31');
       expect(s.status).not.toBe('inactive');
     });
+    it('an expired deliverable does not plan a past nextDue', async () => {
+      queueResult([row({ cadence: 'monthly', anchorDueDate: '2020-01-31', effectiveFrom: '2020-01-01', effectiveUntil: '2020-06-30' })]);
+      queueResult([]);
+      const s = await getDeliverable('org1', 'd1', actor);
+      expect(s.nextDue).toBeNull();
+      expect(s.status).toBe('inactive');
+    });
     it('a deactivated one-time stays inactive', async () => {
       queueResult([row({ cadence: 'one_time', active: false })]);
       queueResult([]);
