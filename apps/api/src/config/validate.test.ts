@@ -3783,6 +3783,28 @@ describe('TOOL_SOURCES_ENABLED boolean guard', () => {
   );
 });
 
+describe('FLOWS_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('FLOWS_ENABLED');
+    expect(buildEnvParseInput({ FLOWS_ENABLED: 'sentinel' }).FLOWS_ENABLED).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off ', ''])(
+    'accepts %j',
+    (value) => {
+      withEnv({ ...validEnv, FLOWS_ENABLED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it.each(['maybe', 'ture', 'enabled', 'y'])('refuses boot on the near-miss value %s', (value) => {
+    withEnv({ ...validEnv, FLOWS_ENABLED: value }, () => {
+      expect(() => validateConfig()).toThrow(/FLOWS_ENABLED must be a boolean/);
+    });
+  });
+});
+
 describe('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS boolean guard + hosted refusal', () => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS');

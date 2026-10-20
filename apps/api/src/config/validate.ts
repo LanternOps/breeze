@@ -716,6 +716,10 @@ const envObjectSchema = z
     // boolean format only, same class as AGENT_AUTO_PROMOTE above.
     TOOL_SOURCES_ENABLED: z.string().optional(),
 
+    // Tool Catalog W3 (#5218). Platform kill switch for Flows, read at runtime
+    // by flowsEnabled() in env.ts. Boolean-format validation only.
+    FLOWS_ENABLED: z.string().optional(),
+
     // Task A7. Sub-flag allowing a tool source to target private/loopback
     // egress — an SSRF vector on the hosted platform, so it's refused there
     // outright in the superRefine below. Read at runtime by
@@ -2177,6 +2181,18 @@ const envSchema = envObjectSchema
         path: ['TOOL_SOURCES_ENABLED'],
         message:
           'TOOL_SOURCES_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the tool-catalog / tool-sources feature is dark).',
+      });
+    }
+
+    // FLOWS_ENABLED (Tool Catalog W3, #5218). Same treatment as
+    // TOOL_SOURCES_ENABLED: a typo must fail boot rather than read as off.
+    const flowsRaw = (data.FLOWS_ENABLED ?? '').trim().toLowerCase();
+    if (flowsRaw && !boolValues.has(flowsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['FLOWS_ENABLED'],
+        message:
+          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the Flows feature is dark).',
       });
     }
 

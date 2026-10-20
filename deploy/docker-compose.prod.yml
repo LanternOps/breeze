@@ -369,6 +369,8 @@ x-api-env: &api-env
   # Tool Sources page and every /tool-sources route stay invisible in every
   # deployment (same trap as AI_OPERATOR_* above).
   TOOL_SOURCES_ENABLED: ${TOOL_SOURCES_ENABLED:-false}
+  # Flows (#5218) kill switch; default off. Must be mapped here or the API never sees it.
+  FLOWS_ENABLED: ${FLOWS_ENABLED:-false}
   # Self-hosted only: let a tool source point at a private/loopback address.
   TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: ${TOOL_SOURCES_ALLOW_PRIVATE_EGRESS:-false}
   # AI execution plane (W01). Hosted-only; all optional. Empty strings are
