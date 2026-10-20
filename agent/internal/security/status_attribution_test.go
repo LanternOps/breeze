@@ -9,8 +9,8 @@ func TestResolveWSCPrimary(t *testing.T) {
 		Registered:         true,
 		RealTimeProtection: false,
 	}
-	cylance := AVProduct{
-		DisplayName:        "CylancePROTECT",
+	unmapped := AVProduct{
+		DisplayName:        "Acme Endpoint Shield",
 		Provider:           "other",
 		Registered:         true,
 		RealTimeProtection: true,
@@ -36,14 +36,14 @@ func TestResolveWSCPrimary(t *testing.T) {
 			// #3593: Defender is listed first but disabled; the active third-party
 			// product wins the provider label even though its name maps to "other".
 			name:           "third-party with rtp beats disabled defender",
-			products:       []AVProduct{defender, cylance},
+			products:       []AVProduct{defender, unmapped},
 			wantProvider:   "other",
 			wantRealTime:   true,
 			wantIdentified: true,
 		},
 		{
 			name:           "first product reporting rtp wins",
-			products:       []AVProduct{defender, sophos, cylance},
+			products:       []AVProduct{defender, sophos, unmapped},
 			wantProvider:   "sophos",
 			wantRealTime:   true,
 			wantIdentified: true,

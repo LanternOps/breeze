@@ -285,6 +285,9 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     case 'f_secure':
     case 'fsecure':
       return 'withsecure';
+    // CylancePROTECT, rebranded Aurora Endpoint Defense (#9178).
+    case 'cylance':
+      return 'cylance';
     case 'unknown':
       return 'unknown';
     default:

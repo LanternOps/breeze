@@ -128,6 +128,10 @@ func providerFromName(name string) string {
 		return "emsisoft"
 	case strings.Contains(lower, "webroot"):
 		return "webroot"
+	// CylancePROTECT was rebranded Aurora Endpoint Defense, but Windows Security
+	// Center still registers it as "CylancePROTECT" (#9178).
+	case strings.Contains(lower, "cylance"):
+		return "cylance"
 	// WithSecure is F-Secure's business brand; older agents still register as
 	// "F-Secure ...".
 	case strings.Contains(lower, "withsecure"), strings.Contains(lower, "f-secure"):
@@ -207,8 +211,8 @@ func resolveWSCPrimary(products []AVProduct) (AVProduct, bool) {
 // only source reporting active real-time protection. It must NOT when another
 // registered product already supplied both the provider and the
 // real-time-protection value: provider "other" is a real attribution for a
-// registered product whose display name we don't map (CylancePROTECT, for
-// example), not a "nothing found" sentinel. Treating it as one relabelled a
+// registered product whose display name we don't map, not a "nothing found"
+// sentinel. Treating it as one relabelled a
 // third-party product's real-time protection as Defender's, reporting
 // real_time_protection=true on a windows_defender row for a device where
 // Defender was fully disabled (#3593).

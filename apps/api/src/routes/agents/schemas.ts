@@ -781,6 +781,7 @@ export const securityProviderValues = [
   'emsisoft',
   'webroot',
   'withsecure',
+  'cylance',
   'other',
   'unknown'
 ] as const;
