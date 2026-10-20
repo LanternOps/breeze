@@ -2,7 +2,16 @@
 import { render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DashboardTiles, DashboardUnavailable } from './DashboardTiles';
-import type { DashboardDto } from '@breeze/shared';
+import type { BackupTileDto, DashboardDto } from '@breeze/shared';
+
+const BACKUP_TILE: BackupTileDto = {
+  status: 'not_configured',
+  completedAt: null,
+  verificationType: null,
+  configured: 0,
+  total: 10,
+  asOf: '2026-09-02T12:00:00.000Z',
+};
 
 const dashboard: DashboardDto = {
   asOf: '2026-09-02T12:00:00.000Z',
@@ -30,14 +39,7 @@ const dashboard: DashboardDto = {
     timezone: 'America/Denver',
     asOf: '2026-09-02T12:00:00.000Z',
   },
-  backup: {
-    status: 'not_configured',
-    completedAt: null,
-    verificationType: null,
-    configured: 0,
-    total: 10,
-    asOf: '2026-09-02T12:00:00.000Z',
-  },
+  backup: BACKUP_TILE,
   support: {
     status: 'ok',
     openTickets: 3,
@@ -152,7 +154,7 @@ describe('DashboardTiles', () => {
             total: 2,
           },
           backup: {
-            ...dashboard.backup,
+            ...BACKUP_TILE,
             status: 'ok',
             completedAt: '2026-09-02T11:00:00.000Z',
             verificationType: 'automated',
@@ -191,7 +193,7 @@ describe('DashboardTiles', () => {
             total: 2,
           },
           backup: {
-            ...dashboard.backup,
+            ...BACKUP_TILE,
             status: 'ok',
             completedAt: '2026-09-02T11:00:00.000Z',
             verificationType: 'automated',
@@ -294,7 +296,7 @@ describe('DashboardTiles', () => {
         dashboard={{
           ...dashboard,
           backup: {
-            ...dashboard.backup,
+            ...BACKUP_TILE,
             status: 'ok',
             completedAt: '2026-09-02T11:00:00.000Z',
             verificationType: 'automated',
@@ -399,5 +401,23 @@ describe('security score rule', () => {
     expect(rule.getAttribute('aria-label')).toMatch(/^Score \d+ of 100/);
     const fill = rule.querySelector('[data-testid="portal-score-rule-fill"]');
     expect(fill?.getAttribute('width')).toBe(String(dashboard.securityScore.score));
+  });
+});
+
+describe('DashboardTiles — backup row gate (#9351)', () => {
+  const withoutBackup = (): DashboardDto => {
+    const d = { ...dashboard, devicesProtected: { ...dashboard.devicesProtected, protected: 2, unprotected: 0, unknown: 0, total: 2 } };
+    delete (d as { backup?: unknown }).backup;
+    return d;
+  };
+
+  it('omits the backup row when the dashboard carries no backup tile', () => {
+    render(<DashboardTiles dashboard={withoutBackup()} />);
+    expect(screen.queryByTestId('portal-dashboard-tile-backup')).toBeNull();
+  });
+
+  it('headlines devices only when there is no backup tile', () => {
+    render(<DashboardTiles dashboard={withoutBackup()} />);
+    expect(screen.getByText('All 2 devices have endpoint protection.')).toBeTruthy();
   });
 });

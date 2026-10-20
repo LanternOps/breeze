@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type {
   BackupDeviceRow,
   BackupOverviewDto,
+  BackupTileDto,
   DashboardDto,
   EnrichedPortalDevice,
   NetworkOverviewDto,
@@ -35,6 +36,8 @@ describe('portal visibility DTOs', () => {
 
   it('exports every approved top-level DTO', () => {
     expectTypeOf<DashboardDto>().toBeObject();
+    // #9351: absent (not null) when the org turned portal Backups off.
+    expectTypeOf<DashboardDto['backup']>().toEqualTypeOf<BackupTileDto | undefined>();
     expectTypeOf<SecurityOverviewDto>().toBeObject();
     expectTypeOf<SecurityDeviceRow>().toBeObject();
     expectTypeOf<BackupOverviewDto>().toBeObject();

@@ -180,6 +180,33 @@ describe('GET /dashboard', () => {
   });
 });
 
+describe('GET /dashboard backup gate (#9351)', () => {
+  const base = { asOf: '2026-09-02T12:00:00.000Z', timezone: 'America/Denver' };
+  const backup = {
+    status: 'not_configured', completedAt: null, verificationType: null,
+    configured: 0, total: 10, asOf: '2026-09-02T12:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    routerState.brandingRows = [];
+  });
+
+  it('passes the backup tile through and changes the ETag only by its presence', async () => {
+    mocks.dashboardForOrg.mockResolvedValueOnce({ ...base, backup });
+    const on = await isolatedApp().request('/dashboard');
+    mocks.dashboardForOrg.mockResolvedValueOnce({ ...base, backup });
+    const onAgain = await isolatedApp().request('/dashboard');
+    expect((await on.json()).backup).toEqual(backup);
+    expect(on.headers.get('etag')).toBe(onAgain.headers.get('etag'));
+
+    mocks.dashboardForOrg.mockResolvedValueOnce({ ...base });
+    const off = await isolatedApp().request('/dashboard');
+    expect('backup' in (await off.json())).toBe(false);
+    expect(off.headers.get('etag')).not.toBe(on.headers.get('etag'));
+  });
+});
+
 describe('GET /dashboard through the real portal router', () => {
   beforeEach(() => {
     vi.clearAllMocks();

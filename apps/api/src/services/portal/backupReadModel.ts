@@ -51,8 +51,8 @@ function firstPartyConfiguredSql(orgId: string, deviceId: SQL) {
  * "Devices protected" tile is a different concept (endpoint security) and is
  * labelled as such.
  *
- * The dashboard tile is built for every org unconditionally
- * (`portal/dashboard.ts`), so third-party backup rows fold in only when the
+ * The Backups page builds this for every org; the dashboard row is gated by
+ * `dashboardBackupTile` below. Third-party backup rows fold in only when the
  * org has turned portal Backups on — the same gate as the Backups page (spec
  * "Client portal"). With it off, or with no third-party rows, the tile is
  * exactly what it was before #6012.
@@ -156,6 +156,22 @@ export async function backupTile(orgId: string, now: Date) {
     total,
     asOf: now.toISOString(),
   };
+}
+
+/**
+ * Dashboard row. `null` = portal Backups is off (or no branding row), in which
+ * case `dashboardForOrg` omits the `backup` key entirely — the same pattern as
+ * `serviceTile`, so a customer whose backup Breeze does not report on is not
+ * told "Not set up" (#9351). No backup data is read in that case.
+ */
+export async function dashboardBackupTile(orgId: string, now: Date) {
+  const [branding] = await db
+    .select({ enableBackups: portalBranding.enableBackups })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, orgId))
+    .limit(1);
+  if (branding?.enableBackups !== true) return null;
+  return backupTile(orgId, now);
 }
 
 // ── third-party rows, merged onto the device ledger (#6012) ────────────────

@@ -70,7 +70,7 @@ function accountHeadline(dashboard: DashboardDto): string {
   }
 
   const backup = dashboard.backup;
-  if (backup.status === 'ok' && backup.completedAt) {
+  if (backup && backup.status === 'ok' && backup.completedAt) {
     clauses.push(`backups verified ${midSentenceWhen(backup.completedAt)}`);
   }
 
@@ -271,7 +271,7 @@ function DevicesValue({ tile }: { tile: DashboardDto['devicesProtected'] }) {
   );
 }
 
-function BackupValue({ tile, timezone }: { tile: DashboardDto['backup']; timezone: string }) {
+function BackupValue({ tile, timezone }: { tile: NonNullable<DashboardDto['backup']>; timezone: string }) {
   if (tile.completedAt == null) return null;
   // A date is a figure column (tabular), but not a serif moment: Literata is
   // reserved for titles and money.
@@ -354,13 +354,15 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
           )}
         </LedgerRow>
 
-        <LedgerRow
-          testId="portal-dashboard-tile-backup"
-          label="Last backup verified"
-          status={effectiveStatus(backup.status, backup.completedAt != null)}
-        >
-          <BackupValue tile={backup} timezone={dashboard.timezone} />
-        </LedgerRow>
+        {backup && (
+          <LedgerRow
+            testId="portal-dashboard-tile-backup"
+            label="Last backup verified"
+            status={effectiveStatus(backup.status, backup.completedAt != null)}
+          >
+            <BackupValue tile={backup} timezone={dashboard.timezone} />
+          </LedgerRow>
+        )}
 
         {/* Capability -> protection -> work delivered -> requests. Absent
             entirely when the org has not enabled the Service surface. */}

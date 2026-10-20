@@ -63,7 +63,7 @@ vi.mock('../backupHealthReadModel', () => ({
   getFirstPartyCoverageForDevices: health.getFirstPartyCoverageForDevices,
 }));
 
-import { backupDevicesPage, backupOverview, backupTile } from './backupReadModel';
+import { backupDevicesPage, backupOverview, backupTile, dashboardBackupTile } from './backupReadModel';
 import { db } from '../../db';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -664,6 +664,28 @@ describe('backupDevicesPage', () => {
     rows(K.pageRows, []);
     await expect(backupDevicesPage(ORG_ID, args({ page: 2 }))).resolves.toMatchObject({
       dataStatus: 'ok', data: [], pagination: { page: 2, limit: 25, total: 2 },
+    });
+  });
+});
+
+describe('dashboardBackupTile (#9351)', () => {
+  it('is null and reads no backup data when portal Backups is off', async () => {
+    rows(K.branding, [{ enableBackups: false }]);
+    await expect(dashboardBackupTile(ORG_ID, NOW)).resolves.toBeNull();
+    expect(state.keys).not.toContain(K.tileTotal);
+  });
+
+  it('is null when the org has no branding row', async () => {
+    await expect(dashboardBackupTile(ORG_ID, NOW)).resolves.toBeNull();
+    expect(state.keys).not.toContain(K.tileTotal);
+  });
+
+  it('is the ordinary tile when portal Backups is on', async () => {
+    rows(K.branding, [{ enableBackups: true }]);
+    rows(K.tileTotal, [{ total: 10 }]);
+    rows(K.tileConfigured, [{ configured: 0 }]);
+    await expect(dashboardBackupTile(ORG_ID, NOW)).resolves.toMatchObject({
+      status: 'not_configured', total: 10,
     });
   });
 });

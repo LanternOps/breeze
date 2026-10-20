@@ -3,7 +3,7 @@ import { and, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { invoices, quotes } from '../../db/schema';
 import { actionItemsTile } from './actionItemsReadModel';
-import { backupTile } from './backupReadModel';
+import { dashboardBackupTile } from './backupReadModel';
 import { patchesAppliedTile } from './patchReadModel';
 import {
   devicesProtectedTile,
@@ -60,7 +60,7 @@ export async function dashboardForOrg(
     securityScoreTile(orgId, args.now),
     devicesProtectedTile(orgId, args.now),
     patchesAppliedTile(orgId, args),
-    backupTile(orgId, args.now),
+    dashboardBackupTile(orgId, args.now),
     supportTile(orgId, args, ticketOwnership),
     actionItemsTile(orgId, args.now),
     awaitingYouTile(orgId, args.now),
@@ -73,7 +73,6 @@ export async function dashboardForOrg(
     securityScore,
     devicesProtected,
     patchesApplied,
-    backup,
     support,
     actionItems,
     awaitingYou,
@@ -82,5 +81,8 @@ export async function dashboardForOrg(
     // had before this wave (routes/portal/dashboard.ts builds the validator
     // from the payload).
     ...(service ? { service } : {}),
+    // Same rule for enable_backups (#9351): absent, not null, so an org with
+    // Backups on keeps its exact payload and ETag.
+    ...(backup ? { backup } : {}),
   };
 }

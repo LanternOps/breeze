@@ -17,7 +17,7 @@ vi.mock('../../services/portal/patchReadModel', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../services/portal/patchReadModel')>(),
   patchesAppliedTile: vi.fn(),
 }));
-vi.mock('../../services/portal/backupReadModel', () => ({ backupTile: vi.fn() }));
+vi.mock('../../services/portal/backupReadModel', () => ({ dashboardBackupTile: vi.fn() }));
 vi.mock('../../services/portal/actionItemsReadModel', () => ({ actionItemsTile: vi.fn() }));
 vi.mock('../../services/portal/serviceReadModel', () => ({ serviceTile: vi.fn() }));
 

@@ -98,7 +98,8 @@ export interface DashboardDto {
   securityScore: SecurityScoreTileDto;
   devicesProtected: DevicesProtectedTileDto;
   patchesApplied: PatchesAppliedTileDto;
-  backup: BackupTileDto;
+  /** Absent when the org turned portal Backups off (#9351). */
+  backup?: BackupTileDto;
   support: SupportTileDto;
   actionItems: ActionItemsTileDto;
   awaitingYou: AwaitingYouTileDto;
