@@ -260,6 +260,7 @@
     "consentUnavailable": "La conexión basada en consentimiento aún no está disponible en esta instancia de Breeze.",
     "selectOrganization": "Selecciona una organización para conectar su inquilino de Microsoft 365.",
     "noTenantForOrg": "No hay ningún inquilino de Microsoft 365 conectado a {{orgName}}",
+    "tenantConnectedToOrg": "{{tenantName}} · conectado a {{orgName}}",
     "noTenant": "No hay ningún inquilino de Microsoft 365 conectado a esta organización",
     "tenantId": "ID del inquilino",
     "copyTenantId": "Copiar ID del inquilino",
@@ -537,6 +538,11 @@
     "pageOf": "Página {{current}} de {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Configurando integraciones para",
+      "thisOrganization": "esta organización",
+      "change": "Cambiar"
+    },
     "webhooks": "Webhooks",
     "notifications": "Notificaciones",
     "security": "Seguridad",

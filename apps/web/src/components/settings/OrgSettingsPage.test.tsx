@@ -13,8 +13,9 @@ vi.mock('../../stores/auth', () => ({
 }));
 
 const storeFetchOrganizations = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const storeSelectOrganization = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: Object.assign(vi.fn(), { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) })
+  useOrgStore: Object.assign(vi.fn(), { getState: () => ({ fetchOrganizations: storeFetchOrganizations, selectOrganization: storeSelectOrganization }) })
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -680,6 +681,17 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
 
     await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
     expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
+  });
+
+  it('offers a Cloud tenants entry that switches the workspace to THIS org, then opens the integrations hash (#9318)', async () => {
+    render(<OrgSettingsPage orgId="org-9" />);
+
+    await screen.findByTestId('org-name-input');
+    await userEvent.click(screen.getByRole('link', { name: /cloud tenants/i }));
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/integrations#cloud-tenants', { replace: true }));
+    expect(storeSelectOrganization).toHaveBeenCalledWith('org-9');
+    expect(storeSelectOrganization.mock.invocationCallOrder[0]).toBeLessThan(navigateToMock.mock.invocationCallOrder[0]!);
   });
 
   it('offers the compact section select for narrow viewports', async () => {

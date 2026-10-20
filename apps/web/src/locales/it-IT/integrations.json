@@ -260,6 +260,7 @@
     "consentUnavailable": "La connessione basata sul consenso non è ancora disponibile su questa istanza di Breeze.",
     "selectOrganization": "Seleziona un'organizzazione per collegarne il tenant Microsoft 365.",
     "noTenantForOrg": "Nessun tenant Microsoft 365 collegato a {{orgName}}",
+    "tenantConnectedToOrg": "{{tenantName}} · collegato a {{orgName}}",
     "noTenant": "Nessun tenant Microsoft 365 collegato a questa organizzazione",
     "tenantId": "ID tenant",
     "copyTenantId": "Copia ID tenant",
@@ -537,6 +538,11 @@
     "pageOf": "Pagina {{current}} di {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Configurazione delle integrazioni per",
+      "thisOrganization": "questa organizzazione",
+      "change": "Cambia"
+    },
     "webhooks": "Webhooks",
     "notifications": "Notifiche",
     "security": "Sicurezza",

@@ -10,6 +10,7 @@ import {
   Contact,
   Copy,
   Check,
+  Cloud,
   CreditCard,
   Fingerprint,
   Globe,
@@ -59,7 +60,7 @@ import { usePageItemName } from '../layout/usePageItemName';
 type TabKey =
   | 'general' | 'contacts' | 'branding' | 'portal' | 'notifications' | 'security'
   | 'approval-security' | 'ai' | 'event-logs' | 'audit-retention' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
-  | 'extensions';
+  | 'extensions' | 'cloud-tenants';
 
 // Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
 // SettingsSectionNav). Hashes are the section keys (already kebab-case).
@@ -76,6 +77,10 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
       // landing on General with a silently-ignored hash.
       { key: 'billing', hash: 'billing', label: 'orgSettingsPage.nav.billing', description: 'orgSettingsPage.nav.billingDescription', icon: CreditCard },
       { key: 'pax8', hash: 'pax8', label: 'orgSettingsPage.nav.pax8', description: 'orgSettingsPage.nav.pax8Description', icon: PackageOpen },
+      // Navigation only (#9318): no settings live here. Activating it switches
+      // the workspace to this org and opens /integrations#cloud-tenants — see
+      // the redirect effect below (same hand-off shape as contacts).
+      { key: 'cloud-tenants', hash: 'cloud-tenants', label: 'orgSettingsPage.nav.cloudTenants', description: 'orgSettingsPage.nav.cloudTenantsDescription', icon: Cloud },
       { key: 'extensions', hash: 'extensions', label: 'orgSettingsPage.nav.extensions', description: 'orgSettingsPage.nav.extensionsDescription', icon: Puzzle },
     ],
   },
@@ -353,6 +358,12 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       void navigateTo(`/organizations/${effectiveOrgId}#billing`, { replace: true });
     } else if (activeTab === 'contacts') {
       void navigateTo(`/organizations/${effectiveOrgId}#contacts`, { replace: true });
+    } else if (activeTab === 'cloud-tenants') {
+      // The Integrations page configures the WORKSPACE org, so select this
+      // org first or the connection would land on whichever customer the
+      // header switcher happens to point at.
+      useOrgStore.getState().selectOrganization(effectiveOrgId);
+      void navigateTo('/integrations#cloud-tenants', { replace: true });
     }
   }, [activeTab, effectiveOrgId]);
 

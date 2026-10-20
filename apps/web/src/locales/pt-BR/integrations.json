@@ -260,6 +260,7 @@
     "consentUnavailable": "A conexão baseada em consentimento ainda não está disponível nesta instância do Breeze.",
     "selectOrganization": "Selecione uma organização para conectar o locatário do Microsoft 365 dela.",
     "noTenantForOrg": "Nenhum locatário do Microsoft 365 conectado a {{orgName}}",
+    "tenantConnectedToOrg": "{{tenantName}} · conectado a {{orgName}}",
     "noTenant": "Nenhum locatário do Microsoft 365 conectado a esta organização",
     "tenantId": "ID do locatário",
     "copyTenantId": "Copiar ID do locatário",
@@ -537,6 +538,11 @@
     "pageOf": "Página {{current}} de {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Configurando integrações para",
+      "thisOrganization": "esta organização",
+      "change": "Alterar"
+    },
     "webhooks": "Webhooks",
     "notifications": "Notificações",
     "security": "Segurança",

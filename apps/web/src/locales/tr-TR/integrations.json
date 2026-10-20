@@ -260,6 +260,7 @@
     "consentUnavailable": "Onaya dayalı bağlantı bu Breeze örneğinde henüz kullanılamıyor.",
     "selectOrganization": "Microsoft 365 kiracısını bağlamak için bir kuruluş seçin.",
     "noTenantForOrg": "{{orgName}} ile bağlı Microsoft 365 kiracısı yok",
+    "tenantConnectedToOrg": "{{tenantName}} · {{orgName}} ile bağlı",
     "noTenant": "Bu kuruluşa bağlı Microsoft 365 kiracısı yok",
     "tenantId": "Kiracı kimliği",
     "copyTenantId": "Kiracı kimliğini kopyala",
@@ -537,6 +538,11 @@
     "pageOf": "Sayfa {{current}} / {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Entegrasyonlar şu kuruluş için yapılandırılıyor:",
+      "thisOrganization": "bu kuruluş",
+      "change": "Değiştir"
+    },
     "webhooks": "Web kancaları",
     "notifications": "Bildirimler",
     "security": "Güvenlik",

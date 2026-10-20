@@ -335,7 +335,7 @@ describe("M365TenantSection — availability ordering", () => {
     expect(screen.getByTestId("m365-tenant-panel")).toBeVisible();
     // The last known tenant identity survives the reload, and Actions does not
     // flash the "needs Read access" warning while Read is merely reloading.
-    expect(screen.getByRole("heading", { level: 2, name: "Northwind Traders" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Northwind Traders · connected to Contoso Ltd" })).toBeInTheDocument();
     expect(within(screen.getByTestId("m365-tenant-identity")).getByText(TENANT_ID)).toBeInTheDocument();
     expect(screen.queryByTestId("m365-actions-read-note")).not.toBeInTheDocument();
 
@@ -402,6 +402,27 @@ describe("M365TenantSection — tenant panel", () => {
     expect(screen.getByRole("button", { name: "Grant admin actions…" })).toBeEnabled();
   });
 
+  it("names the organization in the heading when a tenant IS connected (#9318)", async () => {
+    mockScenario({ consent: true, legacy: "none", read: readConnection() });
+    await renderSettled();
+    const identity = screen.getByTestId("m365-tenant-identity");
+    expect(
+      within(identity).getByRole("heading", { level: 2, name: "Northwind Traders · connected to Contoso Ltd" }),
+    ).toBeInTheDocument();
+  });
+
+  it("follows the org store: the heading names the org the store points at (#9318)", async () => {
+    mockScenario({ consent: true, legacy: "none", read: readConnection() });
+    state.organizations = [
+      { id: ORG_A, name: "Contoso Ltd" },
+      { id: "22222222-2222-4222-8222-222222222222", name: "Fabrikam Inc" },
+    ];
+    state.currentOrgId = "22222222-2222-4222-8222-222222222222";
+    await renderSettled();
+    expect(screen.getByTestId("m365-tenant-identity")).toHaveTextContent("connected to Fabrikam Inc");
+    expect(screen.getByTestId("m365-tenant-identity")).not.toHaveTextContent("Contoso Ltd");
+  });
+
   it("falls back to generic copy when the org name is not available client-side", async () => {
     state.organizations = undefined;
     mockScenario({ consent: true, legacy: "none" });
@@ -418,7 +439,7 @@ describe("M365TenantSection — tenant panel", () => {
     await renderSettled();
 
     const identity = screen.getByTestId("m365-tenant-identity");
-    expect(within(identity).getByRole("heading", { level: 2, name: "Northwind Traders" })).toBeInTheDocument();
+    expect(within(identity).getByRole("heading", { level: 2, name: "Northwind Traders · connected to Contoso Ltd" })).toBeInTheDocument();
     expect(within(identity).getByText(TENANT_ID)).toBeInTheDocument();
     expect(within(identity).getByText(/formatted 2026-07-14T18:01:00.000Z/)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("m365-copy-tenant-id"));
@@ -433,14 +454,14 @@ describe("M365TenantSection — tenant panel", () => {
       actions: actionsConnection({ displayName: "Fabrikam Holdings" }),
     });
     await renderSettled();
-    expect(screen.getByRole("heading", { level: 2, name: "Fabrikam Holdings" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Fabrikam Holdings · connected to Contoso Ltd" })).toBeInTheDocument();
     expect(screen.getByTestId("m365-actions-read-note")).toBeInTheDocument();
   });
 
   it("shows the tenant ID only when the connection has no display name", async () => {
     mockScenario({ consent: true, legacy: "none", read: readConnection({ displayName: null }) });
     await renderSettled();
-    expect(screen.getByRole("heading", { level: 2, name: TENANT_ID })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: `${TENANT_ID} · connected to Contoso Ltd` })).toBeInTheDocument();
   });
 
   it("does not claim Read is missing when the Read envelope failed to load", async () => {
@@ -467,9 +488,9 @@ describe("M365TenantSection — tenant panel", () => {
     const longName = "Northwind Traders International Holdings Group Worldwide Operations Limited";
     mockScenario({ consent: true, legacy: "none", read: readConnection({ displayName: longName }) });
     await renderSettled();
-    const heading = screen.getByRole("heading", { level: 2, name: longName });
+    const heading = screen.getByRole("heading", { level: 2, name: `${longName} · connected to Contoso Ltd` });
     expect(heading).toHaveClass("truncate");
-    expect(heading).toHaveAttribute("title", longName);
+    expect(heading).toHaveAttribute("title", `${longName} · connected to Contoso Ltd`);
   });
 
   it("has no h1 of its own and uses h2 for the panel and h3 for each step", async () => {

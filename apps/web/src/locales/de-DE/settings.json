@@ -5376,6 +5376,8 @@
       "billingDescription": "Steuer- und Rechnungsadresse",
       "pax8": "Pax8-Marktplatz",
       "pax8Description": "Abonnements und Bestellungen",
+      "cloudTenants": "Cloud-Mandanten",
+      "cloudTenantsDescription": "Microsoft 365 und Google Workspace",
       "extensions": "Erweiterungen",
       "extensionsDescription": "Abschnitte von Drittanbieter-Erweiterungen",
       "portalBranding": "Portal & Branding",

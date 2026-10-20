@@ -197,6 +197,16 @@ export default function M365TenantSection({
   ) ?? null;
   const tenantName = identity ? identity.displayName || identity.tenantId : null;
   const consentTarget = identity?.displayName || orgName;
+  // #9318: the heading names the organization in every state, so a technician
+  // can see which customer the connection is written to. orgName comes from the
+  // same store selection (orgId) the read/actions calls use.
+  const panelHeading = tenantName
+    ? (orgName
+      ? t("m365TenantPanel.tenantConnectedToOrg", { tenantName, orgName })
+      : tenantName)
+    : (orgName
+      ? t("m365TenantPanel.noTenantForOrg", { orgName })
+      : t("m365TenantPanel.noTenant"));
 
   const legacyBlock = (
     <section key="legacy" data-testid="m365-legacy">
@@ -264,13 +274,10 @@ export default function M365TenantSection({
           <div className="min-w-0 flex-1">
             <h2
               id="m365-tenant-panel-title"
-              title={tenantName ?? undefined}
+              title={tenantName ? panelHeading : undefined}
               className="truncate text-lg font-semibold text-foreground"
             >
-              {tenantName
-                ?? (orgName
-                  ? t("m365TenantPanel.noTenantForOrg", { orgName })
-                  : t("m365TenantPanel.noTenant"))}
+              {panelHeading}
             </h2>
             {identity?.tenantId && (
               <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">

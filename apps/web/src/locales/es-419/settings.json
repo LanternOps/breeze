@@ -5376,6 +5376,8 @@
       "billingDescription": "Dirección fiscal y de facturación",
       "pax8": "Marketplace Pax8",
       "pax8Description": "Suscripciones y pedidos",
+      "cloudTenants": "Inquilinos en la nube",
+      "cloudTenantsDescription": "Microsoft 365 y Google Workspace",
       "extensions": "Extensiones",
       "extensionsDescription": "Secciones de extensiones de terceros",
       "portalBranding": "Portal y marca",

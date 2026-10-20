@@ -5429,6 +5429,8 @@
       "billingDescription": "Vergi ve fatura adresi",
       "pax8": "Pax8",
       "pax8Description": "Abonelikler ve sipariş",
+      "cloudTenants": "Bulut kiracıları",
+      "cloudTenantsDescription": "Microsoft 365 ve Google Workspace",
       "extensions": "Uzantılar",
       "extensionsDescription": "Üçüncü taraf uzantı bölümleri",
       "portalBranding": "Portal ve Markalama",

@@ -260,6 +260,7 @@
     "consentUnavailable": "Eine zustimmungsbasierte Verbindung ist auf dieser Breeze-Instanz noch nicht verfügbar.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihren Microsoft 365-Mandanten zu verbinden.",
     "noTenantForOrg": "Kein Microsoft 365-Mandant mit {{orgName}} verbunden",
+    "tenantConnectedToOrg": "{{tenantName}} · verbunden mit {{orgName}}",
     "noTenant": "Kein Microsoft 365-Mandant mit dieser Organisation verbunden",
     "tenantId": "Mandanten-ID",
     "copyTenantId": "Mandanten-ID kopieren",
@@ -537,6 +538,11 @@
     "pageOf": "Seite {{current}} von {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Integrationen werden konfiguriert für",
+      "thisOrganization": "diese Organisation",
+      "change": "Ändern"
+    },
     "webhooks": "Webhooks",
     "notifications": "Benachrichtigungen",
     "security": "Sicherheit",

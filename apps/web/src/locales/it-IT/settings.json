@@ -5424,6 +5424,8 @@
       "billingDescription": "Imposte e indirizzo di fatturazione",
       "pax8": "Pax8",
       "pax8Description": "Abbonamenti e ordini",
+      "cloudTenants": "Tenant cloud",
+      "cloudTenantsDescription": "Microsoft 365 e Google Workspace",
       "extensions": "Estensioni",
       "extensionsDescription": "Sezioni estensioni di terze parti",
       "portalBranding": "Portale e branding",

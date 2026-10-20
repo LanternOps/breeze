@@ -5424,6 +5424,8 @@
       "billingDescription": "Adresse fiscale et de facturation",
       "pax8": "Marché Pax8",
       "pax8Description": "Abonnements et commandes",
+      "cloudTenants": "Locataires infonuagiques",
+      "cloudTenantsDescription": "Microsoft 365 et Google Workspace",
       "extensions": "Modules d'extension",
       "extensionsDescription": "Sections d'extensions tierces",
       "portalBranding": "Portail & Branding",

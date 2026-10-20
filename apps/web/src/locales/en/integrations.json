@@ -260,6 +260,7 @@
     "consentUnavailable": "Consent-based connection isn't available on this Breeze instance yet.",
     "selectOrganization": "Select an organization to connect its Microsoft 365 tenant.",
     "noTenantForOrg": "No Microsoft 365 tenant connected to {{orgName}}",
+    "tenantConnectedToOrg": "{{tenantName}} · connected to {{orgName}}",
     "noTenant": "No Microsoft 365 tenant connected to this organization",
     "tenantId": "Tenant ID",
     "copyTenantId": "Copy tenant ID",
@@ -516,6 +517,11 @@
     "pageOf": "Page {{current}} of {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Configuring integrations for",
+      "thisOrganization": "this organization",
+      "change": "Change"
+    },
     "webhooks": "Webhooks",
     "notifications": "Notifications",
     "security": "Security",
