@@ -119,7 +119,9 @@ export function buildContractSpecsFromQuote(
       startDate,
       endDate,
       currencyCode: quote.currencyCode,
-      notes: `Auto-created from accepted quote ${quote.quoteNumber}`,
+      // #9304: contract notes print on every generated invoice, so provenance
+      // never goes here — it lives in the name and the executed agreement.
+      notes: null,
       terms: quote.terms ?? null,
       createdBy,
       lines: group.map((l, i) => {

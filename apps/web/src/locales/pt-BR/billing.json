@@ -221,7 +221,7 @@
       },
       "content": {
         "title": "Conteúdo",
-        "notesOptional": "Observações (opcional, adicionadas ao bloco Observações das faturas geradas)",
+        "notesOptional": "Observações (impressas em cada fatura gerada)",
         "termsOptional": "Observação na fatura (opcional, adicionada ao bloco Observações das faturas geradas)",
         "termsPlaceholder": "ex.: 30 dias líquidos. Renova automaticamente salvo cancelamento 30 dias antes."
       },
@@ -693,7 +693,8 @@
       }
     },
     "contractPill": {
-      "under": "Sob {{template}} v{{n}}"
+      "under": "Sob {{template}} v{{n}}",
+      "fromQuote": "Do orçamento {{number}}"
     },
     "recordSigned": {
       "title": "Registrar acordo assinado",

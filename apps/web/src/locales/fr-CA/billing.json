@@ -221,7 +221,7 @@
       },
       "content": {
         "title": "Contenu",
-        "notesOptional": "Notes (facultatif, ajoutées au bloc Notes des factures générées)",
+        "notesOptional": "Notes (imprimées sur chaque facture générée)",
         "termsOptional": "Note de facturation (facultatif, ajoutée au bloc Notes des factures générées)",
         "termsPlaceholder": "ex. Net 30. Renouvellement automatique sauf annulation 30 jours avant."
       },
@@ -693,7 +693,8 @@
       }
     },
     "contractPill": {
-      "under": "Sous {{template}} v{{n}}"
+      "under": "Sous {{template}} v{{n}}",
+      "fromQuote": "Issu du devis {{number}}"
     },
     "recordSigned": {
       "title": "Enregistrer une entente signée",

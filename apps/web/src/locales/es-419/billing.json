@@ -221,7 +221,7 @@
       },
       "content": {
         "title": "Contenido",
-        "notesOptional": "Notas (opcional, se agregan al bloque de Notas de las facturas generadas)",
+        "notesOptional": "Notas (se imprimen en cada factura generada)",
         "termsOptional": "Nota en la factura (opcional, se agrega al bloque de Notas de las facturas generadas)",
         "termsPlaceholder": "p.ej. Neto 30. Se renueva automáticamente a menos que se cancele 30 días antes."
       },
@@ -693,7 +693,8 @@
       }
     },
     "contractPill": {
-      "under": "Bajo {{template}} v{{n}}"
+      "under": "Bajo {{template}} v{{n}}",
+      "fromQuote": "Desde la cotización {{number}}"
     },
     "recordSigned": {
       "title": "Registrar acuerdo firmado",

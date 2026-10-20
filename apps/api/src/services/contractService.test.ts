@@ -66,6 +66,7 @@ import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
 import { countContractDevices, countContractSeats, snapshotContractDevices, groupMembersForBilling } from './contractQuantities';
 import { GroupEvaluationError } from './groupMembership';
+import { buildContractSpecsFromQuote } from './quoteToContract';
 import { isKnownCurrency, roundToCurrency } from '@breeze/shared';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
@@ -522,6 +523,37 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     // The catalog line was still billed (fallback, never skipped).
     expect(addContractLine).toHaveBeenCalledTimes(3);
     expect(addContractLine).toHaveBeenNthCalledWith(1, 'inv1', expect.objectContaining({ catalogItemId: 'cat-1', unitPrice: '80.00', sourceId: 'cl-1' }), expect.anything());
+  });
+
+  // #9304: a contract auto-created from an accepted quote must not print
+  // internal provenance on the customer's invoices — the generated invoice
+  // carries the quote's terms and nothing else.
+  it('a quote-created contract generates invoices whose notes are the terms only', async () => {
+    const [spec] = buildContractSpecsFromQuote(
+      { orgId: 'org1', partnerId: 'p1', quoteNumber: 'Q-1001', currencyCode: 'EUR', terms: 'Net 30' },
+      [{
+        sourceQuoteLineId: 'ql-1', recurrence: 'monthly', customerVisible: true, name: null,
+        description: 'Managed endpoint', unitPrice: '80.00', quantity: '1', taxable: false,
+        catalogItemId: null, termMonths: null, contractLineType: null, deviceRoles: null,
+        deviceGroupId: null, deviceGroupName: null, siteId: null, siteName: null,
+        includedQuantity: null, overageMode: null, overageUnitPrice: null,
+      }],
+      '2026-07-01',
+      'u1',
+    );
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    results.length = 0;
+    queueResult([{ ...contract, notes: spec!.notes, terms: spec!.terms }]);
+    queueResult([{ id: 'cl-1', lineType: 'manual', description: 'Managed endpoint', unitPrice: '80.00', taxable: false, catalogItemId: null, manualQuantity: '1', siteId: null, ...noAllowance }]);
+    queueResult([{ id: 'bp1' }]);
+    queueResult([]); queueResult([]); queueResult([]); queueResult([]);
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    expect(createManualInvoice).toHaveBeenCalledWith(
+      expect.objectContaining({ notes: 'Net 30' }), expect.anything(),
+    );
   });
 
   it('returns an empty priceBookGaps array when every catalog line resolved from the price book', async () => {

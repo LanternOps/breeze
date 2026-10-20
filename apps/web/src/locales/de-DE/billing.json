@@ -221,7 +221,7 @@
       },
       "content": {
         "title": "Inhalt",
-        "notesOptional": "Notizen (optional, werden dem Notizblock auf erzeugten Rechnungen hinzugefügt)",
+        "notesOptional": "Notizen (werden auf jeder erzeugten Rechnung gedruckt)",
         "termsOptional": "Rechnungshinweis (optional, wird dem Notizblock auf erzeugten Rechnungen hinzugefügt)",
         "termsPlaceholder": "z.B. Netto 30. Automatische Verlängerung, sofern nicht 30 Tage vorher gekündigt."
       },
@@ -693,7 +693,8 @@
       }
     },
     "contractPill": {
-      "under": "Gemäß {{template}} v{{n}}"
+      "under": "Gemäß {{template}} v{{n}}",
+      "fromQuote": "Aus Angebot {{number}}"
     },
     "recordSigned": {
       "title": "Unterzeichnete Vereinbarung erfassen",

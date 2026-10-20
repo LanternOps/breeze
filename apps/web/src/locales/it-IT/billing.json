@@ -221,7 +221,7 @@
       },
       "content": {
         "title": "Contenuto",
-        "notesOptional": "Note (facoltative, aggiunte al blocco Note delle fatture generate)",
+        "notesOptional": "Note (stampate su ogni fattura generata)",
         "termsOptional": "Nota in fattura (facoltativa, aggiunta al blocco Note delle fatture generate)",
         "termsPlaceholder": "es. 30 giorni netto. Rinnovo automatico salvo annullamento 30 giorni prima."
       },
@@ -693,7 +693,8 @@
       }
     },
     "contractPill": {
-      "under": "In base a {{template}} v{{n}}"
+      "under": "In base a {{template}} v{{n}}",
+      "fromQuote": "Dal preventivo {{number}}"
     },
     "recordSigned": {
       "title": "Registra accordo firmato",

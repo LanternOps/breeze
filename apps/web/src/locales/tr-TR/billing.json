@@ -221,7 +221,7 @@
       },
       "content": {
         "title": "İçerik",
-        "notesOptional": "Notlar (isteğe bağlı, oluşturulan faturaların Notlar bloğuna eklenir)",
+        "notesOptional": "Notlar (oluşturulan her faturaya yazdırılır)",
         "termsOptional": "Fatura notu (isteğe bağlı, oluşturulan faturaların Notlar bloğuna eklenir)",
         "termsPlaceholder": "ör. Net 30. 30 gün önceden iptal edilmediği sürece otomatik olarak yenilenir."
       },
@@ -693,7 +693,8 @@
       }
     },
     "contractPill": {
-      "under": "{{template}} v{{n}} kapsamında"
+      "under": "{{template}} v{{n}} kapsamında",
+      "fromQuote": "{{number}} numaralı fiyat teklifinden"
     },
     "recordSigned": {
       "title": "İmzalı anlaşmayı kaydet",

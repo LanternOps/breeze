@@ -221,7 +221,7 @@
       },
       "content": {
         "title": "Content",
-        "notesOptional": "Notes (optional, added to the Notes block on generated invoices)",
+        "notesOptional": "Notes (printed on every generated invoice)",
         "termsOptional": "Invoice note (optional, added to the Notes block on generated invoices)",
         "termsPlaceholder": "e.g. Net 30. Auto-renews unless cancelled 30 days prior."
       },
@@ -693,7 +693,8 @@
       }
     },
     "contractPill": {
-      "under": "Under {{template}} v{{n}}"
+      "under": "Under {{template}} v{{n}}",
+      "fromQuote": "From quote {{number}}"
     },
     "recordSigned": {
       "title": "Record signed agreement",
