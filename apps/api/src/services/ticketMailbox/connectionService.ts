@@ -239,7 +239,15 @@ export async function listConnectedMailboxes(): Promise<ConnectedMailbox[]> {
       .where(and(
         eq(ticketMailboxConnections.provider, 'm365'),
         eq(ticketMailboxConnections.status, 'connected'),
-      ));
+      ))
+      // Oldest attempt first, never-attempted first of all (#8308): the sweep's
+      // pass deadline can stop before the last mailboxes, and those must go
+      // ahead of the ones it reached next time. id breaks ties so the order is
+      // stable.
+      .orderBy(
+        sql`${ticketMailboxConnections.lastPollAttemptAt} ASC NULLS FIRST`,
+        ticketMailboxConnections.id,
+      );
     return rows.flatMap((row) => row.tenantId ? [{ ...row, tenantId: row.tenantId }] : []);
   }));
 }
@@ -794,6 +802,47 @@ export async function recordTransientPollFailure(
       .where(connectedSnapshotPredicate(snapshot))
       .returning({ count: ticketMailboxConnections.consecutiveTransientFailures });
     return rows[0]?.count ?? null;
+  }));
+}
+
+/**
+ * Stamp that the poll sweep started work on this mailbox (#8308), before any
+ * token or Graph request, so a mailbox that hangs or fails still moves behind the
+ * ones the sweep has not reached. The time is the database's clock_timestamp()
+ * (the time the statement runs, not the transaction start), so every worker
+ * stamps from one clock and a worker clock that jumps cannot park a mailbox at
+ * the back. GREATEST keeps it monotonic: GREATEST ignores a NULL, and when two
+ * sweeps overlap, the second UPDATE waits on the first's row lock and then keeps
+ * the larger value, so an older stamp never replaces a newer committed one.
+ *
+ * The stamp is also a short claim. It only lands when the mailbox was not
+ * stamped in the last `claimWindowMs`, so when two sweeps overlap (separate
+ * worker processes, or a sweep that started late), the row lock serializes
+ * their stamps and the second one gets false and moves on instead of starting
+ * the same mailbox again within the window. It is not a lease: nothing releases
+ * it, and after the window an overlapping sweep can start a mailbox whose poll
+ * is still running. That duplicate is safe (cursor compare-and-swap, inbound
+ * dedup by provider message id), only wasted work. A sweep that skips a mailbox
+ * for this reason loses nothing, because it was started within that window.
+ *
+ * Same connected-generation guard as the other worker writes. Returns false
+ * when no row was stamped (claimed by another sweep, the generation changed, or
+ * the mailbox is no longer connected); the caller then skips it. updated_at is
+ * left alone: this is sweep bookkeeping, not a change to the connection.
+ */
+export async function recordPollAttempt(
+  snapshot: MailboxConnectionSnapshot,
+  claimWindowMs: number,
+): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.update(ticketMailboxConnections)
+      .set({ lastPollAttemptAt: sql`GREATEST(${ticketMailboxConnections.lastPollAttemptAt}, clock_timestamp())` })
+      .where(connectedSnapshotPredicate(
+        snapshot,
+        sql`(${ticketMailboxConnections.lastPollAttemptAt} IS NULL OR ${ticketMailboxConnections.lastPollAttemptAt} <= clock_timestamp() - make_interval(secs => ${claimWindowMs / 1000}))`,
+      ))
+      .returning({ id: ticketMailboxConnections.id });
+    return rows.length === 1;
   }));
 }
 
