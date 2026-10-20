@@ -659,6 +659,8 @@ describe('metrics routes', () => {
     // once defined but never registered here — this guards that regression.
     expect(body).toContain('# HELP breeze_m365_customer_graph_read_events_total');
     expect(body).toContain('# HELP breeze_m365_customer_graph_actions_events_total');
+    // #9322: the consent failure-cause sibling counter is live too.
+    expect(body).toContain('# HELP breeze_m365_consent_verification_failure_causes_total');
   });
 
   it('requires auth for metrics endpoints', async () => {

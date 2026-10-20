@@ -228,7 +228,7 @@ describe('callGraphReadExecutor', () => {
   });
 
   it('collapses a transport-level executor error to executor_unavailable on the sync route', async () => {
-    executorMocks.syncAction.mockRejectedValue(new GraphReadExecutorClientError());
+    executorMocks.syncAction.mockRejectedValue(new GraphReadExecutorClientError({ cause: 'network', operation: 'sync-action' }));
     const result = await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-7' });
     expect(result).toMatchObject({ ok: false, code: 'executor_unavailable' });
   });

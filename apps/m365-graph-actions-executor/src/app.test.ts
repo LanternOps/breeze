@@ -344,3 +344,109 @@ describe('executor process lifecycle', () => {
     expect(process.exitCode).toBe(1);
   });
 });
+
+describe('executor HTTP app: failure logging (#9322)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const FAILURE_LOG = '[m365-graph-actions-executor] request failed';
+  const verifyBody = JSON.stringify({
+    correlationId: CORRELATION_ID,
+    consentAttemptId: '33333333-3333-4333-8333-333333333333',
+    expectedTenantId: null,
+    authorizationCode: 'auth-code-secret-9322',
+    codeVerifier: 'v'.repeat(43),
+    nonce: 'nonce-secret-9322',
+    redirectUri: 'https://console.example.test/api/v1/m365/actions-consent/callback',
+  });
+
+  function captureLogs() {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const calls = () => [...warn.mock.calls, ...error.mock.calls];
+    return {
+      lines: () => calls().filter((call) => call[0] === FAILURE_LOG).map((call) => call[1] as Record<string, unknown>),
+      serialized: () => JSON.stringify(calls()),
+    };
+  }
+
+  function deps(verify: unknown, verifyIdentity: unknown = vi.fn()) {
+    return {
+      authenticator: { verify }, verifyIdentity, retest: vi.fn(), executeAction: vi.fn(),
+    } as unknown as Parameters<typeof createExecutorApp>[0];
+  }
+
+  function expectNoSecrets(serialized: string) {
+    for (const secret of ['auth-code-secret-9322', 'nonce-secret-9322', 'v'.repeat(43), 'Bearer ', 'signed-token']) {
+      expect(serialized).not.toContain(secret);
+    }
+  }
+
+  it('a 401 from a token that does not verify logs one line with the operation and no correlation ID', async () => {
+    const logs = captureLogs();
+    const app = createExecutorApp(deps(vi.fn().mockRejectedValue(new Error('unauthorized'))));
+
+    const response = await app.request('/v1/verify-identity', {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: verifyBody,
+    });
+
+    expect(response.status).toBe(401);
+    expect(logs.lines()).toEqual([{ operation: 'verify-identity', status: 401, error: 'unauthorized' }]);
+    expectNoSecrets(logs.serialized());
+  });
+
+  it('a 401 for a verified token whose correlation ID disagrees logs the verified correlation ID', async () => {
+    const logs = captureLogs();
+    const app = createExecutorApp(deps(vi.fn().mockResolvedValue({ correlationId: '99999999-9999-4999-8999-999999999999' })));
+
+    const response = await app.request('/v1/verify-identity', {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: verifyBody,
+    });
+
+    expect(response.status).toBe(401);
+    expect(logs.lines()).toEqual([{
+      operation: 'verify-identity', correlationId: '99999999-9999-4999-8999-999999999999', status: 401, error: 'unauthorized',
+    }]);
+    expectNoSecrets(logs.serialized());
+  });
+
+  it('a 404 for a route this executor does not serve logs one line naming the requested operation', async () => {
+    const logs = captureLogs();
+    const verify = vi.fn();
+    const app = createExecutorApp(deps(verify));
+
+    const response = await app.request('/v1/not-yet-shipped', {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: verifyBody,
+    });
+
+    expect(response.status).toBe(404);
+    expect(logs.lines()).toEqual([{ operation: 'not-yet-shipped', status: 404, error: 'not_found' }]);
+    expect(verify).not.toHaveBeenCalled();
+    expectNoSecrets(logs.serialized());
+  });
+
+  it('a 500 from a throwing operation logs its operation, correlation ID and error class only', async () => {
+    const logs = captureLogs();
+    const verifyIdentity = vi.fn().mockRejectedValue(Object.assign(new Error('token auth-code-secret-9322 leaked'), { name: 'TokenRedeemError' }));
+    const app = createExecutorApp(deps(vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID }), verifyIdentity));
+
+    const response = await app.request('/v1/verify-identity', {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: verifyBody,
+    });
+
+    expect(response.status).toBe(500);
+    expect(logs.lines()).toEqual([{
+      operation: 'verify-identity', correlationId: CORRELATION_ID, status: 500, error: 'internal_error', errorName: 'TokenRedeemError',
+    }]);
+    expectNoSecrets(logs.serialized());
+  });
+});

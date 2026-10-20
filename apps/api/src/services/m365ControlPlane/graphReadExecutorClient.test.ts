@@ -436,8 +436,15 @@ describe('Graph-read executor client — sync-action', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(SYNC_RESULT), { headers: { 'content-type': 'text/html' } }))
       .mockResolvedValueOnce(new Response('{"success":true,"kind":"collection","items":[]}', { headers: { 'content-type': 'application/json' } }));
     const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
-    for (let i = 0; i < 3; i += 1) {
-      await expect(client.syncAction(syncInput())).rejects.toBeInstanceOf(GraphReadExecutorClientError);
+    const expected = [
+      { cause: 'http_status', httpStatus: 504 },
+      { cause: 'content_type' },
+      { cause: 'schema_mismatch' },
+    ];
+    for (const shape of expected) {
+      const error = await client.syncAction(syncInput()).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(GraphReadExecutorClientError);
+      expect(error).toMatchObject({ code: 'executor_unavailable', operation: 'sync-action', ...shape });
     }
   });
 
@@ -562,5 +569,75 @@ describe('Graph-read executor client: verify-identity', () => {
     expect(error).toBeInstanceOf(GraphReadExecutorClientError);
     expect(error).toMatchObject({ code: 'executor_unavailable', message: 'executor_unavailable' });
     expect(String(error)).not.toContain('leak');
+  });
+});
+
+describe('Graph-read executor client: failure classification (#9322)', () => {
+  const verifyInput = {
+    correlationId: CORRELATION_ID,
+    consentAttemptId: ATTEMPT_ID,
+    expectedTenantId: null,
+    authorizationCode: 'authorization-code-secret',
+    codeVerifier: 'v'.repeat(43),
+    nonce: 'nonce-secret',
+    redirectUri: 'https://console.example.test/api/v1/m365/consent/callback',
+  };
+
+  async function clientFor(fetchMock: unknown, maxResponseBytes?: number) {
+    const { privateJwk } = await signingFixture();
+    return createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock as typeof globalThis.fetch,
+      ...(maxResponseBytes ? { maxResponseBytes } : {}),
+    });
+  }
+
+  const json = (body: string, status = 200, contentType = 'application/json') =>
+    new Response(body, { status, headers: { 'content-type': contentType } });
+
+  it.each([
+    ['fetch reject', () => Promise.reject(new TypeError('fetch failed')), { cause: 'network' }],
+    ['abort', () => Promise.reject(new DOMException('The operation was aborted.', 'AbortError')), { cause: 'timeout' }],
+    ['signal timeout', () => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError')), { cause: 'timeout' }],
+    ['404', () => Promise.resolve(json('{"error":"not_found"}', 404)), { cause: 'http_status', httpStatus: 404 }],
+    ['401', () => Promise.resolve(json('{"error":"unauthorized"}', 401)), { cause: 'http_status', httpStatus: 401 }],
+    ['500', () => Promise.resolve(json('{"error":"internal_error"}', 500)), { cause: 'http_status', httpStatus: 500 }],
+    ['200 text/html', () => Promise.resolve(json('<html></html>', 200, 'text/html')), { cause: 'content_type' }],
+    ['200 malformed JSON', () => Promise.resolve(json('{not-json')), { cause: 'malformed_json' }],
+    ['200 extra JSON field', () => Promise.resolve(json(JSON.stringify({ ...identityResult(), extra: 'x' }))), { cause: 'schema_mismatch' }],
+  ] as const)('%s → executor_unavailable with its cause', async (_label, respond, expected) => {
+    const client = await clientFor(vi.fn(respond));
+    const error = await client.verifyConsentIdentity(verifyInput).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GraphReadExecutorClientError);
+    expect(error).toMatchObject({
+      code: 'executor_unavailable',
+      message: 'executor_unavailable',
+      operation: 'verify-identity',
+      ...expected,
+    });
+    if (!('httpStatus' in expected)) expect((error as GraphReadExecutorClientError).httpStatus).toBeUndefined();
+    // Nothing from the request (code, verifier, nonce) rides on the error.
+    const serialized = JSON.stringify(error) + String(error);
+    for (const secret of ['authorization-code-secret', 'nonce-secret', 'v'.repeat(43)]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it('an oversized response is response_too_large', async () => {
+    const client = await clientFor(vi.fn().mockResolvedValue(json('x'.repeat(64))), 16);
+    await expect(client.retestCustomerGraphRead({ correlationId: CORRELATION_ID, tenantId: TENANT_ID }))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'response_too_large', operation: 'retest' });
+  });
+
+  it('a request that fails its own schema is request_invalid and never reaches the executor', async () => {
+    const fetchMock = vi.fn();
+    const client = await clientFor(fetchMock);
+    await expect(client.verifyConsentIdentity({ ...verifyInput, correlationId: 'not-a-uuid' }))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'request_invalid', operation: 'verify-identity' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

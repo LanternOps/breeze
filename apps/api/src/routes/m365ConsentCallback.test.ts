@@ -6,6 +6,8 @@ import {
   buildM365ActionsConsentBindingCookie,
   buildM365ConsentBindingCookie,
 } from '../services/m365ControlPlane/browserBinding';
+import { GraphActionsExecutorClientError } from '../services/m365ControlPlane/graphActionsExecutorClient';
+import { GraphReadExecutorClientError } from '../services/m365ControlPlane/graphReadExecutorClient';
 import {
   m365ActionsConsentCallbackRoutes,
   m365ConsentCallbackRoutes,
@@ -115,6 +117,42 @@ const REAL_CA_ERROR_QUERY = (state: string) => 'error=invalid_grant'
   + `&admin_consent=True&state=${state}`;
 
 const lifecycle = (code: string) => Object.assign(new Error(code), { code });
+
+/** A distinctive authorization code so the negative assertions can find a leak. */
+const SECRET_CODE = 'auth-code-secret-9322';
+const FAILURE_LOG_MESSAGE = '[m365ConsentCallback] consent verification failed';
+
+type ExecutorErrorDetail = ConstructorParameters<typeof GraphReadExecutorClientError>[0];
+
+/** The error the profile's real executor client throws. */
+function executorError(profile: Profile, detail: ExecutorErrorDetail) {
+  return profile === 'customer-graph-actions'
+    ? new GraphActionsExecutorClientError(detail as ConstructorParameters<typeof GraphActionsExecutorClientError>[0])
+    : new GraphReadExecutorClientError(detail);
+}
+
+/** Captures the callback's structured failure log lines (warn or error). */
+function captureFailureLogs() {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const all = () => [...warn.mock.calls, ...error.mock.calls];
+  return {
+    lines: () => all().filter((call) => call[0] === FAILURE_LOG_MESSAGE).map((call) => call[1] as Record<string, unknown>),
+    raw: () => all().map((call) => call.map((arg) => (arg instanceof Error ? `${arg.message}\n${arg.stack}` : arg))),
+    restore: () => { warn.mockRestore(); error.mockRestore(); },
+  };
+}
+
+/** No audit detail or log line carries the code, the PKCE verifier, the nonce, or a token. */
+function expectNoSecrets(audit: ReturnType<typeof vi.fn>, logs: ReturnType<typeof captureFailureLogs>) {
+  const serialized = JSON.stringify(audit.mock.calls) + JSON.stringify(logs.raw());
+  for (const secret of [SECRET_CODE, 'v'.repeat(43), 'identity-nonce', 'Bearer ', 'eyJ']) {
+    expect(serialized).not.toContain(secret);
+  }
+  for (const key of ['authorizationCode', 'codeVerifier', 'nonce']) {
+    expect(serialized).not.toContain(`"${key}"`);
+  }
+}
 
 interface Harness {
   name: string;
@@ -271,6 +309,14 @@ describe('M365 consent callback parser', () => {
     ['CA 53000', 'state=s&error=interaction_required&error_description=AADSTS53000%3A+Device+not+compliant', 'conditional_access'],
     ['CA 50158', 'state=s&error=interaction_required&error_description=AADSTS50158%3A+External+security+challenge', 'conditional_access'],
     ['unrelated code', 'state=s&error=invalid_client&error_description=AADSTS700016%3A+app+not+found', 'other'],
+    // #9322: the tenant disallows user consent and the signer is not an admin.
+    ['user consent blocked (90094 code list)', 'state=s&error=access_denied&error_codes=%5B90094%5D', 'user_consent_blocked'],
+    ['user consent blocked (90094 in description)', 'state=s&error=access_denied&error_subcode=cancel&error_description=AADSTS90094%3A+Admin+consent+is+required', 'user_consent_blocked'],
+    ['admin consent workflow (90095)', 'state=s&error=access_denied&error_codes=90095', 'user_consent_blocked'],
+    ['not consented (65001)', 'state=s&error=invalid_grant&error_codes=%5B65001%5D', 'user_consent_blocked'],
+    ['consent_required error', 'state=s&error=consent_required', 'user_consent_blocked'],
+    ['CA still wins over a consent code', 'state=s&error=access_denied&error_codes=%5B53003%2C90094%5D', 'conditional_access'],
+    ['user declined (65004) stays cancelled', 'state=s&error=access_denied&error_codes=%5B65004%5D', 'cancelled'],
     ['full Microsoft field set', 'state=s&error=server_error&error_description=x&error_uri=u&error_subcode=y&error_codes=%5B1%5D'
       + '&admin_consent=False&tenant=t&timestamp=2026-10-01&trace_id=t1&correlation_id=c1&session_state=ss', 'other'],
   ] as const)('classifies provider error (%s) identically in both phases', (_name, raw, reason) => {
@@ -913,33 +959,209 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
   });
 
   it('a pre-W1 executor (verify-identity 404 → client throws) is executor_unavailable and marks the attempt failed', async () => {
+    const logs = captureFailureLogs();
     const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
     const transitionIdentityToConsent = vi.fn();
+    const audit = vi.fn();
+    const failureCauseMetric = vi.fn();
     const res = await h.app({
       verifyBindingCookie: () => identityBinding(null),
       consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
-      verifyIdentity: vi.fn().mockRejectedValue(new Error('m365_executor_http_404')), markAttemptFailed, transitionIdentityToConsent,
+      verifyIdentity: vi.fn().mockRejectedValue(executorError(h.profile, { cause: 'http_status', httpStatus: 404, operation: 'verify-identity' })),
+      markAttemptFailed, transitionIdentityToConsent, audit, failureCauseMetric,
       loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
-    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+    }).request(`${h.path}?state=id-state&code=${SECRET_CODE}`, { headers: { cookie: 'x' } });
 
     expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
     expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'executor_unavailable');
     expect(transitionIdentityToConsent).not.toHaveBeenCalled();
+    // #9322: the cause is recorded internally, keyed by correlation ID.
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed,
+      outcome: 'executor_unavailable',
+      correlationId: CORRELATION_ID,
+      failureCause: 'executor_route_missing',
+      httpStatus: 404,
+    }));
+    expect(failureCauseMetric).toHaveBeenCalledWith('executor_route_missing');
+    const lines = logs.lines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      profile: h.profile,
+      phase: 'identity_verification',
+      correlationId: CORRELATION_ID,
+      consentAttemptId: ATTEMPT_ID,
+      failureCause: 'executor_route_missing',
+      httpStatus: 404,
+      operation: 'verify-identity',
+    });
+    expectNoSecrets(audit, logs);
+    logs.restore();
+  });
+
+  it.each([
+    [{ cause: 'network' }, 'executor_unreachable'],
+    [{ cause: 'timeout' }, 'executor_timeout'],
+    [{ cause: 'http_status', httpStatus: 401 }, 'executor_auth_rejected'],
+    [{ cause: 'http_status', httpStatus: 400 }, 'executor_request_rejected'],
+    [{ cause: 'http_status', httpStatus: 413 }, 'executor_request_rejected'],
+    [{ cause: 'http_status', httpStatus: 415 }, 'executor_request_rejected'],
+    [{ cause: 'http_status', httpStatus: 500 }, 'executor_error'],
+    [{ cause: 'http_status', httpStatus: 503 }, 'executor_error'],
+    [{ cause: 'content_type' }, 'executor_response_invalid'],
+    [{ cause: 'response_too_large' }, 'executor_response_invalid'],
+    [{ cause: 'malformed_json' }, 'executor_response_invalid'],
+    [{ cause: 'schema_mismatch' }, 'executor_response_invalid'],
+    [{ cause: 'request_invalid' }, 'internal_error'],
+  ] as const)('identity-phase executor failure %o is audited as %s', async (detail, failureCause) => {
+    const logs = captureFailureLogs();
+    const audit = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockRejectedValue(executorError(h.profile, { ...detail, operation: 'verify-identity' })),
+      audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=${SECRET_CODE}`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      outcome: 'executor_unavailable', correlationId: CORRELATION_ID, failureCause,
+    }));
+    expect(logs.lines()).toEqual([expect.objectContaining({ correlationId: CORRELATION_ID, failureCause })]);
+    expectNoSecrets(audit, logs);
+    logs.restore();
+  });
+
+  it('a plain (non-executor) throw from verify-identity is internal_error, not an executor cause', async () => {
+    const logs = captureFailureLogs();
+    const audit = vi.fn();
+    await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockRejectedValue(new Error('runtime config missing')),
+      audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=${SECRET_CODE}`, { headers: { cookie: 'x' } });
+
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      outcome: 'executor_unavailable', failureCause: 'internal_error',
+    }));
+    expect(audit.mock.calls[0]?.[1]).not.toHaveProperty('httpStatus');
+    expect(logs.lines()).toHaveLength(1);
+    logs.restore();
+  });
+
+  it('a transitionIdentityToConsent that throws a plain Error is audited as internal_error and logged with its stack', async () => {
+    const logs = captureFailureLogs();
+    const audit = vi.fn();
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockResolvedValue(identityOk(TENANT_A)),
+      transitionIdentityToConsent: vi.fn().mockRejectedValue(new Error('connection terminated unexpectedly')),
+      audit, markAttemptFailed,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=${SECRET_CODE}`, { headers: { cookie: 'x' } });
+
+    // The public outcome is unchanged.
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'executor_unavailable');
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed,
+      outcome: 'executor_unavailable',
+      correlationId: CORRELATION_ID,
+      failureCause: 'internal_error',
+    }));
+    const lines = logs.lines();
+    expect(lines).toEqual([expect.objectContaining({ correlationId: CORRELATION_ID, failureCause: 'internal_error' })]);
+    expect(JSON.stringify(logs.raw())).toContain('connection terminated unexpectedly');
+    expectNoSecrets(audit, logs);
+    logs.restore();
+  });
+
+  it('a consent-URL/cookie build failure is audited as consent_url_build_failed', async () => {
+    const logs = captureFailureLogs();
+    const audit = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(TENANT_A),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: hashTenant(TENANT_A) })),
+      verifyIdentity: vi.fn().mockResolvedValue(identityOk(TENANT_A)),
+      transitionIdentityToConsent: vi.fn().mockResolvedValue({ rawState: 'consent-state', verifiedTenantId: TENANT_A }),
+      buildConsentUrl: vi.fn(() => { throw new Error('redirect uri mismatch'); }),
+      audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=${SECRET_CODE}`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed, failureCause: 'consent_url_build_failed',
+    }));
+    expect(logs.lines()).toEqual([expect.objectContaining({ correlationId: CORRELATION_ID, failureCause: 'consent_url_build_failed' })]);
+    logs.restore();
   });
 
   it('an executor failure during finalization marks the verifying attempt failed and binds nothing', async () => {
+    const logs = captureFailureLogs();
     const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
     const applyFinalization = vi.fn();
+    const audit = vi.fn();
     const res = await h.app({
       verifyBindingCookie: () => consentBinding(TENANT_A),
       beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID }),
-      finalize: vi.fn().mockRejectedValue(new Error('executor down')), markAttemptFailed, applyFinalization,
+      finalize: vi.fn().mockRejectedValue(executorError(h.profile, { cause: 'http_status', httpStatus: 502, operation: 'retest' })),
+      markAttemptFailed, applyFinalization, audit,
       loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
     }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
 
     expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
     expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('verifying'), 'executor_unavailable');
     expect(applyFinalization).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed, failureCause: 'executor_error', httpStatus: 502,
+    }));
+    expect(logs.lines()).toEqual([expect.objectContaining({
+      phase: 'admin_consent', correlationId: CORRELATION_ID, failureCause: 'executor_error', operation: 'retest',
+    })]);
+    logs.restore();
+  });
+
+  it('a non-lifecycle throw while applying finalization is audited as internal_error', async () => {
+    const logs = captureFailureLogs();
+    const audit = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID }),
+      finalize: vi.fn().mockResolvedValue(retestOk(TENANT_A)),
+      applyFinalization: vi.fn().mockRejectedValue(new Error('deadlock detected')),
+      audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed, outcome: 'executor_unavailable', failureCause: 'internal_error',
+    }));
+    expect(logs.lines()).toHaveLength(1);
+    logs.restore();
+  });
+
+  it.each(PHASES)('a user-consent-blocked provider error (AADSTS90094) in the %s phase is user_consent_blocked, not consent_cancelled', async (_phase, makeBinding, makeSession) => {
+    const binding = makeBinding();
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const audit = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => binding, markAttemptFailed, audit,
+      consumeSession: vi.fn().mockResolvedValue(makeSession()),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=${binding.rawState}&error=access_denied&error_subcode=cancel&error_codes=%5B90094%5D`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/user_consent_blocked`);
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'user_consent_blocked');
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed, outcome: 'user_consent_blocked',
+    }));
   });
 
   it('a failed application proof redirects its specific outcome and audits verification_failed', async () => {
@@ -958,6 +1180,43 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
       event: h.events.verificationFailed, outcome: 'application_token_invalid', actorId: USER_ID,
     }));
     expect(audit).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: h.events.tenantBindingVerified }));
+  });
+
+  it('a stored error code with no public outcome is still executor_unavailable but diagnosed as internal_error', async () => {
+    const logs = captureFailureLogs();
+    const audit = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID }),
+      finalize: vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' }),
+      applyFinalization: vi.fn().mockResolvedValue(h.snapshot({ status: 'pending-consent', lastErrorCode: 'some_future_code' })),
+      audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed, outcome: 'executor_unavailable', failureCause: 'internal_error',
+    }));
+    expect(logs.lines()).toEqual([expect.objectContaining({ failureCause: 'internal_error', unmappedErrorCode: 'some_future_code' })]);
+    logs.restore();
+  });
+
+  it('a stored executor_unavailable is not re-diagnosed', async () => {
+    const logs = captureFailureLogs();
+    const audit = vi.fn();
+    await h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID }),
+      finalize: vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' }),
+      applyFinalization: vi.fn().mockResolvedValue(h.snapshot({ status: 'pending-consent', lastErrorCode: 'executor_unavailable' })),
+      audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(audit.mock.calls[0]?.[1]).not.toHaveProperty('failureCause');
+    expect(logs.lines()).toEqual([]);
+    logs.restore();
   });
 
   it('maps a tenant_already_bound binding conflict to its own outcome', async () => {

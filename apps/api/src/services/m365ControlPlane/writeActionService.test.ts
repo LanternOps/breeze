@@ -352,7 +352,7 @@ describe('executeM365WriteActionByOrg', () => {
   });
 
   it('reports executor_unavailable and audits it when the executor client throws', async () => {
-    executeWriteAction.mockRejectedValue(new GraphActionsExecutorClientError());
+    executeWriteAction.mockRejectedValue(new GraphActionsExecutorClientError({ cause: 'network', operation: 'execute-action' }));
     const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'executor_unavailable' });
     expect(recordEvent).toHaveBeenCalledWith(

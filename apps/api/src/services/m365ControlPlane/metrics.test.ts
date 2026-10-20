@@ -6,6 +6,9 @@ const { writeAuditEvent } = vi.hoisted(() => ({ writeAuditEvent: vi.fn() }));
 vi.mock('../auditEvents', () => ({ writeAuditEvent }));
 
 import {
+  M365_CONSENT_FAILURE_CAUSES,
+  recordM365ConsentFailureCause,
+  registerM365ConsentFailureCausePrometheusCounter,
   M365_CUSTOMER_GRAPH_ACTIONS_EVENTS,
   M365_CUSTOMER_GRAPH_READ_EVENTS,
   M365_CUSTOMER_GRAPH_READ_OUTCOMES,
@@ -84,8 +87,10 @@ describe('M365 customer Graph read observability', () => {
       // #7910 identity-first consent, appended.
       'identity_verified',
       'application_verification_started',
-      // #7913 W03: the operator confirmed the verified tenant, appended last.
+      // #7913 W03: the operator confirmed the verified tenant, appended.
       'tenant_confirmed',
+      // #9322: the tenant disallows user consent, appended last.
+      'user_consent_blocked',
     ]);
     expect(new Set(M365_CUSTOMER_GRAPH_READ_OUTCOMES).size)
       .toBe(M365_CUSTOMER_GRAPH_READ_OUTCOMES.length);
@@ -110,6 +115,37 @@ describe('M365 customer Graph read observability', () => {
       'm365.customer_graph_read.retested',
       'active',
     );
+  });
+
+  it('counts consent verification failure causes on a bounded sibling counter (#9322)', async () => {
+    const registry = new Registry();
+    const first = registerM365ConsentFailureCausePrometheusCounter(registry);
+    expect(registerM365ConsentFailureCausePrometheusCounter(registry)).toBe(first);
+
+    recordM365ConsentFailureCause('customer-graph-read', 'executor_route_missing');
+    recordM365ConsentFailureCause('customer-graph-actions', 'internal_error');
+    recordM365ConsentFailureCause('customer-graph-read', 'attacker-cause' as never);
+    recordM365ConsentFailureCause('attacker-profile' as never, 'internal_error');
+
+    const scrape = await registry.metrics();
+    expect(scrape).toContain(
+      'breeze_m365_consent_verification_failure_causes_total{profile="customer-graph-read",cause="executor_route_missing"} 1',
+    );
+    expect(scrape).toContain(
+      'breeze_m365_consent_verification_failure_causes_total{profile="customer-graph-actions",cause="internal_error"} 1',
+    );
+    expect(scrape).not.toContain('attacker');
+    expect(M365_CONSENT_FAILURE_CAUSES).toEqual([
+      'executor_unreachable',
+      'executor_timeout',
+      'executor_route_missing',
+      'executor_auth_rejected',
+      'executor_request_rejected',
+      'executor_error',
+      'executor_response_invalid',
+      'consent_url_build_failed',
+      'internal_error',
+    ]);
   });
 
   it('registers one idempotent Prometheus counter with only event and outcome labels', async () => {
@@ -217,6 +253,51 @@ describe('M365 customer Graph read observability', () => {
       actorId: '66666666-6666-4666-8666-666666666666',
     }));
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toMatch(/secret-upn|dropped/);
+  });
+
+  it('records a bounded internal failure cause and HTTP status on a verification failure (#9322)', () => {
+    recordM365CustomerGraphReadEvent(requestLike, {
+      event: 'm365.customer_graph_read.verification_failed',
+      orgId: '11111111-1111-4111-8111-111111111111',
+      connectionId: '22222222-2222-4222-8222-222222222222',
+      profile: 'customer-graph-read',
+      consentAttemptId: '33333333-3333-4333-8333-333333333333',
+      outcome: 'executor_unavailable',
+      correlationId: '44444444-4444-4444-8444-444444444444',
+      failureCause: 'executor_route_missing',
+      httpStatus: 404,
+      responseBody: 'secret-response-body',
+    } as never);
+
+    expect(writeAuditEvent).toHaveBeenCalledWith(requestLike, expect.objectContaining({
+      details: {
+        profile: 'customer-graph-read',
+        consentAttemptId: '33333333-3333-4333-8333-333333333333',
+        outcome: 'executor_unavailable',
+        correlationId: '44444444-4444-4444-8444-444444444444',
+        failureCause: 'executor_route_missing',
+        httpStatus: 404,
+      },
+      result: 'failure',
+    }));
+    expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('secret-response-body');
+  });
+
+  it('drops an unbounded failure cause and a non-HTTP status from audit details', () => {
+    recordM365CustomerGraphReadEvent(requestLike, {
+      event: 'm365.customer_graph_read.verification_failed',
+      orgId: '11111111-1111-4111-8111-111111111111',
+      connectionId: '22222222-2222-4222-8222-222222222222',
+      profile: 'customer-graph-read',
+      consentAttemptId: '33333333-3333-4333-8333-333333333333',
+      outcome: 'executor_unavailable',
+      failureCause: 'provider said: secret',
+      httpStatus: 99999,
+    } as never);
+
+    const details = writeAuditEvent.mock.calls[0]?.[1]?.details as Record<string, unknown>;
+    expect(details).not.toHaveProperty('failureCause');
+    expect(details).not.toHaveProperty('httpStatus');
   });
 
   it('counts application_verification_started as a success outcome', () => {

@@ -394,7 +394,7 @@ describe('executeM365ReadAction', () => {
 
   it('maps a GraphReadExecutorClientError to executor_unavailable and audits the attempt', async () => {
     dbMocks.selectResults.push([connectionRow()]);
-    executorMocks.executeReadAction.mockRejectedValue(new GraphReadExecutorClientError());
+    executorMocks.executeReadAction.mockRejectedValue(new GraphReadExecutorClientError({ cause: 'network', operation: 'read-action' }));
 
     const result = await executeM365ReadAction(auth(), ORG_GET_ACTION);
 

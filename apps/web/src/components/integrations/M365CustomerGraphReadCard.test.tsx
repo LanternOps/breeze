@@ -261,6 +261,7 @@ describe("M365CustomerGraphReadCard", () => {
     ["conditional_access_blocked", "Microsoft blocked this sign-in: the tenant's Conditional Access policy interrupted it (for example a device check). Try again from a browser the tenant trusts, or ask the tenant admin."],
     ["consent_provider_error", "Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs."],
     ["executor_unavailable", "The verification service is unavailable. Retest later."],
+    ["user_consent_blocked", "Your organization requires an administrator to approve sign-in to this app. Sign in with a Global Administrator, or approve it in Entra → Enterprise applications → Admin consent requests."],
   ] as const)("shows safe callback copy for %s and refreshes once", async (callbackResult, message) => {
     fetchWithAuthMock.mockResolvedValue(makeResponse(envelope()));
 
@@ -1322,6 +1323,20 @@ describe("M365CustomerGraphReadCard", () => {
 describe("M365CustomerGraphReadCard — identity-first consent (W03)", () => {
   it("accepts confirm-tenant as a callback result so the page passes it through", () => {
     expect(M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS).toContain("confirm-tenant");
+  });
+
+  it("accepts user_consent_blocked as a callback result and localizes it as a stored code (#9322)", async () => {
+    expect(M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS).toContain("user_consent_blocked");
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "pending-consent",
+        lastErrorCode: "user_consent_blocked",
+      }) })),
+    );
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText("Your organization requires an administrator to approve sign-in to this app. Sign in with a Global Administrator, or approve it in Entra → Enterprise applications → Admin consent requests.")).toBeInTheDocument();
+    expect(screen.queryByText("user_consent_blocked")).not.toBeInTheDocument();
   });
 
   const TENANT = "99999999-9999-4999-8999-999999999999";

@@ -20,6 +20,14 @@ import {
 } from '@breeze/shared/m365';
 import { importJWK, SignJWT, type CryptoKey, type JWK } from 'jose';
 import { z } from 'zod';
+import {
+  M365ExecutorClientError,
+  decodeJson,
+  exactJsonContentType,
+  readBoundedResponse,
+  transportFailureCause,
+  type ExecutorClientFailureDetail,
+} from './executorClientFailure';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024;
@@ -29,7 +37,8 @@ const SYNC_ACTION_TIMEOUT_MS = 130_000;
 const SYNC_ACTION_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_SYNC_CAPACITY_RETRY_SECONDS = 30;
 
-type ExecutorOperation = 'verify-identity' | 'retest' | 'read-action' | 'sync-action';
+export type GraphReadExecutorOperation = 'verify-identity' | 'retest' | 'read-action' | 'sync-action';
+type ExecutorOperation = GraphReadExecutorOperation;
 
 /**
  * An outcome the executor reported. Distinct from GraphReadExecutorClientError,
@@ -48,19 +57,14 @@ const capacityRefusalSchema = z.object({
   retryAfterSeconds: z.number().int().min(1).max(300).optional(),
 });
 
-function safeJson(value: string): unknown {
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
-export class GraphReadExecutorClientError extends Error {
-  readonly code = 'executor_unavailable' as const;
-
-  constructor() {
-    super('executor_unavailable');
+/**
+ * The read client's only error type. `code` is always `executor_unavailable`
+ * (the only thing a caller may surface); `cause`, `httpStatus` and
+ * `operation` are bounded internal diagnostics (#9322).
+ */
+export class GraphReadExecutorClientError extends M365ExecutorClientError<ExecutorOperation> {
+  constructor(detail: ExecutorClientFailureDetail<ExecutorOperation>) {
+    super(detail);
     this.name = 'GraphReadExecutorClientError';
   }
 }
@@ -85,8 +89,8 @@ export interface GraphReadExecutorClientConfig {
   randomUUID?: () => string;
 }
 
-function unavailable(): GraphReadExecutorClientError {
-  return new GraphReadExecutorClientError();
+function unavailable(detail: ExecutorClientFailureDetail<ExecutorOperation>): GraphReadExecutorClientError {
+  return new GraphReadExecutorClientError(detail);
 }
 
 function exactExecutorOrigin(value: string): URL {
@@ -94,7 +98,7 @@ function exactExecutorOrigin(value: string): URL {
   try {
     parsed = new URL(value);
   } catch {
-    throw unavailable();
+    throw unavailable({ cause: 'request_invalid' });
   }
   if (
     parsed.protocol !== 'https:'
@@ -103,7 +107,7 @@ function exactExecutorOrigin(value: string): URL {
     || parsed.pathname !== '/'
     || parsed.search !== ''
     || parsed.hash !== ''
-  ) throw unavailable();
+  ) throw unavailable({ cause: 'request_invalid' });
   return new URL(parsed.origin);
 }
 
@@ -124,52 +128,22 @@ function operationEndpoint(origin: URL, operation: ExecutorOperation): string {
     || endpoint.hash !== ''
     || endpoint.username !== ''
     || endpoint.password !== ''
-  ) throw unavailable();
+  ) throw unavailable({ cause: 'request_invalid', operation });
   return endpoint.toString();
 }
 
-function exactJsonContentType(response: Response): boolean {
-  const value = response.headers.get('content-type')?.toLowerCase();
-  return value === 'application/json' || value === 'application/json; charset=utf-8';
-}
-
-async function readBoundedResponse(response: Response, maxBytes: number): Promise<Uint8Array> {
-  const declaredLength = response.headers.get('content-length');
-  if (declaredLength !== null && /^(?:0|[1-9][0-9]*)$/.test(declaredLength)) {
-    try {
-      if (BigInt(declaredLength) > BigInt(maxBytes)) throw unavailable();
-    } catch (error) {
-      if (error instanceof GraphReadExecutorClientError) throw error;
-      throw unavailable();
-    }
-  }
-  if (!response.body) return new Uint8Array();
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
+/**
+ * Keeps the client's contract — it only ever throws its own error — for the
+ * local serialization/hashing steps, the only ones left unclassified. They run
+ * before anything is sent.
+ */
+async function classified<T>(operation: ExecutorOperation, run: () => Promise<T>): Promise<T> {
   try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        throw unavailable();
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
+    return await run();
+  } catch (error) {
+    if (error instanceof GraphReadExecutorClientError) throw error;
+    throw unavailable({ cause: 'request_invalid', operation });
   }
-
-  const body = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return body;
 }
 
 export function createGraphReadExecutorClient(
@@ -193,61 +167,74 @@ export function createGraphReadExecutorClient(
     input: { correlationId: string },
     timeout: number,
   ): Promise<Response> {
-    if (!Number.isSafeInteger(timeout) || timeout <= 0) throw unavailable();
+    if (!Number.isSafeInteger(timeout) || timeout <= 0) throw unavailable({ cause: 'request_invalid', operation });
+    const endpoint = operationEndpoint(executorOrigin, operation);
     // This is the sole serialization. The exact bytes are both signed and sent.
     const rawBody = JSON.stringify(input);
     const bodySha256 = createHash('sha256').update(rawBody).digest('base64url');
     const issuedAt = Math.floor(now().getTime() / 1_000);
-    const token = await new SignJWT({ operation, correlationId: input.correlationId, bodySha256 })
-      .setProtectedHeader({ alg: 'EdDSA', kid: config.signingKid })
-      .setIssuer('breeze-api')
-      .setAudience(config.executorAudience)
-      .setSubject('breeze-control-plane')
-      .setIssuedAt(issuedAt)
-      .setExpirationTime(issuedAt + TOKEN_LIFETIME_SECONDS)
-      .setJti(randomUUID())
-      .sign(await signingKey());
+    let token: string;
+    try {
+      token = await new SignJWT({ operation, correlationId: input.correlationId, bodySha256 })
+        .setProtectedHeader({ alg: 'EdDSA', kid: config.signingKid })
+        .setIssuer('breeze-api')
+        .setAudience(config.executorAudience)
+        .setSubject('breeze-control-plane')
+        .setIssuedAt(issuedAt)
+        .setExpirationTime(issuedAt + TOKEN_LIFETIME_SECONDS)
+        .setJti(randomUUID())
+        .sign(await signingKey());
+    } catch {
+      throw unavailable({ cause: 'signing_failed', operation });
+    }
 
-    return request(operationEndpoint(executorOrigin, operation), {
-      method: 'POST',
-      redirect: 'error',
-      signal: AbortSignal.timeout(timeout),
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: rawBody,
-    });
+    try {
+      return await request(endpoint, {
+        method: 'POST',
+        redirect: 'error',
+        signal: AbortSignal.timeout(timeout),
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: rawBody,
+      });
+    } catch (error) {
+      throw unavailable({ cause: transportFailureCause(error), operation });
+    }
   }
 
-  async function invoke<T>(
+  function invoke<T>(
     operation: ExecutorOperation,
     input: VerifyConsentIdentityRequest | RetestRequest | ReadActionRequest,
     parseResponse: (value: unknown) => T,
     maxBytes: number = maxResponseBytes,
   ): Promise<T> {
-    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw unavailable();
-    try {
+    return classified(operation, async () => {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw unavailable({ cause: 'request_invalid', operation });
       const response = await dispatch(operation, input, timeoutMs);
-      if (!response.ok || !exactJsonContentType(response)) throw unavailable();
-      const rawResponse = await readBoundedResponse(response, maxBytes);
-      return parseResponse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(rawResponse)));
-    } catch {
-      throw unavailable();
-    }
+      if (!response.ok) throw unavailable({ cause: 'http_status', httpStatus: response.status, operation });
+      if (!exactJsonContentType(response)) throw unavailable({ cause: 'content_type', operation });
+      const value = decodeJson(await readBoundedResponse(response, maxBytes, unavailable, operation), unavailable, operation);
+      try {
+        return parseResponse(value);
+      } catch {
+        throw unavailable({ cause: 'schema_mismatch', operation });
+      }
+    });
   }
 
   return {
     verifyConsentIdentity(input) {
       const parsed = verifyConsentIdentityRequestSchema.safeParse(input);
-      if (!parsed.success) return Promise.reject(unavailable());
+      if (!parsed.success) return Promise.reject(unavailable({ cause: 'request_invalid', operation: 'verify-identity' }));
       return invoke('verify-identity', parsed.data, (value) => verifyConsentIdentityResultSchema.parse(value));
     },
     retestCustomerGraphRead(input) {
       const parsed = retestRequestSchema.safeParse(input);
-      if (!parsed.success) return Promise.reject(unavailable());
+      if (!parsed.success) return Promise.reject(unavailable({ cause: 'request_invalid', operation: 'retest' }));
       return invoke('retest', parsed.data, (value) => retestResultSchema.parse(value));
     },
     executeReadAction(input) {
       const parsed = readActionRequestSchema.safeParse(input);
-      if (!parsed.success) return Promise.reject(unavailable());
+      if (!parsed.success) return Promise.reject(unavailable({ cause: 'request_invalid', operation: 'read-action' }));
       return invoke(
         'read-action',
         parsed.data,
@@ -256,40 +243,46 @@ export function createGraphReadExecutorClient(
       );
     },
     async syncAction(input) {
+      const operation = 'sync-action' as const;
       const parsed = syncActionRequestSchema.safeParse(input);
-      if (!parsed.success) throw unavailable();
-      let response: Response;
-      let decoded: string;
-      try {
-        response = await dispatch('sync-action', parsed.data, SYNC_ACTION_TIMEOUT_MS);
-        if (!exactJsonContentType(response)) throw unavailable();
-        const raw = await readBoundedResponse(response, SYNC_ACTION_MAX_RESPONSE_BYTES);
-        decoded = new TextDecoder('utf-8', { fatal: true }).decode(raw);
-      } catch {
-        throw unavailable();
-      }
+      if (!parsed.success) throw unavailable({ cause: 'request_invalid', operation });
+      return classified(operation, async () => {
+        const response = await dispatch(operation, parsed.data, SYNC_ACTION_TIMEOUT_MS);
+        const isCapacityRefusal = response.status === 503;
+        const httpFailure = () => unavailable({ cause: 'http_status', httpStatus: response.status, operation });
+        if (!response.ok && !isCapacityRefusal) throw httpFailure();
+        // A 503 that is not a well-formed capacity refusal is reported as the
+        // 503 it was, not as a body problem.
+        if (!exactJsonContentType(response)) throw isCapacityRefusal ? httpFailure() : unavailable({ cause: 'content_type', operation });
+        const raw = await readBoundedResponse(response, SYNC_ACTION_MAX_RESPONSE_BYTES, unavailable, operation);
 
-      if (response.status === 503) {
-        const body = capacityRefusalSchema.safeParse(safeJson(decoded));
-        if (!body.success) throw unavailable();
+        if (isCapacityRefusal) {
+          let body: unknown;
+          try {
+            body = decodeJson(raw, unavailable, operation);
+          } catch {
+            throw httpFailure();
+          }
+          const refusal = capacityRefusalSchema.safeParse(body);
+          if (!refusal.success) throw httpFailure();
+          return {
+            success: false,
+            code: 'sync_capacity',
+            retryAfterSeconds: refusal.data.retryAfterSeconds ?? DEFAULT_SYNC_CAPACITY_RETRY_SECONDS,
+          } satisfies GraphReadExecutorFailure;
+        }
+
+        const parsedResponse = m365SyncActionResponseSchema.safeParse(decodeJson(raw, unavailable, operation));
+        if (!parsedResponse.success) throw unavailable({ cause: 'schema_mismatch', operation });
+        if (parsedResponse.data.success) return parsedResponse.data;
         return {
           success: false,
-          code: 'sync_capacity',
-          retryAfterSeconds: body.data.retryAfterSeconds ?? DEFAULT_SYNC_CAPACITY_RETRY_SECONDS,
-        };
-      }
-      if (!response.ok) throw unavailable();
-
-      const parsedResponse = m365SyncActionResponseSchema.safeParse(safeJson(decoded));
-      if (!parsedResponse.success) throw unavailable();
-      if (parsedResponse.data.success) return parsedResponse.data;
-      return {
-        success: false,
-        code: parsedResponse.data.code,
-        ...(parsedResponse.data.retryAfterSeconds === undefined
-          ? {}
-          : { retryAfterSeconds: parsedResponse.data.retryAfterSeconds }),
-      };
+          code: parsedResponse.data.code,
+          ...(parsedResponse.data.retryAfterSeconds === undefined
+            ? {}
+            : { retryAfterSeconds: parsedResponse.data.retryAfterSeconds }),
+        } satisfies GraphReadExecutorFailure;
+      });
     },
   };
 }

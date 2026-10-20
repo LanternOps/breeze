@@ -55,6 +55,7 @@ import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
 import { setSupportCodeMetricsRecorder } from '../services/supportCodeMissBudget';
 import {
+  registerM365ConsentFailureCausePrometheusCounter,
   registerM365CustomerGraphActionsPrometheusCounter,
   registerM365CustomerGraphReadPrometheusCounter,
 } from '../services/m365ControlPlane/metrics';
@@ -111,6 +112,7 @@ let METRICS_SCRAPE_IP_ALLOWLIST = parseMetricsScrapeIpAllowlist();
 const register = metricsRegistry;
 registerM365CustomerGraphReadPrometheusCounter(register);
 registerM365CustomerGraphActionsPrometheusCounter(register);
+registerM365ConsentFailureCausePrometheusCounter(register);
 registerM365GraphReadActionPrometheusCounter(register);
 registerM365GraphActionsPrometheusCounter(register);
 registerActionIntentPrometheusCounter(register);
