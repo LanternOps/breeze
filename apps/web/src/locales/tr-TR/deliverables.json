@@ -46,7 +46,8 @@
     "addEvidence": "Kanıt ekle",
     "removeEvidence": "Kanıtı kaldır",
     "save": "Kaydet",
-    "cancel": "İptal"
+    "cancel": "İptal",
+    "retry": "Yeniden dene"
   },
   "form": {
     "name": "Ad",

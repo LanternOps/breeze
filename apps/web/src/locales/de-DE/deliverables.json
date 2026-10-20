@@ -46,7 +46,8 @@
     "addEvidence": "Nachweis hinzufügen",
     "removeEvidence": "Nachweis entfernen",
     "save": "Speichern",
-    "cancel": "Abbrechen"
+    "cancel": "Abbrechen",
+    "retry": "Erneut versuchen"
   },
   "form": {
     "name": "Name",

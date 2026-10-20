@@ -46,7 +46,8 @@
     "addEvidence": "Add evidence",
     "removeEvidence": "Remove evidence",
     "save": "Save",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "retry": "Retry"
   },
   "form": {
     "name": "Name",

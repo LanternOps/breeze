@@ -95,7 +95,7 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   // TicketChecklistCard is ever mounted at a time, so opening a fleet-sized
   // deliverable never fires two dozen checklist fetches on drawer open.
   // #9311 — "link existing document": one picker open at a time, library
-  // fetched lazily on first open and reused for the drawer's lifetime.
+  // fetched each time a picker opens.
   const [linkingId, setLinkingId] = useState<string | null>(null);
   const [linkDocId, setLinkDocId] = useState('');
   const [library, setLibrary] = useState<OrgDocument[] | null>(null);
@@ -208,8 +208,10 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
     setLibraryError(false);
     try {
       setLibrary(await listOrgDocuments(fetcher, orgId));
-    } catch {
-      setLibraryError(true);
+    } catch (err) {
+      console.error('[OccurrenceDrawer] document library load failed', err);
+      // 401: the auth redirect is already taking over; don't flash an error.
+      if (!(err instanceof ActionError && err.status === 401)) setLibraryError(true);
     } finally {
       setLibraryLoading(false);
     }
@@ -222,7 +224,9 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
     }
     setLinkingId(id);
     setLinkDocId('');
-    if (library === null && !libraryLoading) void loadLibrary();
+    // Refetch on every open so a document uploaded since the last open (here
+    // or elsewhere) is linkable; the previous list stays visible meanwhile.
+    if (!libraryLoading) void loadLibrary();
   };
 
   /** #9311: attach a document already in the org library (no re-upload). */
@@ -425,8 +429,17 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                       {t('drawer.link')}
                     </button>
                     {libraryError && (
-                      <span className="text-destructive" role="alert">
+                      <span className="inline-flex items-center gap-1.5 text-destructive" role="alert">
                         {t('errors.libraryLoadFailed')}
+                        <button
+                          type="button"
+                          onClick={() => void loadLibrary()}
+                          disabled={libraryLoading}
+                          className={ACTION_BTN}
+                          data-testid={`occurrence-evidence-library-retry-${occ.id}`}
+                        >
+                          {t('actions.retry')}
+                        </button>
                       </span>
                     )}
                     {library !== null && library.length === 0 && (

@@ -46,7 +46,8 @@
     "addEvidence": "Ajouter un justificatif",
     "removeEvidence": "Retirer le justificatif",
     "save": "Enregistrer",
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "retry": "Réessayer"
   },
   "form": {
     "name": "Nom",

@@ -502,7 +502,65 @@ describe('OccurrenceDrawer link existing document + badges (#9311)', () => {
     expect((screen.getByTestId('occurrence-evidence-link-save-oc-1') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('shows exactly one status badge and no Late pill on a missed row', async () => {
+  it('shows an alert with Retry when the library fails to load, and recovers on retry', async () => {
+    let docCalls = 0;
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path.startsWith('/orgs/org-1/documents')) {
+        docCalls += 1;
+        return docCalls === 1 ? jsonResp(500, { error: 'boom' }) : jsonResp(200, { data: docs });
+      }
+      return jsonResp(200, { data: [occurrence] });
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-oc-1'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load the document library.');
+    expect((screen.getByTestId('occurrence-evidence-link-save-oc-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('occurrence-evidence-library-retry-oc-1'));
+    expect(await screen.findByRole('option', { name: /Pen test/ })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    errSpy.mockRestore();
+  });
+
+  it('shows the empty-library hint and refetches each time the picker opens', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path.startsWith('/orgs/org-1/documents')) return jsonResp(200, { data: [] });
+      return jsonResp(200, { data: [occurrence] });
+    });
+    const docGets = () => fetcher.mock.calls.filter(([p]) => String(p).startsWith('/orgs/org-1/documents')).length;
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    const toggle = await screen.findByTestId('occurrence-evidence-link-oc-1');
+    expect(docGets()).toBe(0);
+    fireEvent.click(toggle);
+    expect(await screen.findByText(/No documents in this organization/)).toBeTruthy();
+    expect((screen.getByTestId('occurrence-evidence-link-save-oc-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(docGets()).toBe(1);
+    fireEvent.click(toggle); // close
+    fireEvent.click(toggle); // reopen
+    await waitFor(() => expect(docGets()).toBe(2));
+  });
+
+  it('keeps the picker and selection open when linking fails', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && path.startsWith('/orgs/org-1/documents')) return jsonResp(200, { data: docs });
+      if (method === 'GET') return jsonResp(200, { data: [occurrence] });
+      return jsonResp(500, { error: 'boom' });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-oc-1'));
+    const select = (await screen.findByTestId('occurrence-evidence-doc-select-oc-1')) as HTMLSelectElement;
+    await screen.findByRole('option', { name: /Pen test/ });
+    fireEvent.change(select, { target: { value: 'doc-2' } });
+    const save = screen.getByTestId('occurrence-evidence-link-save-oc-1') as HTMLButtonElement;
+    fireEvent.click(save);
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(save.disabled).toBe(false));
+    expect(select.value).toBe('doc-2');
+    expect(screen.queryByTestId('evidence-chip-ev-9')).toBeNull();
+  });
+
+  it('shows no Late pill on a missed row; the status badge says Missed', async () => {
     const fetcher = vi.fn(async () => jsonResp(200, { data: [{ ...occurrence, status: 'missed', late: true }] }));
     render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
     await screen.findByTestId('occurrence-status-oc-1');
