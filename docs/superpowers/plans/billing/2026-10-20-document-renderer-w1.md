@@ -17,7 +17,7 @@ tracking_issue: LanternOps/breeze#9402
 
 ## Global Constraints (W1 subset, verbatim values)
 
-- No migration, no schema change. Test API is the gate.
+- No migration, no schema change. Test API is the gate, plus W1b's one real-DB assembler test and the retargeted `invoicePdf.integration.test.ts` (Integration Tests).
 - Hidden lines (`customer_visible = false`) never reach a customer DTO in any mode. #8604 withholding runs only in `toCustomerInvoiceLine`.
 - `@import '@breeze/document-ui/document.css';` above `@import 'tailwindcss'`, no `layer()`. `@source '../../../../packages/document-ui/src/**/*.{ts,tsx}';`.
 - `--primary: var(--paper-primary, 225 62% 48%)` inside the paper block. Web light `:root` gains `--paper-primary: 225 62% 48%;` (its light `--primary`, `apps/web/src/styles/globals.css:34262`).
@@ -57,8 +57,8 @@ Branch `feature/9402-document-renderer/wave-<W1 sub-issue#>-w1a` from `origin/ma
 - Modify: `pnpm-lock.yaml` (via `pnpm install`)
 
 **Interfaces:**
-- Produces: `DocumentPaper({ theme, testId, children }: { theme: DocumentThemeId; testId?: string; children: ReactNode }): JSX.Element` — root `<article data-document-root data-doc-theme={theme} data-testid={testId ?? 'document-root'} className="doc-paper …">` with the accent bar `<div className="doc-accent-bg h-1.5" aria-hidden />` first. `DocumentThemeId` from `@breeze/shared` (`packages/shared/src/types/publicQuote.ts:61`).
-- Produces: `DOCUMENT_HOST_TOKENS: readonly string[]` in `src/tokens.ts` — every CSS custom property the package and `document.css` read that the host must define: `paper-primary`, `primary-foreground`, `background`, `foreground`, `muted`, `muted-foreground`, `border`, `card`, `card-foreground`, `font-display` (extend with any `var(--x)` the paper block reads that it does not itself set; Task 2's test enforces the list is complete).
+- Produces: `DocumentPaper({ theme, testId, children }: { theme: DocumentThemeId; testId?: string; children: ReactNode }): ReactElement` — root `<article data-document-root data-doc-theme={theme} data-testid={testId ?? 'document-root'} className="doc-paper …">` with the accent bar `<div className="doc-accent-bg h-1.5" aria-hidden />` first. `DocumentThemeId` from `@breeze/shared` (`packages/shared/src/types/publicQuote.ts:61`).
+- Produces: `DOCUMENT_HOST_TOKENS: readonly string[]` in `src/tokens.ts`. It lists the CSS custom properties the package reads **without a fallback** and does not set itself, so the host must define them. Today that is `['paper-primary']`. Task 2's test derives the real set from `document.css` and fails if this list is incomplete. Package-owned `--doc-*` variables and anything read with a fallback are excluded. Fonts are not host tokens: `document.css` owns them (Task 2).
 - Produces: `PACKAGE_PROBE_CLASS = 'sm:px-[3.25rem]'` exported from `DocumentPaper.tsx` and used on its root (the built-CSS tests in Task 4 look for it).
 
 - [ ] **Step 1: Write the failing tests**
@@ -84,7 +84,7 @@ Expected: FAIL (module `../DocumentPaper` not found).
 
 - [ ] **Step 3: Implement**
 
-`package.json`: name `@breeze/document-ui`, `private`, `type: module`, `main`/`types` `./src/index.ts`, `exports: { ".": "./src/index.ts", "./document.css": "./src/document.css" }`, scripts `{ "test": "vitest", "typecheck": "tsc --noEmit" }`, `dependencies: { "@breeze/shared": "workspace:*", "lucide-react": <web's version> }`, `peerDependencies: { react: "^19.2.7", "react-dom": "^19.2.7" }`, devDependencies = `office-addin-core`'s minus `@types/office-js`. `tsconfig.json` = `office-addin-core`'s with `types: ["vitest/globals", "vite/client"]`. `vitest.config.ts` = `office-addin-core`'s. `src/document.css` can be an empty file for now (Task 2 fills it). `src/index.ts` exports `DocumentPaper`, `PACKAGE_PROBE_CLASS`, `DOCUMENT_HOST_TOKENS`. Run `pnpm install` at the repo root.
+`package.json`: name `@breeze/document-ui`, `private`, `type: module`, `main`/`types` `./src/index.ts`, `exports: { ".": "./src/index.ts", "./document.css": "./src/document.css" }`, scripts `{ "test": "vitest", "typecheck": "tsc --noEmit" }`, `dependencies: { "@breeze/shared": "workspace:*", "lucide-react": <web's version>, "@fontsource/hanken-grotesk": <portal's version>, "@fontsource/literata": <portal's version> }`, `peerDependencies: { react: "^19.2.7", "react-dom": "^19.2.7" }`, devDependencies = `office-addin-core`'s minus `@types/office-js` (`@azure/msal-browser` is a runtime dependency there and is not copied). `tsconfig.json` = `office-addin-core`'s with `types: ["vitest/globals", "vite/client"]`. `vitest.config.ts` = `office-addin-core`'s. `src/document.css` can be an empty file for now (Task 2 fills it). `src/index.ts` exports `DocumentPaper`, `PACKAGE_PROBE_CLASS`, `DOCUMENT_HOST_TOKENS`. Run `pnpm install` at the repo root.
 
 - [ ] **Step 4: Run to verify it passes, then typecheck**
 
@@ -100,7 +100,13 @@ Run: `cd packages/document-ui && NODE_OPTIONS=--max-old-space-size=12288 npx tsc
 - Create: `packages/document-ui/src/__tests__/paperTokens.test.ts`
 
 **Interfaces:**
-- Produces: `document.css` selectors `[data-document-root]` (paper tokens + `--primary: var(--paper-primary, 225 62% 48%)`), `[data-document-root][data-doc-theme='condensed']` (condensed rules), `.doc-accent-bg`, `.doc-accent-text`, `.doc-accent-border`, `.signature-preview`, `.doc-paper`. Font `@import`s the condensed theme needs go at the top of `document.css`.
+- Produces: `document.css` selectors:
+  - `[data-document-root]`: paper tokens, `--primary: var(--paper-primary, 225 62% 48%)`, `--doc-font-sans`, `--doc-font-display` and `font-family: var(--doc-font-sans)`;
+  - `[data-document-root][data-doc-theme='condensed']`: the condensed rules;
+  - `.doc-font-display`, `.doc-paper`;
+  - `.doc-accent-bg`, `.doc-accent-text`, `.doc-accent-border`, `.signature-preview`. These four stay **global, unscoped** classes: `AuthLayout.astro:59`, `TrustEmbedCard.astro:18`, `TrustPageView.tsx:67`, `TrustDocumentsList.tsx:27,34` and `trust/access/*` use the accent outside any document root.
+
+  The fontsource `@import`s for the classic fonts (Hanken Grotesk and Literata, the portal's `--font-sans`/`--font-display` at `globals.css:77-79`) and for the condensed theme go at the top of `document.css`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -117,6 +123,9 @@ it('condensed rules are scoped under [data-document-root]', () => {
   expect(CSS).toMatch(/\[data-document-root\]\[data-doc-theme='condensed'\]/);
   expect(CSS).not.toMatch(/(^|\n)\[data-doc-theme/);
 });
+it('accent and signature classes stay global (used outside document roots)', () => {
+  for (const c of ['doc-accent-bg', 'doc-accent-text', 'doc-accent-border', 'signature-preview']) expect(CSS).toMatch(new RegExp(`(^|\\n)\\.${c}\\s*[{,]`));
+});
 ```
 Portal `paperTokens.test.ts`: change `PAPER` to read the block from `createRequire(import.meta.url).resolve('@breeze/document-ui/document.css')` with selector `/\n\[data-document-root\]/`; the `primary`/`primary-on-tint`/`ring` expectation becomes `'var(--paper-primary, 225 62% 48%)'`; every other assertion (light values, seven chrome accents) is unchanged.
 
@@ -127,7 +136,7 @@ Run: `cd apps/portal && npx vitest run src/styles/paperTokens.test.ts` → FAIL 
 
 - [ ] **Step 3: Move the rules**
 
-Cut the four portal blocks into `document.css`, re-keying `[data-doc-theme]` → `[data-document-root]` and `[data-doc-theme='condensed'] …` → `[data-document-root][data-doc-theme='condensed'] …`. Add `data-document-root` to the portal `DocumentPaper` root element in `documentShell.tsx` (the portal's quote and invoice pages render through it, so the moved rules keep matching). Do not wire the import yet (Task 3) — the portal is unstyled between Steps 3 and Task 3; commit both tasks before pushing.
+Cut the four portal blocks into `document.css`, re-keying only `[data-doc-theme]` → `[data-document-root]` and `[data-doc-theme='condensed'] …` → `[data-document-root][data-doc-theme='condensed'] …`; the accent and signature classes move verbatim. Add `data-document-root` to the portal `DocumentPaper` root element in `documentShell.tsx` (the portal's quote and invoice pages render through it, so the moved rules keep matching). Do not wire the import yet (Task 3) — the portal is unstyled between Steps 3 and Task 3; commit both tasks before pushing.
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -156,7 +165,7 @@ it('finds the density rules it guards', () => { expect(densitySelectors('compact
 ```
 Then a jsdom check: build `<div data-density="dense"><main><article data-document-root class="p-8"><p class="p-8"></p></article></main></div>`, and for each offender-free selector assert `!el.matches(selector)` for both the article and the `<p>` (`Element.matches` accepts the selector list).
 
-`tokenPresence.test.ts` (each app): parse that app's `globals.css` light `:root` (and, for the portal, every `:root[data-accent=…]` light block) and assert every `DOCUMENT_HOST_TOKENS` entry is declared. Also assert the `@import '@breeze/document-ui/document.css'` line appears before `@import 'tailwindcss'` and that the four-level `@source` line is present verbatim.
+`tokenPresence.test.ts` (each app): parse that app's `globals.css` light `:root` and assert every `DOCUMENT_HOST_TOKENS` entry is declared. For the portal, also assert that every `:root[data-accent=…]` light block declares `paper-primary`, and check only that token there. Also assert the `@import '@breeze/document-ui/document.css'` line appears before `@import 'tailwindcss'` and that the four-level `@source` line is present verbatim.
 
 - [ ] **Step 2: Run to see them fail**
 
@@ -164,6 +173,8 @@ Run: `cd apps/web && npx vitest run src/styles/densityIsolation.test.ts src/styl
 Run: `cd apps/portal && npx vitest run src/styles/tokenPresence.test.ts` → FAIL (import missing).
 
 - [ ] **Step 3: Implement** — add the dependency, the import (beside the fontsource imports, above `tailwindcss`), the `@source`, `--paper-primary`, and the `:not(…)` on each density selector (append to the selector's last compound before any pseudo-element). Extend each header comment with one line: "`@breeze/document-ui/document.css` is imported here, above tailwindcss, for the same reason."
+
+- [ ] **Step 3b: Sweep other host rules.** Spec §3.5 says any other host rule that targets bare utilities under `main` gets the same exclusion. Run `rg -n "^\s*(\[[^]]+\]\s+)?main \." apps/web/src/styles/globals.css`, add the `:not(…)` to every non-density hit, and list the hits in the PR body (or write "none").
 
 - [ ] **Step 4: Run to verify they pass** (same commands) → PASS. Then `cd apps/web && npx vitest run src/styles` and `cd apps/portal && npx vitest run src/styles src/lib/noInlineStyles.test.ts` → PASS.
 
@@ -226,7 +237,7 @@ Add `'test-document-ui'` to the never-area-gated list (`:369-370`).
 
 Run: `node --test .github/scripts/ci-area-gating.test.mjs` → FAIL (job not found).
 
-- [ ] **Step 3: Implement** — copy `test-office-addin-core` (`ci.yml:1140-1168`) to a `test-document-ui` job after it: `name: Test Document UI`, `if:` = `test-shared`'s (`:1116`), steps ending `run: pnpm --filter @breeze/document-ui exec vitest run` and `run: pnpm --filter=@breeze/document-ui typecheck`. Add `test-document-ui` to `ci-success.needs` (`:4543`), `TEST_DOCUMENT_UI_RESULT: ${{ needs.test-document-ui.result }}` after `TEST_SHARED_RESULT` (`:4576`), `[[ "${TEST_DOCUMENT_UI_RESULT}" != "success" ]] || \` after `:4660`, and `[[ "${TEST_DOCUMENT_UI_RESULT}" != "skipped" ]] || \` after `:4734`.
+- [ ] **Step 3: Implement** — copy `test-office-addin-core` (`ci.yml:1140-1169`, through its typecheck `run:` line) to a `test-document-ui` job after it: `name: Test Document UI`, `if:` = `test-shared`'s (`:1116`), steps ending `run: pnpm --filter @breeze/document-ui exec vitest run` and `run: pnpm --filter=@breeze/document-ui typecheck`. Add `test-document-ui` to `ci-success.needs` (`:4543`), `TEST_DOCUMENT_UI_RESULT: ${{ needs.test-document-ui.result }}` after `TEST_SHARED_RESULT` (`:4576`), `[[ "${TEST_DOCUMENT_UI_RESULT}" != "success" ]] || \` after `:4660`, and `[[ "${TEST_DOCUMENT_UI_RESULT}" != "skipped" ]] || \` after `:4734`.
 
 - [ ] **Step 4: Run to verify it passes** — `node --test .github/scripts/ci-area-gating.test.mjs` → PASS. Also run `node --test .github/scripts/*.test.mjs` → PASS (the classifier tests are siblings).
 
@@ -235,13 +246,19 @@ Run: `node --test .github/scripts/ci-area-gating.test.mjs` → FAIL (job not fou
 ### Task 6: Docker manifest lines
 
 **Files:**
-- Modify: `apps/web/Dockerfile` (after `:28-29`), `apps/portal/Dockerfile` (after `:25`), `docker/Dockerfile.web` (after `:9-10`; and `COPY --from=deps /app/packages/document-ui/node_modules ./packages/document-ui/node_modules` beside `:15-18`), `docker/Dockerfile.web.dev` (after `:17`), `docker/Dockerfile.portal.dev` (after `:13`)
+- Modify:
+  - `apps/web/Dockerfile` (after `:28-29`);
+  - `apps/portal/Dockerfile` (after `:25`);
+  - `docker/Dockerfile.web` (after `:9-10`; and `COPY --from=deps /app/packages/document-ui/node_modules ./packages/document-ui/node_modules` beside `:15-18`);
+  - `docker/Dockerfile.web.dev` (manifest after `:17`, source `COPY packages/document-ui ./packages/document-ui` after `:25-26`);
+  - `docker/Dockerfile.portal.dev` (manifest after `:13`, source after `:18`);
+  - `docker-compose.dev.yml`: for the web service (`:160-174`) and the portal service, add the `./packages/document-ui/src` and `package.json` bind mounts and the `/app/packages/document-ui/node_modules` exclusion, mirroring `packages/shared`.
 
 - [ ] **Step 1: Write the failing check** — there is no unit test for Dockerfiles; the red is a real build. Run: `docker build -f apps/portal/Dockerfile .` → FAIL at `pnpm install --frozen-lockfile` (the lockfile names `packages/document-ui`, whose manifest is absent). Record the error line.
 
-- [ ] **Step 2: Add** `COPY packages/document-ui/package.json ./packages/document-ui/` to all five files.
+- [ ] **Step 2: Add** `COPY packages/document-ui/package.json ./packages/document-ui/` to all five files, the source COPYs to the two dev Dockerfiles, and the compose mounts. Run `rg -ln composeBindMounts --glob '*.test.*'` to find the test that checks bind mounts, and run it with `npx vitest run <path>` from its package directory.
 
-- [ ] **Step 3: Verify** — `docker build -f apps/portal/Dockerfile .` and `docker build -f docker/Dockerfile.web .` → succeed. After pushing, `gh workflow run release-build-check.yml --ref <branch>` (builds `apps/web/Dockerfile`); record the run id. CI's `build-smoke-images` builds the other two.
+- [ ] **Step 3: Verify** — `docker build -f apps/portal/Dockerfile .` and `docker build -f docker/Dockerfile.web .` → succeed. After pushing, `release-build-check.yml` runs automatically, because the PR touches `apps/web/Dockerfile` (`release-build-check.yml:4-8`). It builds that image. Record its run id, and dispatch it by hand only if it did not run. CI's `build-smoke-images` builds the other two images.
 
 - [ ] **Step 4: Commit** — `build: copy the document-ui manifest into every web/portal image (#9402)`
 
@@ -260,7 +277,7 @@ Branch `feature/9402-document-renderer/wave-<W1 sub-issue#>-w1b` from `origin/ma
 - Modify: `packages/shared/package.json` (`exports["./documents"] = "./src/documents/index.ts"`)
 
 **Interfaces (produces):**
-- `model.ts`: spec §3.2's `SanitizedHtml`, `DocumentAssetRef`, `DocumentMoney`, `DocumentDate`, `DocumentBranding`, `DocumentHeaderModel`, `DocumentLineRow<Tax>`, `DocumentGroupHeader`, `DocumentLineGroup<Tax>`, `DocumentLineTableModel`, `DocumentTotalsRow`, `DocumentTotalsModel`, `InvoiceDocumentModel` — verbatim, with one addition: `LineTableBase` gains `notTaxableText: string` (the screen-reader text for an `'exempt'` tax cell; components hold no strings, so it rides in the model). Re-use `DocumentThemeId`/`DocumentPageSize` from `../types/publicQuote`. (Quote types are W2a's `quoteModel.ts`.)
+- `model.ts`: spec §3.2's `SanitizedHtml`, `DocumentAssetRef`, `DocumentMoney`, `DocumentDate`, `DocumentBranding`, `DocumentHeaderModel`, `DocumentLineRow<Tax>`, `DocumentGroupHeader`, `DocumentLineGroup<Tax>`, `DocumentLineTableModel`, `DocumentTotalsRow`, `DocumentTotalsModel`, `InvoiceDocumentModel` — verbatim, with one addition: the **taxed** variant's `columns` gains `notTaxable: string`, the screen-reader text for an `'exempt'` cell. Components hold no strings, so the text rides in the model, and only the variant that can have exempt cells carries it. Re-use `DocumentThemeId`/`DocumentPageSize` from `../types/publicQuote`. (Quote types are W2a's `quoteModel.ts`.)
 - `dto.ts`:
 ```ts
 export type CustomerDocumentMode = 'public' | 'portal' | 'staff';
@@ -271,11 +288,11 @@ export interface CustomerInvoiceLineDto {
   ticketSubject?: string | null; isChild?: boolean;   // present only when OD9_CUSTOMER_PROJECTION enables them
 }
 export interface CustomerInvoiceHeaderDto {
-  id: string; invoiceNumber: string | null; status: InvoiceStatus; displayStatus: InvoiceStatus | null;
+  id: string; invoiceNumber: string | null; status: InvoiceStatus; displayStatus: Exclude<InvoiceStatus, 'draft'> | null;
   currencyCode: string; issueDate: string | null; dueDate: string | null;
   subtotal: string; taxRate: string | null; taxTotal: string; total: string;
   amountPaid: string; balance: string; depositDue: string | null;
-  billToName: string | null; notes: string | null; sellerSnapshot: SellerSnapshot | null;
+  billToName: string | null; notes: string | null; sellerSnapshot: DocumentSellerSnapshot | null;
   termsAndConditions: string | null; lineGrouping: 'entry' | 'day';
 }
 export interface CustomerDocumentBrandingDto {
@@ -287,8 +304,14 @@ export interface CustomerInvoiceDocument {
   branding: CustomerDocumentBrandingDto; documentLocale: string;
 }
 ```
-  (`InvoiceStatus` from `packages/shared/src/types/billing-enums.ts:23`. There is no shared `SellerSnapshot`: the API (`apps/api/src/services/sellerSnapshot.ts`) and the portal (`apps/portal/src/lib/api.ts:484`) each declare one. Add `DocumentSellerSnapshot` to `dto.ts`, structurally equal to the API's, and add a type-level assertion in Task 10 that the API's type is assignable to it.)
-- `money.ts`: `documentMoney(amount: string | number, currency: string, locale: string, suffix?: { text: string; srText: string } | null): DocumentMoney` — `text` via the shared `formatMoney(value, currency, locale)` (`packages/shared/src/utils/currency.ts:194`), `amount` = the input as a decimal string, unchanged.
+  - `InvoiceStatus` comes from `packages/shared/src/types/billing-enums.ts:23`.
+  - `export type DocumentSellerSnapshot = PublicQuoteSellerSnapshot;` (`packages/shared/src/types/publicQuote.ts:34`). The structure is the same, so reuse it rather than adding a fourth copy.
+  - The header carries no `billToAddress`/`billToTaxId`/`terms` in W1. W3a adds them; see the feature plan.
+- `money.ts`: `documentMoney(amount: string, currency: string, locale: string, suffix?: { text: string; srText: string } | null): DocumentMoney`.
+  - `text` comes from the shared `formatMoney(value, currency, locale)` (`packages/shared/src/utils/currency.ts:194`).
+  - `amount` is the input string, unchanged.
+  - The function takes strings only: callers with a computed number pass `(cents / 100).toFixed(2)`.
+- `sellerLines.ts`: `documentSellerLines(seller: DocumentSellerSnapshot): string[]`, moved from `sellerAddressLines` (`apps/api/src/services/sellerSnapshot.ts:105`). The API keeps a re-export so its callers are unchanged.
 - `dates.ts`: `documentDate(iso: string, locale: string): DocumentDate` — `YYYY-MM-DD` is formatted as a UTC calendar date (`{ year: 'numeric', month: 'short', day: '2-digit', timeZone: 'UTC' }`), `iso` unchanged.
 - `labels/types.ts`: `interface DocumentLabels` — every invoice string the document prints: `invoiceEyebrow`, `draftNumber`, `issued`, `due`, `billTo`, `notes`, `terms`, `termsFull`, `columns: { description, qty, unitPrice, tax, amount }`, `empty`, `laborLine`, `ticketHeader(n: string): string`, `ticketTitle(n: string, subject: string): string`, `workedVsBilled(worked: string, billed: string): string`, `notTaxable`, `totals: { subtotal, tax(pct: string | null): string, total, paid, balance, balanceDue }`, `deposit: { due(deposit: string, paid: string, total: string): (string | { strong: string })[]; paid(remaining: string): (string | { strong: string })[] }` (returns `DocumentTotalsModel.depositStrip.parts`), `status: Record<InvoiceStatus, string>`, `perMonth`/`perYear` `{ text, srText }` (OD-11, used by W2).
 - `labels/en.ts`: `DOCUMENT_LABELS_EN` — copy the portal's English verbatim (`invoicePaper.tsx` "Description", "Qty", "Price", "Tax", "Amount", "Subtotal", "Total", "Paid", "Balance", "Balance due", the deposit sentences; `lib/invoiceStatus.ts` `STATUS_LABELS`; `lineWorkedVsBilledNote`'s `"<w> h worked · <b> h billed"`; "Ticket #N").
@@ -339,11 +362,11 @@ Rules the builder owns (portal semantics win: the customer is the reader):
 - Groups by `ticketNumber` in first-seen order (the portal's `groupInvoiceLinesByTicket`); a group's header is `{ kind: 'ticket', title: labels.ticketHeader(n), category }`, or `labels.ticketTitle(n, subject)` when the line carries `ticketSubject`; lines without a ticket form a group with `header: null`.
 - `lineGrouping === 'day'` → `days` via `groupLinesByDay` with `{ date, hours, total }`; else one day bucket with `header: null`.
 - Row: `key = line.id`; `title = (name ?? description).trim() || '—'`; `blurb = name ? description.trim() || null : null`; `workDate` only when grouping is `entry`; `note = labels.workedVsBilled(...)` from `workedMinutes` vs `quantity` (null when equal or absent); `isChild = line.isChild === true`; `ticketText = null`; `descriptor = []`; `thumbnail = null`.
-- Tax column iff `Number(taxTotal) > 0`; per-row tax = the portal's `lineTax` rule (`taxable && rate > 0` → `round(cents × rate)/100`, else `'exempt'`).
-- Totals rows: Subtotal; Tax (pct = `taxRate × 100` to 3 dp, or no pct) — always; Total (`ruleAbove: 'neutral'`); Paid with `sign: 'minus'` only when `amountPaid > 0`; hero row `paid ? labels.totals.balance : labels.totals.balanceDue` with `ruleAbove: 'accent'`, `weight: 'hero'`. `depositStrip` when `depositDue > 0` and status ≠ `paid`, using `computeChargeNow`.
-- Header: `eyebrow = labels.invoiceEyebrow`; `number = invoiceNumber ?? labels.draftNumber`; `status` from `displayStatus` (null → no pill) with tone map `sent→info`, `partially_paid→warning`, `overdue→danger`, `paid→success`, `draft|void→neutral`; dates Issued/Due when present; `billTo` null when `billToName` is blank.
-- `branding.wordmark = partnerName ?? seller?.name ?? null`; `logo = logoUrl ? { kind: 'url', url } : null`.
-- `notes`, `terms.full` (`termsAndConditions`), `footer = null`.
+- The tax column appears iff `Number(taxTotal) > 0`. Per-row tax follows the portal's `lineTax` rule: when `taxable && rate > 0`, the tax is `documentMoney((Math.round(cents × rate) / 100).toFixed(2), …)`; otherwise the cell is `'exempt'`.
+- Totals rows: Subtotal; Tax (pct = `taxRate × 100` to 3 dp, or no pct) — always; Total (`ruleAbove: 'neutral'`); Paid with `sign: 'minus'` only when `amountPaid > 0`; hero row `status === 'paid' ? labels.totals.balance : labels.totals.balanceDue` with `ruleAbove: 'accent'`, `weight: 'hero'`. `depositStrip` when `depositDue != null` and `status !== 'paid'` (the portal's `hasDeposit`, `PublicInvoiceView.tsx:138`), worded from `computeChargeNow({ depositDue, amountPaid, balance }, currencyCode)`. Pass the currency: its default is USD.
+- Header: `eyebrow = labels.invoiceEyebrow`; `number = invoiceNumber ?? labels.draftNumber`; `status` from `displayStatus` (null → no pill) with tone map `sent→info`, `partially_paid→warning`, `overdue→danger`, `paid→success`, `void→neutral`; dates Issued/Due when present; `billTo` is null when `billToName` is blank, else `{ label, name, addressLines: [], taxId: null }` (W3a fills the last two).
+- `branding.wordmark = partnerName ?? seller?.name ?? null`; `logo = logoUrl ? { kind: 'url', url } : null`; `logoAlt = wordmark ?? ''`; `seller = sellerSnapshot ? { name, lines: documentSellerLines(s), phone, email, website } : null`; `theme`/`pageSize` from the DTO branding.
+- `notes`; `terms.short = null` (W3a); `terms.full = termsAndConditions ? { label: labels.termsFull, text, meta: '' } : null`; `footer = null`.
 - Throws `DocumentModelError` if any row title is empty after the fallback (cannot happen; the assertion guards future edits).
 
 - [ ] **Step 1: Write the failing tests** — one `it` per fixture asserting the decisive fields, plus:
@@ -383,17 +406,25 @@ This task inverts red-first deliberately: it records today's behaviour on unmodi
 **Files:**
 - Create: `apps/api/src/routes/invoicesPublic.customerDocumentPin.test.ts`, `apps/api/src/routes/portal/invoices.customerDocumentPin.test.ts`, `apps/api/src/routes/__fixtures__/customerInvoicePin.ts` (one issued invoice row, partner, portal_branding, three lines: a taxable ticket line, a time-entry line with `workedMinutes`, and a `customerVisible = false` line)
 
-- [ ] **Step 1: Write the tests with placeholder pins** using the Drizzle-mock idiom of the existing `invoicesPublic.test.ts` / `portal/invoices.test.ts` (mock `../db` selects in call order; real `toCustomerInvoiceLine`). Each test does `const body = await res.json(); expect(body).toEqual(PIN)` with `PIN = 'REPLACE_ME'`, and separately asserts the hidden line's description is absent from `JSON.stringify(body)`.
+- [ ] **Step 1: Write the tests with placeholder pins** using the Drizzle-mock idiom of the existing `invoicesPublic.test.ts` / `portal/invoices.test.ts` (mock `../db` selects in call order; real `toCustomerInvoiceLine`). Each test does `const body = await res.json(); expect(body).toEqual(PIN)` with `PIN = 'REPLACE_ME'`. Do not assert hidden-line absence here: the mocked DB returns whatever rows you hand it, so that assertion is vacuous. The real-DB test in Task 10 covers it.
 - [ ] **Step 2: Run to harvest** — `cd apps/api && npx vitest run src/routes/invoicesPublic.customerDocumentPin.test.ts src/routes/portal/invoices.customerDocumentPin.test.ts` → FAIL; the diff prints the actual JSON.
-- [ ] **Step 3: Pin** the harvested JSON as `PIN` constants with `// Recorded at origin/main f05560b9d0 before customerDocument.ts existed. Task 11 may only ADD the declared keys.`
+- [ ] **Step 3: Pin** the harvested JSON as `PIN` constants with `// Recorded at origin/main f05560b9d0 before customerDocument.ts existed. Task 11 may only ADD the declared keys.` From here on, the `PIN` constants and `__fixtures__/customerInvoicePin.ts` are frozen. Task 11 may change mock call order but not these, and `git diff <Task 9 commit> -- apps/api/src/routes/__fixtures__/customerInvoicePin.ts` must be empty at the end of W1b.
 - [ ] **Step 4: Verify** → PASS (4 tests).
 - [ ] **Step 5: Commit** — `test(billing): pin today's public and portal invoice payloads (#9402)`
 
 ### Task 10: `customerDocument.ts` — loader, assembler, modes, OD-9 switch
 
 **Files:**
-- Create: `apps/api/src/services/customerDocument.ts`, `apps/api/src/services/customerDocument.test.ts`
-- Modify: `apps/api/src/services/invoiceService.ts` (export `resolveDocumentLineDetail` at `:967`; `toCustomerInvoiceLine` (`:1055`) gains `id` and the optional OD-9 fields from its source; delete `projectCustomerInvoiceLine` (`:1086`); `CustomerInvoiceLine` becomes an alias of `CustomerInvoiceLineDto`; `getCustomerInvoice` (`:1125`) becomes org guard + `assembleCustomerInvoiceDocument(inv, 'portal')`, returning `{ invoice, lines, partnerId }` as today)
+- Create: `apps/api/src/services/customerDocument.ts`, `customerDocument.test.ts`, `customerDocument.integration.test.ts`
+- Modify: `apps/api/src/services/invoiceService.ts`:
+  - export `resolveDocumentLineDetail` (`:967`);
+  - `CustomerInvoiceLineSource` gains `id` and `parentLineId`;
+  - `toCustomerInvoiceLine` (`:1055`) gains `id` and **never** emits `ticketSubject`/`isChild`, even though its source selects `ticketSubject` (`:1133`). Only the loader adds the OD-9 keys;
+  - delete `projectCustomerInvoiceLine` (`:1086`);
+  - `CustomerInvoiceLine` becomes an alias of `Omit<CustomerInvoiceLineDto, 'ticketSubject' | 'isChild'>`;
+  - `toCustomerInvoiceHeader` (`:1102`) returns `Omit<CustomerInvoiceHeaderDto, 'displayStatus'>`, narrowing the untyped `sellerSnapshot` jsonb (`db/schema/invoices.ts:84`) through an explicit `asDocumentSellerSnapshot(value: unknown): DocumentSellerSnapshot | null` guard (no bare cast). `CustomerInvoiceHeader` becomes an alias of that type;
+  - delete `getCustomerInvoice` (`:1125`) and add `getPortalInvoiceRowOr404(id: string, orgId: string): Promise<InvoiceRow>` (`getOwnedInvoiceOr404` + org mismatch → the same 404 `InvoiceServiceError`).
+- Modify: `apps/api/src/routes/portal/invoices.ts` PDF route (`:245-262`) uses `getPortalInvoiceRowOr404` and keeps its draft 404; `apps/api/src/services/invoicePdf.integration.test.ts:13-39` retargets its org-guard cases to `getPortalInvoiceRowOr404` + `assembleCustomerInvoiceDocument(row, 'portal')`. `customerDocument.ts` imports `invoiceService.ts`, never the reverse.
 
 **Interfaces (produces):**
 ```ts
@@ -402,12 +433,15 @@ export const OD9_CUSTOMER_PROJECTION = { screen: { ticketSubject: false, bundleN
 export class CustomerDocumentModeError extends Error {}           // programming error, never an HTTP response
 export async function loadCustomerInvoiceLines(invoice: InvoiceRow, opts: { detail: InvoiceLineDetail; surface: 'screen' | 'pdf' }): Promise<CustomerInvoiceLineDto[]>;
 export async function loadCustomerDocumentBranding(invoice: InvoiceRow): Promise<CustomerDocumentBrandingDto>;
-export function invoiceDisplayStatus(status: InvoiceStatus): InvoiceStatus | null;   // draft → null, else status
+export function invoiceDisplayStatus(status: InvoiceStatus): Exclude<InvoiceStatus, 'draft'> | null;   // draft → null, else status
 export async function assembleCustomerInvoiceDocument(invoice: InvoiceRow, mode: CustomerDocumentMode, opts?: { surface?: 'screen' | 'pdf' }): Promise<CustomerInvoiceDocument>;
 ```
-- `loadCustomerInvoiceLines`: one query = the union of today's two (`getCustomerInvoice` `:1132-1155` and `invoicesPublic.ts:136-156`): `invoiceLines.invoiceId = id AND invoiceLines.orgId = invoice.orgId AND customerVisible = true`, tickets left-joined on `tickets.orgId = invoice.orgId AND deletedAt IS NULL`, ordered by `sortOrder`; selects `id` and `parentLineId` too. Maps through `toCustomerInvoiceLine(row, detail, invoice.documentLocale ?? 'en')`, then adds `ticketSubject` / `isChild` only when `OD9_CUSTOMER_PROJECTION[surface]` enables them.
-- `assembleCustomerInvoiceDocument`: `mode !== 'staff' && invoice.status === 'draft'` → throw `CustomerDocumentModeError`. `detail = mode === 'staff' && invoice.status === 'draft' ? await resolveDocumentLineDetail(invoice) : customerLineDetail(invoice)` (resolved **before** projection). Header = `toCustomerInvoiceHeader(invoice)` + `displayStatus`. `documentLocale = invoice.documentLocale ?? resolvePartnerDocumentLocale(partner) ?? 'en'` (`quoteBranding.ts:155` uses the same resolver).
-- `loadCustomerDocumentBranding`: today's public `brandingBlock` fields (`invoicesPublic.ts:197-212`), with `partnerName` **nullable** (the public route keeps its `?? 'Invoice'` at the envelope). Partner-axis reads go through `runOutsideDbContext(() => withSystemDbAccessContext(…))` keyed on `invoice.partnerId` (precedent `routes/portal/invoices.ts` branding read); `portal_branding` reads under the caller's context.
+- `loadCustomerInvoiceLines`: one query = the union of today's two (`getCustomerInvoice` `invoiceService.ts:1132-1155` and `invoicesPublic.ts:136-156`): `invoiceLines.invoiceId = id AND invoiceLines.orgId = invoice.orgId AND customerVisible = true`, tickets left-joined on `tickets.orgId = invoice.orgId AND deletedAt IS NULL`, ordered by `sortOrder`; selects `id` and `parentLineId` too. Maps through `toCustomerInvoiceLine(row, detail, invoice.documentLocale ?? 'en')`, then adds `ticketSubject` / `isChild` only when `OD9_CUSTOMER_PROJECTION[surface]` enables them. When a flag is off, **omit the key** rather than assigning `undefined`.
+- `assembleCustomerInvoiceDocument`: `mode !== 'staff' && invoice.status === 'draft'` → throw `CustomerDocumentModeError`. `detail = mode === 'staff' && invoice.status === 'draft' ? await resolveDocumentLineDetail(invoice) : customerLineDetail(invoice)` (resolved **before** projection). Header = `toCustomerInvoiceHeader(invoice)` + `displayStatus`. `documentLocale = invoice.documentLocale ?? resolvePartnerDocumentLocale(partner)` (`services/documentLocale.ts:5`; it never returns null; `quoteBranding.ts:155` uses the same chain). The partner row (including `settings`) is read once, inside the system-context helper described below, and shared by branding and locale.
+- `loadCustomerDocumentBranding`: today's public `brandingBlock` fields (`invoicesPublic.ts:207-221`), with `partnerName` **nullable** (the public route keeps its `?? 'Invoice'` at the envelope).
+  - Partner-axis reads go through `runOutsideDbContext(() => withSystemDbAccessContext(…))`, keyed on `invoice.partnerId` (precedent: the branding read in `routes/portal/invoices.ts`).
+  - `portal_branding` reads under the caller's context. The public route's caller context is the system context its handler already opens (`invoicesPublic.ts:120`).
+  - **Fail-soft, as the portal is today** (`portal/invoices.ts:150-166`): a thrown branding read is logged with `console.error('[customerDocument] branding lookup failed', { invoiceId, err })`. It then falls back to `partnerName/contactEmail/logoUrl/primaryColor = null`, with theme and page size from `resolveInvoicePresentation(invoice, undefined)`. It never throws.
 
 - [ ] **Step 1: Write the failing tests** (`customerDocument.test.ts`, mocked db as in `invoiceService.test.ts`):
 ```ts
@@ -428,28 +462,48 @@ it('OD-9 screen: no ticketSubject / isChild keys on any line', async () => {
 });
 it('OD-9 pdf surface: ticketSubject present, isChild absent', async () => {});
 it('every line carries its invoice_lines id', async () => {});
-it('documentLocale: invoice → partner → en', async () => {});
+it('documentLocale: invoice → partner default', async () => {});
+it('a failing branding read logs and falls back; the document still assembles', async () => {});
+it('the line query filters customerVisible and orgId', async () => { /* inspect the mocked where()/and() args */ });
 ```
-- [ ] **Step 2: Run** — `cd apps/api && npx vitest run src/services/customerDocument.test.ts` → FAIL (module missing).
+`customerDocument.integration.test.ts` (real DB; copy the seeding style of `invoicePdf.integration.test.ts`). It seeds an issued invoice with one hidden line, a partner with a non-English document locale, and a `portal_branding` row, then:
+```ts
+it('portal-user context: hidden line absent, partner-axis reads return rows, documentLocale = partner locale', …);
+it('staff context: same, and a draft assembles with partner defaults', …);
+it('system context (public route): same', …);
+```
+
+- [ ] **Step 2: Run** — `cd apps/api && npx vitest run src/services/customerDocument.test.ts` → FAIL (module missing). On a per-worktree stack, run `cd apps/api && npx vitest run --config vitest.integration.config.ts src/services/customerDocument.integration.test.ts` → FAIL.
 - [ ] **Step 3: Implement** per the interfaces. Update `invoiceService.test.ts` cases for `projectCustomerInvoiceLine` (delete) and `toCustomerInvoiceLine` (now carries `id`).
-- [ ] **Step 4: Verify** — `cd apps/api && npx vitest run src/services/customerDocument.test.ts src/services/invoiceService` → PASS (check the file count includes every `invoiceService*.test.ts`); typecheck `apps/api` exit 0.
+- [ ] **Step 4: Verify.**
+  - `cd apps/api && npx vitest run src/services/customerDocument.test.ts src/services/invoiceService src/routes/portal/invoices` → PASS. Check that the file count includes every `invoiceService*.test.ts`.
+  - On the stack: `npx vitest run --config vitest.integration.config.ts src/services/customerDocument.integration.test.ts src/services/invoicePdf.integration.test.ts` → PASS. Then run `pnpm wt-stack down`.
+  - Typecheck `apps/api` → exit 0.
 - [ ] **Step 5: Commit** — `feat(billing): customer-document assembler for invoices (#9402)`
 
 ### Task 11: Public and portal invoice routes return the assembler's output
 
 **Files:**
-- Modify: `apps/api/src/routes/invoicesPublic.ts` (`GET /:token` non-void branch, `:136-195`), `apps/api/src/routes/portal/invoices.ts` (`GET /invoices/:id`, `:120-218`), both `*.customerDocumentPin.test.ts` (Task 9), `apps/api/src/routes/invoicesPublic.test.ts`, `apps/api/src/routes/portal/invoices.test.ts` (mock call order changes)
+- Modify: `apps/api/src/routes/invoicesPublic.ts` (`GET /:token` non-void branch, `:136-202`), `apps/api/src/routes/portal/invoices.ts` (`GET /invoices/:id`, `:120-221`), both `*.customerDocumentPin.test.ts` (Task 9), `apps/api/src/routes/invoicesPublic.test.ts`, `apps/api/src/routes/portal/invoices.test.ts` (mock call order changes)
 
 - [ ] **Step 1: Change the pins to the target** — in each pin test, replace `expect(body).toEqual(PIN)` with:
 ```ts
+// public: the route returns { data } (invoicesPublic.ts:204); the portal route is unwrapped (portal/invoices.ts:203)
 expect(stripAdditive(body, PUBLIC_ADDITIVE)).toEqual(PIN);
-expect(body.documentLocale).toBe('en');
-expect(body.invoice.displayStatus).toBe(PIN.invoice.status);
-expect(body.lines.map((l: { id: string }) => l.id)).toEqual(VISIBLE_LINE_IDS);
+expect(body.data.documentLocale).toBe('en');
+expect(body.data.invoice.displayStatus).toBe(PIN.data.invoice.status);
+expect(body.data.lines.map((l: { id: string }) => l.id)).toEqual(VISIBLE_LINE_IDS);
 ```
-with `PUBLIC_ADDITIVE = ['invoice.displayStatus', 'lines[].id', 'documentLocale']` and `PORTAL_ADDITIVE = [...PUBLIC_ADDITIVE, 'branding.contactEmail', 'branding.theme', 'branding.pageSize']`; the portal test also asserts `body.branding.theme` equals the fixture invoice's frozen theme (D14). Add to the public pin file: `it('void invoices never reach the assembler', …)` (spy on `assembleCustomerInvoiceDocument`, expect not called; body equals today's void payload).
+with `PUBLIC_ADDITIVE = ['data.invoice.displayStatus', 'data.lines[].id', 'data.documentLocale']` and `PORTAL_ADDITIVE = ['invoice.displayStatus', 'lines[].id', 'documentLocale', 'branding.contactEmail', 'branding.theme', 'branding.pageSize']` (portal assertions use `body.*`); the portal test also asserts `body.branding.theme` equals the fixture invoice's frozen theme (D14). Add to the public pin file: `it('void invoices never reach the assembler', …)` (spy on `assembleCustomerInvoiceDocument`, expect not called; body equals today's void payload).
 - [ ] **Step 2: Run** — `cd apps/api && npx vitest run src/routes/invoicesPublic.customerDocumentPin.test.ts src/routes/portal/invoices.customerDocumentPin.test.ts` → FAIL (`documentLocale` undefined).
-- [ ] **Step 3: Implement** — public: after the void branch, `const doc = await assembleCustomerInvoiceDocument(inv, 'public')`; envelope `invoice: { ...doc.invoice, paidAt: inv.paidAt }`, `lines: doc.lines`, `branding: { ...doc.branding, partnerName: doc.branding.partnerName ?? 'Invoice' }` (key order as today), `documentLocale: doc.documentLocale`; everything else unchanged, `markViewed` stays where it is. Portal: load `getOwnedInvoiceOr404(id)`, keep the org guard (404 body unchanged) and the draft 404 (`:134-135`), then the assembler with `'portal'`; drop the route's own partner/branding reads; envelope `invoice`, `lines` (no re-projection), `branding: doc.branding`, `documentLocale`.
+- [ ] **Step 3: Implement.**
+
+  **Public route.** After the void branch, call `const doc = await assembleCustomerInvoiceDocument(inv, 'public')` **inside** the existing `runOutsideDbContext(() => withSystemDbAccessContext(…))` block (`:120`). The void branch's own branding read stays where it is. envelope `invoice: { ...doc.invoice, paidAt: inv.paidAt }`, `lines: doc.lines`, `branding: { ...doc.branding, partnerName: doc.branding.partnerName ?? 'Invoice' }` (key order as today), `documentLocale: doc.documentLocale`; everything else unchanged, `markViewed` stays where it is. 
+
+  **Portal route.**
+  - Load the row with `getPortalInvoiceRowOr404(id, auth.user.orgId)`. Map its `InvoiceServiceError` 404 to `INVOICE_NOT_FOUND_BODY` as today, and keep the draft 404 (`:134-135`).
+  - Call the assembler with `'portal'`, and drop the route's own partner and branding reads; the assembler keeps them fail-soft.
+  - The envelope is `invoice`, `lines` (no re-projection), `branding: doc.branding` and `documentLocale`.
 - [ ] **Step 4: Verify** — `cd apps/api && npx vitest run src/routes/invoicesPublic src/routes/portal/invoices` → PASS (report the file count); typecheck exit 0.
 - [ ] **Step 5: Commit** — `refactor(billing): public and portal invoice routes serve the assembled customer document (#9402)`
 
@@ -466,16 +520,26 @@ with `PUBLIC_ADDITIVE = ['invoice.displayStatus', 'lines[].id', 'documentLocale'
 ```ts
 it('serves a draft', …);                                    // 200, displayStatus null
 it('never stamps the view', () => { expect(markViewed).not.toHaveBeenCalled(); /* and no db.update on invoices */ });
-it('returns no token', () => { const s = JSON.stringify(body); expect(s).not.toMatch(/token/i); expect(s).not.toContain(FIXTURE_PUBLIC_TOKEN); });
-it.each([
-  ['a site-restricted caller outside the invoice site', siteRestrictedActor],
-  ['a caller whose accessible orgs exclude the invoice org', foreignOrgActor],
-  ['a caller without invoices:read', noReadPermActor],
-])('%s is rejected exactly as GET /invoices/:id rejects it', async (_n, actor) => {
-  const detail = await get(`/invoices/${ID}`, actor); const view = await get(`/invoices/${ID}/customer-view`, actor);
-  expect(view.status).toBe(detail.status); expect(await view.json()).toEqual(await detail.json());
+it('returns exactly the allowlisted keys (no token, no internal field)', () => {
+  expect(Object.keys(body.data).sort()).toEqual(['branding', 'documentLocale', 'invoice', 'lines']);
+  expect(Object.keys(body.data.invoice).sort()).toEqual(HEADER_DTO_KEYS);     // the CustomerInvoiceHeaderDto keys, listed literally
+  expect(JSON.stringify(body)).not.toContain(FIXTURE_PUBLIC_TOKEN);
 });
-it('hidden lines are absent', …);
+it.each([
+  ['a site-restricted caller outside the invoice site', siteRestrictedActor, 403],
+  ['a caller whose accessible orgs exclude the invoice org', foreignOrgActor, ORG_DENIED_STATUS],  // record the detail route's literal status first
+  ['a caller without invoices:read', noReadPermActor, 403],
+])('%s is rejected exactly as GET /invoices/:id rejects it', async (_n, actor, status) => {
+  const detail = await get(`/invoices/${ID}`, actor); const view = await get(`/invoices/${ID}/customer-view`, actor);
+  expect(detail.status).toBe(status);                    // guards against a mis-built actor making both 200
+  expect(view.status).toBe(status); expect(await view.json()).toEqual(await detail.json());
+});
+it('a site miss carries SITE_DENIED', async () => { expect((await (await get(`/invoices/${ID}/customer-view`, siteRestrictedActor)).json()).code).toBe('SITE_DENIED'); });
+it('an issued invoice equals the portal route\'s document fields (spec §8.1)', async () => {
+  const portal = await portalGet(`/portal/invoices/${ID}`);                            // same fixture, portal user of that org
+  const { invoice, lines, branding, documentLocale } = portal;
+  expect(body.data).toEqual({ invoice, lines, branding, documentLocale });             // raw status and displayStatus are equal in both modes
+});
 it('withheld note on an issued invoice never appears in the body', …);   // Review Focus 4
 it('lives in a route file mcpCoverage already covers (keyed by file; no entry change)', () => {
   expect(MCP_COVERAGE['invoices/invoices.ts']).toBeDefined();   // MCP_COVERAGE from services/mcpCoverage.ts:204
@@ -486,7 +550,7 @@ it('lives in a route file mcpCoverage already covers (keyed by file; no entry ch
 - [ ] **Step 4: Verify** — `cd apps/api && npx vitest run src/routes/invoices src/services/customerDocument.test.ts src/__tests__/mcp-coverage.test.ts` → PASS; typecheck exit 0.
 - [ ] **Step 5: Commit** — `feat(billing): GET /invoices/:id/customer-view for the staff Preview (#9402)`
 
-**W1b exit:** `cd packages/shared && npx vitest run`; `cd apps/api && npx vitest run src/services/customerDocument.test.ts src/services/invoiceService src/routes/invoicesPublic src/routes/portal/invoices src/routes/invoices` and then the full `cd apps/api && npx vitest run` once (catches `orgMerge`-style full-suite-only reds); typecheck `packages/shared` and `apps/api` exit 0. No integration suite (no schema/RLS change).
+**W1b exit:** `cd packages/shared && npx vitest run`; `cd apps/api && npx vitest run src/services/customerDocument.test.ts src/services/invoiceService src/routes/invoicesPublic src/routes/portal/invoices src/routes/invoices` and then the full `cd apps/api && npx vitest run` once (catches `orgMerge`-style full-suite-only reds); typecheck `packages/shared` and `apps/api` exit 0. Integration: `customerDocument.integration.test.ts` and `invoicePdf.integration.test.ts` green on a per-worktree stack, which is then torn down. There is no schema or RLS change, so no other contract suite applies.
 
 ---
 
@@ -497,23 +561,23 @@ Branch `feature/9402-document-renderer/wave-<W1 sub-issue#>-w1c` from `origin/ma
 ### Task 13: Invoice composition in `@breeze/document-ui`
 
 **Files:**
-- Create: `packages/document-ui/src/DocumentHeader.tsx`, `DocumentLineTable.tsx`, `DocumentLineDescription.tsx`, `DocumentTotals.tsx`, `DocumentNotes.tsx`, `DocumentTerms.tsx`, `InvoiceDocumentView.tsx`, `hostComponents.ts`, `src/__fixtures__/normalize.ts`, `src/__fixtures__/invoice-<fixture>.snap.html` (one per `InvoiceFixtureName` except `void`), `src/__tests__/invoiceDocumentView.test.tsx`, `src/__tests__/snapshots.test.tsx`
+- Create: `packages/document-ui/src/DocumentHeader.tsx`, `DocumentLineTable.tsx`, `DocumentLineDescription.tsx`, `DocumentTotals.tsx`, `DocumentNotes.tsx`, `DocumentTerms.tsx`, `InvoiceDocumentView.tsx`, `hostComponents.ts`, `src/__fixtures__/normalize.ts`, `src/__fixtures__/invoice-<fixture>.snap.html` (one per `InvoiceFixtureName`, `void` included: the logged-in portal and the Preview render a void invoice through the view; only the public page replaces it with its host-policy void state), `src/__tests__/invoiceDocumentView.test.tsx`, `src/__tests__/snapshots.test.tsx`
 - Modify: `packages/document-ui/src/index.ts`, `src/__tests__/noStyleAttribute.test.tsx` (`renderAll()` covers every new component × every invoice fixture), `apps/portal/src/components/portal/documentShell.tsx` (`useDeepLinkedDisclosure` and `DocumentTermsCollapsible` move to `DocumentTerms.tsx`; `documentShell.tsx` re-exports them until W2b)
 
 **Interfaces (produces):**
 ```ts
 export interface DocumentHostComponents {
-  Image(props: { asset: DocumentAssetRef; alt: string; className?: string }): JSX.Element | null;
-  AgreementFile(props: { asset: DocumentAssetRef; title: string }): JSX.Element | null;
+  Image(props: { asset: DocumentAssetRef; alt: string; className?: string }): ReactElement | null;
+  AgreementFile(props: { asset: DocumentAssetRef; title: string }): ReactElement | null;
 }
 export interface DocumentSlots { beforePaper?: ReactNode; afterTotals?: ReactNode; signature?: ReactNode; afterPaper?: ReactNode }
-export function InvoiceDocumentView(props: { model: InvoiceDocumentModel; components: DocumentHostComponents; slots?: DocumentSlots }): JSX.Element;
+export function InvoiceDocumentView(props: { model: InvoiceDocumentModel; components: DocumentHostComponents; slots?: DocumentSlots }): ReactElement;
 export interface DocumentLineDescriptionProps { title: string; blurb: string | null; workDate: DocumentDate | null; note: string | null; descriptor: string[]; ticketText: string | null; qtyFold: string | null }
-export function DocumentLineDescription(props: DocumentLineDescriptionProps): JSX.Element;   // W5's lineDescriptionProps() returns this type
+export function DocumentLineDescription(props: DocumentLineDescriptionProps): ReactElement;   // W5's lineDescriptionProps() returns this type
 export function normalizeDocumentRoot(container: ParentNode): string;   // [data-document-root] outerHTML, [data-slot] emptied, React useId values stripped, attributes sorted
 export const STAND_IN_COMPONENTS: DocumentHostComponents;              // <img data-asset="kind:id">, <a data-asset="kind:id">
 ```
-Markup rules: slots render inside `<div data-slot="before-paper|after-totals|signature|after-paper">` (empty `div` when absent, so the normalized markup is stable); test ids `document-line-<rowKey>`, `document-line-blurb-<rowKey>`, `document-day-<iso>`, `document-totals-hero`, `document-deposit`; blurb `<p className="whitespace-pre-line …">`; dates `<time dateTime={iso}>`; money `<span>` text plus `<span className="sr-only">` for `suffix.srText`; phone fold `sm:hidden` qty × unit under the title (D13); `'exempt'` renders `—` with an `sr-only` `lines.notTaxableText`; the qty fold is `` `${row.qty} × ${row.unit.text}` ``. Use the portal's current classes (`invoicePaper.tsx`, `documentShell.tsx:39,139-146`) as the visual baseline.
+(`ReactElement` from `react`: `@types/react` 19 has no global `JSX` namespace.) Markup rules: slots render inside `<div data-slot="before-paper|after-totals|signature|after-paper">` (empty `div` when absent, so the normalized markup is stable); test ids `document-line-<rowKey>`, `document-line-blurb-<rowKey>`, `document-day-<iso>`, `document-totals-hero`, `document-deposit`; blurb `<p className="whitespace-pre-line …">`; dates `<time dateTime={iso}>`; money `<span>` text plus `<span className="sr-only">` for `suffix.srText`; phone fold `sm:hidden` qty × unit under the title (D13); `'exempt'` renders `—` with an `sr-only` `lines.columns.notTaxable`; the qty fold is `` `${row.qty} × ${row.unit.text}` ``. Use the portal's current classes (`invoicePaper.tsx`, `documentShell.tsx:39,139-146`) as the visual baseline, with `font-display` replaced by `doc-font-display`.
 
 - [ ] **Step 1: Write the failing tests**
 ```ts
@@ -552,13 +616,13 @@ it.each(FIXTURE_NAMES)('%s matches its committed normalized snapshot', async (na
 ### Task 15: Web Preview renders the customer view
 
 **Files:**
-- Modify: `apps/web/src/components/billing/InvoiceDocument.tsx` (delete `LineRow`, `InvoiceDocument` and their helpers; keep only `InvoiceDocumentPreview`), `apps/web/src/components/billing/InvoiceWorkspace.tsx` (`:252` passes `detail`), `apps/web/src/components/billing/InvoiceDocument.test.tsx` (rewrite), `apps/web/src/locales/{de-DE,en,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/billing.json`, `apps/web/src/lib/i18n/extractionQuality.test.ts` (`:54-57` entry removed)
+- Modify: `apps/web/src/components/billing/InvoiceDocument.tsx` (delete `LineRow`, `InvoiceDocument` and their helpers; keep only `InvoiceDocumentPreview`), `apps/web/src/components/billing/InvoiceWorkspace.tsx` (`:252` passes `detail`), `apps/web/src/components/billing/InvoiceDocument.test.tsx` (rewrite), `apps/web/src/locales/{de-DE,en,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/billing.json`, `apps/web/src/lib/i18n/extractionQuality.test.ts` (`:54-57` entry removed), `apps/web/src/locales/humanizedKeyBaseline.json` (`:731-734`, the four deleted keys)
 - Delete: `apps/web/src/components/billing/InvoiceDocument.linebreaks.test.tsx` (from #9401; the package blurb test replaces it)
-- Create: `apps/web/src/components/billing/documentHostComponents.tsx` (web `DocumentHostComponents`: `Image` = authenticated fetch → object URL, as `QuoteDocument.tsx:30-33` `DocImage`/`DocLineThumb` do; `AgreementFile` = `null` until W2b)
+- Create: `apps/web/src/components/billing/documentHostComponents.tsx` (web `DocumentHostComponents`: `Image` = authenticated fetch → object URL, as `quotes/QuoteDocument.tsx` `DocLineThumb` (`:33`) and `DocImage` (`:42`) do; `AgreementFile` = `null` until W2b)
 
 **Interfaces:**
 - Consumes: `GET /invoices/:id/customer-view` (Task 12), `buildInvoiceDocumentModel`, `documentLabelsFor`, `InvoiceDocumentView`.
-- Produces: `InvoiceDocumentPreview({ detail }: { detail: InvoiceDetailData })` — `useEffect` keyed on `[detail]` fetches `fetchWithAuth(\`/invoices/${detail.invoice.id}/customer-view\`)`; a stale response (an older request finishing after a newer one) is discarded; renders a loading line, an error line with retry, or `<div className="…" ref={accentRef}>` wrapping `<InvoiceDocumentView model={model} components={webHostComponents} />` with `--doc-accent` set from `model`'s branding primary colour on the wrapper (outside the package). Keeps the caption and the Download PDF button.
+- Produces: `InvoiceDocumentPreview({ detail }: { detail: InvoiceDetailData })` — `useEffect` keyed on `[detail]` fetches `fetchWithAuth(\`/invoices/${detail.invoice.id}/customer-view\`)`; a stale response (an older request finishing after a newer one) is discarded; renders a loading line, an error line with retry, or `<div className="…" ref={accentRef}>` wrapping `<InvoiceDocumentView model={model} components={webHostComponents} />` with `--doc-accent` set from `dto.branding.primaryColor` on the wrapper (outside the package; the model's `DocumentBranding` has no colour). Keeps the caption and the Download PDF button.
 
 - [ ] **Step 1: Write the failing tests** (`InvoiceDocument.test.tsx`; mock `fetchWithAuth`):
 ```ts
@@ -573,8 +637,8 @@ it('discards a stale response', …);
 it('labels come from the document locale, not the staff UI language', async () => { /* i18n.changeLanguage('pt-BR'); fixture documentLocale 'en' → 'Balance due' */ });
 ```
 - [ ] **Step 2: Run** — `cd apps/web && npx vitest run src/components/billing/InvoiceDocument.test.tsx` → FAIL.
-- [ ] **Step 3: Implement.** Delete the body-only `invoiceDocument` keys from all 8 locales: `billTo`, `documentType`, `due`, `empty`, `fallbackTitle`, `issued`, `laborLine`, `terms`, `ticketWork`, `table.*`, `totals.*`. Keep `preview.*` and `ticketHeader` (`InvoiceDetail.tsx:528`). Remove the `invoiceDocument.totals.tax` entry from `extractionQuality.test.ts`.
-- [ ] **Step 4: Verify** — `cd apps/web && npx vitest run src/components/billing/InvoiceDocument.test.tsx src/components/billing/InvoiceWorkspace src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts` → PASS; typecheck `apps/web` exit 0.
+- [ ] **Step 3: Implement.** Delete the body-only `invoiceDocument` keys from all 8 locales: `billTo`, `documentType`, `due`, `empty`, `fallbackTitle`, `issued`, `laborLine`, `terms`, `ticketWork`, `table.*`, `totals.*`. Keep `preview.*` and `ticketHeader` (`InvoiceDetail.tsx:528`). Remove the `invoiceDocument.totals.tax` entry from `extractionQuality.test.ts` and the four `billing.invoiceDocument.*` entries from `humanizedKeyBaseline.json`.
+- [ ] **Step 4: Verify** — `cd apps/web && npx vitest run src/components/billing/InvoiceDocument.test.tsx src/components/billing/InvoiceWorkspace src/lib/i18n src/locales src/lib/__tests__/no-silent-mutations.test.ts` → PASS; typecheck `apps/web` exit 0.
 - [ ] **Step 5: Commit** — `feat(web): invoice Preview renders the customer document from customer-view (#9402)`
 
 ### Task 16: Portal invoice pages render `InvoiceDocumentView`
@@ -634,7 +698,7 @@ it.each(FIXTURES)('public and logged-in %s equal the shared snapshot', (name) =>
   1. Public invoice under the production portal CSP: collect `securitypolicyviolation` events and console CSP errors → expect none; `getComputedStyle(document-root's accent bar).backgroundColor` equals the seeded partner accent (D17).
   2. Screenshot pair: web Preview `[data-testid="document-root"]` vs public page `[data-testid="document-root"]` for the same seeded issued invoice at 1280 px → `toHaveScreenshot` with a shared name per variant and a small `maxDiffPixelRatio` (the two apps' Tailwind builds may differ by sub-pixel font metrics; tune once, state the value).
   3. Web `data-density='dense'` Preview screenshot equals the comfortable one (Review Focus 1).
-- [ ] **Step 2: Run on a per-worktree stack** — `pnpm wt-stack up` with the production CSP enabled for the portal (see `apps/portal/src/lib/docAccent.ts` header for how the stack sets it), seed one issued invoice with a partner accent, `cd e2e-tests && npx playwright test tests/document-renderer.spec.ts`. Expected: PASS. Then `pnpm wt-stack down` and say what was left running.
+- [ ] **Step 2: Run on a per-worktree stack** — `pnpm wt-stack up` with the portal's CSP enforced: set `CSP_STRICT_DEV=1` for the portal (`apps/portal/src/middleware.ts:123-128`; dev otherwise deletes the header), or run a production portal build, seed one issued invoice with a partner accent, `cd e2e-tests && npx playwright test tests/document-renderer.spec.ts`. Expected: PASS. Then `pnpm wt-stack down` and say what was left running.
 - [ ] **Step 3: Commit** — `test(e2e): document renderer W1 slice — public invoice CSP + Preview/public parity (#9402)`
 
-**W1c exit:** `cd packages/document-ui && npx vitest run`; `cd apps/web && npx vitest run src/components/billing src/lib/i18n src/lib/__tests__`; `cd apps/portal && npx vitest run`; typecheck exit 0 in `packages/document-ui`, `apps/web`, `apps/portal`; Playwright slice green with variants listed; `rg -n "invoicePaper|mirrors the dashboard" apps/portal/src apps/web/src/components/billing/InvoiceDocument.tsx` → no hits.
+**W1c exit:** `cd packages/document-ui && npx vitest run`; `cd apps/web && npx vitest run src/components/billing src/lib/i18n src/locales src/lib/__tests__`; `cd apps/portal && npx vitest run`; typecheck exit 0 in `packages/document-ui`, `apps/web`, `apps/portal`; Playwright slice green with variants listed; `rg -n "invoicePaper|mirrors the dashboard" apps/portal/src apps/web/src/components/billing/InvoiceDocument.tsx` → no hits.
