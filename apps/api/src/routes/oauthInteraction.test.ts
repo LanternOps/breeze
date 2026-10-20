@@ -276,6 +276,10 @@ describe('oauthInteractionRoutes', () => {
         verification: 'unverified',
         redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
         redirect_origin: 'https://claude.ai',
+        registration: 'dynamic',
+        client_id_host: null,
+        redirect_host: 'claude.ai',
+        localhost_redirect: false,
       },
       scopes: ['openid', 'offline_access'],
       resource: 'https://api.example/mcp/server',
@@ -338,7 +342,57 @@ describe('oauthInteractionRoutes', () => {
       verification: 'unverified',
       redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
       redirect_origin: 'https://claude.ai',
+      registration: 'dynamic',
+      client_id_host: null,
+      redirect_host: 'claude.ai',
+      localhost_redirect: false,
     });
+  });
+
+  // B-W03 (#6157, D-B20): a CIMD host proves who hosts the metadata, not
+  // who the application is — the name stays unverified.
+  it('consent payload marks a URL client_id as metadata_document with its host and keeps verification unverified', async () => {
+    mocks.interactionDetails.mockResolvedValue(details({
+      params: {
+        client_id: 'https://client.example.com/oauth/metadata.json',
+        resource: 'https://api.example/mcp/server',
+        scope: 'openid offline_access mcp:read',
+        redirect_uri: 'https://app.example.org/callback',
+      },
+    }));
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
+    queueSelect([{ metadata: { client_name: 'Example Agent' } }], 'limit');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const body = await res.json() as { client: Record<string, unknown> };
+    expect(res.status).toBe(200);
+    expect(body.client).toMatchObject({
+      client_id: 'https://client.example.com/oauth/metadata.json',
+      display_name: 'Example Agent',
+      verification: 'unverified',
+      registration: 'metadata_document',
+      client_id_host: 'client.example.com',
+      redirect_host: 'app.example.org',
+      localhost_redirect: false,
+    });
+  });
+
+  it.each([
+    ['http://127.0.0.1:3000/cb', '127.0.0.1'],
+    ['http://localhost:8080/cb', 'localhost'],
+    ['http://[::1]:9000/cb', '[::1]'],
+  ])('consent payload flags a loopback redirect (%s)', async (redirectUri, host) => {
+    mocks.interactionDetails.mockResolvedValue(details({
+      params: {
+        client_id: 'https://client.example.com/oauth/metadata.json',
+        resource: 'https://api.example/mcp/server',
+        scope: 'openid mcp:read',
+        redirect_uri: redirectUri,
+      },
+    }));
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
+    queueSelect([{ metadata: { client_name: 'Example Agent' } }], 'limit');
+    const body = await (await request(loadApp(), '/api/v1/oauth/interaction/uid-1')).json() as { client: Record<string, unknown> };
+    expect(body.client).toMatchObject({ redirect_host: host, localhost_redirect: true, registration: 'metadata_document' });
   });
 
   it('MCP-OAUTH-08: marks the client unverified and exposes the exact callback origin', async () => {

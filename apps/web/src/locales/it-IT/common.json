@@ -2355,6 +2355,8 @@
         "clientId": "ID client: {{clientId}}",
         "unverifiedLabel": "Integrazione non verificata",
         "unverifiedDescription": "Breeze non ha verificato questa integrazione. Il nome è autodichiarato e potrebbe imitare un'app attendibile. Approva solo se hai avviato tu questa connessione e riconosci la destinazione di callback qui sotto.",
+        "metadataHostedAt": "Dettagli dell’app pubblicati da {{host}}",
+        "localhostRedirectWarning": "Questa app riceverà l’accesso su questo computer. Continua solo se hai avviato tu questa connessione.",
         "callbackLabel": "Il codice di autorizzazione verrà inviato a:",
         "missingRedirectTitle": "Impossibile verificare la destinazione di callback",
         "missingRedirectDescription": "Questa richiesta di autorizzazione non includeva una destinazione di callback, quindi non può essere approvata in modo sicuro. Torna al tuo client MCP e avvia nuovamente la connessione.",

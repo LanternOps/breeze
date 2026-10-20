@@ -2355,6 +2355,8 @@
         "clientId": "Client ID : {{clientId}}",
         "unverifiedLabel": "Intégration non vérifiée",
         "unverifiedDescription": "Breeze n’a pas vérifié cette intégration. Son nom est auto-déclaré et pourrait se faire passer pour une application de confiance. Approuvez seulement si vous avez lancé cette connexion et reconnaissez la destination de rappel ci-dessous.",
+        "metadataHostedAt": "Détails de l’application publiés par {{host}}",
+        "localhostRedirectWarning": "Cette application recevra l’accès sur cet ordinateur. Ne continuez que si vous avez lancé cette connexion vous-même.",
         "callbackLabel": "Le code d’autorisation sera envoyé à :",
         "missingRedirectTitle": "Impossible de vérifier la destination de rappel",
         "missingRedirectDescription": "Cette demande d’autorisation n’incluait pas de destination de rappel, donc elle ne peut pas être approuvée en toute sécurité. Retournez à votre client MCP et relancez la connexion.",

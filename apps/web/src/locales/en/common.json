@@ -2355,6 +2355,8 @@
         "clientId": "Client ID: {{clientId}}",
         "unverifiedLabel": "Unverified integration",
         "unverifiedDescription": "Breeze has not verified this integration. Its name is self-reported and could impersonate a trusted app. Only approve if you started this connection and recognize the callback destination below.",
+        "metadataHostedAt": "App details published by {{host}}",
+        "localhostRedirectWarning": "This app will receive access on this computer. Continue only if you started this connection yourself.",
         "callbackLabel": "Authorization code will be sent to:",
         "missingRedirectTitle": "Can't verify the callback destination",
         "missingRedirectDescription": "This authorization request didn't include a callback destination, so it can't be safely approved. Return to your MCP client and start the connection again.",
