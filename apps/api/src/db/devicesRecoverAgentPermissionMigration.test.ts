@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DEFAULT_PERMISSIONS } from './seed';
 
 const FILE = path.resolve(
-  __dirname, '../../migrations/2027-01-02-120000-devices-recover-agent-permission.sql',
+  __dirname, '../../migrations/2027-01-02-120400-devices-recover-agent-permission.sql',
 );
 
 /**
@@ -12,7 +12,7 @@ const FILE = path.resolve(
  * SYSTEM_ROLES (fresh install, pinned in seed.test.ts) and this migration
  * (upgrade back-fill). They must agree on the catalog row and on who holds it.
  */
-describe('2027-01-02-120000-devices-recover-agent-permission.sql', () => {
+describe('2027-01-02-120400-devices-recover-agent-permission.sql', () => {
   const sql = readFileSync(FILE, 'utf8').replace(/^\s*--.*$/gm, '');
 
   it('elects system scope before any write', () => {
