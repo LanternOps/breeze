@@ -38,7 +38,7 @@ export class AutomationReferenceAuthorizationError extends Error {
   }
 }
 
-function scriptOwnershipCondition(owner: AutomationReferenceOwner): SQL {
+export function scriptOwnershipCondition(owner: AutomationReferenceOwner): SQL {
   if (owner.scope === 'partner') {
     return or(
       eq(scripts.isSystem, true),

@@ -290,6 +290,86 @@ export async function resolveTenantTools(
   return dedupeByQualifiedName(descriptors);
 }
 
+// ---------------------------------------------------------------------------
+// Tool Catalog W03 (#5218) — resolve against a flow OWNER, not a session.
+//
+// A flow validates against the catalog of the org or partner that owns it
+// (spec §6.3 rule 1), which is not the same thing as "what this request's
+// token can see" (a partner tech drafting an org flow, or a stored row
+// re-validated on read). The owner is produced only by
+// `services/flows/owner.ts` (after the real caller is authorized) or read from
+// a stored `flows` row, never from tool input.
+// ---------------------------------------------------------------------------
+
+export interface ToolOwnerRef {
+  orgId: string | null;
+  partnerId: string;
+}
+
+/**
+ * The owner predicate: an org owner gets its own tools plus the partner-wide
+ * tools of the org's partner RE-DERIVED from `organizations` (the passed
+ * `partnerId` is never trusted for the widening); a partner owner gets its
+ * partner-wide tools only.
+ */
+export function buildResolveTenantToolsForOwnerQuery(owner: ToolOwnerRef) {
+  let predicate: SQL | undefined;
+  if (owner.orgId) {
+    const orgsPartnerId = sql<string>`(select ${organizations.partnerId} from ${organizations} where ${organizations.id} = ${owner.orgId})`;
+    predicate = or(
+      eq(toolSourceTools.orgId, owner.orgId),
+      and(isNull(toolSourceTools.orgId), eq(toolSourceTools.partnerId, orgsPartnerId)),
+    );
+  } else {
+    predicate = and(isNull(toolSourceTools.orgId), eq(toolSourceTools.partnerId, owner.partnerId));
+  }
+
+  return db
+    .select(RESOLVE_TOOL_ROW_SELECTION)
+    .from(toolSourceTools)
+    .innerJoin(toolSources, eq(toolSourceTools.sourceId, toolSources.id))
+    .where(
+      and(
+        eq(toolSourceTools.enabled, true),
+        isNull(toolSourceTools.removedAt),
+        eq(toolSources.status, 'active'),
+        predicate,
+      ),
+    )
+    .orderBy(toolSourceTools.qualifiedName);
+}
+
+/** Every enabled tenant tool the owner's catalog contains. `[]` when the tool-sources kill switch is off. */
+export async function resolveTenantToolsForOwner(owner: ToolOwnerRef): Promise<TenantToolDescriptor[]> {
+  if (!toolSourcesEnabled()) return [];
+  // Built inside the system context for the same proxy-binding reason as
+  // resolveTenantTools above.
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => buildResolveTenantToolsForOwnerQuery(owner), 'resolveTenantToolsForOwner'),
+  );
+  const ajv = newAjv();
+  const descriptors: TenantToolDescriptor[] = [];
+  for (const row of rows) {
+    const descriptor = compileToolDescriptor(row, ajv);
+    if (descriptor) descriptors.push(descriptor);
+  }
+  return dedupeByQualifiedName(descriptors);
+}
+
+/**
+ * Compiles a tenant tool input schema with the resolver's Ajv options
+ * (`allErrors`, non-strict, formats), so callers that need structured errors
+ * (`instancePath` + `keyword`) — the flow validator's template-aware partial
+ * validation — get the same acceptance as dispatch. `null` when uncompilable.
+ */
+export function compileTenantInputSchema(schema: Record<string, unknown>): ValidateFunction | null {
+  try {
+    return newAjv().compile(schema);
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveTenantToolByName(
   auth: AuthContext,
   qualifiedName: string,

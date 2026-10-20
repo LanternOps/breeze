@@ -804,6 +804,39 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
+ * Tool Catalog W03 (#5218). Every NON-action input key that an input-aware
+ * branch of `checkGuardrails` / `resolveApprovalScope` reads to pick a tier or
+ * an approval scope. A flow step's tier is fixed at save time, so the flow
+ * validator requires each of these (plus the action selector and any
+ * LIVE_READ_INPUT_FLAGS flag) to be literal — a template must never choose its
+ * own tier at run time. Pinned by aiGuardrails.tierDecidingKeys.contract.test.ts;
+ * a new input-aware branch needs an entry here.
+ *
+ * (event_logs_query's payload-aware classification is chat-session only and
+ * never applies to a flow, which runs without a chat session.)
+ */
+export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]>> = {
+  // isInputAwareTier3: comment + isPublic === true escalates to tier 3.
+  manage_tickets: ['isPublic'],
+  // isInputAwareTier3: featureType === 'maintenance' or an HP CMSL inlineSettings payload.
+  manage_policy_feature_link: ['featureType', 'inlineSettings'],
+  // resolveApprovalScope: isolate === false is four-eyes.
+  s1_isolate_device: ['isolate'],
+  // isProposalRunScript: a proposalId changes the tier source entirely.
+  run_script: ['proposalId'],
+  // resolveApprovalScope: update_org with a `status` key is four-eyes.
+  manage_organizations: ['status'],
+};
+
+/** The action selector, the input-aware keys, and the live-read flag, in that order. */
+export function tierDecidingInputKeys(toolName: string): string[] {
+  const keys = [TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action', ...(TIER_DECIDING_INPUT_KEYS[toolName] ?? [])];
+  const liveFlag = LIVE_READ_INPUT_FLAGS[toolName];
+  if (liveFlag) keys.push(liveFlag);
+  return keys;
+}
+
+/**
  * Why a proposal-backed `run_script` was refused a tier, when the input named
  * a `proposalId` but `loadProposalGuardrailContext` could not hand back a
  * reviewed risk tier for it (#7129). Deliberately collapses "no such id" and
