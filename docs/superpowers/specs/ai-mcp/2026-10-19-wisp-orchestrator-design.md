@@ -149,6 +149,18 @@ Chat sessions are deliberately bounded (24 h age / 2 h idle, `aiAgentSessionLimi
 
 Cross-customer reach follows the Operator rule exactly: **"all organizations is an overview, not an executable target."** A partner-wide thread may *read* across the partner's orgs (today's partner-scope chat already does); every *effect* is admitted per org through the existing `aiWriteDefaultOrgId` / `resolveWritableToolOrgId` path with the org named explicitly. Billing, approval mode and audit for an effect attach to that org, as today.
 
+### 6.1 Customer working sessions (consulting mode)
+
+Added 2026-10-19 after Todd pointed at his `~/M365Graph` routine: he regularly works customer-specific items with Claude — paste an email thread, act on the customer's tenant, draft the reply, log the time, remember what was decided and what is still pending — and wants Wisp to be where that happens, with the conversation remembered and full context available. The survey of that folder showed the engine above already covers it; what did **not** persist there was the pasted thread itself, which tenant was active, and the link from a remembered fact back to the conversation that produced it. Five small additions close that:
+
+1. **Thread focus.** A thread may be *focused* on one customer org ("working on Mountain Capital"): `wisp_threads.focus_org_id` (nullable, inside the ceiling). While focused, `recall` defaults to that org's and the user's blocks, effects default to that org (the existing anchor-org path), and the thread header shows the focus. Switching focus is a chat action, not a new thread.
+2. **Thread attachments.** Material a person pastes or drops into the thread (an email thread, an `.eml`, a CSV) is stored once as an org-scoped artifact in the execution plane's artifact store (`ai_run_artifacts`, spec 2026-09-13 §5) and referenced from the thread (`wisp_thread_attachments`: thread, artifact, org, added_by). It is injected by handle into later sessions on the same thread, never re-pasted, and inherits the artifact store's redaction and retention.
+3. **Remember what was done.** A sixth `block_type`, `work_summary` ("2026-10-14: restored Colin's mailbox items from SharePoint recycle bin; evidence: ticket #4021, audit ids …"), written at the end of a working session under the grant, org-owned, with `evidence` pointing at Breeze records (ticket, time entry, audit id). Every block carries `source_session_id` → `ai_sessions`, so "may need to review that conversation" is one click.
+4. **Pending items from conversation.** A chat turn under a grant may call `raise_concern` (subject `org` or `ticket`, e.g. "waiting on Jeremy about Bookings"), so the standing list of per-customer loose ends lives in concerns — nudged and rolled up like everything else — instead of in prose.
+5. **Tenant access is Breeze's own.** Acting on a customer's M365 tenant goes through Breeze's existing M365 tools and executors under the ceiling (no new connector in this spec; the identity-first M365 customer-graph work remains its own track). The OliveTech mail-ledger "Phase 4 — port into Breeze" and the Workspace file/email index are the first two **knowledge connectors** Wisp consumes, both named follow-ons.
+
+Nothing in consulting mode adds authority: a working session is a chat turn under a grant, and every effect is admitted per org as in §6.
+
 ## 7. The triage engine: watches, concerns, nudges
 
 ### 7.1 Wake-ups
@@ -199,7 +211,7 @@ This composes tenancy shapes 1, 3 and 6; no single canned policy covers it, so t
 
 Block lifecycle is the one `ee/workspace`'s `memory_blocks` already drew: **agents author; humans confirm, correct or retract**; `confidence`; `superseded_by`; no actor column on the block itself ("track work, not workers") but `authored_by_grant_id` so provenance is "Wisp for Todd".
 
-`block_type` registry (first launch): `preference` (how this person wants to be told), `standing_instruction` ("PEC's after-hours alerts go to Sam"), `fact` (contact context, site quirks not already on the record), `decision` ("Todd said leave the Greenwood firewall alone until the renewal"), `concern_outcome` (what happened after a nudge, feeding the quieter/louder rule).
+`block_type` registry (first launch): `preference` (how this person wants to be told), `standing_instruction` ("PEC's after-hours alerts go to Sam"; "Mountain Capital work is billable, Toothzone is not"), `fact` (contact context, site quirks not already on the record), `decision` ("Todd said leave the Greenwood firewall alone until the renewal"), `concern_outcome` (what happened after a nudge, feeding the quieter/louder rule), `work_summary` (what was done in a working session, with evidence pointers; §6.1). Every block carries `source_session_id` (nullable → `ai_sessions`, ON DELETE SET NULL).
 
 ### 8.2 Where the table lives
 

@@ -22,7 +22,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Dark by default.** Every new server path returns 404 when `wispEnabled()` (`apps/api/src/config/env.ts`, added by W02) is false; `createSession` refuses `wispGrantId` with `wisp_disabled` when off. Nothing changes for a session created without `wispGrantId`.
 - **Entitlement is the commercial switch, never a kill-switch override.** `requireEntitlement('wisp')` (W01) on every `/api/v1/wisp/*` route; `hasEntitlement(partnerId, 'wisp')` inside `createSession` when `wispGrantId` is present. Entitled + flag off = 404.
 - **Authority is structural.** Under a grant, every tool call — Tier 1 included — passes `resolveGrantCeiling(grantId, revisionId)` + `assertWithinCeiling(ceiling, check)` (W02) **before** `checkGuardrails`; the session's `toolAuth.accessibleOrgIds` is intersected with `ceiling.orgIds` for the call. No prompt text widens anything; the `user_session` principal stays (no synthetic user).
-- **Tenancy ceremony.** RLS enable + force + policy in the creating migration; `wisp_threads` and `wisp_thread_sessions` are shape 3 (`breeze_has_partner_access(partner_id)`) in `PARTNER_TENANT_TABLES`; `wisp_thread_sessions` also carries `org_id`, so it is registered in `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical), `orgMergeRegistry.ts` and `CORE_TENANT_EXPORT_POLICY` (precedent: `migration_window_orgs`, migration `2026-12-25-120000-migration-windows.sql`). The two new `ai_sessions` columns get an export-policy classification. Composite FKs to `org_id` are `DEFERRABLE INITIALLY IMMEDIATE`. Run org-cascade, export-policy and rls-coverage suites under a test stack before the PR.
+- **Tenancy ceremony.** RLS enable + force + policy in the creating migration; `wisp_threads` and `wisp_thread_sessions` are shape 3 (`breeze_has_partner_access(partner_id)`) in `PARTNER_TENANT_TABLES`; `wisp_thread_sessions` also carries `org_id`, so it is registered in `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical), `orgMergeRegistry.ts` and `CORE_TENANT_EXPORT_POLICY` (precedent: `migration_window_orgs`, migration `2026-12-25-120000-migration-windows.sql`). **`wisp_thread_attachments` (w00 A24) is shape 1** (`org_id NOT NULL`, `breeze_has_org_access(org_id)`, auto-discovered by rls-coverage — no `PARTNER_TENANT_TABLES` entry) with `partner_id` denormalised, and is registered in all three org registries. `wisp_threads.focus_org_id` is a nullable org pointer on a partner-axis table: composite deferrable FK, `ON DELETE SET NULL (focus_org_id)` (PG 15+ column-list form; the stack runs `pgvector/pgvector:pg16`). The two new `ai_sessions` columns get an export-policy classification. Composite FKs to `org_id` are `DEFERRABLE INITIALLY IMMEDIATE`. Run org-cascade, export-policy and rls-coverage suites under a test stack before the PR.
 - **Migration** `apps/api/migrations/2027-01-02-100300-wisp-threads.sql` (w00 slot). Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing and bump if anything newer than `2027-01-02-100200-*` landed. Idempotent; no inner `BEGIN;`; it writes no rows, so no `set_config` is needed (say so in its header comment).
 - **Status columns are `text` + CHECK**, never `pgEnum`.
 - **No new AI tools in this wave** (the model-written summary tool is not W04), so the six tool registries are untouched.
@@ -30,7 +30,8 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Copy:** product name **Wisp**; identifiers `wisp_*` / `wisp*`. Locked copy: "Wisp is available on Pro and higher plans."
 - **Tests:** Vitest beside source; run one file with `cd apps/api && npx vitest run <path>` / `cd apps/web && npx vitest run <path>`; never `pnpm --filter <pkg> test -- --run <path>`. Red first.
 - **Session limits unchanged** (`SESSION_MAX_AGE_MS` 24 h, `SESSION_IDLE_TIMEOUT_MS` 2 h, `apps/api/src/services/aiAgentSessionLimits.ts`).
-- **Out of scope:** assessments, concerns, nudges, mobile, the model-written `update_thread_summary` tool, partner-admin thread listing.
+- **Attachments (w00 A24)** reuse the execution plane's artifact store as-is: bytes go through `createArtifact` (`apps/api/src/services/artifacts/artifactService.ts:156`) after `redactForCapture` (`services/artifacts/captureRedaction.ts:44`); caps **20 per thread / 5 MiB each** (`maxBytes: 5 * 1024 * 1024`); text-only (`text/plain`, `text/csv`, `text/tab-separated-values`, `message/rfc822`, `application/json`, decided from the decoded bytes, never the client's `Content-Type` — same posture as `routes/tickets/attachments.ts:109`). No new artifact kind: adding an `ai_artifact_kind` enum value needs `ALTER TYPE … ADD VALUE` outside the migration transaction, so attachments are `kind: 'input_capture'` named `<base>.redacted.<ext>` (the marker `read_artifact` already requires, `REDACTED_CAPTURE_NAME_INFIX`, `artifactService.ts:351`) with `createdByTool: 'wisp_thread_attachment'`. Retention is the store's default 30 days (`ARTIFACT_DEFAULT_TTL_DAYS`); the sweeper's artifact delete cascades the attachment row.
+- **Out of scope:** assessments, concerns, nudges, mobile, the model-written `update_thread_summary` tool, partner-admin thread listing, attachment deletion (an attachment expires with its artifact; a `DELETE` route is a follow-up).
 
 ## Review Focus
 
@@ -46,10 +47,12 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 
 | Path | Responsibility |
 |---|---|
-| `apps/api/migrations/2027-01-02-100300-wisp-threads.sql` | Create `wisp_threads`, `wisp_thread_sessions`; add `ai_sessions.wisp_grant_id`, `ai_sessions.wisp_grant_revision_id`; RLS; grants |
-| `apps/api/src/db/schema/wispThreads.ts` (new) | Drizzle tables `wispThreads`, `wispThreadSessions`; exported from `schema/index.ts` |
+| `apps/api/migrations/2027-01-02-100300-wisp-threads.sql` | Create `wisp_threads` (incl. `focus_org_id`), `wisp_thread_sessions`, `wisp_thread_attachments`; add `ai_sessions.wisp_grant_id`, `ai_sessions.wisp_grant_revision_id`; RLS; grants |
+| `apps/api/src/db/schema/wispThreads.ts` (new) | Drizzle tables `wispThreads`, `wispThreadSessions`, `wispThreadAttachments`; exported from `schema/index.ts` |
 | `apps/api/src/db/schema/ai.ts` | Two new nullable columns on `aiSessions` |
-| `apps/api/src/services/wisp/threads.ts` (new) | Exactly the four w00 exports + `WispThread` type |
+| `apps/api/src/services/wisp/threads.ts` (new) | The four w00 exports + `setThreadFocus` (w00 A24) + `WispThread` type |
+| `apps/api/src/services/wisp/threadAttachments.ts` (new) | `addThreadAttachment`, `listThreadAttachments`, `attachmentSeedLines` (w00 A24) |
+| `apps/api/src/services/artifacts/artifactService.ts`, `services/artifacts/toolResultCapture.ts`, `services/toolExecutionContext.ts`, `services/aiAgentSdkTools.ts` | `read_artifact` reach: the caller anchor gains `wispThreadId`, the ownership predicate gains the thread-attachment arm |
 | `apps/api/src/services/wisp/threadSummary.ts` (new) | `summaryFromMessages`, `finalizeWispSessionSummary` |
 | `apps/api/src/services/wisp/sessionGrant.ts` (new) | `validateWispGrantForSession`, `WispSessionError` |
 | `apps/api/src/services/wisp/chatCeiling.ts` (new) | `enforceWispCeiling`, `narrowAuthToCeiling`, `wispSeedForSession` |
@@ -59,11 +62,11 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 | `apps/api/src/services/aiGuardrails.ts` | export `resolveToolPermissionRequirements` |
 | `apps/api/src/routes/ai.ts` | `wispGrantId` in `createAiSessionSchema`; error mapping; pass grant into `getOrCreate` |
 | `apps/api/src/routes/aiSessionContinue.ts` | refuse Wisp sessions |
-| `apps/api/src/routes/wispThreads.ts` (new) | `GET /thread`, `GET /thread/:id/sessions`, mounted under W02's `wispRoutes` |
+| `apps/api/src/routes/wispThreads.ts` (new) | `GET /thread`, `GET /thread/:id/sessions`, `PATCH /thread/:id/focus`, `GET|POST /thread/:id/attachments`, mounted under W02's `wispRoutes` |
 | `apps/api/src/routes/wisp.ts` (W02) | add `requireEntitlement('wisp')`; mount `wispThreadRoutes` |
 | `apps/api/src/services/tenantCascade.ts`, `orgMergeRegistry.ts`, `tenantExportPolicyRegistry.ts`, `__tests__/integration/rls-coverage.integration.test.ts` | registrations |
 | `apps/web/src/stores/aiStore.ts` | `wisp` slice; `createSession({ wispGrantId })` |
-| `apps/web/src/components/ai/WispToggle.tsx`, `WispGrantStepUpModal.tsx`, `WispThreadHeader.tsx` (new) | the chat-surface UI |
+| `apps/web/src/components/ai/WispToggle.tsx`, `WispGrantStepUpModal.tsx`, `WispThreadHeader.tsx`, `WispThreadAttachments.tsx` (new) | the chat-surface UI (header carries the focus switcher; attachments is the drop zone + list) |
 | `apps/web/src/components/ai/AiChatSidebar.tsx` | Wisp mode wiring |
 | `apps/web/src/locales/*/ai.json` | `wisp.*` keys |
 
@@ -83,8 +86,8 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - Test: `apps/api/src/__tests__/integration/wispThreadsRls.integration.test.ts`
 
 **Interfaces:**
-- Consumes: W02's `wisp_grants` (`id`, `partner_id`, with `UNIQUE (id, partner_id)` — if W02 did not add that unique, this migration adds `wisp_grants_id_partner_uq` idempotently) and `wisp_grant_revisions(id)`; `ai_sessions(id, org_id)` unique (exists: `2026-10-15-160102-ai-budget-reservation-session-org-fk.sql` references it); `organizations(id, partner_id)`.
-- Produces: tables below; Drizzle `wispThreads`, `wispThreadSessions`; `aiSessions.wispGrantId`, `aiSessions.wispGrantRevisionId`.
+- Consumes: W02's `wisp_grants` (`id`, `partner_id`, with `UNIQUE (id, partner_id)` — if W02 did not add that unique, this migration adds `wisp_grants_id_partner_uq` idempotently) and `wisp_grant_revisions(id)`; `ai_sessions(id, org_id)` unique (exists: `2026-10-15-160102-ai-budget-reservation-session-org-fk.sql` references it); `organizations(id, partner_id)`; `ai_run_artifacts(id)` (`2026-10-16-180400-ai-run-artifacts.sql` — no `(id, org_id)` unique exists, so this migration adds `ai_run_artifacts_id_org_uq` idempotently for the composite attachment FK).
+- Produces: tables below; Drizzle `wispThreads` (with `focusOrgId`), `wispThreadSessions`, `wispThreadAttachments`; `aiSessions.wispGrantId`, `aiSessions.wispGrantRevisionId`.
 
 Table shapes (the migration's content; column order as written):
 
@@ -96,14 +99,40 @@ wisp_threads (
   summary text NOT NULL DEFAULT '',
   summary_updated_at timestamptz,
   last_session_id uuid,                    -- typed reference, no FK (a closed session may be erased first)
+  focus_org_id uuid,                       -- w00 A24 / spec §6.1 (1): the customer this thread is "working on"; NULL = unfocused
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT wisp_threads_grant_uq UNIQUE (grant_id),          -- one thread per grant (spec §6)
   CONSTRAINT wisp_threads_id_partner_uq UNIQUE (id, partner_id),
   CONSTRAINT wisp_threads_grant_fk FOREIGN KEY (grant_id, partner_id)
     REFERENCES wisp_grants(id, partner_id) ON DELETE CASCADE,
+  CONSTRAINT wisp_threads_focus_org_fk FOREIGN KEY (focus_org_id, partner_id)
+    REFERENCES organizations(id, partner_id) ON DELETE SET NULL (focus_org_id) DEFERRABLE INITIALLY IMMEDIATE,
+    -- column-list SET NULL (PG 15+): a plain SET NULL would null partner_id too and fail NOT NULL. No repo precedent yet; pg16 in both compose files.
   CONSTRAINT wisp_threads_summary_len_chk CHECK (char_length(summary) <= 4000)
 )
+wisp_thread_attachments (                  -- w00 A24 / spec §6.1 (2): shape 1, org-axis, partner denormalised
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  thread_id uuid NOT NULL,
+  partner_id uuid NOT NULL,
+  org_id uuid NOT NULL,                    -- the artifact's org (= the thread's focus org at upload time, or the grant org)
+  artifact_id uuid NOT NULL,               -- the handle the model reads with read_artifact
+  added_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  label varchar(200) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT wisp_thread_attachments_thread_artifact_uq UNIQUE (thread_id, artifact_id),
+  CONSTRAINT wisp_thread_attachments_thread_fk FOREIGN KEY (thread_id, partner_id)
+    REFERENCES wisp_threads(id, partner_id) ON DELETE CASCADE,
+  CONSTRAINT wisp_thread_attachments_org_fk FOREIGN KEY (org_id, partner_id)
+    REFERENCES organizations(id, partner_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+  CONSTRAINT wisp_thread_attachments_artifact_fk FOREIGN KEY (artifact_id, org_id)
+    REFERENCES ai_run_artifacts(id, org_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE   -- artifact expiry removes the attachment
+)
+-- CREATE UNIQUE INDEX IF NOT EXISTS ai_run_artifacts_id_org_uq ON ai_run_artifacts (id, org_id);   -- before the attachment FK
+-- indexes: wisp_thread_attachments (org_id), (partner_id), (thread_id, created_at DESC), (artifact_id)
+-- RLS on wisp_thread_attachments: ENABLE + FORCE; ONE policy FOR ALL TO breeze_app,
+--   USING/WITH CHECK (breeze_current_scope() = 'system' OR breeze_has_org_access(org_id))   (copy from 2026-10-16-180400-ai-run-artifacts.sql)
+-- The 20-per-thread cap is enforced in threadAttachments.ts under SELECT … FOR UPDATE on the thread row, not by a CHECK.
 wisp_thread_sessions (
   thread_id uuid NOT NULL,
   session_id uuid NOT NULL,
@@ -143,6 +172,9 @@ describe('wisp_threads / wisp_thread_sessions RLS (shape 3)', () => {
   it('wisp_thread_sessions: a session from an org outside the partner is refused (23503 on org_fk)', ...);
   it('deleting the ai_sessions row cascades the wisp_thread_sessions row', ...);
   it('ai_sessions_wisp_grant_pair_chk refuses a grant id without a revision id (23514)', ...);
+  it('focus_org_id: an org from another partner is refused (23503); deleting the focus org sets focus_org_id NULL and keeps partner_id', ...);   // w00 A24
+  it('wisp_thread_attachments: an org context reads its own attachment and not a sibling org's; cross-org insert is 42501; artifact_id must match the artifact's org (23503)', ...);   // shape 1
+  it('deleting the ai_run_artifacts row cascades the attachment; deleting the thread cascades its attachments', ...);
 });
 ```
 
@@ -151,22 +183,23 @@ describe('wisp_threads / wisp_thread_sessions RLS (shape 3)', () => {
 Run: `pnpm test-stack up && cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/wispThreadsRls.integration.test.ts`
 Expected: FAIL — `relation "wisp_threads" does not exist`.
 
-- [ ] **Step 3: Write the migration** `2027-01-02-100300-wisp-threads.sql` per the shape above. Header comment states: partner-axis shape 3, `wisp_thread_sessions` also org-cascade-registered, no rows written (no `set_config`), FKs to `wisp_grants`/`wisp_grant_revisions` declared in SQL only to avoid schema import cycles (same rule as `ai_sessions.agent_id`).
+- [ ] **Step 3: Write the migration** `2027-01-02-100300-wisp-threads.sql` per the shape above. Header comment states: partner-axis shape 3 for the two thread tables, shape 1 for `wisp_thread_attachments` (org-cascade/merge/export registered), `wisp_thread_sessions` also org-cascade-registered, `focus_org_id` column-list `SET NULL`, no rows written (no `set_config`), FKs to `wisp_grants`/`wisp_grant_revisions` declared in SQL only to avoid schema import cycles (same rule as `ai_sessions.agent_id`).
 
 - [ ] **Step 4: Write the Drizzle schema** `apps/api/src/db/schema/wispThreads.ts`:
 
 ```ts
-export const wispThreads = pgTable('wisp_threads', { id, grantId, partnerId, summary, summaryUpdatedAt, lastSessionId, createdAt, updatedAt }, …unique('wisp_threads_grant_uq') …);
+export const wispThreads = pgTable('wisp_threads', { id, grantId, partnerId, summary, summaryUpdatedAt, lastSessionId, focusOrgId, createdAt, updatedAt }, …unique('wisp_threads_grant_uq'), foreignKey({ name: 'wisp_threads_focus_org_fk', columns: [focusOrgId, partnerId], foreignColumns: [organizations.id, organizations.partnerId] }) …);
 export const wispThreadSessions = pgTable('wisp_thread_sessions', { threadId, sessionId, partnerId, orgId, attachedAt }, …primaryKey(threadId, sessionId)…);
+export const wispThreadAttachments = pgTable('wisp_thread_attachments', { id, threadId, partnerId, orgId, artifactId, addedByUserId, label, createdAt }, …foreignKey(org_fk), foreignKey(artifact_fk) — declared so moveOrg.coverage.test.ts's FK reader sees them (W05 does the same for wisp_concerns)…);
 ```
 
 Add to `aiSessions` in `schema/ai.ts`: `wispGrantId: uuid('wisp_grant_id')`, `wispGrantRevisionId: uuid('wisp_grant_revision_id')` with a comment pointing at this migration. Export the new file from `schema/index.ts`.
 
 - [ ] **Step 5: Register tenancy**
   - `rls-coverage.integration.test.ts` `PARTNER_TENANT_TABLES`: `['wisp_threads', 'partner_id']`, `['wisp_thread_sessions', 'partner_id']` (next to lines 343-344, with the same "also carries a non-tenancy org_id" note for the join table).
-  - `tenantCascade.ts` `CORE_ORG_CASCADE_DELETE_ORDER`: `'wisp_thread_sessions'` in alphabetical position (the alphabetical test is on the static list; FK direction is checked on `topologicalCascadeOrder()`, so the `ON DELETE CASCADE` edge to `ai_sessions` needs no exemption).
-  - `orgMergeRegistry.ts`: `wisp_thread_sessions: { kind: 'repoint-dedupe', key: ['thread_id', 'session_id'] }` — the PK is `(thread_id, session_id)` and `session_id` is unique, so a merge never collides; `repoint-dedupe` matches the `migration_window_orgs` precedent for PK-bearing join rows.
-  - `tenantExportPolicyRegistry.ts`: `"wisp_thread_sessions": tablePolicy("org_id", { included: ["thread_id","session_id","partner_id","org_id","attached_at"], reviewedIncluded: [], excludedSensitive: [], excludedOpen: [] })`; add `"wisp_grant_id"`, `"wisp_grant_revision_id"` to the `ai_sessions` entry's `included`.
+  - `tenantCascade.ts` `CORE_ORG_CASCADE_DELETE_ORDER`: `'wisp_thread_attachments'` and `'wisp_thread_sessions'` in alphabetical position (the alphabetical test is on the static list; FK direction is checked on `topologicalCascadeOrder()`, so the `ON DELETE CASCADE` edges to `ai_sessions` / `ai_run_artifacts` need no exemption; `ai_run_artifacts` is already in the order at `tenantExportPolicyRegistry.ts:387`-neighbourhood and `tenantCascade.ts`, so attachments sort before it topologically). `focus_org_id` needs no cascade step: the FK clears it.
+  - `orgMergeRegistry.ts`: `wisp_thread_sessions: { kind: 'repoint-dedupe', key: ['thread_id', 'session_id'] }` — the PK is `(thread_id, session_id)` and `session_id` is unique, so a merge never collides; `repoint-dedupe` matches the `migration_window_orgs` precedent for PK-bearing join rows. `wisp_thread_attachments: { kind: 'repoint', note: 'session-anchored artifacts (run_id NULL) are re-pointed by moveAiRunArtifacts, so the composite (artifact_id, org_id) FK stays consistent under SET CONSTRAINTS ALL DEFERRED; (thread_id, artifact_id) is unique and unaffected' }` (`ai_run_artifacts` entry at `orgMergeRegistry.ts:304` explains the split). `wisp_threads.focus_org_id`: if `orgMergeRegistry.integration.test.ts` / `orgLifecycleFoundations.integration.test.ts:39` flag the new composite FK as an unregistered org reference, add a `custom` entry whose executor runs `UPDATE wisp_threads SET focus_org_id = <survivor> WHERE focus_org_id = <loser>` next to `moveAiRunArtifacts` in `orgMergeCustomExecutors.ts`; otherwise document in the migration header that a merged-away focus org is cleared by the FK and the user re-focuses.
+  - `tenantExportPolicyRegistry.ts`: `"wisp_thread_sessions": tablePolicy("org_id", { included: ["thread_id","session_id","partner_id","org_id","attached_at"], reviewedIncluded: [], excludedSensitive: [], excludedOpen: [] })`; `"wisp_thread_attachments": tablePolicy("org_id", { included: ["id","thread_id","partner_id","org_id","artifact_id","added_by_user_id","label","created_at"], reviewedIncluded: [], excludedSensitive: [], excludedOpen: [] })` (`label` is bounded varchar; the bytes live in `ai_run_artifacts`, already exported); add `"wisp_grant_id"`, `"wisp_grant_revision_id"` to the `ai_sessions` entry's `included`.
 
 - [ ] **Step 6: Migrate, drift-check, run the test and the static guards**
 
@@ -185,7 +218,7 @@ Expected: PASS (every `org_id` table present; `wisp_thread_sessions` classified;
 
 ```bash
 git add apps/api/migrations/2027-01-02-100300-wisp-threads.sql apps/api/src/db/schema/wispThreads.ts apps/api/src/db/schema/index.ts apps/api/src/db/schema/ai.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/wispThreadsRls.integration.test.ts
-git commit -m "feat(wisp): wisp_threads + wisp_thread_sessions (shape 3) and ai_sessions grant columns (W04 T1)"
+git commit -m "feat(wisp): wisp_threads (+focus_org_id), wisp_thread_sessions, wisp_thread_attachments and ai_sessions grant columns (W04 T1)"
 ```
 
 ---
@@ -195,6 +228,7 @@ git commit -m "feat(wisp): wisp_threads + wisp_thread_sessions (shape 3) and ai_
 **Files:**
 - Create: `apps/api/src/services/wisp/threads.ts`
 - Create: `apps/api/src/services/wisp/threadSummary.ts`
+- Create (stub; real body in Task 6b): `apps/api/src/services/wisp/threadAttachments.ts`
 - Test: `apps/api/src/services/wisp/threads.test.ts`, `apps/api/src/services/wisp/threadSummary.test.ts`
 
 **Interfaces:**
@@ -203,11 +237,21 @@ git commit -m "feat(wisp): wisp_threads + wisp_thread_sessions (shape 3) and ai_
 
 ```ts
 // apps/api/src/services/wisp/threads.ts
-export type WispThread = { id: string; grantId: string; partnerId: string; summary: string; summaryUpdatedAt: Date | null; lastSessionId: string | null; createdAt: Date; updatedAt: Date };
+export type WispThread = { id: string; grantId: string; partnerId: string; summary: string; summaryUpdatedAt: Date | null; lastSessionId: string | null; focusOrgId: string | null; createdAt: Date; updatedAt: Date }; // focusOrgId: w00 A24
 export async function getOrCreateThread(grantId: string): Promise<WispThread>;      // INSERT … ON CONFLICT (grant_id) DO NOTHING, then SELECT; partner_id read from wisp_grants
 export async function attachSession(threadId: string, sessionId: string): Promise<void>; // inserts (thread_id, session_id, partner_id, org_id) — org_id from ai_sessions, partner_id from the thread; sets wisp_threads.last_session_id
 export async function updateThreadSummary(threadId: string, summary: string): Promise<void>; // truncateSummary(summary) (≤ 4_000), summary_updated_at = now()
 export async function seedContextForSession(threadId: string, ceiling: GrantCeiling): Promise<string>;
+export async function setThreadFocus(threadId: string, orgId: string | null, ceiling: GrantCeiling): Promise<WispThread>; // w00 A24: orgId !== null ⇒ assertWithinCeiling(ceiling, { orgId }) BEFORE the write (CeilingViolationError propagates); UPDATE … SET focus_org_id, updated_at = now() WHERE id AND partner_id = ceiling.partnerId; returns the row
+
+// apps/api/src/services/wisp/threadAttachments.ts (w00 A24; Task 6b)
+export const THREAD_ATTACHMENT_MAX_PER_THREAD = 20;
+export const THREAD_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+export type ThreadAttachment = { id: string; threadId: string; orgId: string; artifactId: string; label: string; addedByUserId: string | null; contentType: string; bytes: number; expiresAt: Date; createdAt: Date }; // joined with ai_run_artifacts
+export class ThreadAttachmentError extends Error { code: 'too_many' | 'too_large' | 'unsupported_type' | 'empty' | 'org_outside_ceiling' | 'store_unavailable' }
+export async function addThreadAttachment(input: { thread: WispThread; ceiling: GrantCeiling; orgId: string; label: string; text: string; addedByUserId: string }): Promise<ThreadAttachment>;
+export async function listThreadAttachments(threadId: string): Promise<ThreadAttachment[]>; // newest first; expired artifacts excluded (expires_at > now())
+export function attachmentSeedLines(items: ThreadAttachment[]): string;                     // '' for none; else one line per item: `- <label> — handle <artifactId> (<bytes> B, <contentType>)`
 
 // apps/api/src/services/wisp/threadSummary.ts
 export const THREAD_SUMMARY_MAX_CHARS = 4_000;
@@ -220,9 +264,13 @@ export async function finalizeWispSessionSummary(sessionId: string): Promise<{ u
 
 ```
 ## Wisp thread
+Focus: <org name>                                                                                 -- only when focusOrgId is set (w00 A24); name read under system ctx from organizations
 <wrapUntrustedData('wisp_thread_summary', sanitizeUntrustedText(summary, 4_000, flags))>        -- only when summary !== ''
-<renderMemoryForPrompt(await recallForGrant(ceiling, { limit: 40, orgId: <grant org or undefined> }))>  -- only when blocks.length > 0
+<wrapUntrustedData('wisp_thread_attachments', attachmentSeedLines(await listThreadAttachments(threadId)))>  -- only when there are live attachments; labels are user text, hence the fence; the model reads bytes with read_artifact by handle (Task 6b)
+<memory>                                                                                          -- see the recall order below; only when blocks.length > 0
 ```
+
+Recall order (w00 A24): when `focusOrgId` is set, `recallForGrant(ceiling, { owners: ['user','org'], orgId: focusOrgId, limit: 40 })` **first**, then `recallForGrant(ceiling, { owners: ['partner'], limit: 20 })`, rendered as two `renderMemoryForPrompt` calls in that order (org-private blocks never appear in a partner-level answer, spec §8.3 — the focus is what makes the org blocks relevant). When unfocused, the single call stays `recallForGrant(ceiling, { limit: 40, orgId: <grant org or undefined> })`.
 
 All reads/writes in `threads.ts` run under `runOutsideDbContext(() => withSystemDbAccessContext(...))`: callers are the request path (`createSession`), the SDK background processor and the eviction sweep, and the thread's partner axis is not visible to an org-scoped request context. Each function takes ids that were already authorised by the caller (`validateWispGrantForSession`, Task 3).
 
@@ -253,6 +301,14 @@ it('seedContextForSession wraps the summary as untrusted and appends renderMemor
   const out = await seedContextForSession('t1', ceiling);
   expect(out).toMatch(/^## Wisp thread\n/); expect(out).toContain('wisp_thread_summary'); expect(recallForGrant).toHaveBeenCalledWith(ceiling, expect.objectContaining({ limit: 40 }));
 });
+it('seedContextForSession under a focused thread recalls { owners: [user, org], orgId: focus } before { owners: [partner] } and prints the Focus line', async () => {   // w00 A24
+  threadRow.focusOrgId = 'orgA';
+  const out = await seedContextForSession('t1', ceiling);
+  expect(recallForGrant.mock.calls.map((c) => c[1])).toEqual([expect.objectContaining({ owners: ['user', 'org'], orgId: 'orgA' }), expect.objectContaining({ owners: ['partner'] })]);
+  expect(out).toContain('Focus: ');
+});
+it('seedContextForSession lists live attachments inside a wisp_thread_attachments fence, by handle, and omits the fence when there are none', ...);   // listThreadAttachments mocked
+it('setThreadFocus asserts the org is inside the ceiling before writing and rethrows CeilingViolationError without an UPDATE; null clears the focus with no ceiling check', ...);   // w00 A24
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -260,7 +316,7 @@ it('seedContextForSession wraps the summary as untrusted and appends renderMemor
 Run: `cd apps/api && npx vitest run src/services/wisp/threads.test.ts src/services/wisp/threadSummary.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `threadSummary.ts` then `threads.ts`** with the signatures above. `finalizeWispSessionSummary` reads `wisp_thread_sessions` by `session_id`, then the session's `ai_messages` ordered by `created_at`, computes `summaryFromMessages`, and calls `updateThreadSummary` only when non-null and different from the stored summary.
+- [ ] **Step 3: Implement `threadSummary.ts` then `threads.ts`** with the signatures above. `finalizeWispSessionSummary` reads `wisp_thread_sessions` by `session_id`, then the session's `ai_messages` ordered by `created_at`, computes `summaryFromMessages`, and calls `updateThreadSummary` only when non-null and different from the stored summary. `seedContextForSession` imports `listThreadAttachments`/`attachmentSeedLines` from `./threadAttachments` (created in Task 6b — stub the module with the two exports now so this task compiles; Task 6b fills it in).
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -270,8 +326,8 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/wisp/threads.ts apps/api/src/services/wisp/threadSummary.ts apps/api/src/services/wisp/threads.test.ts apps/api/src/services/wisp/threadSummary.test.ts
-git commit -m "feat(wisp): thread service, deterministic summary and session seed (W04 T2)"
+git add apps/api/src/services/wisp/threads.ts apps/api/src/services/wisp/threadSummary.ts apps/api/src/services/wisp/threadAttachments.ts apps/api/src/services/wisp/threads.test.ts apps/api/src/services/wisp/threadSummary.test.ts
+git commit -m "feat(wisp): thread service (focus, seed order), deterministic summary and session seed (W04 T2)"
 ```
 
 ---
@@ -291,7 +347,7 @@ git commit -m "feat(wisp): thread service, deterministic summary and session see
 
 ```ts
 // apps/api/src/services/wisp/sessionGrant.ts
-export type WispSessionErrorCode = 'wisp_disabled' | 'grant_not_found' | 'grant_not_yours' | 'grant_inactive' | 'entitlement_required' | 'grant_scope_mismatch';
+export type WispSessionErrorCode = 'wisp_disabled' | 'grant_not_found' | 'grant_not_yours' | 'grant_inactive' | 'entitlement_required' | 'grant_scope_mismatch' | 'focus_mismatch'; // focus_mismatch (409): explicit orgId ≠ the thread's focus org (w00 A24)
 export class WispSessionError extends Error { constructor(public code: WispSessionErrorCode, public status: 400 | 403 | 404 | 409) }
 export type ValidatedWispGrant = { grantId: string; revisionId: string; partnerId: string; orgId: string | null };
 export async function validateWispGrantForSession(auth: AuthContext, wispGrantId: string, sessionOrgId: string): Promise<ValidatedWispGrant>;
@@ -299,7 +355,9 @@ export async function validateWispGrantForSession(auth: AuthContext, wispGrantId
 
 Validation order and codes: `wispEnabled()` false → `wisp_disabled` 404; grant row not readable under the request context, or `grantee !== 'wisp'` → `grant_not_found` 404; `grantorUserId !== auth.user.id` → `grant_not_yours` 403; `status !== 'active'` → `grant_inactive` 409; `!(await hasEntitlement(grant.partnerId, 'wisp'))` → `entitlement_required` 403; `grant.orgId !== null && grant.orgId !== sessionOrgId` → `grant_scope_mismatch` 400. Route mapping: `c.json({ error: <message>, code }, status)`.
 
-`createSession` changes (behaviour, in order): `options.wispGrantId?: string` added to the signature. After the org chain resolves `orgId` (line 166-170) and before the insert: `validated = await validateWispGrantForSession(auth, wispGrantId, orgId)`. The insert adds `wispGrantId: validated.grantId, wispGrantRevisionId: validated.revisionId`. `systemPrompt` becomes `[await buildSystemPrompt(auth, sanitizedPageContext), seed].filter(Boolean).join('\n')` where `seed = await seedContextForSession(thread.id, await resolveGrantCeiling(validated.grantId, validated.revisionId))` and `thread = await getOrCreateThread(validated.grantId)`. After the insert returns: `await attachSession(thread.id, session.id)`. The return type gains `wispThreadId: string | null`. A Wisp session keeps `type = 'general'` and the existing `requireMfa()` on the route. The anchor-org convention is unchanged: a partner-wide grant's session org is whatever the existing chain picks (explicit `orgId`, page anchor, `auth.orgId`, first accessible), reads stay partner-wide through `toolAuth`, and writes default through `resolveWritableToolOrgId` (`services/aiToolWriteOrg.ts:34`) exactly as today — cite this in the code comment.
+`createSession` changes (behaviour, in order): `options.wispGrantId?: string` added to the signature. After the org chain resolves `orgId` (line 166-170) and before the insert: `validated = await validateWispGrantForSession(auth, wispGrantId, orgId)`. The insert adds `wispGrantId: validated.grantId, wispGrantRevisionId: validated.revisionId`. `systemPrompt` becomes `[await buildSystemPrompt(auth, sanitizedPageContext), seed].filter(Boolean).join('\n')` where `seed = await seedContextForSession(thread.id, await resolveGrantCeiling(validated.grantId, validated.revisionId))` and `thread = await getOrCreateThread(validated.grantId)`. After the insert returns: `await attachSession(thread.id, session.id)`. The return type gains `wispThreadId: string | null` and `wispFocusOrgId: string | null`. A Wisp session keeps `type = 'general'` and the existing `requireMfa()` on the route.
+
+**Focus anchoring (w00 A24; spec §6.1 "effects default to that org").** Between `validateWispGrantForSession` and the insert: `thread = await getOrCreateThread(validated.grantId)`; when `thread.focusOrgId` is set, re-check it against the live ceiling — `assertWithinCeiling(ceiling, { orgId: thread.focusOrgId })` — and (a) on success, if `options.orgId` is absent the session's `orgId` **becomes** `thread.focusOrgId` (it overrides the page anchor / `auth.orgId` / first-accessible defaults; `validated.orgId === null || validated.orgId === thread.focusOrgId` holds because the focus is inside the ceiling), and if `options.orgId` is present and differs → `WispSessionError('focus_mismatch', 409)` (the web always sends the focus org while focused; a stale tab gets a typed 409, never a silently re-anchored session); (b) on `CeilingViolationError` (the grant was tightened since the focus was set) → `await setThreadFocus(thread.id, null, ceiling)` and continue with the ordinary chain, returning `wispFocusOrgId: null` so the header drops the focus and toasts `wisp.toast.focusCleared`. `attachSession` therefore records the focus org on the join row, and every write under the session defaults to it through the unchanged `resolveWritableToolOrgId` path. The anchor-org convention is unchanged: a partner-wide grant's session org is whatever the existing chain picks (explicit `orgId`, page anchor, `auth.orgId`, first accessible), reads stay partner-wide through `toolAuth`, and writes default through `resolveWritableToolOrgId` (`services/aiToolWriteOrg.ts:34`) exactly as today — cite this in the code comment.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -323,8 +381,11 @@ it('a partner-wide grant (orgId null) accepts any session org inside the partner
 ```ts
 it('POST /ai/sessions without wispGrantId is byte-identical to today (no wisp calls)', ...);   // validate/getOrCreateThread/attachSession not called; insert has no wisp columns
 it('POST /ai/sessions with wispGrantId stores both grant columns, appends the seed to systemPrompt and attaches the session', ...);
-it('maps WispSessionError codes to HTTP status', ...);                                       // each of the six
+it('maps WispSessionError codes to HTTP status', ...);                                       // each of the seven
 it('partner-wide grant with an org token anchors to the token org', ...);                    // auth.scope 'organization', orgId = auth.orgId, validate called with that org
+it('a focused thread anchors the session to focusOrgId when no orgId is sent, and returns wispFocusOrgId', ...);   // w00 A24: insert.orgId === focus; attachSession org === focus
+it('an explicit orgId that differs from the focus is refused 409 focus_mismatch', ...);
+it('a focus outside the live ceiling is cleared (setThreadFocus null) and the ordinary chain anchors the session; response wispFocusOrgId is null', ...);
 ```
 
 `ai.continue.test.ts` addition:
@@ -375,12 +436,12 @@ export type WispCeilingRefusal = { code: 'wisp_grant_inactive' | 'wisp_outside_c
 export const WISP_REFUSAL_MESSAGES: Record<WispCeilingRefusal['detail'], string>; // user-visible copy, e.g. org: "Wisp can't act on that organization under your current grant."
 export function requiredPermissionKeys(toolName: string, input: Record<string, unknown>): string[];   // `${resource}:${action}` from resolveToolPermissionRequirements; [] when the tool has no mapping (the RBAC step still denies it later)
 export function targetOrgIdFor(input: Record<string, unknown>, sessionOrgId: string): string;       // typeof input.orgId === 'string' ? input.orgId : sessionOrgId
-export function narrowAuthToCeiling(auth: AuthContext, ceiling: GrantCeiling): AuthContext;       // accessibleOrgIds ∩ ceiling.orgIds (null → ceiling.orgIds), rebuilt closures via buildOrgAccessClosures; allowedSiteIds ∩ ceiling.siteIds when both set; ALSO sets wispGrant = { grantId: ceiling.grantId, grantRevisionId: ceiling.revisionId } (w00 A2 — this is how W03's recall/remember and W07's launch_specialist learn the grant on a chat turn)
-export async function enforceWispCeiling(args: { grant: WispSessionGrant; toolName: string; input: Record<string, unknown>; sessionOrgId: string; toolAuth: AuthContext }): Promise<{ ok: true; toolAuth: AuthContext; ceiling: GrantCeiling } | { ok: false; refusal: WispCeilingRefusal }>;
+export function narrowAuthToCeiling(auth: AuthContext, ceiling: GrantCeiling, sessionId?: string): AuthContext;       // accessibleOrgIds ∩ ceiling.orgIds (null → ceiling.orgIds), rebuilt closures via buildOrgAccessClosures; allowedSiteIds ∩ ceiling.siteIds when both set; ALSO sets wispGrant = { grantId: ceiling.grantId, grantRevisionId: ceiling.revisionId, sessionId: sessionId ?? null } (w00 A2 — this is how W03's recall/remember and W07's launch_specialist learn the grant on a chat turn; w00 A23 — `sessionId` is what W03's `remember` writes as `source_session_id`)
+export async function enforceWispCeiling(args: { grant: WispSessionGrant; toolName: string; input: Record<string, unknown>; sessionOrgId: string; sessionId: string; toolAuth: AuthContext }): Promise<{ ok: true; toolAuth: AuthContext; ceiling: GrantCeiling } | { ok: false; refusal: WispCeilingRefusal }>; // sessionId = session.breezeSessionId, forwarded to narrowAuthToCeiling
 export async function wispSeedForSession(sessionId: string, grant: WispSessionGrant): Promise<string>; // seedContextForSession(grant.threadId, await resolveGrantCeiling(...)); '' on GrantInactiveError
 ```
 
-`enforceWispCeiling` order: `resolveGrantCeiling` (GrantInactiveError → `wisp_grant_inactive`/`inactive`); `assertWithinCeiling(ceiling, { toolName, orgId: targetOrgIdFor(input, sessionOrgId) })`; then for each key of `requiredPermissionKeys` `assertWithinCeiling(ceiling, { permission: key })`; a `CeilingViolationError` → `wisp_outside_ceiling` with `detail = err.code`; success returns `narrowAuthToCeiling(toolAuth, ceiling)`.
+`enforceWispCeiling` order: `resolveGrantCeiling` (GrantInactiveError → `wisp_grant_inactive`/`inactive`); `assertWithinCeiling(ceiling, { toolName, orgId: targetOrgIdFor(input, sessionOrgId) })`; then for each key of `requiredPermissionKeys` `assertWithinCeiling(ceiling, { permission: key })`; a `CeilingViolationError` → `wisp_outside_ceiling` with `detail = err.code`; success returns `narrowAuthToCeiling(toolAuth, ceiling, sessionId)` (`createSessionPreToolUse` passes `session.breezeSessionId`).
 
 **Placement (the one place).** w00 names `makeSessionAwareHandler`, but that wrapper only covers the M365/Google tools (`aiAgentSdkTools.ts:1250-1392`); every registry tool runs through `makeHandler` (`:745`). Both call the same `onPreToolUse`, which is `createSessionPreToolUse(session)` (`aiAgentSdk.ts:809`, bound at `streamingSessionManager.ts:1152`). The gate therefore goes into `createSessionPreToolUse`, immediately after the session-allowlist check (`:859-878`) and **before** `checkGuardrails` (`:885`), so Tier 1 is covered and a refusal never reaches the tier-2 live-authority branch. On `ok`, `session.toolAuth = result.toolAuth` for this call (the tier-2 branch may later replace it with `live.toolAuth`; re-narrow there too: after `session.toolAuth = live.toolAuth` at `:962` apply `narrowAuthToCeiling(live.toolAuth, ceiling)` when `session.wispGrant` is set). On refusal: `writeAuditEvent(..., { action: 'wisp.ceiling_refused', resourceType: 'ai_session', resourceId: session.breezeSessionId, result: 'failure', errorMessage: refusal.message, details: { toolName, code: refusal.code, detail: refusal.detail, grantId } })` when `session.auditSnapshot` exists, and `return { allowed: false, error: refusal.message }` — the existing `preToolUseDenialResult` path streams it to the chat as the tool's result, which is the user-visible reason.
 
@@ -397,7 +458,10 @@ it('refuses when a required permission key is missing with detail "permission"',
 it('narrows toolAuth.accessibleOrgIds to the ceiling, rebuilds closures, and stamps wispGrant', () => {
   const out = narrowAuthToCeiling({ ...auth, accessibleOrgIds: ['a', 'b', 'c'] }, { ...ceiling, orgIds: new Set(['b']) });
   expect(out.accessibleOrgIds).toEqual(['b']); expect(out.canAccessOrg('c')).toBe(false);
-  expect(out.wispGrant).toEqual({ grantId: ceiling.grantId, grantRevisionId: ceiling.revisionId });
+  expect(out.wispGrant).toEqual({ grantId: ceiling.grantId, grantRevisionId: ceiling.revisionId, sessionId: null });
+});
+it('narrowAuthToCeiling stamps wispGrant.sessionId when a session id is passed (w00 A23)', () => {
+  expect(narrowAuthToCeiling(auth, ceiling, 's-1').wispGrant?.sessionId).toBe('s-1');
 });
 it('a null accessibleOrgIds (unrestricted) becomes exactly the ceiling orgs', ...);
 it('requiredPermissionKeys maps an action-dependent tool by input.action', ...);                    // e.g. manage_alerts { action: 'resolve' }
@@ -519,10 +583,13 @@ git commit -m "feat(wisp): deterministic thread summary on session close/expiry 
 ```ts
 export const wispThreadRoutes = new Hono();
 // GET /api/v1/wisp/thread?orgId=<uuid|omitted>  (mine)
-//   200 { data: { thread: WispThread; grant: { id, status, orgId, expiresAt, currentRevisionId, budgetCentsPerDay, floorTickMinutes }; wideningAvailable: boolean } }   -- wideningAvailable = await wideningAvailable(grant.id) (W02; spec §4.4)
+//   200 { data: { thread: WispThread /* incl. focusOrgId */; focusOrgName: string | null; grant: { id, status, orgId, expiresAt, currentRevisionId, budgetCentsPerDay, floorTickMinutes }; wideningAvailable: boolean } }   -- wideningAvailable = await wideningAvailable(grant.id) (W02; spec §4.4); focusOrgName read with readOwnPartnerAxisRows (w00 A24)
 //   404 { code: 'no_active_grant' } when getActiveGrantForUser returns null
 // GET /api/v1/wisp/thread/:id/sessions?limit=20&cursor=
 //   200 { data: Array<{ sessionId, orgId, attachedAt, title: string | null, status }>, nextCursor }   -- only the caller's own grant's thread (403 otherwise, existence-neutral 404)
+// PATCH /api/v1/wisp/thread/:id/focus  body { orgId: uuid | null }                                   -- w00 A24
+//   200 { data: { focusOrgId: string | null; focusOrgName: string | null } }; 403 { code: 'wisp_outside_ceiling', detail: 'org' } on CeilingViolationError; 409 { code: 'grant_inactive' } on GrantInactiveError; 404 for another user's thread
+//   ceiling = await resolveGrantCeiling(grant.id, grant.currentRevisionId); then setThreadFocus(thread.id, orgId, ceiling); writeRouteAudit action 'wisp.thread.focus_changed', resourceType 'wisp_thread', details { from, to }
 ```
 
 Both routes: `requireScope('partner')` (grants are partner-staff only, spec §4.2), `requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action)` (`ai_sessions:use`, w00 A1 — the `requireAiUse` const in `routes/ai.ts:215` is module-private, so re-declare, do not import), `requireEntitlement('wisp')`. Both are inherited from W02's hub chain; declare them again only if the sub-router is ever mounted elsewhere. Mount in `routes/wisp.ts`: `wispRoutes.use('*', requireEntitlement('wisp'))` after W02's `wispEnabled()` 404 gate and before its grant routes, then `wispRoutes.route('/thread', wispThreadRoutes)`. Also in this task: `wispMemoryRoutes.use('*', requireEntitlement('wisp'))` in W03's `routes/wisp/memory.ts`, directly after its own `wispEnabled()` 404 gate (spec §10: every `/api/v1/wisp/*` route is entitlement-gated; the memory routes are mounted outside the hub).
@@ -535,6 +602,9 @@ it('GET /wisp/thread is 403 entitlement_required when the partner lacks wisp', .
 it('GET /wisp/thread is 404 no_active_grant when the user has no grant for the scope', ...);
 it('GET /wisp/thread returns the thread for the caller's own active grant (getOrCreateThread called with grant.id) and wideningAvailable from W02', ...);   // wideningAvailable mocked true → payload true; mocked false → false
 it('GET /wisp/thread/:id/sessions lists attached sessions newest first and refuses another user's thread', ...);
+it('GET /wisp/thread returns thread.focusOrgId and focusOrgName (null when unfocused)', ...);                                                    // w00 A24
+it('PATCH /wisp/thread/:id/focus calls setThreadFocus(thread.id, orgId, ceiling) and audits wisp.thread.focus_changed; CeilingViolationError → 403 wisp_outside_ceiling; null clears', ...);
+it('PATCH /wisp/thread/:id/focus on another user's thread is 404', ...);
 it('org-scoped tokens get 403 from requireScope', ...);
 it('every /wisp/* route (W02 grants + W04 thread + W03 memory) runs requireEntitlement — contract: wispRoutes.routes and wispMemoryRoutes.routes all carry the middleware', ...);
 ```
@@ -544,7 +614,7 @@ it('every /wisp/* route (W02 grants + W04 thread + W03 memory) runs requireEntit
 Run: `cd apps/api && npx vitest run src/routes/wispThreads.test.ts src/routes/wisp.test.ts`
 Expected: FAIL — module not found / middleware absent.
 
-- [ ] **Step 3: Implement** `wispThreads.ts`, the two-line mount + middleware in `wisp.ts`, and the one-line `requireEntitlement('wisp')` in `routes/wisp/memory.ts`.
+- [ ] **Step 3: Implement** `wispThreads.ts` (incl. the focus route; `zValidator('json', z.object({ orgId: z.string().guid().nullable() }))`), the two-line mount + middleware in `wisp.ts`, and the one-line `requireEntitlement('wisp')` in `routes/wisp/memory.ts`.
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -555,7 +625,71 @@ Expected: PASS.
 
 ```bash
 git add apps/api/src/routes/wispThreads.ts apps/api/src/routes/wispThreads.test.ts apps/api/src/routes/wisp.ts apps/api/src/routes/wisp.test.ts
-git commit -m "feat(wisp): thread routes; requireEntitlement('wisp') on every /wisp route (W04 T6)"
+git commit -m "feat(wisp): thread routes incl. focus; requireEntitlement('wisp') on every /wisp route (W04 T6)"
+```
+
+---
+
+### Task 6b: Thread attachments — store, routes, and `read_artifact` reach (w00 A24; spec §6.1 (2))
+
+**Files:**
+- Modify: `apps/api/src/services/wisp/threadAttachments.ts` (stubbed in Task 2; real body here)
+- Modify: `apps/api/src/routes/wispThreads.ts` (two routes)
+- Modify: `apps/api/src/services/artifacts/artifactService.ts:360-375` (`ArtifactCallerAnchor.wispThreadId?`, `findArtifactForCallerQuery` ownership arm), `apps/api/src/services/artifacts/toolResultCapture.ts:52` (`CaptureScope.wispThreadId?`), `apps/api/src/services/aiTools.ts:729` (anchor built for `read_artifact` carries it), `apps/api/src/services/aiAgentSdkTools.ts:832-834` (`capture` from `captureSession.wispGrant?.threadId`)
+- Test: `apps/api/src/services/wisp/threadAttachments.test.ts`, `apps/api/src/routes/wispThreads.test.ts` (extend), `apps/api/src/services/artifacts/artifactService.callerScope.sql.test.ts` (extend — the compiled-SQL suite, so the new arm is proven, not mocked), `apps/api/src/__tests__/integration/wispThreadsRls.integration.test.ts` (extend)
+
+**Interfaces:**
+- Consumes: `createArtifact(input: CreateArtifactInput)` (`artifactService.ts:67,156` — `{ orgId, runId: null, sessionId: null, kind: 'input_capture', name, contentType, body: Buffer, maxBytes, createdByTool: 'wisp_thread_attachment', region: breezeRegion() }`; `BlobTooLargeError` / `BlobStorageUnavailableError` from `services/artifacts/blobStorage.ts:86,96`); `redactForCapture(raw)` (`captureRedaction.ts:44`); `sanitizeArtifactName` (`artifactService.ts:108`); `breezeRegion()` (`config/env.ts:254`); `aiArtifactCaptureEnabled()` (as `aiToolsArtifacts.ts` uses it — when false, `POST` answers `503 { code: 'store_unavailable' }`); `c.req.parseBody({ all: true })` + 413 pattern (`routes/tickets/attachments.ts:93,106`); `userRateLimit` (same file, `:227`); `assertWithinCeiling`, `resolveGrantCeiling` (W02); `WispThread`, `setThreadFocus` (Task 2).
+- Produces: the `threadAttachments.ts` block in Task 2's contract; routes:
+
+```ts
+// POST /api/v1/wisp/thread/:id/attachments        multipart { file, label? } OR json { text, label }   -- userRateLimit('wisp-thread-attachment', 30, 60)
+//   orgId = thread.focusOrgId ?? grant.orgId; a partner-wide, unfocused thread → 409 { code: 'focus_required' } (an artifact row needs one org; spec §6 "all organizations is an overview, not a target")
+//   decode bytes as UTF-8; NUL byte or invalid UTF-8 → 415 unsupported_type; > 5 MiB → 413 too_large; empty → 400 empty; 21st → 409 too_many
+//   text = redactForCapture(decoded); createArtifact({ …, name: `${sanitizeArtifactName(label || file.name)}.redacted.${ext}`, body: Buffer.from(text), maxBytes: THREAD_ATTACHMENT_MAX_BYTES })
+//   insert wisp_thread_attachments (thread_id, partner_id, org_id, artifact_id, added_by_user_id = auth.user.id, label) under system ctx after assertWithinCeiling(ceiling, { orgId })
+//   201 { data: ThreadAttachment }; writeRouteAudit action 'wisp.thread.attachment_added', resourceType 'wisp_thread_attachment', resourceId <id>, details { artifactId, bytes, contentType }
+// GET  /api/v1/wisp/thread/:id/attachments        200 { data: ThreadAttachment[] }  (live only)
+```
+
+**Reach (the `read_artifact` path).** `findArtifactForCaller` matches an artifact to the caller's *exact* run or session (`artifactService.ts:417`, Q4: "any session of this user" is deliberately not a match). An attachment is stored with `session_id NULL` and must be readable from every later session on the same thread, so the anchor gains one more exact pointer: `ArtifactCallerAnchor.wispThreadId?: string | null`, and `findArtifactForCallerQuery`'s `ownership` becomes `or(<existing session/run arm>, exists(select 1 from wisp_thread_attachments ta where ta.artifact_id = ai_run_artifacts.id and ta.thread_id = anchor.wispThreadId))` **only when `wispThreadId` is set**; the org, expiry, `export_dataset` and redacted-marker predicates stay. `CaptureScope` gains `wispThreadId?: string | null`; `makeHandler` builds it from `captureSession.wispGrant?.threadId ?? null` (`aiAgentSdkTools.ts:833`; W04 Task 4 put `wispGrant` on `ActiveSession`); `captureContextFrom` ignores it on the **write** side (captures still anchor on the session) and `aiTools.ts:729` copies it onto `context.captureAnchor` for `read_artifact` only. Agent runs never set it (no thread), so W05 assessments are unaffected.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// threadAttachments.test.ts (mock ../artifacts/artifactService, ../artifacts/captureRedaction, ./grantAuthority, Drizzle)
+it('addThreadAttachment redacts before createArtifact, names the artifact *.redacted.<ext>, passes maxBytes 5 MiB and createdByTool wisp_thread_attachment', …);
+it('refuses the 21st attachment with too_many without calling createArtifact', …);
+it('refuses an org outside the ceiling (org_outside_ceiling) before any write', …);
+it('maps BlobTooLargeError → too_large and BlobStorageUnavailableError → store_unavailable', …);
+it('attachmentSeedLines renders one line per item with the handle and "" for none', …);
+// wispThreads.test.ts additions
+it('POST /wisp/thread/:id/attachments (multipart) → 201 with the artifact id; binary bytes → 415; > 5 MiB → 413; unfocused partner-wide thread → 409 focus_required', …);
+it('POST /wisp/thread/:id/attachments (json text) → 201; GET lists it newest first; another user's thread → 404', …);
+// artifactService.callerScope.sql.test.ts additions
+it('with wispThreadId the ownership predicate ORs an EXISTS on wisp_thread_attachments keyed by thread_id; org, expiry, export_dataset and redacted-marker predicates remain', …);
+it('without wispThreadId the compiled SQL is byte-identical to before (no wisp_thread_attachments reference)', …);
+// wispThreadsRls.integration.test.ts additions
+it('an attachment uploaded in session 1 is found by findArtifactForCaller from session 2 of the same thread, and NOT from a session on another thread in the same org', …);
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd apps/api && npx vitest run src/services/wisp/threadAttachments.test.ts src/routes/wispThreads.test.ts src/services/artifacts/artifactService.callerScope.sql.test.ts`
+Expected: FAIL — stub exports throw / routes 404 / no `wisp_thread_attachments` in the SQL.
+
+- [ ] **Step 3: Implement** the service body, the two routes, the anchor plumbing (four files), then run `cd apps/api && npx vitest run src/services/artifacts src/services/aiToolsArtifacts.test.ts src/services/aiAgentSdkTools.verifiedContext.test.ts` to prove the existing capture/anchor suites are unchanged (`verifiedContext.test.ts` pins the options-bag arity — an absent `wispThreadId` must add no key).
+
+- [ ] **Step 4: Run green, including the integration case**
+
+Run: the Step 2 command, then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/wispThreadsRls.integration.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/api/src/services/wisp/threadAttachments.ts apps/api/src/services/wisp/threadAttachments.test.ts apps/api/src/routes/wispThreads.ts apps/api/src/routes/wispThreads.test.ts apps/api/src/services/artifacts/artifactService.ts apps/api/src/services/artifacts/artifactService.callerScope.sql.test.ts apps/api/src/services/artifacts/toolResultCapture.ts apps/api/src/services/toolExecutionContext.ts apps/api/src/services/aiTools.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/__tests__/integration/wispThreadsRls.integration.test.ts
+git commit -m "feat(wisp): thread attachments as redacted artifacts, readable by handle from later sessions on the thread (W04 T6b)"
 ```
 
 ---
@@ -566,7 +700,7 @@ git commit -m "feat(wisp): thread routes; requireEntitlement('wisp') on every /w
 - Modify: `apps/web/src/stores/aiStore.ts:107` (`createSession` opts), `:322-425` (create body), state shape
 - Create: `apps/web/src/components/ai/WispToggle.tsx`, `apps/web/src/components/ai/WispGrantStepUpModal.tsx`
 - Modify: `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/ai.json` (new `wisp` block)
-- Modify: `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35` (`TARGET_GLOBS` += the two new files + `WispThreadHeader.tsx` from Task 8)
+- Modify: `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35` (`TARGET_GLOBS` += the two new files + `WispThreadHeader.tsx` and `WispThreadAttachments.tsx` from Task 8)
 - Test: `apps/web/src/components/ai/WispToggle.test.tsx`, `apps/web/src/components/ai/WispGrantStepUpModal.test.tsx`, `apps/web/src/stores/aiStore.wisp.test.ts`
 
 **Interfaces:**
@@ -575,9 +709,10 @@ git commit -m "feat(wisp): thread routes; requireEntitlement('wisp') on every /w
 
 ```ts
 // aiStore additions
-type WispState = { grantId: string; threadId: string; scopeOrgId: string | null; status: 'active' | 'paused' | 'revoked' | 'expired'; expiresAt: string; summary: string } | null;
+type WispState = { grantId: string; threadId: string; scopeOrgId: string | null; focusOrgId: string | null; focusOrgName: string | null; status: 'active' | 'paused' | 'revoked' | 'expired'; expiresAt: string; summary: string } | null;   // focus*: w00 A24
 wisp: WispState;
-enterWispMode: (w: NonNullable<WispState>) => Promise<void>;   // sets wisp, then createSession({ wispGrantId: w.grantId, orgId: w.scopeOrgId ?? undefined })
+enterWispMode: (w: NonNullable<WispState>) => Promise<void>;   // sets wisp, then createSession({ wispGrantId: w.grantId, orgId: w.focusOrgId ?? w.scopeOrgId ?? undefined }); a wispFocusOrgId: null in the create response while w.focusOrgId was set ⇒ focus cleared server-side → set focusOrgId null + toast wisp.toast.focusCleared
+setWispFocus: (orgId: string | null, orgName: string | null) => Promise<void>;   // runAction PATCH /wisp/thread/:id/focus → on success update wisp.focusOrgId/focusOrgName, then createSession({ wispGrantId, orgId: orgId ?? scopeOrgId ?? undefined }) so the next turn is anchored to the new focus (spec §6.1 "switching focus is a chat action, not a new thread")
 exitWispMode: () => Promise<void>;                               // closes the current session, wisp = null
 createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext; model?: AiModelChoice; wispGrantId?: string; orgId?: string }) => Promise<void>;
 
@@ -589,7 +724,7 @@ createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext; model?:
 //   submit flow (w00 A4): GET /wisp/grants/preview?orgId= → { ceilingHash } → discoverTier → StepUpPrompt → mintStepUpGrant({ operation: 'wisp_grant', resource: { partnerId, orgId, requestedCeilingHash: ceilingHash }, reauth }) → POST /wisp/grants { orgId, stepUpGrantId } via runAction → GET /wisp/thread?orgId= → onGranted; a 403 STEP_UP_REQUIRED on the POST (reach changed between preview and create) re-runs preview + mint once, then surfaces wisp.modal.stepUpUnavailable
 ```
 
-Locale keys (en; every other locale gets a translation of the same keys): `wisp.title` "Wisp", `wisp.toggle.turnOn` "Turn on Wisp", `wisp.toggle.turningOn` "Turning on Wisp…", `wisp.locked.why` "Wisp is available on Pro and higher plans.", `wisp.modal.title` "Turn on Wisp", `wisp.modal.scopeOrg` "This organization", `wisp.modal.scopePartner` "All organizations", `wisp.modal.explain` "Wisp works within what you are allowed to do. Confirm it is you to continue.", `wisp.modal.confirm` "Confirm", `wisp.modal.cancel` "Cancel", `wisp.modal.stepUpUnavailable` "Could not verify your factor. Try again.", `wisp.toast.on` "Wisp is on", `wisp.toast.onFailed` "Could not turn on Wisp", `wisp.header.scopeAll` "All organizations", `wisp.header.status.active` "Active", `wisp.header.status.paused` "Paused", `wisp.header.status.revoked` "Revoked", `wisp.header.status.expired` "Expired", `wisp.header.refresh` "Refresh grant", `wisp.header.revoke` "Turn off Wisp", `wisp.header.revokeConfirm` "Turn off Wisp for this scope? Open threads stay readable.", `wisp.toast.off` "Wisp is off", `wisp.toast.offFailed` "Could not turn off Wisp", `wisp.toast.refreshed` "Grant refreshed", `wisp.toast.refreshFailed` "Could not refresh the grant", `wisp.header.widening` "You can do more than this grant allows — refresh it to let Wisp keep up.", `wisp.settings.title` "Budget and check-in", `wisp.settings.budget` "Daily budget (¢)", `wisp.settings.tick` "Check-in every (minutes)", `wisp.settings.save` "Save", `wisp.toast.settingsSaved` "Wisp settings saved", `wisp.toast.settingsFailed` "Could not save Wisp settings".
+Locale keys (en; every other locale gets a translation of the same keys): `wisp.title` "Wisp", `wisp.toggle.turnOn` "Turn on Wisp", `wisp.toggle.turningOn` "Turning on Wisp…", `wisp.locked.why` "Wisp is available on Pro and higher plans.", `wisp.modal.title` "Turn on Wisp", `wisp.modal.scopeOrg` "This organization", `wisp.modal.scopePartner` "All organizations", `wisp.modal.explain` "Wisp works within what you are allowed to do. Confirm it is you to continue.", `wisp.modal.confirm` "Confirm", `wisp.modal.cancel` "Cancel", `wisp.modal.stepUpUnavailable` "Could not verify your factor. Try again.", `wisp.toast.on` "Wisp is on", `wisp.toast.onFailed` "Could not turn on Wisp", `wisp.header.scopeAll` "All organizations", `wisp.header.status.active` "Active", `wisp.header.status.paused` "Paused", `wisp.header.status.revoked` "Revoked", `wisp.header.status.expired` "Expired", `wisp.header.refresh` "Refresh grant", `wisp.header.revoke` "Turn off Wisp", `wisp.header.revokeConfirm` "Turn off Wisp for this scope? Open threads stay readable.", `wisp.toast.off` "Wisp is off", `wisp.toast.offFailed` "Could not turn off Wisp", `wisp.toast.refreshed` "Grant refreshed", `wisp.toast.refreshFailed` "Could not refresh the grant", `wisp.header.widening` "You can do more than this grant allows — refresh it to let Wisp keep up.", `wisp.settings.title` "Budget and check-in", `wisp.settings.budget` "Daily budget (¢)", `wisp.settings.tick` "Check-in every (minutes)", `wisp.settings.save` "Save", `wisp.toast.settingsSaved` "Wisp settings saved", `wisp.toast.settingsFailed` "Could not save Wisp settings". Consulting mode (w00 A24): `wisp.focus.label` "Working on", `wisp.focus.none` "No customer focus", `wisp.focus.pick` "Focus on a customer…", `wisp.focus.clear` "Clear focus", `wisp.toast.focusSet` "Wisp is now working on {{org}}", `wisp.toast.focusCleared` "Customer focus cleared", `wisp.toast.focusFailed` "Could not change focus", `wisp.attachments.title` "Attached to this thread", `wisp.attachments.drop` "Drop an email thread, .eml or CSV here, or paste text", `wisp.attachments.paste` "Paste text", `wisp.attachments.label` "Label", `wisp.attachments.add` "Attach", `wisp.attachments.empty` "Nothing attached yet", `wisp.attachments.expires` "Expires {{date}}", `wisp.attachments.limits` "Up to 20 files, 5 MB each, text only", `wisp.attachments.focusRequired` "Pick a customer focus before attaching", `wisp.toast.attached` "Attached to the thread", `wisp.toast.attachFailed` "Could not attach", `wisp.toast.attachTooLarge` "That file is over 5 MB", `wisp.toast.attachUnsupported` "Only text files can be attached".
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -600,6 +735,8 @@ it('createSession sends wispGrantId and orgId when given', ...);                
 it('createSession without wisp options sends a body without wispGrantId (unchanged)', ...);
 it('enterWispMode sets wisp then creates a session with the grant', ...);
 it('exitWispMode closes the session and clears wisp', ...);
+it('enterWispMode under a focused thread sends orgId = focusOrgId; a create response with wispFocusOrgId null clears wisp.focusOrgId', ...);   // w00 A24
+it('setWispFocus PATCHes /wisp/thread/:id/focus through runAction, updates focusOrgId/focusOrgName and creates a session anchored to the new org', ...);
 ```
 
 `WispToggle.test.tsx` (mock `@/hooks/useEntitlement`, `@/stores/aiStore`, `./WispGrantStepUpModal`):
@@ -620,7 +757,7 @@ it('hides the "All organizations" option for an org-scoped token', ...);
 it('a non-step-up failure toasts through runAction and keeps the modal open', ...);
 ```
 
-Also add the three new component files to `TARGET_GLOBS` so `no-silent-mutations.test.ts` guards them.
+Also add the four new component files to `TARGET_GLOBS` so `no-silent-mutations.test.ts` guards them.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -646,9 +783,9 @@ git commit -m "feat(web/wisp): Wisp toggle with step-up grant modal, locked stat
 ### Task 8: Web — `WispThreadHeader` and the sidebar's Wisp mode
 
 **Files:**
-- Create: `apps/web/src/components/ai/WispThreadHeader.tsx`
+- Create: `apps/web/src/components/ai/WispThreadHeader.tsx`, `apps/web/src/components/ai/WispThreadAttachments.tsx` (w00 A24; added to `TARGET_GLOBS` in Task 7's edit of `no-silent-mutations.test.ts`)
 - Modify: `apps/web/src/components/ai/AiChatSidebar.tsx:183-245` (header), `:356-361` (above the context badge)
-- Test: `apps/web/src/components/ai/WispThreadHeader.test.tsx`, extend `apps/web/src/components/ai/AiChatSidebar.test.tsx`
+- Test: `apps/web/src/components/ai/WispThreadHeader.test.tsx`, `apps/web/src/components/ai/WispThreadAttachments.test.tsx`, extend `apps/web/src/components/ai/AiChatSidebar.test.tsx`
 
 **Interfaces:**
 - Consumes: store `wisp`, `exitWispMode`, `enterWispMode` (Task 7); W02 `POST /wisp/grants/:id/revoke`, `POST /wisp/grants/:id/refresh { stepUpGrantId }` (same preview → mint → submit handshake as the create), `PATCH /wisp/grants/:id/settings { budgetCentsPerDay?, floorTickMinutes? }` (w00 A6); `useEntitlement('wisp').limits` as `{ budgetCentsPerDayCeiling, minFloorTickMinutes }` (W01); `ConfirmDialog` (`components/shared/ConfirmDialog.tsx`).
@@ -662,7 +799,14 @@ git commit -m "feat(web/wisp): Wisp toggle with step-up grant modal, locked stat
 //   "Turn off Wisp" button data-testid="wisp-revoke" → ConfirmDialog → runAction POST /wisp/grants/:id/revoke → exitWispMode()
 //   refresh: preview → mint → runAction POST /wisp/grants/:id/refresh { stepUpGrantId } → updates wisp.status/expiresAt
 //   settings popover data-testid="wisp-settings" (spec §9 "one-tap raise within plan ceiling"): budget number input bounded [0, limits.budgetCentsPerDayCeiling], tick input bounded [max(15, limits.minFloorTickMinutes), 240]; Save → runAction PATCH /wisp/grants/:id/settings → updates wisp.budgetCentsPerDay/floorTickMinutes; the server is the authority on the 5× plan-default bound (a 400 SETTINGS_OUT_OF_BOUNDS toasts through runAction)
-// AiChatSidebar.tsx: when `wisp` is set the header title reads t('wisp.title') and the panel shows <WispThreadHeader> under the header; when unset and not showHistory, <WispToggle> sits in the header's right-hand control group before the History button. Mode is hidden for helper/client surfaces (the sidebar already gates on ai_sessions:use).
+//   focus switcher (w00 A24) data-testid="wisp-focus": a <select> labelled t('wisp.focus.label') listing the orgs the token can reach (load them the way `useReportTargetOrg` does, `components/reports/OrgPickerField.tsx:51`; for an org-scoped grant the list is that one org) plus t('wisp.focus.none'); onChange → store.setWispFocus(orgId, orgName); shows t('wisp.focus.none') when wisp.focusOrgId is null
+// WispThreadAttachments.tsx — default export; props { wisp: NonNullable<WispState> }   (w00 A24)
+//   loads GET /wisp/thread/:id/attachments on mount and after each add; renders the list (label, size, t('wisp.attachments.expires')) or t('wisp.attachments.empty')
+//   drop zone data-testid="wisp-attachment-drop" (onDragOver/onDrop pattern: components/organizations/BulkContactImport.tsx) + a "Paste text" textarea with a label input;
+//   add → runAction({ request: () => fetchWithAuth(`/wisp/thread/${threadId}/attachments`, { method: 'POST', body: FormData | JSON }), successMessage: t('wisp.toast.attached'), errorFallback: t('wisp.toast.attachFailed') });
+//   413 → t('wisp.toast.attachTooLarge'), 415 → t('wisp.toast.attachUnsupported'), 409 focus_required → t('wisp.attachments.focusRequired') (map by ActionError.status/code before the fallback);
+//   the whole component is disabled with t('wisp.attachments.focusRequired') when wisp.scopeOrgId === null && wisp.focusOrgId === null; client-side pre-check: file.size > 5 MiB → toast without a request
+// AiChatSidebar.tsx: when `wisp` is set the header title reads t('wisp.title') and the panel shows <WispThreadHeader> under the header and <WispThreadAttachments> collapsed beneath it (disclosure data-testid="wisp-attachments-toggle"); when unset and not showHistory, <WispToggle> sits in the header's right-hand control group before the History button. Mode is hidden for helper/client surfaces (the sidebar already gates on ai_sessions:use).
 ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -675,6 +819,17 @@ it('shows the status badge text for each status', ...);
 it('revoke asks for confirmation, posts /wisp/grants/:id/revoke through runAction and exits Wisp mode', ...);
 it('refresh button is primary with the widening line when wideningAvailable and secondary without it otherwise', ...);
 it('settings popover PATCHes /wisp/grants/:id/settings through runAction with only the changed keys and clamps inputs to the entitlement limits', ...);
+it('focus switcher shows "No customer focus" when focusOrgId is null, the org name when set, and calls setWispFocus(orgId, name) on change', ...);   // w00 A24
+```
+
+`WispThreadAttachments.test.tsx` (mock `@/stores/auth` fetchWithAuth, `@/lib/runAction`):
+
+```ts
+it('lists attachments from GET /wisp/thread/:id/attachments and shows the empty state when none', ...);
+it('dropping a text file POSTs multipart through runAction and reloads the list', ...);
+it('pasted text POSTs JSON { text, label } through runAction', ...);
+it('a 6 MB file is refused client-side with wisp.toast.attachTooLarge and no request', ...);
+it('is disabled with the focus-required copy for a partner-wide thread with no focus', ...);
 ```
 
 `AiChatSidebar.test.tsx` additions (extend `baseState` with `wisp: null, enterWispMode: noop, exitWispMode: noop`; mock `./WispToggle`, `./WispThreadHeader`):
@@ -686,21 +841,21 @@ it('renders WispThreadHeader and the Wisp title when wisp is set', ...);
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd apps/web && npx vitest run src/components/ai/WispThreadHeader.test.tsx src/components/ai/AiChatSidebar.test.tsx`
+Run: `cd apps/web && npx vitest run src/components/ai/WispThreadHeader.test.tsx src/components/ai/WispThreadAttachments.test.tsx src/components/ai/AiChatSidebar.test.tsx`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement** the header component and the sidebar wiring.
+- [ ] **Step 3: Implement** the header component (with the focus switcher), the attachments component and the sidebar wiring.
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `cd apps/web && npx vitest run src/components/ai/WispThreadHeader.test.tsx src/components/ai/AiChatSidebar.test.tsx src/components/ai/AiChatSidebar.firstMessage.test.tsx src/lib/__tests__/no-silent-mutations.test.ts src/lib/i18n/localeParity.test.ts`
+Run: `cd apps/web && npx vitest run src/components/ai/WispThreadHeader.test.tsx src/components/ai/WispThreadAttachments.test.tsx src/components/ai/AiChatSidebar.test.tsx src/components/ai/AiChatSidebar.firstMessage.test.tsx src/lib/__tests__/no-silent-mutations.test.ts src/lib/i18n/localeParity.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/web/src/components/ai/WispThreadHeader.tsx apps/web/src/components/ai/WispThreadHeader.test.tsx apps/web/src/components/ai/AiChatSidebar.tsx apps/web/src/components/ai/AiChatSidebar.test.tsx
-git commit -m "feat(web/wisp): thread header (scope, grant status, refresh, revoke) and chat panel Wisp mode (W04 T8)"
+git add apps/web/src/components/ai/WispThreadHeader.tsx apps/web/src/components/ai/WispThreadHeader.test.tsx apps/web/src/components/ai/WispThreadAttachments.tsx apps/web/src/components/ai/WispThreadAttachments.test.tsx apps/web/src/components/ai/AiChatSidebar.tsx apps/web/src/components/ai/AiChatSidebar.test.tsx
+git commit -m "feat(web/wisp): thread header (scope, focus, grant status, refresh, revoke), attachments drop zone, chat panel Wisp mode (W04 T8)"
 ```
 
 ---
@@ -725,7 +880,7 @@ Expected: PASS. Then `pnpm test-stack down`.
 
 - [ ] **Step 4: Flag-off smoke** — with `BREEZE_WISP_ENABLED` unset: `POST /ai/sessions` without `wispGrantId` behaves exactly as before; `GET /api/v1/wisp/thread` is 404; the web toggle is hidden when `GET /partner/me/entitlements` lacks `wisp` enabled (locked) and the chat is otherwise unchanged.
 
-- [ ] **Step 5: PR body** states: flag off = no behaviour change; tenancy registrations added (`PARTNER_TENANT_TABLES` ×2, `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry`, `CORE_TENANT_EXPORT_POLICY` incl. the two `ai_sessions` columns); contract names consumed (`requireEntitlement`, `useEntitlement`, `FeatureLock`, `createGrant`/`refreshGrant`/`getActiveGrantForUser`/`resolveGrantCeiling`/`assertWithinCeiling`, `recallForGrant`/`renderMemoryForPrompt`) and introduced (`getOrCreateThread`, `attachSession`, `updateThreadSummary`, `seedContextForSession`, `wispGrantId` on session create); the settings-rule-9 line is "no setting added" (no `pages/settings/**` touched). `Closes #<W04 sub-issue>`.
+- [ ] **Step 5: PR body** states: flag off = no behaviour change; tenancy registrations added (`PARTNER_TENANT_TABLES` ×2, `CORE_ORG_CASCADE_DELETE_ORDER` ×2, `orgMergeRegistry` ×2 (+ the `focus_org_id` disposition), `CORE_TENANT_EXPORT_POLICY` ×2 incl. the two `ai_sessions` columns); contract names consumed (`requireEntitlement`, `useEntitlement`, `FeatureLock`, `createGrant`/`refreshGrant`/`getActiveGrantForUser`/`resolveGrantCeiling`/`assertWithinCeiling`, `recallForGrant`/`renderMemoryForPrompt`, `createArtifact`/`redactForCapture`/`findArtifactForCaller`) and introduced (`getOrCreateThread`, `attachSession`, `updateThreadSummary`, `seedContextForSession`, `setThreadFocus`, `addThreadAttachment`/`listThreadAttachments`, `wispGrantId` on session create, `ArtifactCallerAnchor.wispThreadId`); the settings-rule-9 line is "no setting added" (no `pages/settings/**` touched). `Closes #<W04 sub-issue>`.
 
 - [ ] **Step 6: Commit** any verification-driven fixes with their own messages; no empty commit.
 
@@ -770,3 +925,5 @@ Expected: PASS. Then `pnpm test-stack down`.
 - Task 7: `FeatureLock` call uses W01's actual props (`locked`, `why`, `upgradeHref`, `testId`); `wisp.locked.cta` key dropped (CTA copy is W01's). Modal follows W02's handshake: `GET /wisp/grants/preview` → mint with `requestedCeilingHash: ceilingHash` → `POST /wisp/grants { orgId, stepUpGrantId }` (w00 A4; W02 body shape). Tests rewritten to match.
 - Task 8: refresh uses the same handshake; added the budget/tick settings popover calling `PATCH /wisp/grants/:id/settings` with bounds from `useEntitlement('wisp').limits` (spec §9 one-tap raise; w00 A6), plus locale keys and a test.
 - Removed the "threadIdForSession? — No" aside in Task 4; `lookupWispGrant(dbSession)` in `chatCeiling.ts` is the decision.
+- w00 A24 (consulting mode, spec §6.1 (1)–(2)) — **focus:** `wisp_threads.focus_org_id` in the same migration (composite deferrable FK with column-list `ON DELETE SET NULL (focus_org_id)`, PG 15+; RLS-suite case) (Task 1); `WispThread.focusOrgId`, `setThreadFocus(threadId, orgId | null, ceiling)` ceiling-checked before the write, `seedContextForSession` recalls `{ owners: ['user','org'], orgId: focus }` then `{ owners: ['partner'] }` and prints a Focus line (Task 2); session create anchors to the focus org, `focus_mismatch` 409 for a conflicting explicit `orgId`, a focus outside the live ceiling is cleared and reported as `wispFocusOrgId: null` (Task 3); `GET /wisp/thread` returns `focusOrgId`/`focusOrgName`, `PATCH /wisp/thread/:id/focus` audited (Task 6); `WispState.focusOrgId/focusOrgName`, `setWispFocus`, header `<select>` switcher + locale keys (Tasks 7–8). **Attachments:** new table `wisp_thread_attachments` (shape 1, partner denorm, composite FKs to `wisp_threads`, `organizations`, `ai_run_artifacts(id, org_id)` — the latter unique index added idempotently; full cascade/merge/export ceremony) (Task 1); new **Task 6b** — `threadAttachments.ts` (`createArtifact` after `redactForCapture`, `kind: 'input_capture'` with the `.redacted.` marker, `createdByTool: 'wisp_thread_attachment'`, 20 / 5 MiB caps, text-only), `POST|GET /wisp/thread/:id/attachments`, and the `read_artifact` reach via `ArtifactCallerAnchor.wispThreadId` + an `EXISTS wisp_thread_attachments` arm in `findArtifactForCallerQuery` proven in the compiled-SQL suite; attachments are listed by handle in the session seed (Task 2); `WispThreadAttachments.tsx` drop zone + paste through `runAction`, locale keys, `TARGET_GLOBS` (Tasks 7–8). Planner calls: an unfocused partner-wide thread cannot take attachments (`focus_required`) because an artifact row needs one org; retention is the store's 30-day default; attachment deletion is a follow-up.
+- w00 A23 (populator side): `narrowAuthToCeiling(auth, ceiling, sessionId?)` stamps `wispGrant.sessionId` from `session.breezeSessionId` so W03's `remember` can write `source_session_id` (Task 4; test added).

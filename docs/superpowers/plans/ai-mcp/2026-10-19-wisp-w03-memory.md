@@ -76,10 +76,10 @@ Defined here, consumed by W04 (`seedContextForSession`, chat injection) and W05 
 ```ts
 // apps/api/src/services/wisp/memoryBroker.ts
 export type MemoryOwner = { kind: 'user'; userId: string } | { kind: 'org'; orgId: string } | { kind: 'partner' };
-export type MemoryBlockType = 'preference' | 'standing_instruction' | 'fact' | 'decision' | 'concern_outcome';
-export type MemoryBlock = { id: string; tenantPartnerId: string; owner: MemoryOwner; blockType: MemoryBlockType; subjectKey: string; content: Record<string, unknown>; confidence: 'low'|'medium'|'high'; status: 'unconfirmed'|'confirmed'|'retracted'; authoredByGrantId: string | null; authoredByGrantRevisionId: string | null; supersededById: string | null; createdAt: Date; updatedAt: Date };
+export type MemoryBlockType = 'preference' | 'standing_instruction' | 'fact' | 'decision' | 'concern_outcome' | 'work_summary'; // work_summary: spec §6.1 (3) / §8.1 — what a working session did, org-owned, content.evidence points at Breeze records (w00 A23)
+export type MemoryBlock = { id: string; tenantPartnerId: string; owner: MemoryOwner; blockType: MemoryBlockType; subjectKey: string; content: Record<string, unknown>; confidence: 'low'|'medium'|'high'; status: 'unconfirmed'|'confirmed'|'retracted'; authoredByGrantId: string | null; authoredByGrantRevisionId: string | null; supersededById: string | null; sourceSessionId: string | null; createdAt: Date; updatedAt: Date }; // sourceSessionId → ai_sessions(id), ON DELETE SET NULL (w00 A23)
 export type RecallQuery = { owners?: MemoryOwner['kind'][]; subjectKeyPrefix?: string; blockTypes?: MemoryBlockType[]; orgId?: string | null; limit?: number };
-export type RememberInput = Omit<MemoryBlock, 'id'|'status'|'createdAt'|'updatedAt'|'authoredByGrantId'|'authoredByGrantRevisionId'|'tenantPartnerId'|'supersededById'>;
+export type RememberInput = Omit<MemoryBlock, 'id'|'status'|'createdAt'|'updatedAt'|'authoredByGrantId'|'authoredByGrantRevisionId'|'tenantPartnerId'|'supersededById'|'sourceSessionId'> & { sourceSessionId?: string | null }; // omitted ⇒ NULL
 export async function recallForGrant(ceiling: GrantCeiling, q: RecallQuery): Promise<MemoryBlock[]>;      // system ctx; ceiling-filtered; retracted and superseded never returned
 export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInput): Promise<MemoryBlock>; // status 'unconfirmed'; stamps grant + revision; supersedes same (owner, blockType, subjectKey)
 export function renderMemoryForPrompt(blocks: MemoryBlock[]): string;                                       // '' for none; else UNTRUSTED_TOOL_OUTPUT_RULE + wrapUntrustedData('wisp_memory', …)
@@ -96,12 +96,15 @@ export async function listBlocksForPartner(auth: AuthContext): Promise<MemoryBlo
 export async function listUserBlocksForPartnerAdmin(auth: AuthContext, userId: string): Promise<MemoryBlock[]>; // canManagePartnerWidePolicies + audit 'wisp.memory.user_blocks_viewed'; system-context read
 
 // apps/api/src/middleware/auth.ts — populated by W04 (chat turn under a grant) and by W05/W02 (agent run with grant_id); W03 only defines and reads it
-export interface AuthContext { /* … */ wispGrant?: { grantId: string; grantRevisionId: string } }
+// sessionId (w00 A23): the `ai_sessions.id` of the turn that is calling — W04's `narrowAuthToCeiling` stamps `session.breezeSessionId`
+// (the chat path has no other hand-off: `AiTool.handler(input, auth, context?)` sees no ExecuteToolOptions, and `context.captureAnchor` is
+// set only for `read_artifact`, `services/aiTools.ts:729`); W05's run populator stamps `run.sessionId ?? null` (agentAuthContext.ts:30).
+export interface AuthContext { /* … */ wispGrant?: { grantId: string; grantRevisionId: string; sessionId?: string | null } }
 ```
 
 - Tools: `recall` (T1, `ai_sessions:use`), `remember` (T2, `ai_sessions:use`, rate limit 20 / 300 s), `confirm_memory` / `retract_memory` (`HUMAN_ONLY_TOOLS`, `ai_sessions:use`). All four return the string `{"error":"wisp_grant_required"}` when `auth.wispGrant` is absent (the two human-only ones additionally require `auth.principal.kind === 'user_session'`).
 - Routes (`/api/v1/wisp/memory`, 404 unless `wispEnabled()`, `requirePermission('ai_sessions','use')`): `GET /?scope=mine|org|partner&orgId=`, `GET /users/:userId`, `POST /:id/confirm`, `POST /:id/retract`.
-- Table columns (exact): `id`, `tenant_partner_id`, `owner_kind`, `owner_user_id`, `owner_org_id`, `block_type`, `subject_key`, `content`, `confidence`, `status`, `authored_by_grant_id`, `authored_by_grant_revision_id`, `superseded_by_id`, `created_at`, `updated_at`.
+- Table columns (exact): `id`, `tenant_partner_id`, `owner_kind`, `owner_user_id`, `owner_org_id`, `block_type`, `subject_key`, `content`, `confidence`, `status`, `authored_by_grant_id`, `authored_by_grant_revision_id`, `superseded_by_id`, `source_session_id`, `created_at`, `updated_at`.
 - Grantor resolution: `GrantCeiling.grantorUserId: string` (W02, w00 A3) is the grantor; the broker reads it directly and never queries `wisp_grants`. User-owned blocks are readable/writable only when `owner_user_id === ceiling.grantorUserId`.
 - Entitlement: W03 depends on W02 only; `requireEntitlement('wisp')` is attached to `routes/wisp/memory.ts` by W04 (the first W01 consumer), which also extends its "every /wisp/* route carries the middleware" contract to this file.
 
@@ -117,7 +120,7 @@ export interface AuthContext { /* … */ wispGrant?: { grantId: string; grantRev
 
 **Interfaces:**
 - Consumes: `createPartner`, `createOrganization`, `createUser` from `apps/api/src/__tests__/integration/db-utils.ts:129-218`; `withDbAccessContext`, `DbAccessContext` from `apps/api/src/db/index.ts:178,894`; `pgErrorCode` from `apps/api/src/utils/pgErrors`.
-- Produces: Drizzle `aiMemoryBlocks` (columns camel-cased from the table list above; `content: jsonb().$type<Record<string, unknown>>()`), shared `MEMORY_OWNER_KINDS = ['user','org','partner'] as const`, `MEMORY_BLOCK_TYPES = ['preference','standing_instruction','fact','decision','concern_outcome'] as const`, `MEMORY_CONFIDENCES = ['low','medium','high'] as const`, `MEMORY_BLOCK_STATUSES = ['unconfirmed','confirmed','retracted'] as const`, `type MemoryBlockDto = { id; ownerKind; ownerUserId: string | null; ownerOrgId: string | null; blockType; subjectKey; content; confidence; status; authoredByGrantId: string | null; supersededById: string | null; createdAt: string; updatedAt: string }`.
+- Produces: Drizzle `aiMemoryBlocks` (columns camel-cased from the table list above; `content: jsonb().$type<Record<string, unknown>>()`), shared `MEMORY_OWNER_KINDS = ['user','org','partner'] as const`, `MEMORY_BLOCK_TYPES = ['preference','standing_instruction','fact','decision','concern_outcome','work_summary'] as const`, `MEMORY_CONFIDENCES = ['low','medium','high'] as const`, `MEMORY_BLOCK_STATUSES = ['unconfirmed','confirmed','retracted'] as const`, `type MemoryBlockDto = { id; ownerKind; ownerUserId: string | null; ownerOrgId: string | null; blockType; subjectKey; content; confidence; status; authoredByGrantId: string | null; supersededById: string | null; sourceSessionId: string | null; createdAt: string; updatedAt: string }`.
 
 - [ ] **Step 1: Write the failing RLS integration test**
 
@@ -133,6 +136,7 @@ describe('ai_memory_blocks RLS (owner_kind-branched)', () => {
   it('org rows follow org access; partner rows follow partner access', ...) // orgContext(A2) cannot see A1 org row; orgContext(A1) cannot see partner-A row (no partner-wide SELECT branch by design); partnerContext(A) sees partner row and both org rows
   it('system scope reads everything (the broker path)', ...)
   it('owner deletion cascades: deleting the org removes its blocks; deleting the user removes theirs', ...) // under SYSTEM_CTX: db.delete(organizations) / db.delete(users) then select → []
+  it('source_session_id: a block_type of work_summary is accepted; deleting the ai_sessions row sets source_session_id NULL and keeps the block', ...) // w00 A23: insert an ai_sessions row (createOrganization + createUser fixtures), block with source_session_id, delete the session under SYSTEM_CTX, reselect → row present, source_session_id null
 });
 ```
 
@@ -150,10 +154,11 @@ Expected: FAIL — `relation "ai_memory_blocks" does not exist` (or import error
 - `confidence text NOT NULL DEFAULT 'medium'`, `status text NOT NULL DEFAULT 'unconfirmed'`
 - `authored_by_grant_id uuid`, `authored_by_grant_revision_id uuid` (no FK: provenance pointers, like `fix_outcomes.device_id`; grants are never hard-deleted except by partner erasure, which removes this table first via the anchor FK)
 - `superseded_by_id uuid REFERENCES ai_memory_blocks(id) ON DELETE SET NULL`
+- `source_session_id uuid REFERENCES ai_sessions(id) ON DELETE SET NULL` (w00 A23; spec §8.1 "every block carries `source_session_id`" — provenance, never authority; a single-column FK, so no deferrable rule applies. Precedent for the same pointer on an org-axis table: `ai_run_artifacts.session_id`, `2026-10-16-180400-ai-run-artifacts.sql`)
 - `created_at` / `updated_at timestamptz NOT NULL DEFAULT now()`
 - `CONSTRAINT ai_memory_blocks_owner_kind_chk CHECK (owner_kind IN ('user','org','partner'))`
 - `CONSTRAINT ai_memory_blocks_owner_shape_chk CHECK ((owner_kind='user' AND owner_user_id IS NOT NULL AND owner_org_id IS NULL) OR (owner_kind='org' AND owner_org_id IS NOT NULL AND owner_user_id IS NULL) OR (owner_kind='partner' AND owner_user_id IS NULL AND owner_org_id IS NULL))`
-- `CONSTRAINT ai_memory_blocks_block_type_chk CHECK (block_type IN ('preference','standing_instruction','fact','decision','concern_outcome'))`
+- `CONSTRAINT ai_memory_blocks_block_type_chk CHECK (block_type IN ('preference','standing_instruction','fact','decision','concern_outcome','work_summary'))`
 - `CONSTRAINT ai_memory_blocks_confidence_chk CHECK (confidence IN ('low','medium','high'))`
 - `CONSTRAINT ai_memory_blocks_status_chk CHECK (status IN ('unconfirmed','confirmed','retracted'))`
 
@@ -161,7 +166,7 @@ Composite FKs via `DO $$ … EXCEPTION WHEN duplicate_object` (precedent `2026-0
 - `ai_memory_blocks_owner_user_partner_fk FOREIGN KEY (owner_user_id, tenant_partner_id) REFERENCES users (id, partner_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE` (the `users_id_partner_id_key` unique index already exists from that migration; re-issue `CREATE UNIQUE INDEX IF NOT EXISTS` anyway).
 - `ai_memory_blocks_owner_org_partner_fk FOREIGN KEY (owner_org_id, tenant_partner_id) REFERENCES organizations (id, partner_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE` (`organizations_id_partner_id_unique` exists, `2026-05-03-tenant-rls-force-and-invites.sql:7`).
 
-Indexes (`IF NOT EXISTS`): `ai_memory_blocks_tenant_owner_subject_idx (tenant_partner_id, owner_kind, subject_key)`; `ai_memory_blocks_owner_user_idx (owner_user_id) WHERE owner_user_id IS NOT NULL`; `ai_memory_blocks_owner_org_idx (owner_org_id) WHERE owner_org_id IS NOT NULL`; `ai_memory_blocks_grant_idx (authored_by_grant_id) WHERE authored_by_grant_id IS NOT NULL`; `ai_memory_blocks_concern_outcome_created_idx (created_at) WHERE block_type = 'concern_outcome'` (for W05's 180-day reaper).
+Indexes (`IF NOT EXISTS`): `ai_memory_blocks_tenant_owner_subject_idx (tenant_partner_id, owner_kind, subject_key)`; `ai_memory_blocks_owner_user_idx (owner_user_id) WHERE owner_user_id IS NOT NULL`; `ai_memory_blocks_owner_org_idx (owner_org_id) WHERE owner_org_id IS NOT NULL`; `ai_memory_blocks_grant_idx (authored_by_grant_id) WHERE authored_by_grant_id IS NOT NULL`; `ai_memory_blocks_concern_outcome_created_idx (created_at) WHERE block_type = 'concern_outcome'` (for W05's 180-day reaper); `ai_memory_blocks_source_session_idx (source_session_id) WHERE source_session_id IS NOT NULL` (the FK's `ON DELETE SET NULL` scan on session erasure).
 
 RLS: `ENABLE` + `FORCE`; `DROP POLICY IF EXISTS` then one `FOR ALL` policy `ai_memory_blocks_isolation` whose `USING` and `WITH CHECK` are identical:
 
@@ -177,7 +182,7 @@ No partner-wide SELECT branch for org tokens (this is private memory, not config
 
 - [ ] **Step 4: Write the Drizzle schema and shared constants**
 
-`aiMemoryBlocks = pgTable('ai_memory_blocks', {...}, (t) => ({ tenantOwnerSubjectIdx: index(...).on(t.tenantPartnerId, t.ownerKind, t.subjectKey) }))`, column types `.$type<MemoryOwnerKind>()` etc. imported from `@breeze/shared`; `supersededById` as a self-reference with `AnyPgColumn` exactly like `ee/workspace/src/schema/memoryBlocks.ts:18-19`. CHECKs and composite FKs stay SQL-only (the `fixOutcomes` convention, `schema/fixMemory.ts:15-20`). Export `AiMemoryBlockRow = typeof aiMemoryBlocks.$inferSelect`.
+`aiMemoryBlocks = pgTable('ai_memory_blocks', {...}, (t) => ({ tenantOwnerSubjectIdx: index(...).on(t.tenantPartnerId, t.ownerKind, t.subjectKey) }))`, column types `.$type<MemoryOwnerKind>()` etc. imported from `@breeze/shared`; `supersededById` as a self-reference with `AnyPgColumn` exactly like `ee/workspace/src/schema/memoryBlocks.ts:18-19`; `sourceSessionId: uuid('source_session_id').references(() => aiSessions.id, { onDelete: 'set null' })` importing `aiSessions` from `./ai` (no cycle: `schema/ai.ts` imports orgs/users/devices/portal/actionIntents/aiModelRegistry only; `schema/aiWorkspace.ts` already declares the same reference — fall back to SQL-only per w00 A23 only if `tsc` reports one). CHECKs and composite FKs stay SQL-only (the `fixOutcomes` convention, `schema/fixMemory.ts:15-20`). Export `AiMemoryBlockRow = typeof aiMemoryBlocks.$inferSelect`.
 
 - [ ] **Step 5: Migrate, check drift, run the test**
 
@@ -210,7 +215,7 @@ git commit -m "feat(wisp): ai_memory_blocks table with owner_kind-branched RLS (
 - **User offboarding**: `ai_memory_blocks_owner_user_partner_fk … ON DELETE CASCADE`.
 - **Partner erasure**: `tenant_partner_id → partners(id) ON DELETE CASCADE`; the sweep deletes `users` and child orgs first (both cascade here), and the final `partners` delete catches partner-owned rows.
 - **Org merge**: not a merge participant (no `org_id`); the loser's org-owned blocks die with the loser shell via the FK — same disposition as `fix_memory` (`orgMergeRegistry.ts:367`). A survivor repoint is a possible W-later enhancement, recorded in the comment.
-- **Tenant export**: not an org-cascade table, so `CORE_TENANT_EXPORT_POLICY` does not apply. Nothing exportable is lost: `content` is `jsonb` and would be `excludedOpen` under any registration; user-owned blocks are the user's data, not the org's.
+- **Tenant export**: not an org-cascade table, so `CORE_TENANT_EXPORT_POLICY` does not apply. Nothing exportable is lost: `content` is `jsonb` and would be `excludedOpen` under any registration; user-owned blocks are the user's data, not the org's. `source_session_id` (w00 A23) is a bare uuid pointer and would be `included` under any future registration — record that classification in the Step 3 comment so a later org-axis retrofit does not have to re-derive it.
 - **RLS classification**: exactly one bucket, `PARTNER_TENANT_TABLES` with column `tenant_partner_id` (the map value is "the column `breeze_has_partner_access` is called with", `rls-coverage.integration.test.ts:232-234`). Not also `USER_ID_SCOPED_TABLES` — the "classified by exactly one bucket" test (`:1673`) treats the user list as a shape bucket too.
 
 - [ ] **Step 1: Write the failing assertion**
@@ -301,6 +306,7 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
   it('q.orgId outside the ceiling throws CeilingViolationError code org', ...);
   it('grantor outside the anchor partner yields zero user blocks', ...);  // grantorUserId = uB1
   it('rememberForGrant writes status unconfirmed with grant + revision stamped and tenant_partner_id = ceiling.partnerId', ...);
+  it('rememberForGrant stamps source_session_id when sourceSessionId is given and leaves it NULL when omitted; a work_summary block round-trips through recallForGrant with sourceSessionId set', ...); // w00 A23
   it('rememberForGrant refuses an org owner outside the ceiling before writing (CeilingViolationError, no row)', ...);
   it('rememberForGrant refuses a user owner who is not the grantor (CeilingViolationError code permission, no row)', ...);
   it('rememberForGrant supersedes the previous non-retracted block with the same owner, blockType and subjectKey', ...); // old.supersededById === new.id; recall returns only new
@@ -316,7 +322,7 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 5: Implement `memoryBroker.ts`**
 
-Every DB touch is `runOutsideDbContext(() => withSystemDbAccessContext(fn, 'wisp.memoryBroker'))` (the sanctioned pattern for partner-axis reads, `db/partnerAxisRead.ts:55`; the broker is called from inside a request in W04, so the outside-context hop is required). `recallForGrant`: throw `GrantInactiveError` unless `status === 'active'`; if `q.orgId` is set, `assertWithinCeiling(ceiling, { orgId: q.orgId })`; WHERE `tenant_partner_id = ceiling.partnerId AND status <> 'retracted' AND superseded_by_id IS NULL AND (` user branch `owner_user_id = ceiling.grantorUserId` `OR` org branch `owner_org_id IN (q.orgId ?? [...ceiling.orgIds])` `OR` partner branch `owner_kind='partner'` `)`, narrowed by `q.owners` / `q.blockTypes` / `subject_key LIKE prefix%`; `ORDER BY (status='confirmed') DESC, updated_at DESC LIMIT clamp(q.limit, 1, 200, default 50)`. `rememberForGrant`: same status check; owner validation (user ⇒ `userId === ceiling.grantorUserId` else `CeilingViolationError('permission')`; org ⇒ `assertWithinCeiling({ orgId })`); size checks; in one transaction insert the row then `UPDATE … SET superseded_by_id = new.id WHERE` same owner/blockType/subjectKey `AND id <> new.id AND status <> 'retracted' AND superseded_by_id IS NULL`. `renderMemoryForPrompt`: one line per block `- [${blockType}/${status}/${confidence}] ${subjectKey}: ${sanitizeUntrustedToolText(JSON.stringify(content))}`, confirmed first, then `${UNTRUSTED_TOOL_OUTPUT_RULE}\n${wrapUntrustedData('wisp_memory', lines.join('\n'))}`.
+Every DB touch is `runOutsideDbContext(() => withSystemDbAccessContext(fn, 'wisp.memoryBroker'))` (the sanctioned pattern for partner-axis reads, `db/partnerAxisRead.ts:55`; the broker is called from inside a request in W04, so the outside-context hop is required). `recallForGrant`: throw `GrantInactiveError` unless `status === 'active'`; if `q.orgId` is set, `assertWithinCeiling(ceiling, { orgId: q.orgId })`; WHERE `tenant_partner_id = ceiling.partnerId AND status <> 'retracted' AND superseded_by_id IS NULL AND (` user branch `owner_user_id = ceiling.grantorUserId` `OR` org branch `owner_org_id IN (q.orgId ?? [...ceiling.orgIds])` `OR` partner branch `owner_kind='partner'` `)`, narrowed by `q.owners` / `q.blockTypes` / `subject_key LIKE prefix%`; `ORDER BY (status='confirmed') DESC, updated_at DESC LIMIT clamp(q.limit, 1, 200, default 50)`. `rememberForGrant`: same status check; owner validation (user ⇒ `userId === ceiling.grantorUserId` else `CeilingViolationError('permission')`; org ⇒ `assertWithinCeiling({ orgId })`); size checks; in one transaction insert the row (`source_session_id: block.sourceSessionId ?? null`) then `UPDATE … SET superseded_by_id = new.id WHERE` same owner/blockType/subjectKey `AND id <> new.id AND status <> 'retracted' AND superseded_by_id IS NULL`. `toMemoryBlock` maps `source_session_id → sourceSessionId`. `renderMemoryForPrompt`: one line per block `- [${blockType}/${status}/${confidence}] ${subjectKey}: ${sanitizeUntrustedToolText(JSON.stringify(content))}`, confirmed first, then `${UNTRUSTED_TOOL_OUTPUT_RULE}\n${wrapUntrustedData('wisp_memory', lines.join('\n'))}`.
 
 - [ ] **Step 6: Run both suites green**
 
@@ -437,11 +443,11 @@ git commit -m "test(wisp): ai_memory_blocks is reached only through the memory b
 
 **Interfaces:**
 - Consumes: `resolveGrantCeiling` (W02), broker + service (Tasks 3–4), `AiTool` (`services/aiTools.ts:120`), `AiToolTier`, `registryDescription` / `makeHandler` / `tool` in `aiAgentSdkTools.ts` (pattern at `:2655-2665`).
-- Produces: `registerWispMemoryTools(aiTools: Map<string, AiTool>): void`; `AuthContext.wispGrant?: { grantId: string; grantRevisionId: string }`; zod shapes `recallShape`, `rememberShape` exported from `aiToolSchemas.ts` for the MCP declaration.
+- Produces: `registerWispMemoryTools(aiTools: Map<string, AiTool>): void`; `AuthContext.wispGrant?: { grantId: string; grantRevisionId: string; sessionId?: string | null }` (w00 A2 + A23 — `sessionId` is optional so W02/W05 run populators without a session compile unchanged); zod shapes `recallShape`, `rememberShape` exported from `aiToolSchemas.ts` for the MCP declaration.
 
 Tool inputs (the zod shapes are the source of truth; `definition.input_schema` mirrors them):
 - `recall`: `{ ownerKinds?: ('user'|'org'|'partner')[]; subjectKeyPrefix?: string (≤120); blockTypes?: MemoryBlockType[]; orgId?: uuid; limit?: int 1..200 }` → returns `renderMemoryForPrompt(blocks)` or the literal `No memory blocks match.`
-- `remember`: `{ ownerKind: 'user'|'org'|'partner'; orgId?: uuid (required iff ownerKind='org'); blockType: MemoryBlockType; subjectKey: string (1..280); content: object; confidence?: 'low'|'medium'|'high' }` → `Remembered as unconfirmed (ID: <id>). The owner can confirm or retract it on the Wisp memory page.`
+- `remember`: `{ ownerKind: 'user'|'org'|'partner'; orgId?: uuid (required iff ownerKind='org'); blockType: MemoryBlockType; subjectKey: string (1..280); content: object; confidence?: 'low'|'medium'|'high' }` → `Remembered as unconfirmed (ID: <id>). The owner can confirm or retract it on the Wisp memory page.` The `blockType` enum includes `work_summary`; the description tells the model: "At the end of a working session on one customer, write one `work_summary` block owned by that org (`ownerKind: 'org'`), `subjectKey` `work:<yyyy-mm-dd>:<short-slug>`, with `content.evidence` listing the Breeze records touched (ticket ids, time-entry ids, audit ids)". There is **no** `sourceSessionId` input: the handler fills it from `auth.wispGrant.sessionId ?? null` (w00 A23) — the model never names a session.
 - `confirm_memory` / `retract_memory`: `{ blockId: uuid }`.
 
 Registry values: `TOOL_TIERS` `recall: 1`, `remember: 2`; `TOOL_PERMISSIONS` all four `{ resource: 'ai_sessions', action: 'use' }`; `TOOL_CAPABILITY` all four `'tenancy'` (`CAPABILITY_DOMAINS.tenancy` admits domain `'ai'`, `agentToolCatalog.ts:82`); `domain: 'ai'`, `deviceArgs: []`; `TOOL_RATE_LIMITS.remember = { limit: 20, windowSeconds: 300 }`; `HUMAN_ONLY_TOOLS` entries with ≥ 20-char reasons ("A person confirms or retracts memory; Wisp never does (spec §8.3). Reached through the memory page routes, never declared to chat, Helper or agents."); MCP: `tool('recall', …)` and `tool('remember', …)` only.
@@ -457,6 +463,7 @@ describe('wisp memory tools', () => {
   it('recall resolves the ceiling from auth.wispGrant and renders via renderMemoryForPrompt', ...);
   it('remember maps ownerKind/orgId to a MemoryOwner and surfaces CeilingViolationError as {"error":"ceiling_violation","code":"org"}', ...);
   it('remember surfaces GrantInactiveError as {"error":"grant_inactive"}', ...);
+  it('remember passes sourceSessionId = auth.wispGrant.sessionId to rememberForGrant, null when the grant carries no sessionId, and ignores a sourceSessionId supplied in the input', ...); // w00 A23
   it('confirm_memory / retract_memory refuse an ai_agent principal with {"error":"human_only"} and otherwise call memoryService', ...);
   it('recall is tier 1 and remember tier 2 in TOOL_TIERS; confirm_memory and retract_memory are in HUMAN_ONLY_TOOLS and not in TOOL_TIERS', ...);
 });
@@ -469,7 +476,7 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement and register across the registries listed above**
 
-Handler shape per tool: `async (input, auth) => { const g = auth.wispGrant; if (!g) return JSON.stringify({ error: 'wisp_grant_required' }); const ceiling = await resolveGrantCeiling(g.grantId, g.grantRevisionId); … }` with `try/catch` mapping `GrantInactiveError` → `grant_inactive`, `CeilingViolationError` → `{ error: 'ceiling_violation', code }`. The two human-only handlers check `auth.principal.kind === 'user_session'` first and map `MemoryServiceError.code` to `{ error: code }`.
+Handler shape per tool: `async (input, auth) => { const g = auth.wispGrant; if (!g) return JSON.stringify({ error: 'wisp_grant_required' }); const ceiling = await resolveGrantCeiling(g.grantId, g.grantRevisionId); … }` (`remember` builds `{ ...rememberInput, sourceSessionId: g.sessionId ?? null }` — the tool, not the broker, is where the session is known) with `try/catch` mapping `GrantInactiveError` → `grant_inactive`, `CeilingViolationError` → `{ error: 'ceiling_violation', code }`. The two human-only handlers check `auth.principal.kind === 'user_session'` first and map `MemoryServiceError.code` to `{ error: code }`.
 
 - [ ] **Step 4: Run the tool test and the registry contracts green**
 
@@ -507,7 +514,7 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement the routes, mount, cover**
 
-`wispMemoryRoutes.use('*', authMiddleware)`, then a first middleware `if (!wispEnabled()) return c.json({ error: 'not_found' }, 404)`, then `requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action)`. Query schema `z.object({ scope: z.enum(['mine','org','partner']), orgId: z.string().uuid().optional() })`. Map `MemoryServiceError` codes to statuses in one helper. DTO mapping: dates to ISO strings; `owner` flattened to `ownerKind/ownerUserId/ownerOrgId`.
+`wispMemoryRoutes.use('*', authMiddleware)`, then a first middleware `if (!wispEnabled()) return c.json({ error: 'not_found' }, 404)`, then `requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action)`. Query schema `z.object({ scope: z.enum(['mine','org','partner']), orgId: z.string().uuid().optional() })`. Map `MemoryServiceError` codes to statuses in one helper. DTO mapping: dates to ISO strings; `owner` flattened to `ownerKind/ownerUserId/ownerOrgId`; `sourceSessionId` passed through as-is (route test: a block with `sourceSessionId` set serialises it; the memory page's "from conversation" link in Task 8 depends on it).
 
 - [ ] **Step 4: Run green**
 
@@ -528,18 +535,18 @@ git commit -m "feat(wisp): memory routes (list/confirm/retract, audited admin vi
 **Files:**
 - Create: `apps/web/src/pages/settings/wisp-memory.astro`, `apps/web/src/components/settings/WispMemoryPage.tsx`
 - Modify: `apps/web/src/lib/navGates.ts` (`NavGate.requiresWisp?: boolean`; `NavGateContext.wispEnabled?: boolean`; `isNavGateVisible` early-return), `apps/web/src/lib/settingsCatalog.ts` (AI group entry), `apps/web/src/components/layout/Sidebar.tsx` (`:750-759` read `wispEnabled` from `/orgs/partners/me`; `:924-934` pass it), `apps/web/src/components/settings/SettingsCatalog.tsx:33`, `apps/web/src/components/layout/CommandPalette.tsx:416` (pass `wispEnabled` — source it the same way Sidebar does or default `false`)
-- Locales (all 8 dirs): `settings.json` → `wispMemory.{title,description,tabs.mine,tabs.org,tabs.partner,tabs.users,empty,loading,loadFailed,retry,subject,type,status,confidence,updated,confirm,retract,confirmed,retracted,confirmFailed,retractFailed,status.unconfirmed,status.confirmed,status.retracted,type.preference,type.standing_instruction,type.fact,type.decision,type.concern_outcome,pickOrg,pickUser}`; `pages.json` → `titles.settingsWispMemory`, `settingsIndex.cards.wispMemory.{title,description}`
+- Locales (all 8 dirs): `settings.json` → `wispMemory.{title,description,tabs.mine,tabs.org,tabs.partner,tabs.users,empty,loading,loadFailed,retry,subject,type,status,confidence,updated,confirm,retract,confirmed,retracted,confirmFailed,retractFailed,status.unconfirmed,status.confirmed,status.retracted,type.preference,type.standing_instruction,type.fact,type.decision,type.concern_outcome,type.work_summary,fromConversation,pickOrg,pickUser}`; `pages.json` → `titles.settingsWispMemory`, `settingsIndex.cards.wispMemory.{title,description}`
 - Test: `apps/web/src/components/settings/WispMemoryPage.test.tsx`
 
 **Interfaces:**
 - Consumes: `fetchWithAuth` (`stores/auth`), `runAction`, `handleActionError` (`lib/runAction.ts`), `MemoryBlockDto` from `@breeze/shared`, routes from Task 7, `useTranslation('settings')`.
 - Produces: catalog entry `{ id: 'wisp-memory', name: 'Wisp memory', labelKey: card('wispMemory','title'), descriptionKey: card('wispMemory','description'), href: '/settings/wisp-memory', icon: BrainCircuit, group: 'ai', requiresWisp: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } }`.
 
-Page behaviour: tabs **My memory** (`scope=mine`), **Client** (org picker → `scope=org&orgId`), **All clients** (`scope=partner`; shown only when the caller is partner scope), **Technicians** (user picker → `GET /users/:userId`; shown only when `canManagePartnerWide`). Each row: subject, type, status pill, confidence, updated; buttons Confirm (hidden when confirmed/retracted) and Retract (hidden when retracted), each via `runAction({ request: () => fetchWithAuth(`/wisp/memory/${id}/confirm`, { method: 'POST' }), errorFallback: t('wispMemory.confirmFailed'), successMessage: t('wispMemory.confirmed'), onUnauthorized })` then reload. Content is shown collapsed as pretty JSON, never interpreted. Transient tab lives in `window.location.hash` (`#tab=org`), per the CLAUDE.md URL-state rule.
+Page behaviour: tabs **My memory** (`scope=mine`), **Client** (org picker → `scope=org&orgId`), **All clients** (`scope=partner`; shown only when the caller is partner scope), **Technicians** (user picker → `GET /users/:userId`; shown only when `canManagePartnerWide`). Each row: subject, type, status pill, confidence, updated; buttons Confirm (hidden when confirmed/retracted) and Retract (hidden when retracted), each via `runAction({ request: () => fetchWithAuth(`/wisp/memory/${id}/confirm`, { method: 'POST' }), errorFallback: t('wispMemory.confirmFailed'), successMessage: t('wispMemory.confirmed'), onUnauthorized })` then reload. Content is shown collapsed as pretty JSON, never interpreted. Transient tab lives in `window.location.hash` (`#tab=org`), per the CLAUDE.md URL-state rule. **"From conversation" link (w00 A23):** when `block.sourceSessionId` is set, each row renders a `data-testid="wisp-memory-from-conversation"` button labelled `t('wispMemory.fromConversation')` that calls `useAiStore.getState().loadSession(block.sourceSessionId)` then `useAiStore.getState().open()` (`apps/web/src/stores/aiStore.ts:109,310` — the store already restores a persisted session by id through `GET /ai/sessions/:id/messages`, which outlives the 24 h session window; no new route). Hidden when `sourceSessionId` is null; a `404` from `loadSession` (session erased) is surfaced by the store's existing error toast, nothing new.
 
 - [ ] **Step 1: Write the failing component test**
 
-Mock as in `OfficeAddinBindingsPage.test.tsx:1-22`. Cases: renders "My memory" rows from `{ blocks: [...] }`; Confirm calls `runAction` with a `request` that POSTs `/wisp/memory/<id>/confirm`; Retract likewise `/retract`; 401 on load calls `navigateTo('/login')`; `ActionError`-free failure goes to `handleActionError`; Technicians tab absent when `canManagePartnerWide` is false.
+Mock as in `OfficeAddinBindingsPage.test.tsx:1-22`. Cases: renders "My memory" rows from `{ blocks: [...] }`; Confirm calls `runAction` with a `request` that POSTs `/wisp/memory/<id>/confirm`; Retract likewise `/retract`; 401 on load calls `navigateTo('/login')`; `ActionError`-free failure goes to `handleActionError`; Technicians tab absent when `canManagePartnerWide` is false; "From conversation" button present only for a block with `sourceSessionId` and calls `loadSession(<id>)` then `open()` on the mocked `useAiStore` (w00 A23); a `work_summary` row shows `t('wispMemory.type.work_summary')`.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -615,3 +622,4 @@ State: flag off = no behaviour change; tenancy registrations added (`PARTNER_TEN
 - `GrantCeiling.grantorUserId` is now a W02 contract field (w00 A3): removed the optional-field cast and the `wisp_grants` fallback lookup, and the integration case that exercised it (Task 3).
 - Noted that W04 attaches `requireEntitlement('wisp')` to `routes/wisp/memory.ts` (W03 cannot depend on W01); no W03 change.
 - W05's `jobs/wispConcernRetention.ts` deletes `concern_outcome` blocks older than 180 d directly (w00 Memory block "reaper in W05"); it adds itself to Task 5's `AI_MEMORY_BLOCKS_ACCESS_ALLOWLIST` with the reason "retention delete, not an agent-side write" — the single-caller contract's wording in Task 5 ("W05 adds nothing here") is superseded by that one entry.
+- w00 A23 (consulting mode, spec §6.1/§8.1): `MemoryBlockType` + `MEMORY_BLOCK_TYPES` + the `block_type` CHECK gain `work_summary` (Task 1); `source_session_id uuid NULL → ai_sessions(id) ON DELETE SET NULL` + partial index + Drizzle `sourceSessionId` reference + one RLS-suite case (Task 1), export classification recorded as `included`-if-ever-registered (Task 2); `MemoryBlock.sourceSessionId`, `RememberInput.sourceSessionId?`, broker stamps it + one integration case (Task 3); `AuthContext.wispGrant` gains optional `sessionId` (W04 chat populator stamps `session.breezeSessionId`; W05 run populator `run.sessionId ?? null`) and `remember` fills `sourceSessionId` from it with a test (Task 6); DTO passes it through (Task 7); memory page "From conversation" button via `aiStore.loadSession` + `open`, keys `fromConversation` / `type.work_summary` in all 8 locale dirs (Task 8). No new migration.
