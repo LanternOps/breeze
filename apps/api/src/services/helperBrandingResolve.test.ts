@@ -51,6 +51,15 @@ describe('resolvePartnerOrgBranding', () => {
     expect(out).toEqual({});
   });
 
+  it('drops persisted branding carrying a bidi override or zero-width character (#9396)', () => {
+    for (const companyName of ['Acme\u202Eytiruces', 'Mic\u200Brosoft']) {
+      const out = resolvePartnerOrgBranding([
+        { level: 'organization', priority: 0, inlineSettings: { branding: { companyName, primaryColor: '#2255AA' } } },
+      ]);
+      expect(out).toEqual({});
+    }
+  });
+
   it('returns empty when there are no candidates', () => {
     expect(resolvePartnerOrgBranding([])).toEqual({});
   });

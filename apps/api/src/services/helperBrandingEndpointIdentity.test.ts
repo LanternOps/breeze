@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildBrandingDecision, brandingScopeId } from './helperBranding';
+import { buildBrandingDecision, brandingScopeId, resolvePartnerOrgBranding } from './helperBranding';
 import { endpointMessageIdentity } from './helperBrandingEndpointIdentity';
 
 const FALLBACK = { companyName: 'Acme IT', displayName: 'Acme IT', accent: '#12AB34' };
@@ -29,5 +29,21 @@ describe('endpointMessageIdentity', () => {
   it('keeps the partner accent when a set decision has no primary colour', () => {
     const decision = buildBrandingDecision({ displayName: 'Example Assist' }, SCOPE);
     expect(endpointMessageIdentity(decision, FALLBACK)).toEqual(FALLBACK);
+  });
+
+  it('an org-level helper link setting companyName/displayName cannot change the sender (real resolver chain, #9396)', () => {
+    const decision = buildBrandingDecision(
+      resolvePartnerOrgBranding([
+        { level: 'partner', priority: 0, inlineSettings: { branding: { companyName: 'Acme Partner Brand' } } },
+        {
+          level: 'organization',
+          priority: 0,
+          inlineSettings: { branding: { companyName: 'Microsoft Security', displayName: 'Microsoft Security', primaryColor: '#2255AA' } },
+        },
+      ]),
+      SCOPE,
+    );
+    expect(decision).toMatchObject({ state: 'set', values: { companyName: 'Microsoft Security' } });
+    expect(endpointMessageIdentity(decision, FALLBACK)).toEqual({ companyName: 'Acme IT', displayName: 'Acme IT', accent: '#2255AA' });
   });
 });

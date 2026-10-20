@@ -32,7 +32,7 @@ const BRANDING_FIELDS: ReadonlySet<string> = new Set<string>([...Object.keys(TEX
  * toast, so no branding text field may carry one (#9396). Line and paragraph
  * separators (U+2028/U+2029) are Zl/Zp, not C, and are rejected explicitly.
  */
-const CONTROL_CHARS = /[\p{C}\p{Zl}\p{Zp}]/u;
+const DISALLOWED_TEXT_CHARS = /[\p{C}\p{Zl}\p{Zp}]/u;
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 export type BrandingValidation = { ok: true; value: BrandingValues } | { ok: false; errors: string[] };
@@ -60,7 +60,7 @@ export function validateBrandingValues(input: unknown): BrandingValidation {
     }
     if (raw.length === 0) {
       errors.push(`empty:${key}`);
-    } else if (CONTROL_CHARS.test(raw)) {
+    } else if (DISALLOWED_TEXT_CHARS.test(raw)) {
       errors.push(`control:${key}`);
     } else if ([...raw].length > TEXT_LIMITS[key as BrandingTextField]) {
       errors.push(`length:${key}`);
