@@ -63,6 +63,8 @@ interface StoredWarranty {
   end_date: string | null;
   entitlement_count: number;
   entitlement_provider: string | null;
+  last_sync_at: string | null;
+  next_sync_at: string | null;
 }
 
 async function readWarranty(deviceId: string): Promise<StoredWarranty[]> {
@@ -71,7 +73,9 @@ async function readWarranty(deviceId: string): Promise<StoredWarranty[]> {
            warranty_start_date::text        AS start_date,
            warranty_end_date::text          AS end_date,
            jsonb_array_length(entitlements) AS entitlement_count,
-           entitlements #>> '{0,provider}'  AS entitlement_provider
+           entitlements #>> '{0,provider}'  AS entitlement_provider,
+           last_sync_at::text               AS last_sync_at,
+           next_sync_at::text               AS next_sync_at
     FROM device_warranty
     WHERE device_id = ${deviceId}
   `)) as unknown as StoredWarranty[];
@@ -108,6 +112,9 @@ describe('agent-owned warranty rows survive a server sync (#5511 W01, defect 2)'
 
     const after = await readWarranty(deviceId);
     expect(after).toHaveLength(1);
+    // Nothing was fetched, so the preserve branch must not stamp lastSyncAt (the
+    // device card polls it to decide a manual refresh completed).
+    expect(after[0]!.last_sync_at).toBe(before[0]!.last_sync_at);
     expect(
       after[0]!.data_source,
       'a server sweep must never take ownership of an agent-collected row',
@@ -145,7 +152,7 @@ describe('agent-owned warranty rows survive a server sync (#5511 W01, defect 2)'
     expect(after[0]!.entitlement_provider).toBe('apple');
   });
 
-  runDb('a provider-owned row is still refreshed — the preservation branch did not swallow everyone', async () => {
+  runDb('a device no agent has claimed still gets the provider-owned unknown row — the preservation branch did not swallow everyone', async () => {
     const { org, site } = await seedTenant();
     const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const deviceId = await seedDevice(org.id, site.id, `whitebox-${suffix}`);

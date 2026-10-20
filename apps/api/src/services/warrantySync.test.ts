@@ -437,3 +437,25 @@ describe('upsertAgentWarranty entitlements array (#5511 W01, D10)', () => {
     );
   });
 });
+
+describe('server upsert never overwrites an agent-owned row (#5511 W01 review: TOCTOU)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('guards the device-subject write in SQL, NULL-safe, with both agent sources', async () => {
+    const { onConflictDoUpdate } = captureUpsert();
+    providerMock.mockReturnValue({
+      lookup: vi.fn().mockResolvedValue(new Map([['SN1', {
+        found: true, entitlements: [], warrantyStartDate: '2024-01-10', warrantyEndDate: inDays(400),
+      }]])),
+    });
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: { kind: 'device', deviceId: DEVICE_ID } });
+
+    const setWhere = onConflictDoUpdate.mock.calls[0]![0].setWhere;
+    expect(setWhere).toBeDefined();
+    const compiled = compileWhere(setWhere);
+    expect(compiled.sql).toContain('is null');
+    expect(compiled.sql).toContain('not in');
+    expect(compiled.params).toEqual(expect.arrayContaining(['agent_plist', 'agent_cmsl']));
+  });
+});

@@ -327,6 +327,19 @@ async function upsertWarranty(
         nextSyncAt,
         updatedAt: now,
       },
+      // The read in syncWarrantyForSubject is advisory; this is the authority. An
+      // agent report that lands between that read and this write must not be
+      // overwritten by a server-side result (#5511 W01). NULL-safe: a row with
+      // no data_source stays writable. Manual assets can never carry an agent
+      // source (XOR subject), so only the device arm needs it.
+      ...(subject.kind === 'device'
+        ? {
+            setWhere: or(
+              isNull(deviceWarranty.dataSource),
+              notInArray(deviceWarranty.dataSource, [...AGENT_OWNED_WARRANTY_SOURCE_LIST]),
+            ),
+          }
+        : {}),
     });
 
   await recordVendorShipDate(subject, result.shipDate ?? null);

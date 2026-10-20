@@ -350,7 +350,7 @@ function decideValue(
         annotation: { target: mapping, outcome: 'skipped-provider-owned', warning: AGENT_WARRANTY_WARNING },
       };
     }
-    if (existing?.dataSource === 'provider'&& !state.overrideProviderWarranty) {
+    if (existing?.dataSource === 'provider' && !state.overrideProviderWarranty) {
       return {
         annotation: { target: mapping, outcome: 'skipped-provider-owned', warning: PROVIDER_WARRANTY_WARNING },
       };
