@@ -2,10 +2,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import M365Integration from "./M365Integration";
 import { fetchWithAuth } from "../../stores/auth";
+import { useOrgStore } from "../../stores/orgStore";
 
 vi.mock("../../stores/auth", () => ({
   fetchWithAuth: vi.fn(),
   registerOrgIdProvider: vi.fn(),
+  useAuthStore: Object.assign(vi.fn(), {
+    getState: () => ({ tokens: null }),
+  }),
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -106,7 +110,7 @@ describe("M365Integration", () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse(CONNECTED));
       render(<M365Integration />);
       expect(
-        await screen.findByRole("heading", { level: 2, name: "Microsoft 365" }),
+        await screen.findByRole("heading", { level: 2, name: /legacy app registration/i }),
       ).toBeInTheDocument();
       expect(screen.queryAllByRole("heading", { level: 1 })).toHaveLength(0);
       expect(screen.getByRole("heading", { level: 3, name: "Connection" })).toBeInTheDocument();
@@ -165,6 +169,72 @@ describe("M365Integration", () => {
       render(<M365Integration onStatusChange={onStatusChange} />);
       await waitFor(() => expect(onStatusChange).toHaveBeenLastCalledWith("connected"));
       expect(onStatusChange).toHaveBeenCalledWith("loading");
+    });
+  });
+
+  describe("legacy card scope copy (#9320)", () => {
+    beforeEach(() => {
+      useOrgStore.setState({
+        currentOrgId: "org-1",
+        organizations: [{ id: "org-1", name: "Northwind Traders" }],
+      } as never);
+    });
+
+    it("names the organization and the legacy scope in the heading", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+      render(<M365Integration />);
+      const h = await screen.findByRole("heading", { level: 2 });
+      expect(h).toHaveTextContent(/legacy app registration/i);
+      expect(h).toHaveTextContent(/AI assistant only/i);
+      expect(h).toHaveTextContent("Northwind Traders");
+    });
+
+    it("lists what it does not power", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+      render(<M365Integration />);
+      const list = await screen.findByTestId("m365-legacy-does-not-power");
+      expect(list).toHaveTextContent(/tenant sync/i);
+      expect(list).toHaveTextContent("m365_query_*");
+      expect(screen.getByTestId("m365-legacy-powers")).toHaveTextContent(/reset password/i);
+      expect(screen.queryByTestId("m365-legacy-use-consent")).not.toBeInTheDocument();
+    });
+
+    it("points to Connect with Microsoft when consent is available", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+      render(<M365Integration consentAvailable />);
+      expect(await screen.findByTestId("m365-legacy-use-consent")).toBeInTheDocument();
+    });
+
+    it("uses a GUID placeholder, not the onmicrosoft domain", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+      render(<M365Integration />);
+      const input = await screen.findByLabelText(/Tenant ID/i);
+      expect(input.getAttribute("placeholder")).not.toMatch(/onmicrosoft/i);
+      expect(input.getAttribute("placeholder")).toMatch(/00000000-0000-0000-0000-000000000000/);
+    });
+
+    it("rejects a domain-form tenant id client-side: Save disabled, hint shown, no request", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+      render(<M365Integration />);
+      fireEvent.change(await screen.findByLabelText(/Tenant ID/i), {
+        target: { value: "contoso.onmicrosoft.com" },
+      });
+      fireEvent.change(screen.getByLabelText(/App \(client\) ID/i), {
+        target: { value: "55555555-5555-4555-8555-555555555555" },
+      });
+      fireEvent.change(screen.getByLabelText(/^Client secret/i), { target: { value: "s3cret" } });
+      const save = screen.getByRole("button", { name: /Save & verify/i });
+      expect(save).toBeDisabled();
+      expect(screen.getByTestId("m365-tenant-id-hint")).toHaveTextContent(/Directory \(tenant\) ID/);
+      fireEvent.click(save);
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(1); // only the initial GET
+    });
+
+    it("tells the admin to search All applications for an existing Breeze app", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+      render(<M365Integration />);
+      await screen.findByLabelText(/Tenant ID/i);
+      expect(document.body.textContent).toMatch(/All applications/);
     });
   });
 });

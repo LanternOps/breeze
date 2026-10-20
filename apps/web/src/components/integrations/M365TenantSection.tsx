@@ -224,6 +224,7 @@ export default function M365TenantSection({
         <M365Integration
           onStatusChange={setLegacyStatus}
           legacyBadge={legacyConnected}
+          consentAvailable={layout === "consent-available"}
           showPrecedenceNote={legacyConnected && consentConnected}
         />
       </div>
