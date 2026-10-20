@@ -1,7 +1,7 @@
 {
   "section": {
     "title": "Hizmet çıktıları",
-    "pausedDraft": "Sözleşme etkinleştirilene kadar duraklatıldı. Taslak sözleşme bilet açmaz; etkinleştirildiğinde başlamamış çıktılar sözleşme başlangıcına taşınır.",
+    "pausedDraft": "Sözleşme etkinleştirilene kadar duraklatıldı. Taslak sözleşme bilet açmaz; etkinleştirildiğinde başlamamış çıktılar sözleşme başlangıcına (geçmişte kaldıysa bugüne) taşınır.",
     "empty": "Henüz çıktı yok. Bu müşteriye borçlu olunan düzenli raporları ve gözden geçirmeleri ekleyin."
   },
   "table": {

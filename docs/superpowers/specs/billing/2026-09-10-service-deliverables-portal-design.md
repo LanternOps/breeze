@@ -349,12 +349,16 @@ the MSP edits `effective_until` or `active` if it is). `expired` is ignored (D1)
 
 **Re-base on the real start (#9309).** Deliverables applied to a draft are pinned to
 its provisional start. When a draft's start date is edited, and when the draft is
-activated, every deliverable on that contract with **no occurrence yet** is re-based
-inside the same transaction as the contract write: `effective_from` = the new start
-(on activation, the later of the start and the activation day, so nothing is born
-overdue); a recurring item's anchor = end of its first full period from there (§4.6);
-a one-time item keeps its offset from its old `effective_from`. Deliverables that
-already have an occurrence are never touched. This is synchronous rather than a
+activated, deliverables on that contract with **no occurrence yet** are re-based
+inside the same transaction as the contract write, onto the new start (on
+activation, the later of the start and the activation day, so a re-based item is not
+born overdue). Re-based: items pinned to the old start, and items that would begin
+before the new one. `effective_from` = the new start; a recurring item's anchor =
+end of its first full period from there (§4.6); a one-time item keeps its offset
+from its old `effective_from`. An item the MSP gave its own start on or after the new
+start keeps it. An item whose `effective_until` is before the new start owes nothing
+under the contract and is deactivated. Deliverables that already have an occurrence
+are never touched. This is synchronous rather than a
 `contract.activated` consumer because resume (`paused` → `active`) emits the same
 event and a late replay would re-base deliverables added after activation.
 

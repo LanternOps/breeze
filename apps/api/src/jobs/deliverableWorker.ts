@@ -58,11 +58,11 @@ function errMessage(err: unknown): string {
 }
 
 /**
- * Spec §5.2. Contract status is NOT consulted, with one exception:
+ * Spec §5.2. The effective window is the authority, not contract status:
  * generateDueInvoice flips a contract to `expired` the day after its final
- * invoice while service runs on for months, so the effective window is the
- * authority. The exception (#9309, D1 amendment) is `draft` — the one status
- * that means "not agreed yet" — whose deliverables are paused.
+ * invoice while service runs on for months.
+ * One exception (#9309, D1 amendment): `draft`, the one status that means
+ * "not agreed yet", pauses its deliverables.
  */
 export async function runDeliverableSweep(asOf: Date = new Date()): Promise<DeliverableSweepResult> {
   const today = utcToday(asOf);

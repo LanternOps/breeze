@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   serviceDeliverables, serviceDeliverableOccurrences, serviceDeliverableEvidence,
@@ -1069,50 +1069,66 @@ export async function applyContractCancelledToDeliverables(contractId: string, t
  * #9309 (D1 amendment). While a contract is a draft the sweep skips its
  * deliverables, so their schedule is still pinned to whatever start the
  * contract had when they were applied. When the start becomes real — a
- * draft's start-date edit, or activation — every deliverable on the contract
- * with NO occurrence yet is moved onto `newStart` (recurrence.rebasedSchedule).
- * A deliverable that already has an occurrence is never touched: its history
- * is real. Runs on the CALLER's executor so it commits or rolls back with the
- * contract write that triggered it; the actor's context already covers the
- * contract's org. Idempotent: rebasedSchedule is a pure function of the row.
+ * draft's start-date edit (`from` = old start, `to` = new start), or
+ * activation (`from` = start, `to` = the later of start and today) — the
+ * deliverables on the contract with NO occurrence yet are re-based onto `to`
+ * (recurrence.rebasedSchedule) when they were pinned to the old start
+ * (`effective_from = from`) or would begin before `to`. A deliverable the MSP
+ * gave its own start on or after `to` keeps it. A deliverable that already
+ * has an occurrence is never touched: its history is real.
+ *
+ * A deliverable whose `effective_until` falls before `to` can owe nothing
+ * under this contract (its window closes before service starts), and left on
+ * its old schedule the sweep would materialize obligations dated before the
+ * contract began. It is deactivated instead, and logged.
+ *
+ * Runs on the CALLER's executor so it commits or rolls back with the contract
+ * write that triggered it; the actor's context already covers the contract's
+ * org. Re-applying the same `from`/`to` is a no-op.
  */
 export async function rebaseUnmaterializedDeliverables(
-  contractId: string, orgId: string, newStart: string, executor: DbExecutor = db,
-): Promise<number> {
+  contractId: string, orgId: string, start: { from: string; to: string }, executor: DbExecutor = db,
+): Promise<{ rebased: number; deactivated: number }> {
   // `o.` keeps the subquery's column unambiguous inside the UPDATE below.
   const noOccurrence = (deliverableId: typeof serviceDeliverables.id | string) => sql`not exists (select 1 from ${serviceDeliverableOccurrences} o where o.deliverable_id = ${deliverableId})`;
   const rows = await executor.select({
       id: serviceDeliverables.id, cadence: serviceDeliverables.cadence, anchorDueDate: serviceDeliverables.anchorDueDate,
       effectiveFrom: serviceDeliverables.effectiveFrom, effectiveUntil: serviceDeliverables.effectiveUntil,
+      active: serviceDeliverables.active,
     })
     .from(serviceDeliverables)
     .where(and(
       eq(serviceDeliverables.contractId, contractId),
       eq(serviceDeliverables.orgId, orgId),
+      ne(serviceDeliverables.effectiveFrom, start.to),
+      or(eq(serviceDeliverables.effectiveFrom, start.from), lt(serviceDeliverables.effectiveFrom, start.to)),
       noOccurrence(serviceDeliverables.id),
     ));
 
   let rebased = 0;
+  let deactivated = 0;
   for (const r of rows) {
-    const next = rebasedSchedule({ cadence: r.cadence as Cadence, anchorDueDate: r.anchorDueDate, effectiveFrom: r.effectiveFrom }, newStart);
-    if (next.effectiveFrom === r.effectiveFrom && next.anchorDueDate === r.anchorDueDate) continue;
-    if (r.effectiveUntil !== null && r.effectiveUntil < next.effectiveFrom) {
-      // The MSP closed this deliverable's window before the new start; moving
-      // effective_from past it would violate the window CHECK. Leave it as is.
-      console.warn('[deliverables] re-base skipped: effective window ends before the new start',
-        `deliverableId=${r.id}`, `contractId=${contractId}`, `effectiveUntil=${r.effectiveUntil}`, `newStart=${newStart}`);
+    // Re-checked on each write so an occurrence materialized since the read wins.
+    const target = and(eq(serviceDeliverables.id, r.id), eq(serviceDeliverables.orgId, orgId), noOccurrence(r.id));
+    if (r.effectiveUntil !== null && r.effectiveUntil < start.to) {
+      if (!r.active) continue;
+      const off = await executor.update(serviceDeliverables).set({ active: false, updatedAt: new Date() })
+        .where(target).returning({ id: serviceDeliverables.id });
+      deactivated += off.length;
+      if (off.length > 0) {
+        console.warn('[deliverables] deactivated: effective window closes before the contract start',
+          `deliverableId=${r.id}`, `contractId=${contractId}`, `effectiveUntil=${r.effectiveUntil}`, `start=${start.to}`);
+      }
       continue;
     }
-    // Re-checked on the write so an occurrence materialized since the read wins.
-    const written = await executor.update(serviceDeliverables)
-      .set({ ...next, updatedAt: new Date() })
-      .where(and(eq(serviceDeliverables.id, r.id), eq(serviceDeliverables.orgId, orgId), noOccurrence(r.id)))
-      .returning({ id: serviceDeliverables.id });
+    const next = rebasedSchedule({ cadence: r.cadence as Cadence, anchorDueDate: r.anchorDueDate, effectiveFrom: r.effectiveFrom }, start.to);
+    const written = await executor.update(serviceDeliverables).set({ ...next, updatedAt: new Date() })
+      .where(target).returning({ id: serviceDeliverables.id });
     rebased += written.length;
   }
-  if (rebased > 0) {
+  if (rebased > 0 || deactivated > 0) {
     console.log('[deliverables] contract start set — re-based unmaterialized deliverables',
-      `contractId=${contractId}`, `deliverables=${rebased}`, `effectiveFrom=${newStart}`);
+      `contractId=${contractId}`, `rebased=${rebased}`, `deactivated=${deactivated}`, `from=${start.from}`, `to=${start.to}`);
   }
-  return rebased;
+  return { rebased, deactivated };
 }

@@ -1,7 +1,7 @@
 {
   "section": {
     "title": "Entregables del servicio",
-    "pausedDraft": "En pausa hasta que se active el contrato. Un borrador no abre tickets; al activarlo, los entregables que no han comenzado pasan a la fecha de inicio del contrato.",
+    "pausedDraft": "En pausa hasta que se active el contrato. Un borrador no abre tickets; al activarlo, los entregables que no han comenzado pasan a la fecha de inicio del contrato (o a hoy, si ya pasó).",
     "empty": "Aún no hay entregables. Agregue los informes y revisiones periódicos que se le deben a este cliente."
   },
   "table": {

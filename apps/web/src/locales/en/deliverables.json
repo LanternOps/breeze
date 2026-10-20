@@ -1,7 +1,7 @@
 {
   "section": {
     "title": "Service deliverables",
-    "pausedDraft": "Paused until the contract is activated. A draft opens no tickets; on activation, deliverables that have not started move to the contract start.",
+    "pausedDraft": "Paused until the contract is activated. A draft opens no tickets; on activation, deliverables that have not started move to the contract start (or to today, if it has passed).",
     "empty": "No deliverables yet. Add the recurring reports and reviews this customer is owed."
   },
   "table": {

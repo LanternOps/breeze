@@ -1379,8 +1379,13 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
     await db.update(contracts).set(safeSet).where(eq(contracts.id, contractId));
   } else {
     await db.transaction(async (tx) => {
-      await tx.update(contracts).set(safeSet).where(eq(contracts.id, contractId));
-      await rebaseUnmaterializedDeliverables(contractId, c.orgId, newStart, tx);
+      // CAS on the draft + old start `c` was read with: a concurrent activation
+      // or start edit must not have the re-base run against a stale `from`.
+      const [updated] = await tx.update(contracts).set(safeSet)
+        .where(and(eq(contracts.id, contractId), eq(contracts.status, 'draft'), eq(contracts.startDate, c.startDate)))
+        .returning({ id: contracts.id });
+      if (!updated) throw new ContractServiceError('Contract changed while it was being edited; reload and retry', 409, 'INVALID_STATE');
+      await rebaseUnmaterializedDeliverables(contractId, c.orgId, { from: c.startDate, to: newStart }, tx);
     });
   }
   return getOwnedContractOr404(contractId, actor);
@@ -2145,13 +2150,14 @@ export async function activateContract(contractId: string, actor: ContractActor,
       .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
       .where(eq(contracts.id, contractId)).returning();
     // #9309: the sweep skipped this contract's deliverables while it was a draft.
-    // Start the ones with no occurrence yet from the real start — or from today
-    // when that start already passed, so nothing is born overdue or missed.
+    // Re-base the ones with no occurrence yet onto the real start — or onto today
+    // when that start already passed, so a re-based deliverable is not born
+    // overdue or missed (rebaseUnmaterializedDeliverables says which it moves).
     // DRAFTS ONLY: resume (paused -> active) also emits contract.activated, and
     // a live contract's deliverables keep the schedule they were given.
     if (c.status === 'draft') {
       const today = todayISO(asOf);
-      await rebaseUnmaterializedDeliverables(contractId, c.orgId, c.startDate > today ? c.startDate : today, tx);
+      await rebaseUnmaterializedDeliverables(contractId, c.orgId, { from: c.startDate, to: c.startDate > today ? c.startDate : today }, tx);
     }
     return { row: row!, c };
   });

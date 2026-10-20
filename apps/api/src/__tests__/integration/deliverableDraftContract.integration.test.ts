@@ -169,10 +169,45 @@ describe('deliverables on a draft contract (#9309)', () => {
     expect(await schedule(d)).toEqual({ effectiveFrom: '2026-12-05', anchorDueDate: '2026-12-05' });
   });
 
+  runDb('a deliverable with its own start on or after the new start keeps it; one that would begin before it is re-based', async () => {
+    const t = await seedTenant();
+    const contractId = await seedContract(t);   // draft, start 10-01
+    const ownLater = await seedDeliverable(t, { contractId, cadence: 'annual', anchorDueDate: '2027-12-31', effectiveFrom: '2027-01-01' });
+    const ownEarly = await seedDeliverable(t, { contractId, cadence: 'one_time', anchorDueDate: '2026-10-20', effectiveFrom: '2026-10-20' });
+    await system(() => updateContract(contractId, { startDate: '2026-11-01' }, actorOf(t)));
+    expect(await schedule(ownLater)).toEqual({ effectiveFrom: '2027-01-01', anchorDueDate: '2027-12-31' });
+    expect(await schedule(ownEarly)).toEqual({ effectiveFrom: '2026-11-01', anchorDueDate: '2026-11-01' });
+
+    await system(() => activateContract(contractId, actorOf(t), AS_OF));   // start 11-01 is still ahead of 10-25
+    expect(await schedule(ownLater)).toEqual({ effectiveFrom: '2027-01-01', anchorDueDate: '2027-12-31' });
+  });
+
+  runDb('a deliverable whose window closes before the start is deactivated, not left to go missed; activation still succeeds', async () => {
+    const t = await seedTenant();
+    const contractId = await seedContract(t, { startDate: '2026-12-01' });
+    const closed = await seedDeliverable(t, { contractId, cadence: 'one_time', anchorDueDate: '2026-10-01', effectiveFrom: '2026-10-01', effectiveUntil: '2026-11-15' });
+    const sibling = await seedDeliverable(t, { contractId, cadence: 'one_time', anchorDueDate: '2026-10-01', effectiveFrom: '2026-10-01' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await system(() => activateContract(contractId, actorOf(t), AS_OF));
+    } finally { warn.mockRestore(); }
+    const [row] = await getTestDb().select().from(serviceDeliverables).where(eq(serviceDeliverables.id, closed));
+    expect(row).toMatchObject({ active: false, effectiveFrom: '2026-10-01', effectiveUntil: '2026-11-15' });
+    expect(await schedule(sibling)).toEqual({ effectiveFrom: '2026-12-01', anchorDueDate: '2026-12-01' });
+    expect((await getTestDb().select({ status: contracts.status }).from(contracts).where(eq(contracts.id, contractId)))[0]!.status).toBe('active');
+
+    const res = await runDeliverableSweep(AS_OF);
+    expect(res.missed).toBe(0);
+    expect(await occurrencesOf(closed)).toHaveLength(0);
+  });
+
   runDb('replaying contract.activated is idempotent, and a pause/resume never re-bases a live contract\'s deliverables', async () => {
     const t = await seedTenant();
     const contractId = await seedContract(t, { startDate: '2026-11-01' });
     const d = await seedDeliverable(t, { contractId, cadence: 'one_time', anchorDueDate: '2026-10-01', effectiveFrom: '2026-10-01' });
+    // The event alone re-bases nothing — activateContract owns it.
+    await handleContractEvent({ type: 'contract.activated', contractId, orgId: t.orgId, partnerId: t.partnerId }, AS_OF);
+    expect(await schedule(d)).toEqual({ effectiveFrom: '2026-10-01', anchorDueDate: '2026-10-01' });
     await system(() => activateContract(contractId, actorOf(t), AS_OF));
     const afterActivate = await schedule(d);
     expect(afterActivate).toEqual({ effectiveFrom: '2026-11-01', anchorDueDate: '2026-11-01' });
