@@ -1231,9 +1231,9 @@ jobs:
       && needs.classify-release.outputs.release_kind == 'full'
     # validate-release-lineage: this job signs the Tauri updater bundle with
     # TAURI_SIGNING_PRIVATE_KEY — it must not run against a tag whose
-    # lineage hasn't been validated yet. sign-windows-tauri-{azure,sslcom}
-    # (which Authenticode-sign the MSI this job produces) already depend on
-    # build-viewer, so they inherit this transitively.
+    # lineage hasn't been validated yet. sign-windows-tauri-sslcom (which
+    # Authenticode-signs the MSI this job produces) already depends on
+    # build-viewer, so it inherits this transitively.
     needs: [validate-release-lineage, classify-release]
     strategy:
       fail-fast: false
@@ -1796,147 +1796,6 @@ jobs:
           set -euo pipefail
           node .github/scripts/resolve-windows-signing-provider.mjs "$RAW_PROVIDER" >> "$GITHUB_OUTPUT"
 
-  sign-windows-tauri-azure:
-    name: Sign Windows Tauri artifacts (Azure)
-    needs: [build-viewer, build-helper, resolve-windows-signing-provider, classify-release]
-    if: >-
-      needs.resolve-windows-signing-provider.outputs.provider == 'azure'
-      && github.ref_type == 'tag'
-      && startsWith(github.ref, 'refs/tags/v')
-      && needs.classify-release.outputs.release_kind == 'full'
-    runs-on: windows-latest
-    permissions:
-      contents: read
-      id-token: write
-    environment:
-      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
-    steps:
-      - name: Checkout signature verifier
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/scripts
-
-      - name: Download viewer Windows MSI
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: breeze-viewer-windows.msi
-          path: staging/
-
-      - name: Download helper Windows MSI
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: breeze-helper-windows.msi
-          path: staging/
-
-      - name: Validate signing configuration (Azure)
-        shell: pwsh
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          AZURE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          AZURE_CERT_PROFILE_PROD: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          AZURE_CERT_PROFILE_PRERELEASE: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
-        run: |
-          $required = @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT_NAME")
-          # The certificate profile selects WHICH certificate signs. Omitting it
-          # here let a half-populated signing environment surface as an opaque
-          # failure inside azure/artifact-signing-action instead of a named
-          # missing secret.
-          if ($env:IS_PRERELEASE -eq "true") {
-            $required += "AZURE_CERT_PROFILE_PRERELEASE"
-          } else {
-            $required += "AZURE_CERT_PROFILE_PROD"
-          }
-          foreach ($name in $required) {
-            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
-              throw "Missing required signing secret: $name"
-            }
-          }
-
-      - name: Azure Login (OIDC)
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          allow-no-subscriptions: true
-
-      - name: Sign viewer MSI (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          files: ${{ github.workspace }}/staging/breeze-viewer-windows.msi
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign viewer MSI (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          files: ${{ github.workspace }}/staging/breeze-viewer-windows.msi
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign helper MSI (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          files: ${{ github.workspace }}/staging/breeze-helper-windows.msi
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign helper MSI (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          files: ${{ github.workspace }}/staging/breeze-helper-windows.msi
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Verify signatures
-        shell: pwsh
-        env:
-          EXPECTED_SUBJECT: ${{ env.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
-        run: |
-          & .github/scripts/Verify-WindowsSignature.ps1 `
-            -Path "staging/breeze-viewer-windows.msi", "staging/breeze-helper-windows.msi" `
-            -ExpectedSubject $env:EXPECTED_SUBJECT `
-            -AllowUnpinnedLeaf
-
-      - name: Upload signed viewer MSI
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: breeze-viewer-windows.msi
-          path: staging/breeze-viewer-windows.msi
-          overwrite: true
-          retention-days: 30
-
-      - name: Upload signed helper MSI
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: breeze-helper-windows.msi
-          path: staging/breeze-helper-windows.msi
-          overwrite: true
-          retention-days: 30
-
   sign-windows-tauri-sslcom:
     name: Sign Windows Tauri artifacts (SSL.com)
     needs: [build-viewer, build-helper, resolve-windows-signing-provider, classify-release]
@@ -2102,9 +1961,8 @@ jobs:
           override: true
           malware_block: true
 
-      # No leaf pin on the Azure twin: Azure Artifact Signing certificates are
-      # short-lived and rotate automatically, so identity is asserted by subject
-      # there and by subject + pin here.
+      # Identity is asserted by publisher subject AND the pinned certificate
+      # thumbprint; an empty pin fails the release rather than weakening it.
       - name: Verify signatures
         shell: pwsh
         env:
@@ -2134,7 +1992,7 @@ jobs:
 
   sign-windows-tauri:
     name: Windows Tauri signing convergence gate
-    needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom, classify-release]
+    needs: [resolve-windows-signing-provider, sign-windows-tauri-sslcom, classify-release]
     if: ${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' && needs.classify-release.outputs.release_kind == 'full' }}
     runs-on: ubuntu-latest
     permissions:
@@ -2154,19 +2012,19 @@ jobs:
         shell: bash
         env:
           PROVIDER: ${{ needs.resolve-windows-signing-provider.outputs.provider }}
-          AZURE_RESULT: ${{ needs.sign-windows-tauri-azure.result }}
           SSLCOM_RESULT: ${{ needs.sign-windows-tauri-sslcom.result }}
         run: |
           set -euo pipefail
-          node .github/scripts/assert-windows-signing-convergence.mjs "$PROVIDER" "$AZURE_RESULT" "$SSLCOM_RESULT"
+          node .github/scripts/assert-windows-signing-convergence.mjs "$PROVIDER" "$SSLCOM_RESULT"
 
   package-windows-updater:
     name: Package Windows Updater Bundle
     # `!cancelled()` + an explicit result check, not the implicit `success()`:
-    # exactly one of sign-windows-tauri-{azure,sslcom} is always skipped (the
-    # non-selected provider), and the implicit success() is evaluated over the
-    # whole transitive needs chain, so without this the bundle job is skipped
-    # and release-integrity-gate fails closed on it (v0.107.0-rc.1).
+    # the convergence gate runs under `!cancelled()` and the implicit success()
+    # is evaluated over the whole transitive needs chain, so a skipped job
+    # anywhere upstream (the retired second signing provider used to be one)
+    # would skip the bundle job and release-integrity-gate would fail closed on
+    # it (v0.107.0-rc.1).
     if: >-
       !cancelled()
       && needs.sign-windows-tauri.result == 'success'
@@ -2632,7 +2490,7 @@ jobs:
   release-integrity-gate:
     name: Release Integrity Gate
     runs-on: ubuntu-latest
-    needs: [build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest, classify-release, carry-forward-binaries, build-agent, build-recovery-media, build-viewer, build-helper, resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom, build-binaries-image]
+    needs: [build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest, classify-release, carry-forward-binaries, build-agent, build-recovery-media, build-viewer, build-helper, resolve-windows-signing-provider, sign-windows-tauri-sslcom, build-binaries-image]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Fail closed when release signing was skipped
@@ -2649,7 +2507,6 @@ jobs:
           BUILD_VIEWER_RESULT: ${{ needs.build-viewer.result }}
           BUILD_HELPER_RESULT: ${{ needs.build-helper.result }}
           RESOLVE_WINDOWS_SIGNING_PROVIDER_RESULT: ${{ needs.resolve-windows-signing-provider.result }}
-          SIGN_WINDOWS_TAURI_AZURE_RESULT: ${{ needs.sign-windows-tauri-azure.result }}
           SIGN_WINDOWS_TAURI_SSLCOM_RESULT: ${{ needs.sign-windows-tauri-sslcom.result }}
           BUILD_BINARIES_IMAGE_RESULT: ${{ needs.build-binaries-image.result }}
           BUILD_WINDOWS_UNSIGNED_RESULT: ${{ needs.build-windows-unsigned.result }}
@@ -2711,7 +2568,6 @@ jobs:
               require_skipped "build-viewer-macos" "$BUILD_VIEWER_MACOS_RESULT"
               require_skipped "build-helper-macos" "$BUILD_HELPER_MACOS_RESULT"
               require_skipped "resolve-windows-signing-provider" "$RESOLVE_WINDOWS_SIGNING_PROVIDER_RESULT"
-              require_skipped "sign-windows-tauri-azure" "$SIGN_WINDOWS_TAURI_AZURE_RESULT"
               require_skipped "sign-windows-tauri-sslcom" "$SIGN_WINDOWS_TAURI_SSLCOM_RESULT"
               require_skipped "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"
               require_skipped "package-windows-updater" "$PACKAGE_WINDOWS_UPDATER_RESULT"
@@ -2736,7 +2592,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-yara-pack, yara-pack-fp-gate, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor, classify-release, carry-forward-binaries, resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
+    needs: [build-api, build-yara-pack, yara-pack-fp-gate, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor, classify-release, carry-forward-binaries, resolve-windows-signing-provider, sign-windows-tauri-sslcom]
     # The last conjunct is the release-kind split. The full branch is exactly
     # the pre-server-only condition; the server-only branch requires the
     # carried binaries and every binary/signing job to have been SKIPPED.
@@ -2785,7 +2641,6 @@ jobs:
           && needs.build-viewer-macos.result == 'skipped'
           && needs.build-helper-macos.result == 'skipped'
           && needs.resolve-windows-signing-provider.result == 'skipped'
-          && needs.sign-windows-tauri-azure.result == 'skipped'
           && needs.sign-windows-tauri-sslcom.result == 'skipped'
           && needs.sign-windows-tauri.result == 'skipped'
           && needs.package-windows-updater.result == 'skipped'
@@ -3041,7 +2896,7 @@ jobs:
               return "release-workflow-produced"
 
           windows_signing_provider = os.environ.get("WINDOWS_SIGNING_PROVIDER_USED", "").strip()
-          if windows_signing_provider not in ("", "azure", "sslcom"):
+          if windows_signing_provider not in ("", "sslcom"):
               raise SystemExit(
                   f"unexpected Windows signing provider: {windows_signing_provider!r}"
               )

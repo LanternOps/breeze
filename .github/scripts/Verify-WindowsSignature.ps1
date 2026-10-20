@@ -23,8 +23,9 @@ failing the release.
 
 .PARAMETER ExpectedThumbprintSha256
 Optional SHA-256 certificate pin, or a comma-separated allowlist of them. Empty
-means "do not pin", which is correct for Azure Artifact Signing, whose leaf
-certificates are short-lived by design and rotate automatically.
+means "do not pin", which is only accepted together with -AllowUnpinnedLeaf
+(kept for a provider whose leaf certificates rotate automatically; the release
+workflow's SSL.com job always pins and never passes the switch).
 
 Each entry must be 64 hex characters; internal separators such as the colons in
 `C9:EA:...` are ignored, and entries are split on commas, semicolons and

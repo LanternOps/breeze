@@ -1,5 +1,5 @@
 {
-  "_comment": "Job needs/if of .github/workflows/release.yml at 16b3ab2283, before the server-only lane. release-workflow-server-only.test.mjs simulates this graph and the current one and requires identical job results for every full-release scenario. Update ONLY for an intentional change to the full-release job graph.",
+  "_comment": "Job needs/if of .github/workflows/release.yml at 16b3ab2283, before the server-only lane, minus the retired sign-windows-tauri-azure job (removed from both graphs when the Azure signing lane was deleted; the SSL.com lane is the only Windows signing provider). release-workflow-server-only.test.mjs simulates this graph and the current one and requires identical job results for every full-release scenario. Update ONLY for an intentional change to the full-release job graph.",
   "jobs": {
     "build-api": {
       "needs": [],
@@ -64,14 +64,6 @@
       "needs": [],
       "if": "vars.ENABLE_WINDOWS_SIGNING == 'true' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
     },
-    "sign-windows-tauri-azure": {
-      "needs": [
-        "build-viewer",
-        "build-helper",
-        "resolve-windows-signing-provider"
-      ],
-      "if": "needs.resolve-windows-signing-provider.outputs.provider == 'azure' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
-    },
     "sign-windows-tauri-sslcom": {
       "needs": [
         "build-viewer",
@@ -83,7 +75,6 @@
     "sign-windows-tauri": {
       "needs": [
         "resolve-windows-signing-provider",
-        "sign-windows-tauri-azure",
         "sign-windows-tauri-sslcom"
       ],
       "if": "${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}"

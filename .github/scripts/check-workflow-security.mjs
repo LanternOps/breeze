@@ -24,7 +24,6 @@ const TAURI_SIGNED_ARTIFACT_RE = /breeze-[a-z0-9-]+-windows\.msi/gu;
 const PROVIDER_RESOLVER_SCRIPT = '.github/scripts/resolve-windows-signing-provider.mjs';
 const CONVERGENCE_SCRIPT = '.github/scripts/assert-windows-signing-convergence.mjs';
 const SHARED_SIGNATURE_VERIFIER = '.github/scripts/Verify-WindowsSignature.ps1';
-const AZURE_SIGNING_ACTION_PREFIX = 'azure/artifact-signing-action@';
 const SSLCOM_ACTION_PREFIX = 'SSLcom/esigner-codesign@';
 const PINNED_EXTERNAL_USES = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*@[0-9a-f]{40}$/u;
 const PUBLIC_AGENT_WINDOWS_ASSETS = [
@@ -55,7 +54,6 @@ const PROTECTED_SIGNING_SECRET_RE = new RegExp(
     'RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY',
     'TAURI_SIGNING_PRIVATE_KEY(?:_PASSWORD)?',
     'APPLE_[A-Za-z0-9_]+',
-    'AZURE_(?:CLIENT_ID|TENANT_ID|SIGNING_[A-Za-z0-9_]+|CERT_PROFILE_[A-Za-z0-9_]+)',
     'SSLCOM_[A-Za-z0-9_]+',
   ].join('|')
   + ')\\b',
@@ -1099,12 +1097,12 @@ function artifactsMatching(job, lineFilter) {
   return [...found].sort(codePointCompare);
 }
 
-// Artifacts handed to a signing action, via azure `files:` or eSigner
-// `file_path:`. Deliberately NOT every MSI named in the job — download and
-// upload steps name them too, so a deleted sign step would go unnoticed while
-// the unsigned file was re-uploaded over the signed artifact name.
+// Artifacts handed to the eSigner action via `file_path:`. Deliberately NOT
+// every MSI named in the job — download and upload steps name them too, so a
+// deleted sign step would go unnoticed while the unsigned file was re-uploaded
+// over the signed artifact name.
 function signedWindowsArtifacts(job) {
-  return artifactsMatching(job, (trimmed) => /^(?:files|file_path):/u.test(trimmed));
+  return artifactsMatching(job, (trimmed) => /^file_path:/u.test(trimmed));
 }
 
 // Artifacts passed to the shared verifier.
@@ -1123,10 +1121,11 @@ function publicReleaseSigningViolations(file, lines) {
   }
 
   const jobs = workflowJobs(lines);
-  // Each provider is located by the action or script that defines it, so the
-  // rules survive any renaming of the jobs themselves.
+  // Each job is located by the action or script that defines it, so the rules
+  // survive any renaming of the jobs themselves. SSL.com eSigner is the only
+  // signing provider: the Azure Artifact Signing lane was retired, so there is
+  // no second signing job to find.
   const resolver = findJobByShape(jobs, PROVIDER_RESOLVER_SCRIPT);
-  const azure = findJobByShape(jobs, AZURE_SIGNING_ACTION_PREFIX);
   const sslcom = findJobByShape(jobs, SSLCOM_ACTION_PREFIX);
   const gate = findJobByShape(jobs, CONVERGENCE_SCRIPT);
   const integrityGate = findJobByShape(jobs, 'require_success');
@@ -1134,7 +1133,6 @@ function publicReleaseSigningViolations(file, lines) {
   const violations = [];
   const structural = [
     [resolver, 'a provider resolution job', WINDOWS_SIGNING_PROVIDER_FAIL_CLOSED_RULE],
-    [azure, 'an Azure signing job', WINDOWS_SIGNING_PUBLISHER_RULE],
     [sslcom, 'an SSL.com signing job', SSLCOM_SIGNING_CERTIFICATE_PIN_RULE],
     [gate, 'a provider convergence gate', WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE],
     [integrityGate, 'a release integrity gate', WINDOWS_SIGNING_RELEASE_GATE_RULE],
@@ -1159,14 +1157,8 @@ function publicReleaseSigningViolations(file, lines) {
     file,
   );
 
-  // Only the Azure signer may hold OIDC.
-  requirePattern(
-    azure,
-    /id-token:\s*write/u,
-    WINDOWS_SIGNING_PROVIDER_LEAST_PRIVILEGE_RULE,
-    violations,
-    file,
-  );
+  // No Windows signing job holds OIDC. Only the retired Azure signer ever
+  // needed it; eSigner authenticates with environment-scoped credentials.
   for (const section of [resolver, sslcom, gate]) {
     forbidPattern(
       section,
@@ -1177,25 +1169,23 @@ function publicReleaseSigningViolations(file, lines) {
     );
   }
 
-  // Both providers must assert the publisher through the shared verifier. The
-  // Azure path previously verified only that *some* signature existed, so a
-  // mis-set endpoint or certificate profile shipped under any identity.
-  for (const section of [azure, sslcom]) {
-    requirePattern(
-      section,
-      new RegExp(escapeRegExp(SHARED_SIGNATURE_VERIFIER), 'u'),
-      WINDOWS_SIGNING_TIMESTAMP_RULE,
-      violations,
-      file,
-    );
-    requirePattern(
-      section,
-      /-ExpectedSubject\s+\$env:EXPECTED_SUBJECT/u,
-      WINDOWS_SIGNING_PUBLISHER_RULE,
-      violations,
-      file,
-    );
-  }
+  // The signing job must assert the publisher through the shared verifier. An
+  // inline check once verified only that *some* signature existed, so a
+  // mis-set credential or certificate shipped under any identity.
+  requirePattern(
+    sslcom,
+    new RegExp(escapeRegExp(SHARED_SIGNATURE_VERIFIER), 'u'),
+    WINDOWS_SIGNING_TIMESTAMP_RULE,
+    violations,
+    file,
+  );
+  requirePattern(
+    sslcom,
+    /-ExpectedSubject\s+\$env:EXPECTED_SUBJECT/u,
+    WINDOWS_SIGNING_PUBLISHER_RULE,
+    violations,
+    file,
+  );
 
   // SSL.com credential + certificate pinning.
   requirePattern(
@@ -1221,21 +1211,13 @@ function publicReleaseSigningViolations(file, lines) {
     violations,
     file,
   );
-  // -AllowUnpinnedLeaf turns the certificate pin off. It is correct on the
-  // Azure path, whose leaves rotate, and never on the pinned one.
+  // -AllowUnpinnedLeaf turns the certificate pin off. It existed for a
+  // provider whose leaf certificates rotated automatically; the pinned path
+  // must never carry it.
   forbidPattern(
     sslcom,
     /-AllowUnpinnedLeaf/u,
     SSLCOM_SIGNING_CERTIFICATE_PIN_RULE,
-    violations,
-    file,
-  );
-  // Verifying without a pin has to be an explicit, reviewable choice rather
-  // than the silent consequence of an empty secret.
-  requirePattern(
-    azure,
-    /-AllowUnpinnedLeaf/u,
-    WINDOWS_SIGNING_PUBLISHER_RULE,
     violations,
     file,
   );
@@ -1271,72 +1253,44 @@ function publicReleaseSigningViolations(file, lines) {
     );
   }
 
-  // Agent-family artifacts stay unsigned in the public pipeline — on BOTH
-  // providers, not just SSL.com.
-  for (const section of [azure, sslcom]) {
-    for (const asset of PUBLIC_AGENT_WINDOWS_ASSETS) {
-      forbidPattern(
-        section,
-        new RegExp(escapeRegExp(asset), 'u'),
-        SSLCOM_SIGNING_AGENT_ISOLATION_RULE,
-        violations,
-        file,
-      );
-    }
-    // A directory-wide batch sign would pick up whatever is staged without
-    // naming any forbidden file.
+  // Agent-family artifacts stay unsigned in the public pipeline.
+  for (const asset of PUBLIC_AGENT_WINDOWS_ASSETS) {
     forbidPattern(
-      section,
-      /(?:command:\s*batch_sign|dir_path:)/u,
+      sslcom,
+      new RegExp(escapeRegExp(asset), 'u'),
       SSLCOM_SIGNING_AGENT_ISOLATION_RULE,
       violations,
       file,
     );
   }
+  // A directory-wide batch sign would pick up whatever is staged without
+  // naming any forbidden file.
+  forbidPattern(
+    sslcom,
+    /(?:command:\s*batch_sign|dir_path:)/u,
+    SSLCOM_SIGNING_AGENT_ISOLATION_RULE,
+    violations,
+    file,
+  );
 
-  // Both providers must cover exactly the same artifact set, or one of them can
-  // quietly leave a file unsigned while overwriting the signed artifact name.
-  // Every artifact a provider verifies must also have been signed by it, and
-  // both providers must cover the same set.
-  for (const section of [azure, sslcom]) {
-    if (!section) {
-      continue;
-    }
-    const signed = signedWindowsArtifacts(section);
-    const verified = verifiedWindowsArtifacts(section);
+  // Every artifact the signing job verifies must also have been signed by it,
+  // or a deleted sign step can quietly leave a file unsigned while the job
+  // still overwrites the signed artifact name.
+  if (sslcom) {
+    const signed = signedWindowsArtifacts(sslcom);
+    const verified = verifiedWindowsArtifacts(sslcom);
     if (signed.join(',') !== verified.join(',')) {
-      violations.push({
-        file,
-        line: section.lines[0].line,
-        rule: WINDOWS_SIGNING_ARTIFACT_PARITY_RULE,
-        message: `signing job "${section.name}" signs [${signed.join(' ')}] but verifies [${verified.join(' ')}]`,
-      });
-    }
-  }
-  if (azure && sslcom) {
-    const azureArtifacts = signedWindowsArtifacts(azure);
-    const sslcomArtifacts = signedWindowsArtifacts(sslcom);
-    if (azureArtifacts.join(',') !== sslcomArtifacts.join(',')) {
       violations.push({
         file,
         line: sslcom.lines[0].line,
         rule: WINDOWS_SIGNING_ARTIFACT_PARITY_RULE,
-        message: `Windows signing providers must cover the same artifacts; azure=[${azureArtifacts.join(' ')}] sslcom=[${sslcomArtifacts.join(' ')}]`,
+        message: `signing job "${sslcom.name}" signs [${signed.join(' ')}] but verifies [${verified.join(' ')}]`,
       });
     }
   }
 
-  // Convergence gate: exactly one provider ran, and it succeeded.
+  // Convergence gate: the selected provider ran, and it succeeded.
   requirePattern(gate, /!cancelled\(\)/u, WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE, violations, file);
-  if (azure) {
-    requirePattern(
-      gate,
-      new RegExp(`needs\\.${escapeRegExp(azure.name)}\\.result`, 'u'),
-      WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE,
-      violations,
-      file,
-    );
-  }
   if (sslcom) {
     requirePattern(
       gate,
@@ -1348,7 +1302,7 @@ function publicReleaseSigningViolations(file, lines) {
   }
   requirePattern(
     gate,
-    /node\s+\.github\/scripts\/assert-windows-signing-convergence\.mjs\s+"\$PROVIDER"\s+"\$AZURE_RESULT"\s+"\$SSLCOM_RESULT"/u,
+    /node\s+\.github\/scripts\/assert-windows-signing-convergence\.mjs\s+"\$PROVIDER"\s+"\$SSLCOM_RESULT"/u,
     WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE,
     violations,
     file,

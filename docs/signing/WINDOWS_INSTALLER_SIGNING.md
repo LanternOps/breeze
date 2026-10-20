@@ -12,7 +12,8 @@ pre-signing `*-unsigned.exe` build outputs as manifest-tracked signing inputs,
 so self-hosters can sign with their own certificates — see the
 `breeze-selfhost-signing` template and the "Sign Your Own Agent Packages"
 docs page. Only the Windows Viewer and Helper installers are Authenticode-signed
-by LanternOps (Azure Artifact Signing or SSL.com eSigner), with a
+by LanternOps (SSL.com eSigner; the earlier Azure Artifact Signing lane was
+retired and its secrets deleted), with a
 `Get-AuthenticodeSignature` verification sweep. To check a downloaded
 installer, see the "Verify a Breeze Installer" docs page.
 The signing pipeline described below is the original design/evaluation
@@ -95,10 +96,11 @@ GitHub environments (both restricted to `v*` tag deployments):
 Secrets used by the current release workflow — all **environment** secrets,
 none at repository level (full table: `ARTIFACT_SIGNING_OPERATIONS.md` →
 "Where signing secrets live"):
-- `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT_NAME` — both environments
-- `AZURE_CERT_PROFILE_PROD` — `signing-production`
-- `AZURE_CERT_PROFILE_PRERELEASE` — `signing-prerelease`
 - `SSLCOM_*` — both environments, each with its own values
+
+The Azure example above is retained as the original evaluation record only;
+the release workflow no longer has an Azure lane and the `AZURE_*` secrets
+were deleted.
 
 **For traditional OV/EV certs:**
 - Use `signtool.exe` (Windows SDK) or `osslsigncode` (cross-platform)

@@ -47,9 +47,6 @@ environments under the same name.
 | `TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key has one) | yes | yes | `build-viewer`, `build-viewer-macos`, `package-windows-updater` |
 | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | yes | yes | `build-macos-agent`, `build-macos-installer-app`, `build-viewer-macos`, `build-helper-macos` |
 | `APPLE_INSTALLER_IDENTITY` | yes | yes | `build-macos-agent` |
-| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT_NAME` | yes | yes | `sign-windows-tauri-azure` |
-| `AZURE_CERT_PROFILE_PROD` | yes | — | `sign-windows-tauri-azure` (stable tags) |
-| `AZURE_CERT_PROFILE_PRERELEASE` | — | yes | `sign-windows-tauri-azure` (prerelease tags) |
 | `SSLCOM_*` (six secrets, `SSLCOM_ENVIRONMENT_LABEL` set to the environment's own name) | yes | yes | `sign-windows-tauri-sslcom` |
 
 The release-manifest **public** keys (`RELEASE_MANIFEST_ED25519_PUBLIC_KEY`,
@@ -67,10 +64,10 @@ expressions but not in job-level `if:` conditions. Keep release-control
 variables (`ENABLE_MACOS_SIGNING`, `ENABLE_WINDOWS_SIGNING`,
 `WINDOWS_SIGNING_PROVIDER`, `RELEASE_DRAFT_FIRST`) at repository level only.
 
-Azure Trusted Signing authenticates through OIDC, so the secret scope above is
-only half of the control: the Entra app's federated credentials should name the
-environments (`repo:LanternOps/breeze:environment:signing-production` and
-`...:environment:signing-prerelease`), not a branch or a bare repository.
+SSL.com eSigner is the only Windows signing provider. The Azure Trusted Signing
+lane was retired: the account was disabled (v0.105.x onward signed by SSL.com)
+and the `AZURE_*` secrets were deleted on 2026-10-19, so no release job holds
+`id-token: write` and there are no federated credentials to maintain.
 
 Developer builds (`dev-build-agent.yml`) are unsigned. A signed macOS build
 for testing comes from a prerelease tag through `release.yml`.
@@ -91,8 +88,8 @@ Windows signing references:
 2. Configure `signing-prerelease` environment for non-production tags.
 3. Restrict who can create release tags.
 4. Ensure signed artifact verification step is required and blocking.
-5. Log and monitor signing events in Azure and GitHub.
-6. Define emergency procedure: revoke/disable profile, rotate identity, rebuild, republish.
+5. Log and monitor signing events in SSL.com eSigner and GitHub.
+6. Define emergency procedure: revoke the certificate, rotate the eSigner credential, rebuild, republish.
 
 ### Release artifact manifest and installer fallback prerequisite
 
