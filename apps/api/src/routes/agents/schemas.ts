@@ -1126,8 +1126,10 @@ const pendingPatchSchema = z.object({
   severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
   // Provenance of `severity` (#9387): 'vendor' or 'derived'. Deliberately a
   // free string, narrowed at ingest: an unrecognised value from a newer agent
-  // is dropped (stored as NULL) rather than rejecting the whole scan.
-  severitySource: z.string().max(32).optional(),
+  // is dropped (stored as NULL) rather than rejecting the whole scan — and so
+  // is a malformed one (`.catch`), since a bad provenance label must never
+  // cost the device its whole patch inventory.
+  severitySource: z.string().max(32).optional().catch(undefined),
   size: z.number().int().optional(),
   requiresRestart: z.boolean().optional(),
   releaseDate: z.string().optional(),

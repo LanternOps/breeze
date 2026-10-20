@@ -162,6 +162,14 @@ describe('PatchList severity (#3758)', () => {
     expect(screen.queryByTestId(`patch-row-${plain.id}-severity-derived`)).toBeNull();
   });
 
+  it('never marks an unrated patch as derived', () => {
+    const patch = makePatch({ id: 'cccccccc-1111-1111-1111-111111111111', severity: 'unrated', severitySource: 'derived' });
+
+    render(<PatchList patches={[patch]} />);
+
+    expect(screen.queryByTestId(`patch-row-${patch.id}-severity-derived`)).toBeNull();
+  });
+
   it('offers "Unrated" as a severity filter option', () => {
     render(<PatchList patches={[]} />);
 

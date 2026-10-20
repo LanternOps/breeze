@@ -1030,6 +1030,14 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
       expect(devicePatchValues[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: null });
     });
 
+    it('does not reject the scan over a malformed provenance value', async () => {
+      const { devicePatchValues } = await submit({ severity: 'important', severitySource: 'x'.repeat(200) });
+      expect(devicePatchValues[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: null });
+
+      const numeric = await submit({ severity: 'important', severitySource: 7 });
+      expect(numeric.devicePatchValues[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: null });
+    });
+
     it('keeps the stored severity and flag together when a scan carries no severity', async () => {
       const { devicePatchConflictSets } = await submit({});
 

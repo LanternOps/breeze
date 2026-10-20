@@ -324,6 +324,8 @@ describe('updateRings routes', () => {
       expect(severitySql).toContain(orderBy);
       expect(sourceSql).toContain(orderBy);
       expect(sourceSql).toContain('"device_patches"."reported_severity" IS NOT NULL');
+      // A trusted shared severity is not a device report: no provenance.
+      expect(sourceSql).toMatch(/CASE\s+WHEN NULLIF\(.*'unknown'\) IS NOT NULL THEN NULL/s);
     });
 
     it('derives os from source when osTypes is empty (#2215)', async () => {

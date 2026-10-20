@@ -152,6 +152,17 @@ describe('#9387 gap 2 — catalog severity provenance', () => {
     expect(result.get(patchId)).toEqual({ severity: 'moderate', source: null });
   });
 
+  it('is not derived when an older agent reported the same severity without provenance', async () => {
+    const patchId = await seedPatch();
+    const a = await seedDevice(orgId, siteId, 'a');
+    const b = await seedDevice(orgId, siteId, 'b');
+    await seedReport({ orgId, deviceId: a, patchId, severity: 'important', source: 'derived' });
+    await seedReport({ orgId, deviceId: b, patchId, severity: 'important', source: null });
+
+    const result = await loadForOrg([patchId]);
+    expect(result.get(patchId)).toEqual({ severity: 'important', source: null });
+  });
+
   it('skips patches whose shared severity is already known (the trusted value wins)', async () => {
     const patchId = await seedPatch('critical');
     const a = await seedDevice(orgId, siteId, 'a');
