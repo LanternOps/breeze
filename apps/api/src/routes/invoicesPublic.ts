@@ -5,15 +5,16 @@ import { getInvoiceAutopayOffer } from '../services/autopay/payAndSave';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { and, eq, sql, isNull } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { computeChargeNow, ERROR_CODES } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { invoices, invoiceLines, invoiceStripePayments, tickets } from '../db/schema';
+import { invoices, invoiceStripePayments } from '../db/schema';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
-import { toCustomerInvoiceHeader, toCustomerInvoiceLine, customerLineDetail, markViewed } from '../services/invoiceService';
-import { getInvoicePdf, renderInvoicePdf, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from '../services/invoicePdf';
+import { markViewed } from '../services/invoiceService';
+import { assembleCustomerInvoiceDocument } from '../services/customerDocument';
+import { getInvoicePdf, renderInvoicePdf } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
 import { publicInvoiceCheckoutUrls } from '../services/quoteAcceptCheckout';
 import { isPartnerOnlinePaymentAvailable } from '../services/partnerStripe';
@@ -114,15 +115,15 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
   if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
 
   const data = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [partner] = await db.select({
-      name: partners.name, billingEmail: partners.billingEmail,
-      documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
-    }).from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
-    const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
-      .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
-
     // Void: the calm no-amounts state — status + who to contact, nothing else.
+    // It never reaches the customer-document assembler (no lines, no amounts).
     if (inv.status === 'void') {
+      const [partner] = await db.select({
+        name: partners.name, billingEmail: partners.billingEmail,
+        documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
+      }).from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
+      const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
+        .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
       return {
         invoice: {
           id: inv.id, invoiceNumber: inv.invoiceNumber, status: inv.status,
@@ -133,28 +134,10 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       };
     }
 
-    const rows = await db.select({
-      ticketId: invoiceLines.ticketId,
-      ticketNumber: invoiceLineTicketNumberSql(inv.status),
-      ticketSubject: invoiceLineTicketSubjectSql(inv.status),
-      ticketCategory: invoiceLineTicketCategorySql(inv.status),
-      name: invoiceLines.name,
-      description: invoiceLines.description,
-      quantity: invoiceLines.quantity,
-      unitPrice: invoiceLines.unitPrice,
-      taxable: invoiceLines.taxable,
-      lineTotal: invoiceLines.lineTotal,
-      workedMinutes: invoiceLines.workedMinutes,
-      sourceType: invoiceLines.sourceType,
-      workDate: invoiceLines.workDate,
-    }).from(invoiceLines)
-      .leftJoin(tickets, and(
-        eq(invoiceLines.ticketId, tickets.id),
-        eq(tickets.orgId, inv.orgId),
-        isNull(tickets.deletedAt),
-      ))
-      .where(and(eq(invoiceLines.invoiceId, inv.id), eq(invoiceLines.customerVisible, true)))
-      .orderBy(invoiceLines.sortOrder);
+    // #9402: the one customer projection — customer-visible lines of THIS org's
+    // invoice, #8604 toggles from the frozen columns, branding, document locale.
+    // `resolve` already refused drafts, so 'public' never sees one.
+    const doc = await assembleCustomerInvoiceDocument(inv, 'public');
 
     // "Link fetched" stamp — an email scanner can trigger this, so it is a
     // signal, not proof of human viewing. Best-effort; never fails the render.
@@ -186,19 +169,19 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       captureException(err, undefined, { autopay_phase: 'invoice_status' });
     }
     return {
-      invoice: { ...toCustomerInvoiceHeader(inv), paidAt: inv.paidAt },
+      invoice: { ...doc.invoice, paidAt: inv.paidAt },
       collectionInProgress,
       autopayStatus: customerAutopay.status,
       autopayEnrolled: customerAutopay.enrolled,
-      // #8604: toggles applied server-side from the FROZEN columns.
-      lines: rows.map((r) => toCustomerInvoiceLine(r, customerLineDetail(inv), inv.documentLocale ?? 'en')),
+      lines: doc.lines,
       chargeNow,
       // #7509: no Pay CTA unless the partner can actually take online payment.
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
         && await isPartnerOnlinePaymentAvailable(inv.partnerId),
       autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(inv.orgId, inv.id),
       bankAutopay: autopayKnown ? await getBankAutopayOffer(inv.id,inv.orgId) : null,
-      branding: brandingBlock(inv, partner, brand),
+      branding: { ...doc.branding, partnerName: doc.branding.partnerName ?? 'Invoice' },
+      documentLocale: doc.documentLocale,
     };
   }));
   return c.json({ data });

@@ -1,15 +1,15 @@
 /**
  * #9402 W1b characterization pin for GET /invoices/public/:token. The DB is a
- * table-keyed stand-in (`__fixtures__/tableKeyedDb.ts`), so this pin survives
+ * table-keyed stand-in (`__tests__/helpers/tableKeyedDb.ts`), so this pin survives
  * changes to which queries run and in what order; the serialization boundaries
  * (`toCustomerInvoiceHeader`, `toCustomerInvoiceLine`) are REAL.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { state } = vi.hoisted(() => ({ state: { db: null as null | import('./__fixtures__/tableKeyedDb').TableKeyedDb } }));
+const { state } = vi.hoisted(() => ({ state: { db: null as null | import('../__tests__/helpers/tableKeyedDb').TableKeyedDb } }));
 vi.mock('../db', async () => {
-  const { createTableKeyedDb } = await import('./__fixtures__/tableKeyedDb');
+  const { createTableKeyedDb } = await import('../__tests__/helpers/tableKeyedDb');
   const { pinRowsByTable } = await import('./__fixtures__/customerInvoicePin');
   state.db = createTableKeyedDb(pinRowsByTable);
   return {
@@ -53,9 +53,24 @@ vi.mock('../services/autopay/bankPayment', async (importActual) => ({
   getBankAutopayOffer: vi.fn(async () => null),
 }));
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
+const { assembleSpy } = vi.hoisted(() => ({ assembleSpy: vi.fn() }));
+vi.mock('../services/customerDocument', async (importActual) => {
+  const actual = await importActual<typeof import('../services/customerDocument')>();
+  return {
+    ...actual,
+    assembleCustomerInvoiceDocument: (...args: Parameters<typeof actual.assembleCustomerInvoiceDocument>) => {
+      assembleSpy(...args);
+      return actual.assembleCustomerInvoiceDocument(...args);
+    },
+  };
+});
 
 import { invoicesPublicRoutes } from './invoicesPublic';
-import { PIN_INVOICE_ROW, PIN_PUBLIC_TOKEN } from './__fixtures__/customerInvoicePin';
+import { PIN_INVOICE_ROW, PIN_PUBLIC_TOKEN, PIN_VISIBLE_LINE_IDS } from './__fixtures__/customerInvoicePin';
+import { stripAdditive } from '../__tests__/helpers/stripAdditive';
+
+// The ONLY keys the assembler refactor may add to this response (#9402 W1b).
+const PUBLIC_ADDITIVE = ['data.invoice.displayStatus', 'data.lines[].id', 'data.documentLocale'] as const;
 
 function app() {
   const a = new Hono();
@@ -66,6 +81,7 @@ function app() {
 beforeEach(() => {
   markViewedMock.mockReset();
   resolveMock.mockReset();
+  assembleSpy.mockReset();
 });
 
 // Recorded at origin/main 5dfeddf233 before customerDocument.ts existed.
@@ -180,13 +196,21 @@ describe('GET /invoices/public/:token — characterization pin (#9402)', () => {
     const res = await app().request(`/invoices/public/${PIN_PUBLIC_TOKEN}`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual(PIN);
+    // The public route wraps its body in { data }.
+    expect(stripAdditive(body, PUBLIC_ADDITIVE)).toEqual(PIN);
+    expect(body.data.documentLocale).toBe('en');
+    expect(body.data.invoice.displayStatus).toBe(PIN.data.invoice.status);
+    expect(body.data.lines.map((l: { id: string }) => l.id)).toEqual(PIN_VISIBLE_LINE_IDS);
+    expect(assembleSpy).toHaveBeenCalledTimes(1);
+    expect(assembleSpy.mock.calls[0]![1]).toBe('public');
+    expect(markViewedMock).toHaveBeenCalledTimes(1);
   });
 
-  it('a void invoice (the no-amounts state)', async () => {
+  it('a void invoice (the no-amounts state) never reaches the assembler', async () => {
     resolveMock.mockResolvedValue({ ...PIN_INVOICE_ROW, status: 'void' });
     const res = await app().request(`/invoices/public/${PIN_PUBLIC_TOKEN}`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(VOID_PIN);
+    expect(assembleSpy).not.toHaveBeenCalled();
   });
 });

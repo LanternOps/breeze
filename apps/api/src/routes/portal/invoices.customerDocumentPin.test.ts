@@ -1,6 +1,6 @@
 /**
  * #9402 W1b characterization pin for GET /portal/invoices/:id. The DB is a
- * table-keyed stand-in (`../__fixtures__/tableKeyedDb.ts`), so this pin survives
+ * table-keyed stand-in (`__tests__/helpers/tableKeyedDb.ts`), so this pin survives
  * changes to which queries run and in what order; the invoice service and its
  * serialization boundaries are REAL (only markViewed is stubbed).
  */
@@ -8,10 +8,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 const { state } = vi.hoisted(() => ({
-  state: { db: null as null | import('../__fixtures__/tableKeyedDb').TableKeyedDb, invoiceStatus: 'sent' as string },
+  state: { db: null as null | import('../../__tests__/helpers/tableKeyedDb').TableKeyedDb, invoiceStatus: 'sent' as string },
 }));
 vi.mock('../../db', async () => {
-  const { createTableKeyedDb } = await import('../__fixtures__/tableKeyedDb');
+  const { createTableKeyedDb } = await import('../../__tests__/helpers/tableKeyedDb');
   const { pinRowsByTable } = await import('../__fixtures__/customerInvoicePin');
   state.db = createTableKeyedDb(() => {
     const rows = pinRowsByTable();
@@ -49,7 +49,16 @@ vi.mock('../../services/autopay/bankPayment', async (importActual) => ({
 }));
 
 import { invoiceRoutes as portalInvoiceRoutes } from './invoices';
-import { PIN_INVOICE_ID, PIN_ORG_ID } from '../__fixtures__/customerInvoicePin';
+import {
+  PIN_INVOICE_ID, PIN_ORG_ID, PIN_INVOICE_ROW, PIN_PARTNER_ROW, PIN_VISIBLE_LINE_IDS,
+} from '../__fixtures__/customerInvoicePin';
+import { stripAdditive } from '../../__tests__/helpers/stripAdditive';
+
+// The ONLY keys the assembler refactor may add to this response (#9402 W1b).
+const PORTAL_ADDITIVE = [
+  'invoice.displayStatus', 'lines[].id', 'documentLocale',
+  'branding.contactEmail', 'branding.theme', 'branding.pageSize',
+] as const;
 
 function app(orgId = PIN_ORG_ID) {
   const a = new Hono();
@@ -148,7 +157,17 @@ describe('GET /portal/invoices/:id — characterization pin (#9402)', () => {
   it('an issued invoice', async () => {
     const res = await app().request(`/invoices/${PIN_INVOICE_ID}`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(PIN);
+    const body = await res.json();
+    // The portal route is unwrapped (no { data }).
+    expect(stripAdditive(body, PORTAL_ADDITIVE)).toEqual(PIN);
+    expect(body.documentLocale).toBe('en');
+    expect(body.invoice.displayStatus).toBe(PIN.invoice.status);
+    expect(body.lines.map((l: { id: string }) => l.id)).toEqual(PIN_VISIBLE_LINE_IDS);
+    // D14: the logged-in page gets the invoice's FROZEN theme, not the partner's live one.
+    expect(body.branding.theme).toBe(PIN_INVOICE_ROW.documentTheme);
+    expect(body.branding.pageSize).toBe(PIN_INVOICE_ROW.documentPageSize);
+    expect(body.branding.contactEmail).toBe(PIN_PARTNER_ROW.billingEmail);
+    expect(markViewedMock).toHaveBeenCalledTimes(1);
   });
 
   it('a draft is a 404 with the shared not-found body', async () => {
@@ -156,5 +175,13 @@ describe('GET /portal/invoices/:id — characterization pin (#9402)', () => {
     const res = await app().request(`/invoices/${PIN_INVOICE_ID}`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Invoice not found', code: 'NOT_FOUND' });
+    expect(markViewedMock).not.toHaveBeenCalled();
+  });
+
+  it('another org\'s invoice is the same 404 (org guard) and reads no lines', async () => {
+    const res = await app('99999999-9999-4999-8999-999999999999').request(`/invoices/${PIN_INVOICE_ID}`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Invoice not found', code: 'NOT_FOUND' });
+    expect(markViewedMock).not.toHaveBeenCalled();
   });
 });
