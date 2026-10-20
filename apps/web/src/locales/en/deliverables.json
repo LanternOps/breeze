@@ -92,6 +92,7 @@
     "evidence": "Evidence",
     "noEvidence": "No evidence attached",
     "late": "Late",
+    "awaitingEvidenceHint": "Ticket resolved — attach evidence to complete",
     "rescheduledFrom": "Rescheduled from {{date}}",
     "deliveryNote": "Delivery note",
     "waivedReason": "Reason for waiving",

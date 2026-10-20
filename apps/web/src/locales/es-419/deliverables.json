@@ -92,6 +92,7 @@
     "evidence": "Evidencia",
     "noEvidence": "Sin evidencia adjunta",
     "late": "Atrasada",
+    "awaitingEvidenceHint": "Ticket resuelto: adjunta evidencia para completar",
     "rescheduledFrom": "Reprogramada desde {{date}}",
     "deliveryNote": "Nota de entrega",
     "waivedReason": "Motivo de la exoneración",

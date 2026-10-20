@@ -92,6 +92,7 @@
     "evidence": "Kanıtlar",
     "noEvidence": "Ekli kanıt yok",
     "late": "Gecikmiş",
+    "awaitingEvidenceHint": "Talep çözüldü — tamamlamak için kanıt ekleyin",
     "rescheduledFrom": "{{date}} tarihinden yeniden planlandı",
     "deliveryNote": "Teslim notu",
     "waivedReason": "Muafiyet nedeni",

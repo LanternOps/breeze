@@ -85,6 +85,24 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe('OccurrenceDrawer awaiting-evidence hint (#9310)', () => {
+  const renderWith = async (status: Occurrence['status']) => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [{ ...occurrence, status, evidence: [] }] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByTestId('occurrence-row-oc-1');
+  };
+
+  it('tells the technician evidence is what is missing on an awaiting_evidence row', async () => {
+    await renderWith('awaiting_evidence');
+    expect(screen.getByTestId('occurrence-awaiting-evidence-hint-oc-1')).toBeTruthy();
+  });
+
+  it('shows no hint on an open row', async () => {
+    await renderWith('open');
+    expect(screen.queryByTestId('occurrence-awaiting-evidence-hint-oc-1')).toBeNull();
+  });
+});
+
 describe('OccurrenceDrawer evidence upload (#5573 W03)', () => {
   const pdf = () => new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])], 'findings.pdf', { type: 'application/pdf' });
 

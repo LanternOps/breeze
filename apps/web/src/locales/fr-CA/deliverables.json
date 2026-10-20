@@ -92,6 +92,7 @@
     "evidence": "Preuves",
     "noEvidence": "Aucune preuve jointe",
     "late": "En retard",
+    "awaitingEvidenceHint": "Billet résolu — joignez une preuve pour terminer",
     "rescheduledFrom": "Reportée depuis le {{date}}",
     "deliveryNote": "Note de livraison",
     "waivedReason": "Motif de l'exemption",

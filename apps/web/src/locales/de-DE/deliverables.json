@@ -92,6 +92,7 @@
     "evidence": "Nachweis",
     "noEvidence": "Kein Nachweis angehängt",
     "late": "Verspätet",
+    "awaitingEvidenceHint": "Ticket gelöst – Nachweis anhängen, um abzuschließen",
     "rescheduledFrom": "Verschoben von {{date}}",
     "deliveryNote": "Lieferhinweis",
     "waivedReason": "Grund für den Erlass",

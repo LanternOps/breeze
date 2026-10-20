@@ -92,6 +92,7 @@
     "evidence": "Justificatifs",
     "noEvidence": "Aucun justificatif joint",
     "late": "En retard",
+    "awaitingEvidenceHint": "Ticket résolu — joignez un justificatif pour terminer",
     "rescheduledFrom": "Replanifiée depuis le {{date}}",
     "deliveryNote": "Note de livraison",
     "waivedReason": "Motif de la dispense",

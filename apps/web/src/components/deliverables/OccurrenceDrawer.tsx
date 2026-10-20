@@ -381,6 +381,11 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                   </div>
                   <div className="flex items-center gap-1.5">
                     {occ.late && occ.status !== 'missed' && <span className={LATE_PILL}>{t('drawer.late')}</span>}
+                    {occ.status === 'awaiting_evidence' && (
+                      <span className="text-xs text-amber-700 dark:text-amber-400" data-testid={`occurrence-awaiting-evidence-hint-${occ.id}`}>
+                        {t('drawer.awaitingEvidenceHint')}
+                      </span>
+                    )}
                     {occ.checklist !== null && (
                       <span
                         className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
