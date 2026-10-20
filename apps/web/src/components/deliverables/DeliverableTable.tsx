@@ -116,7 +116,12 @@ export default function DeliverableTable({
       setError(null);
       try {
         const data = await listDeliverables(fetcher, orgId, contractId ? { contractId } : {});
-        if (!cancelled) setRows(data);
+        if (!cancelled) {
+          setRows(data);
+          // Drop selections that no longer exist (deactivated, other org/contract).
+          const live = new Set(data.map((r) => r.id));
+          setSelectedIds((prev) => (prev.size === 0 ? prev : new Set([...prev].filter((id) => live.has(id)))));
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error && err.message ? err.message : stableT('errors.loadFailed'));
       } finally {
@@ -144,19 +149,20 @@ export default function DeliverableTable({
     setBulkBusy(true);
     try {
       const ids = await runClientAction(async () => {
-        const lists = await Promise.all([...selectedIds].map((id) => listOccurrences(fetcher, orgId, id)));
+        const lists = await Promise.all([...selectedIds].map((id) => listOccurrences(fetcher, orgId, id, 100)));
         return lists.map(oldestLive).filter((o): o is Occurrence => !!o).map((o) => o.id);
       }, { errorFallback: t('bulk.failed') });
       if (ids.length === 0) {
         showToast({ type: 'warning', message: t('bulk.none') });
         return;
       }
+      const skipped = selectedIds.size - ids.length; // selected, but nothing live to move
       const results = await runClientAction(
         () => bulkRescheduleOccurrences(fetcher, orgId, { occurrenceIds: ids, dueAt: bulkDate }),
         { errorFallback: t('bulk.failed') },
       );
       const moved = results.filter((r) => r.ok).length;
-      const refused = results.length - moved;
+      const refused = results.length - moved + skipped;
       showToast(refused === 0
         ? { type: 'success', message: t('bulk.done', { count: moved }) }
         : { type: 'warning', message: t('bulk.partial', { moved, refused }) });

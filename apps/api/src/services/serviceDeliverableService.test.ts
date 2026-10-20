@@ -80,6 +80,14 @@ function updateWhereParams(): unknown[] {
   if (i === -1) throw new Error('no .where() call after the last .set()');
   return boundParams(chain.where.mock.calls[i]?.[0]);
 }
+// SQL text of the UPDATE's own WHERE (see updateWhereParams) — distinguishes
+// `not in (...)` from `in (...)`, which bound params alone cannot.
+function updateWhereSql(): string {
+  const setOrder = chain.set.mock.invocationCallOrder.at(-1);
+  if (setOrder === undefined) throw new Error('no .set() call recorded');
+  const i = chain.where.mock.invocationCallOrder.findIndex((o) => o > setOrder);
+  return new PgDialect().sqlToQuery(chain.where.mock.calls[i]?.[0] as SQL).sql;
+}
 const summaryRow = (over: Record<string, unknown> = {}, contractName: string | null = null) => ({
   deliverable: { id: 'd1', orgId: 'org1', ...base, effectiveFrom: '2020-01-01', active: true, effectiveUntil: null, contractId: null, ...over },
   contractName,
@@ -755,6 +763,7 @@ describe('serviceDeliverableService', () => {
       expect(lastSet()).toMatchObject({ dueDate: new Date('2026-11-30T00:00:00.000Z') });
       const p = updateWhereParams();
       expect(p).toEqual(expect.arrayContaining(['t1', 'org1', 'resolved', 'closed']));
+      expect(updateWhereSql()).toMatch(/not in/i); // resolved/closed are EXCLUDED, not targeted
     });
 
     it('does not touch tickets when the occurrence has no ticket', async () => {
@@ -783,10 +792,28 @@ describe('serviceDeliverableService', () => {
       expect(out.map((r) => [r.occurrenceId, r.ok])).toEqual([['a', true], ['b', false], ['c', false], ['d', true]]);
       expect(out[1]).toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
       expect(out[2]).toMatchObject({ status: 404, code: 'NOT_FOUND' });
-      expect(chain.transaction.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(chain.transaction.mock.calls).toHaveLength(1 + 4); // outer + one savepoint per distinct id
       // only a and d were written, and originalDueAt never is
       expect(chain.set.mock.calls.every((c) => !('originalDueAt' in (c[0] as object)))).toBe(true);
       expect(chain.set.mock.calls.filter((c) => 'dueAt' in (c[0] as object))).toHaveLength(2);
+    });
+
+    it('moves the ticket due_date on the bulk path too', async () => {
+      queueResult([occ({ id: 'a', status: 'open', ticketId: 't1' })]);
+      queueResult([{ id: 'a' }]);
+      queueResult([]); // ticket update
+      queueResult([occ({ id: 'a' })]);
+      queueResult([]);
+      await rescheduleOccurrences('org1', { occurrenceIds: ['a'], dueAt: '2026-11-30' }, actor);
+      expect(chain.set.mock.calls.some((c) => (c[0] as Record<string, unknown>).dueDate instanceof Date)).toBe(true);
+    });
+
+    it('scopes every lookup/write to the request org (foreign ids cannot be touched)', async () => {
+      queueResult([]); // foreign id → not found
+      const out = await rescheduleOccurrences('org1', { occurrenceIds: ['x'], dueAt: '2026-11-30' }, actor);
+      expect(out[0]).toMatchObject({ ok: false, status: 404 });
+      expect(chain.update.mock.calls).toHaveLength(0);
+      expect(boundParams(chain.where.mock.calls[0]?.[0])).toEqual(expect.arrayContaining(['x', 'org1']));
     });
 
     it('shiftDays offsets each occurrence from its own dueAt', async () => {

@@ -231,6 +231,30 @@ describe('DeliverableTable', () => {
       expect(bulkCalls(fetcher)).toHaveLength(1);
     });
 
+    it('warns and sends nothing when no selected deliverable has a live occurrence', async () => {
+      const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && /\/d-1\/occurrences/.test(path)) return jsonResp(200, { data: [{ id: 'x', status: 'delivered', dueAt: '2026-08-01' }] });
+        if (method === 'GET') return jsonResp(200, { data: [base] });
+        throw new Error(`unexpected ${method} ${path}`);
+      });
+      render(<DeliverableTable fetcher={fetcher} orgId="org-1" selectable />);
+      fireEvent.click(await screen.findByTestId('deliverable-select-d-1'));
+      fireEvent.change(screen.getByTestId('deliverables-bulk-date'), { target: { value: '2026-11-30' } });
+      fireEvent.click(screen.getByTestId('deliverables-bulk-reschedule'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })));
+      expect(fetcher.mock.calls.some(([, i]) => i?.method === 'POST')).toBe(false);
+    });
+
+    it('counts a selected deliverable with nothing live as not moved', async () => {
+      const results = [{ occurrenceId: 'd-1-old', ok: true }, { occurrenceId: 'd-2-old', ok: true }];
+      const base2 = bulkFetcher({ bulk: () => jsonResp(200, { data: { results } }) });
+      const fetcher = vi.fn(async (path: string, init?: RequestInit) =>
+        /\/d-3\/occurrences/.test(path) ? jsonResp(200, { data: [occ('z', 'waived', '2026-08-01')] }) : base2(path, init));
+      await selectThreeAndSubmit(fetcher as unknown as ReturnType<typeof bulkFetcher>);
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: '2 rescheduled, 1 could not be moved' })));
+    });
+
     it('the action stays disabled until a date is chosen', async () => {
       render(<DeliverableTable fetcher={bulkFetcher()} orgId="org-1" selectable />);
       fireEvent.click(await screen.findByTestId('deliverable-select-d-1'));
