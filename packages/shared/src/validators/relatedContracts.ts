@@ -8,6 +8,8 @@
  * (per-site, per-service), so nothing here blocks a transition server-side.
  */
 
+import { z } from 'zod';
+
 /** Statuses that bill now or can be turned on to bill. Cancelled/expired
  *  contracts are history, not a double-billing risk. */
 export const RELATED_CONTRACT_STATUSES = ['draft', 'active', 'paused'] as const;
@@ -53,4 +55,26 @@ export function contractsOverlapCadence(a: CadenceWindow, b: CadenceWindow): boo
   const aEndsBeforeB = a.endDate !== null && a.endDate < b.startDate;
   const bEndsBeforeA = b.endDate !== null && b.endDate < a.startDate;
   return !aEndsBeforeB && !bEndsBeforeA;
+}
+
+/**
+ * #9346 — `POST /contracts/:id/adopt-draft`: fold a hand-built DRAFT contract
+ * (`sourceContractId`) into the contract being viewed (normally the one a quote
+ * accept created, which carries the signed prices and agreement). The source's
+ * deliverables move across, its signed agreements and agreement requests are
+ * re-linked, and the source is deleted. Its lines are NOT copied.
+ */
+export const adoptDraftContractSchema = z.object({
+  sourceContractId: z.string().guid(),
+}).strict();
+export type AdoptDraftContractInput = z.infer<typeof adoptDraftContractSchema>;
+
+/** `data` of a successful adopt. */
+export interface AdoptDraftContractResult {
+  target: { id: string; orgId: string; name: string };
+  /** The deleted draft. */
+  source: { id: string; orgId: string; name: string };
+  movedDeliverables: number;
+  movedDocuments: number;
+  movedAgreementRequests: number;
 }

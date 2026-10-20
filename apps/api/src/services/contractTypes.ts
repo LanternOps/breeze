@@ -120,7 +120,15 @@ export type ContractServiceErrorCode =
   // #4547 W03 (index C10): a second live block-hours line for the organization
   // (409) / an edit of a field a block does not allow, or of a retired block (400).
   | 'HOUR_BLOCK_EXISTS'
-  | 'HOUR_BLOCK_FIELD_LOCKED';
+  | 'HOUR_BLOCK_FIELD_LOCKED'
+  // #9346 adopt-draft: the folded-in contract must be a draft (400), the
+  // receiving one draft or active (400), and they must differ (400).
+  | 'ADOPT_SOURCE_NOT_DRAFT'
+  | 'ADOPT_TARGET_INVALID_STATE'
+  | 'ADOPT_SELF'
+  // #9346: a source deliverable's name is already used on the target (or by
+  // another moved one). `details.names` lists every colliding name.
+  | 'DUPLICATE_NAME';
 
 export class ContractServiceError extends Error {
   constructor(

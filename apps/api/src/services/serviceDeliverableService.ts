@@ -389,45 +389,57 @@ export async function moveDeliverables(
   const ids = [...new Set(input.deliverableIds)];
   const targetId = input.contractId;
   await validateReferences(orgId, { contractId: targetId });
-  let movedCount = 0;
   try {
     // Savepoint: see assertNameAvailable — keeps a 23505 from poisoning the request transaction.
-    await db.transaction(async (tx) => {
-      const found = await tx.select({ id: serviceDeliverables.id, name: serviceDeliverables.name })
-        .from(serviceDeliverables)
-        .where(and(eq(serviceDeliverables.orgId, orgId), inArray(serviceDeliverables.id, ids)));
-      if (found.length !== ids.length) throw notFound();
-
-      const seen = new Set<string>();
-      const colliding = new Set<string>();
-      for (const r of found) { if (seen.has(r.name)) colliding.add(r.name); seen.add(r.name); }
-      const existing = await tx.select({ name: serviceDeliverables.name }).from(serviceDeliverables)
-        .where(and(
-          eq(serviceDeliverables.orgId, orgId),
-          targetId === null ? isNull(serviceDeliverables.contractId) : eq(serviceDeliverables.contractId, targetId),
-          inArray(serviceDeliverables.name, [...seen]),
-          sql`${serviceDeliverables.id} NOT IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})`,
-        ));
-      for (const e of existing) colliding.add(e.name);
-      if (colliding.size > 0) {
-        throw new DeliverableServiceError(
-          'A deliverable with this name already exists for the target contract', 409, 'DUPLICATE_NAME',
-          { names: [...colliding].sort() },
-        );
-      }
-
-      const updated = await tx.update(serviceDeliverables)
-        .set({ contractId: targetId, updatedAt: new Date() })
-        .where(and(eq(serviceDeliverables.orgId, orgId), inArray(serviceDeliverables.id, ids)))
-        .returning({ id: serviceDeliverables.id });
-      // Roll the batch back rather than report a partial move as success.
-      if (updated.length !== ids.length) throw new DeliverableServiceError('Not every deliverable could be moved', 409, 'MOVE_INCOMPLETE');
-      movedCount = updated.length;
-    });
+    const moved = await db.transaction((tx) => moveDeliverablesWithin(tx, orgId, ids, targetId));
+    return { moved };
   } catch (err) {
     mapUniqueViolation(err);
   }
-  return { moved: movedCount };
+}
+
+/**
+ * The body of {@link moveDeliverables}, on the CALLER's transaction, so a
+ * larger operation (#9346 adopt-draft) can move deliverables and roll back
+ * together with its own writes. The caller owns org access and has already
+ * validated `targetId` (same org, not cancelled); `ids` must be non-empty and
+ * de-duplicated. Throws 404 / 409 `DUPLICATE_NAME` (`details.names`) /
+ * 409 `MOVE_INCOMPLETE` as DeliverableServiceError; a racing 23505 surfaces raw
+ * (map it with the caller's own savepoint, as moveDeliverables does).
+ */
+export async function moveDeliverablesWithin(
+  tx: DbExecutor, orgId: string, ids: string[], targetId: string | null,
+): Promise<number> {
+  const found = await tx.select({ id: serviceDeliverables.id, name: serviceDeliverables.name })
+    .from(serviceDeliverables)
+    .where(and(eq(serviceDeliverables.orgId, orgId), inArray(serviceDeliverables.id, ids)));
+  if (found.length !== ids.length) throw notFound();
+
+  const seen = new Set<string>();
+  const colliding = new Set<string>();
+  for (const r of found) { if (seen.has(r.name)) colliding.add(r.name); seen.add(r.name); }
+  const existing = await tx.select({ name: serviceDeliverables.name }).from(serviceDeliverables)
+    .where(and(
+      eq(serviceDeliverables.orgId, orgId),
+      targetId === null ? isNull(serviceDeliverables.contractId) : eq(serviceDeliverables.contractId, targetId),
+      inArray(serviceDeliverables.name, [...seen]),
+      sql`${serviceDeliverables.id} NOT IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})`,
+    ));
+  for (const e of existing) colliding.add(e.name);
+  if (colliding.size > 0) {
+    throw new DeliverableServiceError(
+      'A deliverable with this name already exists for the target contract', 409, 'DUPLICATE_NAME',
+      { names: [...colliding].sort() },
+    );
+  }
+
+  const updated = await tx.update(serviceDeliverables)
+    .set({ contractId: targetId, updatedAt: new Date() })
+    .where(and(eq(serviceDeliverables.orgId, orgId), inArray(serviceDeliverables.id, ids)))
+    .returning({ id: serviceDeliverables.id });
+  // Roll the batch back rather than report a partial move as success.
+  if (updated.length !== ids.length) throw new DeliverableServiceError('Not every deliverable could be moved', 409, 'MOVE_INCOMPLETE');
+  return updated.length;
 }
 
 export async function deactivateDeliverable(orgId: string, id: string, actor: DeliverableActor): Promise<void> {

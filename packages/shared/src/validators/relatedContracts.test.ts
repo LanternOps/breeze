@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contractsOverlapCadence, RELATED_CONTRACT_STATUSES } from './relatedContracts';
+import { adoptDraftContractSchema, contractsOverlapCadence, RELATED_CONTRACT_STATUSES } from './relatedContracts';
 
 const base = { intervalMonths: 1, startDate: '2026-07-01', endDate: null as string | null };
 
@@ -40,5 +40,17 @@ describe('contractsOverlapCadence (#9303)', () => {
 
   it('names the statuses that can still bill', () => {
     expect([...RELATED_CONTRACT_STATUSES]).toEqual(['draft', 'active', 'paused']);
+  });
+});
+
+describe('adoptDraftContractSchema (#9346)', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  it('accepts a source contract id', () => {
+    expect(adoptDraftContractSchema.parse({ sourceContractId: ID })).toEqual({ sourceContractId: ID });
+  });
+  it('rejects a missing or malformed id, and unknown keys', () => {
+    expect(adoptDraftContractSchema.safeParse({}).success).toBe(false);
+    expect(adoptDraftContractSchema.safeParse({ sourceContractId: 'nope' }).success).toBe(false);
+    expect(adoptDraftContractSchema.safeParse({ sourceContractId: ID, copyLines: true }).success).toBe(false);
   });
 });

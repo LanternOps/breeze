@@ -661,6 +661,21 @@
         "title": "¿Activar junto con otro contrato?",
         "message": "Esta organización ya tiene un contrato que factura con la misma periodicidad en fechas que se superponen. Si activa este, se le cobra al cliente por los dos.",
         "confirm": "Activar de todos modos"
+      },
+      "adopt": {
+        "action": "Integrar en este contrato",
+        "title": "¿Integrar “{{name}}” en este contrato?",
+        "message": "Úselo cuando “{{name}}” cubra los mismos servicios que este contrato, para que al cliente no se le cobre dos veces.",
+        "deliverables_one": "Su {{count}} entregable pasa a este contrato, con su historial.",
+        "deliverables_other": "Sus {{count}} entregables pasan a este contrato, con su historial.",
+        "agreements_one": "Su {{count}} acuerdo firmado se vincula a este contrato.",
+        "agreements_other": "Sus {{count}} acuerdos firmados se vinculan a este contrato.",
+        "noLines": "Sus líneas no se copian. Las líneas y los precios de este contrato no cambian.",
+        "deleted": "Después, “{{name}}” se elimina. Esta acción no se puede deshacer.",
+        "confirm": "Integrar y eliminar borrador",
+        "success": "“{{name}}” se integró en este contrato",
+        "error": "No se pudo integrar el borrador en este contrato",
+        "collision": "Estos nombres de entregables ya existen en este contrato: {{names}}. Cámbielos de nombre o elimínelos en uno de los dos y vuelva a intentarlo."
       }
     }
   },

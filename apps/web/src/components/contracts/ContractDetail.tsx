@@ -302,13 +302,19 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   // editor's draft path, which this action deliberately does not touch.
   const canChangeCurrency = can('contracts', 'manage') && contract.status === 'active';
   const currencySubmittable = !!currencyMode && currencyConfirmed && targetCurrency !== currency;
+  // #9346: folding a sibling draft in re-files deliverables and agreements onto
+  // this contract; the sections that list them read on mount, so remount them.
+  const [adoptedTick, setAdoptedTick] = useState(0);
+  const adoptDraft = can('contracts', 'write') && (contract.status === 'draft' || contract.status === 'active')
+    ? { contractId: contract.id, onAdopted: () => { setAdoptedTick((n) => n + 1); onChanged(); } }
+    : undefined;
 
   return (
     <div className="space-y-6" data-testid="contract-detail">
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header (read-only) + lines + period history ───────────────── */}
         <div className="space-y-6">
-          <RelatedContractsNotice related={detail.relatedContracts} />
+          <RelatedContractsNotice related={detail.relatedContracts} adopt={adoptDraft} />
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header">
             <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div>
@@ -520,10 +526,11 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             </h3>
             <p className="px-3 py-1 text-xs text-muted-foreground">{t('contracts.contractDetail.documents.subtitle')}</p>
             <div className="px-3 pb-3">
-              <SignedAgreementsPage lockedContractId={contract.id} />
+              <SignedAgreementsPage key={adoptedTick} lockedContractId={contract.id} />
             </div>
           </section>
           <ContractDeliverablesSection
+            key={adoptedTick}
             contractId={contract.id}
             orgId={contract.orgId}
             contractStartDate={contract.startDate}

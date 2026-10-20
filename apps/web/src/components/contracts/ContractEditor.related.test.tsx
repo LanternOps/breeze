@@ -29,7 +29,7 @@ vi.mock('../../lib/api/catalog', () => ({
 }));
 vi.mock('../../lib/api/contracts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api/contracts')>();
-  return { ...actual, contractTransition: vi.fn(), getContractEstimate: vi.fn() };
+  return { ...actual, contractTransition: vi.fn(), getContractEstimate: vi.fn(), adoptDraftContract: vi.fn() };
 });
 
 const resp = (payload: unknown, ok = true): Response =>
@@ -83,5 +83,27 @@ describe('ContractEditor — related contracts (#9303)', () => {
     fireEvent.click(await screen.findByTestId('activate-contract-btn'));
     await waitFor(() => expect(api.contractTransition).toHaveBeenCalledWith('ct-1', 'activate'));
     expect(screen.queryByTestId('contract-activate-overlap-confirm')).not.toBeInTheDocument();
+  });
+});
+
+describe('ContractEditor — adopt a draft sibling (#9346)', () => {
+  it('a draft quote-accept contract folds the hand-built draft in, then refreshes', async () => {
+    vi.mocked(api.adoptDraftContract).mockResolvedValue(resp({ data: {} }));
+    const onChanged = vi.fn();
+    render(<ContractEditor detail={relatedDetail('draft', [overlappingSibling, unrelatedSibling])} onChanged={onChanged} />);
+    await screen.findByTestId('contract-related-notice');
+    // Only the DRAFT sibling is adoptable; the active one is not.
+    expect(screen.queryByTestId('contract-related-adopt-ct-annual')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('contract-related-adopt-ct-hand'));
+    fireEvent.click(await screen.findByTestId('contract-adopt-draft-confirm-btn'));
+    await waitFor(() => expect(api.adoptDraftContract).toHaveBeenCalledWith('ct-1', 'ct-hand'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it('is not offered to a viewer without contracts:write', async () => {
+    state.permissions = [{ resource: 'contracts', action: 'read' }];
+    render(<ContractEditor detail={relatedDetail('draft', [overlappingSibling])} onChanged={vi.fn()} />);
+    await screen.findByTestId('contract-related-notice');
+    expect(screen.queryByTestId('contract-related-adopt-ct-hand')).not.toBeInTheDocument();
   });
 });

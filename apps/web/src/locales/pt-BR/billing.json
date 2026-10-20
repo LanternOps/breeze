@@ -661,6 +661,21 @@
         "title": "Ativar junto com outro contrato?",
         "message": "Esta organização já tem um contrato que fatura na mesma periodicidade em datas que se sobrepõem. Se você ativar este, o cliente paga pelos dois.",
         "confirm": "Ativar mesmo assim"
+      },
+      "adopt": {
+        "action": "Incorporar a este contrato",
+        "title": "Incorporar “{{name}}” a este contrato?",
+        "message": "Use isto quando “{{name}}” cobrir os mesmos serviços deste contrato, para que o cliente não seja cobrado duas vezes.",
+        "deliverables_one": "Sua {{count}} entrega é movida para cá, com o histórico.",
+        "deliverables_other": "Suas {{count}} entregas são movidas para cá, com o histórico.",
+        "agreements_one": "Seu {{count}} acordo assinado é vinculado a este contrato.",
+        "agreements_other": "Seus {{count}} acordos assinados são vinculados a este contrato.",
+        "noLines": "As linhas dele não são copiadas. As linhas e os preços deste contrato permanecem como estão.",
+        "deleted": "Em seguida, “{{name}}” é excluído. Isso não pode ser desfeito.",
+        "confirm": "Incorporar e excluir rascunho",
+        "success": "“{{name}}” foi incorporado a este contrato",
+        "error": "Não foi possível incorporar o rascunho a este contrato",
+        "collision": "Estes nomes de entregas já existem neste contrato: {{names}}. Renomeie ou remova-os em um dos lados e tente novamente."
       }
     }
   },

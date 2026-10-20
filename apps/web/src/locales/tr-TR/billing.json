@@ -661,6 +661,21 @@
         "title": "Başka bir sözleşmeyle birlikte etkinleştirilsin mi?",
         "message": "Bu kuruluşun aynı sıklıkta ve çakışan tarihlerde faturalandıran bir sözleşmesi zaten var. Bunu etkinleştirirseniz müşteri her ikisi için de ödeme yapar.",
         "confirm": "Yine de etkinleştir"
+      },
+      "adopt": {
+        "action": "Bu sözleşmeye birleştir",
+        "title": "“{{name}}” bu sözleşmeye birleştirilsin mi?",
+        "message": "“{{name}}” bu sözleşmeyle aynı hizmetleri kapsıyorsa kullanın; böylece müşteri iki kez faturalandırılmaz.",
+        "deliverables_one": "{{count}} hizmet çıktısı geçmişiyle birlikte buraya taşınır.",
+        "deliverables_other": "{{count}} hizmet çıktısı geçmişleriyle birlikte buraya taşınır.",
+        "agreements_one": "{{count}} imzalı anlaşma bu sözleşmeye bağlanır.",
+        "agreements_other": "{{count}} imzalı anlaşma bu sözleşmeye bağlanır.",
+        "noLines": "Kalemleri kopyalanmaz. Bu sözleşmenin kalemleri ve fiyatları olduğu gibi kalır.",
+        "deleted": "Ardından “{{name}}” silinir. Bu işlem geri alınamaz.",
+        "confirm": "Birleştir ve taslağı sil",
+        "success": "“{{name}}” bu sözleşmeye birleştirildi",
+        "error": "Taslak bu sözleşmeye birleştirilemedi",
+        "collision": "Bu hizmet çıktısı adları bu sözleşmede zaten var: {{names}}. Bir taraftakileri yeniden adlandırın veya kaldırın, ardından tekrar deneyin."
       }
     }
   },

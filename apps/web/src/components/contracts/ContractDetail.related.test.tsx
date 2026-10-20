@@ -25,11 +25,11 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../lib/api/contracts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api/contracts')>();
-  return { ...actual, contractTransition: vi.fn(), getContractEstimate: vi.fn() };
+  return { ...actual, contractTransition: vi.fn(), getContractEstimate: vi.fn(), adoptDraftContract: vi.fn() };
 });
 
-const resp = (payload: unknown, ok = true): Response =>
-  ({ ok, status: ok ? 200 : 500, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
+const resp = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
+  ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -105,5 +105,76 @@ describe('ContractDetail — activate confirm on overlap (#9303)', () => {
     fireEvent.click(await screen.findByTestId('contract-activate-btn'));
     await waitFor(() => expect(contractsApi.contractTransition).toHaveBeenCalledWith('ct-1', 'activate'));
     expect(screen.queryByTestId('contract-activate-overlap-confirm')).not.toBeInTheDocument();
+  });
+});
+
+// #9346: the quote-created contract can fold a hand-built draft sibling in —
+// its deliverables and agreements move here and the draft is deleted.
+describe('ContractDetail — adopt a draft sibling (#9346)', () => {
+  const activeSibling = { ...overlappingSibling, id: 'ct-live', name: 'Live MSA', status: 'active' as const };
+
+  beforeEach(() => {
+    state.permissions = [{ resource: 'contracts', action: 'write' }];
+    vi.mocked(contractsApi.adoptDraftContract).mockResolvedValue(resp({ data: {} }));
+  });
+
+  it('offers the action only on a DRAFT sibling, to a contracts:write user', async () => {
+    render(<ContractDetail detail={relatedDetail('active', [overlappingSibling, activeSibling])} onChanged={vi.fn()} />);
+    await screen.findByTestId('contract-related-notice');
+    expect(screen.getByTestId('contract-related-adopt-ct-hand')).toBeInTheDocument();
+    expect(screen.queryByTestId('contract-related-adopt-ct-live')).not.toBeInTheDocument();
+  });
+
+  it('hides the action without contracts:write', async () => {
+    state.permissions = [{ resource: 'contracts', action: 'read' }];
+    render(<ContractDetail detail={relatedDetail('active', [overlappingSibling])} onChanged={vi.fn()} />);
+    await screen.findByTestId('contract-related-notice');
+    expect(screen.queryByTestId('contract-related-adopt-ct-hand')).not.toBeInTheDocument();
+  });
+
+  it('hides the action when this contract can no longer adopt (paused)', async () => {
+    render(<ContractDetail detail={relatedDetail('paused', [overlappingSibling])} onChanged={vi.fn()} />);
+    await screen.findByTestId('contract-related-notice');
+    expect(screen.queryByTestId('contract-related-adopt-ct-hand')).not.toBeInTheDocument();
+  });
+
+  it('confirms first, naming what moves and that the draft is deleted; Cancel sends nothing', async () => {
+    render(<ContractDetail detail={relatedDetail('active', [{ ...overlappingSibling, signedAgreementCount: 2 }])} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('contract-related-adopt-ct-hand'));
+    const dialog = await screen.findByTestId('contract-adopt-draft-confirm');
+    expect(dialog).toHaveTextContent('Hand-built MSA');
+    expect(dialog).toHaveTextContent('24 deliverables');
+    expect(dialog).toHaveTextContent('2 signed agreements');
+    expect(dialog).toHaveTextContent(/deleted/i);
+    expect(dialog).toHaveTextContent(/lines are not copied/i);
+    expect(contractsApi.adoptDraftContract).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByTestId('contract-adopt-draft-confirm')).not.toBeInTheDocument());
+    expect(contractsApi.adoptDraftContract).not.toHaveBeenCalled();
+  });
+
+  it('Confirm adopts the draft into this contract and refreshes', async () => {
+    const onChanged = vi.fn();
+    render(<ContractDetail detail={relatedDetail('active', [overlappingSibling])} onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('contract-related-adopt-ct-hand'));
+    fireEvent.click(await screen.findByTestId('contract-adopt-draft-confirm-btn'));
+    await waitFor(() => expect(contractsApi.adoptDraftContract).toHaveBeenCalledTimes(1));
+    expect(contractsApi.adoptDraftContract).toHaveBeenCalledWith('ct-1', 'ct-hand');
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByTestId('contract-adopt-draft-confirm')).not.toBeInTheDocument());
+  });
+
+  it('a 409 name collision keeps the dialog open and names the colliding deliverables', async () => {
+    const onChanged = vi.fn();
+    vi.mocked(contractsApi.adoptDraftContract).mockResolvedValue(resp(
+      { error: 'dup', code: 'DUPLICATE_NAME', details: { names: ['Quarterly review', 'Patch report'] } }, false, 409,
+    ));
+    render(<ContractDetail detail={relatedDetail('active', [overlappingSibling])} onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('contract-related-adopt-ct-hand'));
+    fireEvent.click(await screen.findByTestId('contract-adopt-draft-confirm-btn'));
+    const err = await screen.findByTestId('contract-adopt-draft-collision');
+    expect(err).toHaveTextContent('Quarterly review, Patch report');
+    expect(screen.getByTestId('contract-adopt-draft-confirm')).toBeInTheDocument();
+    expect(onChanged).not.toHaveBeenCalled();
   });
 });

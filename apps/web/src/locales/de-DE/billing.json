@@ -661,6 +661,21 @@
         "title": "Neben einem anderen Vertrag aktivieren?",
         "message": "Diese Organisation hat bereits einen Vertrag, der im gleichen Rhythmus über überschneidende Zeiträume abrechnet. Wenn Sie diesen aktivieren, zahlt der Kunde für beide.",
         "confirm": "Trotzdem aktivieren"
+      },
+      "adopt": {
+        "action": "In diesen Vertrag übernehmen",
+        "title": "„{{name}}“ in diesen Vertrag übernehmen?",
+        "message": "Verwenden Sie dies, wenn „{{name}}“ dieselben Leistungen abdeckt wie dieser Vertrag, damit dem Kunden nicht doppelt berechnet wird.",
+        "deliverables_one": "Seine {{count}} Serviceleistung wird mit ihrem Verlauf hierher verschoben.",
+        "deliverables_other": "Seine {{count}} Serviceleistungen werden mit ihrem Verlauf hierher verschoben.",
+        "agreements_one": "Seine {{count}} unterzeichnete Vereinbarung wird mit diesem Vertrag verknüpft.",
+        "agreements_other": "Seine {{count}} unterzeichneten Vereinbarungen werden mit diesem Vertrag verknüpft.",
+        "noLines": "Seine Positionen werden nicht kopiert. Positionen und Preise dieses Vertrags bleiben unverändert.",
+        "deleted": "„{{name}}“ wird anschließend gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Übernehmen und Entwurf löschen",
+        "success": "„{{name}}“ wurde in diesen Vertrag übernommen",
+        "error": "Der Entwurf konnte nicht in diesen Vertrag übernommen werden",
+        "collision": "Diese Namen von Serviceleistungen gibt es in diesem Vertrag bereits: {{names}}. Benennen Sie sie auf einer Seite um oder entfernen Sie sie und versuchen Sie es erneut."
       }
     }
   },

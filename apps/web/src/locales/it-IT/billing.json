@@ -661,6 +661,21 @@
         "title": "Attivare insieme a un altro contratto?",
         "message": "Questa organizzazione ha già un contratto che fattura con la stessa cadenza in date che si sovrappongono. Attivando questo, il cliente paga per entrambi.",
         "confirm": "Attiva comunque"
+      },
+      "adopt": {
+        "action": "Unisci a questo contratto",
+        "title": "Unire “{{name}}” a questo contratto?",
+        "message": "Usalo quando “{{name}}” copre gli stessi servizi di questo contratto, così il cliente non viene fatturato due volte.",
+        "deliverables_one": "Il suo {{count}} deliverable del servizio viene spostato qui, con la sua cronologia.",
+        "deliverables_other": "I suoi {{count}} deliverable del servizio vengono spostati qui, con la loro cronologia.",
+        "agreements_one": "Il suo {{count}} accordo firmato viene collegato a questo contratto.",
+        "agreements_other": "I suoi {{count}} accordi firmati vengono collegati a questo contratto.",
+        "noLines": "Le sue righe non vengono copiate. Le righe e i prezzi di questo contratto restano invariati.",
+        "deleted": "“{{name}}” viene poi eliminato. L'operazione non può essere annullata.",
+        "confirm": "Unisci ed elimina la bozza",
+        "success": "“{{name}}” è stato unito a questo contratto",
+        "error": "Impossibile unire la bozza a questo contratto",
+        "collision": "Questi nomi di deliverable esistono già in questo contratto: {{names}}. Rinominali o rimuovili da una delle due parti, quindi riprova."
       }
     }
   },

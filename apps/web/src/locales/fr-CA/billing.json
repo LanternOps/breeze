@@ -661,6 +661,21 @@
         "title": "Activer en plus d’un autre contrat?",
         "message": "Cette organisation a déjà un contrat qui facture au même rythme sur des dates qui se chevauchent. Si vous activez celui-ci, le client paie pour les deux.",
         "confirm": "Activer quand même"
+      },
+      "adopt": {
+        "action": "Intégrer à ce contrat",
+        "title": "Intégrer « {{name}} » à ce contrat?",
+        "message": "Utilisez cette option lorsque « {{name}} » couvre les mêmes services que ce contrat, pour que le client ne soit pas facturé deux fois.",
+        "deliverables_one": "Son {{count}} livrable est déplacé ici, avec son historique.",
+        "deliverables_other": "Ses {{count}} livrables sont déplacés ici, avec leur historique.",
+        "agreements_one": "Son {{count}} entente signée est reliée à ce contrat.",
+        "agreements_other": "Ses {{count}} ententes signées sont reliées à ce contrat.",
+        "noLines": "Ses lignes ne sont pas copiées. Les lignes et les prix de ce contrat restent inchangés.",
+        "deleted": "« {{name}} » est ensuite supprimé. Cette action est irréversible.",
+        "confirm": "Intégrer et supprimer le brouillon",
+        "success": "« {{name}} » a été intégré à ce contrat",
+        "error": "Impossible d'intégrer le brouillon à ce contrat",
+        "collision": "Ces noms de livrables existent déjà dans ce contrat : {{names}}. Renommez-les ou supprimez-les d'un côté, puis réessayez."
       }
     }
   },

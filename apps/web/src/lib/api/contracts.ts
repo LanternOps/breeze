@@ -276,6 +276,16 @@ export function deleteContract(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}`, { method: 'DELETE' });
 }
 
+/** #9346: fold the org's draft `sourceContractId` into contract `id` (moves its
+ *  deliverables and agreements here, then deletes it). */
+export function adoptDraftContract(id: string, sourceContractId: string): Promise<Response> {
+  return fetchWithAuth(`/contracts/${id}/adopt-draft`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sourceContractId }),
+  });
+}
+
 export function addContractLine(id: string, body: unknown): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}/lines`, {
     method: 'POST',

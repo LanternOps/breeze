@@ -661,6 +661,21 @@
         "title": "Activate alongside another contract?",
         "message": "This organization already has a contract that bills on the same schedule over overlapping dates. Activating this one bills the customer for both.",
         "confirm": "Activate anyway"
+      },
+      "adopt": {
+        "action": "Fold into this contract",
+        "title": "Fold “{{name}}” into this contract?",
+        "message": "Use this when “{{name}}” covers the same services as this contract, so the customer is not billed twice.",
+        "deliverables_one": "Its {{count}} deliverable moves here, with its history.",
+        "deliverables_other": "Its {{count}} deliverables move here, with their history.",
+        "agreements_one": "Its {{count}} signed agreement is re-linked to this contract.",
+        "agreements_other": "Its {{count}} signed agreements are re-linked to this contract.",
+        "noLines": "Its lines are not copied. This contract's lines and prices stay as they are.",
+        "deleted": "“{{name}}” is then deleted. This cannot be undone.",
+        "confirm": "Fold in and delete draft",
+        "success": "“{{name}}” was folded into this contract",
+        "error": "Could not fold the draft into this contract",
+        "collision": "These deliverable names already exist on this contract: {{names}}. Rename or remove them on one side, then try again."
       }
     }
   },

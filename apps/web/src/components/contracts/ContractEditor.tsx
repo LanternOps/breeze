@@ -931,7 +931,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header form + lines ─────────────────────────────────────── */}
         <div className="space-y-6">
-          <RelatedContractsNotice related={detail?.relatedContracts} />
+          <RelatedContractsNotice
+            related={detail?.relatedContracts}
+            adopt={contract && canWrite && (contract.status === 'draft' || contract.status === 'active')
+              ? { contractId: contract.id, onAdopted: refresh }
+              : undefined}
+          />
           <div className="space-y-6 rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header-form">
             {/* Existing contracts blur-autosave per field; a single polite live
                 region announces the "Saved" that the amber→green ring shows. */}
