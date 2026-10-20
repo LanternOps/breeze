@@ -71,7 +71,7 @@
         "autoIssue": "Auto-issue",
         "renewal": "Renewal",
         "estimatedPerPeriod": "Est. / period",
-        "notes": "Notes",
+        "notes": "Internal notes",
         "invoiceNote": "Invoice note"
       },
       "values": {
@@ -221,8 +221,8 @@
       },
       "content": {
         "title": "Content",
-        "notesOptional": "Notes (printed on every generated invoice)",
-        "termsOptional": "Invoice note (optional, added to the Notes block on generated invoices)",
+        "notesOptional": "Internal notes (never shown to the customer)",
+        "termsOptional": "Invoice note (optional, printed on every generated invoice)",
         "termsPlaceholder": "e.g. Net 30. Auto-renews unless cancelled 30 days prior."
       },
       "lines": {

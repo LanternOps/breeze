@@ -71,7 +71,7 @@
         "autoIssue": "Emissão automática",
         "renewal": "Renovação",
         "estimatedPerPeriod": "Estim. / período",
-        "notes": "Observações",
+        "notes": "Observações internas",
         "invoiceNote": "Observação na fatura"
       },
       "values": {
@@ -221,8 +221,8 @@
       },
       "content": {
         "title": "Conteúdo",
-        "notesOptional": "Observações (impressas em cada fatura gerada)",
-        "termsOptional": "Observação na fatura (opcional, adicionada ao bloco Observações das faturas geradas)",
+        "notesOptional": "Observações internas (nunca mostradas ao cliente)",
+        "termsOptional": "Observação na fatura (opcional, impressa em cada fatura gerada)",
         "termsPlaceholder": "ex.: 30 dias líquidos. Renova automaticamente salvo cancelamento 30 dias antes."
       },
       "lines": {

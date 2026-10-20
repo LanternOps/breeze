@@ -556,6 +556,39 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     );
   });
 
+  // #9347: contract `notes` are internal-only. Generated invoices print the
+  // Invoice note (`terms`) and nothing else, whatever the internal notes say.
+  function queueFlatRun(header: { notes: string | null; terms: string | null }) {
+    results.length = 0;
+    queueResult([{ ...contract, ...header }]);
+    queueResult([{ id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, ...noAllowance }]);
+    queueResult([{ id: 'bp1' }]);
+    queueResult([]); queueResult([]); queueResult([]); queueResult([]);
+  }
+
+  it('never copies internal contract notes onto a generated invoice (#9347)', async () => {
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    queueFlatRun({ notes: 'Customer is slow to pay - chase on day 3', terms: 'Net 30' });
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    const [input] = vi.mocked(createManualInvoice).mock.calls[0]!;
+    expect(input).toMatchObject({ notes: 'Net 30' });
+    expect(JSON.stringify(input)).not.toContain('chase on day 3');
+  });
+
+  it('a contract with internal notes and no invoice note generates an invoice with no notes (#9347)', async () => {
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    queueFlatRun({ notes: 'Internal only', terms: null });
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    const [input] = vi.mocked(createManualInvoice).mock.calls[0]!;
+    expect(input.notes).toBeUndefined();
+  });
+
   it('returns an empty priceBookGaps array when every catalog line resolved from the price book', async () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'price_book' } as never);

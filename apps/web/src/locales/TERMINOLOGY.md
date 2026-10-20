@@ -42,6 +42,9 @@ template variables (`{{name}}`), and code values remain unchanged.
   Never translate both concepts with the same noun — telling them apart is the whole
   point of the vocabulary split. tr-TR is not in the table above: use
   `anlaşma şablonu` and `imzalı anlaşma`, keeping `sözleşme` for the billing contract.
-- `Invoice note` is the contract's free-text `terms` field, which is appended to the
+- `Invoice note` is the contract's free-text `terms` field, which is printed as the
   Notes block on generated invoices. Translate it as a note on an invoice, never as
   legal terms.
+- A contract's `Internal notes` (the `notes` field) are staff-only and never printed on
+  an invoice or shown to the customer (#9347). Translate "internal" as internal to the
+  MSP, never as "private to the customer".

@@ -71,7 +71,7 @@
         "autoIssue": "Otomatik yayın",
         "renewal": "Yenileme",
         "estimatedPerPeriod": "Tah. / dönem",
-        "notes": "Notlar",
+        "notes": "İç notlar",
         "invoiceNote": "Fatura notu"
       },
       "values": {
@@ -221,8 +221,8 @@
       },
       "content": {
         "title": "İçerik",
-        "notesOptional": "Notlar (oluşturulan her faturaya yazdırılır)",
-        "termsOptional": "Fatura notu (isteğe bağlı, oluşturulan faturaların Notlar bloğuna eklenir)",
+        "notesOptional": "İç notlar (müşteriye asla gösterilmez)",
+        "termsOptional": "Fatura notu (isteğe bağlı, oluşturulan her faturaya yazdırılır)",
         "termsPlaceholder": "ör. Net 30. 30 gün önceden iptal edilmediği sürece otomatik olarak yenilenir."
       },
       "lines": {

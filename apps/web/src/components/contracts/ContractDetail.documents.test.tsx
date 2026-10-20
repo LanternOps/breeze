@@ -141,7 +141,7 @@ describe('ContractDetail — executed documents section', () => {
 });
 
 describe('ContractDetail — invoice note (spec §3)', () => {
-  it('renders the contract terms as an Invoice note row next to Notes', async () => {
+  it('renders the contract terms as an Invoice note row next to Internal notes', async () => {
     const detail: ContractDetailData = {
       ...activeDetail,
       contract: { ...activeDetail.contract, notes: 'Renewal call booked', terms: 'Net 30. Late fees apply after 15 days.' },
@@ -150,8 +150,8 @@ describe('ContractDetail — invoice note (spec §3)', () => {
     await waitFor(() => expect(screen.getByTestId('contract-documents-section')).toBeInTheDocument());
     expect(screen.getByText('Invoice note')).toBeInTheDocument();
     expect(screen.getByText('Net 30. Late fees apply after 15 days.')).toBeInTheDocument();
-    // The billing contract's own Notes row is unaffected.
-    expect(screen.getByText('Notes')).toBeInTheDocument();
+    // The billing contract's own notes row is labelled internal-only (#9347).
+    expect(screen.getByText('Internal notes')).toBeInTheDocument();
     expect(screen.getByText('Renewal call booked')).toBeInTheDocument();
   });
 

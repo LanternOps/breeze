@@ -71,7 +71,7 @@
         "autoIssue": "Emisión automática",
         "renewal": "Renovación",
         "estimatedPerPeriod": "Est. / período",
-        "notes": "Notas",
+        "notes": "Notas internas",
         "invoiceNote": "Nota en la factura"
       },
       "values": {
@@ -221,8 +221,8 @@
       },
       "content": {
         "title": "Contenido",
-        "notesOptional": "Notas (se imprimen en cada factura generada)",
-        "termsOptional": "Nota en la factura (opcional, se agrega al bloque de Notas de las facturas generadas)",
+        "notesOptional": "Notas internas (nunca se muestran al cliente)",
+        "termsOptional": "Nota en la factura (opcional, se imprime en cada factura generada)",
         "termsPlaceholder": "p.ej. Neto 30. Se renueva automáticamente a menos que se cancele 30 días antes."
       },
       "lines": {

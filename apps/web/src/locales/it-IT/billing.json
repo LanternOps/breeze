@@ -71,7 +71,7 @@
         "autoIssue": "Emissione automatica",
         "renewal": "Rinnovo",
         "estimatedPerPeriod": "Stima / periodo",
-        "notes": "Note",
+        "notes": "Note interne",
         "invoiceNote": "Nota in fattura"
       },
       "values": {
@@ -221,8 +221,8 @@
       },
       "content": {
         "title": "Contenuto",
-        "notesOptional": "Note (stampate su ogni fattura generata)",
-        "termsOptional": "Nota in fattura (facoltativa, aggiunta al blocco Note delle fatture generate)",
+        "notesOptional": "Note interne (mai mostrate al cliente)",
+        "termsOptional": "Nota in fattura (facoltativa, stampata su ogni fattura generata)",
         "termsPlaceholder": "es. 30 giorni netto. Rinnovo automatico salvo annullamento 30 giorni prima."
       },
       "lines": {

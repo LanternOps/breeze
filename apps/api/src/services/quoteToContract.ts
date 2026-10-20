@@ -119,8 +119,9 @@ export function buildContractSpecsFromQuote(
       startDate,
       endDate,
       currencyCode: quote.currencyCode,
-      // #9304: contract notes print on every generated invoice, so provenance
-      // never goes here — it lives in the name and the executed agreement.
+      // #9304: provenance never goes in notes — it lives in the name and the
+      // executed agreement. Notes are the MSP's internal notes (#9347); the
+      // quote's terms become the Invoice note that generated invoices print.
       notes: null,
       terms: quote.terms ?? null,
       createdBy,

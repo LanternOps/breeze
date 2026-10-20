@@ -71,7 +71,7 @@
         "autoIssue": "Automatisch ausstellen",
         "renewal": "Erneuerung",
         "estimatedPerPeriod": "Geschätzt / Zeitraum",
-        "notes": "Notizen",
+        "notes": "Interne Notizen",
         "invoiceNote": "Rechnungshinweis"
       },
       "values": {
@@ -221,8 +221,8 @@
       },
       "content": {
         "title": "Inhalt",
-        "notesOptional": "Notizen (werden auf jeder erzeugten Rechnung gedruckt)",
-        "termsOptional": "Rechnungshinweis (optional, wird dem Notizblock auf erzeugten Rechnungen hinzugefügt)",
+        "notesOptional": "Interne Notizen (werden dem Kunden nie angezeigt)",
+        "termsOptional": "Rechnungshinweis (optional, wird auf jeder erzeugten Rechnung gedruckt)",
         "termsPlaceholder": "z.B. Netto 30. Automatische Verlängerung, sofern nicht 30 Tage vorher gekündigt."
       },
       "lines": {
