@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { PORTAL_CHROME_ACCENTS, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared';
 
@@ -19,6 +20,8 @@ import { PORTAL_CHROME_ACCENTS, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/sha
  */
 
 const CSS = readFileSync(fileURLToPath(new URL('./globals.css', import.meta.url)), 'utf8');
+// The document paper block moved to the shared package (document.css).
+const DOC_CSS = readFileSync(createRequire(import.meta.url).resolve('@breeze/document-ui/document.css'), 'utf8');
 
 /** Every `--token: value;` declaration in a block, as a map. */
 function declarations(block: string): Map<string, string> {
@@ -89,7 +92,7 @@ describe('theme token parity', () => {
   it('documents are pinned to paper regardless of theme', () => {
     // Proposals and invoices carry partner brand colours chosen against white,
     // and are what a customer prints or forwards to their accountant.
-    expect(CSS).toMatch(/\[data-doc-theme\]\s*\{[\s\S]*?color-scheme: light/);
+    expect(DOC_CSS).toMatch(/\[data-document-root\]\s*\{[\s\S]*?color-scheme: light/);
   });
 });
 

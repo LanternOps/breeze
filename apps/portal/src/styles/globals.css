@@ -10,6 +10,11 @@
 
 @plugin '@tailwindcss/forms';
 
+/* Tailwind v4 does not scan workspace packages on its own: the document-ui
+   components' utilities (and the probe class the built-CSS test looks for)
+   would otherwise never be emitted. */
+@source '../../../../packages/document-ui/src/**/*.{ts,tsx}';
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
