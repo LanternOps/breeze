@@ -89,7 +89,80 @@ describe('device warranty routes', () => {
     // device flagged virtual never advances lastSyncAt and the warranty card
     // polls a "queued" refresh that never completes — the exact dead-end the
     // review blocked on. The service half is pinned in warrantySync.test.ts.
+    //
+    // No hardware row and no warranty row: not agent-collected, so it queues.
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    })) as never);
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: 'device-1', orgId: 'org-123' } as never);
+
+    const res = await app.request('/devices/device-1/warranty/refresh', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(queueWarrantySyncForDevice).toHaveBeenCalledWith('device-1', { force: true });
+  });
+});
+
+describe('manual refresh refuses agent-collected devices (#5511 W01, D11)', () => {
+  /** Two reads in order: device_hardware.manufacturer, then device_warranty.dataSource. */
+  function rigRefreshReads(hardware: unknown[], warranty: unknown[]) {
+    const queue = [hardware, warranty];
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve(queue.shift() ?? []) }) }),
+    })) as never);
+  }
+
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/devices', warrantyRoutes);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: 'device-1', orgId: 'org-123' } as never);
+  });
+
+  it('refuses an HP device with a coded 409 instead of queueing a sync that can never answer', async () => {
+    rigRefreshReads([{ manufacturer: 'HP' }], []);
+
+    const res = await app.request('/devices/device-1/warranty/refresh', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'WARRANTY_REFRESH_NOT_AVAILABLE' });
+    expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();
+  });
+
+  it('refuses a device whose row an agent already owns', async () => {
+    rigRefreshReads([{ manufacturer: 'Apple Inc.' }], [{ dataSource: 'agent_plist' }]);
+
+    const res = await app.request('/devices/device-1/warranty/refresh', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();
+  });
+
+  it('still queues for a device a registered vendor provider can answer for', async () => {
+    rigRefreshReads([{ manufacturer: 'Dell Inc.' }], [{ dataSource: 'provider' }]);
+
+    const res = await app.request('/devices/device-1/warranty/refresh', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(queueWarrantySyncForDevice).toHaveBeenCalledWith('device-1', { force: true });
+  });
+
+  it('still queues for a device with no hardware row and no warranty row', async () => {
+    rigRefreshReads([], []);
 
     const res = await app.request('/devices/device-1/warranty/refresh', {
       method: 'POST',
