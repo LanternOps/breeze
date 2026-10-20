@@ -381,6 +381,18 @@ describe('previewDeviceCustomFieldImport', () => {
     expect(opted!.values[0]!.outcome).toBe('applied');
   });
 
+  it('previews an agent-owned warranty as refused, even with overrideProviderWarranty (#5511 W01)', async () => {
+    for (const dataSource of ['agent_cmsl', 'agent_plist']) {
+      seed({ warranty: [{ deviceId: D1, dataSource }] });
+      const [row] = await preview(
+        [{ deviceId: D1, values: [w('warrantyEndDate', '2027-03-04')] }],
+        { ...ctx, overrideProviderWarranty: true },
+      );
+      expect(row!.values[0]!.outcome).toBe('skipped-provider-owned');
+      expect(row!.values[0]!.warning).toMatch(/agent/i);
+    }
+  });
+
   it('previews an unchanged warranty cell as skipped-already-set, the way commit will treat it', async () => {
     // Preview's whole job is to predict commit. Before this, a re-import of an
     // unchanged file previewed every warranty cell as `applied` and then

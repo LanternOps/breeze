@@ -331,3 +331,66 @@ describe('heartbeatSchema — WebSocket desktop start-fence capability', () => {
     }
   });
 });
+
+describe('agentWarrantyInfoSchema entitlements (#5511 W01, D10)', () => {
+  const base = { source: 'agent_cmsl', manufacturer: 'HP' };
+
+  it('accepts a bounded entitlements array and normalises its dates', () => {
+    const parsed = agentWarrantyInfoSchema.parse({
+      ...base,
+      entitlements: [
+        {
+          serviceLevelDescription: 'HP 3y Next Business Day Onsite',
+          entitlementType: 'Hardware Support',
+          startDate: '2024-03-01T00:00:00Z',
+          endDate: '2027-02-28',
+        },
+      ],
+    });
+
+    expect(parsed.entitlements).toEqual([
+      {
+        serviceLevelDescription: 'HP 3y Next Business Day Onsite',
+        entitlementType: 'Hardware Support',
+        startDate: '2024-03-01',
+        endDate: '2027-02-28',
+      },
+    ]);
+  });
+
+  it('rejects more than 25 entitlements', () => {
+    const many = Array.from({ length: 26 }, () => ({ entitlementType: 'x' }));
+    expect(() => agentWarrantyInfoSchema.parse({ ...base, entitlements: many })).toThrow();
+  });
+
+  it('accepts exactly 25', () => {
+    const many = Array.from({ length: 25 }, () => ({ entitlementType: 'x' }));
+    expect(agentWarrantyInfoSchema.parse({ ...base, entitlements: many }).entitlements).toHaveLength(25);
+  });
+
+  it('rejects a string field over 200 chars', () => {
+    expect(() =>
+      agentWarrantyInfoSchema.parse({
+        ...base,
+        entitlements: [{ serviceLevelDescription: 'x'.repeat(201) }],
+      }),
+    ).toThrow();
+  });
+
+  it('never accepts a client-supplied provider — the server derives it', () => {
+    const parsed = agentWarrantyInfoSchema.parse({
+      ...base,
+      entitlements: [{ entitlementType: 'Hardware Support', provider: 'apple' }],
+    });
+    expect(parsed.entitlements![0]).not.toHaveProperty('provider');
+  });
+
+  it('still parses a payload with no entitlements at all (macOS plist collectors)', () => {
+    const parsed = agentWarrantyInfoSchema.parse({
+      source: 'agent_plist',
+      manufacturer: 'Apple',
+      coverageType: 'AppleCare+',
+    });
+    expect(parsed.entitlements).toBeUndefined();
+  });
+});

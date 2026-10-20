@@ -40,6 +40,10 @@ import { db } from '../../../db';
 import { deviceWarranty } from '../../../db/schema';
 import { computeWarrantyStatus } from '../../warrantySync';
 import { normalizeManufacturer } from '../../warrantyProviders';
+import {
+  AGENT_OWNED_WARRANTY_SOURCE_LIST,
+  isAgentOwnedWarrantySource,
+} from '../../warrantyDataSources';
 import type {
   CustomFieldImportRejection,
   WarrantyImportField,
@@ -176,6 +180,17 @@ export async function applyWarrantyImport(
     .where(eq(deviceWarranty.deviceId, write.deviceId))
     .limit(1)) as ExistingWarrantyRow[];
 
+  // An agent-collected row is owned by the device itself, and `overrideProvider`
+  // does NOT unlock it (#5511 W01, D9) — that flag has always meant "override a
+  // VENDOR lookup". The agent rewrites this row on its next report, so an import
+  // that won here would be reverted within one heartbeat while the operator was
+  // told `applied`. Reported as `skipped-provider-owned` rather than a new
+  // outcome member: that union is mirrored in `openapi.ts` and in the web
+  // import-preview table, both outside this wave's ownership.
+  if (existing && isAgentOwnedWarrantySource(existing.dataSource)) {
+    return 'skipped-provider-owned';
+  }
+
   // A manufacturer lookup outranks a hand-typed CSV. Refused here so the
   // operator gets `skipped-provider-owned` rather than a silent no-op.
   if (existing && existing.dataSource === 'provider' && !options.overrideProvider) {
@@ -228,16 +243,22 @@ export async function applyWarrantyImport(
       // raises 42P10 on every imported warranty row.
       targetWhere: sql`${deviceWarranty.deviceId} IS NOT NULL`,
       set: { ...columns, orgId: write.orgId, updatedAt: new Date() },
-      // The AUTHORITY on the provider rule; the read above is advisory. A row
-      // that turns provider-owned between the two matches no target here and
-      // the statement writes nothing rather than clobbering it.
-      ...(options.overrideProvider
-        ? {}
-        : {
-            setWhere: and(
-              sql`${deviceWarranty.dataSource} IS DISTINCT FROM 'provider'`,
-            ),
-          }),
+      // The AUTHORITY on both ownership rules; the reads above are advisory. A
+      // row that turns provider- or agent-owned between the read and the write
+      // matches no target here and the statement writes nothing rather than
+      // clobbering it. The agent-owned arms are unconditional — see the guard
+      // above for why `overrideProvider` does not reach them.
+      //
+      // `IS DISTINCT FROM` on every arm: data_source is nullable, and
+      // `NULL <> 'provider'` is NULL, which would refuse every brand-new row.
+      setWhere: and(
+        ...(options.overrideProvider
+          ? []
+          : [sql`${deviceWarranty.dataSource} IS DISTINCT FROM 'provider'`]),
+        ...AGENT_OWNED_WARRANTY_SOURCE_LIST.map(
+          (source) => sql`${deviceWarranty.dataSource} IS DISTINCT FROM ${source}`,
+        ),
+      ),
     })
     .returning({ id: deviceWarranty.id });
 

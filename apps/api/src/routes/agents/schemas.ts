@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { isIP } from 'node:net';
 import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
+import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
 
 // ============================================
 // Enrollment
@@ -922,12 +923,33 @@ const warrantyDateSchema = z.string().max(50).optional()
     return d.toISOString().slice(0, 10);
   });
 
+/**
+ * One entitlement from an agent collector (#5511 W01, D10). HP CMSL reports N
+ * of these per device out of `HP_Entitlements`; the macOS plist collector
+ * reports none and keeps using the flat `coverageType` fields below.
+ *
+ * `provider` is deliberately NOT part of the wire shape. The server derives it
+ * from `source` (`warrantyEntitlementProviderForSource`): an agent that could
+ * name the vendor could label HP coverage as Apple. `z.object` strips it
+ * silently, and the schema test pins that.
+ *
+ * Dates run through the same `warrantyDateSchema` as the flat fields, so HP's
+ * own per-entitlement dates are preserved as reported, as ISO `YYYY-MM-DD`.
+ */
+const agentWarrantyEntitlementSchema = z.object({
+  serviceLevelDescription: z.string().max(200).optional(),
+  entitlementType: z.string().max(200).optional(),
+  startDate: warrantyDateSchema,
+  endDate: warrantyDateSchema,
+});
+
 export const agentWarrantyInfoSchema = z.object({
   source: z.string().min(1).max(50),
   manufacturer: z.string().min(1).max(100),
   coverageEndDate: warrantyDateSchema,
   coverageStartDate: warrantyDateSchema,
   coverageType: z.string().max(200).optional(),
+  entitlements: z.array(agentWarrantyEntitlementSchema).max(MAX_AGENT_WARRANTY_ENTITLEMENTS).optional(),
   // Coverage kind derived from the macOS NDO label verb: 'subscription'
   // ("Renews ...") vs 'fixed' ("Expires ..."). Empty/absent when unknown.
   // Accept '' for back-compat: older agents (and timestamp-only/labelless/
