@@ -1,6 +1,6 @@
 # Partner billing toggle (`billingEnabled`) — Design Spec
 
-**Status:** Revised after second maintainer review (CHANGES_REQUESTED on PR #8916, 2026-10-18). Awaiting re-review.
+**Status:** Revised after second maintainer review (CHANGES_REQUESTED on PR #8916, 2026-10-18), with the corrections of the 2026-10-20 review. Awaiting re-review.
 **Discussion:** LanternOps/breeze#8807 ("Add a Native RMM + Ticketing Mode Without Billing").
 **Maintainer decisions:** Discussion #8807 comment (2026-10-15) and PR #8916 reviews by @ToddHebebrand (2026-10-17, 2026-10-18).
 
@@ -107,16 +107,31 @@ Gating happens **per partner inside each job's due-rows query**, the same way
 | `contractWorker` → `billing-sweep`, alerts | **Keep** (proposal). Internal alerts. |
 | `autopayWorker` → `collection-run` | **Stop.** No charges, including work already queued. |
 | `autopayWorker` → `control-reconcile` | **Keep.** Reconciles existing state. |
-| `autopayWorker` → `notice-dispatch`, charge notices | **Stop** (proposal). No "will be charged" notices. |
+| `autopayWorker` → `notice-dispatch`, per notice kind | See §6.2. |
 | `autopayWorker` → `notice-dispatch`, payment-method detaches | **Keep.** Drains detaches already requested. |
-| `autopayWorker` → `reminder-sweep` | **Stop** (proposal). No reminders to add payment methods. |
-| `autopayWorker` → `card-expiry-check` | **Keep** (proposal). Card expiry happens regardless; no client messages are sent. |
+| `autopayWorker` → `reminder-sweep` | **Keep** (proposal). Payment reminder and overdue emails for existing unpaid invoices (§3.8). |
+| `autopayWorker` → `card-expiry-check`, status update | **Keep** (proposal). Marks saved cards as expiring. |
+| `autopayWorker` → `card-expiry-check`, `card_expiring` notice | **Stop** (proposal). See §6.2. |
 | `quoteSendQueue` | **Stop.** Queued sends are not delivered. |
 | `quoteExpiryReaper` | **Keep.** Maintainer. |
 | `stripeReconcileSweep.ts` | **Keep.** Maintainer. |
 | Cleanup jobs | **Keep.** |
 
 Items marked "proposal" are our suggestions and need the maintainer's confirmation.
+
+### 6.2 Notice kinds in `notice-dispatch` (per kind, with billing off)
+
+Kinds from `apps/api/src/services/autopay/enrollmentNotices.ts` and `renderBillingNotice.ts`.
+
+| Notice kind | Behaviour with billing off |
+|---|---|
+| `payment_receipt` | **Keep.** Receipt for a payment already made. |
+| `payment_failed` | **Keep** (proposal). Outcome of a charge attempted before the switch. |
+| `autopay_stopped` | **Keep.** Tells the client that autopay stopped. |
+| `autopay_request` | **Stop** (proposal). New enrolment is blocked (§7.1). |
+| `autopay_enrolled` | **Keep** (proposal). Confirms an enrolment already completed. |
+| `autopay_paused`, `autopay_resumed` | **Keep** (proposal). Describes the state of existing autopay. |
+| `card_expiring` | **Stop** (proposal). Asks the client to update a card for autopay that is off. |
 
 ### 6.1 Re-enabling billing (proposal, needs confirmation)
 
@@ -152,7 +167,7 @@ check. The list below is what the tests check (PR #8916, 2026-10-18).
 | Quotes (`routes/quotes/quotes.ts`, `quotes/bulk.ts`) | create, clone, revise, edit, delete, blocks and lines, currency, orders (create and edit), bulk delete / send |
 | Quote send and acceptance (`quotes/lifecycle.ts`, `quotes/acceptanceEvidence.ts`) | send, schedule-send and its delete, resend, share-link, `accept-on-behalf`, images upload, acceptance evidence upload |
 | Public quote acceptance (`quotesPublic`) | `POST /quotes/public/:token/accept` |
-| `POST /charge` (`routes/billingStepUp.ts`) | Charges a card. |
+| Contract activate (`routes/contracts/lifecycle.ts`) | `POST /:id/activate` |
 
 ### 7.2 HTTP routes, kept
 
@@ -165,6 +180,7 @@ check. The list below is what the tests check (PR #8916, 2026-10-18).
 | Quote reads and PDF (`quotes/quotes.ts` GET), quote images and contract-file reads | reads | No new billing |
 | Quote decline (`quotesPublic` `/decline`, `decline-on-behalf`) | decline | Creates nothing |
 | Contract reads, hour periods, deliverables, documents | reads | No money movement |
+| Contract pause, resume, cancel (`routes/contracts/lifecycle.ts`) | `POST /:id/pause`, `/:id/resume`, `/:id/cancel` | Lifecycle of existing contracts (review of 2026-10-20) |
 | Contract templates (`contracts/templates.ts`) | reads **and writes** | Configuration (Q5, Q3 rule) |
 | Billing reporting reads (`invoices/settings.ts`) | `/billing/reporting-totals`, currency impact | Reads |
 | Billing profiles (`routes/billingProfiles.ts`, `orgBillingProfile.ts`) | reads **and writes** | Configuration (Q3) |
@@ -184,7 +200,7 @@ check. The list below is what the tests check (PR #8916, 2026-10-18).
 | AI tools `manage_invoices` (`services/aiToolsBilling.ts`), `manage_quotes` (`services/aiToolsQuotes.ts`), `manage_contracts` (`services/aiToolsContracts.ts`) | Block writes. Reads kept. Checked in the services, not the tool wrapper. |
 | Partner API contract writes (`routes/partnerApi/contracts.ts`) | Block writes. Reads kept. |
 | Portal quote acceptance and pay (`routes/portal/quotes.ts`) | Block. Decline kept. |
-| Portal autopay setup (`routes/portal/paymentMethods.ts`) | Block new enrolment. Removal kept. |
+| Portal autopay setup (`routes/portal/paymentMethods.ts`) | Block `setup-session` and `setup-return` (new enrolment). `POST /autopay/stop` kept. No payment-method removal route exists. |
 
 Portal and public routes return the same 404 body as any other gated route, so the UI shows one message.
 
