@@ -118,6 +118,25 @@ describe('executor HTTP app', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
+  it('GET /version defaults to the baked APP_VERSION / GIT_SHA, reporting unknown for unusable values', async () => {
+    const previous = { v: process.env.APP_VERSION, s: process.env.GIT_SHA };
+    process.env.APP_VERSION = '9.9.9';
+    process.env.GIT_SHA = 'not a sha';
+    try {
+      const app = createExecutorApp({
+        authenticator: { verify: vi.fn() },
+        verifyIdentity: vi.fn(),
+        retest: vi.fn(),
+        readAction: vi.fn(),
+        syncAction: vi.fn(),
+      });
+      expect(await (await app.request('/version')).json()).toEqual({ version: '9.9.9', gitSha: 'unknown' });
+    } finally {
+      if (previous.v === undefined) delete process.env.APP_VERSION; else process.env.APP_VERSION = previous.v;
+      if (previous.s === undefined) delete process.env.GIT_SHA; else process.env.GIT_SHA = previous.s;
+    }
+  });
+
   it('sanitizes operation exceptions instead of classifying them as caller errors', async () => {
     const app = createExecutorApp({
       authenticator: { verify: vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' }) },

@@ -168,6 +168,35 @@ describe('POST /admin/system/connections/m365-executors/probe', () => {
     expect(JSON.stringify(body)).not.toMatch(/ECONNREFUSED|10\.0\.0\.9|executor\.internal/);
   });
 
+  it('healthz non-200 → reachable:false and no route or version requests are made', async () => {
+    route(async (input) => {
+      const p = new URL(String(input)).pathname;
+      if (p === '/healthz') return json({ status: 'down' }, 503);
+      throw new Error('should not be called');
+    });
+    const { body } = await probe();
+    const read = body.data.executors.find((e: any) => e.id === 'm365-graph-read');
+    expect(read.reachable).toBe(false);
+    expect(read.routes['verify-identity']).toBe('unknown');
+    const paths = fetchMock.mock.calls.map((c) => new URL(String(c[0])).pathname);
+    expect(paths.every((p) => p === '/healthz')).toBe(true);
+  });
+
+  it('a route that answers 500 is still present; one whose request fails is unknown', async () => {
+    route(async (input) => {
+      const p = new URL(String(input)).pathname;
+      if (p === '/healthz') return json({ status: 'ok' });
+      if (p === '/version') return json({ version: '1.2.3', gitSha: 'abc1234' });
+      if (p === '/v1/retest') return json({ error: 'internal_error' }, 500);
+      if (p === '/v1/read-action') throw new Error('socket hang up');
+      return json({ error: 'unauthorized' }, 401);
+    });
+    const { body } = await probe();
+    const read = body.data.executors.find((e: any) => e.id === 'm365-graph-read');
+    expect(read.routes.retest).toBe('present');
+    expect(read.routes['read-action']).toBe('unknown');
+  });
+
   it('unset URL → configured:false and no request is made for that executor', async () => {
     setEnv('M365_GRAPH_ACTIONS_EXECUTOR_URL', undefined);
     route(healthy(READ_URL));

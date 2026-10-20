@@ -318,6 +318,36 @@ describe('ConnectionsTab', () => {
       expect(fetchWithAuth.mock.calls.some(([url]) => url === PROBE_URL)).toBe(false);
     });
 
+    it('does not offer Check now on other connections', async () => {
+      fetchWithAuth.mockImplementation(async () => ok());
+      render(<ConnectionsTab />);
+      await screen.findByTestId('connection-card-database');
+      expect(screen.queryByTestId('connection-probe-database')).toBeNull();
+      expect(screen.queryByTestId('connection-probe-smtp')).toBeNull();
+    });
+
+    it('a failed probe leaves the button usable and renders no result', async () => {
+      mockApi(() => jsonRes({ error: 'boom' }, 500));
+      render(<ConnectionsTab />);
+      await screen.findByTestId('connection-card-m365-graph-read');
+      const button = screen.getByTestId('connection-probe-m365-graph-read') as HTMLButtonElement;
+      fireEvent.click(button);
+      await vi.waitFor(() => expect(fetchWithAuth.mock.calls.some(([u]) => u === PROBE_URL)).toBe(true));
+      await vi.waitFor(() => expect(button.disabled).toBe(false));
+      expect(screen.queryByTestId('connection-probe-result-m365-graph-read')).toBeNull();
+    });
+
+    it('a malformed 200 probe body renders no result', async () => {
+      mockApi(() => jsonRes({ data: { nope: true } }));
+      render(<ConnectionsTab />);
+      await screen.findByTestId('connection-card-m365-graph-read');
+      const button = screen.getByTestId('connection-probe-m365-graph-read') as HTMLButtonElement;
+      fireEvent.click(button);
+      await vi.waitFor(() => expect(fetchWithAuth.mock.calls.some(([u]) => u === PROBE_URL)).toBe(true));
+      await vi.waitFor(() => expect(button.disabled).toBe(false));
+      expect(screen.queryByTestId('connection-probe-result-m365-graph-read')).toBeNull();
+    });
+
     it('clicking Check now POSTs the probe and renders per-check rows', async () => {
       mockApi(() => jsonRes(probeBody));
       render(<ConnectionsTab />);
