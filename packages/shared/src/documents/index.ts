@@ -9,3 +9,5 @@ export { documentMoney } from './money';
 export { documentDate } from './dates';
 export { documentSellerLines } from './sellerLines';
 export { DOCUMENT_LABELS_EN, documentLabelsFor, type DocumentLabels, type DocumentRichParts } from './labels';
+export { buildInvoiceDocumentModel, DocumentModelError } from './invoiceBuilder';
+export { INVOICE_DTO_FIXTURES, type InvoiceFixtureName } from './fixtures/invoiceDtos';
