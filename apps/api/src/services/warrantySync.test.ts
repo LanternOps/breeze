@@ -285,3 +285,155 @@ describe('vendor ship date → purchase date (Hardware Lifecycle)', () => {
     expect(compiled.params).toContain('ma-1');
   });
 });
+
+describe('upsertAgentWarranty entitlement provider (#5511 W01, defect 1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("labels an HP CMSL entitlement 'hp', not 'apple'", async () => {
+    const { values, onConflictDoUpdate } = captureUpsert();
+
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, {
+      source: 'agent_cmsl',
+      manufacturer: 'HP',
+      serialNumber: 'HP-SERIAL-1',
+      coverageEndDate: inDays(400),
+      coverageStartDate: inDays(-100),
+      coverageType: 'HP 3y Next Business Day Onsite',
+    });
+
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entitlements: [expect.objectContaining({ provider: 'hp' })],
+      }),
+    );
+    // The UPDATE arm carries the same value — a fix applied to only one of the
+    // two would mislabel every row after the first report.
+    expect(onConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        set: expect.objectContaining({
+          entitlements: [expect.objectContaining({ provider: 'hp' })],
+        }),
+      }),
+    );
+  });
+
+  it("still labels a macOS plist entitlement 'apple'", async () => {
+    const { values } = captureUpsert();
+
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, {
+      source: 'agent_plist',
+      manufacturer: 'Apple',
+      serialNumber: 'APPLE-SERIAL-1',
+      coverageEndDate: inDays(400),
+      coverageStartDate: inDays(-100),
+      coverageType: 'AppleCare+',
+    });
+
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entitlements: [expect.objectContaining({ provider: 'apple' })],
+      }),
+    );
+  });
+
+  it('synthesises no entitlement at all when the vendor cannot be attributed', async () => {
+    const { values } = captureUpsert();
+
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, {
+      source: 'agent_future',
+      manufacturer: 'Acme Whitebox',
+      serialNumber: 'ACME-1',
+      coverageEndDate: inDays(400),
+      coverageStartDate: inDays(-100),
+      coverageType: 'Some coverage',
+    });
+
+    // A mislabelled entitlement is worse than a missing one: everything
+    // downstream reads entitlements[].provider as ground truth.
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ entitlements: [] }));
+  });
+});
+
+describe('upsertAgentWarranty entitlements array (#5511 W01, D10)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("stores every reported entitlement, each stamped with the derived provider", async () => {
+    const { values } = captureUpsert();
+
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, {
+      source: 'agent_cmsl',
+      manufacturer: 'HP',
+      serialNumber: 'HP-SERIAL-1',
+      coverageStartDate: '2024-03-01',
+      coverageEndDate: '2027-02-28',
+      coverageType: 'HP 3y Next Business Day Onsite',
+      entitlements: [
+        { serviceLevelDescription: 'HP 3y NBD Onsite', entitlementType: 'Hardware Support', startDate: '2024-03-01', endDate: '2027-02-28' },
+        { serviceLevelDescription: 'HP Pickup and Return', entitlementType: 'Hardware Support', startDate: '2024-03-01', endDate: '2026-02-28' },
+      ],
+    });
+
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entitlements: [
+          { provider: 'hp', serviceLevelDescription: 'HP 3y NBD Onsite', entitlementType: 'Hardware Support', startDate: '2024-03-01', endDate: '2027-02-28' },
+          { provider: 'hp', serviceLevelDescription: 'HP Pickup and Return', entitlementType: 'Hardware Support', startDate: '2024-03-01', endDate: '2026-02-28' },
+        ],
+      }),
+    );
+  });
+
+  it('preserves HP dates rather than re-deriving them from the coverage window', async () => {
+    const { values } = captureUpsert();
+
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, {
+      source: 'agent_cmsl',
+      manufacturer: 'HP',
+      serialNumber: 'HP-SERIAL-2',
+      coverageStartDate: '2024-03-01',
+      coverageEndDate: '2027-02-28',
+      coverageType: 'HP 3y Next Business Day Onsite',
+      entitlements: [{ entitlementType: 'Battery', startDate: '2024-03-01', endDate: '2025-03-01' }],
+    });
+
+    const written = values.mock.calls[0]![0] as { entitlements: Array<{ endDate: string }> };
+    expect(written.entitlements[0]!.endDate).toBe('2025-03-01');
+  });
+
+  it('re-slices to the bound so a non-HTTP caller cannot bypass the schema', async () => {
+    const { values } = captureUpsert();
+
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, {
+      source: 'agent_cmsl',
+      manufacturer: 'HP',
+      serialNumber: 'HP-SERIAL-3',
+      coverageStartDate: '2024-03-01',
+      coverageEndDate: '2027-02-28',
+      coverageType: 'x',
+      entitlements: Array.from({ length: 40 }, (_, i) => ({ entitlementType: `e${i}` })),
+    });
+
+    const written = values.mock.calls[0]![0] as { entitlements: unknown[] };
+    expect(written.entitlements).toHaveLength(25);
+  });
+
+  it('falls back to the single synthesised window when the collector reports none', async () => {
+    const { values } = captureUpsert();
+
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, {
+      source: 'agent_plist',
+      manufacturer: 'Apple',
+      serialNumber: 'APPLE-1',
+      coverageStartDate: '2024-01-01',
+      coverageEndDate: '2027-01-01',
+      coverageType: 'AppleCare+',
+      entitlements: null,
+    });
+
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entitlements: [expect.objectContaining({ provider: 'apple', entitlementType: 'AppleCare+' })],
+      }),
+    );
+  });
+});

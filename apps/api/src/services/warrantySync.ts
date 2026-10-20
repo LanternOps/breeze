@@ -1,8 +1,14 @@
 import { db } from '../db';
 import { deviceWarranty, deviceHardware, devices, manualAssets } from '../db/schema';
-import { eq, and, lt, isNull, or, sql } from 'drizzle-orm';
+import { eq, and, lt, isNull, or, sql, notInArray } from 'drizzle-orm';
 import { getProviderForManufacturer, normalizeManufacturer } from './warrantyProviders';
-import type { WarrantyLookupResult } from './warrantyProviders';
+import type { WarrantyEntitlement, WarrantyLookupResult } from './warrantyProviders';
+import {
+  AGENT_OWNED_WARRANTY_SOURCE_LIST,
+  MAX_AGENT_WARRANTY_ENTITLEMENTS,
+  isAgentOwnedWarrantySource,
+  warrantyEntitlementProviderForSource,
+} from './warrantyDataSources';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
@@ -150,7 +156,7 @@ export async function syncWarrantyForSubject(input: {
   if (!provider) {
     // Check if we already have agent-reported warranty data for this subject.
     // If so, don't overwrite it with an error — just skip. Only an agent writes
-    // 'agent_plist', so only a device subject can ever carry it.
+    // an agent-owned source, so only a device subject can ever carry one.
     if (subject.kind === 'device') {
       const [existing] = await db
         .select({ dataSource: deviceWarranty.dataSource, status: deviceWarranty.status })
@@ -158,13 +164,18 @@ export async function syncWarrantyForSubject(input: {
         .where(eq(deviceWarranty.deviceId, subject.deviceId))
         .limit(1);
 
-      if (existing?.dataSource === 'agent_plist') {
-        // Agent-reported data exists — preserve it regardless of status, just update nextSyncAt
+      // Generalised, not given a second hardcoded string (#5511 W01, D9). Keyed
+      // to the literal 'agent_plist', an `agent_cmsl` row fell through to the
+      // unknown-result upsert below, which nulls both dates, empties
+      // `entitlements` and flips `data_source` back to 'provider'.
+      if (isAgentOwnedWarrantySource(existing?.dataSource)) {
+        // Agent-reported data exists — preserve it regardless of status.
+        // `lastSyncAt` is deliberately NOT stamped: nothing was fetched, and the
+        // device card polls it to decide whether a manual refresh completed.
         const now = new Date();
         await db
           .update(deviceWarranty)
           .set({
-            lastSyncAt: now,
             lastSyncError: null,
             nextSyncAt: new Date(now.getTime() + SYNC_CADENCE_MS),
             updatedAt: now,
@@ -350,6 +361,18 @@ async function recordVendorShipDate(subject: WarrantySubject, shipDate: string |
   }
 }
 
+/**
+ * One entitlement as an agent collector reports it (#5511 W01, D10). No
+ * `provider` field: the server derives that from the reporting source, so an
+ * agent cannot attribute HP coverage to Apple.
+ */
+export interface AgentWarrantyEntitlement {
+  serviceLevelDescription?: string;
+  entitlementType?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
 /** Upsert warranty data reported directly by the agent (e.g. Apple plist). */
 export interface AgentWarrantyData {
   source: string;
@@ -367,6 +390,14 @@ export interface AgentWarrantyData {
    * fallback, or an older agent); it's treated as 'fixed' for back-compat.
    */
   coverageKind?: 'subscription' | 'fixed' | '' | null;
+  /**
+   * Per-entitlement coverage rows when the collector produces them (HP CMSL's
+   * `HP_Entitlements`). Bounded to MAX_AGENT_WARRANTY_ENTITLEMENTS by
+   * `agentWarrantyInfoSchema`, and re-sliced below so a non-HTTP caller cannot
+   * bypass that bound. Absent, null or empty keeps the legacy single-window
+   * behaviour synthesised from `coverageType`.
+   */
+  entitlements?: AgentWarrantyEntitlement[] | null;
 }
 
 /** Return the date string if it parses to a valid Date, otherwise null. */
@@ -400,16 +431,38 @@ export async function upsertAgentWarranty(
   const now = new Date();
   const nextSyncAt = new Date(now.getTime() + SYNC_CADENCE_MS);
 
-  // Build entitlements array from agent data
-  const entitlements = data.coverageType
-    ? [{
-        provider: 'apple' as const,
-        serviceLevelDescription: data.coverageType,
-        entitlementType: data.coverageType,
-        startDate: data.coverageStartDate ?? '',
-        endDate: data.coverageEndDate ?? '',
-      }]
-    : [];
+  // Build the entitlements array from agent data.
+  //
+  // The provider is DERIVED, never hardcoded (#5511 W01, defect 1). A null
+  // return means the coverage cannot be attributed to a vendor at all, in which
+  // case NO entitlement is synthesised: a mislabelled one is worse than none,
+  // because everything downstream reads entitlements[].provider as ground truth.
+  //
+  // Reported rows win over the synthesised window: HP reports its real
+  // per-entitlement dates, which the single coverageStart/End pair cannot
+  // express. The .slice is a second bound behind the schema's .max — the schema
+  // only guards the HTTP path, and this function is exported.
+  const entitlementProvider = warrantyEntitlementProviderForSource(data.source, data.manufacturer);
+  const reported = data.entitlements ?? [];
+  const entitlements: WarrantyEntitlement[] = !entitlementProvider
+    ? []
+    : reported.length > 0
+      ? reported.slice(0, MAX_AGENT_WARRANTY_ENTITLEMENTS).map((e) => ({
+          provider: entitlementProvider,
+          serviceLevelDescription: e.serviceLevelDescription ?? '',
+          entitlementType: e.entitlementType ?? '',
+          startDate: e.startDate ?? '',
+          endDate: e.endDate ?? '',
+        }))
+      : data.coverageType
+        ? [{
+            provider: entitlementProvider,
+            serviceLevelDescription: data.coverageType,
+            entitlementType: data.coverageType,
+            startDate: data.coverageStartDate ?? '',
+            endDate: data.coverageEndDate ?? '',
+          }]
+        : [];
 
   await db
     .insert(deviceWarranty)
@@ -508,10 +561,26 @@ export async function getDevicesNeedingWarrantySync(limit = 50): Promise<Warrant
         // Has hardware with serial number
         sql`${deviceHardware.serialNumber} IS NOT NULL`,
         sql`${deviceHardware.manufacturer} IS NOT NULL`,
-        // Either no warranty row or next sync is due
+        // Either no warranty row at all, or one that is due AND not agent-owned.
+        //
+        // An agent-owned row must never be re-selected (#5511 W01, D9): no
+        // registered provider answers for HP or Apple, so the sync can only
+        // preserve it, and every selected-but-preserved row burns one of this
+        // page's `limit` slots — a large HP fleet would starve the subjects a
+        // vendor CAN answer for.
+        //
+        // The explicit isNull arm is load-bearing: `NULL NOT IN (...)` is NULL,
+        // not TRUE, so a row with no data_source would otherwise be dropped from
+        // the sweep forever.
         or(
           isNull(deviceWarranty.id),
-          lt(deviceWarranty.nextSyncAt, now)
+          and(
+            lt(deviceWarranty.nextSyncAt, now),
+            or(
+              isNull(deviceWarranty.dataSource),
+              notInArray(deviceWarranty.dataSource, [...AGENT_OWNED_WARRANTY_SOURCE_LIST]),
+            ),
+          ),
         )
       )
     )
