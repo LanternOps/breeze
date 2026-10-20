@@ -53,6 +53,12 @@ export type Patch = {
   installFailure?: PatchInstallFailure;
   /** Devices in the caller's scope that still need the patch (#8728). */
   outstandingDeviceCount?: number;
+  /**
+   * Where a device-reported severity came from (#9387): 'derived' when the
+   * agent inferred it from the update's classification because the vendor
+   * published no rating. Undefined for the trusted catalog value or unknown.
+   */
+  severitySource?: 'vendor' | 'derived';
 };
 
 type PatchListProps = {
@@ -376,6 +382,15 @@ export default function PatchList({
         </span>
         {patch.severity === 'unrated' && (
           <span className="text-[10px] text-muted-foreground">{t('patchList.severity.unratedNote')}</span>
+        )}
+        {patch.severity !== 'unrated' && patch.severitySource === 'derived' && (
+          <span
+            className="w-fit cursor-help text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2"
+            title={t('patchList.severity.derivedTooltip')}
+            data-testid={`patch-row-${patch.id}-severity-derived`}
+          >
+            {t('patchList.severity.derivedNote')}
+          </span>
         )}
       </span>
     );

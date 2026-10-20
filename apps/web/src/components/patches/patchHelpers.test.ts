@@ -346,3 +346,24 @@ describe('normalizePatch — outstanding device count (#8728)', () => {
     expect(normalizePatch({ id: 'p1', title: 'KB1', outstandingDeviceCount: '3' }, 0).outstandingDeviceCount).toBeUndefined();
   });
 });
+
+describe('normalizePatch — severitySource (#9387)', () => {
+  it('carries a derived severity source through', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB1', severity: 'important', severitySource: 'derived' }, 0);
+    expect(patch.severitySource).toBe('derived');
+  });
+
+  it('carries a vendor severity source through', () => {
+    expect(normalizePatch({ id: 'p1', title: 'KB1', severity: 'critical', severitySource: 'vendor' }, 0).severitySource).toBe('vendor');
+  });
+
+  it('drops a missing or unrecognised source', () => {
+    expect(normalizePatch({ id: 'p1', title: 'KB1', severity: 'important' }, 0).severitySource).toBeUndefined();
+    expect(normalizePatch({ id: 'p1', title: 'KB1', severity: 'important', severitySource: null }, 0).severitySource).toBeUndefined();
+    expect(normalizePatch({ id: 'p1', title: 'KB1', severity: 'important', severitySource: 'guess' }, 0).severitySource).toBeUndefined();
+  });
+
+  it('never marks an unrated patch as derived', () => {
+    expect(normalizePatch({ id: 'p1', title: 'KB1', severity: 'unknown', severitySource: 'derived' }, 0).severitySource).toBeUndefined();
+  });
+});

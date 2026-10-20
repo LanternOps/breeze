@@ -51,6 +51,15 @@ function normalizeSeverity(value?: string): PatchSeverity {
   return severityMap[normalized] ?? 'unrated';
 }
 
+/**
+ * #9387: provenance of a device-reported severity. Only a real rating has
+ * one — an unrated patch is never shown as "derived".
+ */
+function normalizeSeveritySource(value: unknown, severity: PatchSeverity): Patch['severitySource'] {
+  if (severity === 'unrated') return undefined;
+  return value === 'derived' || value === 'vendor' ? value : undefined;
+}
+
 function normalizeApprovalStatus(value?: string): PatchApprovalStatus {
   if (!value) return 'pending';
   return approvalMap[value.toLowerCase()] ?? 'pending';
@@ -84,10 +93,13 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
     ? cveIdsRaw.filter((v): v is string => typeof v === 'string' && v.length > 0)
     : undefined;
 
+  const severity = normalizeSeverity(raw.severity ? String(raw.severity) : undefined);
+
   return {
     id: String(id),
     title: String(title),
-    severity: normalizeSeverity(raw.severity ? String(raw.severity) : undefined),
+    severity,
+    severitySource: normalizeSeveritySource(raw.severitySource ?? raw.severity_source, severity),
     source: typeof source === 'string' && source.trim() ? source : 'unknown',
     os: normalizeOs(os ? String(os) : undefined),
     releaseDate: String(releaseDate),

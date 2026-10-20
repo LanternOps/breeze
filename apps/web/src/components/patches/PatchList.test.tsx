@@ -134,6 +134,34 @@ describe('PatchList severity (#3758)', () => {
     expect(screen.queryByText(/will not auto-approve/i)).toBeNull();
   });
 
+  // #9387: a severity the agent derived (Windows Update sent no MSRC rating)
+  // is labelled so nobody mistakes it for a vendor rating.
+  it('marks a derived severity as derived, with an explanation', () => {
+    const patch = makePatch({
+      id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+      title: 'KB5127001',
+      severity: 'important',
+      severitySource: 'derived',
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    const markers = screen.getAllByTestId(`patch-row-${patch.id}-severity-derived`);
+    expect(markers.length).toBeGreaterThan(0);
+    expect(markers[0]).toHaveTextContent(/derived/i);
+    expect(markers[0]).toHaveAttribute('title', expect.stringMatching(/no rating/i));
+  });
+
+  it('does not mark a vendor-rated or provenance-less severity as derived', () => {
+    const vendor = makePatch({ id: 'aaaaaaaa-1111-1111-1111-111111111111', severity: 'critical', severitySource: 'vendor' });
+    const plain = makePatch({ id: 'bbbbbbbb-1111-1111-1111-111111111111', severity: 'critical' });
+
+    render(<PatchList patches={[vendor, plain]} />);
+
+    expect(screen.queryByTestId(`patch-row-${vendor.id}-severity-derived`)).toBeNull();
+    expect(screen.queryByTestId(`patch-row-${plain.id}-severity-derived`)).toBeNull();
+  });
+
   it('offers "Unrated" as a severity filter option', () => {
     render(<PatchList patches={[]} />);
 

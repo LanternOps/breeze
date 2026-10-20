@@ -259,7 +259,9 @@
       "moderate": "Modéré",
       "low": "Faible",
       "unrated": "Non évalué",
-      "unratedNote": "Ne sera pas approuvé automatiquement"
+      "unratedNote": "Ne sera pas approuvé automatiquement",
+      "derivedNote": "Niveau déduit",
+      "derivedTooltip": "L'éditeur n'a publié aucune évaluation pour cette mise à jour. Cette gravité a été déduite de sa classification et de son titre."
     },
     "approval": {
       "pending": "En attente",
