@@ -3473,6 +3473,25 @@ describe('IP_ALLOWLIST_ENFORCEMENT_MODE (#2896)', () => {
   );
 });
 
+// B-W03 (#6157): the stateless MCP era kill switch. Read per request by
+// mcpStatelessEnabled() with the envFlag vocabulary; a typo must fail boot
+// rather than leave an operator believing they enabled (or disabled) it.
+describe('MCP_STATELESS_ENABLED boolean guard', () => {
+  it('is declared in the schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('MCP_STATELESS_ENABLED');
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts %s', (value) => {
+    withEnv({ ...validEnv, MCP_STATELESS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_STATELESS_ENABLED).toBe(value);
+    });
+  });
+  it('refuses boot on a typo', () => {
+    withEnv({ ...validEnv, MCP_STATELESS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_STATELESS_ENABLED/);
+    });
+  });
+});
+
 describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {
   it('accepts an explicit false', () => {
     withEnv({ ...validEnv, AGENT_AUTO_PROMOTE: 'false' }, () => {

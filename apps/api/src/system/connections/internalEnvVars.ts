@@ -305,6 +305,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 'rate limit knob',
   // MCP_*
   MCP_EXECUTE_TOOL_ALLOWLIST: 'MCP tool policy',
+  MCP_HEADER_MISMATCH_ALERT_THRESHOLD: 'alert threshold',
   MCP_INSUFFICIENT_SCOPE_HTTP_403: 'MCP step-up challenge flag',
   MCP_MAX_SSE_SESSIONS_PER_KEY: 'rate limit knob',
   MCP_MESSAGE_MAX_BODY_BYTES: 'request size limit',
@@ -312,6 +313,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MCP_REQUIRE_EXECUTE_ADMIN: 'MCP tool policy',
   MCP_SESSION_TTL_SECONDS: 'timing knob',
   MCP_SSE_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
+  MCP_STATELESS_ENABLED: 'MCP rollout flag',
   MCP_UNATTENDED_TIER3_PRINCIPALS: 'MCP tool policy',
   MCP_TOOLS_LIST_PAGE_SIZE: 'paging knob',
   MCP_UNKNOWN_SESSION_ALERT_THRESHOLD: 'alert threshold',

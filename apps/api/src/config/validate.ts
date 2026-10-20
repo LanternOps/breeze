@@ -689,6 +689,12 @@ const envObjectSchema = z
     // "off" for an operator who believed they enabled auto-remediation.
     AGENT_EDITION_AUTO_MIGRATE_ENABLED: z.string().optional(),
 
+    // Stateless MCP 2026-07-28 era kill switch (B-W03 #6157). Default false;
+    // read per request by mcpStatelessEnabled() (services/mcpProtocol.ts).
+    // Validated here for boolean format only, same class as
+    // AGENT_AUTO_PROMOTE above.
+    MCP_STATELESS_ENABLED: z.string().optional(),
+
     // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
     // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
     // env.ts. Validated here for boolean format only, for the same reason as
@@ -2051,6 +2057,18 @@ const envSchema = envObjectSchema
         message:
           'AGENT_EDITION_AUTO_MIGRATE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
           'Defaults to false (no automatic edition-migration dispatch).',
+      });
+    }
+
+    // MCP_STATELESS_ENABLED (B-W03 #6157). Same treatment as AGENT_AUTO_PROMOTE.
+    const mcpStatelessRaw = (data.MCP_STATELESS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpStatelessRaw && !boolValues.has(mcpStatelessRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_STATELESS_ENABLED'],
+        message:
+          'MCP_STATELESS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (the MCP server answers only the initialize-based protocol versions).',
       });
     }
 

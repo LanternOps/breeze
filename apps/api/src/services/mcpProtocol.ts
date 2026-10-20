@@ -102,3 +102,18 @@ export function mcpToolsListPageSize(env: NodeJS.ProcessEnv = process.env): numb
   const size = Number(env.MCP_TOOLS_LIST_PAGE_SIZE);
   return Number.isInteger(size) && size > 0 ? size : 0;
 }
+
+const STATELESS_TRUE_VALUES: ReadonlySet<string> = new Set(['1', 'true', 'yes', 'on']);
+
+/**
+ * B-W03 (#6157, D-B24): `MCP_STATELESS_ENABLED` kill switch, default off.
+ * Same truthy vocabulary as `envFlag` in config/env.ts. Read per request (like
+ * `MCP_INSUFFICIENT_SCOPE_HTTP_403`) so the route snapshots it once per
+ * request and passes that one value to both classification and the
+ * advertised version list.
+ */
+export function mcpStatelessEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.MCP_STATELESS_ENABLED;
+  if (!raw) return false;
+  return STATELESS_TRUE_VALUES.has(raw.trim().toLowerCase());
+}

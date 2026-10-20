@@ -3,7 +3,7 @@ import {
   ASSUMED_MCP_PROTOCOL_VERSION, LATEST_LEGACY_MCP_PROTOCOL_VERSION, LEGACY_MCP_PROTOCOL_VERSIONS,
   MODERN_MCP_PROTOCOL_VERSIONS, SUPPORTED_MCP_PROTOCOL_VERSIONS,
   isLegacyMcpProtocolVersion, isModernMcpProtocolVersion, supportedMcpProtocolVersions,
-  computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize,
+  computeToolsListCatalogFingerprint, decodeToolsListCursor, mcpStatelessEnabled, encodeToolsListCursor, mcpToolsListPageSize,
   negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader,
 } from './mcpProtocol';
 
@@ -72,5 +72,10 @@ describe('mcpProtocol', () => {
     expect(mcpToolsListPageSize({ MCP_TOOLS_LIST_PAGE_SIZE: '50' })).toBe(50);
     expect(mcpToolsListPageSize({ MCP_TOOLS_LIST_PAGE_SIZE: 'x' })).toBe(0);
     expect(mcpToolsListPageSize({ MCP_TOOLS_LIST_PAGE_SIZE: '-3' })).toBe(0);
+  });
+  it('reads MCP_STATELESS_ENABLED per call with the envFlag vocabulary, default off', () => {
+    expect(mcpStatelessEnabled({})).toBe(false);
+    for (const v of ['1', 'true', 'TRUE', ' yes ', 'on']) expect(mcpStatelessEnabled({ MCP_STATELESS_ENABLED: v })).toBe(true);
+    for (const v of ['0', 'false', 'off', 'no', '', 'enabled']) expect(mcpStatelessEnabled({ MCP_STATELESS_ENABLED: v })).toBe(false);
   });
 });

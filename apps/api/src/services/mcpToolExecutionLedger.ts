@@ -42,7 +42,14 @@ export interface BeginMcpToolExecutionLedgerInput {
   tier: number;
   toolInput: Record<string, unknown>;
   principal: McpToolExecutionLedgerPrincipal;
+  /** Verified-owned legacy transport session; null in the stateless era. */
   transportSessionId?: string | null;
+  /**
+   * B-W03 (#6157, D-B19): the server-minted per-request UUID — the same value
+   * the request audit and tool audit carry as `resourceId`.
+   */
+  transportRequestId: string;
+  era: 'legacy' | 'modern';
 }
 
 export interface CompleteMcpToolExecutionLedgerInput {
@@ -94,6 +101,8 @@ export async function beginMcpToolExecutionLedger(
     target,
     transport: {
       sessionId: input.transportSessionId ?? null,
+      requestId: input.transportRequestId,
+      era: input.era,
     },
   };
 
@@ -117,6 +126,8 @@ export async function beginMcpToolExecutionLedger(
             source: 'mcp',
             principal,
             transportSessionId: input.transportSessionId ?? null,
+            transportRequestId: input.transportRequestId,
+            era: input.era,
           },
           systemPrompt: null,
         });

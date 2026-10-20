@@ -49,6 +49,8 @@ function baseInput(overrides: Partial<BeginMcpToolExecutionLedgerInput> = {}): B
     toolInput: { orgId: OWN_ORG },
     principal: { apiKeyId: 'key-1', oauthGrantId: null, partnerId: 'p-1', actorUserId: null },
     transportSessionId: null,
+    transportRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    era: 'legacy',
     ...overrides,
   };
 }
@@ -98,5 +100,31 @@ describe('beginMcpToolExecutionLedger — AI origin (#5022 W01)', () => {
     expect(handle.aiOrigin.sessionId).toBe(handle.sessionId);
     expect(handle.aiOrigin.sessionId).not.toBe('mcp-transport-abc');
     expect(handle.aiOrigin.agentRunId).toBeUndefined();
+  });
+});
+
+describe('beginMcpToolExecutionLedger — request correlation (B-W03 #6157)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('records the server-minted transportRequestId and era in BOTH ledger representations', async () => {
+    await beginMcpToolExecutionLedger(
+      baseInput({ transportSessionId: null, transportRequestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', era: 'modern' }),
+    );
+    const insertMock = db.insert as unknown as ReturnType<typeof vi.fn>;
+    const valuesCalls = insertMock.mock.results.map((r) => (r.value as { values: ReturnType<typeof vi.fn> }).values.mock.calls[0]![0]);
+    const sessionRow = valuesCalls[0] as { contextSnapshot: Record<string, unknown> };
+    const execRow = valuesCalls[1] as { toolInput: { transport: Record<string, unknown> } };
+    expect(sessionRow.contextSnapshot).toMatchObject({
+      transportSessionId: null,
+      transportRequestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      era: 'modern',
+    });
+    expect(execRow.toolInput.transport).toEqual({
+      sessionId: null,
+      requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      era: 'modern',
+    });
   });
 });

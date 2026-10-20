@@ -367,7 +367,16 @@ async function dispatchBootstrap(
     testState.scopes,
     apiKey as any,
     await makeContext(),
-    'sess-1',
+    {
+      requestId: '00000000-0000-4000-8000-0000000000a1',
+      era: 'legacy',
+      protocolVersion: '2025-11-25',
+      transport: 'streamable_http',
+      sessionId: 'sess-1',
+      principalKey: 'key-1',
+      tokenJti: null,
+      clientInfo: null,
+    },
   ) as Promise<any>;
 }
 
