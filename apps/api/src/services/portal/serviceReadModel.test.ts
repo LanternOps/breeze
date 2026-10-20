@@ -165,6 +165,22 @@ describe('serviceOverview', () => {
     }
   });
 
+  it('never publishes signed-agreement evidence: the portal has no agreements read path yet (#9312)', async () => {
+    // The kind must be refused by NAME, not by falling through to the
+    // report_run arm: this row carries report-shaped fields that the report
+    // arm would publish.
+    seed({ enableReports: true, evidence: [{
+      occurrenceId: 'o1', evidenceId: 'e4', kind: 'contract_document', documentId: null,
+      documentTitle: null, documentPortalVisible: null, documentDeletedAt: null,
+      reportRunId: 'r1', reportName: 'Not a report', reportPortalSelfService: true,
+      occurrenceStatus: 'delivered',
+      createdAt: new Date('2026-10-02T09:05:00Z'),
+    }] });
+    const dto = await serviceOverview(ORG_ID, { timezone: 'UTC', now: NOW });
+    expect(dto.groups[0]!.deliverables[0]!.lastDelivered!.evidence).toEqual([]);
+    expect(dto.groups[0]!.deliverables[0]!.lastDelivered!.artifactState).toBe('held_by_msp');
+  });
+
   it('publishes a portal-visible document even when documents are off', async () => {
     // Spec §8: enable_documents governs the LIBRARY page only. The branding read
     // in this read model asks for enableReports and nothing else, so a document

@@ -360,6 +360,46 @@ describe('serviceDeliverableService', () => {
     });
   });
 
+  describe('signed agreement evidence (#9312)', () => {
+    const CDOC_ID = '44444444-4444-4444-8444-444444444444';
+
+    it('links a signed agreement of the same org by reference (no copy into the library)', async () => {
+      queueResult([occ({ status: 'open' })]); // load
+      queueResult([{ id: CDOC_ID }]); // contract document lookup (org-scoped)
+      queueResult([]); // insert
+      queueResult([occ({ status: 'open' })]); // reload
+      queueResult([{ id: 'e1', kind: 'contract_document', documentId: null, reportId: null, reportRunId: null, contractDocumentId: CDOC_ID, createdAt: new Date('2026-10-20T00:00:00Z') }]);
+      const view = await addEvidence('org1', 'o1', { kind: 'contract_document', contractDocumentId: CDOC_ID }, actor);
+      expect(lastValues()).toMatchObject({
+        orgId: 'org1', occurrenceId: 'o1', kind: 'contract_document', contractDocumentId: CDOC_ID,
+        documentId: null, reportId: null, reportRunId: null, createdByUserId: 'u1',
+      });
+      expect(view.evidence[0]).toMatchObject({ kind: 'contract_document', contractDocumentId: CDOC_ID });
+    });
+
+    it('a signed agreement of another org is 404 and nothing is inserted', async () => {
+      queueResult([occ({ status: 'open' })]);
+      queueResult([]); // lookup filtered by org_id finds nothing
+      await expect(addEvidence('org1', 'o1', { kind: 'contract_document', contractDocumentId: CDOC_ID }, actor))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
+      const params = chain.where.mock.calls.flatMap((c) => boundParams(c[0]));
+      expect(params).toEqual(expect.arrayContaining([CDOC_ID, 'org1']));
+    });
+
+    it('delivering with a signed agreement satisfies artifactRequired', async () => {
+      queueResult([occ({ status: 'open', artifactRequired: true })]); // load
+      queueResult([{ id: CDOC_ID }]); // lookup
+      queueResult([]); // insert
+      queueResult([{ n: 1 }]); // evidence count
+      queueResult([{ id: 'o1' }]); // update returning
+      queueResult([occ({ status: 'delivered', deliveredAt: new Date('2026-10-20T00:00:00Z'), deliveredVia: 'explicit' })]);
+      queueResult([{ id: 'e1', kind: 'contract_document', documentId: null, reportId: null, reportRunId: null, contractDocumentId: CDOC_ID, createdAt: new Date('2026-10-20T00:00:00Z') }]);
+      const view = await deliverOccurrence('org1', 'o1', { evidence: [{ kind: 'contract_document', contractDocumentId: CDOC_ID }] }, actor);
+      expect(view.status).toBe('delivered');
+    });
+  });
+
   describe('getOccurrenceOr404 (W03)', () => {
     it('answers 404 — never 403 — for an occurrence of another org, without a query', async () => {
       await expect(getOccurrenceOr404('org1', 'o1', { ...actor, accessibleOrgIds: ['org9'] })).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
@@ -415,7 +455,7 @@ describe('serviceDeliverableService', () => {
       expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'open']));
       expect(view.status).toBe('delivered');
       expect(view.late).toBe(false);
-      expect(view.evidence).toEqual([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, createdAt: '2026-10-20T00:00:00.000Z' }]);
+      expect(view.evidence).toEqual([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, contractDocumentId: null, createdAt: '2026-10-20T00:00:00.000Z' }]);
       expect(view).not.toHaveProperty('artifactRequired');
     });
 

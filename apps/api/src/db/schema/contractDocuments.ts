@@ -183,6 +183,8 @@ export const contractDocuments = pgTable('contract_documents', {
   acceptanceRenderLocale: varchar('acceptance_render_locale', { length: 16 })
 }, (t) => [
   index('contract_documents_org_idx').on(t.orgId),
+  // #9312: FK target for service_deliverable_evidence (contract_document_id, org_id).
+  uniqueIndex('contract_documents_id_org_uq').on(t.id, t.orgId),
   index('contract_documents_contract_idx').on(t.contractId),
   index('contract_documents_quote_idx').on(t.quoteId),
   uniqueIndex('contract_documents_agreement_request_uq').on(t.agreementRequestId).where(sql`${t.agreementRequestId} IS NOT NULL`)

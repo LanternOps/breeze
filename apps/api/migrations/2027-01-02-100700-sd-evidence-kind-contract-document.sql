@@ -1,0 +1,11 @@
+-- #9312: a signed agreement already stored in contract_documents can be linked
+-- as service-deliverable evidence BY REFERENCE (no copy into org_documents).
+--
+-- Step 1 of 2: the new enum value. Its own file because Postgres refuses to
+-- USE a value added by ALTER TYPE ... ADD VALUE inside the transaction that
+-- added it (55P04 "unsafe use of new value"), and autoMigrate wraps each file
+-- in one transaction. The column, FK and CHECK that use it are in
+-- 2027-01-02-100710-sd-evidence-contract-document.sql.
+--
+-- ADD VALUE IF NOT EXISTS is a no-op on re-apply. DDL only: no row writes.
+ALTER TYPE deliverable_evidence_kind ADD VALUE IF NOT EXISTS 'contract_document';

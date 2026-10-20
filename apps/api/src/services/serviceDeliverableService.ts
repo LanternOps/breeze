@@ -9,6 +9,7 @@ import { organizations } from '../db/schema/orgs';
 import { users } from '../db/schema/users';
 import { reports, reportRuns } from '../db/schema/reports';
 import { orgDocuments } from '../db/schema/orgDocuments';
+import { contractDocuments } from '../db/schema/contractDocuments';
 import { ticketCategories } from '../db/schema/tickets';
 import { ticketChecklistItems, ticketChecklistTemplateItems } from '../db/schema/ticketChecklists';
 import { checklistCountsForTickets } from './ticketChecklistService';
@@ -52,7 +53,13 @@ export interface DeliverableSummary extends ServiceDeliverableRow {
 
 export interface OccurrenceView extends ServiceDeliverableOccurrenceRow {
   late: boolean;
-  evidence: Array<{ id: string; kind: 'document' | 'report_run'; documentId: string | null; reportId: string | null; reportRunId: string | null; createdAt: string }>;
+  evidence: Array<{
+    id: string; kind: 'document' | 'report_run' | 'contract_document';
+    documentId: string | null; reportId: string | null; reportRunId: string | null;
+    /** #9312: the signed agreement (contract_documents) this evidence references. */
+    contractDocumentId: string | null;
+    createdAt: string;
+  }>;
   /**
    * #5808 W03 — MSP-only checklist progress for the occurrence's ticket. `null`
    * when the occurrence has no ticket or its ticket has no checklist.
@@ -410,16 +417,20 @@ function isLate(o: Pick<ServiceDeliverableOccurrenceRow, 'status' | 'dueAt' | 'd
   return today > o.dueAt;
 }
 
-type EvidenceListRow = Pick<typeof serviceDeliverableEvidence.$inferSelect, 'id' | 'occurrenceId' | 'kind' | 'documentId' | 'reportId' | 'reportRunId' | 'createdAt'>;
+type EvidenceListRow = Pick<typeof serviceDeliverableEvidence.$inferSelect, 'id' | 'occurrenceId' | 'kind' | 'documentId' | 'reportId' | 'reportRunId' | 'contractDocumentId' | 'createdAt'>;
 
 const evidenceColumns = {
   id: serviceDeliverableEvidence.id, occurrenceId: serviceDeliverableEvidence.occurrenceId, kind: serviceDeliverableEvidence.kind,
   documentId: serviceDeliverableEvidence.documentId, reportId: serviceDeliverableEvidence.reportId,
-  reportRunId: serviceDeliverableEvidence.reportRunId, createdAt: serviceDeliverableEvidence.createdAt,
+  reportRunId: serviceDeliverableEvidence.reportRunId, contractDocumentId: serviceDeliverableEvidence.contractDocumentId,
+  createdAt: serviceDeliverableEvidence.createdAt,
 };
 
 function toEvidenceView(e: EvidenceListRow): OccurrenceView['evidence'][number] {
-  return { id: e.id, kind: e.kind, documentId: e.documentId, reportId: e.reportId, reportRunId: e.reportRunId, createdAt: e.createdAt.toISOString() };
+  return {
+    id: e.id, kind: e.kind, documentId: e.documentId, reportId: e.reportId, reportRunId: e.reportRunId,
+    contractDocumentId: e.contractDocumentId ?? null, createdAt: e.createdAt.toISOString(),
+  };
 }
 
 function toView(
@@ -480,6 +491,25 @@ async function insertEvidenceRef(orgId: string, occurrenceId: string, ref: Evide
       if (!doc) throw notFound();
       await executor.insert(serviceDeliverableEvidence).values({
         orgId, occurrenceId, kind: 'document', documentId: doc.id, reportId: null, reportRunId: null, createdByUserId: actor.userId,
+      });
+      return;
+    }
+    case 'contract_document': {
+      // #9312: a signed agreement already stored in Breeze, referenced in
+      // place — never copied into org_documents, so there is one record with
+      // one retention rule. Same 404-not-403 contract as 'document': another
+      // org's agreement must be indistinguishable from a missing one. The
+      // explicit org predicate matters because a partner-scoped RLS context
+      // can see every org of the partner; the composite FK
+      // (contract_document_id, org_id) is the DB backstop.
+      const [agreement] = await executor.select({ id: contractDocuments.id })
+        .from(contractDocuments)
+        .where(and(eq(contractDocuments.id, ref.contractDocumentId), eq(contractDocuments.orgId, orgId)))
+        .limit(1);
+      if (!agreement) throw notFound();
+      await executor.insert(serviceDeliverableEvidence).values({
+        orgId, occurrenceId, kind: 'contract_document', contractDocumentId: agreement.id,
+        documentId: null, reportId: null, reportRunId: null, createdByUserId: actor.userId,
       });
       return;
     }

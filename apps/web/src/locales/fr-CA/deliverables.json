@@ -107,11 +107,17 @@
     "linkDocumentLoading": "Chargement des documents…",
     "linkDocumentPlaceholder": "Choisir un document…",
     "linkDocumentEmpty": "Aucun document dans la bibliothèque de cette organisation pour le moment.",
+    "linkAgreement": "Lier une entente signée",
+    "linkAgreementSelect": "Choisir une entente signée à lier comme preuve",
+    "linkAgreementLoading": "Chargement des ententes signées…",
+    "linkAgreementPlaceholder": "Choisir une entente signée…",
+    "linkAgreementEmpty": "Aucune entente signée pour cette organisation pour le moment.",
     "link": "Lier"
   },
   "evidence": {
     "reportRun": "Exécution de rapport",
     "document": "Document",
+    "signedAgreement": "Entente signée",
     "reportRunId": "Identifiant d'exécution de rapport"
   },
   "upcoming": {
@@ -132,7 +138,8 @@
     "unsupportedType": "Seuls les fichiers PDF, JPEG, PNG et WebP peuvent être joints.",
     "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu.",
     "linkFailed": "Impossible de lier le document.",
-    "libraryLoadFailed": "Impossible de charger la bibliothèque de documents."
+    "libraryLoadFailed": "Impossible de charger la bibliothèque de documents.",
+    "agreementsLoadFailed": "Impossible de charger les ententes signées."
   },
   "confirm": {
     "deactivate": "Désactiver {{name}}? Les occurrences ouvertes seront fermées et aucune nouvelle ne sera planifiée.",

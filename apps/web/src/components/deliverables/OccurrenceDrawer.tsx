@@ -18,6 +18,7 @@ import {
   type OccurrenceStatus,
 } from '../../lib/api/serviceDeliverables';
 import { listOrgDocuments, type OrgDocument } from '../../lib/api/orgDocuments';
+import { listOrgSignedAgreements, type ContractDocument } from '../../lib/api/contractDocuments';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { formatDate } from '../billing/shared/format';
 import { Drawer } from '../shared/Drawer';
@@ -36,6 +37,9 @@ export interface OccurrenceDrawerProps {
 }
 
 type ActionKind = 'deliver' | 'waive' | 'reschedule';
+/** Which existing-record picker is open: a library document (#9311) or a
+ *  signed agreement (#9312). One picker at a time across the whole drawer. */
+type LinkSource = 'document' | 'agreement';
 
 // Mirrors the API state machine (serviceDeliverableState.ts): deliver/waive
 // need an ACTIVE occurrence, reopen a terminal one, reschedule any non-terminal.
@@ -72,8 +76,22 @@ function isEvidenceRequired(err: unknown): boolean {
 }
 
 function evidenceRef(ev: OccurrenceEvidence): string {
-  const raw = ev.kind === 'document' ? ev.documentId : ev.reportRunId;
+  const raw = ev.kind === 'document' ? ev.documentId
+    : ev.kind === 'contract_document' ? ev.contractDocumentId
+      : ev.reportRunId;
   return raw ? raw.slice(0, 8) : ev.id.slice(0, 8);
+}
+
+const EVIDENCE_KIND_KEY: Record<OccurrenceEvidence['kind'], string> = {
+  document: 'evidence.document',
+  report_run: 'evidence.reportRun',
+  contract_document: 'evidence.signedAgreement',
+};
+
+/** "Master services agreement v3 — Jane Doe, Sep 15, 2026" */
+function agreementLabel(a: ContractDocument): string {
+  const who = [a.signerName, formatDate(a.signedAt ?? a.createdAt)].filter(Boolean).join(', ');
+  return `${a.templateName} v${a.templateVersionNumber}${who ? ` — ${who}` : ''}`;
 }
 
 export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose, onChanged }: OccurrenceDrawerProps) {
@@ -95,12 +113,17 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   // TicketChecklistCard is ever mounted at a time, so opening a fleet-sized
   // deliverable never fires two dozen checklist fetches on drawer open.
   // #9311 — "link existing document": one picker open at a time, library
-  // fetched each time a picker opens.
-  const [linkingId, setLinkingId] = useState<string | null>(null);
+  // fetched each time a picker opens. #9312 adds the signed-agreement picker
+  // under the same one-at-a-time rule.
+  const [linking, setLinking] = useState<{ id: string; source: LinkSource } | null>(null);
   const [linkDocId, setLinkDocId] = useState('');
   const [library, setLibrary] = useState<OrgDocument[] | null>(null);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
+  const [linkAgreementId, setLinkAgreementId] = useState('');
+  const [agreements, setAgreements] = useState<ContractDocument[] | null>(null);
+  const [agreementsLoading, setAgreementsLoading] = useState(false);
+  const [agreementsError, setAgreementsError] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -217,16 +240,35 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
     }
   };
 
-  const toggleLink = (id: string) => {
-    if (linkingId === id) {
-      setLinkingId(null);
+  const loadAgreements = async () => {
+    setAgreementsLoading(true);
+    setAgreementsError(false);
+    try {
+      setAgreements(await listOrgSignedAgreements(fetcher, orgId));
+    } catch (err) {
+      console.error('[OccurrenceDrawer] signed agreements load failed', err);
+      // 401: the auth redirect is already taking over; don't flash an error.
+      if (!(err instanceof ActionError && err.status === 401)) setAgreementsError(true);
+    } finally {
+      setAgreementsLoading(false);
+    }
+  };
+
+  const toggleLink = (id: string, source: LinkSource) => {
+    if (linking?.id === id && linking.source === source) {
+      setLinking(null);
       return;
     }
-    setLinkingId(id);
-    setLinkDocId('');
-    // Refetch on every open so a document uploaded since the last open (here
-    // or elsewhere) is linkable; the previous list stays visible meanwhile.
-    if (!libraryLoading) void loadLibrary();
+    setLinking({ id, source });
+    // Refetch on every open so a record added since the last open (here or
+    // elsewhere) is linkable; the previous list stays visible meanwhile.
+    if (source === 'document') {
+      setLinkDocId('');
+      if (!libraryLoading) void loadLibrary();
+    } else {
+      setLinkAgreementId('');
+      if (!agreementsLoading) void loadAgreements();
+    }
   };
 
   /** #9311: attach a document already in the org library (no re-upload). */
@@ -240,8 +282,29 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
         { errorFallback: t('errors.linkFailed'), successMessage: t('toast.evidenceLinked') },
       );
       applyResult(next);
-      setLinkingId(null);
+      setLinking(null);
       setLinkDocId('');
+    } catch (err) {
+      handleActionError(err, t('errors.linkFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** #9312: cite a signed agreement already stored in Breeze — by reference,
+   *  never by re-uploading its PDF into the library. */
+  const linkAgreement = async (id: string) => {
+    if (!linkAgreementId || busy) return;
+    setBusy(true);
+    setInlineError(null);
+    try {
+      const next = await runClientAction(
+        () => addEvidence(fetcher, orgId, id, { kind: 'contract_document', contractDocumentId: linkAgreementId }),
+        { errorFallback: t('errors.linkFailed'), successMessage: t('toast.evidenceLinked') },
+      );
+      applyResult(next);
+      setLinking(null);
+      setLinkAgreementId('');
     } catch (err) {
       handleActionError(err, t('errors.linkFailed'));
     } finally {
@@ -343,7 +406,7 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                         className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary"
                         data-testid={`evidence-chip-${ev.id}`}
                       >
-                        {ev.kind === 'document' ? t('evidence.document') : t('evidence.reportRun')}
+                        {t(/* i18n-dynamic */ EVIDENCE_KIND_KEY[ev.kind])}
                         <span className="font-mono">{evidenceRef(ev)}</span>
                         <button
                           type="button"
@@ -386,18 +449,79 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                     <span className="text-muted-foreground">{t('drawer.uploadEvidenceHint')}</span>
                     <button
                       type="button"
-                      onClick={() => toggleLink(occ.id)}
+                      onClick={() => toggleLink(occ.id, 'document')}
                       disabled={busy}
-                      aria-expanded={linkingId === occ.id}
+                      aria-expanded={linking?.id === occ.id && linking.source === 'document'}
                       className={ACTION_BTN}
                       data-testid={`occurrence-evidence-link-${occ.id}`}
                     >
                       {t('drawer.linkDocument')}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleLink(occ.id, 'agreement')}
+                      disabled={busy}
+                      aria-expanded={linking?.id === occ.id && linking.source === 'agreement'}
+                      className={ACTION_BTN}
+                      data-testid={`occurrence-evidence-link-agreement-${occ.id}`}
+                    >
+                      {t('drawer.linkAgreement')}
+                    </button>
                   </div>
                 )}
 
-                {occ.status !== 'waived' && linkingId === occ.id && (
+                {occ.status !== 'waived' && linking?.id === occ.id && linking.source === 'agreement' && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs" data-testid={`occurrence-evidence-agreement-panel-${occ.id}`}>
+                    <label className="sr-only" htmlFor={`${uid}-agreement-${occ.id}`}>
+                      {t('drawer.linkAgreementSelect')}
+                    </label>
+                    <select
+                      id={`${uid}-agreement-${occ.id}`}
+                      className="max-w-[20rem] rounded-md border bg-background px-2 py-1 text-xs"
+                      value={linkAgreementId}
+                      onChange={(e) => setLinkAgreementId(e.target.value)}
+                      disabled={agreementsLoading || busy}
+                      data-testid={`occurrence-evidence-agreement-select-${occ.id}`}
+                    >
+                      <option value="">
+                        {agreementsLoading ? t('drawer.linkAgreementLoading') : t('drawer.linkAgreementPlaceholder')}
+                      </option>
+                      {(agreements ?? []).map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {agreementLabel(a)}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void linkAgreement(occ.id)}
+                      disabled={busy || !linkAgreementId}
+                      className={ACTION_BTN}
+                      data-testid={`occurrence-evidence-agreement-save-${occ.id}`}
+                    >
+                      {t('drawer.link')}
+                    </button>
+                    {agreementsError && (
+                      <span className="inline-flex items-center gap-1.5 text-destructive" role="alert">
+                        {t('errors.agreementsLoadFailed')}
+                        <button
+                          type="button"
+                          onClick={() => void loadAgreements()}
+                          disabled={agreementsLoading}
+                          className={ACTION_BTN}
+                          data-testid={`occurrence-evidence-agreement-retry-${occ.id}`}
+                        >
+                          {t('actions.retry')}
+                        </button>
+                      </span>
+                    )}
+                    {agreements !== null && agreements.length === 0 && (
+                      <span className="text-muted-foreground">{t('drawer.linkAgreementEmpty')}</span>
+                    )}
+                  </div>
+                )}
+
+                {occ.status !== 'waived' && linking?.id === occ.id && linking.source === 'document' && (
                   <div className="flex flex-wrap items-center gap-2 text-xs" data-testid={`occurrence-evidence-link-panel-${occ.id}`}>
                     <label className="sr-only" htmlFor={`${uid}-doc-${occ.id}`}>
                       {t('drawer.linkDocumentSelect')}

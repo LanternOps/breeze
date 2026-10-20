@@ -220,6 +220,39 @@ describe('service deliverable routes (#5573 W01)', () => {
     expect(removeEvidence).toHaveBeenCalledWith(ORG, OCC, EVID, ACTOR);
   });
 
+  describe('signed agreement evidence (#9312) needs agreements:read on top of contracts:write', () => {
+    const CONTRACTS_ONLY = { authorization: 'Bearer token', 'x-allow': 'contracts:write', 'content-type': 'application/json' };
+    const BOTH = { authorization: 'Bearer token', 'x-allow': 'contracts:write,agreements:read', 'content-type': 'application/json' };
+    const send = (path: string, body: unknown, headers: Record<string, string>) =>
+      app.request(path, { method: 'POST', headers, body: JSON.stringify(body) });
+    const ref = { kind: 'contract_document', contractDocumentId: RUN };
+
+    it('POST evidence with a contract_document ref → 403 without agreements:read, service untouched', async () => {
+      const res = await send(`/${ORG}/deliverables/occurrences/${OCC}/evidence`, ref, CONTRACTS_ONLY);
+      expect(res.status).toBe(403);
+      expect(addEvidence).not.toHaveBeenCalled();
+    });
+
+    it('POST evidence with a contract_document ref → 200 with agreements:read', async () => {
+      const res = await send(`/${ORG}/deliverables/occurrences/${OCC}/evidence`, ref, BOTH);
+      expect(res.status).toBe(200);
+      expect(addEvidence).toHaveBeenCalledWith(ORG, OCC, ref, ACTOR);
+    });
+
+    it('POST deliver carrying a contract_document ref → 403 without agreements:read', async () => {
+      const res = await send(`/${ORG}/deliverables/occurrences/${OCC}/deliver`, { evidence: [ref] }, CONTRACTS_ONLY);
+      expect(res.status).toBe(403);
+      expect(deliverOccurrence).not.toHaveBeenCalled();
+    });
+
+    it('other evidence kinds still need only contracts:write', async () => {
+      const res = await send(`/${ORG}/deliverables/occurrences/${OCC}/evidence`, { kind: 'report_run', reportRunId: RUN }, CONTRACTS_ONLY);
+      expect(res.status).toBe(200);
+      const deliver = await send(`/${ORG}/deliverables/occurrences/${OCC}/deliver`, { evidence: [{ kind: 'document', documentId: RUN }] }, CONTRACTS_ONLY);
+      expect(deliver.status).toBe(200);
+    });
+  });
+
   it('service error details are forwarded in the envelope', async () => {
     createDeliverable.mockRejectedValueOnce({ status: 422, code: 'BAD_CONTRACT', message: 'x', details: { contractId: DEL } });
     const res = await post(`/${ORG}/deliverables`, validCreate);

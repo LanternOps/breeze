@@ -83,8 +83,16 @@ export const documentEvidenceRefSchema = z.object({
   kind: z.literal('document'),
   documentId: z.string().guid(),
 });
-// W03: both arms of deliverable_evidence_kind are now reachable from the API.
-export const evidenceRefSchema = z.discriminatedUnion('kind', [reportRunEvidenceRefSchema, documentEvidenceRefSchema]);
+/** #9312: a signed agreement already stored in Breeze (contract_documents),
+ *  linked by reference — never copied into the document library. */
+export const contractDocumentEvidenceRefSchema = z.object({
+  kind: z.literal('contract_document'),
+  contractDocumentId: z.string().guid(),
+});
+// Every arm of deliverable_evidence_kind is reachable from the API.
+export const evidenceRefSchema = z.discriminatedUnion('kind', [
+  reportRunEvidenceRefSchema, documentEvidenceRefSchema, contractDocumentEvidenceRefSchema,
+]);
 export const addEvidenceSchema = evidenceRefSchema;
 
 export const deliverOccurrenceSchema = z.object({

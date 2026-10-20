@@ -50,6 +50,13 @@ describe('serviceDeliverables validators', () => {
     expect(deliverOccurrenceSchema.safeParse({ evidence: [{ kind: 'document' }] }).success).toBe(false);
     expect(addEvidenceSchema.safeParse({ kind: 'document', documentId: 'nope' }).success).toBe(false);
   });
+  it('accepts a signed-agreement (contract_document) evidence ref (#9312)', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    expect(addEvidenceSchema.parse({ kind: 'contract_document', contractDocumentId: id })).toEqual({ kind: 'contract_document', contractDocumentId: id });
+    expect(deliverOccurrenceSchema.parse({ evidence: [{ kind: 'contract_document', contractDocumentId: id }] }).evidence).toHaveLength(1);
+    expect(addEvidenceSchema.safeParse({ kind: 'contract_document', contractDocumentId: 'nope' }).success).toBe(false);
+    expect(addEvidenceSchema.safeParse({ kind: 'contract_document' }).success).toBe(false);
+  });
   it('addEvidence requires a guid', () =>
     expect(addEvidenceSchema.safeParse({ kind: 'report_run', reportRunId: 'nope' }).success).toBe(false));
   it('reschedule requires an ISO date', () =>

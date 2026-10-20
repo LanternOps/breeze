@@ -107,11 +107,17 @@
     "linkDocumentLoading": "Loading documents…",
     "linkDocumentPlaceholder": "Choose a document…",
     "linkDocumentEmpty": "No documents in this organization’s library yet.",
+    "linkAgreement": "Link signed agreement",
+    "linkAgreementSelect": "Choose a signed agreement to link as evidence",
+    "linkAgreementLoading": "Loading signed agreements…",
+    "linkAgreementPlaceholder": "Choose a signed agreement…",
+    "linkAgreementEmpty": "No signed agreements for this organization yet.",
     "link": "Link"
   },
   "evidence": {
     "reportRun": "Report run",
     "document": "Document",
+    "signedAgreement": "Signed agreement",
     "reportRunId": "Report run ID"
   },
   "upcoming": {
@@ -132,7 +138,8 @@
     "unsupportedType": "Only PDF, JPEG, PNG and WebP files can be attached.",
     "storageUnavailable": "Document storage is unavailable right now. Try again shortly.",
     "linkFailed": "Could not link the document.",
-    "libraryLoadFailed": "Could not load the document library."
+    "libraryLoadFailed": "Could not load the document library.",
+    "agreementsLoadFailed": "Could not load signed agreements."
   },
   "confirm": {
     "deactivate": "Deactivate {{name}}? Open occurrences will be closed and no new ones will be scheduled.",

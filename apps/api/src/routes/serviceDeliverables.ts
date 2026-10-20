@@ -14,7 +14,7 @@
  * paths are registered BEFORE `/:orgId/deliverables/:id` so "occurrences" is
  * never captured as a deliverable id.
  */
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireScope, requirePermission, type AuthContext } from '../middleware/auth';
@@ -43,6 +43,22 @@ serviceDeliverableRoutes.use('*', authMiddleware);
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
 const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action);
+const agreementsReadPerm = requirePermission(PERMISSIONS.AGREEMENTS_READ.resource, PERMISSIONS.AGREEMENTS_READ.action);
+
+/**
+ * #9312: citing a signed agreement as evidence also needs `agreements:read`
+ * — the same gate as listing or downloading it (routes/contracts/documents.ts).
+ * Without it, `contracts:write` alone would let a caller probe signed-agreement
+ * ids (404 vs 200). Runs after the JSON validator, on either body shape: a
+ * single evidence ref (POST …/evidence) or `{ evidence: [...] }` (…/deliver).
+ */
+async function agreementsReadForSignedAgreementEvidence(c: Context, next: Next) {
+  const body = (c.req as unknown as { valid: (t: 'json') => unknown }).valid('json') as
+    { kind?: string; evidence?: Array<{ kind: string }> };
+  const refs = Array.isArray(body.evidence) ? body.evidence : [body];
+  if (refs.some((r) => r.kind === 'contract_document')) return agreementsReadPerm(c, next);
+  return next();
+}
 
 const orgParam = z.object({ orgId: z.string().guid() });
 const deliverableParam = orgParam.extend({ id: z.string().guid() });
@@ -110,6 +126,7 @@ serviceDeliverableRoutes.post(
   '/:orgId/deliverables/occurrences/:oId/deliver',
   scopes, writePerm,
   zValidator('param', occurrenceParam), zValidator('json', deliverOccurrenceSchema),
+  agreementsReadForSignedAgreementEvidence,
   async (c) => {
     const { orgId, oId } = c.req.valid('param');
     try {
@@ -158,6 +175,7 @@ serviceDeliverableRoutes.post(
   '/:orgId/deliverables/occurrences/:oId/evidence',
   scopes, writePerm,
   zValidator('param', occurrenceParam), zValidator('json', addEvidenceSchema),
+  agreementsReadForSignedAgreementEvidence,
   async (c) => {
     const { orgId, oId } = c.req.valid('param');
     try {

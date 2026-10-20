@@ -107,11 +107,17 @@
     "linkDocumentLoading": "Dokumente werden geladen…",
     "linkDocumentPlaceholder": "Dokument auswählen…",
     "linkDocumentEmpty": "Die Dokumentenbibliothek dieser Organisation enthält noch keine Dokumente.",
+    "linkAgreement": "Unterzeichnete Vereinbarung verknüpfen",
+    "linkAgreementSelect": "Unterzeichnete Vereinbarung als Nachweis auswählen",
+    "linkAgreementLoading": "Unterzeichnete Vereinbarungen werden geladen…",
+    "linkAgreementPlaceholder": "Unterzeichnete Vereinbarung auswählen…",
+    "linkAgreementEmpty": "Für diese Organisation gibt es noch keine unterzeichneten Vereinbarungen.",
     "link": "Verknüpfen"
   },
   "evidence": {
     "reportRun": "Berichtslauf",
     "document": "Dokument",
+    "signedAgreement": "Unterzeichnete Vereinbarung",
     "reportRunId": "ID des Berichtslaufs"
   },
   "upcoming": {
@@ -132,7 +138,8 @@
     "unsupportedType": "Es können nur PDF-, JPEG-, PNG- und WebP-Dateien angehängt werden.",
     "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut.",
     "linkFailed": "Das Dokument konnte nicht verknüpft werden.",
-    "libraryLoadFailed": "Die Dokumentenbibliothek konnte nicht geladen werden."
+    "libraryLoadFailed": "Die Dokumentenbibliothek konnte nicht geladen werden.",
+    "agreementsLoadFailed": "Unterzeichnete Vereinbarungen konnten nicht geladen werden."
   },
   "confirm": {
     "deactivate": "{{name}} deaktivieren? Offene Vorkommen werden geschlossen und keine neuen mehr geplant.",

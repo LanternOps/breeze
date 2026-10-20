@@ -1128,6 +1128,7 @@ export {
   listDeliverablesQuerySchema,
   reportRunEvidenceRefSchema,
   documentEvidenceRefSchema,
+  contractDocumentEvidenceRefSchema,
   evidenceRefSchema,
   addEvidenceSchema,
   deliverOccurrenceSchema,

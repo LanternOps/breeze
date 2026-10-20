@@ -76,7 +76,7 @@ const occurrence: Occurrence = {
   updatedAt: '2026-09-01T00:00:00Z',
   late: false,
   evidence: [
-    { id: 'ev-1', kind: 'report_run', documentId: null, reportId: 'r-1', reportRunId: 'run-1', createdAt: '2026-09-02T00:00:00Z' },
+    { id: 'ev-1', kind: 'report_run', documentId: null, reportId: 'r-1', reportRunId: 'run-1', contractDocumentId: null, createdAt: '2026-09-02T00:00:00Z' },
   ],
   checklist: null,
 };
@@ -102,7 +102,7 @@ describe('OccurrenceDrawer evidence upload (#5573 W03)', () => {
             ...occurrence,
             evidence: [
               ...occurrence.evidence,
-              { id: 'ev-2', kind: 'document', documentId: 'doc-1', reportId: null, reportRunId: null, createdAt: '2026-09-03T00:00:00Z' },
+              { id: 'ev-2', kind: 'document', documentId: 'doc-1', reportId: null, reportRunId: null, contractDocumentId: null, createdAt: '2026-09-03T00:00:00Z' },
             ],
           },
         });
@@ -454,6 +454,96 @@ describe('OccurrenceDrawer checklist progress (#5808 W03)', () => {
   });
 });
 
+describe('OccurrenceDrawer link signed agreement (#9312)', () => {
+  const AGREEMENTS_PATH = '/contracts/contract-documents?orgId=org-1&linked=all';
+  const agreements = [
+    {
+      id: 'cd-1', orgId: 'org-1', templateName: 'Master services agreement', templateVersionNumber: 3,
+      signerName: 'Jane Doe', signedAt: '2026-09-15T12:00:00Z', createdAt: '2026-09-15T12:00:00Z', mime: 'application/pdf',
+    },
+  ];
+
+  it('lists the org\'s signed agreements and links one by reference', async () => {
+    const awaiting = { ...occurrence, status: 'awaiting_evidence' as const, evidence: [] };
+    const linked = {
+      ...awaiting,
+      status: 'delivered' as const,
+      evidence: [{
+        id: 'ev-7', kind: 'contract_document' as const, documentId: null, reportId: null, reportRunId: null,
+        contractDocumentId: 'cd-1', createdAt: '2026-09-16T00:00:00Z',
+      }],
+    };
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && path === AGREEMENTS_PATH) return jsonResp(200, { data: agreements });
+      if (method === 'GET') return jsonResp(200, { data: [awaiting] });
+      if (path.endsWith('/evidence')) return jsonResp(200, { data: linked });
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-agreement-oc-1'));
+    const select = await screen.findByTestId('occurrence-evidence-agreement-select-oc-1');
+    await waitFor(() => expect(screen.getByRole('option', { name: /Master services agreement/ })).toBeTruthy());
+    expect((screen.getByTestId('occurrence-evidence-agreement-save-oc-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(select, { target: { value: 'cd-1' } });
+    fireEvent.click(screen.getByTestId('occurrence-evidence-agreement-save-oc-1'));
+
+    await waitFor(() =>
+      expect(fetcher).toHaveBeenCalledWith(
+        '/orgs/org-1/deliverables/occurrences/oc-1/evidence',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ kind: 'contract_document', contractDocumentId: 'cd-1' }) }),
+      ),
+    );
+    expect((await screen.findByTestId('evidence-chip-ev-7')).textContent).toContain('Signed agreement');
+    expect(screen.getByTestId('occurrence-status-oc-1').textContent).toBe('Delivered');
+    expect(screen.queryByTestId('occurrence-evidence-agreement-panel-oc-1')).toBeNull();
+  });
+
+  it('shows an alert with Retry when the agreements fail to load, and recovers on retry', async () => {
+    let calls = 0;
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path === AGREEMENTS_PATH) {
+        calls += 1;
+        return calls === 1 ? jsonResp(500, { error: 'boom' }) : jsonResp(200, { data: agreements });
+      }
+      return jsonResp(200, { data: [occurrence] });
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-agreement-oc-1'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load signed agreements.');
+    fireEvent.click(screen.getByTestId('occurrence-evidence-agreement-retry-oc-1'));
+    expect(await screen.findByRole('option', { name: /Master services agreement/ })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    errSpy.mockRestore();
+  });
+
+  it('shows the empty hint when the org has no signed agreements', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path === AGREEMENTS_PATH) return jsonResp(200, { data: [] });
+      return jsonResp(200, { data: [occurrence] });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-agreement-oc-1'));
+    expect(await screen.findByText(/No signed agreements for this organization/)).toBeTruthy();
+  });
+
+  it('opening the agreement picker closes the document picker (one picker at a time)', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && (path === AGREEMENTS_PATH || path.startsWith('/orgs/org-1/documents'))) {
+        return jsonResp(200, { data: [] });
+      }
+      return jsonResp(200, { data: [occurrence] });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-oc-1'));
+    expect(await screen.findByTestId('occurrence-evidence-link-panel-oc-1')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('occurrence-evidence-link-agreement-oc-1'));
+    expect(await screen.findByTestId('occurrence-evidence-agreement-panel-oc-1')).toBeTruthy();
+    expect(screen.queryByTestId('occurrence-evidence-link-panel-oc-1')).toBeNull();
+  });
+});
+
 describe('OccurrenceDrawer link existing document + badges (#9311)', () => {
   const docs = [
     { id: 'doc-1', title: 'Q3 findings', originalFilename: 'q3.pdf', category: 'report' },
@@ -465,7 +555,7 @@ describe('OccurrenceDrawer link existing document + badges (#9311)', () => {
     const linked = {
       ...awaiting,
       status: 'delivered' as const,
-      evidence: [{ id: 'ev-9', kind: 'document' as const, documentId: 'doc-2', reportId: null, reportRunId: null, createdAt: '2026-09-02T00:00:00Z' }],
+      evidence: [{ id: 'ev-9', kind: 'document' as const, documentId: 'doc-2', reportId: null, reportRunId: null, contractDocumentId: null, createdAt: '2026-09-02T00:00:00Z' }],
     };
     const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
       const method = init?.method ?? 'GET';

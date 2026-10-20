@@ -107,11 +107,17 @@
     "linkDocumentLoading": "Cargando documentos…",
     "linkDocumentPlaceholder": "Elige un documento…",
     "linkDocumentEmpty": "Aún no hay documentos en la biblioteca de esta organización.",
+    "linkAgreement": "Vincular acuerdo firmado",
+    "linkAgreementSelect": "Elige un acuerdo firmado para vincularlo como evidencia",
+    "linkAgreementLoading": "Cargando acuerdos firmados…",
+    "linkAgreementPlaceholder": "Elige un acuerdo firmado…",
+    "linkAgreementEmpty": "Aún no hay acuerdos firmados para esta organización.",
     "link": "Vincular"
   },
   "evidence": {
     "reportRun": "Ejecución de informe",
     "document": "Documento",
+    "signedAgreement": "Acuerdo firmado",
     "reportRunId": "ID de la ejecución de informe"
   },
   "upcoming": {
@@ -132,7 +138,8 @@
     "unsupportedType": "Solo se pueden adjuntar archivos PDF, JPEG, PNG y WebP.",
     "storageUnavailable": "El almacenamiento de documentos no está disponible en este momento. Vuelva a intentarlo en unos minutos.",
     "linkFailed": "No se pudo vincular el documento.",
-    "libraryLoadFailed": "No se pudo cargar la biblioteca de documentos."
+    "libraryLoadFailed": "No se pudo cargar la biblioteca de documentos.",
+    "agreementsLoadFailed": "No se pudieron cargar los acuerdos firmados."
   },
   "confirm": {
     "deactivate": "¿Desactivar {{name}}? Las ocurrencias abiertas se cerrarán y no se programarán nuevas.",

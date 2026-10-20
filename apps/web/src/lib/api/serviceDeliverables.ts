@@ -81,10 +81,12 @@ export interface Deliverable {
 
 export interface OccurrenceEvidence {
   id: string;
-  kind: 'document' | 'report_run';
+  kind: 'document' | 'report_run' | 'contract_document';
   documentId: string | null;
   reportId: string | null;
   reportRunId: string | null;
+  /** #9312: the signed agreement (contract_documents) this evidence cites. */
+  contractDocumentId: string | null;
   createdAt: string;
 }
 

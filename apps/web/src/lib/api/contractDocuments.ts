@@ -8,6 +8,7 @@
 // Every route responds with a `{ data: ... }` envelope.
 
 import { fetchWithAuth } from '../../stores/auth';
+import { unwrapData, type Fetcher } from './serviceDeliverables';
 
 const BASE = '/contracts/contract-documents';
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -68,6 +69,13 @@ function buildQuery(q: ListContractDocumentsQuery): string {
 
 export function listContractDocuments(query: ListContractDocumentsQuery = {}): Promise<Response> {
   return fetchWithAuth(`${BASE}${buildQuery(query)}`);
+}
+
+/** #9312: every signed agreement of ONE org (linked or not), through a caller-
+ *  supplied fetcher — the deliverable drawer runs inside the org record, whose
+ *  org-pinned fetch must carry the request (see serviceDeliverables.ts). */
+export async function listOrgSignedAgreements(f: Fetcher, orgId: string): Promise<ContractDocument[]> {
+  return unwrapData<ContractDocument[]>(await f(`${BASE}${buildQuery({ orgId, linked: 'all' })}`));
 }
 
 /** Path for usePdfDownload — the route streams the stored bytes under their

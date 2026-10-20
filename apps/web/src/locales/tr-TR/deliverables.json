@@ -107,11 +107,17 @@
     "linkDocumentLoading": "Belgeler yükleniyor…",
     "linkDocumentPlaceholder": "Bir belge seçin…",
     "linkDocumentEmpty": "Bu kuruluşun kitaplığında henüz belge yok.",
+    "linkAgreement": "İmzalı anlaşmayı bağla",
+    "linkAgreementSelect": "Kanıt olarak bağlanacak imzalı anlaşmayı seçin",
+    "linkAgreementLoading": "İmzalı anlaşmalar yükleniyor…",
+    "linkAgreementPlaceholder": "İmzalı anlaşma seçin…",
+    "linkAgreementEmpty": "Bu kuruluş için henüz imzalı anlaşma yok.",
     "link": "Bağla"
   },
   "evidence": {
     "reportRun": "Rapor çalıştırması",
     "document": "Belge",
+    "signedAgreement": "İmzalı anlaşma",
     "reportRunId": "Rapor çalıştırma kimliği"
   },
   "upcoming": {
@@ -132,7 +138,8 @@
     "unsupportedType": "Yalnızca PDF, JPEG, PNG ve WebP dosyaları eklenebilir.",
     "storageUnavailable": "Belge depolama şu anda kullanılamıyor. Kısa süre sonra tekrar deneyin.",
     "linkFailed": "Belge bağlanamadı.",
-    "libraryLoadFailed": "Belge kitaplığı yüklenemedi."
+    "libraryLoadFailed": "Belge kitaplığı yüklenemedi.",
+    "agreementsLoadFailed": "İmzalı anlaşmalar yüklenemedi."
   },
   "confirm": {
     "deactivate": "{{name}} devre dışı bırakılsın mı? Açık oluşumlar kapatılır ve yenileri planlanmaz.",

@@ -107,11 +107,17 @@
     "linkDocumentLoading": "Caricamento dei documenti…",
     "linkDocumentPlaceholder": "Scegli un documento…",
     "linkDocumentEmpty": "Nessun documento nella libreria di questa organizzazione.",
+    "linkAgreement": "Collega un accordo firmato",
+    "linkAgreementSelect": "Scegli un accordo firmato da collegare come prova",
+    "linkAgreementLoading": "Caricamento degli accordi firmati…",
+    "linkAgreementPlaceholder": "Scegli un accordo firmato…",
+    "linkAgreementEmpty": "Nessun accordo firmato per questa organizzazione.",
     "link": "Collega"
   },
   "evidence": {
     "reportRun": "Esecuzione del report",
     "document": "Documento",
+    "signedAgreement": "Accordo firmato",
     "reportRunId": "ID dell'esecuzione del report"
   },
   "upcoming": {
@@ -132,7 +138,8 @@
     "unsupportedType": "È possibile allegare solo file PDF, JPEG, PNG e WebP.",
     "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve.",
     "linkFailed": "Impossibile collegare il documento.",
-    "libraryLoadFailed": "Impossibile caricare la libreria documenti."
+    "libraryLoadFailed": "Impossibile caricare la libreria documenti.",
+    "agreementsLoadFailed": "Impossibile caricare gli accordi firmati."
   },
   "confirm": {
     "deactivate": "Disattivare {{name}}? Le occorrenze aperte verranno chiuse e non ne verranno pianificate di nuove.",
