@@ -247,8 +247,29 @@ describe('list_deliverables paging (#9313)', () => {
   it('refuses a cursor replayed with a different contractId', async () => {
     const first = await call('list_deliverables', { orgId: ORG, contractId: CONTRACT_A });
     const out = await call('list_deliverables', { orgId: ORG, contractId: CONTRACT_B, cursor: first.nextCursor });
-    expect(out).toMatchObject({ code: expect.stringMatching(/^CURSOR_(INVALID|MISMATCH)$/) });
+    expect(first.nextCursor).toEqual(expect.any(String));
+    expect(out).toMatchObject({ code: 'CURSOR_MISMATCH' });
     expect(out).not.toHaveProperty('deliverables');
+  });
+
+  it('refuses a cursor replayed across includeInactive, but not across includeDetails', async () => {
+    const first = await call('list_deliverables', { orgId: ORG });
+    const flipped = await call('list_deliverables', { orgId: ORG, includeInactive: true, cursor: first.nextCursor });
+    expect(flipped).toMatchObject({ code: 'CURSOR_MISMATCH' });
+    const explicitFalse = await call('list_deliverables', { orgId: ORG, includeInactive: false, cursor: first.nextCursor });
+    expect(explicitFalse).toHaveProperty('deliverables');
+    const detailed = await call('list_deliverables', { orgId: ORG, includeDetails: true, cursor: first.nextCursor });
+    expect(detailed).toHaveProperty('deliverables');
+  });
+
+  it('passes contractId / includeInactive filters to the service', async () => {
+    await call('list_deliverables', { orgId: ORG, contractId: CONTRACT_A, includeInactive: true });
+    expect(svc.listDeliverables).toHaveBeenLastCalledWith(ORG, { contractId: CONTRACT_A, includeInactive: true }, expect.anything());
+  });
+
+  it('does not leak lastDelivered.note into rows', async () => {
+    const out = await call('list_deliverables', { orgId: ORG, limit: 1 });
+    expect(out.deliverables[0].lastDelivered).toEqual({ at: '2026-09-15T00:00:00.000Z', late: false });
   });
 
   it('exposes limit/offset/cursor/includeDetails on the Zod schema', () => {
@@ -275,6 +296,18 @@ describe('manage_deliverables link_evidence documentId (#9313)', () => {
     const out = await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC });
     expect(out).toMatchObject({ code: 'VALIDATION_ERROR' });
     expect(svc.addEvidence).not.toHaveBeenCalled();
+  });
+  it('rejects a non-UUID documentId without calling the service', async () => {
+    svc.addEvidence.mockClear();
+    const out = await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC, documentId: 'nope' });
+    expect(out).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(svc.addEvidence).not.toHaveBeenCalled();
+    expect(toolInputSchemas.manage_deliverables!.safeParse({ action: 'link_evidence', documentId: 'nope' }).success).toBe(false);
+  });
+  it('treats an empty reportRunId as absent when documentId is given', async () => {
+    svc.addEvidence.mockResolvedValue({ id: OCC });
+    await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC, documentId: DOC, reportRunId: '' });
+    expect(svc.addEvidence).toHaveBeenLastCalledWith(ORG, OCC, { kind: 'document', documentId: DOC }, expect.anything());
   });
   it('accepts documentId on the Zod schema', () => {
     expect(toolInputSchemas.manage_deliverables!.safeParse({ action: 'link_evidence', orgId: ORG, occurrenceId: OCC, documentId: DOC }).success).toBe(true);

@@ -173,7 +173,11 @@ export const LIST_DELIVERABLES_TOOL: AiTool = {
     if (refusal) return refusal;
     const missing = missingParamsJson(input, 'list', ['orgId']);
     if (missing) return missing;
-    const page = readPageArgs('list_deliverables', input, LIST_DELIVERABLES_PAGE);
+    // `includeInactive` changes WHICH rows are listed, but pageFingerprint exempts every
+    // `include*` key as a projection flag, so it is renamed (and normalised: omitted === false)
+    // to stay in the fingerprint; a cursor replayed across it would otherwise skip/repeat rows.
+    const { includeInactive, ...rest } = input;
+    const page = readPageArgs('list_deliverables', { ...rest, inactiveRows: includeInactive === true }, LIST_DELIVERABLES_PAGE);
     if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
     const actor = actorFromAuth(auth);
     const orgId = String(input.orgId);
