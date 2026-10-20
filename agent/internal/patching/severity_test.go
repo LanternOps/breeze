@@ -39,10 +39,20 @@ func TestWindowsSeverity(t *testing.T) {
 
 		// No MSRC rating: derive from classification, then title.
 		{
-			name:         "critical updates classification derives critical",
+			// Capped at important: WUA's Critical Updates classification also
+			// covers non-security fixes, and a derived critical would feed
+			// rings that auto-approve critical only.
+			name:         "critical updates classification is capped at important",
 			categories:   []string{"Windows 11", "Critical Updates"},
 			title:        "Update for Windows 11 (KB5000001)",
-			wantSeverity: "critical",
+			wantSeverity: "important",
+			wantSource:   SeveritySourceDerived,
+		},
+		{
+			name:         "critical updates with a security title is still capped at important",
+			categories:   []string{"Critical Updates", "Security Updates"},
+			title:        "Critical Security Update for Windows",
+			wantSeverity: "important",
 			wantSource:   SeveritySourceDerived,
 		},
 		{

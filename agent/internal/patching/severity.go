@@ -29,16 +29,20 @@ const (
 //     carry a security rating and stay "unknown". This is checked first so a
 //     "Security Intelligence Update for Microsoft Defender Antivirus"
 //     (a definition update) does not pick up a rating from its title.
-//   - Critical Updates → "critical"; Security Updates → "important".
+//   - Critical Updates or Security Updates → "important".
 //   - Update Rollups → "important" only when the title says "security"
 //     (e.g. a Security Monthly Quality Rollup); otherwise "unknown".
 //   - Any other classification → "important" when the title names a security
 //     update or a (non-preview) cumulative update; otherwise "unknown".
 //     Preview cumulative updates are the optional non-security releases.
 //
-// The derived value is a floor, not Microsoft's rating: a cumulative update
-// that fixes a critical CVE still shows "important". Pulling exact per-KB
-// ratings from MSRC server-side is a separate enhancement.
+// A derived value never exceeds "important". WUA's Critical Updates
+// classification also covers non-security fixes for critical bugs, and a
+// derived "critical" would feed rings that auto-approve critical only. Only a
+// vendor (MSRC) rating can say "critical". The derived value is therefore a
+// floor, not Microsoft's rating: a cumulative update that fixes a critical
+// CVE still shows "important". Pulling exact per-KB ratings from MSRC
+// server-side is a separate enhancement.
 func windowsSeverity(msrcSeverity string, categoryNames []string, title string) (severity, source string) {
 	switch s := strings.ToLower(strings.TrimSpace(msrcSeverity)); s {
 	case "critical", "important", "moderate", "low":
@@ -73,10 +77,9 @@ func deriveWindowsSeverity(categoryNames []string, title string) string {
 			return "unknown"
 		}
 	}
-	if classifications["critical updates"] {
-		return "critical"
-	}
-	if classifications["security updates"] {
+	// Capped at "important" (see windowsSeverity): Critical Updates is not
+	// a security rating.
+	if classifications["critical updates"] || classifications["security updates"] {
 		return "important"
 	}
 
