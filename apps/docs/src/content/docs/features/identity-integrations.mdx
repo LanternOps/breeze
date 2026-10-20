@@ -71,6 +71,7 @@ Customer Graph Read uses Breeze's dedicated multitenant, certificate-backed appl
 1. Set your Breeze scope to the customer organization and find **Step 1 · Read access** in the tenant panel.
 2. Review what it enables (open **Show Microsoft permissions** to see the thirteen required permissions), then choose **Connect tenant**.
 3. Complete Breeze MFA and sign in to Microsoft as a Global Administrator or Privileged Role Administrator **of the customer's tenant**. Breeze verifies who you are and which tenant your account belongs to before anything is consented. An account without either role stops here.
+   The first Microsoft sign-in shows a **user-level consent screen** for Breeze's application ("View your basic profile", "Maintain access to data you have given it access to", and, for administrators, an optional **Consent on behalf of your organization** checkbox). This only lets Breeze read who you are; it grants no tenant data access. Accept it, or tick the checkbox to stop other users in the tenant from seeing it. If the tenant has user consent disabled, Microsoft shows an *Approval required* / *Need admin approval* message instead (AADSTS90094 or AADSTS65001): a Global Administrator must complete this sign-in themselves, and can tick **Consent on behalf of your organization** to clear it for everyone.
 4. Breeze shows the tenant you signed in to (tenant ID and username) and asks you to confirm it. If it is your own MSP tenant rather than the customer's, choose **Cancel, wrong tenant** and sign in again with the customer's admin account. Otherwise choose **Continue to Microsoft consent**.
 5. Review Microsoft's consent screen carefully and accept only if it shows the expected application and exact permissions below. The screen is for the tenant you just confirmed and no other.
 6. Breeze verifies its own access to that tenant (application token, organization probe, exact grants) and only then connects the tenant to the organization.
@@ -181,6 +182,7 @@ Legacy direct uses a customer-specific **Entra app registration** and the client
 <Steps>
 1. Set your scope to the customer organization, then open **Integrations → Cloud tenants → Microsoft 365**.
 2. In the **Microsoft Entra admin center** (entra.microsoft.com) or the Azure portal, open **Microsoft Entra ID → App registrations** and pick an existing app or click **New registration**. Give it a name and choose "Accounts in this organizational directory only."
+   After you click **Register**, find the app under **All applications**. The **Owned applications** list can lag by several minutes; if the app is not there yet, wait. Do not register a second time, or you will end up with duplicate registrations.
 3. On the app's **Overview** page, copy the **Directory (tenant) ID** and the **Application (client) ID** into the Breeze fields.
 4. Go to **Certificates & secrets → Client secrets → New client secret**. Set a description and expiry (24 months max), then copy the secret **Value** immediately — not the secret ID; it is shown only once.
 5. Under **API permissions**, add the Microsoft Graph **application** permissions listed below, then click **Grant admin consent**.

@@ -955,13 +955,15 @@ These enable partners to connect a Microsoft 365 shared support mailbox so custo
 
 ## Customer Microsoft 365 Graph-read consent (optional)
 
-This feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when you turn the feature on. Concretely, the API **refuses to boot only when `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED=true` *and* one of the required variables is missing or malformed**; while the flag is off (or absent) these variables are never parsed and any values you set are ignored.
+This feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when you turn the feature on. Concretely, the API **refuses to boot when either `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED=true` or `M365_GRAPH_READ_TOOLS_ENABLED=true` *and* one of the required variables is missing or malformed**; while both flags are off (or absent) these variables are never parsed and any values you set are ignored.
 
 Customer Graph-read lets a customer administrator grant read-only Microsoft Graph consent to Breeze's dedicated multi-tenant application without handing you a reusable secret. The Entra certificate and Key Vault access live entirely inside an isolated [executor sidecar](/deploy/production/) — the API holds only an opaque, version-pinned reference and a private key it uses to sign short-lived internal requests to that sidecar. See [Customer Graph Read](/features/identity-integrations/#customer-graph-read-recommended-for-read-only-inventory) for the admin-facing side.
 
 | Variable | Required when enabled | Format / example | Meaning |
 |---|---|---|---|
-| `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for **new** consent initiation only. Existing connection status, retest, and disconnect flows are independent of it. When `false`, none of the variables below are validated. |
+| `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for **new** consent initiation only. Existing connection status, retest, and disconnect flows are independent of it. When `false` (and `M365_GRAPH_READ_TOOLS_ENABLED` is also off), none of the variables below are validated. |
+| `M365_GRAPH_READ_TOOLS_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Independent switch for the six read-only `m365_query_*` AI tools. Separate from onboarding: you can run the tools without allowing new consent. Turning it on forces full validation of every variable below at boot, including the executor settings. |
+| `M365_GRAPH_READ_TOOLS_ORG_IDS` | Yes, when `M365_GRAPH_READ_TOOLS_ENABLED` is on | Literal `*` or comma-separated canonical org UUIDs | Which Breeze organizations get the `m365_query_*` tools. Boot fails if the tools flag is on and this is empty or malformed. Leave empty while the flag is off. |
 | `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS` | Yes | Literal `*` or comma-separated canonical org UUIDs (e.g. `*` or `1111...,2222...`) | Which Breeze organizations may start consent. `*` = all organizations; otherwise an allowlist of canonical UUIDs. Boot fails if enabled and this is empty. |
 | `M365_CUSTOMER_GRAPH_READ_CLIENT_ID` | Yes | Canonical UUID | Entra application (client) ID of the shared multi-tenant Graph-read app. |
 | `M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION` | Yes | Exactly 32 lowercase hex characters | Pins which stored credential version the executor must use. Must equal the version segment of `M365_CUSTOMER_GRAPH_READ_VAULT_REF`. |
@@ -1014,7 +1016,7 @@ These are read by the **`m365-graph-read-executor` sidecar**, not the API. They 
 
 ## Customer Microsoft 365 Graph-actions (write) executor (optional)
 
-Like Graph-read above, this feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true`; while the flag is off (or absent) these variables are never parsed and any values you set are ignored.
+Like Graph-read above, this feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true` or `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED=true`; while both flags are off (or absent) these variables are never parsed and any values you set are ignored.
 
 Where Graph-read is read-only inventory, Graph-actions authorises **write** operations against a customer's Microsoft 365 tenant — the identity actions the AI can propose, such as resetting a user's password, disabling a user, or changing mailbox rules. Those tools are Tier 3, so they still require human approval before anything executes (see [AI Risk Engine → Approval workflow](/features/ai/#approval-workflow)).
 
@@ -1022,6 +1024,8 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 
 | Variable | Required when enabled | Format / example | Meaning |
 |---|---|---|---|
+| `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for **new** Graph-actions consent initiation (the **Step 2 · Admin actions** card). Independent of `M365_GRAPH_ACTIONS_TOOLS_ENABLED`; turning on either one forces full validation of the variables below at boot. In production, one of `PUBLIC_URL`, `PUBLIC_APP_URL`, or `PUBLIC_API_URL` must be set so the consent callback origin can be derived. |
+| `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS` | Yes, when onboarding is on | Literal `*` or comma-separated canonical org UUIDs | Which Breeze organizations may start Graph-actions consent. Boot fails if onboarding is on and this is empty or malformed. |
 | `M365_GRAPH_ACTIONS_TOOLS_ENABLED` | — (the switch) | `true` / `false`, `1` / `0`, `yes` / `no`, `on` / `off` (default `false`) | Master switch for the M365 write-action tools. When `false`, none of the variables below are validated and the write tools are unavailable. **From v0.106.0 a value outside the list above stops the API from starting** (it was previously read as "off", silently leaving the write tools dark), and turning it on additionally requires `APP_ENCRYPTION_KEY_ID`. |
 | `M365_GRAPH_ACTIONS_TOOLS_ORG_IDS` | Yes | Literal `*` or comma-separated canonical org UUIDs | Which Breeze organizations may use M365 write actions. `*` = all organizations; otherwise an allowlist. Leave empty while the feature is off. |
 | `M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID` | Yes | Canonical UUID | Entra application (client) ID of the multi-tenant Graph-actions app. |
@@ -1043,6 +1047,25 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 <Aside type="caution" title="Map new variables into the api service">
   As with every optional block above, a value in `.env` is necessary but **not sufficient** on a custom Compose file — each variable must also appear in the `api` service's `environment:` block, or it reaches the container empty and an "enabled" deploy fails to boot.
 </Aside>
+
+
+## Microsoft 365 communications (delegated, optional)
+
+Off by default and safe to leave unset. This feature works per **user** rather than per organization, so its allowlists are lists of Breeze **user** UUIDs. The API reads and validates the variables below only when `M365_COMMS_ONBOARDING_ENABLED` or `M365_COMMS_TOOLS_ENABLED` is truthy; otherwise they are ignored.
+
+| Variable | Required when enabled | Format / example | Meaning |
+|---|---|---|---|
+| `M365_COMMS_ONBOARDING_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for new delegated-communications consent initiation. |
+| `M365_COMMS_ONBOARDING_USER_IDS` | Yes, when onboarding is on | Literal `*` or comma-separated canonical user UUIDs | Which Breeze users may start consent. A malformed entry fails boot rather than being dropped. |
+| `M365_COMMS_TOOLS_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Switch for the delegated communications AI tools. Independent of onboarding. |
+| `M365_COMMS_TOOLS_USER_IDS` | Yes, when tools are on | Literal `*` or comma-separated canonical user UUIDs | Which Breeze users get the tools. |
+| `M365_COMMS_CLIENT_ID` | Yes | Canonical UUID | Entra application (client) ID of the delegated communications app. |
+| `M365_COMMS_EXECUTOR_URL` | Yes | Origin-only HTTPS, e.g. `https://comms-executor.internal` | Private base URL of the communications executor sidecar. |
+| `M365_COMMS_EXECUTOR_AUDIENCE` | Yes | Literal `m365-communications-executor` | JWT audience for the API→executor token. Must equal that exact string. |
+| `M365_COMMS_EXECUTOR_SIGNING_KID` | Yes | Non-empty string | Key ID of the API's signing JWK; must match the `kid` in the JWK file. |
+| `M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` | Yes | Absolute path, e.g. `/run/secrets/m365_comms_executor_signing_private_jwk` | The API's Ed25519 **private** signing JWK. Same file rules as Graph-read: a regular file, mode `0600` or stricter, mounted read-only; never inline the key in an env var. |
+
+The consent callback origin comes from `PUBLIC_URL`, then `PUBLIC_APP_URL`, then `PUBLIC_API_URL`, with `/api/v1/m365/comms-consent/callback` appended. In production one of them must be set.
 
 ## Docker Deployment
 
