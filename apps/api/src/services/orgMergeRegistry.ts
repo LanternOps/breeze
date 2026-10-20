@@ -181,6 +181,11 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   tool_sources: { kind: 'custom', note: 'rename a loser source whose slug collides with a survivor source (suffix stays inside tool_sources_slug_chk), rewrite the affected tool_source_tools.qualified_name values, then repoint org_id — so no registration is silently dropped' },
   tool_source_tools: { kind: 'custom', note: 'repoint org_id alongside the parent source; the owner-guard constraint trigger is deferred for the merge transaction, so parent and child may move in separate statements' },
 
+  // Tool Catalog W03 (#5218). Two orgs may each own a flow with the same slug
+  // (`flows_org_slug_uq` is per-org), so a plain repoint aborts on 23505 and a
+  // dedupe-DELETE would silently destroy a draft.
+  flows: { kind: 'custom', note: 'repoint org_id; a loser flow whose slug collides with a survivor flow is renamed <slug>_m<n> first so no flow is silently dropped (flows_org_slug_uq); moved flows that name a renamed loser tool source have their step tool references rewritten (resolve phase, before mergeToolSources renames)' },
+
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
   // execution must not keep pointing at an `ai_agent_runs` row: runs are
   // `leave-for-erasure` (org_id is trigger-immutable,

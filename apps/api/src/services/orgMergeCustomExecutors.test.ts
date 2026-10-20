@@ -637,3 +637,118 @@ describe('mergeToolSources / mergeToolSourceTools', () => {
     expect(result.dropped).toBe(0);
   });
 });
+
+/**
+ * Tool Catalog W03 (#5218). `flows_org_slug_uq (org_id, slug)` lets two orgs
+ * each own a flow with the same slug, so a plain repoint would abort the
+ * merge on 23505 and a dedupe-DELETE would silently destroy a draft. The
+ * resolve half renames the loser's colliding flows `<slug>_m<n>` and rewrites
+ * step tool references to loser tool sources that `mergeToolSources` will
+ * rename in the move phase (quorum risk 1) — resolve runs for every table
+ * before move runs for any, so this cannot depend on walk order.
+ */
+describe('resolveFlows / mergeFlows', () => {
+  afterEach(() => {
+    executeMock.mockReset();
+  });
+
+  const LOSER_HEX3 = L.replace(/-/g, '').slice(0, 3);
+  const def = (tools: string[]) => ({
+    version: 1,
+    name: 'x',
+    trigger: { type: 'manual' },
+    inputs: [],
+    steps: tools.map((tool, i) => ({ id: `s${i}`, tool, input: {} })),
+  });
+  const updates = () =>
+    executeMock.mock.calls
+      .map((c) => dialect.sqlToQuery(c[0] as SQL))
+      .filter((q) => /^\s*UPDATE flows/i.test(q.sql));
+
+  it('classifies flows as custom with both a resolve and a move half', () => {
+    expect(getOrgMergePolicies().get('flows')).toMatchObject({ kind: 'custom' });
+    expect(CUSTOM_RESOLVE_EXECUTORS.flows).toBeTypeOf('function');
+    expect(CUSTOM_EXECUTORS.flows).toBeTypeOf('function');
+  });
+
+  it('does nothing when the loser has no flows', async () => {
+    executeMock.mockResolvedValueOnce([]);
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(out).toEqual({ moved: 0, dropped: 0, notes: [] });
+  });
+
+  it('renames a colliding slug to _m1, retrying past a taken _m1, and leaves non-colliders alone', async () => {
+    executeMock
+      .mockResolvedValueOnce([
+        { id: 'f1', slug: 'disk_cleanup', definition: def(['get_device_details']) },
+        { id: 'f2', slug: 'patch_report', definition: def(['wait']) },
+      ])
+      .mockResolvedValueOnce([{ slug: 'disk_cleanup' }, { slug: 'disk_cleanup_m1' }]) // survivor + partner-wide slugs
+      .mockResolvedValueOnce([]) // no colliding tool sources
+      .mockResolvedValue({ count: 1 });
+
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    const ups = updates();
+    expect(ups).toHaveLength(1);
+    expect(ups[0]!.params).toContain('disk_cleanup_m2');
+    expect(ups[0]!.params).toContain('f1');
+    expect(out.dropped).toBe(0);
+    expect(out.notes.join(' ')).toMatch(/renamed 1/);
+  });
+
+  it('cuts a 48-char base so the result fits, strips a trailing _, and never forms __', async () => {
+    const long = 'a'.repeat(44) + '_bcd'; // 48 chars; cut at 45 ends in '_'
+    executeMock
+      .mockResolvedValueOnce([{ id: 'f1', slug: long, definition: def(['wait']) }])
+      .mockResolvedValueOnce([{ slug: long }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValue({ count: 1 });
+
+    await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    const slug = updates()[0]!.params.find((p) => typeof p === 'string' && p.endsWith('_m1')) as string;
+    expect(slug).toBe('a'.repeat(44) + '_m1');
+    expect(slug.length).toBeLessThanOrEqual(48);
+    expect(slug).not.toContain('__');
+    expect(slug).toMatch(/^[a-z][a-z0-9_]{1,47}$/);
+  });
+
+  it('rewrites step tools naming a renamed loser source and bumps definition_version', async () => {
+    executeMock
+      .mockResolvedValueOnce([
+        { id: 'f1', slug: 'asset_sync', definition: def(['hudu__get_asset', 'halo__create_ticket', 'wait']) },
+      ])
+      .mockResolvedValueOnce([]) // no flow slug collision
+      .mockResolvedValueOnce([{ old_slug: 'hudu', new_slug: `hudum${LOSER_HEX3}` }])
+      .mockResolvedValue({ count: 1 });
+
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    // The rename map query mirrors mergeToolSources' suffix expression.
+    const mapSql = dialect.sqlToQuery(executeMock.mock.calls[2]![0] as SQL).sql.replace(/\s+/g, ' ');
+    expect(mapSql).toMatch(/FROM tool_sources/i);
+    expect(mapSql).toMatch(/left\(/i);
+
+    const ups = updates();
+    expect(ups).toHaveLength(1);
+    expect(ups[0]!.sql).toMatch(/definition_version = definition_version \+ 1/);
+    const written = JSON.parse(ups[0]!.params.find((p) => typeof p === 'string' && p.startsWith('{')) as string);
+    expect(written.steps.map((s: { tool: string }) => s.tool)).toEqual([
+      `hudum${LOSER_HEX3}__get_asset`,
+      'halo__create_ticket',
+      'wait',
+    ]);
+    expect(out.notes.join(' ')).toMatch(/rewrote/);
+  });
+
+  it('move half repoints org_id only (partner-wide rows have org_id NULL and are untouched)', async () => {
+    executeMock.mockResolvedValueOnce({ count: 3 });
+    const out = await CUSTOM_EXECUTORS.flows!(L, S);
+    const text = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL).sql;
+    expect(text).toMatch(/UPDATE "flows" SET org_id =/);
+    expect(text).toMatch(/WHERE org_id =/);
+    expect(out).toEqual({ moved: 3, dropped: 0, notes: [] });
+  });
+});
