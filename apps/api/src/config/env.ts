@@ -690,6 +690,14 @@ export const BILLING_URL = process.env.BILLING_URL ?? '';
 export const OAUTH_DCR_ENABLED = envFlag('OAUTH_DCR_ENABLED', false);
 export const OAUTH_DCR_REQUIRE_IAT = envFlag('OAUTH_DCR_REQUIRE_IAT', false);
 export const OAUTH_DCR_ALLOW_ANONYMOUS = envFlag('OAUTH_DCR_ALLOW_ANONYMOUS', false);
+
+// B-W03 (#6157): OAuth Client ID Metadata Documents — an https URL as
+// client_id, alongside DCR. Default off. Boot-time switch for the provider
+// feature + AS metadata; oauth/cimdPolicy.ts re-reads it per use so a cached
+// client is refused once the flag is turned off. OAUTH_CIMD_ALLOWED_HOSTS
+// (CSV of hostnames / `.suffix`) restricts which hosts may serve documents;
+// unset = any public https host.
+export const OAUTH_CIMD_ENABLED = envFlag('OAUTH_CIMD_ENABLED', false);
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
 

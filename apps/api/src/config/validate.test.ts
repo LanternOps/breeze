@@ -3476,6 +3476,32 @@ describe('IP_ALLOWLIST_ENFORCEMENT_MODE (#2896)', () => {
 // B-W03 (#6157): the stateless MCP era kill switch. Read per request by
 // mcpStatelessEnabled() with the envFlag vocabulary; a typo must fail boot
 // rather than leave an operator believing they enabled (or disabled) it.
+// B-W03 (#6157): CIMD flag + host allowlist.
+describe('OAUTH_CIMD_* boot validation', () => {
+  it('declares both keys', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('OAUTH_CIMD_ENABLED');
+    expect(ENV_SCHEMA_KEYS).toContain('OAUTH_CIMD_ALLOWED_HOSTS');
+  });
+  it('refuses boot on a non-boolean OAUTH_CIMD_ENABLED', () => {
+    withEnv({ ...validEnv, OAUTH_CIMD_ENABLED: 'yes please' }, () => {
+      expect(() => validateConfig()).toThrow(/OAUTH_CIMD_ENABLED/);
+    });
+  });
+  it('accepts example.com,.example.org', () => {
+    withEnv({ ...validEnv, OAUTH_CIMD_ALLOWED_HOSTS: 'example.com,.example.org' }, () => {
+      expect(validateConfig().OAUTH_CIMD_ALLOWED_HOSTS).toBe('example.com,.example.org');
+    });
+  });
+  it.each(['https://example.com', 'example.com/path', '*.example.com', 'example.com,,example.org'])(
+    'boot rejects a malformed OAUTH_CIMD_ALLOWED_HOSTS entry: %s',
+    (value) => {
+      withEnv({ ...validEnv, OAUTH_CIMD_ALLOWED_HOSTS: value }, () => {
+        expect(() => validateConfig()).toThrow(/OAUTH_CIMD_ALLOWED_HOSTS/);
+      });
+    },
+  );
+});
+
 describe('MCP_STATELESS_ENABLED boolean guard', () => {
   it('is declared in the schema', () => {
     expect(ENV_SCHEMA_KEYS).toContain('MCP_STATELESS_ENABLED');

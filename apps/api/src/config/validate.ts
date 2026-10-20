@@ -1,4 +1,5 @@
 import { isIP } from 'net';
+import { parseCimdAllowedHosts } from '../oauth/cimdHosts';
 import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES } from '@breeze/shared';
 import { parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
 import { z } from 'zod';
@@ -851,6 +852,10 @@ const envObjectSchema = z
     OAUTH_DCR_ENABLED: z.string().optional(),
     OAUTH_DCR_REQUIRE_IAT: z.string().optional(),
     OAUTH_DCR_ALLOW_ANONYMOUS: z.string().optional(),
+    // CIMD (B-W03 #6157): boolean flag + optional host allowlist, both checked
+    // in the superRefine below.
+    OAUTH_CIMD_ENABLED: z.string().optional(),
+    OAUTH_CIMD_ALLOWED_HOSTS: z.string().optional(),
 
     // Wave 3 live-authorization rollout controls. Shape is validated in EVERY
     // environment (a garbage value is a bug anywhere); presence is required in
@@ -2061,6 +2066,25 @@ const envSchema = envObjectSchema
         message:
           'AGENT_EDITION_AUTO_MIGRATE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
           'Defaults to false (no automatic edition-migration dispatch).',
+      });
+    }
+
+    // OAUTH_CIMD_ENABLED / OAUTH_CIMD_ALLOWED_HOSTS (B-W03 #6157). A typo in
+    // the allowlist would otherwise fail closed at runtime with no boot error.
+    const cimdEnabledRaw = (data.OAUTH_CIMD_ENABLED ?? '').trim().toLowerCase();
+    if (cimdEnabledRaw && !boolValues.has(cimdEnabledRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OAUTH_CIMD_ENABLED'],
+        message: 'OAUTH_CIMD_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
+      });
+    }
+    const cimdHosts = parseCimdAllowedHosts(data.OAUTH_CIMD_ALLOWED_HOSTS);
+    if (!cimdHosts.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OAUTH_CIMD_ALLOWED_HOSTS'],
+        message: `OAUTH_CIMD_ALLOWED_HOSTS must be a comma-separated list of hostnames or .suffix entries (no scheme, path, port or wildcard): ${cimdHosts.reason}.`,
       });
     }
 

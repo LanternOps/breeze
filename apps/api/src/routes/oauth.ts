@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { OAUTH_REJECTED_CLIENT_METADATA } from '../oauth/cimdPolicy';
 import type { HttpBindings } from '@hono/node-server';
 import { createHash } from 'node:crypto';
 import { createLocalJWKSet, jwtVerify, type JWTPayload } from 'jose';
@@ -30,20 +31,10 @@ if (MCP_OAUTH_ENABLED) {
   const OAUTH_ALLOWED_DCR_GRANT_TYPES = new Set(['authorization_code', 'refresh_token']);
   const OAUTH_ALLOWED_DCR_RESPONSE_TYPES = new Set(['code']);
   const OAUTH_ALLOWED_DCR_TOKEN_AUTH_METHODS = new Set(['none']);
-  const OAUTH_REJECTED_DCR_METADATA = [
-    'jwks',
-    'jwks_uri',
-    'request_uris',
-    'sector_identifier_uri',
-    'software_statement',
-    // LOW-B6 (audit 2026-04-24): `software_id` is opaque, unauthenticated,
-    // and currently unvalidated. A spoofed value could be used to
-    // impersonate known integrations (e.g. "claude-desktop") in any
-    // future UI surface that displays it. We reject it outright; if a
-    // legitimate need arises, gate it behind .guid() validation and a
-    // partner-trusted IAT flow.
-    'software_id',
-  ];
+  // Shared with CIMD (oauth/cimdPolicy.ts) so the two self-registration
+  // paths can never diverge. LOW-B6 (audit 2026-04-24): `software_id` is
+  // opaque and unauthenticated, so it is rejected too.
+  const OAUTH_REJECTED_DCR_METADATA = OAUTH_REJECTED_CLIENT_METADATA;
   let cachedRevocationJwks: ReturnType<typeof createLocalJWKSet> | null = null;
 
   function rateLimitKeyPart(value: string): string {
