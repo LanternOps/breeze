@@ -19,6 +19,12 @@ related:
 > the import worker and the wizard (step 3), with Zammad 7.2.2 as the first module. Step 1's §8 is
 > binding except where §10 corrects it.
 
+> **Revision 2 (2026-10-20): review changes (#9295).** Decision 1 takes a denylist of executable
+> types on top of the sniff (§4.1, §4.4). The attachments CHECK is validated in the no-transaction
+> file (§4.2). The ledger now states what happens to a ticket removed in Breeze, org erasure
+> included (§5.5, §5.9). F31 no longer names main's newest migration. Decisions 24 and 25 stay
+> open for the owner.
+
 ## 1. Summary
 
 Step 1 gave Breeze a way to write historic tickets: a time-boxed migration window for one keyless
@@ -104,7 +110,7 @@ API paths are relative to `apps/api/src/`. Line numbers are as of 8f240ddbe.
 | F28 | The window summary and its event count tickets and comments only. | `db/schema/migrationWindows.ts:11-15`; `services/migrationWindows.ts:196-226`; `apps/docs/src/content/docs/features/webhooks.mdx:147` |
 | F29 | "Actions and reports are not settings" (settings rule 2). The org import lives on the Organizations page, not in settings. The web app already has `mintStepUpGrant` (no caller for `migration_window_open` yet) and a polling precedent. | `docs/agents/settings.md:12`; `apps/web/src/components/organizations/board/OrganizationsBoardPage.tsx:682`; `apps/web/src/lib/mfaStepUp.ts:64`; `apps/web/src/components/backup/RestoreWizard.tsx:345`; `apps/web/src/components/setup/SetupStepper.tsx:5-41` |
 | F30 | Route namespaces are reserved in the extension SDK, and a new route file needs an MCP coverage entry; `human_only_migration` is an existing exemption kind. | `packages/extension-sdk/src/manifest.ts:41`; `services/mcpCoverage.ts:30`, `:574` |
-| F31 | The newest migration on 8f240ddbe is `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`. Step 1 built its `ticket_comments` resume index `CONCURRENTLY` in a `-- @no-transaction` file. | `apps/api/migrations/`; `apps/api/migrations/2026-12-25-120100-migration-window-ticket-indexes.sql:1`, `:21-22` |
+| F31 | Main's newest migration moves daily, so each wave picks its slot at merge time (`apps/api/migrations/README.md`). Step 1 built its `ticket_comments` resume index `CONCURRENTLY` in a `-- @no-transaction` file. | `apps/api/migrations/`; `apps/api/migrations/2026-12-25-120100-migration-window-ticket-indexes.sql:1`, `:21-22` |
 | F32 | `users.status` is `active`, `invited` or `disabled`. `password_hash` is nullable. `disabled_reason` is free text; partner unsuspend re-enables only `partner_suspended`. `email` is globally unique, and `(id, partner_id)` is unique. A users row that is disabled, has no password and has no `partner_users` or `organization_users` row is an existing shape: the neutralized "tombstone" a removed member leaves. | `db/schema/users.ts:15`, `:27-43`; `apps/api/migrations/2026-04-11-users-rls.sql:231-235` (insert needs partner or org access); `apps/api/migrations/2026-08-22-office-addin-user-bindings.sql:22`; `apps/api/migrations/2026-06-18-neutralize-orphaned-users.sql:1-45`; `services/userNeutralization.ts:37-64` |
 | F33 | Such a user cannot sign in. Password login refuses a row with no `password_hash`, and any status but `active`, with the generic 401. Refresh needs `active`. A password reset is refused for `disabled` both when it is requested and when it is redeemed. Invite acceptance needs `invited`. A partner SSO provider may match a password-less staff row by email, but refuses to mint without a `partner_users` membership. CF Access needs `active`. | `routes/auth/login.ts:326`, `:428`, `:1050`; `services/passwordResetEligibility.ts:52`, `:128-130`; `jobs/authEmailWorker.ts:105`; `routes/auth/invite.ts:105`, `:177`; `routes/sso.ts:3388-3412`; `routes/auth/ssoLinkCompletion.ts:203-221`; `routes/auth/cfAccessRedirectLogin.ts:174` |
 | F34 | Such a user is invisible to pickers and notifications. `GET /users` in partner scope selects from `partner_users`; the ticket assignee pickers and Settings › Users read it. The default-assignee picker joins `partner_users` and active members. Live assignment and every ticket notification (assignee and subscribers) go through `isEligibleTicketRecipient`, which requires `active`. Tickets have no @-mention feature. Import eligibility checks only partner and org, not status or membership. | `routes/users.ts:1431-1451`; `apps/web/src/components/tickets/TicketsPage.tsx:256`; `apps/web/src/components/tickets/TicketWorkbench.tsx:517`; `services/inboundEmail/defaultAssigneeEligibility.ts:52-57`; `services/ticketPush.ts:181-191`; `jobs/ticketNotifyWorker.ts:381`, `:772`, `:805`; `ticketService.ts:506-517`, `:568-575` |
@@ -220,7 +226,8 @@ against a live instance. Items marked **unverified** are collected in §11.
 - **Object storage only.** The writer refuses attachments unless `selectBackend()` is `'s3'`
   (`409 TICKET_IMPORT_OBJECT_STORAGE_REQUIRED`), and a run refuses to start without
   `isS3Configured()` (F10). A 3.4 GB backfill never lands in `bytea`.
-- **Any type, served download-only outside the allowlist** (§4.4). No route changes.
+- **Any type except executables, served download-only outside the allowlist** (§4.4). A denylist
+  of executable types runs on top of the sniff (decision 1). No route changes.
 - **The live 10 MiB cap and the CHECK stay** (F5). A larger, empty or unfetchable file is skipped.
   It is named in a note appended to its comment and listed in the run report.
 - **Attribution.** `uploaded_by_user_id` stays NULL, as for inbound email (F8).
@@ -229,14 +236,15 @@ against a live instance. Items marked **unverified** are collected in §11.
   deleted only by a technician with `TICKETS_MANAGE`, as any uploader-less row today.
 - **No malware scanning,** as for every attachment today (F6). Imported files
   are years of customer mail. They include executables, macro documents and archives that the
-  live upload route would refuse. Download-only serving stops a browser from rendering or running
-  them. It does not stop a technician from opening one. This is the main risk of §4. It is
-  decision 1 (§9), and the maintainer decides it.
+  live upload route would refuse. The denylist (§4.4) skips executables and macro-enabled
+  documents, and download-only serving stops a browser from rendering or running the rest. Neither
+  looks inside archives, and neither stops a technician from opening a document that carries an
+  exploit. This is the main residual risk of §4 (decision 1, §9).
 
 ### 4.2 Data model
 
 ```sql
--- 2027-01-0X-HHMMSS-ticket-import-attachments.sql (transactional; name re-checked at commit, F31)
+-- 2027-01-0X-HHMMSS-ticket-import-attachments.sql (transactional; slot picked at merge time, F31)
 ALTER TABLE ticket_attachments ADD COLUMN IF NOT EXISTS migration_window_id uuid;   -- FK-less snapshot, like tickets
 ALTER TABLE ticket_attachments ADD COLUMN IF NOT EXISTS origin_principal_id uuid;   -- FK-less, like ticket_comments
 ALTER TABLE ticket_attachments ADD COLUMN IF NOT EXISTS import_source_id varchar(255);
@@ -247,9 +255,12 @@ ALTER TABLE ticket_attachments ADD CONSTRAINT ticket_attachments_import_shape_ch
   AND (import_source_id IS NULL
        OR (uploaded_by_user_id IS NULL AND migration_window_id IS NOT NULL AND storage_backend = 's3'))
 ) NOT VALID;
-ALTER TABLE ticket_attachments VALIDATE CONSTRAINT ticket_attachments_import_shape_chk;
 
 -- 2027-01-0X-HHMMSS-ticket-import-attachment-indexes.sql (-- @no-transaction, as F31's precedent)
+-- VALIDATE runs here, not in the file above: inside that transaction the ADD CONSTRAINT's
+-- ACCESS EXCLUSIVE lock would be held through the scan, so NOT VALID would gain nothing.
+-- On its own, VALIDATE takes only SHARE UPDATE EXCLUSIVE, so reads and writes continue.
+ALTER TABLE ticket_attachments VALIDATE CONSTRAINT ticket_attachments_import_shape_chk;
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ticket_attachments_import_source_uq
   ON ticket_attachments (origin_principal_id, import_source_id) WHERE import_source_id IS NOT NULL;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ticket_attachments_migration_window
@@ -337,7 +348,8 @@ mode:
 |---|---|---|
 | JPEG, PNG, WebP | that type | `inline` thumbnail, as a live upload |
 | PDF | `application/pdf` | `attachment` |
-| anything else (Office files, ZIP, EML, TXT, GIF, SVG, HTML, executables) | `application/octet-stream` | `attachment`, `nosniff`, file chip in the UI |
+| anything else (Office files, ZIP, EML, TXT, GIF, SVG, HTML) | `application/octet-stream` | `attachment`, `nosniff`, file chip in the UI |
+| an executable (the denylist below) | not stored | skipped as `blocked_type` and named in the note |
 
 - **The source's declared type is never trusted,** as on the live route (F6). It is not stored
   either: `content_type` is `varchar(64)` (F5), and an Office type is longer than that. The
@@ -347,8 +359,23 @@ mode:
   `TicketAttachmentMeta.contentType` is typed as the four allowlisted types
   (`packages/shared/src/types/tickets.ts:11`) and widens to `string`. GIF and SVG show as files,
   not previews. That is the price of not widening what renders inline.
+- **The executable denylist (decision 1).** A file is skipped as `blocked_type`, before it is
+  reserved, when either test matches:
+  - **Its final extension**, compared case-insensitively after trailing dots and spaces are
+    trimmed (so `invoice.pdf.exe` and `setup.EXE.` both match), is one of `exe`, `dll`, `com`,
+    `scr`, `pif`, `cpl`, `msi`, `msp`, `msix`, `appx`, `bat`, `cmd`, `ps1`, `psm1`, `psd1`, `vbs`,
+    `vbe`, `js`, `jse`, `wsf`, `wsh`, `hta`, `jar`, `lnk`, `reg`, `scf`, `inf`, `sh`, `app`,
+    `dmg`, `pkg`, or a macro-enabled Office type (`docm`, `dotm`, `xlsm`, `xltm`, `xlam`,
+    `pptm`, `potm`, `ppam`, `ppsm`, `sldm`).
+  - **Its first bytes** are an executable header, whatever the name: PE (`MZ`), ELF, or Mach-O
+    (both byte orders and the fat header). This runs in the same sniff as the allowlist (F6).
+
+  The list is a constant in `importAttachments.ts`, and a unit test pins each entry and each
+  header. Archives are not opened, so an executable inside a ZIP is imported as a ZIP. That is the
+  residual risk §4.1 names.
 - **Permanent skips:** `too_large` (declared or actual size over 10 MiB), `empty` (0 bytes,
-  refused by the CHECK) and `not_found` (the source answers 404 or 403 for the file). The note
+  refused by the CHECK), `blocked_type` (the denylist) and `not_found` (the source answers 404 or
+  403 for the file). The note
   appended to the comment follows the inbound note's shape (F8): `[Attachments not imported:
   a.zip (over the 10 MB limit); …]`.
 - **Memory.** The ticket path cannot stream (F10). A download is bounded by `maxBytes`, so peak
@@ -640,7 +667,7 @@ CREATE TABLE IF NOT EXISTS ticket_import_items (           -- the per-source tic
   source_id uuid NOT NULL,
   partner_id uuid NOT NULL,
   source_ticket_key varchar(255) NOT NULL,
-  state text NOT NULL CHECK (state IN ('imported', 'skipped', 'failed', 'deleted_in_source', 'hidden_in_source')),
+  state text NOT NULL CHECK (state IN ('imported', 'skipped', 'failed', 'deleted_in_source', 'hidden_in_source', 'removed_in_breeze')),
   imported_version varchar(64),                         -- source version of the last complete import
   seen_version varchar(64),
   seen_run_id uuid,                                     -- FK-less: runs may be deleted
@@ -848,8 +875,24 @@ Every import run is the same pass, and the first one is just the one where every
      decided from the list row, without loading the ticket.
    - **Unchanged.** `imported_version = seen_version` and `state = imported`: skip, with no source
      call.
+   - **Removed in Breeze.** `state = removed_in_breeze`: skip, whatever the version.
+   - **Changed, but gone from Breeze.** `state = imported` with a newer `seen_version`, and this
+     principal's `ticket_external_refs` row for the key no longer exists: mark
+     `removed_in_breeze`, report it, and do not import. The refs are read in system scope, one
+     batched query per page and only for changed items, so the window's narrowed RLS cannot make
+     a ticket in another org look gone. A ref disappears when the ticket is hard-deleted
+     (`ticket_id … ON DELETE CASCADE`, `migrations/2026-12-04-101300-ticket-external-refs.sql:51`)
+     or when its org is erased (refs are in the org cascade, `services/tenantCascade.ts:1013`).
    - **Otherwise** `load`, `convert` and `importTicket`. On success set `imported_version`. Links
      the conversion asked for are queued in the run cursor.
+
+   **Why a removal in Breeze is final, and the ledger is not cleared.** Clearing an erased org's
+   rows would let a later pass recreate that customer's tickets, through the fallback org or a
+   re-mapped org, and so undo the erasure. A technician's hard delete would be undone in the same
+   way. The rule matches the writer's: a change made in Breeze wins. The ledger rows keep only
+   source keys, versions and codes, never content, so keeping them after an erasure retains
+   nothing personal. To import such a ticket again, the admin deletes its item from the source's
+   ledger (§12).
 2. **Links** (phase `links`): `importTicketLink` for each queued link whose two tickets now exist
    in one org (merges, §6.6). Anything else becomes an internal note, already written by the
    conversion.
@@ -891,7 +934,7 @@ Breeze, so the report puts these first.
 `counters` (typed, per run): tickets `seen`, `created`, `resumed`, `unchanged`, `skipped`,
 `failed`; comments `written`, `skipped`, `systemSkipped`; attachments `written`, `skipped`, `bytes`,
 `alternativesIgnored`; `linksWritten`, `linksAsNotes`; `statusKept`; `contentTruncated`;
-`clockClamped`; `deletedInSource`, `hiddenInSource`; `ownersUnmatched` (distinct owners) and
+`clockClamped`; `deletedInSource`, `hiddenInSource`, `removedInBreeze`; `ownersUnmatched` (distinct owners) and
 `requestersWithoutContact`; `usersCreated`, `contactsCreated`, `ownersNotCreated`;
 `openTicketsOwnedByCreatedUsers`; `customAttributes: { name: count }`; and the dry-run predictions
 (`predicted.*`, including `ownersToCreate`, `contactsToCreate` per org and
@@ -908,6 +951,7 @@ exact beyond it):
   The people an import created are listed from the ledgers, not from issue rows (§5.13).
 - **Changed in the source:** `comments_changed`, `comments_missing`, `requester_changed`,
   `org_changed`, `deleted_in_source`, `hidden_in_source`.
+- **Removed in Breeze:** `removed_in_breeze` (§5.9).
 - **Content:** `content_truncated`.
 
 Issue rows carry source keys, source numbers and codes, never ticket content. Filenames and names
@@ -1340,7 +1384,7 @@ Each wave is one PR against `main`, usable and testable on its own. "Cutover" ma
 | Wave | Contents | Tests | Cutover |
 |---|---|---|---|
 | W0: writer follow-ups | §5.3 items 2, 3 and 5: the requester email optional, the resume report fields, the #8884 findings. | Unit: each finding as listed (byte bound through the transaction count, first-import `statusSkipped`, the `writtenByImport` kind case, the unified reason code, the charged racing status). Integration: each report field on a real resume (requester changed, comment changed or flipped internal, comment missing, org changed). | yes |
-| W1: attachments (step 2) | §4: the two migrations, the export classifications, `ImportedComment.attachments`, `importAttachments.ts` (reserve, skip-delete), the import claim in `addTicketComment`, the byte bucket, the S3 refusal, `attachmentsImported` in the summary and event, webhook docs, the shared `TicketAttachmentMeta.contentType` widened to `string`. | **Unit:** sniff to stored type; skip reasons and the note; provisional metadata never served; the side-effect scan over `importAttachments.ts`. **Integration, as `breeze_app`:** a round trip writes attached rows with no outbox, audit or event; resume skips an attached file and reuses a pending one; a crash after the put leaves a pending row that a later pass attaches and the reaper would otherwise delete; a declared-oversize file is never reserved; a transient file failure fails the ticket and keeps its pending row, and the next run attaches the file; a live comment cannot claim an import reservation and the reverse; a refusal with no S3; another org's ticket refused by RLS. **Contract:** tenant export, `eventBus.types`. | yes |
+| W1: attachments (step 2) | §4: the two migrations, the export classifications, `ImportedComment.attachments`, `importAttachments.ts` (reserve, skip-delete), the import claim in `addTicketComment`, the byte bucket, the S3 refusal, `attachmentsImported` in the summary and event, webhook docs, the shared `TicketAttachmentMeta.contentType` widened to `string`. | **Unit:** sniff to stored type; the executable denylist (each extension, each header, a double extension, trailing dots); skip reasons and the note; provisional metadata never served; the side-effect scan over `importAttachments.ts`. **Integration, as `breeze_app`:** a round trip writes attached rows with no outbox, audit or event; resume skips an attached file and reuses a pending one; a crash after the put leaves a pending row that a later pass attaches and the reaper would otherwise delete; a declared-oversize file is never reserved; a transient file failure fails the ticket and keeps its pending row, and the next run attaches the file; a live comment cannot claim an import reservation and the reverse; a refusal with no S3; another org's ticket refused by RLS. **Contract:** tenant export, `eventBus.types`. | yes |
 | W2: links in import mode | §5.3 item 4: `ticket_links.migration_window_id`, `addTicketLink(…, mode)`, `importTicketLink`. | Live behaviour unchanged (existing suites). Import: no event or audit, feed rows at `mode.at`, the window org check, `ALREADY_LINKED` idempotent, each known-impossible refusal mapped to `link_not_written`, `duplicate_elsewhere` on a chain formed between passes. Side-effect scan extended. Tenant export. | no (merged tickets fall back to the note) |
 | W3: HTML to text | §5.4. | The defaults are byte-identical on the existing inbound fixtures. Links, `javascript:` dropped, nested quotes, image resolver, 200k clamp with marker, surrogate pair at the cut, the pathological-nesting time bound. | yes |
 | W4: framework | §5.1, §5.2, §5.5–§5.10: tables and RLS, every registration, the credential writer, the SSRF client, the routes, the worker with slices and the lease, the ledger and the report, the `ticket-imports` reserved namespace, a fake module for tests, env vars (`.env.example`, `docker-compose.yml`, `internalEnvVars.ts`), locale strings. | **Routes:** owner-only create and edit, any-admin revoke, delete and cancel, no ciphertext returned, mappings locked while running, the run's window checks, S3 refusal. **Credentials:** round trip, foreign row id fails. **Lease (real Redis, `vitest.integration.config.ts`):** cap per partner and global, renew keeps both keys alive past several lease lengths, expiry after a simulated crash, release. **Worker with the fake module:** a slice continues itself; a retried slice whose successor already ran exits on `slice_seq`; a crash mid-page resumes from the ledger; a closed window stops the run; a 429 defers without spending an attempt; deletions probe. **RLS:** cross-partner forge 42501 on every table. **Contract:** `rls-coverage`, org cascade, org merge, tenant export, `orgLifecycleFoundations`, `workerRegistry`, entrypoint closure, readiness coverage, `partner-wide-write-coverage`, `mcpCoverage`, encrypted-column registry and AI-output masking. | yes |
@@ -1355,11 +1399,12 @@ cutover needs every wave but W2, and W4b because it turns both options on. Witho
 
 Decisions 24 and 25 revisit #8313 answer 3. Please read them first.
 
-1. **Attachment types and risk.** Any type is accepted; outside JPEG/PNG/WebP/PDF a file is
-   stored as `application/octet-stream` and served download-only. The cap is 10 MiB; larger files
-   are skipped and listed. There is **no malware scanning**: an imported executable reaches a
-   technician who opens it. Alternatives: the live allowlist only (most Zammad files would be
-   dropped), or a denylist of executable extensions on top.
+1. **Attachment types and risk. Decided in review (2026-10-20): the denylist.** Any type except
+   executables is accepted. Outside JPEG/PNG/WebP/PDF a file is stored as
+   `application/octet-stream` and served download-only. A denylist of executable extensions and
+   headers runs on top of the sniff (§4.4), and the cap is 10 MiB. Skipped files are listed. There
+   is still no malware scanning, and archives are not opened. Rejected: the live allowlist only,
+   which would drop most of a Zammad history, and any type with no denylist.
 2. **Reserve before storing** (§4.3), so the existing reaper cleans up after a crash. The
    alternative is the inbound precedent, which leaves unreferenced objects that org erasure cannot
    find.
@@ -1466,7 +1511,9 @@ Step 1's §8 is binding except for these points. A one-line note in that section
 
 ## 11. Risks
 
-- **Malware in imported files** (§4.1, decision 1).
+- **Malware in imported files** (§4.1, decision 1). The denylist stops executables and
+  macro-enabled documents. It does not stop an executable inside an archive, or an exploit inside
+  an ordinary document.
 - **Invisible tickets.** Inactive groups, or groups the token cannot read, hide tickets from every
   call (Z1). Nothing in the API reports them. Preflight flags the groups, the runbook reactivates
   them, and the dry-run count is compared with Zammad's own.
@@ -1518,5 +1565,6 @@ Step 1's §8 is binding except for these points. A one-line note in that section
 
 Comment update, delete and requester re-apply in import mode (decision 14). Ticket links other than
 merges, checklists and custom attributes. Raw `.eml` for unrenderable bodies. A streaming put and a
-higher cap. A principal ownership transfer. More modules (Freshdesk, Zendesk, OTRS, Autotask,
+higher cap. A "forget this item" action on the ledger, to import again a ticket that §5.9 marked
+`removed_in_breeze`. A principal ownership transfer. More modules (Freshdesk, Zendesk, OTRS, Autotask,
 ConnectWise, HaloPSA, CSV/JSON), each one new module and no change to `ticketService`.
