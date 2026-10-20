@@ -34,7 +34,7 @@ export default function CharacterKeyShortcutsSettings({ preferences, onSaved }: 
       onSaved?.(saved);
       showToast({
         type: 'success',
-        message: t(next ? 'characterKeyShortcuts.enabledToast' : 'characterKeyShortcuts.disabledToast'),
+        message: next ? t('characterKeyShortcuts.enabledToast') : t('characterKeyShortcuts.disabledToast'),
       });
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
