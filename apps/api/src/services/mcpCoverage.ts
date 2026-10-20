@@ -415,6 +415,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devPush.ts': { exempt: 'internal_plumbing' },
   'devices/pamReconciliation.ts': { exempt: 'human_only_pam_reconciliation', note: 'Privileged-access recovery is a human operator decision requiring PAM approval, device execution permission, MFA policy and an audited reason. No AI reset tool: restoring elevation availability must not be initiated by an autonomous agent.' },
   'devices/actuateElevation.ts': { exempt: 'internal_plumbing', note: "PAM actuator is disabled by default in every env; request_elevation already covers the product path. From #6796." },
+  // #9234: the device-page button for the watchdog restart the AI tool already queues.
+  'devices/agentRecovery.ts': { tools: ['trigger_agent_restart'] },
   'devices/aiOrigin.ts': { gap: '#6780' },
   'devices/alerts.ts': { tools: ['manage_alerts'] },
   'devices/anomalies.ts': { gap: '#6777' },

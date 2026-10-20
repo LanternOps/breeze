@@ -109,3 +109,10 @@ describe('webhooks permission', () => {
     expect(keys).toEqual(['WEBHOOKS_READ']);
   });
 });
+
+describe('agent recovery grant (#9234)', () => {
+  it('is its own devices action, distinct from devices:execute', () => {
+    expect(PERMISSION_GRANTS.DEVICES_RECOVER_AGENT).toEqual({ resource: 'devices', action: 'recover_agent' });
+    expect(PERMISSION_GRANTS.DEVICES_RECOVER_AGENT).not.toEqual(PERMISSION_GRANTS.DEVICES_EXECUTE);
+  });
+});

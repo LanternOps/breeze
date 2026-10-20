@@ -1393,6 +1393,147 @@ async function precheckCommandExecution(
 }
 
 /**
+ * The row-writing half of the dispatch phase, shared by `dispatchPreparedCommand`
+ * (which then pushes over WS and waits) and `enqueueWatchdogCommand` (which
+ * returns as soon as the row exists). Inserts the `device_commands` row and
+ * writes the dispatch-time audit rows. Must run OUTSIDE the caller's DB context
+ * (both callers wrap it in `runOutsideDbContextSafe`) so the INSERT commits
+ * immediately. Returns undefined only when the INSERT returned no row.
+ */
+async function insertPreparedCommand(
+  device: PreparedCommandDevice,
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload,
+  options: ExecuteCommandOptions,
+): Promise<typeof deviceCommands.$inferSelect | undefined> {
+  const { timeoutMs = 30000, userId } = options;
+  const targetRole = options.targetRole ?? 'agent';
+
+  // Validate userId for the created_by FK. Shared with queueCommand — see
+  // `resolveCommandCreatedBy` for why synthetic-auth ids degrade to NULL and
+  // why the probe opens its own system context. The sibling drift this used
+  // to warn about (queueCommand/queueCommandForExecution stamping verbatim,
+  // breaking the hyperv/backup/vault/mssql/incident/agent-logs tools) is
+  // closed: both insert sites now go through that one helper (#3978).
+  const safeUserId = await resolveCommandCreatedBy(deviceId, userId, options.aiOrigin);
+
+  // #3112: the caller's budget has to travel WITH the command, not merely bound
+  // the server-side wait below. The agent's helper-IPC path used a hardcoded
+  // per-attempt timeout, so raising `timeoutMs` here changed only how long the
+  // server waited while the device gave up on its own schedule underneath.
+  // Publishing it as `timeoutSeconds` — the key the agent's script path already
+  // reads — lets the device bound its own work by what the caller is waiting for.
+  //
+  // Never clobber an explicit value: callers that set their own `timeoutSeconds`
+  // (script execution, for one) carry the more specific intent.
+  //
+  // Agent-targeted only. The watchdog is a different consumer with no helper-IPC
+  // path to bound, and its callers are explicitly told to pass a LARGER
+  // timeoutMs than they would for an agent command (see the targetRole doc
+  // above) — publishing that inflated number into its payload would be
+  // misleading rather than useful.
+  const payloadWithBudget = (
+    targetRole === 'agent'
+    && payload
+    && typeof payload === 'object'
+    && !Array.isArray(payload)
+    && (payload as Record<string, unknown>).timeoutSeconds === undefined
+  )
+    ? { ...(payload as Record<string, unknown>), timeoutSeconds: Math.ceil(timeoutMs / 1000) }
+    : payload;
+
+  const persisted = persistableCommandPayload(deviceId, type, payloadWithBudget, options.commandId);
+
+  // Insert command (device_commands — no RLS, but establish a system context
+  // so it isn't a contextless bare-pool write under runOutsideDbContext, #1375).
+  const [command] = await withSystemDbAccessContext(() =>
+    db
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type,
+        payload: persisted.payload,
+        ...(persisted.commandId ? { id: persisted.commandId } : {}),
+        status: 'pending',
+        createdBy: safeUserId,
+        targetRole,
+        // #5128. executeCommand is synchronous by contract (the caller waits
+        // via waitForCommandResult), so it stays `reject` — and a `reject`
+        // row gets NO `deliver_by`. Review round 2 (J): stamping the
+        // 5-minute race grace here cut every executeCommand row's pending
+        // window from the legacy 30-minute execution clock to 5 minutes,
+        // including watchdog-targeted binary/restart work and other
+        // `preferHeartbeat` callers, and it expired a barrier-held reboot
+        // while the power-state barrier was deliberately holding it. NULL
+        // keeps the legacy clock, so nothing changes for reject callers.
+        // (Deliberately no literal command-type names here: the #4093 scan in
+        // agentEditionCompat.test.ts greps raw file text, and this hub file
+        // must stay off its allowlist so a real raw insert still trips it.)
+        deliverBy: deliverByFor({ kind: 'reject' }),
+        submittedOrgId: device.orgId,
+        ...aiOriginColumns(options.aiOrigin),
+      })
+      .returning(),
+  );
+
+  if (!command) return undefined;
+
+  // #5022 W01 — see the twin in `queueCommand`. This path already holds the
+  // device row from step 1, so no extra lookup is needed.
+  if (options.aiOrigin && !options.suppressAiCommandAudit) {
+    writeAiCommandAudit({
+      aiOrigin: options.aiOrigin,
+      orgId: device.orgId,
+      deviceId,
+      hostname: device.hostname,
+      commandId: command.id,
+      commandType: type,
+      actorId: safeUserId ?? options.userId ?? null,
+    });
+  }
+
+  // Audit log for mutating commands (fire-and-forget).
+  // Uses device info fetched in step 1 to avoid an RLS-gated query.
+  if (AUDITED_COMMANDS.has(type)) {
+    // Claimed up front, like createAuditLogAsync (fire-and-forget write).
+    markRequestAuditWritten();
+    withDbAccessContext(
+      { scope: 'organization', orgId: device.orgId, accessibleOrgIds: [device.orgId] },
+      () =>
+        db
+          .insert(auditLogs)
+          .values({
+            orgId: device.orgId,
+            actorType: safeUserId ? 'user' : 'system',
+            actorId: safeUserId || '00000000-0000-0000-0000-000000000000',
+            action: `agent.command.${type}`,
+            resourceType: 'device',
+            resourceId: deviceId,
+            resourceName: device.hostname,
+            details: commandAuditDetails(command.id, type, persisted.payload),
+            // Dispatch-time row: the agent hasn't reported back yet, so
+            // this cannot claim 'success' (#4225).
+            result: 'dispatched',
+          })
+          .execute()
+    )
+      .catch((err) => {
+        console.error('Failed to write audit log', {
+          commandId: command.id,
+          deviceId,
+          type,
+          orgId: device.orgId,
+          error: err,
+        });
+        captureException(err);
+      });
+  }
+
+  return command;
+}
+
+/**
  * Phase 2 of `executeCommand` — queue, dispatch, and poll. Runs entirely
  * OUTSIDE the caller's DB context so the INSERT commits immediately and is
  * visible to the WebSocket handler that processes the agent's response
@@ -1411,131 +1552,13 @@ async function dispatchPreparedCommand(
   payload: CommandPayload,
   options: ExecuteCommandOptions,
 ): Promise<CommandResult> {
-  const { timeoutMs = 30000, userId } = options;
-  const targetRole = options.targetRole ?? 'agent';
+  const { timeoutMs = 30000 } = options;
   const dispatchViaWs = dispatchesViaWs(options);
 
   return runOutsideDbContextSafe(async () => {
-    // Validate userId for the created_by FK. Shared with queueCommand — see
-    // `resolveCommandCreatedBy` for why synthetic-auth ids degrade to NULL and
-    // why the probe opens its own system context. The sibling drift this used
-    // to warn about (queueCommand/queueCommandForExecution stamping verbatim,
-    // breaking the hyperv/backup/vault/mssql/incident/agent-logs tools) is
-    // closed: both insert sites now go through that one helper (#3978).
-    const safeUserId = await resolveCommandCreatedBy(deviceId, userId, options.aiOrigin);
-
-    // #3112: the caller's budget has to travel WITH the command, not merely bound
-    // the server-side wait below. The agent's helper-IPC path used a hardcoded
-    // per-attempt timeout, so raising `timeoutMs` here changed only how long the
-    // server waited while the device gave up on its own schedule underneath.
-    // Publishing it as `timeoutSeconds` — the key the agent's script path already
-    // reads — lets the device bound its own work by what the caller is waiting for.
-    //
-    // Never clobber an explicit value: callers that set their own `timeoutSeconds`
-    // (script execution, for one) carry the more specific intent.
-    //
-    // Agent-targeted only. The watchdog is a different consumer with no helper-IPC
-    // path to bound, and its callers are explicitly told to pass a LARGER
-    // timeoutMs than they would for an agent command (see the targetRole doc
-    // above) — publishing that inflated number into its payload would be
-    // misleading rather than useful.
-    const payloadWithBudget = (
-      targetRole === 'agent'
-      && payload
-      && typeof payload === 'object'
-      && !Array.isArray(payload)
-      && (payload as Record<string, unknown>).timeoutSeconds === undefined
-    )
-      ? { ...(payload as Record<string, unknown>), timeoutSeconds: Math.ceil(timeoutMs / 1000) }
-      : payload;
-
-    const persisted = persistableCommandPayload(deviceId, type, payloadWithBudget, options.commandId);
-
-    // Insert command (device_commands — no RLS, but establish a system context
-    // so it isn't a contextless bare-pool write under runOutsideDbContext, #1375).
-    const [command] = await withSystemDbAccessContext(() =>
-      db
-        .insert(deviceCommands)
-        .values({
-          deviceId,
-          type,
-          payload: persisted.payload,
-          ...(persisted.commandId ? { id: persisted.commandId } : {}),
-          status: 'pending',
-          createdBy: safeUserId,
-          targetRole,
-          // #5128. executeCommand is synchronous by contract (the caller waits
-          // via waitForCommandResult), so it stays `reject` — and a `reject`
-          // row gets NO `deliver_by`. Review round 2 (J): stamping the
-          // 5-minute race grace here cut every executeCommand row's pending
-          // window from the legacy 30-minute execution clock to 5 minutes,
-          // including watchdog-targeted binary/restart work and other
-          // `preferHeartbeat` callers, and it expired a barrier-held reboot
-          // while the power-state barrier was deliberately holding it. NULL
-          // keeps the legacy clock, so nothing changes for reject callers.
-          // (Deliberately no literal command-type names here: the #4093 scan in
-          // agentEditionCompat.test.ts greps raw file text, and this hub file
-          // must stay off its allowlist so a real raw insert still trips it.)
-          deliverBy: deliverByFor({ kind: 'reject' }),
-          submittedOrgId: device.orgId,
-          ...aiOriginColumns(options.aiOrigin),
-        })
-        .returning(),
-    );
-
+    const command = await insertPreparedCommand(device, deviceId, type, payload, options);
     if (!command) {
       return { status: 'failed' as const, error: 'Failed to create command' };
-    }
-
-    // #5022 W01 — see the twin in `queueCommand`. This path already holds the
-    // device row from step 1, so no extra lookup is needed.
-    if (options.aiOrigin && !options.suppressAiCommandAudit) {
-      writeAiCommandAudit({
-        aiOrigin: options.aiOrigin,
-        orgId: device.orgId,
-        deviceId,
-        hostname: device.hostname,
-        commandId: command.id,
-        commandType: type,
-        actorId: safeUserId ?? options.userId ?? null,
-      });
-    }
-
-    // Audit log for mutating commands (fire-and-forget).
-    // Uses device info fetched in step 1 to avoid an RLS-gated query.
-    if (AUDITED_COMMANDS.has(type)) {
-      // Claimed up front, like createAuditLogAsync (fire-and-forget write).
-      markRequestAuditWritten();
-      withDbAccessContext(
-        { scope: 'organization', orgId: device.orgId, accessibleOrgIds: [device.orgId] },
-        () =>
-          db
-            .insert(auditLogs)
-            .values({
-              orgId: device.orgId,
-              actorType: safeUserId ? 'user' : 'system',
-              actorId: safeUserId || '00000000-0000-0000-0000-000000000000',
-              action: `agent.command.${type}`,
-              resourceType: 'device',
-              resourceId: deviceId,
-              resourceName: device.hostname,
-              details: commandAuditDetails(command.id, type, persisted.payload),
-              // Dispatch-time row: the agent hasn't reported back yet, so
-              // this cannot claim 'success' (#4225).
-              result: 'dispatched',
-            })
-            .execute()
-      )
-        .catch((err) => {
-          console.error('Failed to write audit log', {
-            commandId: command.id,
-            deviceId,
-            type,
-            orgId: device.orgId,
-            error: err,
-          });
-          captureException(err);
-        });
     }
 
     // Dispatch via WebSocket. Retry briefly on send failure: a transient WS
@@ -1855,6 +1878,56 @@ export async function executeCommandWithCallerPrecheck(
     );
   if (!precheck.ok) return precheck.result;
   return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
+}
+
+/** Watchdog recovery commands an operator may request directly (#9234). */
+export const WATCHDOG_RECOVERY_COMMAND_TYPES = ['restart_agent', 'start_agent'] as const;
+export type WatchdogRecoveryCommandType = (typeof WATCHDOG_RECOVERY_COMMAND_TYPES)[number];
+
+export type EnqueueWatchdogCommandResult =
+  | { status: 'queued'; commandId: string }
+  | { status: 'failed'; error: string; trust?: CommandResult['trust'] };
+
+/**
+ * Queue a watchdog recovery command and return as soon as the row exists
+ * (#9234 step 1, the device-page "Restart agent" action).
+ *
+ * The same path the `trigger_agent_restart` AI tool takes through
+ * `executeCommand(..., { targetRole: 'watchdog' })` — the same precheck (device
+ * lookup, `expectedOrgId` tenancy gate, parked-device refusal, partner trust,
+ * watchdog freshness) and the same row — minus the wait. The watchdog has no
+ * socket and claims its commands on a ~30s failover poll, so a request handler
+ * that waited would hold the request open across that poll, and a short wait
+ * would be worse: `waitForCommandResult` marks a still-pending row failed when
+ * it gives up, cancelling a restart the watchdog had not yet seen. An
+ * unclaimed row is expired by the stale-command reaper instead.
+ *
+ * Call it from a request handler: the precheck runs in the caller's RLS
+ * context, the INSERT outside it so it commits immediately.
+ */
+export async function enqueueWatchdogCommand(
+  deviceId: string,
+  type: WatchdogRecoveryCommandType,
+  options: { userId?: string; expectedOrgId?: string } = {},
+): Promise<EnqueueWatchdogCommandResult> {
+  const execOptions: ExecuteCommandOptions = {
+    ...(options.userId !== undefined ? { userId: options.userId } : {}),
+    ...(options.expectedOrgId !== undefined ? { expectedOrgId: options.expectedOrgId } : {}),
+    targetRole: 'watchdog',
+  };
+  const precheck = await precheckCommandExecution(deviceId, type, {}, execOptions);
+  if (!precheck.ok) {
+    return {
+      status: 'failed',
+      error: precheck.result.error ?? 'Command refused',
+      ...(precheck.result.trust ? { trust: precheck.result.trust } : {}),
+    };
+  }
+  const command = await runOutsideDbContextSafe(() =>
+    insertPreparedCommand(precheck.device, deviceId, type, {}, execOptions),
+  );
+  if (!command) return { status: 'failed', error: 'Failed to create command' };
+  return { status: 'queued', commandId: command.id };
 }
 
 /**

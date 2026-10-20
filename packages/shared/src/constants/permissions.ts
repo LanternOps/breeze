@@ -22,6 +22,10 @@ export const PERMISSION_GRANTS = {
   DEVICES_WRITE: { resource: 'devices', action: 'write' },
   DEVICES_DELETE: { resource: 'devices', action: 'delete' },
   DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+  // Ask the watchdog to restart or start a wedged/stopped agent (#9234). Its own
+  // grant so an MSP can hand out agent recovery without arbitrary device
+  // commands, or withhold it from a role that otherwise holds devices:execute.
+  DEVICES_RECOVER_AGENT: { resource: 'devices', action: 'recover_agent' },
 
   // Signed, resource-bound rollback of customer-machine agent components.
   AGENT_ROLLBACK_CREATE: { resource: 'agent_rollback', action: 'create' },
