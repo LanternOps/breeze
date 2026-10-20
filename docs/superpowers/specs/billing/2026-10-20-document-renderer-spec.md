@@ -44,11 +44,11 @@ Nothing is shared between the two apps. `apps/portal` is a separate Astro app, a
 | D11 | Invoice totals | The web Preview says "Amount due", shows Paid as a positive figure, shows the Tax row only when tax is non-zero, and sets the balance in sans (`InvoiceDocument.tsx:260-299`). The portal says "Balance due" or "Balance", shows Paid as "−", always shows the Tax row, adds a deposit strip, and sets the balance in serif (`invoicePaper.tsx:126-159`). |
 | D12 | Terms | The web Preview shows a plain pre-wrapped block (`InvoiceDocument.tsx:303-310`). The portal shows a collapsible `<details>` with detected sections and a contents list (`DocumentTermsCollapsible`, `documentShell.tsx:277`). |
 | D13 | Phone layout | Below `sm`, the portal folds Qty × Price under the description (`invoicePaper.tsx:101`). The web Preview forces `min-w-[30rem]` and scrolls sideways (`InvoiceDocument.tsx:201`). |
-| D14 | Paper theme | The portal pins a white paper token block on `[data-doc-theme]` (`apps/portal/src/styles/globals.css:556-593`), so neither dark mode nor the chrome accent reaches the document. Web has no such block, so its Preview paints with the web app's own tokens. It does so even where it stamps the theme: `QuoteDocument.tsx:574` stamps `data-doc-theme` and `InvoiceDocument.tsx` does not. The logged-in portal invoice omits the theme too (`InvoiceDetailView.tsx:263`, `<DocumentPaper>` with no `docTheme`), while the public invoice passes it. |
-| D15 | Accent delivery | Web sets the accent with inline `style` attributes: `InvoiceDocument.tsx:125,145,286,291` and `QuoteDocument.tsx:457,572,589,710,718,730,735`. `QuoteDocument.tsx:297,310` also put `textAlign` in a `style` attribute. The portal uses one nonced `<style>` element plus `.doc-accent-*` classes (`apps/portal/src/lib/docAccent.ts`, `globals.css:539-547`), because its CSP sends `style-src-attr 'none'` (`apps/portal/src/lib/csp.ts:47`). A web component moved into the portal unchanged would render an unstyled grey rule, and only in production. |
-| D16 | Label language | Web Preview labels follow the **staff user's UI language** (`useTranslation('billing')`, `InvoiceDocument.tsx:73`; dates via `i18n.language`, `:40`). Portal labels are hard-coded English. PDF labels follow the **document's** locale (`resolveRenderLocale`, `invoicePdf.ts:101`). So a pt-BR technician previews in Portuguese an invoice that the customer receives in English. |
+| D14 | Paper theme | The portal pins a white paper token block on `[data-doc-theme]` (`apps/portal/src/styles/globals.css:556-593`), so neither dark mode nor the chrome accent reaches the document. Web has no such block, so its Preview paints with the web app's own tokens. It does so even where it stamps the theme: `QuoteDocument.tsx:574` stamps `data-doc-theme` and `InvoiceDocument.tsx` does not. The logged-in portal invoice passes no `docTheme` (`InvoiceDetailView.tsx:263`), so it always renders `classic` (`documentShell.tsx:36` default), while the public invoice passes the real theme. |
+| D15 | Accent delivery | Web sets the accent with inline `style` attributes: `InvoiceDocument.tsx:125,145,286,291` and `QuoteDocument.tsx:457,572,589,710,718,730,735`. `QuoteDocument.tsx:297,310` also put `textAlign` in a `style` attribute. The portal uses one nonced `<style>` element plus `.doc-accent-*` classes (`apps/portal/src/lib/docAccent.ts`, `globals.css:539-547`), because its CSP sends `style-src-attr 'none'` (`apps/portal/src/lib/csp.ts:47`). Move a web component into the portal unchanged and its server-rendered markup draws an unstyled grey rule, but only in production. |
+| D16 | Label language | Web Preview labels follow the **staff user's UI language** (`useTranslation('billing')`, `InvoiceDocument.tsx:73`; dates via `i18n.language`, `:40`). Portal labels are hard-coded English. PDF labels are hard-coded English (`'DESCRIPTION'`, `'QTY'`, `` `Issued: ` ``, `` `Due: ` `` at `invoicePdf.ts:472-488`, and the same pattern at `quotePdf.ts:1178-1179`). The exceptions are two invoice line strings (`tApi` at `invoicePdf.ts:134,145`), which follow the document locale. `apps/api/src/i18n/locales/pt-BR/pdf.json` has keys for the rest, but no code reads them. So a pt-BR technician previews in Portuguese an invoice that the customer receives in English. |
 | D17 | Accent on the public invoice | The public invoice page deliberately fetches client-side, for rate-limit reasons (`apps/portal/src/pages/invoice/[token].astro:2-7`). `PublicDocumentLayout.astro:38` emits the nonced accent `<style>` only when the accent is known at SSR, and the invoice page passes none. The customer's public invoice therefore uses the app primary colour instead of the partner's brand colour. |
-| D18 | Money and date locale | The portal formats money in the **browser's** language, and in English during SSR (`portalLocale()`, `apps/portal/src/lib/money.ts:11-14`). The PDF uses the document locale. The web Preview uses the staff UI language. |
+| D18 | Money and date locale | The portal formats money in the **browser's** language, and in English during SSR (`portalLocale()`, `apps/portal/src/lib/money.ts:11-14`). The PDF formats money in the document locale, but always formats dates as `en-US` (`invoicePdf.ts:109`, `quotePdf.ts:48`). The web Preview uses the staff UI language for both. |
 | D19 | Server payload per host | The public quote route serializes through `toPublicQuoteHeader` (`apps/api/src/services/publicQuoteDto.ts:88`). The logged-in portal quote route spreads the raw quote row into its response (`apps/api/src/routes/portal/quotes.ts:99`). The two portal pages for one quote receive differently shaped data, so sharing JSX alone would not make them agree. |
 | D20 | Preview caption | `billing.json` says "This is what your customer sees on their proposal link." (`apps/web/src/locales/en/billing.json:1615`) and "…on their invoice." (`:2203`). D5–D19 make both false. |
 
@@ -97,7 +97,7 @@ packages/document-ui/
   src/QuoteBlocks.tsx     # rich_text, table, callout, image, line_items, contract
   src/InvoiceDocumentView.tsx
   src/QuoteDocumentView.tsx
-  src/hostComponents.ts   # DocumentHostComponents: Image, and nothing else for now
+  src/hostComponents.ts   # DocumentHostComponents: Image, AgreementFile (§3.6)
   src/document.css        # paper tokens, fonts, .doc-accent-*, condensed theme, cover geometry, isolation
   src/tokens.ts           # the host tokens the package relies on (§3.5)
   src/__tests__/noStyleAttribute.test.tsx
@@ -106,64 +106,100 @@ packages/document-ui/
 
 ### 3.2 The view-model contract
 
-The model is built **only** from the customer DTO (§3.4). It holds display-ready values: strings already formatted in the document's locale and currency, plus booleans for what to show. Components hold no business rules: no visibility filtering, no tax maths, no fallback chains. That is what lets two apps render the same thing.
+The model is built **only** from the customer DTO (§3.4). It holds display-ready values, formatted in the document's locale and currency, and booleans for what to show. Components hold no business rules: no visibility filtering, no tax maths, no fallback chains. That is what lets two apps render the same thing.
+
+Money is the one exception to "only strings". The PDF re-derives a glyph-safe string from the raw amount: `formatMoneyForPdf` (`apps/api/src/services/pdfMoney.ts:53`) falls back to the currency code when the symbol form is not WinAnsi-safe, for example `₹` or the narrow no-break space that `fr-FR` emits. So money travels as `DocumentMoney`.
 
 ```ts
 // packages/shared/src/documents/model.ts
-export interface DocumentAssetRef { kind: 'logo' | 'cover' | 'block_image' | 'line_thumb'; id: string }
+declare const sanitized: unique symbol;
+/** HTML that passed the assembler's server-side sanitizer. Only the assembler casts to it;
+ *  every dangerouslySetInnerHTML sink in the package accepts only this type. */
+export type SanitizedHtml = string & { readonly [sanitized]: true };
+
+export interface DocumentAssetRef {
+  kind: 'logo' | 'cover' | 'block_image' | 'line_thumb' | 'agreement_file';
+  /** line_thumb: the line's uploaded image id, else its catalog item id (quotePdf.ts:579-585). */
+  id: string;
+}
+
+export interface DocumentMoney {
+  text: string;             // screen form, document locale
+  amount: string;           // decimal string, for the PDF's glyph-safe re-format
+  currency: string;
+  suffix: { text: string; srText: string } | null;   // "/mo" + "per month" (OD-11)
+}
+
+export interface DocumentDate { text: string; iso: string }   // <time dateTime={iso}>
 
 export interface DocumentBranding {
-  logo: DocumentAssetRef | null;   // or a data:/https logo URL, carried as-is
-  wordmark: string | null;         // partner name, else seller name
-  theme: DocumentThemeId;          // 'classic' | 'condensed'
-  pageSize: DocumentPageSize;      // 'a4' | 'letter' (sets the cover aspect, OD-5)
+  logo: { kind: 'asset'; ref: DocumentAssetRef } | { kind: 'url'; url: string } | null;
+  logoAlt: string;
+  wordmark: string | null;           // partner name, else seller name
+  theme: DocumentThemeId;            // 'classic' | 'condensed'
+  pageSize: DocumentPageSize;        // 'a4' | 'letter'; sets the cover aspect (OD-5)
   seller: { name: string | null; lines: string[]; phone: string | null; email: string | null; website: string | null } | null;
 }
 
 export interface DocumentHeaderModel {
-  eyebrow: string;                 // "Invoice" / "Proposal"
-  number: string;                  // "INV-0042", or the draft fallback label
-  subtitle: string | null;         // a proposal's title
+  eyebrow: string;                   // "Invoice" / "Proposal"
+  number: string;                    // "INV-0042", or the draft fallback label
+  subtitle: string | null;           // a proposal's title
   status: { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'danger' } | null;
-  dates: { label: string; value: string }[];
-  billTo: { label: string; name: string; addressLines: string[]; taxId: string | null } | null;
+  dates: { label: string; value: DocumentDate }[];
+  billTo: { label: string; name: string; addressLines: string[]; taxId: string | null } | null;  // null when a cover carries "Prepared for"
 }
 
-export interface DocumentLineRow {
-  key: string;                     // stable server line id (never an array index)
-  title: string;                   // never empty: '—' or the localised labor label
-  blurb: string | null;            // rendered with whitespace-pre-line (fixes D1 by construction)
-  workDate: string | null;         // formatted
-  qtyText: string; unitText: string; taxText: string | null; amountText: string;
-  recurrenceTag: string | null;    // quotes: "Monthly" / "Annual"
-  note: string | null;             // worked-vs-billed disclosure
-  descriptor: string[];            // quote device-set lines
-  ticketText: string | null;       // the logged-in portal's per-line ticket (invoicePaper's showLineTicket)
+export interface DocumentLineRow<Tax extends DocumentMoney | 'exempt' | null> {
+  key: string;                       // server line id (§3.4 adds it to the invoice projection)
+  title: string;                     // non-empty: '—' or the localised labor label (builder asserts)
+  blurb: string | null;              // rendered with whitespace-pre-line (fixes D1 by construction)
+  workDate: DocumentDate | null;
+  qty: string;
+  unit: DocumentMoney;
+  tax: Tax;                          // 'exempt' renders '—' with srText "Not taxable"
+  amount: DocumentMoney;
+  note: string | null;               // worked-vs-billed disclosure
+  descriptor: string[];              // quote device-set lines
+  ticketText: string | null;         // the logged-in portal's per-line ticket (invoicePaper's showLineTicket)
   thumbnail: DocumentAssetRef | null;
-  isChild: boolean;                // bundle component (D10, OD-9)
+  isChild: boolean;                  // bundle component (D10, OD-9)
 }
 
-export interface DocumentLineGroup {
+export type DocumentGroupHeader =
+  | { kind: 'ticket'; title: string; category: string | null }   // invoices (D9, OD-9)
+  | { kind: 'cadence'; label: string }                           // quotes: One-time / Monthly / Annual (quoteBlocks.tsx:115-121)
+  | null;
+
+export interface DocumentLineGroup<Tax extends DocumentMoney | 'exempt' | null> {
   key: string;
-  header: { title: string; category: string | null } | null;   // ticket group (D9, OD-9)
-  days: { key: string; header: { date: string; hours: string; total: string } | null; rows: DocumentLineRow[] }[];
+  header: DocumentGroupHeader;
+  days: { key: string; header: { date: DocumentDate; hours: string; total: DocumentMoney } | null; rows: DocumentLineRow<Tax>[] }[];
 }
 
-export interface DocumentLineTableModel {
-  label: string | null;            // quote pricing-table label
-  showTax: boolean;
-  columns: { description: string; qty: string; unitPrice: string; tax: string; amount: string };
-  groups: DocumentLineGroup[];
-  subtotal: { label: string; value: string } | null;   // quote per-table subtotal
-  emptyText: string | null;
-}
+interface LineTableBase { label: string | null; subtotal: { label: string; parts: DocumentMoney[] } | null; emptyText: string | null }
+/** The tax column is shown iff `columns.tax` is a string; rows are typed to match, so the two cannot disagree. */
+export type DocumentLineTableModel =
+  | (LineTableBase & { columns: { description: string; qty: string; unitPrice: string; tax: string; amount: string }; groups: DocumentLineGroup<DocumentMoney | 'exempt'>[] })
+  | (LineTableBase & { columns: { description: string; qty: string; unitPrice: string; tax: null; amount: string }; groups: DocumentLineGroup<null>[] });
 
-export interface DocumentTotalsRow { key: string; label: string; value: string; emphasis?: 'rule' | 'hero' | 'muted' }
-export interface DocumentTotalsModel { rows: DocumentTotalsRow[]; footnote: string | null; depositStrip: string | null }
+export interface DocumentTotalsRow {
+  key: string;
+  label: string;
+  value: DocumentMoney | DocumentMoney[];        // a list renders joined with ' + ', stacked when too wide
+  weight: 'muted' | 'regular' | 'strong' | 'hero';
+  ruleAbove: 'none' | 'neutral' | 'accent';
+  sign?: 'minus';                                 // "Paid −$100.00"
+}
+export interface DocumentTotalsModel {
+  rows: DocumentTotalsRow[];
+  aside: { rows: DocumentTotalsRow[]; note: string } | null;    // the quote's tinted first-period box
+  depositStrip: { parts: (string | { strong: string })[] } | null;
+}
 
 export interface InvoiceDocumentModel {
   kind: 'invoice';
-  locale: string;                  // resolved document locale (§3.7)
+  locale: string;                    // resolved document locale (§3.7)
   branding: DocumentBranding;
   header: DocumentHeaderModel;
   notes: string | null;
@@ -173,25 +209,38 @@ export interface InvoiceDocumentModel {
   footer: string | null;
 }
 
+export interface QuoteTableBlock {
+  columns: { label: SanitizedHtml; align: 'left' | 'center' | 'right' }[];
+  rows: { key: string; cells: SanitizedHtml[] }[];   // builder asserts cells.length === columns.length
+  headerStyle: 'plain' | 'tinted';
+  zebra: boolean;
+  caption: string | null;
+}
+
 export type QuoteBlockModel =
-  | { kind: 'rich_text'; key: string; html: string }            // server-sanitized (quoteBlocks.tsx:251-254)
-  | { kind: 'table'; key: string; model: QuoteTableBlock }       // alignment as classes, never style
-  | { kind: 'callout'; key: string; tone: string; html: string }
-  | { kind: 'image'; key: string; image: DocumentAssetRef | null; caption: string | null; width: string | null }
-  | { kind: 'line_items'; key: string; table: DocumentLineTableModel }
-  | { kind: 'contract'; key: string; agreementId: string };    // rendered in DocumentAgreements
+  | { kind: 'heading'; key: string; level: 1 | 2 | 3; text: string }      // quoteBlocks.tsx:221-230
+  | { kind: 'rich_text'; key: string; html: SanitizedHtml }
+  | { kind: 'table'; key: string; table: QuoteTableBlock }               // alignment as classes, never style
+  | { kind: 'callout'; key: string; tone: 'neutral' | 'warn' | 'accent'; title: string | null; html: SanitizedHtml }
+  | { kind: 'image'; key: string; image: DocumentAssetRef | null; alt: string; caption: string | null; width: number | null }
+  | { kind: 'line_items'; key: string; table: DocumentLineTableModel };
+// Contract blocks are not body blocks (today they render null in the body); they appear only in `agreements`, in block order.
+
+export type AgreementBody =
+  | { kind: 'authored'; html: SanitizedHtml | null; footer: string }
+  | { kind: 'uploaded'; file: DocumentAssetRef | null; footer: string };     // lazy-mounted (derived from kind)
 
 export interface QuoteDocumentModel {
   kind: 'quote';
   locale: string;
   branding: DocumentBranding;
   cover: { title: string; image: DocumentAssetRef | null; preparedFor: string | null; preparedBy: string | null; eyebrow: string } | null;
-  header: DocumentHeaderModel;     // the number is an h2 when cover !== null
+  header: DocumentHeaderModel;
   introNotes: string | null;
-  blocks: QuoteBlockModel[];       // includes the trailing default pricing table for un-blocked lines
+  blocks: QuoteBlockModel[];         // includes the trailing default pricing table for un-blocked lines
   totals: DocumentTotalsModel;
   terms: { short: string | null };
-  agreements: { id: string; title: string; meta: string; body: AgreementBody }[];
+  agreements: { id: string; anchor: string; title: string; meta: string; body: AgreementBody }[];  // anchor: `agreement-<blockId>` | 'terms'
   footer: string | null;
 }
 ```
@@ -203,7 +252,12 @@ buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: DocumentLabels):
 buildQuoteDocumentModel(dto: CustomerQuoteDocument, labels: DocumentLabels): QuoteDocumentModel
 ```
 
-The builders are pure and take no surface argument, so the same DTO always yields the same model. Hosts differ only in two things: the `DocumentHostComponents` they pass to the view (§3.6), and their slots (§3.3).
+The builders are pure and take no surface argument, so the same DTO always yields the same model. Hosts differ in only two things: the `DocumentHostComponents` they pass to the view (§3.6) and their slots (§3.3).
+
+**Invariants that stay derived, not stored:**
+- **Header level.** `QuoteDocumentView` renders the header number as an `h2` when `cover !== null` and as an `h1` otherwise. When a cover is present, the builder sets `header.billTo = null`, because the cover carries "Prepared for". This is today's `preparedForName={cover ? undefined : …}`.
+- **Agreement links.** The signature slot builds its agreement links from `model.agreements`. This replaces `quoteAgreementLinks(blocks, …)`, which walks the raw blocks.
+- **Test ids belong to the package.** The portal's two `testIdPrefix` values (`public-quote` and `quote`) go away, so the markup under `[data-document-root]` is identical across hosts. The Playwright selectors move with it.
 
 ### 3.3 Surfaces mapped onto the model
 
@@ -217,7 +271,7 @@ The builders are pure and take no surface argument, so the same DTO always yield
 
 **What stays in the package and what goes to the host.** The package handles document interactions that are safe for any reader: agreement disclosure, deep links, lazy PDF bodies and print expansion. Anything that mutates is a host slot. `InvoiceDocumentView` and `QuoteDocumentView` take `slots?: { beforePaper?, afterTotals?, signature?, afterPaper? }`, which carry the payment rails, notices, the signature panel and the accept/decline feedback. Whole-page states are host policy rendered outside the document: void, superseded, link unavailable, and online payment unavailable. The parity test serializes `[data-document-root]` with the slot containers emptied.
 
-**Preview freshness.** The Preview's customer-view query is invalidated whenever the editor saves, so the Preview never shows a stale DTO. This uses the same invalidation the workspace already does for its detail query.
+**Preview freshness.** The web app has no query cache. The workspace reloads its detail through `reload()` (`InvoiceWorkspace.tsx:117`). The Preview refetches customer-view whenever `reload()` runs and each time the Preview tab is shown, so it never shows a DTO older than the last save.
 
 **Deleted:**
 - `apps/portal/src/components/portal/invoicePaper.tsx`.
@@ -235,12 +289,31 @@ The builders are pure and take no surface argument, so the same DTO always yield
 
 Today the web Preview reapplies the customer rules in the browser from the staff payload: `InvoiceDocument.tsx:87-90` filters on `customerVisible`, and `:32-33` calls `invoiceLineText`/`lineWorkDateToShow`. The portal receives lines already projected on the server (`toCustomerInvoiceLine`, `invoiceService.ts:1055`, called from `invoicesPublic.ts:194` and through `getCustomerInvoice` for `routes/portal/invoices.ts:126`). Two implementations of who-sees-what is the same mistake as two renderers. D19 shows that the portal's own two quote routes already disagree.
 
-**Assembler.** `customerDocument.ts` exports `assembleCustomerInvoiceDocument(invoice, rows, brand, opts)` and `assembleCustomerQuoteDocument(quote, blocks, rows, brand, opts)`. They wrap the existing serialization boundaries (`toCustomerInvoiceHeader`/`toCustomerInvoiceLine`, `toPublicQuoteHeader`) and add branding, presentation and the resolved `documentLocale`. The public routes, the logged-in portal routes (replacing the raw spread at `routes/portal/quotes.ts:99`) and the new staff routes all return its output. `opts` carries two explicit parameters:
+**Assembler.** `customerDocument.ts` owns the whole path from document id to customer DTO, including the row query. Today the customer row filter is already copied twice, and the copies differ: `invoicesPublic.ts:150-156` does not filter on `invoiceLines.orgId`, while `getCustomerInvoice` (`invoiceService.ts:1132-1155`) does. A third copy in the staff route would be one more place where a hidden line can leak into a Preview that claims to be the customer view.
 
-1. **Line detail.** An issued document always uses the frozen columns (`customerLineDetail`, `invoiceService.ts:1046`). A draft first resolves the partner default with the same resolver the staff detail uses (`resolveDocumentLineDetail`, defined `invoiceService.ts:967`, called `:961`), because that is what it will freeze to at issue. Draft defaults are resolved *before* the projection, never inside it.
-2. **Status mapping.** `toPublicQuoteHeader` maps `sent` to `viewed` and throws on `draft` (`publicQuoteDto.ts:53-60`). The assembler takes the status mapping as a parameter. Public and portal routes keep today's mapping and refusals. The staff route passes the raw status. The customer DTO's `status` union widens for that one caller.
+The module exports:
+- `loadCustomerInvoiceLines(invoice)` and `loadCustomerQuoteRows(quote)`. These are the single customer row queries (`customerVisible = true`, org-scoped joins).
+- `assembleCustomerInvoiceDocument(invoiceId, mode)` and `assembleCustomerQuoteDocument(quoteId, mode)`. They call those loaders, then wrap the existing serialization boundaries (`toCustomerInvoiceHeader`/`toCustomerInvoiceLine`, `toPublicQuoteHeader`), and add branding, presentation and the resolved `documentLocale`.
 
-Eligibility stays in the routes and does not move: portal draft refusal (`routes/portal/invoices.ts:134-135`), public link revocation and supersession (`isPublicLinkDead`, `quotesPublic.ts:87`), void and superseded screens.
+`projectCustomerInvoiceLine` (`invoiceService.ts:1086`, used at `routes/portal/invoices.ts:208`) is a second fixed keyset over the same line. It is folded into the assembler, so a field added to the projection (such as an OD-9 field) cannot be dropped on one path.
+
+The public routes, the logged-in portal routes (replacing the raw spread at `routes/portal/quotes.ts:99`) and the new staff routes all return the assembler's output. Each route supplies only eligibility and its `mode`.
+
+**Line ids.** The invoice projection gains `id` (the `invoice_lines.id` already present in the staff payload). The model's row `key` and the package's test ids need a stable id. An array index changes with every edit; today the portal keys rows by `${title}-${index}`. The id is an opaque row identifier, not customer-visible content, so §5's rule on visibility is unchanged.
+
+**Modes.** `mode` is `'public' | 'portal' | 'staff'`. It is an explicit parameter, not a fork, and it controls three things:
+
+1. **Line detail.** Every mode uses the frozen columns for an issued document (`customerLineDetail`, `invoiceService.ts:1046`). For a draft (staff mode only), the assembler first resolves the partner default, using the resolver the staff detail already uses. That resolver is `resolveDocumentLineDetail`: defined at `invoiceService.ts:967`, called at `:961`, module-private today, and exported in W1. The partner default is what the draft will freeze to at issue. Draft defaults are resolved *before* the projection, never inside it.
+2. **Status.** Today the three paths treat status differently:
+   - `toPublicStatus` maps `sent` to `viewed`, throws on `draft`, and throws 410 on `superseded` (`publicQuoteDto.ts:53-75`).
+   - The logged-in portal applies no mapping. It serves superseded quotes, which `QuoteDetailView.tsx:216` shows with a "Replaced" notice.
+
+   The assembler keeps each path's behaviour. `'public'` keeps the mapping and the refusals. `'portal'` keeps the raw status and serves superseded documents. `'staff'` accepts any status, including `draft`.
+
+   Every mode also emits `displayStatus`: the status label the customer's public link would show (`sent` → "Viewed", `draft` → none). The header renders `displayStatus` in every mode, so the Preview's pill is the customer's pill. The raw status stays in the staff workspace chrome.
+3. **Eligibility errors.** Only the routes raise them. The assembler shapes data; it never decides who may see it.
+
+Eligibility therefore stays in the routes: the portal draft refusal (`routes/portal/invoices.ts:134-135`), public link revocation and supersession (`isPublicLinkDead`, `quotesPublic.ts:87`), and the void and superseded screens.
 
 **Staff routes.** Two new routes sit beside the existing detail routes:
 - `GET /invoices/:id/customer-view` in `apps/api/src/routes/invoices/invoices.ts`, beside `:65`.
@@ -262,16 +335,20 @@ Both apps use Tailwind v4 with CSS-first config, and neither has a `tailwind.con
 - **`packages/document-ui/src/document.css`** holds everything document-scoped that is portal-only or duplicated today:
   - the `[data-doc-theme]` paper token block, moved from portal `globals.css:556-593`;
   - `.doc-accent-bg/-text/-border` (`:539-547`);
-  - the condensed theme rules (portal `:527-533`, web `globals.css:34654-34666`) and their font imports;
+  - the condensed theme rules (portal `:527-533`, web `globals.css:34654-34665`) and their font imports;
   - the cover geometry (OD-5) and `.signature-preview`.
 
-  The document owns its fonts and tokens inside `[data-document-root]`, so neither the host's font stack nor its dark mode reaches the paper.
-- **Wiring.** Each app's `globals.css` adds `@import '@breeze/document-ui/document.css';` after `@import 'tailwindcss'`. It also adds `@source '../../../packages/document-ui/src/**/*.{ts,tsx}';`, so its Tailwind build sees the package's class names. `apps/word-addin/src/index.css:10` uses this mechanism for `office-addin-core`.
-- **Isolation from host overrides.** Web density modes rewrite utility spacing under `main` with `!important` (`apps/web/src/styles/globals.css:34539` onward, e.g. `[data-density='compact'] main .p-8`). A Preview inside `main` would be re-spaced. Those selectors gain `:not([data-document-root] *)`, and a web test fails if a `[data-density]` rule can match inside the document root. Any other host rule that targets bare utilities under `main` gets the same exclusion.
-- **Token contract.** `packages/document-ui/src/tokens.ts` lists the host `@theme` tokens the package still relies on outside the paper block. A test in each app parses that app's `globals.css` and fails if any listed token is missing.
+  The document owns its fonts and tokens inside `[data-document-root]`, so neither the host's font stack nor its dark mode reaches the paper. The portal's `src/styles/paperTokens.test.ts`, which pins the paper block today, moves into the package with the block.
+- **Wiring.**
+  - `packages/document-ui/package.json` exports `"./document.css": "./src/document.css"` beside `"."`. `office-addin-core` exports only `"."`, so this is a new pattern.
+  - Each app's `globals.css` imports it **above** `@import 'tailwindcss'`, with no `layer()`, next to the existing fontsource imports. Both files' headers state this rule (web `:7-14`, portal `:5-7`): Vite's postcss-import drops any `@import` that is not first.
+  - Each app also adds `@source '../../../../packages/document-ui/src/**/*.{ts,tsx}';`, four levels up, because both stylesheets sit at `apps/<app>/src/styles/`. The three-level path in `apps/word-addin/src/index.css:10` works only because that file is one directory higher.
+  - A test in each app builds the CSS and asserts that a `document.css` selector and a package-only utility class both appear in the output. DOM parity cannot see a wrong `@source`.
+- **Isolation from host overrides.** Web density modes `compact` (`apps/web/src/styles/globals.css:34539` onward) and `dense` (`:34595` onward) rewrite utility spacing under `main` with `!important`, e.g. `[data-density='compact'] main .p-8`. A Preview inside `main` would be re-spaced. Those selectors gain `:not([data-document-root], [data-document-root] *)`, which covers the root element as well as its descendants, because `DocumentPaper` itself carries padding. A web test fails if any `[data-density]` rule can match the document root or anything inside it. Any other host rule that targets bare utilities under `main` gets the same exclusion.
+- **Token contract.** `packages/document-ui/src/tokens.ts` lists every host token the package reads, including the ones the paper block reads. The paper block sets `--primary: var(--paper-primary)`, and today only the portal's light theme blocks define `--paper-primary` (portal `globals.css:121,248-290`). W1 adds `--paper-primary` to web's light `:root` (equal to web's light `--primary`), and `document.css` writes `--primary: var(--paper-primary, 225 62% 48%)`. That gives a literal HSL-triplet fallback, matching how both apps store tokens and read them through `hsl(var(--primary))`. A test in each app parses that app's `globals.css` and fails if any listed token is missing.
 - **Accent.** `--doc-accent` stays the host's job, and the package never writes a `style` attribute. `noStyleAttribute.test.tsx` renders every component with every fixture and fails on any element that carries `style`. Today's `textAlign` style attributes (`QuoteDocument.tsx:297,310`) become alignment classes, as the portal already does (`quoteBlocks.tsx:199-207`). Hosts deliver the accent as follows:
   - **Portal SSR pages:** the nonced `<style>` from `PublicDocumentLayout.astro:38`, as today.
-  - **Portal client-fetched pages** (the public invoice, D17): a portal-only `useDocumentAccent(color)` hook. It sets the value through CSSOM (`document.documentElement.style.setProperty('--doc-accent', sanitized)`) after `sanitizeAccentColor` (`docAccent.ts`). CSP's `style-src-attr` governs style attributes in markup, not CSSOM writes from an allowed script. The Playwright run under the production CSP (§8.2) is the proof that this holds, and if it fails there, the fallback is a nonced `<style>` element created from the page's nonce.
+  - **Portal client-fetched pages** (the public invoice, D17): a portal-only `useDocumentAccent(ref, color)` hook. It runs `sanitizeAccentColor` (`docAccent.ts`), then sets the value through CSSOM on a host wrapper element: `ref.current.style.setProperty('--doc-accent', sanitized)`. It does not write to `<html>`, because `PublicDocumentLayout` mounts `<ClientRouter />` and its navigations replace the attributes on `<html>`. `style-src-attr` governs `style` attributes set by the parser or by `setAttribute`, not CSSOM property writes such as `style.setProperty`. The W1 Playwright slice runs under the production CSP (§8.2) and proves it. If it fails there, the fallback is a nonced `<style>` element created from the page's nonce.
   - **Web:** sets the variable on a wrapper `<div>` outside the package, as it does now.
 
 DOM parity does not catch two Tailwind builds emitting different CSS for the same class. The screenshot matrix (§8.2) is the guard for that.
@@ -282,18 +359,23 @@ Image delivery differs per host:
 - The public portal uses plain URLs: `/quotes/public/:token/images/:id` (`PublicQuoteView.tsx:188,216-218`).
 - The web needs an **authenticated fetch turned into an object URL**, because a bare `img src` would 401 (`QuoteDocument.tsx:30-31`, `DocLineThumb`/`DocImage`).
 
-The model therefore carries `DocumentAssetRef`s, not URLs. The view takes `components: DocumentHostComponents` with one member, `Image({ asset, alt, className })`. In the portal, `Image` is a plain `<img>` with a host-built URL. In the web, it is the existing authenticated-fetch image. Parity fixtures use a deterministic `Image` that renders `<img data-asset="kind:id">`, so markup compares exactly. Real asset loading is tested inside each app's existing Astro island.
+The model therefore carries `DocumentAssetRef`s, not URLs. The view takes `components: DocumentHostComponents`, which has two members:
+- `Image({ asset, alt, className })`.
+- `AgreementFile({ asset, title })`, which renders an uploaded agreement's PDF viewer and download link.
+
+In the portal, both are plain elements with host-built URLs. In the web, both use the existing authenticated fetch. Parity fixtures use deterministic stand-ins: `<img data-asset="kind:id">` and `<a data-asset="kind:id">`. That way markup compares exactly. Real asset loading is tested inside each app's existing Astro island.
 
 ### 3.7 Strings and language
 
 - `packages/shared/src/documents/labels.ts` exports `type DocumentLabels` and `DOCUMENT_LABELS_EN`, the single source of the English defaults. The type covers every string the document prints, with pluralised read-time and interpolated device-set text as small functions.
-- **The document's locale governs everything printed**: labels, money, dates and plurals. The chain is `invoice.documentLocale ?? partner locale ?? 'en'`, the same one the PDF uses (`resolveRenderLocale`, `invoicePdf.ts:101`). The assembler resolves it and puts it in the DTO, and the builder formats with it. No component reads `navigator.language` or the viewer's i18next language, so SSR and hydration produce the same text (D18). The staff UI around the Preview stays in the staff user's language.
-- **Locales.** English ships in W1. Other locales are taken from the API's `pdf` namespace where the string already exists (`apps/api/src/i18n/locales/{en,pt-BR}/pdf.json`), so the document reads the same on screen and in the PDF in pt-BR. A locale without document labels falls back to English on every surface, which is what the portal does today. (OD-3)
+- **The document's locale governs everything printed**: labels, money, dates and plurals. The chain is `invoice.documentLocale ?? partner locale ?? 'en'`, the chain the PDF already uses for money (`resolveRenderLocale`, `invoicePdf.ts:101`). The assembler resolves it and puts it in the DTO. The builder formats everything with it, including the dates that the PDF prints as `en-US` today (D18). No component reads `navigator.language` or the viewer's i18next language, so SSR and hydration produce the same text. The staff UI around the Preview stays in the staff user's language.
+- **Where the strings live.** The web and portal cannot import `apps/api`, so the document strings move **out of** the API's `pdf` namespace and **into** `packages/shared/src/documents/labels/{en,pt-BR}.ts`. The API's PDF code reads the same maps. Strings the document prints never live anywhere else, which gives the PDF and the screen one source.
+- **Locales.** W1 ships English (`DOCUMENT_LABELS_EN`). W3 ships pt-BR: it moves the existing pt-BR strings from `apps/api/src/i18n/locales/pt-BR/pdf.json` into `labels/pt-BR.ts`, and switches the PDF headers' hard-coded `Issued:`/`Due:`/`Valid until:` and column labels (D16) to the shared labels. From W3 on, the document reads the same on screen and in the PDF in pt-BR. A locale without document labels falls back to English on every surface, which is what the portal does today. (OD-3)
 - Web's `invoiceDocument.*` and `quotes.document.*` keys in `billing.json` that only the document body uses are deleted from all 7 locales, keeping `localeParity` green. Preview chrome keys (the caption, Download PDF) stay.
 
 ### 3.8 PDF module
 
-A new `apps/api/src/services/documentPdfTable.ts` is used by both `invoicePdf.ts` and `quotePdf.ts`. It takes the same `DocumentLineTableModel` and `DocumentTotalsModel` the screen renders, so PDF and screen print the same strings. Each kind's totals *semantics* (recurring, deposit, balance) stay in its builder; the module owns only geometry and drawing.
+A new `apps/api/src/services/documentPdfTable.ts` is used by both `invoicePdf.ts` and `quotePdf.ts`. It takes the same `DocumentLineTableModel` and `DocumentTotalsModel` the screen renders, so the PDF and the screen print the same strings. Money is the one exception: the PDF re-formats it from `DocumentMoney.amount` through `formatMoneyForPdf` to stay glyph-safe (§3.2). Each kind's totals *semantics* (recurring, deposit, balance) stay in its builder, and the module owns only geometry and drawing.
 
 - **`documentColumnsFor(doc, { showTax })`** replaces `invoiceColumnsFor` and `columnsFor` with one geometry:
   - the description column first (fixes D3);
@@ -307,7 +389,8 @@ A new `apps/api/src/services/documentPdfTable.ts` is used by both `invoicePdf.ts
   - Money cells use `lineBreak: false` + `fitFontSize` (`pdfFitText.ts:18`).
 - **`drawDocumentTotals`** draws the totals box: its geometry and its emphasis row.
 - **Fonts.** Both services pass their theme's `PdfThemeFonts`, which fixes D4 for invoices.
-- **What stays.** Headers, the cover page and the quote-only block renderers (`richTextPdf.ts`, `calloutPdf.ts`, `tablePdf.ts`) stay where they are (OD-6, OD-7).
+- **What stays.** Header layout, the cover page and the quote-only block renderers (`richTextPdf.ts`, `calloutPdf.ts`, `tablePdf.ts`) stay where they are (OD-6, OD-7). The header *strings* switch to the shared labels (§3.7).
+- `renderInvoiceHtml` is deleted. The stale "used by email + portal" line at the top of `invoicePdf.ts:5` is deleted with it.
 
 Both PDF services get their rows from the §3.4 assembler and keep their own loaders (`loadInvoiceForRender`, `invoicePdf.ts:819`).
 
@@ -350,7 +433,7 @@ None. There is no new table, column, migration, RLS policy, cascade entry or exp
 - **Recommend (a).** The PDF services need the model and labels without React. `office-addin-core` is the precedent for a React peer-dependency package with its own CI job.
 
 **OD-3. Strings and locale.**
-- (a) A typed `DocumentLabels` with the English map in `packages/shared`. The **document** locale picks labels, money, dates and plurals. Other locales are filled from the API `pdf` namespace.
+- (a) A typed `DocumentLabels`, one map per locale in `packages/shared/src/documents/labels/`, read by web, portal and the PDF. The **document** locale picks labels, money, dates and plurals. English ships in W1; pt-BR moves over from the API `pdf` namespace in W3.
 - (b) Web passes i18next output in the viewer's language and the portal passes English. This was the orchestrator's starting position.
 - (c) Package-owned JSON for each web locale, registered as a web i18next namespace.
 - **Recommend (a).** (b) keeps D16 and D18: the Preview would show the staff user's language, not the customer's. (c) translates the document into 7 languages that the PDF and the portal do not speak.
@@ -359,7 +442,7 @@ None. There is no new table, column, migration, RLS policy, cascade entry or exp
 - (a) Keep `LineItemsTable` and render `DocumentLineDescription` in its description cell.
 - (b) Turn Detail into `DocumentLineTable` with an `internalColumns` slot.
 - (c) Leave Detail alone.
-- **Recommend (a), amended by the quorum.** Detail is a staff workbench: cost, margin, the hidden-line marker, the stateful `InvoiceLineDevices` that must render once, and a stacked-card phone layout (`apps/web/src/components/billing/shared/LineItemsTable.tsx:36-57`). The drift that hurt (D1) is in the description cell, and (a) shares exactly that cell. Detail shares the description *props*: a shared `lineDescriptionProps(line, labels)` presenter runs on each staff row. It does not use customer model rows, because `CustomerInvoiceLine` has no ids (`invoiceService.ts:976-1000`) and hidden staff rows have no customer counterpart. Staff rows and customer rows are never zipped by position. (b) would put staff-only columns into the customer component's API.
+- **Recommend (a), amended by the quorum.** Detail is a staff workbench: cost, margin, the hidden-line marker, the stateful `InvoiceLineDevices` that must render once, and a stacked-card phone layout (`apps/web/src/components/billing/shared/LineItemsTable.tsx:36-57`). The drift that hurt (D1) is in the description cell, and (a) shares exactly that cell. Detail shares the description *props*: a shared `lineDescriptionProps(line, labels)` presenter runs on each staff row. It does not use customer model rows. Hidden staff rows have no customer counterpart, and `CustomerInvoiceLine` had no ids until §3.4 added them (`invoiceService.ts:976-1000`). Staff rows and customer rows are never zipped by position. (b) would put staff-only columns into the customer component's API.
 
 **OD-5. Cover crop parity.**
 - (a) One geometry. The on-screen cover renders at the PDF page's aspect ratio (A4 1:1.414, Letter 1:1.294, from `pageSize`), with a centre crop and the title band from 62% of the height down, exactly as `renderCoverPage` draws it. The editor's cover upload shows that one crop.
@@ -392,22 +475,35 @@ None. There is no new table, column, migration, RLS policy, cascade entry or exp
 - (a) Vitest DOM parity (shared fixtures through the web Preview wrapper and the portal views, compared against committed normalized `[data-document-root]` snapshots), plus a Playwright screenshot matrix.
 - (b) Screenshot diff only.
 - (c) DOM parity only.
-- **Recommend (a).** DOM parity is fast, runs in the existing `test-web` and `test-portal` jobs, and catches content drift. The screenshot matrix catches the risk of two Tailwind builds, density overrides and production CSP, which DOM parity cannot see.
+- **Recommend (a).** DOM parity is fast, runs in the existing `test-web` and `test-portal` jobs, and catches content drift. The screenshot matrix catches what DOM parity cannot see: drift between the two Tailwind builds, density overrides, and the production CSP. W1 ships a minimal slice of the matrix; each later wave adds its own variants.
+
+**OD-11. Recurrence suffix placement (quotes).**
+The screen draws "/mo" after both the unit price and the amount, as a smaller muted span (`quoteBlocks.tsx:173,182`). The PDF draws it after the total only (`quotePdf.ts:707`).
+- (a) Unit price and amount, on every surface.
+- (b) Amount only, on every surface.
+- **Recommend (a).** It is the customer-facing screen behaviour today. A monthly unit price without its cadence reads as one-time. In the PDF the unit cell shrinks to fit through `fitFontSize`, and the CHF box test is extended to include the suffix.
 
 ## 8. Test and rollout notes
 
 ### 8.1 Unit and parity (vitest)
 
 - **`packages/document-ui`.** Component tests (jsdom) and `noStyleAttribute.test.tsx`. For both kinds, a blurb test asserts `whitespace-pre-line` and the literal `\n` in the rendered text.
-- **`packages/shared/src/documents`.** Builder tests for each fixture: draft, issued, taxed, untaxed, deposit, recurring, day grouping, withheld note, prefix-code currency, `pt-BR` locale and empty.
-- **Cross-app DOM parity.** One fixture set lives in `packages/document-ui/src/__fixtures__/`. A web test renders the Preview wrapper with each fixture DTO. A portal test renders `PublicInvoiceView`/`InvoiceDetailView` and `PublicQuoteView`/`QuoteDetailView` with the same DTOs through their `initial` test seam (e.g. `PublicInvoiceView`'s `initial?: PublicInvoiceDetail`). Each normalizes `[data-document-root]` (slots emptied, React ids stripped) and compares it to **one committed snapshot per fixture in the package**, so the web and portal tests compare against the same file.
-- **`apps/web`.** `localeParity` after the key deletions, the token-presence test, and the density-isolation test (§3.5).
-- **`apps/portal`.** The token-presence test, and `useDocumentAccent` sanitization: the hook drops a hostile colour.
+- **`packages/shared/src/documents`.** Builder tests for each fixture: draft, issued, taxed, untaxed, deposit, recurring, day grouping, withheld note, prefix-code currency, a WinAnsi-unsafe currency (`₹`), and empty. W3 adds `pt-BR`. A builder assertion test covers non-empty titles and `cells.length === columns.length`.
+- **Cross-app DOM parity.** One fixture set lives in `packages/document-ui/src/__fixtures__/`.
+  - A web test renders the Preview wrapper with each fixture DTO.
+  - A portal test renders `PublicInvoiceView`/`InvoiceDetailView` and `PublicQuoteView`/`QuoteDetailView` with the same DTOs through an `initial` test seam. Only the public views have that seam today (e.g. `PublicInvoiceView`'s `initial?: PublicInvoiceDetail`); W1 adds it to `InvoiceDetailView` and W2 to `QuoteDetailView`. Each normalizes `[data-document-root]` (slots emptied, React ids stripped) and compares it to **one committed snapshot per fixture in the package**, so the web and portal tests compare against the same file.
+- **`apps/web`.** `localeParity` after the key deletions, the token-presence test, the density-isolation test covering both modes and the root element, and the built-CSS test (§3.5).
+- **`apps/portal`.** The token-presence test, the built-CSS test, and `useDocumentAccent` sanitization: the hook drops a hostile colour.
 - **`apps/api`.**
   - `documentPdfTable.test.ts` checks geometry on A4 and Letter, CHF prefix fit at 10 and bold 14 (the measurement style of the existing CHF tests in `invoicePdf.test.ts`/`quotePdf.test.ts`), and pagination with a row taller than the remaining page.
-  - The `customerDocument.ts` assembler is tested once per caller mode.
-  - The customer-view routes are tested for: a draft is allowed; `markViewed` is never called; no token is minted; a caller without access to the org or site gets 404; and for an issued document, the response deep-equals what the portal route returns.
-  - The logged-in portal quote route test asserts that its response now equals the public DTO shape (D19).
+  - The `customerDocument.ts` assembler is tested once per mode. The tests check `public` mapping and refusals, `portal` raw status with superseded served, and `staff` with drafts. A hidden line never appears in any mode.
+  - The customer-view routes are tested for:
+    - a draft is allowed;
+    - `markViewed` is never called;
+    - no token is minted;
+    - a caller without access to the org or site gets 404;
+    - for an issued document, the response deep-equals the portal route's response, excluding the mode-dependent `status`. `displayStatus` must be equal.
+  - The logged-in portal quote route test asserts that its response has the assembler's field shape (D19) and still serves a superseded quote.
 
 ### 8.2 Screenshot matrix (Playwright)
 
@@ -416,10 +512,16 @@ One spec under `e2e-tests/tests/` loads the web Preview and the portal pages for
 - Preview vs public vs logged-in;
 - desktop and 390 px;
 - classic and condensed;
-- web density compact;
-- one non-English document locale.
+- web density compact and dense;
+- one non-English document locale (from W3).
 
 It runs against the **production portal CSP** (the stack sets the prod CSP rather than dev's deleted header; see `docAccent.ts`), so D15 and D17 regressions show up. Where a variant needs a separate run, the PR states which variants ran.
+
+The matrix grows by wave:
+- **W1** ships the slice its own changes need: the public invoice under the production CSP (accent present, no CSP violations), plus one invoice screenshot pair, Preview against public.
+- **W2** adds quotes.
+- **W3** adds the locale.
+- **W4** adds the cover and the remaining variants.
 
 ### 8.3 PDF goldens
 
@@ -427,10 +529,19 @@ W3 changes PDF coordinates for invoices (wider description, theme fonts) and for
 
 ### 8.4 CI jobs (per `docs/agents/testing.md`)
 
-- A new `test-document-ui` job goes beside `test-office-addin-core` (`.github/workflows/ci.yml:1140`). It runs both test and typecheck, is added to `ci-success`'s `needs` (`:4543`), and is added to the `changes` path classifier. Without it, the package's tests do not run in CI.
+- A new `test-document-ui` job goes beside `test-office-addin-core` (`.github/workflows/ci.yml:1140`) and runs both test and typecheck. It is gated like `test-shared`, on code and app changes. `packages/**` already sets every area in the `changes` classifier, so the classifier needs no change. The job is registered in `.github/scripts/ci-area-gating.test.mjs`. Without this job, the package's tests do not run in CI.
+- `ci-success` has no generic check over its `needs`. Wiring it takes three edits, as for `test-office-addin-core`:
+  - add the job to `needs` (`:4543`);
+  - add an env var mirroring `TEST_OFFICE_ADDIN_CORE_RESULT` (`:4577`);
+  - add the matching success/skipped conditions (`:4660-4663` and `:4734-4735`).
+
+  Without all three, a red `test-document-ui` still passes CI.
 - `test-shared` runs the builders. `test-web` and `test-portal` run the parity tests. `test-api` runs the PDF module, the assembler and the route tests.
 - There is no migration, so **Test API is enough**: no integration or RLS contract suite is touched.
-- **Dockerfiles.** Both copy every package's `package.json` explicitly in the deps stage: `apps/web/Dockerfile:28-29` and `apps/portal/Dockerfile:25`. `apps/web/Dockerfile:17-18` warns that ordinary workspace builds do not catch a missing manifest. Each needs `COPY packages/document-ui/package.json ./packages/document-ui/` added there. The builder stages already copy all of `packages/` as source (`apps/web/Dockerfile:57`, `apps/portal/Dockerfile:53`), so they need no change. `build-web` and `build-portal` catch a miss.
+- **Dockerfiles.**
+  - **What changes.** Each Dockerfile copies the manifests of the packages in its own dependency graph (web: shared and extension-web-sdk at `apps/web/Dockerfile:28-29`; portal: shared at `apps/portal/Dockerfile:25`). Each gains `COPY packages/document-ui/package.json ./packages/document-ui/`. So do `docker/Dockerfile.web` (the CI smoke image, which also copies each package's `node_modules`, `:15-18`), `docker/Dockerfile.web.dev` and `docker/Dockerfile.portal.dev`.
+  - **What does not.** The builder stages already copy all of `packages/` as source (`apps/web/Dockerfile:57`, `apps/portal/Dockerfile:53`), so they need no change.
+  - **What catches a miss.** `apps/web/Dockerfile:17-24` warns that a plain workspace build cannot catch a missing manifest. `build-web` and `build-portal` run `pnpm build` (`ci.yml:1656,1703`), so they do not catch it. `build-smoke-images` (`:3545`) does: it builds `apps/portal/Dockerfile` and `docker/Dockerfile.web`. `apps/web/Dockerfile` itself is built only in the release and security workflows, so W1 runs `release-build-check.yml` by hand once.
 
 ### 8.5 Rollout
 
@@ -441,14 +552,22 @@ There is no flag. Each wave swaps a surface whole, behind its parity test. A wav
 Each wave can ship on its own. #9401 lands first; W1 supersedes it by deleting its class fixes along with the files they live in.
 
 - **W1: package and invoice on screen.**
-  - Scaffold `packages/document-ui`, its CI job and the Dockerfile manifest lines; add `document.css` and both `globals.css` imports, with the density isolation.
+  - Scaffold `packages/document-ui`, with the `./document.css` export. Add its CI job, fully wired into `ci-success`, and the Dockerfile manifest lines.
+  - Add `document.css`. Wire both `globals.css` files (the import above `tailwindcss`, the four-level `@source`), add the density isolation, and add web's `--paper-primary`. Move `paperTokens.test.ts`.
   - Add the invoice model, builder and English labels in `packages/shared/src/documents`.
-  - Add `assembleCustomerInvoiceDocument` and route the public, portal and new staff `GET /invoices/:id/customer-view` through it.
+  - Add `customerDocument.ts` with `loadCustomerInvoiceLines` and `assembleCustomerInvoiceDocument`, plus line `id` in the projection. Export `resolveDocumentLineDetail`. Route the public, portal and new staff `GET /invoices/:id/customer-view` through the assembler.
   - Add the portal `useDocumentAccent` (fixes D17).
-  - Swap the web invoice Preview, portal `PublicInvoiceView` and `InvoiceDetailView` (theme fixed, D14).
-  - Delete `invoicePaper.tsx` and the `InvoiceDocument.tsx` body.
-  - Add the invoice DOM parity tests.
-  - Files: the new package, `packages/shared/src/documents/*`, `apps/api/src/services/customerDocument.ts`, `routes/invoices/invoices.ts`, `routes/invoicesPublic.ts`, `routes/portal/invoices.ts`, `InvoiceDocument.tsx`, `PublicInvoiceView.tsx`, `InvoiceDetailView.tsx`, both `globals.css`, `ci.yml`, both Dockerfiles.
+  - Swap the web invoice Preview, portal `PublicInvoiceView` and `InvoiceDetailView` (fixes the theme, D14). Add the `initial` seam to `InvoiceDetailView`. The Preview refetches on `reload()`.
+  - Delete `invoicePaper.tsx` and the `InvoiceDocument.tsx` body. Delete the body-only `invoiceDocument.*` keys from all 7 `billing.json` locales.
+  - Add the invoice DOM parity tests, the built-CSS tests, and the W1 Playwright slice (§8.2).
+  - Files:
+    - new: the `packages/document-ui` package, `packages/shared/src/documents/*`, `apps/api/src/services/customerDocument.ts`;
+    - API: `services/invoiceService.ts`, `routes/invoices/invoices.ts`, `routes/invoicesPublic.ts`, `routes/portal/invoices.ts`;
+    - web: `InvoiceDocument.tsx`, `InvoiceWorkspace.tsx`, `apps/web/src/locales/*/billing.json`;
+    - portal: `PublicInvoiceView.tsx`, `InvoiceDetailView.tsx`, `apps/portal/src/styles/paperTokens.test.ts`;
+    - shared: both `globals.css` files;
+    - CI and build: `ci.yml`, `.github/scripts/ci-area-gating.test.mjs`, the five Dockerfiles in §8.4;
+    - e2e: one spec under `e2e-tests/tests/`.
 - **W2: quotes on screen.**
   - Add the quote model and builder, `QuoteBlocks`, `DocumentAgreements` and the cover (current portal geometry for now).
   - Add `assembleCustomerQuoteDocument`. The logged-in portal quote route stops spreading the raw row (D19). Add `GET /quotes/:id/customer-view`.
@@ -457,8 +576,9 @@ Each wave can ship on its own. #9401 lands first; W1 supersedes it by deleting i
   - Closes #6649.
 - **W3: PDF module.**
   - Add `documentPdfTable.ts`. `invoicePdf.ts` and `quotePdf.ts` draw line tables, totals and pagination through it from the shared models.
-  - Invoice PDFs get theme fonts.
-  - Delete `renderInvoiceHtml` and its golden snapshot. Regenerate the goldens.
+  - Invoice PDFs get theme fonts. PDF dates and header and column labels switch to the shared labels in the document locale. The pt-BR strings move from `apps/api/src/i18n/locales/pt-BR/pdf.json` into `packages/shared/src/documents/labels/pt-BR.ts`.
+  - Apply the OD-11 suffix rule to the PDF unit column.
+  - Delete `renderInvoiceHtml`, its golden snapshot and the stale header line `invoicePdf.ts:5`. Regenerate the goldens.
   - Mostly API-only and file-disjoint from W2. Both need W1's model. W3's quote half needs W2's quote builder, so W3 runs the invoice half in parallel with W2 and the quote half after it.
 - **W4: cover geometry and screenshot matrix.**
   - Apply the OD-5 geometry in `DocumentCover` and `document.css`.
@@ -520,5 +640,24 @@ Each wave can ship on its own. #9401 lands first; W1 supersedes it by deleting i
 - Preview refetch after editor saves (§3.3).
 
 Its correction on D14 (quote Preview stamps the theme) was confirmed, and D14 now says so. There was no disagreement to escalate.
+
+**PR review round (one round).** `/pr-review-toolkit:review-pr` ran three reviewers on the spec: code, documentation accuracy and type design. Their findings were folded in:
+- the `@source` path, which was one level short;
+- the CSS import order (above `tailwindcss`) and the `./document.css` export;
+- `--paper-primary` on web;
+- the density exclusion of the root itself, and dense mode;
+- full `ci-success` wiring;
+- the W1 Playwright slice;
+- line ids in the projection;
+- assembler-owned row queries, with `projectCustomerInvoiceLine` folded in;
+- per-mode status with `displayStatus`;
+- one label source in `packages/shared`, with PDF dates and labels moving in W3;
+- the Dockerfile and CI-job claims;
+- `DocumentMoney`, so the PDF can stay glyph-safe;
+- the tax-column union type;
+- the missing `heading`, cadence-group, callout-title, `AgreementBody` and `QuoteTableBlock` types;
+- `SanitizedHtml`;
+- package-owned test ids;
+- OD-11 (suffix placement).
 
 One place where this spec goes further than Codex: for the client-fetch accent, the spec prefers a CSSOM write over a nonced `<style>` update. A CSSOM write needs no nonce plumbing into a client island, and the nonced `<style>` stays as the fallback. The production-CSP Playwright run (§8.2) settles it.
