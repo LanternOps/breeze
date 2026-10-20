@@ -64,8 +64,8 @@ const auth = {
 function buildApp() {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('auth', auth);
-    c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
+    c.set('auth', auth as any);
+    c.set('permissions', { permissions: [{ resource: '*', action: '*' }] } as any);
     await next();
   });
   app.route('/', featureLinkRoutes);

@@ -57,7 +57,7 @@ const auth = {
 function buildApp() {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('auth', auth);
+    c.set('auth', auth as any);
     await next();
   });
   app.route('/', assignmentRoutes);
