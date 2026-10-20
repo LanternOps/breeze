@@ -16,6 +16,7 @@ import {
   Save,
   ScrollText,
   Shield,
+  ShieldCheck,
   SlidersHorizontal,
   Ticket,
   Wallet,
@@ -37,6 +38,7 @@ import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiApprovalsTab from './PartnerAiApprovalsTab';
 import PartnerAiModelsTab from './aiModels/PartnerAiModelsTab';
 import PartnerMlFeaturesCard from './PartnerMlFeaturesCard';
+import PartnerAiDataPolicyCard from './PartnerAiDataPolicyCard';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
@@ -44,6 +46,7 @@ import PartnerModulesCard, { type TopologyFeatureFlags } from './PartnerModulesC
 import type { ServiceManagementMode } from '@/stores/orgStore';
 import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
+import TrustTemplateSettings from '../trustCenter/TrustTemplateSettings';
 import type {
   PartnerSettings,
   SupportedLocale,
@@ -59,6 +62,7 @@ import type {
   InheritableAiBudgetSettings,
   AiApprovalSettings,
   InheritableRemoteAccessSettings,
+  PartnerNetworkProxySettings,
   IpAllowlistStatus,
   SendingDomainsCapabilityDto
 } from '@breeze/shared';
@@ -68,12 +72,15 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
-import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
+import MfaPolicyOffBanner, { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 import { useStableT } from '@/lib/i18n/useStableT';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
+// Scalar security limits the API unsets when sent as null (see PATCH /partners/me).
+const CLEARABLE_SECURITY_KEYS = ['minLength', 'complexity', 'expirationDays', 'sessionTimeout', 'maxSessions'] as const;
+
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules' | 'trustCenter';
 
 type Partner = {
   id: string;
@@ -147,6 +154,8 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
     tabs: [
       { key: 'branding', hash: 'branding', label: 'partnerSettingsPage.tabs.branding.label', description: 'partnerSettingsPage.tabs.branding.description', icon: Palette, enforced: true },
       { key: 'loginBranding', hash: 'login-branding', label: 'partnerSettingsPage.tabs.loginBranding.label', description: 'partnerSettingsPage.tabs.loginBranding.description', icon: LogIn, selfSaving: true },
+      // Trust Center W2 (#8770 W02g): the partner-wide default for customer trust pages (own load/save, MFA).
+      { key: 'trustCenter', hash: 'trust-center', label: 'partnerSettingsPage.tabs.trustCenter.label', description: 'partnerSettingsPage.tabs.trustCenter.description', icon: ShieldCheck, selfSaving: true },
     ],
   },
 ];
@@ -181,7 +190,7 @@ function getTabFromHash(): TabKey | null {
 // tabs (Ticketing, Email templates, Login Branding, AI Provider, Sender
 // Addresses, Modules) persist independently and are never "dirty" from this
 // page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules' | 'trustCenter'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -240,6 +249,8 @@ export default function PartnerSettingsPage() {
   const [aiBudgetsValid, setAiBudgetsValid] = useState(true);
   const [aiApprovalsData, setAiApprovalsData] = useState<AiApprovalSettings>({});
   const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
+  // `settings.networkProxy` (#8155): partner-only, shown on the Remote Access tab.
+  const [networkProxyData, setNetworkProxyData] = useState<PartnerNetworkProxySettings>({});
   // Registered agent/watchdog versions for the pin selectors (#2124).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
   // Capability only: the tab does its own full read. `checked` distinguishes
@@ -261,12 +272,12 @@ export default function PartnerSettingsPage() {
     branding: JSON.stringify(brandingData),
     aiBudgets: JSON.stringify(aiBudgetsData),
     aiApprovals: JSON.stringify(aiApprovalsData),
-    remoteAccess: JSON.stringify(remoteAccessData),
+    remoteAccess: JSON.stringify({ remoteAccessData, networkProxyData }),
   }), [
     companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature,
     timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours,
     securityData, notificationsData, eventLogsData, defaultsData, brandingData,
-    aiBudgetsData, aiApprovalsData, remoteAccessData,
+    aiBudgetsData, aiApprovalsData, remoteAccessData, networkProxyData,
   ]);
   const [baseline, setBaseline] = useState<Snapshot | null>(null);
   // fetchPartner can't read the state it just set (updates are async), so it
@@ -339,6 +350,9 @@ export default function PartnerSettingsPage() {
       setAiBudgetsData(settings.aiBudgets || {});
       setAiApprovalsData(settings.aiApprovals || {});
       setRemoteAccessData(settings.remoteAccessProviders || {});
+      // Keep only a real boolean: anything else is "never chose" (platform default).
+      const dedicated = settings.networkProxy?.dedicatedTunnelOrigin;
+      setNetworkProxyData(typeof dedicated === 'boolean' ? { dedicatedTunnelOrigin: dedicated } : {});
 
       // Re-baseline dirty tracking against the values that were just fetched.
       baselinePending.current = true;
@@ -482,7 +496,14 @@ export default function PartnerSettingsPage() {
     };
 
     // Always include all categories so clearing all fields removes locks
-    settings.security = securityData;
+    // The API deep-merges `security`, so an omitted key keeps its stored value.
+    // A cleared scalar limit must go out as an explicit null to be unset (#8976).
+    settings.security = {
+      ...securityData,
+      ...Object.fromEntries(
+        CLEARABLE_SECURITY_KEYS.filter(key => securityData[key] === undefined).map(key => [key, null])
+      ),
+    };
     settings.notifications = notificationsData;
     settings.eventLogs = eventLogsData;
     settings.defaults = defaultsData;
@@ -490,6 +511,12 @@ export default function PartnerSettingsPage() {
     settings.aiBudgets = aiBudgetsData;
     settings.aiApprovals = aiApprovalsData;
     settings.remoteAccessProviders = remoteAccessData;
+    // Only an explicit choice is written. An unset value stays unset so the
+    // platform default (TUNNEL_ORIGIN_PARTNER_DEFAULT) can later flip for
+    // partners who never chose (plan W04 Task 19).
+    if (typeof networkProxyData.dedicatedTunnelOrigin === 'boolean') {
+      settings.networkProxy = networkProxyData;
+    }
 
     const payload: Record<string, unknown> = { settings };
     const trimmedName = companyName.trim();
@@ -622,6 +649,10 @@ export default function PartnerSettingsPage() {
         )}
       </header>
 
+      {/* The layout's copy stands down on this route (placement="layout"), so
+          exactly one banner shows, aligned to this container. */}
+      <MfaPolicyOffBanner placement="page" />
+
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-destructive">
           <p className="text-sm">{error}</p>
@@ -742,6 +773,9 @@ export default function PartnerSettingsPage() {
               top-level "Save Settings" button does not apply here). */}
           {activeTab === 'loginBranding' && <LoginBrandingCard partnerSlug={partner?.slug} />}
 
+          {/* Trust Center defaults: self-contained form with its own load/save (MFA, revisioned). */}
+          {activeTab === 'trustCenter' && <TrustTemplateSettings />}
+
           {activeTab === 'aiBudgets' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
@@ -765,13 +799,19 @@ export default function PartnerSettingsPage() {
           {/* AI Features: self-contained card with its own autosave switches. */}
           {activeTab === 'aiFeatures' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={() => void fetchPartner()} />
+              <PartnerAiDataPolicyCard />
+              <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={(ml) => setPartner((p) => (p ? { ...p, settings: { ...p.settings, ml } } : p))} />
             </section>
           )}
 
           {activeTab === 'remoteAccess' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerRemoteAccessTab data={remoteAccessData} onChange={setRemoteAccessData} />
+              <PartnerRemoteAccessTab
+                data={remoteAccessData}
+                onChange={setRemoteAccessData}
+                networkProxy={networkProxyData}
+                onNetworkProxyChange={setNetworkProxyData}
+              />
             </section>
           )}
 

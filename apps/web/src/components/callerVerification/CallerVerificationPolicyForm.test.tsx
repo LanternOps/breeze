@@ -12,7 +12,7 @@ vi.mock('@/lib/useCallerVerificationEnabled', () => ({ useCallerVerificationEnab
 afterEach(() => { vi.clearAllMocks(); enabled.value = true; });
 
 const orgOwner = { ownerScope: 'organization' as const, orgId: ORG };
-const response = (over: Partial<PolicyResponse> = {}): PolicyResponse => ({ row: null, defaults: policyValues, baseline: policyValues, effective: policy, ...over });
+const response = (over: Partial<PolicyResponse> = {}): PolicyResponse => ({ maxAchievableTier: 3, row: null, defaults: policyValues, baseline: policyValues, effective: policy, ...over });
 
 it('makes no request while the feature is off', () => {
   enabled.value = false;
@@ -63,9 +63,23 @@ it('resets a field to inherit', async () => {
   vi.mocked(getPolicy).mockResolvedValue(response({ row }));
   vi.mocked(putPolicy).mockResolvedValue(response());
   render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
-  fireEvent.click(await screen.findByTestId('cv-policy-maxAttemptsPerHour-inherit'));
+  const attempts = await screen.findByTestId('cv-policy-maxAttemptsPerHour');
+  expect(attempts).toHaveValue(2);
+  fireEvent.click(screen.getByTestId('cv-policy-maxAttemptsPerHour-inherit'));
+  expect(attempts).toHaveValue(policyValues.maxAttemptsPerHour);
   await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
   expect(putPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, inheritedDraft());
+});
+
+it('shows the value the server saved, not the one that was typed', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response());
+  vi.mocked(putPolicy).mockResolvedValue(response({ row: { ...inheritedDraft(), verificationTtlMinutes: 60 } as unknown as PolicyResponse['row'] }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  const ttl = await screen.findByTestId('cv-policy-verificationTtlMinutes');
+  fireEvent.change(ttl, { target: { value: '45' } });
+  fireEvent.blur(ttl);
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
+  expect(ttl).toHaveValue(60);
 });
 
 it('labels the partner baseline as applying to all organizations', async () => {
@@ -128,4 +142,65 @@ it('partner mount makes no request while the feature is off', () => {
   enabled.value = false;
   render(<PartnerCallerVerificationPolicy />);
   expect(getPolicy).not.toHaveBeenCalled();
+});
+
+it('caps the tier selectors at maxAchievableTier and explains why while the workstation tier is dark', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 2 }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierResetPassword')).toHaveAttribute('max', '2');
+  expect(screen.getByTestId('cv-policy-requiredTierDisableUser')).toHaveAttribute('max', '2');
+  expect(screen.getByTestId('cv-policy-requiredTierResetPassword-cap-hint')).toHaveTextContent(/Tier 3 needs workstation verification/);
+  // Other numeric fields keep their own bounds.
+  expect(screen.getByTestId('cv-policy-maxAttemptsPerHour')).toHaveAttribute('max', '100');
+});
+
+it('caps each tier input by its own per-action cap', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 2, maxAchievableTierResetPassword: 2, maxAchievableTierDisableUser: 3 }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierResetPassword')).toHaveAttribute('max', '2');
+  expect(screen.getByTestId('cv-policy-requiredTierDisableUser')).toHaveAttribute('max', '3');
+  expect(screen.getByTestId('cv-policy-requiredTierResetPassword-cap-hint')).toBeInTheDocument();
+  expect(screen.queryByTestId('cv-policy-requiredTierDisableUser-cap-hint')).toBeNull();
+});
+
+it('keeps a stored disable_user tier 3 on save when its own cap allows it', async () => {
+  const row = { ...inheritedDraft(), requiredTierDisableUser: 3, requiredTierResetPassword: 3 } as unknown as PolicyResponse['row'];
+  const caps = { maxAchievableTier: 2 as const, maxAchievableTierResetPassword: 2 as const, maxAchievableTierDisableUser: 3 as const };
+  vi.mocked(getPolicy).mockResolvedValue(response({ ...caps, row }));
+  vi.mocked(putPolicy).mockResolvedValue(response({ ...caps, row }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierDisableUser')).toHaveValue(3);
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
+  expect(putPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, { ...inheritedDraft(), requiredTierResetPassword: 2, requiredTierDisableUser: 3 });
+});
+
+it('allows tier 3 and shows no hint when the workstation tier is available', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 3 }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierResetPassword')).toHaveAttribute('max', '3');
+  expect(screen.queryByTestId('cv-policy-requiredTierResetPassword-cap-hint')).toBeNull();
+});
+
+it('sends a stored tier 3 as the achievable tier on save instead of a refused value', async () => {
+  const row = { ...inheritedDraft(), requiredTierResetPassword: 3 } as unknown as PolicyResponse['row'];
+  vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 2, row }));
+  vi.mocked(putPolicy).mockResolvedValue(response({ maxAchievableTier: 2, row }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierResetPassword')).toHaveValue(2);
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
+  expect(putPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, { ...inheritedDraft(), requiredTierResetPassword: 2 });
+});
+
+// #9168: the h-8 controls at the default font size clipped descenders in the
+// Yes/No selects and the numeric fields. They use the shared settings control
+// size (h-10 + text-sm) that every other partner-settings field uses.
+it('sizes its selects and number fields with the shared h-10 text-sm control style', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response());
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  const select = await screen.findByTestId('cv-policy-requireTicket');
+  const number = screen.getByTestId('cv-policy-maxAttemptsPerHour');
+  for (const control of [select, number]) {
+    expect(control).toHaveClass('h-10', 'text-sm');
+    expect(control).not.toHaveClass('h-8');
+  }
 });

@@ -222,6 +222,12 @@ export type VpnProvider =
   | 'zerotier'
   | 'openvpn'
   | 'cloudflare-warp'
+  // Enterprise VPN / SSE clients (#8763).
+  | 'zscaler'
+  | 'globalprotect'
+  | 'cisco-secure-client'
+  | 'forticlient'
+  | 'netskope'
   | 'generic';
 
 /** How the agent recognized the VPN — a raw signal, not a trust ranking. */
@@ -788,6 +794,11 @@ export interface EffectiveOrgSettings {
   locked: string[];
 }
 
+/** `partners.settings.networkProxy` (#8155). Partner-only: there is no org override. */
+export interface PartnerNetworkProxySettings {
+  dedicatedTunnelOrigin?: boolean;
+}
+
 export interface PartnerSettings {
   timezone?: string;
   dateFormat?: DateFormat;
@@ -827,6 +838,9 @@ export interface PartnerSettings {
   // (newly created or stale entries) are appended in createdAt order.
   organizationOrder?: string[];
   remoteAccessProviders?: InheritableRemoteAccessSettings;
+  // Network Proxy transport (#8155). Partner-only; resolved by
+  // tunnelOriginOptInFromSettings (utils/networkProxyOptIn.ts).
+  networkProxy?: PartnerNetworkProxySettings;
   emailTemplates?: Partial<Record<EmailTemplateId, {
     subject?: string | null;
     heading?: string | null;
@@ -992,6 +1006,7 @@ export * from './topologyInvestigation';
 export * from './topologyAi';
 
 export * from './securityScan';
+export * from './yara';
 
 // Metric anomaly episodes (spec 2026-09-21)
 export * from './metricAnomalyEpisodes';

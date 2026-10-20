@@ -245,6 +245,14 @@ export default function MoveDeviceOrgDialog({
         setError(null);
         return;
       }
+      if (status === 409 && errCode === 'PAM_DEVICE_MOVE_ACTIVE') {
+        setError(t('moveDeviceOrgDialog.pamMoveActive'));
+        return;
+      }
+      if (status === 409 && errCode === 'PAM_DEVICE_MOVE_BLOCKED') {
+        setError(t('moveDeviceOrgDialog.pamMoveBlocked'));
+        return;
+      }
       setError((err as { message?: string } | null)?.message ?? t('moveDeviceOrgDialog.genericError'));
     }
   }, [device.id, targetOrgId, targetSiteId, acceptCurrencyMismatch, phase, tier, code, targets, onCompleted, onClose, t]);

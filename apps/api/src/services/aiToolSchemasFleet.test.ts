@@ -378,16 +378,22 @@ describe('generate_report schema', () => {
     expect(parse('generate_report', { action: 'create', name: 'Test', reportType: 'compliance', format: 'docx' }).success).toBe(false);
   });
 
-  // #3198 W02 regression pin: the org-axis AI tool cannot create or run a
-  // business report by type (they are msp_staff, partner-capable and gated
-  // on extra read permissions the tool's ad-hoc path never checks).
-  it.each(['ticket_sla_attainment', 'technician_time_billability', 'ar_aging'])(
-    'rejects business type %s for create and generate',
+  // #9222 reverses the #3198 W02 pin: the business types are reachable by type
+  // because the handler now applies the route gates (msp_staff audience, per-type
+  // read permissions, site-restricted refusal) — see
+  // aiToolsFleet.reportAudience.test.ts. The schema only closes the enum.
+  it.each(['ticket_sla_attainment', 'technician_time_billability', 'ar_aging', 'ai_usage_by_client'])(
+    'accepts business type %s for create, generate and data',
     (reportType) => {
-      expect(parse('generate_report', { action: 'create', name: 'Biz', reportType }).success).toBe(false);
-      expect(parse('generate_report', { action: 'generate', reportType }).success).toBe(false);
+      expect(parse('generate_report', { action: 'create', name: 'Biz', reportType }).success).toBe(true);
+      expect(parse('generate_report', { action: 'generate', reportType }).success).toBe(true);
+      expect(parse('generate_report', { action: 'data', reportType }).success).toBe(true);
     },
   );
+
+  it('still rejects a business-looking type that does not exist (no #6830 types yet)', () => {
+    expect(parse('generate_report', { action: 'data', reportType: 'ar_ageing' }).success).toBe(false);
+  });
 });
 
 // ─── manage_patches: setup_auto_approval ────────────────────────────────

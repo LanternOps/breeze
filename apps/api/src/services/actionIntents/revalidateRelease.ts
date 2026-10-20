@@ -22,6 +22,14 @@ import {
   loadTaskAgentToolAllowlists,
 } from '../aiOperator/planApproval';
 import { planOrdinalFromOperationKey } from '../aiOperator/operationKey';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { callerAction, loadPinnedCallerBackend } from './callerTarget';
+import { requireCallerVerification } from '../callerVerification/gate';
+import { getEffectivePolicy } from '../callerVerification/policy';
+import {
+  CallerVerificationRequiredError, CallerVerificationValidationError, type CallerVerificationRefusal,
+} from '../callerVerification/errors';
+import { CALLER_VERIFICATION_REQUIRED_CODE } from '../callerVerification/refusal';
 
 /**
  * Shared release-time revalidation for an approved action intent (spec
@@ -225,6 +233,85 @@ function isSystemDecided(intent: ActionIntent): boolean {
 }
 
 export async function revalidateApprovedIntentForRelease(
+  intent: ActionIntent,
+  winningApproval: { boundArgumentDigest: string | null } | null,
+): Promise<IntentReleaseRevalidation> {
+  const revalidation = await revalidateApprovedIntentCore(intent, winningApproval);
+  if (!revalidation.ok) return revalidation;
+  // Caller verification (#6354 W05) runs LAST: only an intent that passed
+  // every other release check may spend the caller's single-use grant.
+  return consumeCallerVerificationForRelease(intent, revalidation);
+}
+
+/**
+ * Caller verification W05 (#6354): the consume step for the two protected M365
+ * identity actions, after every RBAC / org / digest / authority check has
+ * passed and AFTER the caller already won the `approved -> executing` CAS.
+ *
+ *  - Agent-originated or requester-less protected intents refuse
+ *    (`technician_mismatch`): a verified caller authorizes a human technician.
+ *  - An intent without a pinned target (created before W05, or tampered)
+ *    refuses (`subject_unmatched`); nothing is resolved from its UPN.
+ *  - The gate consumes in its own committed transaction. A pre-consume
+ *    refusal leaves the grant untouched; a same-intent retry gets the grant it
+ *    already consumed back; a different intent can never spend it.
+ *
+ * Every refusal is the typed `caller_verification_required` failure carrying
+ * the gate's payload in `details.requiresCallerVerification` — never a retry.
+ * The pinned connection being gone is `connection_unavailable` (nothing sent).
+ */
+async function consumeCallerVerificationForRelease(
+  intent: ActionIntent,
+  revalidation: Extract<IntentReleaseRevalidation, { ok: true }>,
+): Promise<IntentReleaseRevalidation> {
+  const action = callerAction(intent.actionName);
+  if (!action) return revalidation;
+  let requiredTier = 2;
+  const refusal = (reason: CallerVerificationRefusal): IntentReleaseRevalidation => ({
+    ok: false,
+    errorCode: CALLER_VERIFICATION_REQUIRED_CODE,
+    details: {
+      requiresCallerVerification: {
+        orgId: intent.orgId, contactId: null, action, requiredTier, reason, latest: null,
+      },
+    },
+  });
+  try {
+    // Short org-filtered system reads, between DB contexts (the gate itself
+    // escapes into its own transactions and commits the consume).
+    const backend = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const policy = await getEffectivePolicy(intent.orgId);
+      requiredTier = action === 'reset_password' ? policy.requiredTierResetPassword : policy.requiredTierDisableUser;
+      if (!intent.targetConnectionRef) return null;
+      return loadPinnedCallerBackend(intent.orgId, intent.targetConnectionRef);
+    }, 'callerVerification.release.prepare'));
+    if (!intent.requestedByUserId || intent.requestingAgentRunId) return refusal('technician_mismatch');
+    if (!intent.targetEntraTenantId || !intent.targetEntraOid || !backend) return refusal('subject_unmatched');
+    await requireCallerVerification({
+      orgId: intent.orgId, action,
+      target: { entraTenantId: intent.targetEntraTenantId, entraOid: intent.targetEntraOid },
+      backendTenantId: backend.tenantId,
+      technicianUserId: intent.requestedByUserId,
+      intentId: intent.id,
+      mode: 'consume',
+    });
+  } catch (error) {
+    if (error instanceof CallerVerificationRequiredError) {
+      return {
+        ok: false,
+        errorCode: CALLER_VERIFICATION_REQUIRED_CODE,
+        details: { requiresCallerVerification: error.payload },
+      };
+    }
+    if (error instanceof CallerVerificationValidationError && error.code === 'connection_not_ready') {
+      return { ok: false, errorCode: 'connection_unavailable', details: { reason: error.message } };
+    }
+    throw error;
+  }
+  return revalidation;
+}
+
+async function revalidateApprovedIntentCore(
   intent: ActionIntent,
   winningApproval: { boundArgumentDigest: string | null } | null,
 ): Promise<IntentReleaseRevalidation> {

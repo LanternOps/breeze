@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/react';
-import PartnerSecurityTab, { parseAllowlistInput, currentIpCovered } from './PartnerSecurityTab';
+import PartnerSecurityTab, { parseAllowlistInput, currentIpCovered, displayIp } from './PartnerSecurityTab';
 
 describe('parseAllowlistInput', () => {
   it('splits lines, trims, and drops blanks', () => {
@@ -52,5 +52,40 @@ describe('PartnerSecurityTab allowlist textarea', () => {
     const textarea = container.querySelector('textarea')!;
     fireEvent.change(textarea, { target: { value: '' } });
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ ipAllowlist: [] }));
+  });
+});
+
+// #9168: a dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`. The
+// button shows the familiar dotted quad, but the entry it ADDS stays the exact
+// address the server sees: the allowlist matcher never crosses address
+// families (apps/api/src/services/ipMatch.ts), so adding the bare IPv4 form
+// would not cover the session that added it.
+describe('PartnerSecurityTab add-current-IP button', () => {
+  it('shows an IPv4-mapped address without the ::ffff: prefix, and adds the exact address', () => {
+    const onChange = vi.fn();
+    const { getByRole } = render(
+      <PartnerSecurityTab
+        data={{ ipAllowlist: [] }}
+        onChange={onChange}
+        status={{ currentIp: '::ffff:203.0.113.7', enforced: true, active: true } as never}
+      />,
+    );
+    const button = getByRole('button', { name: /203\.0\.113\.7/ });
+    expect(button.textContent).not.toContain('::ffff:');
+    fireEvent.click(button);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ ipAllowlist: ['::ffff:203.0.113.7'] }));
+  });
+});
+
+describe('displayIp', () => {
+  it('strips only the dotted IPv4-mapped prefix, case-insensitively', () => {
+    expect(displayIp('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(displayIp('::FFFF:203.0.113.7')).toBe('203.0.113.7');
+  });
+
+  it('leaves plain IPv4, plain IPv6 and the hex-form mapped address untouched', () => {
+    expect(displayIp('203.0.113.7')).toBe('203.0.113.7');
+    expect(displayIp('2001:db8::1')).toBe('2001:db8::1');
+    expect(displayIp('::ffff:cb00:7107')).toBe('::ffff:cb00:7107');
   });
 });

@@ -14,8 +14,11 @@ export function planTransitions(input: {
   tracked: readonly TrackedIncident[];
   now: Date;
   seed: boolean;
+  /** Defaults to REOPEN_WINDOW_MS; the reconciler passes reopenWindowMs(source.intervalMinutes). */
+  reopenWindowMs?: number;
 }): TransitionAction[] {
   const { observations, tracked, now, seed } = input;
+  const windowMs = input.reopenWindowMs ?? REOPEN_WINDOW_MS;
   const bySource = new Map<string, HealthObservation>();
   for (const o of observations) {
     if (bySource.has(o.sourceId)) throw new Error(`duplicate observation for ${o.sourceKind}:${o.sourceId}`);
@@ -30,9 +33,12 @@ export function planTransitions(input: {
 
     if (t.resolvedAt) {
       // Recently resolved: only a broken observation inside the window matters.
-      if (o?.state === 'broken' && now.getTime() - t.resolvedAt.getTime() <= REOPEN_WINDOW_MS) {
+      if (o?.state === 'broken' && now.getTime() - t.resolvedAt.getTime() <= windowMs) {
         handled.add(t.sourceId);
-        actions.push({ type: 'reopen', incidentId: t.id, obs: o });
+        actions.push({
+          type: 'reopen', incidentId: t.id, obs: o,
+          escalated: t.severity === 'transient' && o.severity === 'permanent',
+        });
       }
       // Outside the window the row is history: a broken observation falls through to a new incident.
       continue;

@@ -1,5 +1,5 @@
 import { Job, Queue, Worker, type JobsOptions } from 'bullmq';
-import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   devices,
@@ -40,6 +40,11 @@ const ACTION_POLL_EVERY_MS = 60 * 1000;
 const DEFAULT_JOB_ATTEMPTS = 3;
 const DEFAULT_JOB_BACKOFF_MS = 2_000;
 const MAX_ACTION_POLL_FAILURES = 5;
+// Must stay well under VENDOR_VIEW_STALE_MS (24h) so absence is noticed before the
+// coverage view would go stale.
+const S1_FULL_AGENT_LISTING_EVERY_MS = 6 * 60 * 60 * 1000;
+// s1_agents.status for a row the console no longer returns.
+export const S1_AGENT_STATUS_ABSENT = 'absent';
 
 interface SyncIntegrationJobData {
   type: 'sync-integration';
@@ -75,6 +80,7 @@ interface IntegrationForSync {
   managementUrl: string;
   isActive: boolean;
   lastSyncAt: Date | null;
+  lastFullAgentSyncAt?: Date | null;
 }
 
 interface DeviceCandidates {
@@ -255,7 +261,8 @@ async function listActiveIntegrations(): Promise<IntegrationForSync[]> {
       partnerId: s1Integrations.partnerId,
       managementUrl: s1Integrations.managementUrl,
       isActive: s1Integrations.isActive,
-      lastSyncAt: s1Integrations.lastSyncAt
+      lastSyncAt: s1Integrations.lastSyncAt,
+      lastFullAgentSyncAt: s1Integrations.lastFullAgentSyncAt
     })
     .from(s1Integrations)
     .where(eq(s1Integrations.isActive, true));
@@ -509,8 +516,14 @@ async function syncAgentsForIntegration(
 ): Promise<{ fetched: number; upserted: number; skipped: number; truncated: boolean }> {
   // Phase 1 — fetch agents from SentinelOne with NO DB context held (#1896).
   // The HTTP round-trip must not pin a pooled connection in an open transaction.
+  // Incremental fetches (updatedAt >= lastSyncAt) cannot show which agents are gone,
+  // so a full listing runs periodically; only a complete one may mark absentees (#9248).
+  const fullListing =
+    !integration.lastSyncAt ||
+    !integration.lastFullAgentSyncAt ||
+    Date.now() - integration.lastFullAgentSyncAt.getTime() >= S1_FULL_AGENT_LISTING_EVERY_MS;
   const agentResult = await dbModule.runOutsideDbContext(() =>
-    client.listAgents(integration.lastSyncAt ?? undefined)
+    client.listAgents(fullListing ? undefined : integration.lastSyncAt ?? undefined)
   );
   // Site registration tokens are an additive capability (deploy-time enrollment);
   // a failure here (e.g. the API token lacks sites:read) must NOT abort the core
@@ -639,6 +652,30 @@ async function syncAgentsForIntegration(
       .returning({ id: s1Agents.id });
 
     upserted += inserted.length;
+  }
+
+  // Mark absent: only after a complete (non-truncated) full listing. An empty listing
+  // is not trusted (revoked scope / wrong console would otherwise mark everything).
+  if (fullListing && !agentResult.truncated) {
+    // The id list is a bound NOT IN; stay under the driver's parameter cap.
+    if (fetchedAgents.length > 0 && fetchedAgents.length <= 50_000) {
+      const returnedIds = fetchedAgents.map((a) => a.id);
+      await db
+        .update(s1Agents)
+        // Also unlink/clear so every other s1_agents reader (posture evidence, device
+        // read model, status summaries, action targeting) stops matching the row; a
+        // returning agent is re-linked by the upsert.
+        .set({ status: S1_AGENT_STATUS_ABSENT, deviceId: null, infected: false, threatCount: 0, updatedAt: new Date() })
+        .where(and(
+          eq(s1Agents.integrationId, integration.id),
+          sql`${s1Agents.status} IS DISTINCT FROM ${S1_AGENT_STATUS_ABSENT}`,
+          notInArray(s1Agents.s1AgentId, returnedIds)
+        ));
+      await db
+        .update(s1Integrations)
+        .set({ lastFullAgentSyncAt: new Date() })
+        .where(eq(s1Integrations.id, integration.id));
+    }
   }
 
     return {
@@ -835,7 +872,8 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
         managementUrl: s1Integrations.managementUrl,
         apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
         isActive: s1Integrations.isActive,
-        lastSyncAt: s1Integrations.lastSyncAt
+        lastSyncAt: s1Integrations.lastSyncAt,
+        lastFullAgentSyncAt: s1Integrations.lastFullAgentSyncAt
       })
       .from(s1Integrations)
       .where(eq(s1Integrations.id, data.integrationId))

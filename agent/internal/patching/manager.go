@@ -66,6 +66,28 @@ func (m *PatchManager) ScanWithCoverage() ([]AvailablePatch, []string, error) {
 
 // Install installs a patch by ID.
 func (m *PatchManager) Install(patchID string) (InstallResult, error) {
+	return m.InstallWithHook(patchID, nil)
+}
+
+// BeforeInstallFunc is called once per patch immediately before a provider
+// mutates the system for it — after the provider's own "already installed /
+// no longer offered" detection and any download. category is the provider's
+// normalized category for the update ("definitions", "security", ...), or ""
+// when the provider does not know it. #4609 W07 takes its System Restore
+// checkpoint here.
+type BeforeInstallFunc func(category string)
+
+// HookedInstaller is implemented by providers that can call a
+// BeforeInstallFunc at their true mutation boundary (WindowsUpdateProvider).
+type HookedInstaller interface {
+	InstallWithHook(patchID string, before BeforeInstallFunc) (InstallResult, error)
+}
+
+// InstallWithHook is Install with a before-mutation hook. A provider that
+// implements HookedInstaller calls it itself (and not at all for a patch it
+// skips); any other provider gets it called with an empty category
+// immediately before its Install. A nil hook is plain Install.
+func (m *PatchManager) InstallWithHook(patchID string, before BeforeInstallFunc) (InstallResult, error) {
 	providerID, localID, err := m.splitPatchID(patchID)
 	if err != nil {
 		return InstallResult{}, err
@@ -76,7 +98,15 @@ func (m *PatchManager) Install(patchID string) (InstallResult, error) {
 		return InstallResult{}, fmt.Errorf("unknown patch provider: %s", providerID)
 	}
 
-	result, err := provider.Install(localID)
+	var result InstallResult
+	if hooked, ok := provider.(HookedInstaller); ok && before != nil {
+		result, err = hooked.InstallWithHook(localID, before)
+	} else {
+		if before != nil {
+			before("")
+		}
+		result, err = provider.Install(localID)
+	}
 	if err != nil {
 		return InstallResult{}, err
 	}

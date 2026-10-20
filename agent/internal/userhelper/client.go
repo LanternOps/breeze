@@ -195,6 +195,8 @@ func (c *Client) Run() error {
 		}
 	}
 
+	c.wireDesktopICETrickle()
+
 	// Hand each session's clipboard counters to the service for the central
 	// audit log (#1012). Sent once, from session teardown.
 	c.desktopMgr.mgr.OnClipboardSummary = func(sessionID string, summary ipc.ClipboardSummary) {
@@ -205,12 +207,10 @@ func (c *Client) Run() error {
 	}
 
 	// Start TCC permission check loop (macOS only; no-op on other platforms).
-	// Skip capture probes while a live session is active to avoid contending
-	// with the streaming capturer in the same helper process.
+	// It never captures the screen (#8390), so it needs no coordination with
+	// a live session's capturer.
 	safeGo("tcc_check", func() {
-		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, func() bool {
-			return !c.desktopMgr.hasActiveSessions()
-		})
+		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind)
 	})
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
@@ -383,7 +383,7 @@ func (c *Client) authenticate() error {
 }
 
 // currentCapabilities computes the capabilities this helper would report now.
-// On macOS desktop helpers this runs a real capture probe.
+// On macOS desktop helpers this runs the non-capturing access check.
 func (c *Client) currentCapabilities() ipc.Capabilities {
 	caps := detectCapabilitiesFn(c.binaryKind, c.context)
 	// On Windows, user-role helpers cannot capture desktop (no SYSTEM token
@@ -504,6 +504,12 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypeDesktopLeaseUpdate:
 			safeGo("desktop_lease_update", func() { c.handleDesktopLeaseUpdate(env) })
+
+		case ipc.TypeDesktopICETrickleBegin:
+			safeGo("desktop_ice_trickle_begin", func() { c.handleDesktopICETrickleBegin(env) })
+
+		case ipc.TypeDesktopRemoteICECandidate:
+			safeGo("desktop_remote_ice_candidate", func() { c.handleDesktopRemoteICECandidate(env) })
 
 		case ipc.TypeDesktopInput:
 			safeGo("desktop_input", func() { c.handleDesktopInput(env) })
@@ -1287,6 +1293,49 @@ func (c *Client) handleDesktopLeaseUpdate(env *ipc.Envelope) {
 	c.desktopMgr.mgr.ApplyLeaseUpdate(update)
 }
 
+// wireDesktopICETrickle sends the desktop manager's late local candidates
+// to the service, which relays them to the API (#9182). Sent in order on
+// pion's serial candidate callback; nothing is sent before the service's
+// desktop_ice_trickle_begin.
+func (c *Client) wireDesktopICETrickle() {
+	c.desktopMgr.mgr.OnLocalICECandidate = func(sessionID, startGeneration string, cand desktop.LocalICECandidate) {
+		notice := localICECandidateNotice(sessionID, startGeneration, cand)
+		if err := c.conn.SendTyped("desk-ice-"+sessionID, ipc.TypeDesktopLocalICECandidate, notice); err != nil {
+			log.Warn("failed to send desktop ICE candidate via IPC", "session", sessionID, "seq", cand.Seq, "error", err)
+		}
+	}
+}
+
+func (c *Client) handleDesktopICETrickleBegin(env *ipc.Envelope) {
+	var req ipc.DesktopICETrickleBegin
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid desktop_ice_trickle_begin payload", "error", err)
+		return
+	}
+	if err := c.desktopMgr.beginICETrickle(req); err != nil {
+		// The service sends begin only after this helper's start succeeded,
+		// so a refusal means the session is already gone or the request is
+		// bad; either way its late candidates stay local.
+		log.Warn("desktop ICE trickle not started; late candidates will not reach the viewer",
+			"sessionId", req.SessionID, "generation", req.StartGeneration, "reason", err.Error())
+	}
+}
+
+func (c *Client) handleDesktopRemoteICECandidate(env *ipc.Envelope) {
+	var req ipc.DesktopRemoteICECandidate
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid desktop_remote_ice_candidate payload", "error", err)
+		return
+	}
+	if err := c.desktopMgr.addRemoteICECandidate(req); err != nil {
+		if errors.Is(err, desktop.ErrNoICESession) || errors.Is(err, desktop.ErrStaleICEGeneration) {
+			log.Debug("dropping relayed viewer ICE candidate", "sessionId", req.SessionID, "reason", err.Error())
+			return
+		}
+		log.Warn("failed to apply relayed viewer ICE candidate", "sessionId", req.SessionID, "error", err.Error())
+	}
+}
+
 func (c *Client) handleDesktopStop(env *ipc.Envelope) {
 	var req ipc.DesktopStopRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
@@ -1540,19 +1589,15 @@ func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
 		caps.CanTray = false
 		caps.CanClipboard = false
 		if runtime.GOOS == "darwin" {
-			// A permission check: ProbeCaptureAccess never calls
-			// ScreenCaptureKit (#8058). The backend a real session uses is
-			// chosen when it opens its capturer.
-			granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
-				DesktopContext: desktopContext,
-			})
-			if err != nil {
-				log.Warn("desktop helper capability probe failed",
-					"context", desktopContext,
-					"error", err.Error())
-				caps.CanCapture = false
-			} else {
-				caps.CanCapture = granted
+			// A permission check: it never captures (#8390) and never calls
+			// ScreenCaptureKit (#8058). A session may try unless access is
+			// known to be denied; its own capture is the precise check, and
+			// the backend is chosen when it opens its capturer.
+			access := checkCaptureAccessFn(desktop.CaptureConfig{DesktopContext: desktopContext})
+			caps.CanCapture = access.CanCapture()
+			if !caps.CanCapture {
+				log.Warn("desktop helper cannot capture: Screen Recording access denied",
+					"context", desktopContext, "reason", access.Reason)
 			}
 		}
 	}

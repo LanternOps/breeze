@@ -138,7 +138,11 @@ export type StepUpOperation =
   // to the exact { partnerId, principalId, sorted orgIds, endsAt,
   // writesPerHour } the admin confirmed, so a grant can never open a wider,
   // longer or faster window than the one shown.
-  | 'migration_window_open';
+  | 'migration_window_open'
+  // Caller verification (#6354 W05): an administrative disable authorised by
+  // an interactive step-up instead of a caller challenge. Bound to the exact
+  // { orgId, Entra tenant, Entra OID, reason } the technician confirmed.
+  | 'caller_verification_administrative_disable';
 
 export interface StepUpGrant {
   id: string;
@@ -508,6 +512,14 @@ export function autopayRequestRecipientResourceDigest(input: {
     orgIds: [...new Set(input.orgIds.map(id => id.toLowerCase()))].sort(),
     recipientOverride: input.recipientOverride,
   });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+export function callerVerificationAdministrativeDigest(input: {
+  orgId: string; entraTenantId: string; entraOid: string; reason: string;
+}): `sha256:${string}` {
+  const reasonHash = createHash('sha256').update(input.reason.trim()).digest('hex');
+  const canonical = [input.orgId, input.entraTenantId, input.entraOid, reasonHash].join('|');
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

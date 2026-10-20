@@ -44,7 +44,7 @@ Devices are assigned to rings through the **Configuration Policy** system, not d
 |---|---|---|---|
 | Name | string | -- | Human-readable name (e.g., "Pilot", "Early Adopters", "Production") |
 | Description | string | null | Optional description of the ring's purpose |
-| Enabled | boolean | `true` | Whether the ring is active |
+| Enabled | boolean | `true` | Whether the ring is active. A disabled ring is treated as deleted: configuration policies linked to it hold their patching until they are relinked |
 | Ring order | integer | `0` | Position in the deployment sequence (0 = first, higher = later) |
 | Deferral period (days) | integer | `0` | Days to wait after a patch is released before it becomes eligible for this ring (0 -- 365). Third-party and Linux patches carry no release date, so their wait starts when the device first reports the patch. A Windows or macOS patch with no release date stays held until approved manually |
 | Deadline (days) | integer | null | Days after deferral ends by which the patch must be installed. Null means no deadline |
@@ -54,6 +54,7 @@ Devices are assigned to rings through the **Configuration Policy** system, not d
 | Patch sources | enum[] | null | Patch sources to include: `microsoft`, `apple`, `linux`, `third_party`, `custom` |
 | Category rules | object[] | `[]` | Per-category auto-approval and deferral override rules |
 | Auto-approve settings | JSON | `{}` | Auto-approval configuration |
+| Application rules (`appRules`) | object[] | `[]` | Per-application **block** and **pin** rules for the devices this ring covers. Up to 200, one per package. See [Application Rules](/features/patch-management/#application-rules) |
 | Device targets | JSON | `{}` | Device targeting rules (device groups, tags, sites, etc.) |
 
 ### Patch Sources
@@ -334,6 +335,8 @@ Patches require explicit approval per ring. If auto-approval is not configured v
 
 **Deleting a ring does not remove patches**
 Ring deletion is a soft delete -- it sets `enabled: false`. The ring's approval records and job history are preserved. Patches approved in other rings are unaffected.
+
+A deleted (or disabled) ring stops gating patches straight away. Every configuration policy still linked to it is treated as having an invalid ring reference: scheduled patching for that policy is skipped, manual patch jobs from it are refused, and its devices show every patch as denied (`ring_reference_invalid`), manual approvals included. The policy's Patch tab shows that the linked ring is no longer available. Choose another ring on the policy and save to resume patching, or re-enable the ring with `PATCH /api/v1/update-rings/:id` and `{ "enabled": true }`. A deleted ring cannot be linked to a policy.
 
 **Category rules not auto-approving**
 Double-check that `autoApproveSeverities` includes the severity of the patches you expect to be auto-approved. See the case-sensitivity note in the Category Rules section above.

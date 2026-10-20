@@ -3,6 +3,10 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { portalBranding } from '../../db/schema';
 import type { PortalVisibilityFlag } from '../../services/portal/portalFlags';
+import {
+  decidePortalTrustPageEditor,
+  type PortalTrustEditorUser,
+} from '../../services/portal/trustPageEditor';
 
 // Network Visibility is deliberately excluded from the generic strict
 // 403 gate. Its approved shared contract represents disabled availability
@@ -213,4 +217,39 @@ export function createPortalFeatureGateAny(
 
     return c.json(STRICT_PORTAL_FEATURES[flags[0]], 403);
   };
+}
+
+// Trust Center W3d (#8771): a PERMISSION gate, not a visibility gate. Passes
+// only when the org's enable_trust_page_editing flag is on AND the portal user
+// is an active org-scoped admin contact (services/portal/trustPageEditor.ts).
+// Re-checked on every request, never cached in the session. The two refusals
+// carry distinct codes so the portal page can tell "your provider has not
+// turned this on" from "you are not an admin contact".
+const PORTAL_TRUST_EDITOR_ERRORS = {
+  PORTAL_TRUST_EDITING_DISABLED: 'Trust page editing is not enabled for this portal',
+  PORTAL_TRUST_EDITOR_REQUIRED: "Only your organization's admin contacts can edit the trust page",
+} as const;
+
+export const requirePortalTrustPageEditor: MiddlewareHandler = async (c, next) => {
+  const auth = c.get('portalAuth');
+  if (!auth) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
+  // Draft state and revision numbers are per-viewer and change under the user.
+  c.header('Cache-Control', 'no-store');
+  const decision = await decidePortalTrustPageEditor({ id: auth.user.id, orgId: auth.user.orgId });
+  if (!decision.allowed) {
+    return c.json({ error: PORTAL_TRUST_EDITOR_ERRORS[decision.code], code: decision.code }, 403);
+  }
+  return next();
+};
+
+/**
+ * Per-user portal capabilities (as opposed to the org-level flags on the
+ * branding row). `canEditTrustPage` decides whether the portal shows the
+ * "Trust page" nav entry; the routes re-check it on every request.
+ */
+export async function resolvePortalCapabilities(user: PortalTrustEditorUser): Promise<{ canEditTrustPage: boolean }> {
+  const decision = await decidePortalTrustPageEditor(user);
+  return { canEditTrustPage: decision.allowed };
 }

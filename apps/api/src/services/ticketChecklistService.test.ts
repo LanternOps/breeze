@@ -194,19 +194,47 @@ describe('patchChecklistItem attestation rules', () => {
     expect(out.done).toBe(false);
   });
 
-  it('editing only the DETAIL of a DONE item also clears the attestation', async () => {
-    // `editsText` covers detail as well as label — the note is part of what the
-    // tick attested to, so the label-only case above does not prove this branch.
+  it('editing only the DETAIL (note) of a DONE item KEEPS the attestation (#9180)', async () => {
+    // The tick attests to the label text; the note is working commentary. A
+    // detail-only edit must not withdraw a person's sign-off.
+    const doneAt = new Date('2026-09-01T10:00:00.000Z');
     dbMocks.rows.push(
-      [row({ doneAt: new Date(), doneByUserId: 'user-1', detail: 'Old note' })],
-      [row({ detail: 'New note' })],
+      [row({ doneAt, doneByUserId: 'user-1', detail: 'Old note' })],
+      [row({ doneAt, doneByUserId: 'user-1', detail: 'New note' })],
     );
 
     const out = await patchChecklistItem(ITEM, { detail: 'New note' }, ACTOR);
 
-    expect(dbMocks.set[0]).toEqual(expect.objectContaining({
-      detail: 'New note', doneAt: null, doneByUserId: null,
-    }));
+    const set = dbMocks.set[0] as Record<string, unknown>;
+    expect(set.detail).toBe('New note');
+    expect(Object.prototype.hasOwnProperty.call(set, 'doneAt')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(set, 'doneByUserId')).toBe(false);
+    expect(out.done).toBe(true);
+  });
+
+  it('an UNCHANGED label sent alongside a new note keeps the tick (the edit form always sends both)', async () => {
+    const doneAt = new Date('2026-09-01T10:00:00.000Z');
+    dbMocks.rows.push(
+      [row({ doneAt, doneByUserId: 'user-1', label: 'Same', detail: 'Old' })],
+      [row({ doneAt, doneByUserId: 'user-1', label: 'Same', detail: 'New' })],
+    );
+
+    const out = await patchChecklistItem(ITEM, { label: 'Same', detail: 'New' }, ACTOR);
+
+    const set = dbMocks.set[0] as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(set, 'doneAt')).toBe(false);
+    expect(out.done).toBe(true);
+  });
+
+  it('editing label AND detail of a DONE item still clears the attestation (label rule intact)', async () => {
+    dbMocks.rows.push(
+      [row({ doneAt: new Date(), doneByUserId: 'user-1', label: 'Old', detail: 'a' })],
+      [row({ label: 'New', detail: 'b' })],
+    );
+
+    const out = await patchChecklistItem(ITEM, { label: 'New', detail: 'b' }, ACTOR);
+
+    expect(dbMocks.set[0]).toEqual(expect.objectContaining({ doneAt: null, doneByUserId: null }));
     expect(out.done).toBe(false);
   });
 

@@ -1,5 +1,4 @@
 import { db } from '../db';
-import { PolicyApprovalFieldMovedError } from './configPolicyPatching';
 import { securitySettingsAutoQuarantine, withoutFeatureLinkAuthority } from './securityScanQuarantineAuthority';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
@@ -17,6 +16,7 @@ import {
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { checkSecurityAgentsLinkWrite, SecurityAgentsLinkWriteError } from './securityAgents/securityAgentsLinkWrite';
+import { checkSecurityRuleSetsWrite } from '../routes/configurationPolicies/securityRuleSetGate';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
@@ -184,14 +184,6 @@ function rejectElevatedAutomationActions(raw: unknown): string | null {
  * carries no driver or schema detail.
  */
 function warrantyConsentRefusal(err: unknown): string | null {
-  // #8186: approval / app rules now live on the Update Ring. Say where, so
-  // the model can redo the change there instead of seeing a generic failure.
-  if (err instanceof PolicyApprovalFieldMovedError) {
-    return JSON.stringify({
-      error: `${err.message} Edit them with manage_update_rings, and link the ring with featurePolicyId.`,
-      code: err.code,
-    });
-  }
   // #6960: the service backstop's refusal is a fixed, coded message; left to
   // safeHandler it would reach the model as the generic tool error.
   if (err instanceof SecurityAgentsLinkWriteError) {
@@ -1174,6 +1166,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if ('error' in validated) return JSON.stringify({ error: validated.error });
         inlineSettings = validated.value;
 
+        // #6263 W03: same ruleSetIds gate as the HTTP route (featureLinks.ts).
+        if (featureType === 'security') {
+          const ruleSets = await checkSecurityRuleSetsWrite({ orgId: policy.orgId, partnerId: policy.partnerId }, inlineSettings);
+          if (!ruleSets.ok) return JSON.stringify(ruleSets.body);
+        }
+
         // addFeatureLink returns null (instead of throwing) on a duplicate —
         // see the comment on its onConflictDoNothing insert in
         // configurationPolicy.ts for why the raised-violation catch pattern
@@ -1223,6 +1221,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           const validated = validateInlineSettingsForFeature(existingFeatureType, inlineSettings);
           if ('error' in validated) return JSON.stringify({ error: validated.error });
           inlineSettings = validated.value;
+          if (existingFeatureType === 'security') {
+            const ruleSets = await checkSecurityRuleSetsWrite({ orgId: policy.orgId, partnerId: policy.partnerId }, inlineSettings);
+            if (!ruleSets.ok) return JSON.stringify(ruleSets.body);
+          }
           updates.inlineSettings = inlineSettings;
         }
 

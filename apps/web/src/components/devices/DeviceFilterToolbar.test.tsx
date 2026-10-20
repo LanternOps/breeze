@@ -94,3 +94,53 @@ describe('DeviceFilterToolbar — device search', () => {
     expect(chip.textContent).not.toContain('33333333');
   });
 });
+
+// #9037: when the quick-chip strip overflows, a fade alone is not a cue a
+// user can act on. An explicit scroll button appears at the clipped edge.
+describe('DeviceFilterToolbar — quick-chip overflow cue (#9037)', () => {
+  const layout: Record<string, PropertyDescriptor | undefined> = {};
+  const define = (name: string, descriptor: PropertyDescriptor) => {
+    layout[name] = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+    Object.defineProperty(HTMLElement.prototype, name, { configurable: true, ...descriptor });
+  };
+  const restore = () => {
+    for (const [name, descriptor] of Object.entries(layout)) {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+    }
+  };
+
+  it('shows a right-scroll button when chips are clipped on the right, and scrolls the strip on click', () => {
+    let scrollLeft = 0;
+    define('scrollWidth', { get: () => 900 });
+    define('clientWidth', { get: () => 300 });
+    define('scrollLeft', { get: () => scrollLeft, set: (v: number) => { scrollLeft = v; } });
+    const scrollBy = vi.fn();
+    define('scrollBy', { value: scrollBy, writable: true });
+    try {
+      render(
+        <DeviceFilterToolbar value={null} onChange={vi.fn()} listFilters={{ search: '' }} onListFiltersChange={vi.fn()} />,
+      );
+      const right = screen.getByRole('button', { name: 'Scroll filters right' });
+      expect(screen.queryByRole('button', { name: 'Scroll filters left' })).toBeNull();
+      fireEvent.click(right);
+      expect(scrollBy).toHaveBeenCalledTimes(1);
+      expect((scrollBy.mock.calls[0][0] as { left: number }).left).toBeGreaterThan(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('shows no scroll buttons when every chip fits', () => {
+    define('scrollWidth', { get: () => 300 });
+    define('clientWidth', { get: () => 300 });
+    try {
+      render(
+        <DeviceFilterToolbar value={null} onChange={vi.fn()} listFilters={{ search: '' }} onListFiltersChange={vi.fn()} />,
+      );
+      expect(screen.queryByRole('button', { name: /Scroll filters/ })).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+});

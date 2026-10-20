@@ -2192,5 +2192,34 @@
     "scansTab": "Varreduras",
     "threatsTab": "Ameaças",
     "backToThreats": "Voltar para ameaças"
+  },
+  "securityAgentCoverage": {
+    "title": "Cobertura de agentes de segurança",
+    "states": {
+      "covered": "Coberto",
+      "gap": "Lacuna",
+      "vendorOnly": "Somente no fornecedor",
+      "vendorOffline": "Fornecedor offline",
+      "mismatchedOrg": "Organização divergente",
+      "notApplicable": "Não aplicável",
+      "pending": "Pendente"
+    },
+    "reasons": {
+      "orgNotMapped": "Organização não mapeada para o fornecedor",
+      "integrationInactive": "Integração inativa",
+      "orgKeyMissing": "Chave da organização ausente",
+      "accountKeyMissing": "Chave da conta ausente",
+      "platformUnsupported": "Plataforma sem suporte",
+      "requiresMdmApproval": "Requer aprovação de MDM",
+      "platformNotSelected": "Plataforma não selecionada",
+      "varMissing": "Variável de implantação ausente",
+      "vendorUnavailable": "Fornecedor indisponível",
+      "installFailed": "Falha na instalação",
+      "installNotArmed": "Instalação não habilitada",
+      "installPending": "Instalação pendente",
+      "awaitingVendorReport": "Aguardando relatório do fornecedor",
+      "awaitingEvaluation": "Aguardando avaliação",
+      "vendorOrgMismatch": "O fornecedor informa outra organização"
+    }
   }
 }

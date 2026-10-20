@@ -62,6 +62,7 @@ GO_VERSION_ENV_FILES=(
   .github/workflows/security.yml
   .github/workflows/release.yml
   .github/workflows/dev-build-agent.yml
+  .github/workflows/yara-pack.yml
 )
 GO_VERSION_LITERAL_FILES=(
   .github/workflows/codeql.yml
@@ -105,6 +106,44 @@ for file in .github/workflows/*.yml; do
     [[ "$v" == *'{{'* ]] && continue
     [ "$v" = "$pinned" ] || note "$file hard-codes go-version: $v != $pinned"
   done < <(literal_values "$file")
+done
+
+# --- other Go modules (#6263 W03b: the built-in YARA pack filter) ----------
+# Each extra go.mod is its own toolchain pin for anyone running `go test` /
+# `go build` in that directory (release.yml builds the pack with it).
+EXTRA_GO_MODS=(
+  scripts/security/yara-pack/go.mod
+)
+for file in "${EXTRA_GO_MODS[@]}"; do
+  [ -f "$file" ] || { note "$file is missing — it must declare go $pinned"; continue; }
+  v="$(sed -nE 's/^go ([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$file")"
+  if [ -z "$v" ]; then
+    note "$file has no fully-qualified 'go X.Y.Z' directive (want go $pinned)"
+  elif [ "$v" != "$pinned" ]; then
+    note "$file go $v != $pinned (agent/go.mod)"
+  fi
+done
+
+# --- golang build stages in Dockerfiles (#6263 W03a: breeze-yarac) ----------
+# The API images build the agent's YARA compiler from agent/ sources; that
+# stage must use the same toolchain as the agent and be digest-pinned.
+GO_DOCKERFILES=(
+  apps/api/Dockerfile
+  docker/Dockerfile.api
+)
+for file in "${GO_DOCKERFILES[@]}"; do
+  [ -f "$file" ] || { note "$file is missing — it must build breeze-yarac with golang:$pinned"; continue; }
+  froms="$(grep -E '^FROM[[:space:]].*golang:' "$file" || true)"
+  [ -n "$froms" ] || note "$file has no golang build stage — expected golang:$pinned-alpine@sha256:… for breeze-yarac"
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    v="$(sed -nE 's/.*golang:([0-9]+\.[0-9]+\.[0-9]+)-alpine@sha256:[0-9a-f]{64}.*/\1/p' <<<"$line")"
+    if [ -z "$v" ]; then
+      note "$file golang stage is not a digest-pinned golang:X.Y.Z-alpine@sha256 image: $line"
+    elif [ "$v" != "$pinned" ]; then
+      note "$file golang:$v != $pinned (agent/go.mod)"
+    fi
+  done <<<"$froms"
 done
 
 # --- public docs telling self-hosters which toolchain to install ------------

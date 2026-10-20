@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../db', () => ({
   db: {},
@@ -15,7 +15,7 @@ vi.mock('../services/featureConfigResolver', () => ({
   isInMaintenanceWindow: vi.fn(),
   resolvePatchConfigForDevice: vi.fn(),
 }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('../services/patchAlerts', () => ({
   REBOOT_PENDING_ALERT_THRESHOLD_DAYS: 7,
   emitRebootPendingAlert: vi.fn().mockResolvedValue(null),
@@ -31,6 +31,12 @@ import {
 } from './maintenanceRebootWorker';
 import { DEFAULT_REBOOT_DELAY_MINUTES, DEFERRAL_OFF } from '../services/patchRebootHandler';
 import { emitRebootPendingAlert, loadOldestRebootRequiredSince } from '../services/patchAlerts';
+import { captureException, captureMessage } from '../services/sentry';
+
+beforeEach(() => {
+  vi.mocked(captureException).mockClear();
+  vi.mocked(captureMessage).mockClear();
+});
 
 // #3197: the grace period is no longer a constant in this module. It resolves
 // from the device's effective patch policy — the same setting the post-patch
@@ -72,23 +78,49 @@ describe('decideRebootCommand', () => {
     });
   });
 
-  it('carries the policy-resolved grace onto the Linux reboot payload', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'linux', delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF, promptText: {} })).toEqual({
-      type: 'reboot',
-      payload: { delay: POLICY_DELAY },
+  // #9181: Linux rides the same warn-then-reboot manager as Windows. The old
+  // `reboot` + bare `delay` path (an OS-scheduled `shutdown -r +N`) could not
+  // carry the deferral budget or the #8030 prompt text, so a Linux user was
+  // never offered Postpone and never saw the operator's custom copy.
+  it('sends Linux the same schedule_reboot payload Windows gets (#9181)', () => {
+    const params = { rebootIfPending: true, windowActive: true, delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF, promptText: {} };
+    const linux = decideRebootCommand({ ...params, osType: 'linux' });
+    expect(linux).toEqual({
+      type: 'schedule_reboot',
+      payload: {
+        delayMinutes: POLICY_DELAY,
+        reason: 'Pending reboot — maintenance window',
+        source: 'maintenance_window',
+        deadline: expect.any(String),
+        allowDeferral: false,
+        maxDeferrals: 0,
+        deferralMinutes: 0,
+      },
     });
+    const windows = decideRebootCommand({ ...params, osType: 'windows' });
+    expect(Object.keys(linux!.payload).sort()).toEqual(Object.keys(windows!.payload).sort());
   });
 
-  // #3207: the Linux path is a different command with a different contract
-  // (`shutdown -r +N` via the `delay` wire key). It has no deferral surface
-  // until W4 ships a Linux prompt, and must not grow one by accident.
-  it('leaves the Linux reboot payload a bare delay even when deferral is enabled', () => {
-    expect(decideRebootCommand({
+  it('never sends Linux the legacy reboot command or its bare delay key (#9181)', () => {
+    const decision = decideRebootCommand({
+      rebootIfPending: true, windowActive: true, osType: 'linux',
+      delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF, promptText: {},
+    });
+    expect(decision?.type).not.toBe('reboot');
+    expect(decision!.payload).not.toHaveProperty('delay');
+  });
+
+  it('carries the deferral budget onto the Linux payload when enabled (#9181)', () => {
+    const decision = decideRebootCommand({
       rebootIfPending: true, windowActive: true, osType: 'linux',
       delayMinutes: POLICY_DELAY,
       deferral: { allowDeferral: true, maxDeferrals: 3, deferralMinutes: 60 },
       promptText: {},
-    })).toEqual({ type: 'reboot', payload: { delay: POLICY_DELAY } });
+    });
+    expect(decision?.type).toBe('schedule_reboot');
+    expect(decision!.payload).toMatchObject({
+      allowDeferral: true, maxDeferrals: 3, deferralMinutes: 60,
+    });
   });
 
   it('carries the deferral budget onto the Windows payload when enabled', () => {
@@ -114,12 +146,30 @@ describe('decideRebootCommand', () => {
     );
   });
 
-  it('never puts prompt text on the Linux bare-delay payload (#8030)', () => {
-    expect(decideRebootCommand({
+  it('carries the #8030 prompt text onto the Linux payload (#9181)', () => {
+    const decision = decideRebootCommand({
       rebootIfPending: true, windowActive: true, osType: 'linux',
       delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF,
-      promptText: { title: 'Neustart', body: 'x', button: 'y' },
-    })).toEqual({ type: 'reboot', payload: { delay: POLICY_DELAY } });
+      promptText: { title: 'Neustart', body: 'Bitte speichern', button: 'Jetzt' },
+    });
+    expect(decision?.type).toBe('schedule_reboot');
+    expect(decision!.payload).toMatchObject({
+      promptTitle: 'Neustart', promptBody: 'Bitte speichern', promptButton: 'Jetzt',
+    });
+  });
+
+  it('clamps the Linux maintenance-window deadline to the end of the window (#9181)', () => {
+    const decision = decideRebootCommand({
+      rebootIfPending: true, windowActive: true, osType: 'linux',
+      delayMinutes: 15,
+      deferral: { allowDeferral: true, maxDeferrals: 4, deferralMinutes: 60 },
+      promptText: {},
+      windowEndsAt: new Date(Date.now() + 45 * 60_000),
+    });
+    const deadline = (decision!.payload as { deadline: string }).deadline;
+    const minutesOut = (Date.parse(deadline) - Date.now()) / 60000;
+    expect(minutesOut).toBeGreaterThan(44);
+    expect(minutesOut).toBeLessThanOrEqual(45);
   });
 
   it('clamps the maintenance-window deadline to the end of the window', () => {
@@ -218,14 +268,34 @@ describe('processRebootCandidate', () => {
     );
   });
 
-  it('issues reboot with grace delay on Linux', async () => {
+  it('issues schedule_reboot with the policy grace on Linux (#9181)', async () => {
     const deps = makeDeps();
     const res = await processRebootCandidate(linuxDevice, deps);
     expect(res.issued).toBe(true);
     expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
       'dev-2',
-      'reboot',
-      expect.objectContaining({ delay: POLICY_DELAY }),
+      'schedule_reboot',
+      expect.objectContaining({ delayMinutes: POLICY_DELAY, source: 'maintenance_window' }),
+      { expectedOrgId: 'org-1' },
+    );
+  });
+
+  it('carries the policy prompt text and deferral budget to a Linux device (#9181)', async () => {
+    const deps = makeDeps({
+      resolveRebootPlan: vi.fn().mockResolvedValue({
+        delayMinutes: POLICY_DELAY,
+        deferral: { allowDeferral: true, maxDeferrals: 2, deferralMinutes: 30 },
+        promptText: { title: 'Restart soon', body: 'Save your work', button: 'OK' },
+      }),
+    } as never);
+    await processRebootCandidate(linuxDevice, deps);
+    expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
+      'dev-2',
+      'schedule_reboot',
+      expect.objectContaining({
+        allowDeferral: true, maxDeferrals: 2, deferralMinutes: 30,
+        promptTitle: 'Restart soon', promptBody: 'Save your work', promptButton: 'OK',
+      }),
       { expectedOrgId: 'org-1' },
     );
   });
@@ -256,6 +326,60 @@ describe('processRebootCandidate', () => {
     const res = await processRebootCandidate(winDevice, deps);
     expect(res.issued).toBe(false);
     expect(res.reason).toBe(errorMsg);
+  });
+
+  // #8022 (BREEZE-45): a refused dispatch used to be reported as
+  // `captureException(new Error(<message with the device id and reason>))`.
+  // scrubEvent rewrites every exception value to '[redacted]' and drops
+  // untagged context, so production saw only a contentless "Error" whose top
+  // frame was processRebootCandidate — read as a throw, when the sweep had in
+  // fact reported a refusal and moved on. The refusal must arrive as a warning
+  // whose only content is bounded, allowlisted tags.
+  it('reports a refused dispatch as a tagged warning, not a contentless exception (#8022)', async () => {
+    const deps = makeDeps({
+      queueCommandForExecution: vi.fn().mockResolvedValue({
+        error: 'TRUST_PROBATION',
+        trust: { capability: 'device_execute', reason: 'probation_default_deny' },
+        refusal: 'trust_denied',
+      }),
+    } as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await processRebootCandidate(winDevice, deps);
+
+      expect(res).toEqual({ issued: false, reason: 'TRUST_PROBATION' });
+      expect(captureException).not.toHaveBeenCalled();
+      expect(captureMessage).toHaveBeenCalledTimes(1);
+      expect(captureMessage).toHaveBeenCalledWith('[MaintenanceReboot] reboot dispatch refused', {
+        eventCode: 'maintenance_reboot_dispatch_refused',
+        level: 'warning',
+        tags: { org_id: 'org-1', command_dispatch_refusal: 'trust_denied' },
+      });
+      // The unbounded detail (device id, full reason) stays on the console line.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dev-1'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('TRUST_PROBATION'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('tags a refusal that carries no class as unclassified rather than dropping the tag (#8022)', async () => {
+    const deps = makeDeps({
+      queueCommandForExecution: vi.fn().mockResolvedValue({ error: 'something new' }),
+    } as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await processRebootCandidate(winDevice, deps);
+
+      expect(captureMessage).toHaveBeenCalledWith(
+        '[MaintenanceReboot] reboot dispatch refused',
+        expect.objectContaining({
+          tags: { org_id: 'org-1', command_dispatch_refusal: 'unclassified' },
+        }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('skips without issuing when the maintenance window is not active (M3)', async () => {
@@ -353,7 +477,7 @@ describe('processRebootCandidate', () => {
       1, 'dev-1', 'schedule_reboot', expect.objectContaining({ delayMinutes: 30 }), { expectedOrgId: 'org-1' },
     );
     expect(deps.queueCommandForExecution).toHaveBeenNthCalledWith(
-      2, 'dev-2', 'reboot', expect.objectContaining({ delay: 5 }), { expectedOrgId: 'org-1' },
+      2, 'dev-2', 'schedule_reboot', expect.objectContaining({ delayMinutes: 5 }), { expectedOrgId: 'org-1' },
     );
   });
 
@@ -402,6 +526,35 @@ describe('runMaintenanceRebootSweep', () => {
       }),
     );
     expect(result).toEqual({ issued: 1, checked: 2 });
+  });
+
+  // #8022: a throw on one candidate is caught, logged with its device id and
+  // reported with tags that survive scrubEvent; the candidates after it are
+  // still processed in the same tick.
+  it('reports a per-device throw with worker + org tags and still processes the next candidate (#8022)', async () => {
+    const boom = new Error('boom');
+    const otherOrgCandidate = { ...candidate2, orgId: 'org-2' };
+    const deps = makeSweepDeps({
+      getRebootCandidates: vi.fn().mockResolvedValue([candidate1, otherOrgCandidate]),
+      processRebootCandidate: vi.fn()
+        .mockRejectedValueOnce(boom)
+        .mockResolvedValueOnce({ issued: true, reason: 'issued' }),
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await runMaintenanceRebootSweep(deps);
+
+      expect(result).toEqual({ issued: 1, checked: 2 });
+      expect(deps.processRebootCandidate).toHaveBeenNthCalledWith(2, otherOrgCandidate);
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(captureException).toHaveBeenCalledWith(boom, undefined, {
+        worker: 'maintenanceRebootWorker',
+        org_id: 'org-1',
+      });
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('dev-1'), boom);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it('calls the reboot-pending emitter for a non-issued candidate with the right args', async () => {

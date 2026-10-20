@@ -6,6 +6,12 @@ declare namespace App {
      *  `<style>` element the layouts emit (partner brand accent); see
      *  `src/lib/docAccent.ts`. */
     cspNonce: string;
+    /** Set by trust pages that rendered a loaded card (200 path); the middleware
+     *  only emits public Cache-Control when this is true. */
+    trustCacheable?: boolean;
+    /** Trust Center W03a: set by the /trust/embed/* pages from the card's live `frameAncestors`; the middleware
+     *  emits `frame-ancestors <origins>` (and drops X-Frame-Options) only for a 200 with a non-empty list. */
+    trustEmbedOrigins?: string[];
   }
 }
 

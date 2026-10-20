@@ -93,10 +93,13 @@ function resultParams(f: Fixture, command: typeof deviceCommands.$inferSelect, s
 
 beforeEach(() => {
   process.env.CALLER_VERIFICATION_ENABLED = 'true';
+  // The workstation tier is dark by default; this suite exercises it.
+  process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED = 'true';
   dispatch.mockReset().mockResolvedValue({ status: 'sent', via: 'local' });
 });
 afterEach(() => {
   delete process.env.CALLER_VERIFICATION_ENABLED;
+  delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
 });
 
 it('start commits the verification and its caller_verify command together, or neither', async () => {

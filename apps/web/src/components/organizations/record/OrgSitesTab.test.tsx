@@ -5,6 +5,7 @@ import '@/lib/i18n';
 import OrgSitesTab from './OrgSitesTab';
 import { fetchWithAuth } from '@/stores/auth';
 import { useOrgStore } from '@/stores/orgStore';
+import { navigateTo } from '@/lib/navigation';
 
 vi.mock('@/stores/auth', async () => {
   const actual = await vi.importActual<typeof import('@/stores/auth')>('@/stores/auth');
@@ -17,7 +18,13 @@ const fetchMock = vi.mocked(fetchWithAuth);
 
 const RECORD_ORG = 'org-record-1';
 const OTHER_ORG = 'org-other-2';
-const SITE = { id: 'site-1', name: 'Downtown Office', timezone: 'UTC', deviceCount: 5 };
+const SITE = {
+  id: 'site-1',
+  name: 'Downtown Office',
+  timezone: 'UTC',
+  deviceCount: 5,
+  address: { line1: '1 Pier', city: 'Halifax', state: 'NS' },
+};
 
 const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: ok ? 'OK' : 'ERROR', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -36,6 +43,8 @@ describe('OrgSitesTab', () => {
 
     // SiteList renders the name in both its desktop and mobile layouts.
     await waitFor(() => expect(screen.getAllByText('Downtown Office').length).toBeGreaterThan(0));
+    // The row passes through the tab untouched, so SiteList's Address cell fills in.
+    expect(screen.getAllByText('1 Pier · Halifax, NS').length).toBeGreaterThan(0);
 
     const [url, init] = fetchMock.mock.calls[0];
     // `fetchAllSites` (#6412) pages to exhaustion, so the request carries
@@ -69,6 +78,21 @@ describe('OrgSitesTab', () => {
       const body = JSON.parse((postCall![1] as RequestInit).body as string);
       expect(body.orgId).toBe(RECORD_ORG);
     });
+  });
+
+  it('a row click and the row\'s "Open" both open the site page (#9022)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: [SITE] }));
+    const user = userEvent.setup();
+    render(<OrgSitesTab orgId={RECORD_ORG} orgName="Acme Dental" />);
+
+    await waitFor(() => expect(screen.getByTestId('site-row-site-1')).toBeTruthy());
+    await user.click(screen.getByTestId('site-row-site-1'));
+    expect(navigateTo).toHaveBeenLastCalledWith('/settings/sites/site-1');
+
+    vi.mocked(navigateTo).mockClear();
+    await user.click(screen.getAllByRole('button', { name: 'Open Downtown Office' })[0]);
+    expect(navigateTo).toHaveBeenCalledTimes(1);
+    expect(navigateTo).toHaveBeenCalledWith('/settings/sites/site-1');
   });
 
   it('shows a real error state on a failed load, not "no sites" (#5075 W02 review)', async () => {

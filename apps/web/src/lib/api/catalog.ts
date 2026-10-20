@@ -136,7 +136,8 @@ export interface CatalogItemDetail {
 
 /** Shape of `GET /catalog/:id/economics` — `{ data: { ... } }`. Money totals are
  *  null unless the price book is complete in `currencyCode` AND every component
- *  cost is in that currency — never a partial sum. */
+ *  cost is known (non-null) and in that currency — never a partial sum, and a
+ *  missing cost is never counted as 0 (#9223). */
 export interface BundleEconomics {
   currencyCode: string;
   headlinePrice: string | null;
@@ -151,6 +152,8 @@ export interface BundleEconomics {
   allocationTotal: string | null;
   allocationMatchesHeadline: boolean;
   missingPriceComponentIds: string[];
+  /** components whose cost is unknown (NULL); non-empty ⇒ margin unknown (#9223). */
+  missingCostComponentIds: string[];
 }
 
 /** One component as sent to `PUT /catalog/:id/components`. */

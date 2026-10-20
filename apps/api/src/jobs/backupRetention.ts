@@ -30,7 +30,24 @@ import {
   resolveBackupOrphanManifestMaxAgeMs,
 } from '../services/backupGcKnobs';
 import { backupHelperSupportsServerBase } from '../services/backupHelperCapabilities';
-import { GC_SUPPORTED_KEY_LAYOUTS, isGcSupportedKeyLayout } from '../services/backupKeyLayout';
+import {
+  GC_SUPPORTED_KEY_LAYOUTS,
+  isGcSupportedKeyLayout,
+  keyRootId,
+  logicalKeyFrom,
+  physicalKeyFor,
+  snapshotKeyRootOf,
+  type SnapshotKeyRoot,
+} from '../services/backupKeyLayout';
+import { erasureTargetKeyRoot, keyRootsIndexAllowsOrigin, listIdentityKeyRoots, type IdentityKeyRoots } from '../services/backupKeyRoots';
+import { classifyBackupObjectKey } from '../services/backupObjectKey';
+import { resolveMintKeyRoot } from '../services/backupStorageWriteSessions';
+import {
+  deleteRootedObjectKeys,
+  fetchRootedObjectText,
+  iterateRootedObjects,
+  type RootedStorage,
+} from '../services/backupRootedStorage';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -39,10 +56,7 @@ import {
   backupSnapshotRootPrefix,
   backupSystemStateArtifactKey,
   backupSystemStateManifestKey,
-  deleteBackupObjectKeys,
-  fetchBackupObjectText,
   isBackupObjectNotFound,
-  iterateBackupObjectsUnderPrefix,
   MANIFEST_FETCH_MAX_BYTES,
   type BackupObjectListing,
 } from '../services/backupSnapshotStorage';
@@ -283,6 +297,8 @@ async function deleteSnapshotRow(params: {
   storageIdentity: string | null;
   backupType: (typeof backupSnapshots.$inferSelect)['backupType'];
   reason: 'expired' | 'max_versions';
+  /** The row's recorded key root (#7081; immutable, so the enumeration copy is current). */
+  keyRoot: SnapshotKeyRoot;
 }): Promise<DeleteSnapshotOutcome> {
   const now = new Date();
   const restoreLingerMs = resolveBackupRestorePinLingerMs();
@@ -412,6 +428,10 @@ async function deleteSnapshotRow(params: {
     storageIdentity,
     backupType: params.backupType,
     reason: params.reason,
+    // The retirement keeps the root the snapshot's objects were written
+    // under, so the sweep reclaims them there and nowhere else (#7081).
+    keyLayout: params.keyRoot.layout,
+    keyPrefix: params.keyRoot.prefix,
   });
 
   await db.delete(backupSnapshots).where(eq(backupSnapshots.id, params.id));
@@ -442,6 +462,7 @@ async function tryDeleteSnapshotRow(snap: {
   storageIdentity: string | null;
   backupType: (typeof backupSnapshots.$inferSelect)['backupType'];
   reason: 'expired' | 'max_versions';
+  keyRoot: SnapshotKeyRoot;
 }): Promise<DeleteSnapshotOutcome | 'failed'> {
   try {
     return await withSystemDbAccessContext(() => deleteSnapshotRow(snap));
@@ -482,6 +503,17 @@ function applyDeleteOutcome(result: RetentionCleanupResult, outcome: DeleteSnaps
   }
 }
 
+/**
+ * The key root a snapshot row is retired under, or null when the row may not
+ * be retired: its layout is one storage GC cannot sweep, or its recorded root
+ * is unreadable (#7081, I5). Such a row is kept and counted, never retired
+ * with a guessed root.
+ */
+function gcRetirableKeyRoot(row: { keyLayout: unknown; keyPrefix?: unknown }): SnapshotKeyRoot | null {
+  if (!isGcSupportedKeyLayout(row.keyLayout)) return null;
+  return snapshotKeyRootOf({ keyLayout: row.keyLayout, keyPrefix: row.keyPrefix });
+}
+
 export async function cleanupExpiredSnapshots(
   orgId: string
 ): Promise<RetentionCleanupResult> {
@@ -520,6 +552,7 @@ export async function cleanupExpiredSnapshots(
         configId: backupSnapshots.configId,
         storageIdentity: backupSnapshots.storageIdentity,
         keyLayout: backupSnapshots.keyLayout,
+        keyPrefix: backupSnapshots.keyPrefix,
         backupType: backupSnapshots.backupType,
       })
       .from(backupSnapshots)
@@ -532,7 +565,8 @@ export async function cleanupExpiredSnapshots(
   );
 
   for (const snap of expired) {
-    if (!isGcSupportedKeyLayout(snap.keyLayout)) {
+    const keyRoot = gcRetirableKeyRoot(snap);
+    if (!keyRoot) {
       result.skippedUnsupportedLayout++;
       continue;
     }
@@ -545,6 +579,7 @@ export async function cleanupExpiredSnapshots(
       storageIdentity: snap.storageIdentity,
       backupType: snap.backupType,
       reason: 'expired',
+      keyRoot,
     });
     applyDeleteOutcome(result, outcome);
   }
@@ -559,6 +594,7 @@ export async function cleanupExpiredSnapshots(
         configId: backupSnapshots.configId,
         storageIdentity: backupSnapshots.storageIdentity,
         keyLayout: backupSnapshots.keyLayout,
+        keyPrefix: backupSnapshots.keyPrefix,
         backupType: backupSnapshots.backupType,
         retention: configPolicyBackupSettings.retention,
       })
@@ -590,7 +626,8 @@ export async function cleanupExpiredSnapshots(
     if (!maxVersions || maxVersions < 1 || groupRows.length <= maxVersions) continue;
 
     for (const snap of groupRows.slice(maxVersions)) {
-      if (!isGcSupportedKeyLayout(snap.keyLayout)) {
+      const keyRoot = gcRetirableKeyRoot(snap);
+      if (!keyRoot) {
         result.skippedUnsupportedLayout++;
         continue;
       }
@@ -603,6 +640,7 @@ export async function cleanupExpiredSnapshots(
         storageIdentity: snap.storageIdentity,
         backupType: snap.backupType,
         reason: 'max_versions',
+        keyRoot,
       });
       if (outcome === 'deleted') result.prunedByMaxVersions++;
       applyDeleteOutcome(result, outcome);
@@ -1331,12 +1369,50 @@ async function logUnreachableStorageIdentities(
 }
 
 /**
- * Mark phase for one storage identity. Returns null (never throws) on any
- * fetch/parse failure so the caller can fail-closed and skip the sweep.
+ * Thrown by the mark phase when a row-backed manifest under one key root
+ * references an object of an origin snapshot recorded under another root, or
+ * with no recorded root under a prefixed one (#7081, I4). The sweep of the
+ * storage identity stops for the rest of the run (`cross_root_reference`):
+ * GC marks logical keys, so such a reference would protect nothing where the
+ * origin's objects live.
+ */
+class BackupGcCrossRootReferenceError extends Error {
+  constructor(readonly snapshotId: string, readonly originSnapshotId: string, readonly rootId: string) {
+    super(
+      `cross_root_reference: snapshot ${snapshotId} (key root ${rootId}) references objects of snapshot ` +
+      `${originSnapshotId}, which is not recorded under that key root`,
+    );
+    this.name = 'BackupGcCrossRootReferenceError';
+  }
+}
+
+/** Called for each manifest reference while marking; throws on a cross-root origin. */
+type BackupGcOriginGuard = (snapshotId: string, backupPath: string) => void;
+
+/** Throws BackupGcCrossRootReferenceError for a manifest reference that crosses key roots. */
+function originGuardFor(root: SnapshotKeyRoot, keyRoots: Pick<IdentityKeyRoots, 'rootIdsBySnapshotId'>): BackupGcOriginGuard {
+  return (snapshotId, backupPath) => {
+    const scope = classifyBackupObjectKey(backupPath, snapshotId);
+    // A path that is not a snapshot object key, or one under the snapshot's
+    // own prefix, cannot cross roots.
+    if (!scope || scope.kind === 'own') return;
+    if (!keyRootsIndexAllowsOrigin(keyRoots.rootIdsBySnapshotId, root, scope.originSnapshotId)) {
+      throw new BackupGcCrossRootReferenceError(snapshotId, scope.originSnapshotId, keyRootId(root));
+    }
+  };
+}
+
+/**
+ * Mark phase for one storage identity under one key root. Returns null
+ * (never throws) on any fetch/parse failure so the caller can fail-closed and
+ * skip the sweep. Live keys are LOGICAL (what manifests reference); the
+ * storage view maps them to the root's physical keys. `originGuard` throws on
+ * a reference that crosses key roots.
  */
 async function markLiveBackupObjects(
-  identity: { provider: string; providerConfig: unknown },
+  storage: RootedStorage,
   snapshotIds: Iterable<string>,
+  originGuard?: BackupGcOriginGuard,
 ): Promise<Set<string> | null> {
   const live = new Set<string>();
 
@@ -1346,12 +1422,7 @@ async function markLiveBackupObjects(
 
     let raw: string;
     try {
-      raw = await fetchBackupObjectText({
-        provider: identity.provider,
-        providerConfig: identity.providerConfig,
-        key: manifestKey,
-        maxBytes: MANIFEST_FETCH_MAX_BYTES,
-      });
+      raw = await fetchRootedObjectText(storage, manifestKey, MANIFEST_FETCH_MAX_BYTES);
     } catch (error) {
       console.error(
         `[BackupGC] Manifest fetch failed for snapshot ${snapshotId} (key ${manifestKey}) — aborting sweep for this identity:`,
@@ -1373,6 +1444,7 @@ async function markLiveBackupObjects(
 
     for (const file of manifest.files ?? []) {
       if (typeof file.backupPath === 'string' && file.backupPath.length > 0) {
+        originGuard?.(snapshotId, file.backupPath);
         live.add(file.backupPath);
       }
     }
@@ -1405,12 +1477,7 @@ async function markLiveBackupObjects(
     const stateManifestKey = backupSystemStateManifestKey(snapshotId);
     let stateRaw: string;
     try {
-      stateRaw = await fetchBackupObjectText({
-        provider: identity.provider,
-        providerConfig: identity.providerConfig,
-        key: stateManifestKey,
-        maxBytes: MANIFEST_FETCH_MAX_BYTES,
-      });
+      stateRaw = await fetchRootedObjectText(storage, stateManifestKey, MANIFEST_FETCH_MAX_BYTES);
     } catch (error) {
       if (isBackupObjectNotFound(error)) continue;
       console.error(
@@ -1562,12 +1629,14 @@ class OldestFirstCandidates {
 }
 
 async function deleteSelectedCandidates(
-  identity: { provider: string; providerConfig: unknown },
+  storage: RootedStorage,
   selected: BackupObjectListing[],
 ): Promise<{ deletedKeys: string[]; failedKeys: { key: string; error: string }[]; attempted: number }> {
   if (selected.length === 0) return { deletedKeys: [], failedKeys: [], attempted: 0 };
   const toDelete = selected.map((c) => c.key);
-  const result = await deleteBackupObjectKeys({ provider: identity.provider, providerConfig: identity.providerConfig, keys: toDelete });
+  // Logical keys in, logical keys out: the delete goes to the root's
+  // physical keys only (backupRootedStorage.ts).
+  const result = await deleteRootedObjectKeys(storage, toDelete);
   // `attempted` (not `deletedKeys.length`) is what the caller charges against
   // the per-run cap — a failed attempt still cost a real provider call this
   // run and must not be retried unboundedly within the same run.
@@ -1618,18 +1687,39 @@ function manifestOlderThanWindow(item: BackupObjectListing, nowMs: number, windo
  * `groups` summary for every org's own `sweepStorageIdentity` call.
  */
 async function listStorageIdentityGroups(
-  identity: { provider: string; providerConfig: unknown },
+  storage: RootedStorage,
 ): Promise<Map<string, BackupGcSnapshotSummary>> {
   assertOutsideHeldDbContext('backupGC.listStorageIdentityGroups');
-  return summarizeListingBySnapshotId(iterateBackupObjectsUnderPrefix({
+  // One key root's `snapshots/` (#7081): `snapshots` for the legacy root,
+  // `<prefix>/snapshots` for a prefixed one, with keys handed back logical.
+  return summarizeListingBySnapshotId(iterateRootedObjects(storage, backupSnapshotRootPrefix()));
+}
+
+/**
+ * One (identity, org) unit's storage view under one key root. `key` is the
+ * physical identity; `skipSetKey` names its failed-delete skip set (the
+ * identity alone for the legacy root, as it always has been, so existing
+ * entries keep applying); `label` is what logs call the unit.
+ */
+type GcUnitStorage = RootedStorage & { key: string; skipSetKey: string; label: string };
+
+function gcUnitStorage(
+  identity: { key: string; provider: string; providerConfig: unknown },
+  root: SnapshotKeyRoot,
+): GcUnitStorage {
+  const legacy = root.layout === 'legacy_flat';
+  return {
+    key: identity.key,
     provider: identity.provider,
     providerConfig: identity.providerConfig,
-    prefix: backupSnapshotRootPrefix(),
-  }));
+    root,
+    skipSetKey: legacy ? identity.key : `${identity.key}::${keyRootId(root)}`,
+    label: legacy ? identity.key : `${identity.key} root ${keyRootId(root)}`,
+  };
 }
 
 async function sweepStorageIdentity(
-  identity: { key: string; provider: string; providerConfig: unknown },
+  identity: GcUnitStorage,
   // Already fetched by the caller via listStorageIdentityGroups(), ONCE per
   // physical identity -- never re-listed per org. Read-only from here; this
   // function partitions it into `ownGroups` via `foreignOwnedSnapshotIds`
@@ -1663,6 +1753,9 @@ async function sweepStorageIdentity(
     extraLiveKeys: ReadonlySet<string>;
     recheck: (snapshotIds: string[], objectKeys: string[]) => Promise<{ snapshotIds: Set<string>; objectKeys: Set<string> }>;
   } | null = null,
+  // #7081: throws on a manifest reference that crosses key roots (the
+  // caller skips the whole identity).
+  originGuard?: BackupGcOriginGuard,
 ): Promise<{
   deleted: number;
   retiredSweptIds: string[]; // retirement row ids CONFIRMED fully gone from THIS run's fresh listing
@@ -1714,6 +1807,13 @@ async function sweepStorageIdentity(
   const unresolvedNullIdentityCount = unresolvedNullRows.length;
   const unresolvedSnapshotIds = unresolvedNullRows.map((r) => r.snapshotId);
   const alwaysRootedIds = new Set([...retainedSnapshotIds, ...resolvedNullRows.map((r) => r.snapshotId)]);
+  // Rule 5 applies to snapshots a row makes restorable. A row-less manifest
+  // (an orphan, or any listed manifest in deferred mode) can only become a
+  // restore point through reconcile, which refuses a base under another root,
+  // so a cross-root reference there protects nothing worth stopping for.
+  const rowRootedGuard: BackupGcOriginGuard | undefined = originGuard
+    ? (snapshotId, backupPath) => { if (alwaysRootedIds.has(snapshotId)) originGuard(snapshotId, backupPath); }
+    : undefined;
 
   // §3.4: EITHER condition defers the WHOLE identity to exactly today's
   // (pre-D18) algorithm — no retired/orphan reclamation at all this run.
@@ -1721,7 +1821,7 @@ async function sweepStorageIdentity(
 
   const graceThreshold = nowMs - graceMs;
   const manifestlessThreshold = nowMs - manifestlessWindowMs;
-  const skipSet = await loadGcFailedKeySkipSet(identity.key);
+  const skipSet = await loadGcFailedKeySkipSet(identity.skipSetKey);
   let deleted = 0;
   let orphansSwept = 0;
   let remaining = deletesRemaining;
@@ -1750,11 +1850,7 @@ async function sweepStorageIdentity(
       onItem(rootSummary.bareItem);
     }
     if (!rootSummary.hasPathKeys) return summary;
-    const pages = iterateBackupObjectsUnderPrefix({
-      provider: identity.provider,
-      providerConfig: identity.providerConfig,
-      prefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`,
-    });
+    const pages = iterateRootedObjects(identity, `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`);
     for (;;) {
       // Only the storage read is classified as a re-list failure; an error
       // from the per-item logic below propagates unwrapped (and fails the
@@ -1778,7 +1874,7 @@ async function sweepStorageIdentity(
   }
 
   function logGroupChanged(snapshotId: string, what: string): void {
-    console.warn(`[BackupGC] identity ${identity.key}: snapshot ${snapshotId} ${what} between listing passes — skipped this run`);
+    console.warn(`[BackupGC] identity ${identity.label}: snapshot ${snapshotId} ${what} between listing passes — skipped this run`);
   }
 
   // #6843 review: BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP truncating a
@@ -1796,7 +1892,7 @@ async function sweepStorageIdentity(
   ): void {
     if (groupCap < remainingAtGroupStart && candidates.droppedCount > 0) {
       console.warn(
-        `[BackupGC] identity ${identity.key}: snapshot ${snapshotId} candidate buffer capped at ` +
+        `[BackupGC] identity ${identity.label}: snapshot ${snapshotId} candidate buffer capped at ` +
         `${BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP} — ${candidates.droppedCount} object(s) deferred to a later run`,
       );
     }
@@ -1818,7 +1914,7 @@ async function sweepStorageIdentity(
       return !fresh.objectKeys.has(c.key) && !(id !== null && fresh.snapshotIds.has(id));
     });
     console.warn(
-      `[BackupGC] identity ${identity.key}: ${selected.length - kept.length} candidate(s) fenced by an org erasure ` +
+      `[BackupGC] identity ${identity.label}: ${selected.length - kept.length} candidate(s) fenced by an org erasure ` +
       'during this sweep — kept, not deleted',
     );
     return kept;
@@ -1828,7 +1924,7 @@ async function sweepStorageIdentity(
     const result = await deleteSelectedCandidates(identity, await dropNewlyFenced(selected));
     deleted += result.deletedKeys.length;
     remaining -= result.attempted;
-    if (result.failedKeys.length > 0) await recordGcFailedKeys(identity.key, result.failedKeys);
+    if (result.failedKeys.length > 0) await recordGcFailedKeys(identity.skipSetKey, result.failedKeys);
     return result.deletedKeys;
   }
 
@@ -1942,7 +2038,7 @@ async function sweepStorageIdentity(
     const everyListedManifestIds: string[] = [];
     for (const [snapshotId, group] of ownGroups) if (group.manifestItem) everyListedManifestIds.push(snapshotId);
     const rootsForMark = new Set([...alwaysRootedIds, ...everyListedManifestIds]);
-    const liveSet = await markLiveBackupObjects(identity, rootsForMark);
+    const liveSet = await markLiveBackupObjects(identity, rootsForMark, rowRootedGuard);
     if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
     for (const key of fenceProtection?.extraLiveKeys ?? []) liveSet.add(key);
     const liveFingerprints = fingerprintLiveKeysBySnapshotId(liveSet);
@@ -1957,7 +2053,7 @@ async function sweepStorageIdentity(
   } else {
     const orphanIds = orphanManifestSnapshotIds(ownGroups, alwaysRootedIds, retiredSnapshotIds, nowMs, orphanWindowMs);
     const rootsForMark = new Set([...alwaysRootedIds, ...orphanIds]);
-    const liveSet = await markLiveBackupObjects(identity, rootsForMark);
+    const liveSet = await markLiveBackupObjects(identity, rootsForMark, rowRootedGuard);
     if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
     for (const key of fenceProtection?.extraLiveKeys ?? []) liveSet.add(key);
     const liveFingerprints = fingerprintLiveKeysBySnapshotId(liveSet);
@@ -2057,10 +2153,25 @@ async function identityHasLegacyHelper(
   return { deferred: false };
 }
 
-/** Per-identity DB reads gathered in ONE short system context, per §3.7. */
+/**
+ * Rows recorded under exactly this key root (#7081, rule 2): `key_layout`
+ * and `key_prefix` both equal. Every row is under exactly one root, so the
+ * per-root states of an identity partition its rows.
+ */
+function recordedUnderRoot(
+  table: { keyLayout: typeof backupSnapshots.keyLayout | typeof backupSnapshotRetirements.keyLayout; keyPrefix: typeof backupSnapshots.keyPrefix | typeof backupSnapshotRetirements.keyPrefix },
+  root: SnapshotKeyRoot,
+) {
+  return root.prefix === null
+    ? and(eq(table.keyLayout, root.layout), isNull(table.keyPrefix))
+    : and(eq(table.keyLayout, root.layout), eq(table.keyPrefix, root.prefix));
+}
+
+/** Per-identity DB reads gathered in ONE short system context, per §3.7, for one key root. */
 async function loadIdentityGcState(
   identity: BackupGcStorageIdentity,
   nowMs: number,
+  root: SnapshotKeyRoot,
 ): Promise<{
   retainedSnapshotIds: string[];
   nullIdentityRows: { id: string; snapshotId: string }[];
@@ -2068,12 +2179,11 @@ async function loadIdentityGcState(
   legacyHelper: { deferred: boolean; deviceId?: string; version?: string | null };
 }> {
   return withSystemDbAccessContext(async () => {
-    // Storage-identity-scoped retained set, now ALSO org-scoped
-    // Two orgs can share the same physical `key`, and
-    // this org's root set must never include another org's live snapshots —
-    // that is what `foreignOwnedSnapshotIds` (built by the caller from the
-    // UNION of this query across every org sharing `key`) protects against
-    // during the sweep. NOT filtered by backupType (every mode publishes
+    // Storage-identity-scoped retained set, also org- and key-root-scoped.
+    // Two orgs can share the same physical `key`, and this org's root set
+    // must never include another org's live snapshots — that is what
+    // `foreignOwnedSnapshotIds` (from the run-start owner map across every
+    // org sharing `key`) protects against during the sweep. NOT filtered by backupType (every mode publishes
     // snapshots/<id>/manifest.json — the spec's own investigation found the
     // file's earlier "hyperv/mssql use a different namespace" comment
     // factually wrong; see the PR description for the reasoning) and NOT
@@ -2082,7 +2192,11 @@ async function loadIdentityGcState(
     const retainedRows = await db
       .select({ snapshotId: backupSnapshots.snapshotId })
       .from(backupSnapshots)
-      .where(and(eq(backupSnapshots.storageIdentity, identity.key), eq(backupSnapshots.orgId, identity.orgId)));
+      .where(and(
+        eq(backupSnapshots.storageIdentity, identity.key),
+        eq(backupSnapshots.orgId, identity.orgId),
+        recordedUnderRoot(backupSnapshots, root),
+      ));
 
     // P1 fix: fetch the primary key `id`, not just `snapshotId` — snapshot_id
     // is NOT unique across identities, so the self-heal write-back below
@@ -2091,7 +2205,11 @@ async function loadIdentityGcState(
     const nullIdentityRows = await db
       .select({ id: backupSnapshots.id, snapshotId: backupSnapshots.snapshotId })
       .from(backupSnapshots)
-      .where(and(isNull(backupSnapshots.storageIdentity), inArray(backupSnapshots.configId, identity.configIds)));
+      .where(and(
+        isNull(backupSnapshots.storageIdentity),
+        inArray(backupSnapshots.configId, identity.configIds),
+        recordedUnderRoot(backupSnapshots, root),
+      ));
 
     const retirementRows = await db
       .select({ id: backupSnapshotRetirements.id, snapshotId: backupSnapshotRetirements.snapshotId })
@@ -2100,6 +2218,7 @@ async function loadIdentityGcState(
         eq(backupSnapshotRetirements.storageIdentity, identity.key),
         eq(backupSnapshotRetirements.orgId, identity.orgId),
         isNull(backupSnapshotRetirements.sweptAt),
+        recordedUnderRoot(backupSnapshotRetirements, root),
       ));
 
     const legacyHelper = await identityHasLegacyHelper(identity, nowMs);
@@ -2184,15 +2303,41 @@ export const __backupGcTestHooks: {
  * carries results across the orgs sharing one physical identity in a run.
  */
 async function resolveErasureFencedReferences(
-  identity: { provider: string; providerConfig: unknown },
+  storage: RootedStorage,
   physicalKey: string,
   fencedSnapshotIds: Iterable<string>,
   groups: Map<string, BackupGcSnapshotSummary>,
   cache: Map<string, Set<string> | 'unresolved'>,
   nowMs: number,
+  // #7081: the root each fenced id's targets record (NULL = legacy, see
+  // erasureTargetKeyRoot). A fenced manifest is read only under its own
+  // root; one with an unreadable or ambiguous root stays unresolved.
+  fenceRoots: ReadonlyMap<string, ReadonlyArray<{ keyLayout: unknown; keyPrefix: unknown }>>,
 ): Promise<{ liveKeys: Set<string>; unresolved: string[] }> {
   const fencedIds = [...new Set(fencedSnapshotIds)];
-  const pending = fencedIds.filter((id) => groups.get(id)?.manifestItem && !cache.has(id));
+  const listed = fencedIds.filter((id) => groups.get(id)?.manifestItem && !cache.has(id));
+  const pending: string[] = [];
+  for (const snapshotId of listed) {
+    // A fenced id with no root entry was never fenced by these rows: unresolved.
+    const targetRoots = (fenceRoots.get(snapshotId) ?? []).map(erasureTargetKeyRoot);
+    const rootIds = new Set(targetRoots.map((r) => (r ? keyRootId(r) : null)));
+    if (rootIds.has(null) || rootIds.size !== 1) {
+      const message =
+        `[BackupGC] identity ${physicalKey}: erasure-fenced snapshot ${snapshotId} has no single readable key root ` +
+        'on its fence; its own prefix stays protected, retired/orphan reclamation on this identity is deferred.';
+      console.error(message);
+      captureException(new Error(message));
+      cache.set(snapshotId, 'unresolved');
+      continue;
+    }
+    // Fenced under another root: the group listed here is not that
+    // snapshot's prefix (it stays protected as foreign); nothing to read.
+    if (!rootIds.has(keyRootId(storage.root))) {
+      cache.set(snapshotId, new Set());
+      continue;
+    }
+    pending.push(snapshotId);
+  }
   if (pending.length > 0) {
     const stored = await withSystemDbAccessContext(() => loadFenceRefs(physicalKey, pending));
     for (const snapshotId of pending) {
@@ -2205,7 +2350,9 @@ async function resolveErasureFencedReferences(
         cache.set(snapshotId, 'unresolved');
         continue;
       }
-      const marked = await markLiveBackupObjects(identity, [snapshotId]);
+      // No origin guard: an erased org's snapshot is never restored again,
+      // so its references only need protecting under its own root.
+      const marked = await markLiveBackupObjects(storage, [snapshotId]);
       if (marked === null) {
         const attempts = await withSystemDbAccessContext(() =>
           recordFenceRefsUnreadable(physicalKey, snapshotId, 'manifest fetch/parse failed', nowMs));
@@ -2232,6 +2379,46 @@ async function resolveErasureFencedReferences(
     else if (entry) for (const key of entry) liveKeys.add(key);
   }
   return { liveKeys, unresolved };
+}
+
+/**
+ * Rule 10: an org's unit runs under a root when the org has a row recorded
+ * under it on this identity, or its destination writes new snapshots there
+ * (the mint root). Every org writes the legacy root until destination
+ * prefixes are applied, so a legacy-only identity runs exactly the units it
+ * always has.
+ */
+function orgRunsUnderRoot(
+  identity: BackupGcStorageIdentity,
+  root: SnapshotKeyRoot,
+  keyRoots: Pick<IdentityKeyRoots, 'orgIdsByRootId'>,
+): boolean {
+  const rootId = keyRootId(root);
+  if (keyRoots.orgIdsByRootId.get(rootId)?.has(identity.orgId)) return true;
+  const writes = resolveMintKeyRoot(identity.provider, asRecord(identity.providerConfig));
+  return writes.ok && keyRootId(writes.root) === rootId;
+}
+
+/** Key of `listedIdsByIdentityKey`: one physical identity's listing of one key root. */
+function listedIdsKey(identityKey: string, root: SnapshotKeyRoot): string {
+  return `${identityKey}::${keyRootId(root)}`;
+}
+
+/**
+ * Fenced recovery-media keys are physical; the live set is logical. Each key
+ * is kept as is and, when it lies under this root, also in its logical form.
+ * (Recovery media never lives under `snapshots/`, so today neither form can
+ * match a listed key; this keeps the fence exact if that ever changes.)
+ */
+function fencedObjectKeysUnderRoot(objectKeys: Iterable<string>, root: SnapshotKeyRoot): string[] {
+  const out: string[] = [];
+  for (const key of objectKeys) {
+    out.push(key);
+    if (root.layout === 'legacy_flat') continue;
+    const logical = logicalKeyFrom(root, key);
+    if (logical !== null) out.push(logical);
+  }
+  return out;
 }
 
 /**
@@ -2431,8 +2618,9 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   // never a candidate on any identity, whoever's storage it sits in. Loaded
   // system-scoped — RLS visibility must not decide what is protected.
   const reservationState = await withSystemDbAccessContext(() => loadReservationGcState(nowMs, orphanWindowMs));
-  // Snapshot ids present in each identity's fresh (pre-sweep) listing, for
-  // confirming an abandoned prefix is gone before its reservation is deleted.
+  // Snapshot ids present in each identity's fresh (pre-sweep) listing of
+  // each key root (listedIdsKey), for confirming an abandoned prefix is gone
+  // before its reservation is deleted.
   const listedIdsByIdentityKey = new Map<string, Set<string>>();
 
   let deleted = 0;
@@ -2442,6 +2630,8 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   let orphansSwept = 0;
   let deferredIdentities = 0;
   let deletesRemaining = resolveBackupGcMaxDeletesPerRun();
+  // #7081 rule 3: ids protected because a row records them under another root.
+  let crossRootProtected = 0;
 
   // Group the (identity, org) units of work back by their shared PHYSICAL
   // key. An MSP routinely points every one of its orgs' configs at one
@@ -2516,196 +2706,367 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     const realpathDeferred = identityCoarse.unresolved !== null
       || (representative.provider === 'local' && unresolvedLocalKeys.length > 0);
 
-    // ONE streamed listing pass for this physical key, reused below by
-    // every org sharing it — see listStorageIdentityGroups().
-    let groups: Map<string, BackupGcSnapshotSummary>;
+    // #7081 — KEY ROOTS. A storage identity holds one `snapshots/` tree per
+    // key root: `snapshots/` for the legacy root and `<P>/snapshots/` for each
+    // prefixed root (disjoint by construction, I3). The sweep runs once per
+    // (identity, root, org) unit, under these rules:
+    //  1. Each root is listed once per physical identity, through a storage
+    //     view that maps every listed key back to its LOGICAL key
+    //     (backupRootedStorage.ts); a key that does not map back aborts that
+    //     root. Summaries, marking and every age rule then run on logical
+    //     keys exactly as before, and every fetch / delete goes to the root's
+    //     physical keys only.
+    //  2. Retained snapshots, retirements and NULL-identity rows are filtered
+    //     to the unit's root (loadIdentityGcState). Reservations and fences
+    //     protect ids across roots; only their proof of absence (rule 6) and
+    //     manifest reads (rule 8) are per root.
+    //  3. Cross-root protection: an id listed under root R that any row on
+    //     the identity records under another root is never deleted under R;
+    //     it is logged per id and reported once per run.
+    //  4. A row whose recorded root this server cannot read, or a prefixed
+    //     root on a destination other than S3, skips the whole identity
+    //     (`key_root_invalid`), like an unsupported layout.
+    //  5. A reference, in the manifest of a snapshot a row makes restorable,
+    //     into an origin not recorded under the marking root (or with no
+    //     recorded root, under a prefixed root) stops the sweep of the
+    //     identity for the rest of the run (`cross_root_reference`). It is
+    //     detected while marking, so prefixed roots are swept before the
+    //     legacy root: a prefixed run referencing a legacy base is caught
+    //     before the legacy root is touched (units already swept are not
+    //     undone). Row-less manifests (orphans) and erasure-fenced ones are
+    //     not checked: neither can become a restore point with such a chain.
+    //     Chains never span roots (I4, enforced at dispatch and mint) and
+    //     readers refuse such a chain, so this guards against a defect, not a
+    //     supported state.
+    //  6. Absence is proven only by a root's own listing: a retirement's
+    //     swept_at and an abandoned reservation's release are decided only
+    //     from the listing of the root the row records, and only when that
+    //     listing succeeded (`listedIdsByIdentityKey` is keyed per root).
+    //  7. Foreign-owner checks stay bucket-wide: the run-start owner map and
+    //     `foreignOwnedSnapshotIds` cover every root of the physical identity.
+    //  8. Erasure-fenced manifests are read under the root their fence
+    //     records; an unreadable or ambiguous fence root stays unresolved.
+    //  9. The run-wide deletion cap is checked before each unit; the
+    //     failed-delete skip set is per root (the legacy root keeps the
+    //     identity's own set); the helper-version gate is evaluated per unit.
+    //     The coarse alias checks compare identities, which never include a
+    //     prefix, so they are unchanged.
+    // 10. An org's unit runs under a root only when the org has a row
+    //     recorded there or writes there now (orgRunsUnderRoot), and the root
+    //     is listed with such an org's destination, so an org whose
+    //     credentials are scoped to its own prefix never lists or reads
+    //     another org's root. A root no org is in scope for is not listed.
+    // skipped/blocked/deferred counts are per (root, org) unit.
+    let keyRoots: IdentityKeyRoots;
     try {
-      groups = await listStorageIdentityGroups(representative);
+      keyRoots = await listIdentityKeyRoots({
+        storageIdentity: physicalKey,
+        nullIdentityConfigIds: orgIdentities.flatMap((identity) => identity.configIds),
+      });
     } catch (error) {
       skippedIdentities += orgIdentities.length;
       blockedIdentities += orgIdentities.length;
-      console.error(`[BackupGC] Identity ${physicalKey}: listing failed — isolated, other identities proceed:`, error);
+      console.error(`[BackupGC] Identity ${physicalKey}: key roots could not be read — isolated, other identities proceed:`, error);
       captureException(error instanceof Error ? error : new Error(String(error)));
       continue;
     }
+    const prefixedOnNonS3 = representative.provider !== 's3' && keyRoots.roots.some((root) => root.layout !== 'legacy_flat');
+    if (keyRoots.invalid.length > 0 || prefixedOnNonS3) {
+      skippedIdentities += orgIdentities.length;
+      const sample = keyRoots.invalid.slice(0, 5)
+        .map((row) => `${row.source} ${row.snapshotId ?? '(no id)'} [${String(row.keyLayout)}, ${String(row.keyPrefix)}]`)
+        .join(', ');
+      const message =
+        `[BackupGC] identity ${physicalKey}: key_root_invalid — ` +
+        (keyRoots.invalid.length > 0
+          ? `${keyRoots.invalid.length} row(s) record a storage key root this server cannot read (${sample})`
+          : `a prefixed key root is recorded on a ${representative.provider} destination`) +
+        '; sweep skipped for every organization on it (fail-closed).';
+      console.error(message);
+      captureException(new Error(message));
+      continue;
+    }
 
-    for (const identity of orgIdentities) listedIdsByIdentityKey.set(identity.key, new Set(groups.keys()));
-    const fencedRefsCache = new Map<string, Set<string> | 'unresolved'>();
+    const rootsInSweepOrder = [
+      ...keyRoots.roots.filter((root) => root.layout !== 'legacy_flat'),
+      ...keyRoots.roots.filter((root) => root.layout === 'legacy_flat'),
+    ];
+    // Rule 10: the orgs whose units run under each root, in identity order.
+    const unitsByRootId = new Map(rootsInSweepOrder.map((root) => [
+      keyRootId(root),
+      orgIdentities.filter((identity) => orgRunsUnderRoot(identity, root, keyRoots)),
+    ]));
+    const unitsTotal = [...unitsByRootId.values()].reduce((n, units) => n + units.length, 0);
+    let unitsAccounted = 0;
+    let identityStopped = false;
+    let unitsStoppedEarly = false;
 
-    for (const identity of orgIdentities) {
+    for (const root of rootsInSweepOrder) {
+      if (identityStopped) break;
       if (deletesRemaining <= 0) {
         console.log('[BackupGC] Deletion cap reached for this run — stopping cleanly; remaining identities resume next run');
         break;
       }
+      const rootId = keyRootId(root);
+      const rootUnits = unitsByRootId.get(rootId) ?? [];
+      // No org has rows under this root or writes there now: nothing on it
+      // is any unit's to reclaim, so it is not listed at all.
+      if (rootUnits.length === 0) continue;
+      // Listed, and fenced manifests read, with an in-scope org's
+      // destination: an org whose credentials are scoped to its own prefix
+      // never lists another org's root.
+      const rootStorage = gcUnitStorage(rootUnits[0]!, root);
 
+      // ONE streamed listing pass for this physical key and root, reused
+      // below by every org sharing it — see listStorageIdentityGroups().
+      let groups: Map<string, BackupGcSnapshotSummary>;
       try {
-        await __backupGcTestHooks.beforeIdentityState?.(identity);
-        const state = await loadIdentityGcState(identity, nowMs);
+        groups = await listStorageIdentityGroups(rootStorage);
+      } catch (error) {
+        skippedIdentities += rootUnits.length;
+        blockedIdentities += rootUnits.length;
+        unitsAccounted += rootUnits.length;
+        console.error(`[BackupGC] Identity ${rootStorage.label}: listing failed — isolated, other identities proceed:`, error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        continue;
+      }
 
-        // Erasure fences. Ordering rule: read AFTER every ownership read this
-        // unit relies on (the run-start owner map and loadIdentityGcState just
-        // above). Erasure commits its fences before deleting a single row
-        // (services/backupErasureFence.ts), so a snapshot whose rows this unit
-        // did not see was already fenced when those reads ran — and is
-        // therefore visible here. Anything fenced after this read is caught by
-        // the pre-delete recheck in sweepStorageIdentity.
-        const fences = await withSystemDbAccessContext(() => loadBackupErasureFences(groups.keys()));
-        await __backupGcTestHooks.afterFenceRead?.(identity);
-        // Ids this org still holds a live row for: an id fenced by this org's
-        // OWN (aborted) erasure stays this org's to decide while that row
-        // exists — see fencedIdsForeignTo.
-        const unitOwnedSnapshotIds = new Set([
-          ...state.retainedSnapshotIds,
-          ...state.retiredSnapshotIds.keys(),
-          ...state.nullIdentityRows.map((r) => r.snapshotId),
-        ]);
-        const fencedForeignIds = fencedIdsForeignTo(fences.snapshotSubjects, identity.orgId, unitOwnedSnapshotIds);
-        const fencedRefs = await resolveErasureFencedReferences(
-          representative, physicalKey, fences.snapshotSubjects.keys(), groups, fencedRefsCache, nowMs,
+      listedIdsByIdentityKey.set(listedIdsKey(physicalKey, root), new Set(groups.keys()));
+      const fencedRefsCache = new Map<string, Set<string> | 'unresolved'>();
+      const originGuard = originGuardFor(root, keyRoots);
+
+      // Rule 3: listed here, recorded under another root.
+      const crossRootIds = new Set<string>();
+      for (const snapshotId of groups.keys()) {
+        const otherRoots = [...(keyRoots.rootIdsBySnapshotId.get(snapshotId) ?? [])].filter((id) => id !== rootId);
+        if (otherRoots.length === 0) continue;
+        crossRootIds.add(snapshotId);
+        console.warn(
+          `[BackupGC] identity ${physicalKey} root ${rootId}: snapshot ${snapshotId} is recorded under root ` +
+          `${otherRoots.join(', ')} — protected`,
         );
-        const fenceProtection = {
-          extraLiveKeys: new Set([...fencedRefs.liveKeys, ...fences.objectKeys]),
-          // Re-reads the fences AND, for ids fenced by this org's own
-          // erasure, whether the org still holds a live row NOW — the
-          // unit's loaded state may predate an erasure that has since
-          // deleted it.
-          recheck: (snapshotIds: string[], objectKeys: string[]) => withSystemDbAccessContext(async () => {
-            const fresh = await loadBackupErasureFences(snapshotIds, objectKeys);
-            const ownFenced = [...fresh.snapshotSubjects].filter(([, subjects]) => subjects.has(identity.orgId)).map(([id]) => id);
-            const stillOwned = await loadOrgLiveSnapshotIds(identity.orgId, ownFenced);
-            return {
-              snapshotIds: fencedIdsForeignTo(fresh.snapshotSubjects, identity.orgId, stillOwned),
-              objectKeys: fresh.objectKeys,
-            };
-          }),
-        };
-        const fenceRefsDeferred = fencedRefs.unresolved.length > 0;
-        if (fenceRefsDeferred) {
-          console.warn(
-            `[BackupGC] identity ${identity.key}: reclamation deferred — ${fencedRefs.unresolved.length} erasure-fenced ` +
-            `manifest(s) not yet readable (${fencedRefs.unresolved.slice(0, 10).join(', ')})`,
+      }
+      crossRootProtected += crossRootIds.size;
+
+      for (const identity of rootUnits) {
+        if (deletesRemaining <= 0) {
+          console.log('[BackupGC] Deletion cap reached for this run — stopping cleanly; remaining identities resume next run');
+          break;
+        }
+        unitsAccounted++;
+        const unit = gcUnitStorage(identity, root);
+
+        try {
+          await __backupGcTestHooks.beforeIdentityState?.(identity);
+          const state = await loadIdentityGcState(identity, nowMs, root);
+
+          // Erasure fences. Ordering rule: read AFTER every ownership read this
+          // unit relies on (the run-start owner map and loadIdentityGcState just
+          // above). Erasure commits its fences before deleting a single row
+          // (services/backupErasureFence.ts), so a snapshot whose rows this unit
+          // did not see was already fenced when those reads ran — and is
+          // therefore visible here. Anything fenced after this read is caught by
+          // the pre-delete recheck in sweepStorageIdentity.
+          const fences = await withSystemDbAccessContext(() => loadBackupErasureFences(groups.keys()));
+          await __backupGcTestHooks.afterFenceRead?.(identity);
+          // Ids this org still holds a live row for: an id fenced by this org's
+          // OWN (aborted) erasure stays this org's to decide while that row
+          // exists — see fencedIdsForeignTo.
+          const unitOwnedSnapshotIds = new Set([
+            ...state.retainedSnapshotIds,
+            ...state.retiredSnapshotIds.keys(),
+            ...state.nullIdentityRows.map((r) => r.snapshotId),
+          ]);
+          const fencedForeignIds = fencedIdsForeignTo(fences.snapshotSubjects, identity.orgId, unitOwnedSnapshotIds);
+          const fencedRefs = await resolveErasureFencedReferences(
+            rootStorage, physicalKey, fences.snapshotSubjects.keys(), groups, fencedRefsCache, nowMs,
+            fences.snapshotRoots,
           );
-        }
-        const identityDeferred = state.legacyHelper.deferred || aliasDeferred || realpathDeferred || fenceRefsDeferred;
-        if (identityDeferred) deferredIdentities++; // counted once per identity regardless of how many reasons apply
-        if (state.legacyHelper.deferred) {
-          console.warn(`[BackupGC] identity ${identity.key}: reclamation deferred (legacy helper ${state.legacyHelper.deviceId} ${state.legacyHelper.version})`);
-        }
-        if (aliasDeferred) {
-          // Review round 2 follow-up 4: escalate like suspiciousIdentityKeys —
-          // this is the same "identity variant needs operator investigation"
-          // class, and it will otherwise silently defer forever.
-          const message =
-            `[BackupGC] identity ${identity.key}: reclamation deferred — coarsely aliases a stale/unreachable ` +
-            `identity (${identityCoarse.signature}); a config edit may have changed the identity string while ` +
-            `still pointing at the same physical bucket/directory. Investigate before reclamation resumes.`;
-          console.warn(message);
-          captureException(new Error(message));
-        }
-        if (identityCoarse.unresolved) {
-          const { code, message: cause } = identityCoarse.unresolved;
-          if (code === 'ENOENT') {
+          const fenceProtection = {
+            extraLiveKeys: new Set([...fencedRefs.liveKeys, ...fencedObjectKeysUnderRoot(fences.objectKeys, root)]),
+            // Re-reads the fences AND, for ids fenced by this org's own
+            // erasure, whether the org still holds a live row NOW — the
+            // unit's loaded state may predate an erasure that has since
+            // deleted it. Fenced object keys are physical: candidates are
+            // checked under both spellings.
+            recheck: (snapshotIds: string[], objectKeys: string[]) => withSystemDbAccessContext(async () => {
+              const logicalOf = new Map(objectKeys.map((key) => [physicalKeyFor(root, key), key]));
+              const fresh = await loadBackupErasureFences(snapshotIds, [...new Set([...objectKeys, ...logicalOf.keys()])]);
+              const ownFenced = [...fresh.snapshotSubjects].filter(([, subjects]) => subjects.has(identity.orgId)).map(([id]) => id);
+              const stillOwned = await loadOrgLiveSnapshotIds(identity.orgId, ownFenced);
+              const fencedKeys = new Set<string>();
+              for (const key of fresh.objectKeys) {
+                fencedKeys.add(key);
+                const logical = logicalOf.get(key);
+                if (logical !== undefined) fencedKeys.add(logical);
+              }
+              return {
+                snapshotIds: fencedIdsForeignTo(fresh.snapshotSubjects, identity.orgId, stillOwned),
+                objectKeys: fencedKeys,
+              };
+            }),
+          };
+          const fenceRefsDeferred = fencedRefs.unresolved.length > 0;
+          if (fenceRefsDeferred) {
             console.warn(
-              `[BackupGC] identity ${identity.key}: reclamation deferred — local root does not exist (fs.realpath ENOENT: ` +
-              `${cause}). Expected for a fresh config with no backups yet; if backups DO exist here, the volume is not mounted.`,
+              `[BackupGC] identity ${unit.label}: reclamation deferred — ${fencedRefs.unresolved.length} erasure-fenced ` +
+              `manifest(s) not yet readable (${fencedRefs.unresolved.slice(0, 10).join(', ')})`,
             );
-          } else {
+          }
+          const identityDeferred = state.legacyHelper.deferred || aliasDeferred || realpathDeferred || fenceRefsDeferred;
+          if (identityDeferred) deferredIdentities++; // counted once per unit regardless of how many reasons apply
+          if (state.legacyHelper.deferred) {
+            console.warn(`[BackupGC] identity ${unit.label}: reclamation deferred (legacy helper ${state.legacyHelper.deviceId} ${state.legacyHelper.version})`);
+          }
+          if (aliasDeferred) {
+            // Review round 2 follow-up 4: escalate like suspiciousIdentityKeys —
+            // this is the same "identity variant needs operator investigation"
+            // class, and it will otherwise silently defer forever.
             const message =
-              `[BackupGC] identity ${identity.key}: reclamation deferred — fs.realpath failed with ${code} (${cause}); ` +
-              `cannot verify this local root is not a symlink/bind-mount alias of another identity, so every local ` +
-              `identity is deferred this run (fail-closed).`;
-            console.error(message);
+              `[BackupGC] identity ${unit.label}: reclamation deferred — coarsely aliases a stale/unreachable ` +
+              `identity (${identityCoarse.signature}); a config edit may have changed the identity string while ` +
+              `still pointing at the same physical bucket/directory. Investigate before reclamation resumes.`;
+            console.warn(message);
             captureException(new Error(message));
           }
-        } else if (realpathDeferred) {
-          console.warn(
-            `[BackupGC] identity ${identity.key}: reclamation deferred — another local identity's root could not be ` +
-            `resolved this run (${unresolvedLocalKeys.join(', ')}), so a symlink/bind-mount alias with this one ` +
-            `cannot be ruled out; see the error logged for that identity.`,
+          if (identityCoarse.unresolved) {
+            const { code, message: cause } = identityCoarse.unresolved;
+            if (code === 'ENOENT') {
+              console.warn(
+                `[BackupGC] identity ${unit.label}: reclamation deferred — local root does not exist (fs.realpath ENOENT: ` +
+                `${cause}). Expected for a fresh config with no backups yet; if backups DO exist here, the volume is not mounted.`,
+              );
+            } else {
+              const message =
+                `[BackupGC] identity ${unit.label}: reclamation deferred — fs.realpath failed with ${code} (${cause}); ` +
+                `cannot verify this local root is not a symlink/bind-mount alias of another identity, so every local ` +
+                `identity is deferred this run (fail-closed).`;
+              console.error(message);
+              captureException(new Error(message));
+            }
+          } else if (realpathDeferred) {
+            console.warn(
+              `[BackupGC] identity ${unit.label}: reclamation deferred — another local identity's root could not be ` +
+              `resolved this run (${unresolvedLocalKeys.join(', ')}), so a symlink/bind-mount alias with this one ` +
+              `cannot be ruled out; see the error logged for that identity.`,
+            );
+          }
+
+          const owners = snapshotOwnersByIdentityKey.get(identity.key);
+          const foreignOwnedSnapshotIds: ReadonlySet<string> = new Set([
+            ...(owners
+              ? [...owners].filter(([, ownerOrgId]) => ownerOrgId !== identity.orgId).map(([snapshotId]) => snapshotId)
+              : []),
+            // Reserved / sealing / recently abandoned ids: skipped entirely,
+            // exactly like another org's snapshot.
+            ...reservationState.protectedIds,
+            // Prefixes of an erased org: owned forever by the erasure record,
+            // never this org's to reclaim (unless it is this org's own, still
+            // live — see fencedIdsForeignTo).
+            ...fencedForeignIds,
+            // Rule 3: recorded under another key root.
+            ...crossRootIds,
+          ]);
+
+          const identityResult = await sweepStorageIdentity(
+            unit, groups, state.retainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
+            foreignOwnedSnapshotIds,
+            nowMs, deletesRemaining, graceMs, orphanWindowMs, manifestlessWindowMs,
+            identityDeferred,
+            fenceProtection,
+            originGuard,
           );
-        }
 
-        const owners = snapshotOwnersByIdentityKey.get(identity.key);
-        const foreignOwnedSnapshotIds: ReadonlySet<string> = new Set([
-          ...(owners
-            ? [...owners].filter(([, ownerOrgId]) => ownerOrgId !== identity.orgId).map(([snapshotId]) => snapshotId)
-            : []),
-          // Reserved / sealing / recently abandoned ids: skipped entirely,
-          // exactly like another org's snapshot.
-          ...reservationState.protectedIds,
-          // Prefixes of an erased org: owned forever by the erasure record,
-          // never this org's to reclaim (unless it is this org's own, still
-          // live — see fencedIdsForeignTo).
-          ...fencedForeignIds,
-        ]);
+          if (identityResult.unresolvedNullIdentityCount > 0) {
+            console.warn(
+              `[BackupGC] identity ${unit.label}: deferred — ${identityResult.unresolvedNullIdentityCount} unresolved ` +
+              `row(s) (snapshot ids: ${identityResult.unresolvedSnapshotIds.join(', ')})`,
+            );
+            if (!identityDeferred) deferredIdentities++; // avoid double-counting one identity across all deferral reasons
+          }
 
-        const identityResult = await sweepStorageIdentity(
-          identity, groups, state.retainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
-          foreignOwnedSnapshotIds,
-          nowMs, deletesRemaining, graceMs, orphanWindowMs, manifestlessWindowMs,
-          identityDeferred,
-          fenceProtection,
-        );
+          deleted += identityResult.deleted;
+          retiredSwept += identityResult.retiredSweptIds.length;
+          orphansSwept += identityResult.orphansSwept;
+          deletesRemaining -= identityResult.deletesUsed;
 
-        if (identityResult.unresolvedNullIdentityCount > 0) {
-          console.warn(
-            `[BackupGC] identity ${identity.key}: deferred — ${identityResult.unresolvedNullIdentityCount} unresolved ` +
-            `row(s) (snapshot ids: ${identityResult.unresolvedSnapshotIds.join(', ')})`,
-          );
-          if (!identityDeferred) deferredIdentities++; // avoid double-counting one identity across all deferral reasons
-        }
+          await applyIdentityGcWriteBacks(identity, {
+            retiredSweptIds: identityResult.retiredSweptIds,
+            selfHealRowIds: identityResult.selfHealRowIds,
+          });
 
-        deleted += identityResult.deleted;
-        retiredSwept += identityResult.retiredSweptIds.length;
-        orphansSwept += identityResult.orphansSwept;
-        deletesRemaining -= identityResult.deletesUsed;
+          if (identityResult.deleted > 0) {
+            console.log(`[BackupGC] Identity ${unit.label}: deleted ${identityResult.deleted} object(s)`);
+          } else {
+            console.debug(`[BackupGC] Identity ${unit.label}: 0 objects deleted`);
+          }
 
-        await applyIdentityGcWriteBacks(identity, {
-          retiredSweptIds: identityResult.retiredSweptIds,
-          selfHealRowIds: identityResult.selfHealRowIds,
-        });
-
-        if (identityResult.deleted > 0) {
-          console.log(`[BackupGC] Identity ${identity.key}: deleted ${identityResult.deleted} object(s)`);
-        } else {
-          console.debug(`[BackupGC] Identity ${identity.key}: 0 objects deleted`);
-        }
-
-        // #6834: a per-group re-list failed mid-sweep. The sweep already
-        // stopped at that group; its deletions, cap usage and write-backs
-        // above are accurate, so they are kept — but the identity is reported
-        // exactly like any other failed sweep (the catch below).
-        if (identityResult.relistFailure) {
-          const failure = identityResult.relistFailure;
+          // #6834: a per-group re-list failed mid-sweep. The sweep already
+          // stopped at that group; its deletions, cap usage and write-backs
+          // above are accurate, so they are kept — but the identity is reported
+          // exactly like any other failed sweep (the catch below).
+          if (identityResult.relistFailure) {
+            const failure = identityResult.relistFailure;
+            skippedIdentities++;
+            blockedIdentities++;
+            console.error(
+              `[BackupGC] Identity ${unit.label}: sweep stopped — ${failure.message}; later snapshot prefixes were not swept this run:`,
+              failure.cause,
+            );
+            captureException(failure);
+          }
+        } catch (error) {
+          // A sweep abort here is a fail-closed failure path — an unfetchable
+          // or unparseable manifest, or a delete/other sweep error (a failed
+          // per-snapshot re-list is reported above, not thrown; a failed ROOT
+          // listing is caught once per physical key and root, above this
+          // inner loop). Count it as BOTH skipped (broad "not swept" total)
+          // and blocked (the distinct signal that unreclaimed storage, which
+          // will not clear on its own, may be accumulating for this identity).
           skippedIdentities++;
           blockedIdentities++;
-          console.error(
-            `[BackupGC] Identity ${identity.key}: sweep stopped — ${failure.message}; later snapshot prefixes were not swept this run:`,
-            failure.cause,
-          );
-          captureException(failure);
+          if (error instanceof BackupGcCrossRootReferenceError) {
+            // Rule 5: nothing more on this identity this run.
+            identityStopped = true;
+            unitsStoppedEarly = true;
+            const message =
+              `[BackupGC] identity ${physicalKey}: ${error.message}. Sweep stopped for this identity for the rest of ` +
+              `the run (fail-closed). A backup chain never spans key roots, so this is a defect to investigate before ` +
+              `storage here is reclaimed again.`;
+            console.error(message);
+            captureException(new Error(message));
+            break;
+          }
+          console.error(`[BackupGC] Identity ${unit.label}: sweep failed — isolated, other identities proceed:`, error);
+          captureException(error instanceof Error ? error : new Error(String(error)));
         }
-      } catch (error) {
-        // A sweep abort here is a fail-closed failure path — an unfetchable
-        // or unparseable manifest, or a delete/other sweep error (a failed
-        // per-snapshot re-list is reported above, not thrown; a failed ROOT
-        // listing is caught once per physical key, above this inner loop).
-        // Count it as BOTH skipped (broad "not swept" total) and blocked
-        // (the distinct signal that unreclaimed storage, which will not
-        // clear on its own, may be accumulating for this identity).
-        skippedIdentities++;
-        blockedIdentities++;
-        console.error(`[BackupGC] Identity ${identity.key}: sweep failed — isolated, other identities proceed:`, error);
-        captureException(error instanceof Error ? error : new Error(String(error)));
       }
     }
+    // Units the stop above left unswept: reported like the failed unit.
+    if (unitsStoppedEarly) {
+      skippedIdentities += unitsTotal - unitsAccounted;
+      blockedIdentities += unitsTotal - unitsAccounted;
+    }
+  }
+
+  if (crossRootProtected > 0) {
+    // Constant text so repeat runs group as one issue; the count and ids are
+    // in the log.
+    const message =
+      '[BackupGC] snapshot id(s) listed under one storage key root are recorded under another key root — ' +
+      'protected, not swept (see the per-id warnings in the log).';
+    console.error(`${message} Count this run: ${crossRootProtected}.`);
+    captureException(new Error(message));
   }
 
   // Abandoned ids past the orphan window whose prefix this run's listing no
   // longer shows (the previous run reclaimed it): the reservation goes, the
   // id is tombstoned. Re-checked at delete time.
+  // #7081 rule 6: only the listing of the root the reservation records
+  // proves its prefix gone; an unreadable root never does.
   const reclaimable = reservationState.reclaimable
-    .filter((r) => listedIdsByIdentityKey.get(r.storageIdentity)?.has(r.snapshotId) === false)
+    .filter((r) => r.root !== null
+      && listedIdsByIdentityKey.get(listedIdsKey(r.storageIdentity, r.root))?.has(r.snapshotId) === false)
     .map((r) => r.snapshotId);
   if (reclaimable.length > 0) {
     try {

@@ -160,7 +160,7 @@ describe('conversion resource', () => {
   });
   it.each([
     ['policy_not_found', 404], ['partner_wide_denied', 403],
-    ['preview_stale', 409], ['conversion_revert_unavailable', 409], ['equivalence_delta', 409], ['blocked', 409],
+    ['preview_stale', 409], ['conversion_contended', 409], ['conversion_revert_unavailable', 409], ['equivalence_delta', 409], ['blocked', 409],
     ['source_not_found', 404], ['conversion_not_found', 404], ['already_converted', 409],
   ] as const)('maps %s without claiming success', async (code, status) => {
     m.convert.mockRejectedValue(new ConversionError(code, code, { reason: code }));

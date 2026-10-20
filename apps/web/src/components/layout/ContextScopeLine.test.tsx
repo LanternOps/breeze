@@ -56,13 +56,31 @@ describe('ContextScopeLine', () => {
   });
 
   it('states fleet view on an org-or-all page when All organizations is chosen', () => {
-    stubPathname('/devices');
+    stubPathname('/alerts');
     mockStoreState.currentOrgId = null;
     mockStoreState.allOrgs = true;
     render(<ContextScopeLine />);
     const line = screen.getByTestId('context-scope-line');
     expect(line.getAttribute('data-kind')).toBe('fleet');
     expect(line.textContent).toContain('Showing all organizations');
+  });
+
+  // #9035: the Devices list folds the scope into its own heading
+  // ("Devices & Assets · All organizations"), so a separate line would repeat it.
+  it('renders nothing on the devices list in fleet view (its heading carries the scope)', () => {
+    stubPathname('/devices');
+    mockStoreState.currentOrgId = null;
+    mockStoreState.allOrgs = true;
+    render(<ContextScopeLine />);
+    expect(screen.queryByTestId('context-scope-line')).toBeNull();
+  });
+
+  it('still states fleet view on a device record page', () => {
+    stubPathname('/devices/dev-1');
+    mockStoreState.currentOrgId = null;
+    mockStoreState.allOrgs = true;
+    render(<ContextScopeLine />);
+    expect(screen.getByTestId('context-scope-line').getAttribute('data-kind')).toBe('fleet');
   });
 
   it('renders nothing for a transient null (not yet resolved context)', () => {

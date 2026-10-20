@@ -46,6 +46,7 @@ import {
   evaluateFilterWithPreview,
   deviceMatchesFilter,
   FilterQueryTimeoutError,
+  FilterValueError,
   isAgentReportedFilterField,
   getAgentReportedFieldsUsed,
   isExecutionRefusedFilterField,
@@ -420,6 +421,31 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
     expect(sql).not.toMatch(/any\s*\(/i);
   });
 
+  // #9179: group exclusion. A device in no group must match "not equal".
+  it('groupId notEquals → NOT EXISTS membership', () => {
+    const sql = render({ field: 'groupId', operator: 'notEquals', value: G1 });
+    expect(sql).toMatch(/not exists \(select 1 from "device_group_memberships"/i);
+    expect(sql).toMatch(/"group_id" in \(\$\d\)/i);
+  });
+
+  it('groupId notIn → NOT EXISTS membership with an explicit IN list', () => {
+    const sql = render({ field: 'groupId', operator: 'notIn', value: [G1, G2] });
+    expect(sql).toMatch(/not exists \(select 1 from "device_group_memberships"/i);
+    expect(sql).toMatch(/"group_id" in \(\$\d, \$\d\)/i);
+    expect(sql).not.toMatch(/any\s*\(/i);
+  });
+
+  it('groupId negative operators with only non-UUID values match every device', () => {
+    expect(render({ field: 'groupId', operator: 'notEquals', value: 'Cash Registers' })).toMatch(/true/i);
+    expect(render({ field: 'groupId', operator: 'notIn', value: ['Cash Registers'] })).toMatch(/true/i);
+  });
+
+  it('validateFilter accepts notEquals/notIn on groupId only among hierarchy fields', () => {
+    expect(validateFilter({ field: 'groupId', operator: 'notEquals', value: G1 }).valid).toBe(true);
+    expect(validateFilter({ field: 'groupId', operator: 'notIn', value: [G1] }).valid).toBe(true);
+    expect(validateFilter({ field: 'siteId', operator: 'notEquals', value: G1 }).valid).toBe(false);
+  });
+
   // #8760: a group NAME where an id belongs raised 22P02 and failed the whole
   // filter. A non-UUID value can match no membership, so it is dropped.
   it('groupId drops non-UUID values instead of sending them to a uuid column', () => {
@@ -427,6 +453,66 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
     expect(render({ field: 'groupId', operator: 'in', value: ['Cash Registers'] })).toMatch(/false/i);
     const mixed = dialect.sqlToQuery(buildConditionSQL({ field: 'groupId', operator: 'in', value: ['Cash Registers', G1] }));
     expect(mixed.params).toEqual([G1]);
+  });
+
+  // #8773 sweep: an enum-typed column rejects a value outside the enum with
+  // 22P02 ("invalid input value for enum os_type"), failing the whole filter as
+  // an opaque 500. Unlike the non-UUID group id above, an unknown enum value is
+  // NOT dropped: dropping it would turn `osType notEquals "Windows"` (a case
+  // slip) into match-everything and silently widen a script/deployment target.
+  // It is refused instead — a clean 400 from validateFilter on the write and
+  // preview paths, and a typed FilterValueError (never a pg 22P02) on paths
+  // that evaluate without validating (group membership → engine_error).
+  describe('unknown enum values are refused, never dropped', () => {
+    const params = (c: FilterCondition) => dialect.sqlToQuery(buildConditionSQL(c)).params;
+
+    it.each([
+      ['osType', 'equals', '2026'],
+      ['osType', 'in', ['2026']],
+      ['status', 'notEquals', 'Online'],
+      ['watchdogStatus', 'notIn', ['gone']],
+      ['osType', 'notEquals', 'Windows'],
+    ] as const)('%s %s %j throws FilterValueError naming the value and the allowed set', (field, operator, value) => {
+      expect(() => buildConditionSQL({ field, operator, value } as FilterCondition)).toThrow(FilterValueError);
+    });
+
+    it('a mixed list is refused whole rather than narrowed to its known values', () => {
+      expect(() => buildConditionSQL({ field: 'osType', operator: 'notIn', value: ['Windows', 'linux'] } as FilterCondition))
+        .toThrow(/Unknown value "Windows" for osType.*windows, macos, linux/);
+    });
+
+    // Deployment targets (deploymentTargetResolver) and dynamic-group membership
+    // evaluate saved filters WITHOUT validateFilter in front, so the refusal
+    // must happen in the engine itself, before any query runs — otherwise a
+    // `notEquals "Windows"` target would resolve to every device.
+    it.each([
+      ['evaluateFilter', () => evaluateFilter({ operator: 'AND', conditions: [{ field: 'osType', operator: 'notEquals', value: 'Windows' }] } as FilterConditionGroup, { orgId: 'org-1' })],
+      ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', { operator: 'AND', conditions: [{ field: 'osType', operator: 'notEquals', value: 'Windows' }] } as FilterConditionGroup)],
+    ] as const)('%s rejects with FilterValueError before querying', async (_name, run) => {
+      dbMock.events.length = 0;
+      await expect(run()).rejects.toThrow(FilterValueError);
+      expect(dbMock.events).not.toContain('query');
+    });
+
+    it('validateFilter reports the unknown value so routes answer 400', () => {
+      const res = validateFilter({ field: 'osType', operator: 'notEquals', value: 'Windows' } as FilterCondition);
+      expect(res.valid).toBe(false);
+      expect(res.errors.join(' ')).toMatch(/Unknown value "Windows" for osType/);
+      const nested = validateFilter({ operator: 'AND', conditions: [{ field: 'status', operator: 'in', value: ['online', 'Online'] }] } as FilterConditionGroup);
+      expect(nested.valid).toBe(false);
+    });
+
+    it('known enum values are untouched', () => {
+      expect(params({ field: 'osType', operator: 'equals', value: 'linux' })).toEqual(['linux']);
+      expect(params({ field: 'osType', operator: 'notIn', value: ['linux', 'macos'] })).toEqual(['linux', 'macos']);
+      expect(render({ field: 'osType', operator: 'notEquals', value: 'linux' })).toMatch(/!=/);
+      expect(validateFilter({ field: 'osType', operator: 'in', value: ['windows', 'linux'] } as FilterCondition).valid).toBe(true);
+    });
+
+    it('non-enum varchar columns still pass any value through', () => {
+      expect(params({ field: 'deviceRole', operator: 'equals', value: 'whatever' })).toEqual(['whatever']);
+      expect(validateFilter({ field: 'deviceRole', operator: 'equals', value: 'whatever' } as FilterCondition).valid).toBe(true);
+    });
   });
 
   it('device-column fields still compare directly (no subquery)', () => {

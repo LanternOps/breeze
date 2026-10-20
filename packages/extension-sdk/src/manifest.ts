@@ -34,7 +34,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'circuits', 'cis',
   'client-ai', 'config', 'configuration-policies', 'connection-health', 'contracts',
   'custom-fields', 'deliverable-templates', 'deployments', 'desktop-ws', 'dev', 'device-groups',
-  'devices', 'discovery', 'dns-security', 'docs', 'dr', 'edr', 'endpoint-messages', 'enrollment-keys',
+  'devices', 'discovery', 'dns-security', 'docs', 'dr', 'edr', 'email', 'endpoint-messages', 'enrollment-keys',
   'events', 'ext', 'extensions', 'filters', 'fix-memory', 'fleet', 'google', 'groups', 'helper',
   'huntress',
   'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
@@ -51,7 +51,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'software-inventory', 'software-policies', 'sso', 'support',
   'system', 'system-tools', 'tags', 'tenant-variables', 'third-party-catalog',
   'ticket-approval-requests', 'ticket-categories', 'ticket-checklist-templates', 'ticket-config', 'ticket-forms',
-  'ticket-response-templates', 'ticketing', 'tickets', 'time-entries', 'time-status', 'tool-sources', 'topology', 'tunnel-http', 'tunnel-ws',
+  'ticket-response-templates', 'ticketing', 'tickets', 'time-entries', 'time-status', 'tool-sources', 'topology', 'trust', 'trust-page-template', 'tunnel-http', 'tunnel-ws',
   'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'verify', 'viewers',
   'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
 ]);

@@ -140,6 +140,8 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/audit-baselines(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/logs(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/tickets(\/.*)?$/, kind: 'org-or-all' },
+  // Endpoint message send history (#8742): fleet state, narrowed by the selected org.
+  { pattern: /^\/endpoint-messages(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/billing(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/contracts(\/.*)?$/, kind: 'org-or-all' },
   // W03 IA split: the agreements area is the same fleet-state surface the
@@ -206,6 +208,17 @@ export function getRouteScope(pathname: string): RouteScopeKind | null {
  */
 export function isSingleDocumentRoute(pathname: string): boolean {
   return /^\/billing\/(quotes|invoices)\/[^/]+$/.test(normalize(pathname));
+}
+
+/**
+ * Pages whose own heading names the scope ("Devices & Assets · All
+ * organizations", #9035). They keep their org-or-all classification, but
+ * ContextScopeLine skips the fleet line: with the switcher pill and the
+ * org-switch toast it would be the third statement of the same fact, and the
+ * row it costs pushes the first table row below the fold.
+ */
+export function isScopeInHeadingRoute(pathname: string): boolean {
+  return normalize(pathname) === '/devices';
 }
 
 /**

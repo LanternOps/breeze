@@ -17,7 +17,7 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { envInt } from '../../utils/envInt';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { isPgDataException, pgErrorCode } from '../../utils/pgErrors';
 import { stripNul } from '../../utils/stripNul';
 import { recordAgentIngestSubmission } from '../metrics';
 import { captureException } from '../../services/sentry';
@@ -66,16 +66,6 @@ const MAX_AGENT_LOG_FUTURE_SKEW_MS = 10 * 60 * 1000;
 const DEVICE_LAST_LOG_AT_THROTTLE_MS = 5 * 60 * 1000;
 
 const INSERT_CHUNK_SIZE = 100;
-
-/**
- * SQLSTATE class 22 (data exception: 22P05 untranslatable character, 22001
- * string too long, ...) is a property of one row's VALUES, so retrying that
- * chunk row by row keeps every other row. Anything else (connection loss,
- * lock timeout) would fail the same way per row, so it is not retried.
- */
-function isPgDataException(err: unknown): boolean {
-  return pgErrorCode(err)?.startsWith('22') ?? false;
-}
 
 /**
  * Remove the two server-authored clamp-provenance keys from redacted agent
@@ -274,9 +264,8 @@ logsRoutes.post(
     }
   }
 
-  // #7067 — stamp the device's latest log-ingest time so "heartbeating but no
-  // logs" becomes a queryable condition (isDeviceLogSilent, @breeze/shared)
-  // instead of an absence. Throttled: skip the write entirely when the column
+  // #7067 — stamp the device's latest log-ingest time (informational; agents
+  // ship warn+ by default, so recency alone is not a health signal). Throttled: skip the write entirely when the column
   // already moved within the last DEVICE_LAST_LOG_AT_THROTTLE_MS, so a
   // healthy device shipping every ~60s doesn't cost a write per batch.
   if (inserted > 0) {
@@ -293,11 +282,7 @@ logsRoutes.post(
         ));
     } catch (err) {
       // Deliberately does not fail the request — the logs themselves already
-      // landed. But an invisible failure here is worse than the neighboring
-      // insert-failure path: the whole point of last_log_at is to be a
-      // trustworthy stand-in for "logs are flowing", so a silently-stuck
-      // column would make a healthy device read as log-silent with no signal
-      // that the column, not the device, is the thing that's broken.
+      // landed — but report it so a silently-stuck column is visible.
       console.error(`[AgentLogs] Failed to update last_log_at for device ${device.id}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)), c, {
         route: 'agents.logs.lastLogAtUpdate',

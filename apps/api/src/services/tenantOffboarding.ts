@@ -5,10 +5,9 @@ import {
   devices,
   organizations,
   partners,
-  partnerUsers,
-  roles,
   users,
 } from '../db/schema';
+import { listActivePartnerAdmins } from './partnerAdminRecipients';
 import { ANONYMOUS_ACTOR_ID, requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { captureException } from './sentry';
 import {
@@ -33,6 +32,11 @@ import { envInt } from '../utils/envInt';
 import { enqueueTenantErasure } from '../jobs/tenantErasure';
 import { getOrgMergeQueue } from '../jobs/orgMerge';
 import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
+import {
+  ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+  ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+  ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+} from './orgSettingsInternalKeys';
 import {
   EVIDENCE_HOLD_RELEASED_ACTION,
   EVIDENCE_HOLD_SCOPED_ERASURE_KEY,
@@ -151,8 +155,8 @@ function inCallerOrSystemDbContext<T>(
  */
 const DB_NOW = sql`now()`;
 
-export const ARCHIVE_PURGE_WARN_14_SENT_AT_KEY = 'archivePurgeWarn14SentAt';
-export const ARCHIVE_PURGE_WARN_1_SENT_AT_KEY = 'archivePurgeWarn1SentAt';
+// Declared in orgSettingsInternalKeys.ts (a leaf module); re-exported here.
+export { ARCHIVE_PURGE_WARN_14_SENT_AT_KEY, ARCHIVE_PURGE_WARN_1_SENT_AT_KEY };
 export type ArchivePurgeWarningMarker =
   | typeof ARCHIVE_PURGE_WARN_14_SENT_AT_KEY
   | typeof ARCHIVE_PURGE_WARN_1_SENT_AT_KEY;
@@ -174,7 +178,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * unit test injecting rows straight past the WHERE clause can't tell a
  * 15-minute floor apart from no floor at all.
  */
-export const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY = 'purgingRecoveryAttempts';
+export { ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY }; // declared in orgSettingsInternalKeys.ts (a leaf module)
 
 /**
  * How many times the backstop will re-run the erasure handoff for one `purging`
@@ -2054,23 +2058,8 @@ export async function sweepOffboardingTenants(
           continue;
         }
 
-        const recipients = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() =>
-            db
-              .select({ email: users.email })
-              .from(partnerUsers)
-              .innerJoin(users, eq(partnerUsers.userId, users.id))
-              .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
-              .where(
-                and(
-                  eq(partnerUsers.partnerId, org.partnerId),
-                  eq(roles.name, 'Partner Admin'),
-                  eq(users.status, 'active')
-                )
-              )
-          )
-        );
-        const emails = [...new Set(recipients.map((recipient) => recipient.email).filter(Boolean))];
+        const recipients = await listActivePartnerAdmins(org.partnerId);
+        const emails = recipients.map((recipient) => recipient.email);
         if (emails.length === 0) {
           console.warn(
             `[tenantOffboarding] no active Partner Admin recipients for org ${org.id}; `

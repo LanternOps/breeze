@@ -26,6 +26,12 @@ type Props = {
   orgId: string;
   siteId?: string;
   deviceId?: string;
+  /**
+   * Where contacts are assigned (the org record's Contacts tab). When set, an
+   * empty result collapses to one muted line with an "Assign" link instead of
+   * an empty card (#9029).
+   */
+  assignHref?: string;
 };
 
 /**
@@ -33,7 +39,7 @@ type Props = {
  * Shows the responsibilities resolved for one Site or one Device, with the scope that
  * explains each selection. It never edits: configuration lives on the organization card.
  */
-export default function ContactResponsibilitiesCard({ orgId, siteId, deviceId }: Props) {
+export default function ContactResponsibilitiesCard({ orgId, siteId, deviceId, assignHref }: Props) {
   const { t } = useTranslation('contactResponsibilities');
   const { can } = usePermissions();
   // The route is gated on organizations:read; without it the card would only ever show an error.
@@ -66,6 +72,24 @@ export default function ContactResponsibilitiesCard({ orgId, siteId, deviceId }:
   }, [canRead, orgId, siteId, deviceId]);
 
   if (!canRead) return null;
+
+  if (assignHref && !failed && items !== null && items.length === 0) {
+    return (
+      <p
+        data-testid="contact-responsibilities-empty"
+        className="flex flex-wrap items-center gap-x-1.5 rounded-lg border bg-card px-5 py-3 text-sm text-muted-foreground"
+      >
+        <span>{t('emptyCompact')}</span>
+        <span aria-hidden="true">·</span>
+        <a
+          href={assignHref}
+          className="font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+        >
+          {t('assign')}
+        </a>
+      </p>
+    );
+  }
 
   return (
     <section data-testid="contact-responsibilities-card" className="rounded-lg border bg-card p-6 shadow-xs" aria-labelledby="contact-responsibilities-title">

@@ -34,8 +34,6 @@ function makePatchSettings(overrides: Record<string, unknown> = {}): any {
     id: 'ps-1',
     featureLinkId: 'fl-1',
     sources: ['windows_update'],
-    autoApprove: true,
-    autoApproveSeverities: ['critical', 'important'],
     rebootPolicy: 'if_needed',
     scheduleFrequency: 'daily',
     scheduleTime: '02:00',
@@ -122,6 +120,23 @@ describe('patchJobService', () => {
       expect(valuesMock).toHaveBeenCalledWith(
         expect.objectContaining({ policyId: null, configPolicyId: 'cp-1', orgId: 'org-1' })
       );
+    });
+
+    it('snapshots only sources and rebootPolicy, never policy-level auto-approve (#8188)', async () => {
+      const valuesMock = mockDbInsertCapturingValues([{ id: 'job-1' }]);
+      // A stale settings object still carrying the dropped columns: the top-level
+      // `patches.autoApprove` slot is what the executor reads as RING
+      // auto-approve, so a policy value must never land there.
+      await createPatchJobFromConfigPolicy(
+        'dev-1',
+        makePatchSettings({ autoApprove: true, autoApproveSeverities: ['critical'] }),
+        'org-1',
+        'cp-1',
+      );
+      expect(valuesMock.mock.calls[0]![0].patches).toEqual({
+        sources: ['windows_update'],
+        rebootPolicy: 'if_needed',
+      });
     });
 
     it('generates correct daily job name', async () => {

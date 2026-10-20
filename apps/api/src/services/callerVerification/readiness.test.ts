@@ -6,7 +6,8 @@ afterEach(() => vi.unstubAllEnvs());
 it.each([undefined, '', 'false', '1', 'yes', 'TRUE', 'true'])('exact readiness value %s', (value) => {
   if (value === undefined) delete process.env.CALLER_VERIFICATION_ENABLED;
   else vi.stubEnv('CALLER_VERIFICATION_ENABLED', value);
-  expect(callerVerificationEnabled()).toBe(value === 'true');
+  // Default ON (unset) and exact 'true' enable; every other explicit value is off.
+  expect(callerVerificationEnabled()).toBe(value === undefined || value === 'true');
 });
 
 it('exports every fixed cross-wave service entry point', async () => {

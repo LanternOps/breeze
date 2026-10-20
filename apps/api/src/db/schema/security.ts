@@ -32,7 +32,10 @@ export const securityProviderEnum = pgEnum('security_provider', [
   'other',
   // Failed collection / not collected (#8538) — distinct from 'other', which
   // is a real attribution for an unmapped product.
-  'unknown'
+  'unknown',
+  // Breeze's own IOC scanner (#6263 W02) — attribution for security_scan
+  // threats, never an AV product reported via status ingest.
+  'breeze'
 ]);
 
 export const threatSeverityEnum = pgEnum('threat_severity', [
@@ -126,7 +129,13 @@ export const securityScans = pgTable('security_scans', {
   // Set when the governing policy asked for auto-quarantine but its stored
   // authority did not resolve, so the scan was dispatched detect-only
   // (services/securityScanQuarantineAuthority.ts). NULL = not suppressed.
-  autoQuarantineSuppressedReason: varchar('auto_quarantine_suppressed_reason', { length: 64 })
+  autoQuarantineSuppressedReason: varchar('auto_quarantine_suppressed_reason', { length: 64 }),
+  // #6263 W03 — explicit scan outcome. 'yara' when rule-set refs were sent,
+  // 'legacy' otherwise (the agent's C3 report overwrites it); NULL on rows
+  // written before W03. ruleSetErrors: [{ id, version?, code, detail? }] from
+  // the dispatch-time resolver/version gate plus the agent's C3 report.
+  engine: varchar('engine', { length: 16 }),
+  ruleSetErrors: jsonb('rule_set_errors')
 }, (table) => ({
   deviceStartedIdx: index('security_scans_device_started_idx').on(table.deviceId, table.startedAt),
   statusIdx: index('security_scans_status_idx').on(table.status)

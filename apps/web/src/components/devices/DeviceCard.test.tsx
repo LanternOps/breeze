@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceCard from './DeviceCard';
@@ -9,8 +9,18 @@ vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
 }));
 
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
+}));
+
+// This file pins the metrics request lifecycle by counting fetchWithAuth
+// calls; the attention pills' batched request (#9038) is covered in
+// DeviceCard.attention.test.tsx, so keep it out of these counts.
+vi.mock('./deviceAttentionCounts', () => ({
+  useDeviceAttentionCounts: () => () => ({ status: 'loading' }),
+  DeviceAttentionPills: () => null,
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -67,13 +77,24 @@ describe('DeviceCard sparkline history', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/device-1/metrics?range=1h', { signal: expect.any(AbortSignal) });
   });
 
+  it('rounds a raw float percent before printing it', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ metrics: [] }));
+
+    render(<DeviceCard device={{ ...baseDevice, cpuPercent: 37.456789012 }} />);
+
+    expect(screen.getByText('37.5%')).toBeTruthy();
+    expect(screen.queryByText('37.456789012%')).toBeNull();
+    await screen.findAllByText('No trend data');
+  });
+
   it('shows an explicit empty state when no metric history exists', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ metrics: [] }));
 
     render(<DeviceCard device={baseDevice} />);
 
+    // #9037: one placeholder for the card, not one per metric.
     await waitFor(() => {
-      expect(screen.getAllByText('No trend data').length).toBe(2);
+      expect(screen.getAllByText('No trend data').length).toBe(1);
     });
   });
 });
@@ -319,5 +340,57 @@ describe('DeviceCard shared metrics requests (#6044)', () => {
     expect(requests[0].signal?.aborted).toBe(false);
     await act(async () => { requests[0].resolve(makeJsonResponse({ metrics: [{ cpu: 1, ram: 2 }, { cpu: 3, ram: 4 }] })); });
     expect(screen.getByTestId('cpu-sparkline-shared')).toBeInTheDocument();
+  });
+});
+
+describe('DeviceCard site link (ui-flow W03)', () => {
+  it('links the site name and does not trigger the card click', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ metrics: [] }));
+    const onClick = vi.fn();
+    render(<DeviceCard device={baseDevice} onClick={onClick} />);
+    await act(async () => {});
+    const link = screen.getByTestId('site-record-link');
+    expect(link).toHaveAttribute('href', '/settings/sites/site-1');
+    fireEvent.click(link);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+});
+
+// #9037: the grid card used to disagree with the list row it mirrors —
+// hostname instead of display name, "0%" for an offline device, a bare
+// version with no OS name.
+describe('DeviceCard list parity (#9037)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ metrics: [] }));
+  });
+
+  it('titles the card with the display name and keeps the hostname in the tooltip', () => {
+    render(<DeviceCard device={{ ...baseDevice, displayName: 'Reception PC' }} />);
+    const title = screen.getByTestId('device-card-title-device-1');
+    expect(title).toHaveTextContent('Reception PC');
+    expect(title).toHaveAttribute('title', 'edge-01');
+  });
+
+  it('falls back to the hostname when there is no display name', () => {
+    render(<DeviceCard device={baseDevice} />);
+    expect(screen.getByTestId('device-card-title-device-1')).toHaveTextContent('edge-01');
+  });
+
+  it('shows a dash, not 0%, for CPU and RAM on an offline device', () => {
+    render(<DeviceCard device={{ ...baseDevice, status: 'offline', cpuPercent: 0, ramPercent: 0 }} />);
+    expect(screen.queryByText('0%')).toBeNull();
+    expect(screen.getByTestId('device-card-cpu-device-1')).toHaveTextContent('—');
+    expect(screen.getByTestId('device-card-ram-device-1')).toHaveTextContent('—');
+  });
+
+  it('names the OS alongside the version, like the device header', () => {
+    render(<DeviceCard device={{ ...baseDevice, os: 'macos', osVersion: '14.5' }} />);
+    expect(screen.getByTestId('device-card-os-device-1')).toHaveTextContent('macOS 14.5');
+  });
+
+  it('keeps every pill at 11px or larger', () => {
+    const { container } = render(<DeviceCard device={{ ...baseDevice, deviceClass: 'network' }} />);
+    expect(container.innerHTML).not.toContain('text-[10px]');
   });
 });

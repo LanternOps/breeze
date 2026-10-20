@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "montreDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Messagerie des terminaux",
+        "endpointMessagingHelp": "Permet aux techniciens d'envoyer des messages à la personne devant l'appareil.",
+        "allowUserReply": "Autoriser les réponses de l'utilisateur",
+        "allowUserReplyHelp": "Permet à la personne devant l'appareil de répondre dans un chat lancé par un technicien. Désactivé, les chats sont à sens unique."
       },
       "inlineEntityPicker": {
         "search": "Rechercher...",
@@ -883,9 +887,7 @@
         "noRingManualApprovalHint": "Aucun anneau lié — les correctifs ne s'installent qu'après une approbation manuelle.",
         "unavailableRingOption": "Anneau indisponible",
         "ringInvalidTitle": "L'anneau de mise à jour lié n'est plus disponible.",
-        "ringInvalidBody": "Les correctifs de cette stratégie sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez.",
-        "ringInvalidLegacyRules": "Cette stratégie contient encore des règles d'application antérieures à leur transfert vers les anneaux ({{rules}}). L'anneau choisi doit déjà comporter exactement ces règles : ajoutez-les-y d'abord.",
-        "approvalRulesMovedToRing": "L'approbation automatique et les règles d'application se configurent désormais dans l'anneau de mise à jour. Modifiez-les dans l'anneau lié. Si cette page était ouverte avant la mise à jour, rechargez-la puis enregistrez à nouveau."
+        "ringInvalidBody": "Les correctifs de cette stratégie sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Politique de périphériques de lien",
@@ -1121,6 +1123,26 @@
         "aboutTitle": "À propos de la Restauration du système",
         "aboutBody": "S’applique uniquement aux appareils Windows. La Restauration du système couvre les fichiers système, le registre, les programmes installés et les paramètres. Ce n’est pas une sauvegarde et elle ne couvre pas les fichiers personnels. Par défaut, Windows limite la création de points de restauration à un toutes les 24 heures, et un point créé peut ensuite être supprimé par Windows ou devenir inutilisable."
       },
+      "securityAgentsTab": {
+        "title": "Agents de sécurité",
+        "description": "Déployer et maintenir installés des agents de sécurité gérés sur les appareils",
+        "deployVendor": "Déployer {{vendor}}",
+        "comingSoon": "Bientôt disponible",
+        "platformWindows": "Windows : installé automatiquement.",
+        "platformMacos": "macOS : nécessite une approbation MDM ; Breeze ne l’installe donc pas automatiquement. Ces appareils sont affichés comme non applicables.",
+        "platformLinux": "Linux : non pris en charge.",
+        "keysNotice": "Les installations utilisent les clés par client de l’intégration du fournisseur (clés d’organisation Huntress, jetons de site SentinelOne). Les organisations qui ne sont pas associées dans cette intégration sont ignorées et affichées comme non applicables, sans déploiement en échec. Désactiver un fournisseur arrête l’application, mais ne désinstalle jamais l’agent.",
+        "closerWarning": "Une politique de configuration attribuée plus près de l’appareil (site, groupe ou appareil, ou politique enfant héritante) qui possède ses propres paramètres d’agents de sécurité remplace entièrement ces paramètres pour ces appareils. Un fournisseur omis à cet endroit n’est pas appliqué.",
+        "partnerWideBadge": "S’applique à toutes les organisations",
+        "noneEnabledNote": "Aucun fournisseur n’est activé : les appareils visés par cette politique sont exclus de tous les agents de sécurité.",
+        "catalogMissing": "{{vendors}} n’est pas encore configuré pour ce partenaire. Connectez d’abord l’intégration, puis enregistrez de nouveau.",
+        "catalogMissingLink": "Connecter l’intégration",
+        "executeRequired": "L’activation des installations exige l’autorisation d’exécuter des commandes sur les appareils, avec l’authentification multifacteur. Demandez à un administrateur disposant de cette autorisation d’enregistrer ce paramètre.",
+        "binaryMissing": "{{vendors}} ne peut pas être activé tant que le paquet intégré n’a pas de programme d’installation déployable : un MSI Windows comme dernière version, avec des arguments d’installation qui incluent SITE_TOKEN={s1_site_token}. Corrigez-le dans l’onglet Versions du paquet, puis enregistrez de nouveau.",
+        "binaryMissingLink": "Ouvrir l’onglet Versions",
+        "platformMacosUnsupported": "macOS : non pris en charge.",
+        "sentinelOneMsiNote": "Ajoutez d’abord le MSI SentinelOne dans l’onglet Versions du paquet SentinelOne intégré, avec des arguments d’installation qui incluent SITE_TOKEN={s1_site_token}. Breeze ne fournit pas le programme d’installation, et SentinelOne ne peut pas être activé tant qu’il n’y est pas."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Les alertes de garantie sont facultatives : les appareils sans stratégie de garantie attribuée ne génèrent aucune alerte. Les seuils ci-dessous s’appliquent uniquement aux couvertures à durée déterminée. Les abonnements AppleCare actifs se renouvellent au lieu d’expirer ; leurs alertes d’expiration sont donc toujours masquées.",
         "enableWarrantyExpiryAlerts": "Activez les alertes d’expiration de garantie",
@@ -1339,7 +1361,15 @@
       "installSkippedNoCatalog": "Une règle obligatoire n'a pas d'élément de catalogue lié, il n'y a donc rien à installer. Ajoutez un lien de catalogue dans l'éditeur de politique pour corriger cela.",
       "installSkippedCapOrPlatform": "Ce n'est pas un échec : soit la limite d'installations par passage a été atteinte, soit la plateforme de cet appareil n'a pas de méthode d'installation pour ce logiciel. Une nouvelle tentative pourra avoir lieu au prochain passage.",
       "installAttempts": "{{count}} tentative(s)",
-      "installLastAttempt": "Dernière tentative d'installation : "
+      "installLastAttempt": "Dernière tentative d'installation : ",
+      "managedByConfigPolicy": "Géré par une politique de configuration",
+      "managedByConfigPolicyHint": "Cette politique est générée à partir d’une politique de configuration et est en lecture seule ici. Modifiez-la dans Politiques de configuration.",
+      "securityAgentCoverage": "Couverture des agents de sécurité",
+      "coverageDevice": "Appareil",
+      "coverageVendor": "Éditeur",
+      "coverageReason": "Motif",
+      "vendorOnlyAgent": "Agent connu de l'éditeur uniquement",
+      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}"
     },
     "deploymentList": {
       "running": "En cours",

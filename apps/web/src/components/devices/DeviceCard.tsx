@@ -21,9 +21,12 @@ import { fetchWithAuth } from "../../stores/auth";
 import { usePermissions } from "../../lib/permissions";
 import { acquire, DEFAULT_FETCH_LIMIT } from "@/lib/fetchLimiter";
 import { formatLastSeen } from "@/lib/formatTime";
-import { asRecord, toPercentNullable } from "@/lib/deviceUtils";
+import { asRecord, toPercent, toPercentNullable } from "@/lib/deviceUtils";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { EntityLink } from "@/components/shared/EntityLink";
+import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
+import { formatDeviceSummaryOs } from "./osDisplay";
 
 type DeviceCardProps = {
   device: Device;
@@ -248,6 +251,11 @@ export default function DeviceCard({
   const deviceClass = device.deviceClass ?? "agent";
   const isNetwork = deviceClass === "network";
   const isManual = deviceClass === "manual";
+  const isAgent = !isNetwork && !isManual;
+
+  // #9038: same alert/ticket pills as the list's Attention column. Every card
+  // calls this, but the loader coalesces them into ceil(cards/100) requests.
+  const attentionFor = useDeviceAttentionCounts(isAgent ? [device.id] : [], isAgent);
 
   useEffect(() => {
     // A discovered asset or a manual asset has no agent and no metric
@@ -304,6 +312,9 @@ export default function DeviceCard({
   // ("Device is quarantined") rather than a blanket "Device is not online".
   const commandQueueable = isCommandQueueable(device.status);
   const online = device.status === "online";
+  // Round once: the row may carry a raw float; text and thresholds use the same value.
+  const cpuPercent = toPercent(device.cpuPercent);
+  const ramPercent = toPercent(device.ramPercent);
   const liveSessionTitle = notOnlineTitle(device.status, t);
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const { can } = usePermissions();
@@ -337,7 +348,14 @@ export default function DeviceCard({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="font-medium">{device.hostname}</h3>
+              {/* #9037: same name the list row leads with; hostname on hover. */}
+              <h3
+                data-testid={`device-card-title-${device.id}`}
+                className="font-medium"
+                title={device.displayName && device.displayName !== device.hostname ? device.hostname : undefined}
+              >
+                {device.displayName || device.hostname}
+              </h3>
               <span
                 className={`h-2 w-2 rounded-full ${statusColors[device.status]}`}
                 aria-hidden="true"
@@ -354,7 +372,7 @@ export default function DeviceCard({
               <span
                 data-testid={`device-${device.id}-class-badge`}
                 title={t("deviceList.networkDiscoveredDevice")}
-                className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-info/30 bg-info/15 px-2 py-0.5 text-[10px] font-medium text-info"
+                className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-info/30 bg-info/15 px-2 py-0.5 text-[11px] font-medium text-info"
               >
                 <Network className="h-3 w-3" />
                 {t("deviceList.network")}
@@ -363,13 +381,23 @@ export default function DeviceCard({
               <span
                 data-testid={`device-${device.id}-class-badge`}
                 title={t("deviceList.manualAsset")}
-                className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/15 px-2 py-0.5 text-[10px] font-medium text-warning"
+                className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning"
               >
                 <Package className="h-3 w-3" />
                 {t("deviceList.manual")}
               </span>
             ) : (
-              <p className="text-xs text-muted-foreground">{device.osVersion}</p>
+              <>
+                <p data-testid={`device-card-os-${device.id}`} className="text-xs text-muted-foreground">
+                  {formatDeviceSummaryOs(device.os, device.osVersion)}
+                </p>
+                <DeviceAttentionPills
+                  deviceId={device.id}
+                  entry={attentionFor(device.id)}
+                  pillsOnly
+                  className="mt-1"
+                />
+              </>
             )}
           </div>
         </div>
@@ -583,72 +611,52 @@ export default function DeviceCard({
           ))}
         </div>
       ) : (
+        // #9037: an offline device has no live reading — "—" like the list's
+        // metricBar, not a confident 0%. One trend placeholder for the card.
         <div className="mt-4 grid grid-cols-2 gap-4">
-          <div>
-            <div className="mb-1 flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">CPU</span>
-              <span className="font-medium">{device.cpuPercent}%</span>
+          {([
+            { key: "cpu", label: "CPU", percent: cpuPercent, history: cpuHistory },
+            { key: "ram", label: "RAM", percent: ramPercent, history: ramHistory },
+          ] as const).map(({ key, label, percent, history }) => (
+            <div key={key}>
+              <div className="mb-1 flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">{label}</span>
+                <span
+                  data-testid={`device-card-${key}-${device.id}`}
+                  className={online ? "font-medium" : "font-medium text-muted-foreground"}
+                >
+                  {online ? `${percent}%` : t("deviceList.text")}
+                </span>
+              </div>
+              {historyState === "ready" && (
+                <div
+                  className={
+                    percent > 80
+                      ? "text-destructive"
+                      : percent > 60
+                        ? "text-warning"
+                        : "text-success"
+                  }
+                >
+                  <MiniSparkline testId={`${key}-sparkline-${device.id}`} data={history} />
+                </div>
+              )}
             </div>
-            {historyState === "ready" ? (
-              <div
-                className={
-                  device.cpuPercent > 80
-                    ? "text-destructive"
-                    : device.cpuPercent > 60
-                      ? "text-warning"
-                      : "text-success"
-                }
-              >
-                <MiniSparkline
-                  testId={`cpu-sparkline-${device.id}`}
-                  data={cpuHistory}
-                />
-              </div>
-            ) : (
-              <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
-                {historyState === "loading"
-                  ? t("deviceCard.loadingTrend")
-                  : historyState === "error"
-                    ? t("deviceCard.trendUnavailable")
-                    : t("deviceCard.noTrendData")}
-              </div>
-            )}
-          </div>
-          <div>
-            <div className="mb-1 flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">RAM</span>
-              <span className="font-medium">{device.ramPercent}%</span>
+          ))}
+          {historyState !== "ready" && (
+            <div className="col-span-2 flex h-8 items-center chart-legend-xs text-muted-foreground">
+              {historyState === "loading"
+                ? t("deviceCard.loadingTrend")
+                : historyState === "error"
+                  ? t("deviceCard.trendUnavailable")
+                  : t("deviceCard.noTrendData")}
             </div>
-            {historyState === "ready" ? (
-              <div
-                className={
-                  device.ramPercent > 80
-                    ? "text-destructive"
-                    : device.ramPercent > 60
-                      ? "text-warning"
-                      : "text-success"
-                }
-              >
-                <MiniSparkline
-                  testId={`ram-sparkline-${device.id}`}
-                  data={ramHistory}
-                />
-              </div>
-            ) : (
-              <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
-                {historyState === "loading"
-                  ? t("deviceCard.loadingTrend")
-                  : historyState === "error"
-                    ? t("deviceCard.trendUnavailable")
-                    : t("deviceCard.noTrendData")}
-              </div>
-            )}
-          </div>
+          )}
         </div>
       )}
 
       <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-        <span>{device.siteName}</span>
+        <EntityLink kind="site" id={device.siteId} name={device.siteName} tone="muted" />
         <span>
           {t("deviceCard.lastSeen")}{" "}
           {formatLastSeen(device.lastSeen, effectiveTimezone)}

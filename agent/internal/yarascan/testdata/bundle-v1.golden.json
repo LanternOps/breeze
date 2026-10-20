@@ -1,0 +1,1 @@
+{"format":"breeze-yara-bundle","v":1,"ruleSetId":"00000000-0000-4000-8000-000000000001","version":3,"autoQuarantine":false,"rules":[{"id":"00000000-0000-4000-8000-0000000000a1","name":"fixture_marker","severity":"high","source":"rule fixture_marker : fixture { meta: threat_type = \"pup\" strings: $a = \"breeze_yara_fixture_marker_7f3a\" condition: $a }"}]}

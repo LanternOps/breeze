@@ -20,6 +20,7 @@ type fakeLifecycle struct {
 	mu            sync.Mutex
 	mode          string
 	acquired      []sessionbroker.HelperKey
+	acquiredTTLs  []time.Duration
 	released      []sessionbroker.HelperKey
 	renewed       int
 	waited        []sessionbroker.HelperKey
@@ -54,6 +55,7 @@ func (f *fakeLifecycle) AcquireLease(id uint32, role ipc.HelperRole, opID string
 		return f.acquireErr
 	}
 	f.acquired = append(f.acquired, sessionbroker.HelperKey{WindowsSessionID: id, Role: role})
+	f.acquiredTTLs = append(f.acquiredTTLs, ttl)
 	return nil
 }
 

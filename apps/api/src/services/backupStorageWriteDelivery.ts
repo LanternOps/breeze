@@ -81,6 +81,9 @@ const WRITE_REFUSAL_MESSAGES: Record<string, string> = {
     "The backup destination's key prefix is invalid. Edit the destination and save a valid prefix.",
   key_root_invalid:
     'This backup was started under a storage location this server cannot read. Start the backup again.',
+  base_key_root_mismatch:
+    "The destination's key prefix changed after this backup was scheduled. The next scheduled run will take a full "
+    + 'backup under the new prefix.',
 };
 
 export function backupWriteRefusalMessage(reason: string): string {

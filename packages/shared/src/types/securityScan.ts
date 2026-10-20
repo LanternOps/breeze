@@ -31,4 +31,10 @@ export interface SecurityScanSettings {
   maxFileSizeMb: number;
   /** Wall-clock deadline for one scan; a hit deadline yields partial results. */
   scanTimeoutMinutes: number;
+  /**
+   * YARA rule sets (`yara_rule_sets.id`, #6263 W03) this policy scans with, in
+   * order; at most `YARA_MAX_RULE_SETS_PER_POLICY`. Empty = legacy signature
+   * scan (DECISION W03-e). W03 is the only wave allowed to widen this type.
+   */
+  ruleSetIds: string[];
 }

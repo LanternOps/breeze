@@ -178,6 +178,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes/abc-123/accept-on-behalf'],
     ['POST', '/api/v1/quotes/abc-123/accept-on-behalf/'],
     ['post', '/api/v1/quotes/abc-123/accept-on-behalf'], // method is case-insensitive
+    // Record signed agreement (#8865 W1c) — same shape as accept-on-behalf:
+    // short auth-context reads, then the insert + freeze in a system context.
+    ['POST', '/api/v1/contracts/agreement-requests/record-signed'],
+    ['POST', '/api/v1/contracts/agreement-requests/record-signed/'],
     // Task A9 — the tool test-call route dispatches a real outbound MCP call.
     ['POST', '/api/v1/tool-sources'],
     ['PATCH', '/api/v1/tool-sources/src-1'],
@@ -231,6 +235,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/mssql/backup/'],
     ['POST', '/api/v1/backup/hyperv/backup'],
     ['POST', '/api/v1/backup/hyperv/backup/'],
+    // #8333 — the recovery-media catalog fetches the signed release manifest
+    // (safeFetch, 1-2 s) per arch; read-only, so it must not pin a connection.
+    ['GET', '/api/v1/backup/bmr/boot-media'],
+    ['GET', '/api/v1/backup/bmr/boot-media/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -260,6 +268,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes/abc-123/send/extra', 'extra path segment must not match'],
     ['GET', '/api/v1/quotes/abc-123/share-link', 'share-link mails nothing and keeps the ambient tx'],
     ['GET', '/api/v1/quotes/abc-123/accept-on-behalf', 'accept-on-behalf is POST-only'],
+    ['GET', '/api/v1/contracts/agreement-requests/record-signed', 'record-signed is POST-only'],
+    ['POST', '/api/v1/contracts/agreement-requests/record-signed/extra', 'extra path segment must not match'],
     ['GET', '/api/v1/invoices/abc-123/pay-link', 'wrong method (only POST opts out)'],
     ['GET', '/api/v1/portal/invoices/def-456/pay', 'wrong method'],
     ['POST', '/api/v1/invoices/abc-123', 'invoice route without /pay-link'],
@@ -440,6 +450,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/providers/connections//test', 'empty connection id must not match'],
     ['POST', '/api/v1/backup/providers/connections/conn-1/test/extra', 'extra segment must not match'],
     ['GET', '/api/v1/backup/providers/connections/conn-1/test', 'test is POST-only'],
+    ['GET', '/api/v1/backup/bmr/media', 'no outbound fetch (#8333 ruled it out)'],
+    ['POST', '/api/v1/backup/bmr/boot-media', 'only the GET catalog opts out'],
   ];
 
   const SNMP_MATCH: ReadonlyArray<[string, string]> = [
@@ -667,4 +679,14 @@ it('#8167 self-manages POST /edr/actions (commit before the vendor call) and no 
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/actions/abc-123')).toBe(false);
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/edr/endpoints')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/sync')).toBe(false);
+});
+
+it('#8167 PR-B self-manages the three push routes (vendor push-settings calls) and nothing nearby', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push')).toBe(true);
+  expect(isSelfManagedDbContextRoute('DELETE', '/api/v1/edr/connections/abc-123/push')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push/test')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/edr/connections/abc-123/push')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push/other')).toBe(false);
+  // The public webhook has no ambient auth transaction to opt out of.
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/webhooks/edr/abc-123')).toBe(false);
 });

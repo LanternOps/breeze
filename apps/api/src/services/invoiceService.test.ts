@@ -1166,11 +1166,21 @@ describe('issueInvoice document_locale stamp', () => {
     expect(issueSet().terms).toBe('Powered by Acme Portal');
   });
 
-  it('prefers the partner footer over portal branding when both are set', async () => {
+  it('prefers the org (portal-branding) footer over the partner default when both are set (#7510)', async () => {
     queueIssuePath(
       draft(),
       { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: 'Partner footer' },
       [{ footerText: 'Portal footer' }],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBe('Portal footer');
+  });
+
+  it('stamps the partner footer when the org sets none', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: 'Partner footer' },
+      [{ footerText: null }],
     );
     await svc.issueInvoice('inv1', actor);
     expect(issueSet().terms).toBe('Partner footer');
@@ -1304,7 +1314,8 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     currencyCode: 'USD', headlinePrice: '100.00', headlineGap: null, headlineGapMessage: null,
     priceBookComplete: true, marginAvailable: true,
     totalCost: '40.00', margin: '60.00', marginPct: 60, allocationTotal: '100.00',
-    allocationAvailable: true, allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[], ...over,
+    allocationAvailable: true, allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[],
+    missingCostComponentIds: [] as string[], ...over,
   });
 
   it('addBundleLine computes economics in the INVOICE currency and snapshots child cost only in the same currency', async () => {
@@ -1331,6 +1342,30 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'b-1', unitPrice: '100.00', costBasis: '40.00' }));
     expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-usd', costBasis: '10.00' }));
     expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-cad', costBasis: null }));
+  });
+
+  it('addBundleLine stamps a NULL parent cost when a component cost is unknown — never a partial or zero sum (#9223)', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({
+      marginAvailable: false, totalCost: null, margin: null, marginPct: null, missingCostComponentIds: ['c-null'],
+    }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ name: 'Bundle', description: null }]);
+    queueInsertAndRecompute({ id: 'parent', sortOrder: 1, unitPrice: '100.00', lineTotal: '100.00' });
+    queueResult([
+      { componentItemId: 'c-usd', quantity: '1.00', showOnInvoice: true, revenueAllocation: null, name: 'A', description: null, costBasis: '10.00', costCurrency: 'USD' },
+      { componentItemId: 'c-null', quantity: '1.00', showOnInvoice: false, revenueAllocation: null, name: 'B', description: null, costBasis: null, costCurrency: 'USD' },
+    ]);
+    queueResult([]); queueResult([]); // two child inserts
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'USD' }]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: null }]);
+    queueResult([]);
+
+    await svc.addBundleLine('i1', 'b-1', 1, actor);
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'b-1', unitPrice: '100.00', costBasis: null }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-usd', costBasis: '10.00' }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-null', costBasis: null }));
   });
 
   it('addBundleLine (JPY, #3775 review #4/#8): persists the whole-yen parent cost and snapshots a fractional-yen legacy child cost as null', async () => {

@@ -189,8 +189,9 @@ export async function insertVerifiedConsentSessionInTransaction(
 
 /**
  * The verified identity a post-identity flow-2 session carries, or null when
- * the row is not such a session (legacy v1 row, identity-phase row, or any
- * verified field missing).
+ * the row is not such a session (identity-phase row, or any verified field
+ * missing). The flow_version test is defense in depth:
+ * m365_consent_sessions_flow_version_check admits only flow_version 2.
  */
 export function verifiedIdentityFromSession(
   session: M365ConsentSession,
@@ -222,7 +223,8 @@ export async function consumeConsentSessionInTransaction(
   const rows = await db.delete(m365ConsentSessions).where(and(
     eq(m365ConsentSessions.stateHash, sha256Hex(input.rawState)),
     eq(m365ConsentSessions.phase, input.phase),
-    // A legacy (pre-identity-first) row can never be consumed by current code.
+    // Defense in depth: m365_consent_sessions_flow_version_check already
+    // forbids any other flow_version.
     eq(m365ConsentSessions.flowVersion, 2),
     gt(m365ConsentSessions.expiresAt, sql`now()`),
     eq(m365ConsentSessions.connectionId, input.connectionId),
@@ -323,7 +325,7 @@ export interface ConsentSessionPurposeLookup {
  * `pending-consent`. The authoritative consume happens afterwards
  * and re-checks state hash, phase, flow version, expiry, connection, org,
  * profile and attempt, so this lookup routes and never authorizes. Flow-2 rows
- * only: a legacy row is never routed. Deliberately not scoped
+ * only (defense in depth; the table admits nothing else). Deliberately not scoped
  * by org: the org id is not known until the attempt is loaded, and state_hash
  * is unique.
  */

@@ -262,7 +262,8 @@ describe('ConnectionsTab', () => {
     await screen.findByTestId('connections-summary');
     fireEvent.click(screen.getByTestId('connections-refresh'));
     await screen.findByTestId('connections-summary');
-    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+    // The health-jobs card fetches its own route; count only the connections list calls.
+    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/admin/system/connections')).toHaveLength(2);
   });
 
   it('is read-only: no text inputs and no save button (D1)', async () => {

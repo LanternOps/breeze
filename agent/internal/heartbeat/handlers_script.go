@@ -15,6 +15,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/systemrestore"
 )
 
 func init() {
@@ -39,8 +40,18 @@ func init() {
 // silently opt out. Mirrors the server's own chokepoint invariant
 // (redactAgentResultErrorFields as the first statement of processCommandResult,
 // apps/api/src/routes/agentWs.ts).
-func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
+//
+// It owns a third for the same reason: the #4609 System Restore checkpoint
+// outcome is attached here, on every exit path, so a new failure path cannot
+// silently drop it. A missing block on a script means disabled.
+func handleScript(h *Heartbeat, cmd Command) (res tools.CommandResult) {
 	start := time.Now()
+	cp := newCommandCheckpoint(cmd.Payload, false,
+		"run script "+tools.GetPayloadString(cmd.Payload, "scriptId", ""))
+	// Report, not the Take result: a stamped request that never reached the
+	// boundary (any refusal below or inside the executor, no helper session)
+	// is reported as skipped_no_mutation rather than vanishing.
+	defer func() { res.RestorePoint = cp.Report() }()
 	secretEnv, err := executor.ParseSecretEnv(cmd.Payload[executor.SecretEnvPayloadKey])
 	if err != nil {
 		// Fail closed: never run a script whose secret map we could not
@@ -55,7 +66,7 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
-	res := handleScriptInner(h, cmd, secretEnv)
+	res = handleScriptInner(h, cmd, secretEnv, cp)
 	// Unconditional, and centralized here rather than at the result-build
 	// sites: the two tools.NewErrorResult returns (the executor error below and
 	// the helper IPC send failure in executeViaUserHelper — the latter is a
@@ -114,7 +125,13 @@ func redactCustomFieldValues(result any, redact func(string) string) {
 // handleScriptInner is the original handler body. Every return it makes flows
 // back through handleScript's redaction — do not call it (or the helper paths
 // it owns: executeViaUserHelper, executeScriptInSession) from anywhere else.
-func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) tools.CommandResult {
+//
+// cp is the command's one restore-point checkpoint. It is taken at whichever
+// mutation boundary this command reaches first — the local executor's
+// BeforeLaunch, or immediately before the user-helper IPC send — and at most
+// once (systemrestore.Checkpoint). User-context scripts are checkpointed HERE,
+// by the service process, because the helper runs unelevated and could not.
+func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv, cp *systemrestore.Checkpoint) tools.CommandResult {
 	start := time.Now()
 	script := executor.ScriptExecution{
 		ID:         cmd.ID,
@@ -210,13 +227,17 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 	// matching a numeric targetSessionId against it would risk silently
 	// hitting an unrelated user's helper.
 	if targetSessionID >= 0 && h.sessionBroker != nil && strings.EqualFold(script.RunAs, "user") {
-		return h.executeScriptInSession(cmd, script, uint32(targetSessionID), start)
+		return h.runOnUserHelperOnce(cmd, start, cp, func() tools.CommandResult {
+			return h.executeScriptInSession(cmd, script, uint32(targetSessionID), start, cp)
+		})
 	}
 
 	// Phase 3: If runAs is specified and a user helper is connected, forward via IPC
 	if script.RunAs != "" && h.sessionBroker != nil {
 		if session := resolveRunAsSession(h.sessionBroker, script.RunAs); session != nil {
-			return h.executeViaUserHelper(session, cmd, script.Timeout)
+			return h.runOnUserHelperOnce(cmd, start, cp, func() tools.CommandResult {
+				return h.executeViaUserHelper(session, cmd, script.Timeout, cp)
+			})
 		}
 	}
 	if strings.EqualFold(script.RunAs, "user") {
@@ -249,7 +270,19 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 			"runAs", script.RunAs, "commandId", cmd.ID)
 	}
 
+	// #4609: the executor calls this after its content refusals and before the
+	// script's timeout clock starts, so a script refused for its content never
+	// consumes the day's one restore point and the checkpoint (bounded by its
+	// own restorePointBudget) never eats timeoutSeconds. See
+	// executor.ScriptExecution.BeforeLaunch for the few refusals after it.
+	script.BeforeLaunch = func() { takeCheckpoint(cp) }
 	scriptResult, execErr := h.executor.Execute(script)
+	var dup *executor.DuplicateExecutionError
+	if errors.As(execErr, &dup) {
+		// A redelivery of a command still running under this id: that run
+		// owns the restore-point request, so this delivery answers nothing.
+		cp.Abandon()
+	}
 	if execErr != nil && scriptResult == nil {
 		return tools.NewErrorResult(execErr, time.Since(start).Milliseconds())
 	}
@@ -307,6 +340,42 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 		}
 	}
 	return result
+}
+
+// runOnUserHelperOnce runs a user-helper-bound script under a reservation of
+// its command id, refusing a second delivery of an id that is still in flight
+// (#9164). It is the user-helper mirror of the local path's
+// executor.DuplicateExecutionError -> cp.Abandon() guard above, and it has to
+// run earlier than the helper's own duplicate checks for two reasons:
+//
+//   - The service process takes the restore-point checkpoint immediately
+//     before the IPC handoff (executeViaUserHelper). Session.SendCommand's
+//     ErrDuplicateCommand and the helper's executor both refuse a duplicate,
+//     but only AFTER that checkpoint — so the redelivery took a second point
+//     (existing_accepted inside System Restore's frequency window) and its
+//     answer competed with the original run's outcome for the ledger row.
+//   - On the on-demand (RDS) path, leases are owned per opID, which is the
+//     command id. A duplicate that acquired and then released "its" lease
+//     dropped the ORIGINAL run's ownership while that script was still running.
+//
+// Like the executor, the duplicate never releases the reservation: it does
+// not own it. The reservation ends when the owning run returns, so a delivery
+// after completion is governed by the heartbeat's own dedup window, exactly as
+// on the local path. Known limit: the reservation and the executor's running
+// map do not see each other, so a redelivery that changes PATH mid-run (a
+// helper that disconnected, sending the second delivery to the local executor)
+// is not refused here.
+func (h *Heartbeat) runOnUserHelperOnce(cmd Command, start time.Time, cp *systemrestore.Checkpoint, run func() tools.CommandResult) tools.CommandResult {
+	if _, loaded := h.helperScriptsInFlight.LoadOrStore(cmd.ID, struct{}{}); loaded {
+		// That run owns the restore-point request, so this delivery answers
+		// nothing (see systemrestore.Checkpoint.Abandon).
+		cp.Abandon()
+		err := &executor.DuplicateExecutionError{ID: cmd.ID}
+		log.Warn("refusing a duplicate user-helper script delivery for an id already in flight", "commandId", cmd.ID)
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	defer h.helperScriptsInFlight.Delete(cmd.ID)
+	return run()
 }
 
 // isRunningElevated is an indirection over privilege.IsRunningAsRoot so the
@@ -575,8 +644,11 @@ func (h *Heartbeat) runAsHelperSessions() []*sessionbroker.Session {
 }
 
 // executeViaUserHelper forwards a script command to a user helper via IPC
-// and translates the response back to a tools.CommandResult.
-func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Command, timeoutSeconds int) tools.CommandResult {
+// and translates the response back to a tools.CommandResult. cp (may be nil)
+// is the command's restore-point checkpoint, taken after the scope check and
+// immediately before the IPC send — the handoff is the service process's last
+// chance, since the helper runs unelevated.
+func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Command, timeoutSeconds int, cp *systemrestore.Checkpoint) tools.CommandResult {
 	start := time.Now()
 
 	if !session.HasScope("run_as_user") {
@@ -588,6 +660,12 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
+
+	// #4609. A helper-side refusal after this point (its own validation) can
+	// still leave a checkpoint behind for a script that never ran: that is the
+	// safe direction — pre-validating here with the service's executor could
+	// disagree with the helper's and let a script run unprotected.
+	takeCheckpoint(cp)
 
 	result, err := h.sendCommandToUserHelper(session, cmd, timeoutSeconds)
 	if err != nil {
@@ -709,7 +787,7 @@ func helperCommandTimeout(timeoutSeconds int) time.Duration {
 // Windows session's user-role helper. In on-demand mode the helper is
 // lease-spawned and the wait failure is typed; in always-on mode the helper
 // must already be connected.
-func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptExecution, winID uint32, start time.Time) tools.CommandResult {
+func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptExecution, winID uint32, start time.Time, cp *systemrestore.Checkpoint) tools.CommandResult {
 	fail := func(msg string) tools.CommandResult {
 		return tools.CommandResult{
 			Status: "failed",
@@ -759,6 +837,12 @@ func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptEx
 		if ttl > 30*time.Minute {
 			ttl = 30 * time.Minute
 		}
+		// The checkpoint is taken after the helper is ready (inside
+		// executeViaUserHelper) and so runs under this lease: give it its
+		// own allowance rather than letting it eat the script's share.
+		if cp.Requested() {
+			ttl += restorePointBudget
+		}
 		if err := lc.AcquireLease(winID, ipc.HelperRoleUser, cmd.ID, ttl); err != nil {
 			if errors.Is(err, sessionbroker.ErrLeaseSessionNotFound) {
 				return fail(fmt.Sprintf("target session %d no longer exists; eligible sessions: %s", winID, eligibleSessionsSummary()))
@@ -773,7 +857,7 @@ func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptEx
 		if res.Status != sessionbroker.HelperWaitReady {
 			return fail(fmt.Sprintf("cannot run in session %d: %s", winID, helperWaitFailureMessage(res)))
 		}
-		return h.executeViaUserHelper(res.Session, cmd, script.Timeout)
+		return h.executeViaUserHelper(res.Session, cmd, script.Timeout, cp)
 	}
 
 	// Always-on (workstation multi-user, or RDS forced always-on): the helper
@@ -792,7 +876,7 @@ func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptEx
 	if session == nil {
 		return fail(fmt.Sprintf("no user helper connected in session %d; eligible sessions: %s", winID, eligibleSessionsSummary()))
 	}
-	return h.executeViaUserHelper(session, cmd, script.Timeout)
+	return h.executeViaUserHelper(session, cmd, script.Timeout, cp)
 }
 
 // eligibleSessionsSummary enumerates targetable interactive sessions for

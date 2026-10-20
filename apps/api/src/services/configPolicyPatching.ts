@@ -1,9 +1,7 @@
 import { and, eq, isNull, SQL } from 'drizzle-orm';
 import type { z } from 'zod';
 import {
-  canonicalAppRuleKey,
   patchInlineSettingsSchema,
-  policyAppRuleSchema,
   rebootPromptTextSchemas,
 } from '@breeze/shared/validators';
 import { db } from '../db';
@@ -23,6 +21,9 @@ import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 export type PatchInlineSettings = z.infer<typeof patchInlineSettingsSchema>;
 export type PatchReferenceClassification =
   | 'valid_ring'
+  // A ring row that is disabled: `DELETE /update-rings/:id` is a soft delete
+  // (enabled = false), and PATCH can switch `enabled` off (#8678).
+  | 'disabled_ring'
   | 'legacy_patch_policy'
   | 'config_policy_uuid'
   | 'missing_target'
@@ -179,19 +180,15 @@ export function tryNormalizePatchInlineSettings(settings: unknown): {
 /**
  * Normalizes the feature link's stored inline JSON for the load path, but —
  * unlike the bare `tryNormalizePatchInlineSettings` — never *silently*
- * collapses a corrupt document to defaults. Zod parses the whole document, so
- * a single malformed field (one bad app entry, a legacy '2:00' scheduleTime)
- * would otherwise wipe every safety rule (app block/pin rules, deferral) with
- * nothing in any log, and the executor's fail-closed warnings never fire
- * because job snapshots are built from this already-sanitized output.
+ * collapses a corrupt document to defaults: zod parses the whole document, so
+ * one malformed field (a legacy '2:00' scheduleTime) falls back to defaults for
+ * every field, and that must show up in logs and Sentry.
  *
- * On whole-document failure this warns + reports to Sentry, then salvages the
- * JSON-only safety fields per-entry (mirroring the executor's per-entry
- * posture): each raw `apps` entry that individually passes
- * `policyAppRuleSchema`, and `autoApproveDeferralDays` when it is a valid
- * non-negative integer <= 60.
+ * Before #8188 this also salvaged the policy-level `apps` rules and
+ * `autoApproveDeferralDays` per entry. Both are retired (the Update Ring owns
+ * them), so the defaults are now all there is to fall back to.
  */
-export function normalizeStoredInlineSettingsWithSalvage(
+export function normalizeStoredPatchInlineSettings(
   raw: unknown,
   context: { configPolicyId: string; featureLinkId: string }
 ): PatchInlineSettings {
@@ -200,232 +197,12 @@ export function normalizeStoredInlineSettingsWithSalvage(
 
   const ident = `config policy ${context.configPolicyId} (feature link ${context.featureLinkId})`;
   console.warn(
-    `[configPolicyPatching] Stored patch inline settings failed validation for ${ident}; ` +
-      'using defaults and salvaging app rules / deferral per-entry'
+    `[configPolicyPatching] Stored patch inline settings failed validation for ${ident}; using defaults`
   );
   captureException(
-    new Error(
-      `Stored patch inline settings failed validation for ${ident}; defaults applied with per-entry salvage`
-    )
+    new Error(`Stored patch inline settings failed validation for ${ident}; defaults applied`)
   );
-
-  const settings = normalized.settings;
-  const rawObj: Record<string, unknown> =
-    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-
-  if (Array.isArray(rawObj.apps)) {
-    const salvagedApps: PatchInlineSettings['apps'] = [];
-    // Same canonical dedup key as patchInlineSettingsSchema's superRefine —
-    // duplicates would make the downstream whole-document re-parse throw.
-    const seenAppKeys = new Set<string>();
-    for (const [index, entry] of rawObj.apps.entries()) {
-      const parsedApp = policyAppRuleSchema.safeParse(entry);
-      if (!parsedApp.success) {
-        console.warn(
-          `[configPolicyPatching] Dropping invalid app rule at index ${index} for ${ident}: ` +
-            parsedApp.error.issues.map((issue) => issue.message).join('; ')
-        );
-        continue;
-      }
-      const canonicalSource = parsedApp.data.source === 'custom' ? 'third_party' : parsedApp.data.source;
-      const key = `${canonicalSource}|${parsedApp.data.packageId.toLowerCase()}`;
-      if (seenAppKeys.has(key)) {
-        console.warn(
-          `[configPolicyPatching] Dropping duplicate app rule at index ${index} for ${ident} (${key})`
-        );
-        continue;
-      }
-      if (salvagedApps.length >= 200) {
-        // patchInlineSettingsSchema caps apps at 200; exceeding it would make
-        // the downstream re-parse throw.
-        console.warn(
-          `[configPolicyPatching] Dropping app rule at index ${index} for ${ident}: salvage cap of 200 reached`
-        );
-        continue;
-      }
-      seenAppKeys.add(key);
-      salvagedApps.push(parsedApp.data);
-    }
-    settings.apps = salvagedApps;
-  }
-
-  const rawDeferral = rawObj.autoApproveDeferralDays;
-  if (
-    typeof rawDeferral === 'number' &&
-    Number.isInteger(rawDeferral) &&
-    rawDeferral >= 0 &&
-    rawDeferral <= 60
-  ) {
-    settings.autoApproveDeferralDays = rawDeferral;
-  }
-
-  return settings;
-}
-
-/**
- * A configuration-policy patch write tried to change approval config that now
- * lives on the Update Ring (#8186): the per-app `apps` rules, or switching
- * policy-level `autoApprove` on. Routes map it to a 400 with `code`.
- */
-export class PolicyApprovalFieldMovedError extends Error {
-  readonly status = 400 as const;
-  readonly code = 'APPROVAL_RULES_MOVED_TO_RING' as const;
-
-  constructor() {
-    super('Approval and application rules are configured on the Update Ring linked to this policy.');
-    this.name = 'PolicyApprovalFieldMovedError';
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
- * What a rule list enforces, order- and case-insensitively: one
- * `key|action|version` token per entry (display names do not count, and a
- * block's stray version is ignored, as the evaluator ignores it). A
- * non-object entry keeps a raw token so it can never match a stored list.
- */
-export function enforcedAppRuleSet(apps: unknown): string[] {
-  if (!Array.isArray(apps)) return [];
-  const tokens = apps.map((entry) => {
-    if (!isRecord(entry)) return `invalid|${JSON.stringify(entry)}`;
-    const key = canonicalAppRuleKey(String(entry.source), String(entry.packageId));
-    const version = entry.action === 'pin' ? String(entry.pinnedVersion ?? '') : '';
-    return `${key}|${String(entry.action)}|${version}`;
-  });
-  return [...new Set(tokens)].sort();
-}
-
-export function sameAppRuleSet(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((token, i) => token === b[i]);
-}
-
-/**
- * Reject a patch feature-link write that edits approval config which the
- * Update Ring now owns (#8186, Open Decision 4 = A):
- *  - `apps` present and enforcing a different set than the stored link's;
- *  - `autoApprove: true` when the stored link does not already have it.
- *
- * An unchanged round-trip passes, so a Patch tab loaded before the release
- * can still save its other fields. "Stored" is matched both as the raw link
- * salvages it and as the read path hands it to a client (a stored document
- * that fails validation is read back with schema defaults, i.e. `apps: []`).
- * `stored` is the link's current `inline_settings`, or null for a new link.
- */
-export function assertNoPolicyApprovalEdits(
-  stored: unknown,
-  incoming: unknown,
-  context: { configPolicyId: string; featureLinkId: string } = { configPolicyId: 'unknown', featureLinkId: 'unknown' },
-): void {
-  if (!isRecord(incoming)) return;
-
-  if (incoming.apps !== undefined) {
-    const incomingSet = enforcedAppRuleSet(incoming.apps);
-    const acceptable = stored === null || stored === undefined
-      ? [[]]
-      : [
-          enforcedAppRuleSet(
-            normalizeStoredInlineSettingsWithSalvage(stored, context).apps,
-          ),
-          enforcedAppRuleSet(tryNormalizePatchInlineSettings(stored).settings.apps),
-        ];
-    if (!acceptable.some((set) => sameAppRuleSet(set, incomingSet))) {
-      throw new PolicyApprovalFieldMovedError();
-    }
-  }
-
-  if (incoming.autoApprove === true && !(isRecord(stored) && stored.autoApprove === true)) {
-    throw new PolicyApprovalFieldMovedError();
-  }
-}
-
-/**
- * The approval keys a patch link still stores from before the Update Ring
- * owned them (#8186). W04 strips them; until then a write that does not send
- * them keeps the stored values (#8671).
- */
-export const LEGACY_PATCH_APPROVAL_KEYS = [
-  'apps',
-  'autoApprove',
-  'autoApproveSeverities',
-  'autoApproveDeferralDays',
-] as const;
-
-/**
- * `patchInlineSettingsSchema` fills an absent `apps` with `[]` and absent
- * `autoApprove*` with their defaults. Hand the service only the legacy
- * approval keys the client actually sent, so an omitted key means "unchanged"
- * rather than an explicit edit the ring-ownership guards reject (#8671).
- */
-export function omitUnsentLegacyApprovalKeys(
-  raw: unknown,
-  parsed: Record<string, unknown>,
-): Record<string, unknown> {
-  const sent = isRecord(raw) ? raw : {};
-  const result: Record<string, unknown> = { ...parsed };
-  for (const key of LEGACY_PATCH_APPROVAL_KEYS) {
-    if (!(key in sent)) delete result[key];
-  }
-  return result;
-}
-
-/**
- * Fill the legacy approval keys an update did not send from what the link
- * stores, so a write that omits them (the Patch tab, the AI tool, a PATCH
- * routed through `omitUnsentLegacyApprovalKeys`) does not reset them to
- * schema defaults (#8671). `stored` is the link JSONB with the relational
- * `autoApprove` the read path serves overlaid; `apps` comes from the salvage
- * reader so a stored document that fails validation still yields its valid
- * rules instead of failing the write.
- */
-export function withStoredLegacyApprovalKeys(
-  incoming: Record<string, unknown>,
-  stored: unknown,
-  context: { configPolicyId: string; featureLinkId: string },
-): Record<string, unknown> {
-  const missing = LEGACY_PATCH_APPROVAL_KEYS.filter((key) => !(key in incoming));
-  if (missing.length === 0 || stored === null || stored === undefined) return incoming;
-  const salvaged = normalizeStoredInlineSettingsWithSalvage(stored, context);
-  const storedRecord = isRecord(stored) ? stored : {};
-  const result: Record<string, unknown> = { ...incoming };
-  for (const key of missing) {
-    if (key === 'apps') {
-      result.apps = salvaged.apps;
-    } else if (key === 'autoApprove') {
-      result.autoApprove = storedRecord.autoApprove === true;
-    } else if (key === 'autoApproveSeverities') {
-      result.autoApproveSeverities = salvaged.autoApproveSeverities;
-    } else {
-      result.autoApproveDeferralDays = salvaged.autoApproveDeferralDays;
-    }
-  }
-  // The schema refuses autoApprove without a severity. A stored document can
-  // only reach that state by failing validation (its severities fall back to
-  // the default); the policy flag is inert since reads moved to the ring, so
-  // drop it rather than fail an unrelated save.
-  if (
-    result.autoApprove === true
-    && Array.isArray(result.autoApproveSeverities)
-    && result.autoApproveSeverities.length === 0
-  ) {
-    console.warn(
-      `[configPolicyPatching] Dropping stored autoApprove with no valid severity for config policy ` +
-        `${context.configPolicyId} (feature link ${context.featureLinkId}); the Update Ring owns auto-approval`,
-    );
-    result.autoApprove = false;
-  }
-  return result;
-}
-
-/** The enforced set of a link's stored legacy `apps`, as the salvage reads it. */
-export function storedLegacyAppRuleSet(
-  stored: unknown,
-  context: { configPolicyId: string; featureLinkId: string },
-): string[] {
-  if (stored === null || stored === undefined) return [];
-  return enforcedAppRuleSet(normalizeStoredInlineSettingsWithSalvage(stored, context).apps);
+  return normalized.settings;
 }
 
 /** The partner a configuration policy's patch ring must belong to. */
@@ -470,6 +247,7 @@ export async function resolvePatchPolicyReference(
         id: patchPolicies.id,
         kind: patchPolicies.kind,
         name: patchPolicies.name,
+        enabled: patchPolicies.enabled,
         categoryRules: patchPolicies.categoryRules,
         categories: patchPolicies.categories,
         excludeCategories: patchPolicies.excludeCategories,
@@ -483,6 +261,15 @@ export async function resolvePatchPolicyReference(
 
   if (patchPolicy) {
     if (patchPolicy.kind === 'ring') {
+      // #8678: a disabled (soft-deleted) ring is gone as far as the ring list
+      // and picker are concerned, so it must not keep gating or releasing
+      // patches here either. It is an invalid reference like any other:
+      // the scheduler skips the policy, manual jobs are refused and device
+      // evaluation denies every candidate, until the link is repointed or
+      // the ring is re-enabled. Anything but an explicit `true` fails closed.
+      if (patchPolicy.enabled !== true) {
+        return noRingResolution('disabled_ring', false);
+      }
       return {
         classification: 'valid_ring',
         valid: true,
@@ -549,21 +336,11 @@ export async function loadPolicyLocalPatchConfig(
 
   if (!row) return null;
 
-  const storedInline = normalizeStoredInlineSettingsWithSalvage(row.storedInlineSettings, {
-    configPolicyId: row.configPolicyId,
-    featureLinkId: row.featureLinkId,
-  });
-  // Constraint: autoApproveDeferralDays and apps have no columns on
-  // config_policy_patch_settings — they live only in the feature link's
-  // inline JSON. The mixed sourcing below (columns for everything else,
-  // storedInline for these two) is therefore intentional, not an oversight.
+  // Every patch setting has a column on config_policy_patch_settings; the
+  // link's inline JSON is the fallback for a link with no normalized row.
   const settings = row.patchSettings
     ? normalizePatchInlineSettings({
         sources: row.patchSettings.sources,
-        autoApprove: row.patchSettings.autoApprove,
-        autoApproveSeverities: row.patchSettings.autoApproveSeverities ?? [],
-        autoApproveDeferralDays: storedInline.autoApproveDeferralDays,
-        apps: storedInline.apps,
         scheduleFrequency: row.patchSettings.scheduleFrequency,
         scheduleTime: row.patchSettings.scheduleTime,
         scheduleDayOfWeek: row.patchSettings.scheduleDayOfWeek ?? undefined,
@@ -577,7 +354,10 @@ export async function loadPolicyLocalPatchConfig(
         ...salvageRebootPromptColumns(row.patchSettings, row.featureLinkId),
         exclusiveWindowsUpdate: row.patchSettings.exclusiveWindowsUpdate,
       })
-    : storedInline;
+    : normalizeStoredPatchInlineSettings(row.storedInlineSettings, {
+        configPolicyId: row.configPolicyId,
+        featureLinkId: row.featureLinkId,
+      });
 
   // Partner-wide config policies (#1724) carry partnerId directly and orgId === null;
   // org-scoped policies derive the partner from their org. Prefer the explicit
@@ -639,8 +419,6 @@ export async function backfillMissingPatchSettings(): Promise<{
     await db.insert(configPolicyPatchSettings).values({
       featureLinkId: row.featureLinkId,
       sources: normalized.settings.sources,
-      autoApprove: normalized.settings.autoApprove,
-      autoApproveSeverities: normalized.settings.autoApproveSeverities,
       scheduleFrequency: normalized.settings.scheduleFrequency,
       scheduleTime: normalized.settings.scheduleTime,
       scheduleDayOfWeek: normalized.settings.scheduleDayOfWeek,
@@ -702,10 +480,10 @@ async function buildPatchInventory(conditions: SQL[]): Promise<PatchInventoryRow
       : 'missing_target';
     const inlineSettingsValid = patchInlineSettingsSchema.safeParse(row.storedInlineSettings ?? {}).success;
     const normalizedSettingsPresent = Boolean(row.patchSettingsId);
+    // Every classification except a usable ring or no ring at all is a broken
+    // reference the editor must repoint.
     const effectiveStatus: PatchEffectiveStatus =
-      classification === 'legacy_patch_policy' ||
-      classification === 'config_policy_uuid' ||
-      classification === 'missing_target'
+      classification !== 'valid_ring' && classification !== 'null'
         ? 'invalid_reference'
         : normalizedSettingsPresent && inlineSettingsValid
           ? 'ok'

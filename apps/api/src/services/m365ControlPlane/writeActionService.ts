@@ -1,9 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import type { M365WriteAction, WriteActionResult, WriteActionFailureCode } from '@breeze/shared/m365';
+import {
+  getM365PermissionProfile,
+  isM365ProbeActionId,
+  type M365MutatingAction,
+  type M365WriteAction,
+  type WriteActionResult,
+  type WriteActionFailureCode,
+} from '@breeze/shared/m365';
 import { and, eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
+import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, type RequestLike } from '../auditEvents';
+import { resolveWritableToolOrgId } from '../aiToolWriteOrg';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
+import { missingRolesForAction } from './grantReadiness';
 import {
   createGraphActionsExecutorClient,
   GraphActionsExecutorClientError,
@@ -14,6 +25,9 @@ import {
   loadM365CustomerGraphActionsRuntimeConfig,
 } from './writeActionRuntimeConfig';
 import { consumeM365WriteActionBudget } from './writeActionBudget';
+import { prepareCallerDispatch } from '../callerVerification/dispatch';
+import { requireCallerVerification } from '../callerVerification/gate';
+import { CallerVerificationRequiredError } from '../callerVerification/errors';
 
 const PROFILE = 'customer-graph-actions' as const;
 
@@ -27,8 +41,14 @@ const EXECUTABLE_STATUSES = ['active'] as const;
 export type M365WriteActionRefusalCode =
   | 'tools_disabled'
   | 'connection_not_ready'
+  // The connection executes, but the customer has not consented to a role
+  // this action needs yet (its manifest is behind the code's). The UI offers
+  // upgrade consent instead of saying the tenant is disconnected (spec §7.2).
+  | 'consent_upgrade_required'
   | 'write_rate_limited'
-  | 'executor_unavailable';
+  | 'executor_unavailable'
+  | 'site_scope_denied'
+  | 'org_context_required';
 
 export type M365WriteActionServiceResult =
   | { ok: true; result: WriteActionResult }
@@ -52,6 +72,11 @@ const FAILURE_MESSAGES: Record<WriteActionFailureCode, string> = {
   graph_transport_failed: 'Could not reach Microsoft Graph.',
   graph_error: 'Microsoft Graph rejected the change.',
   invalid_action: 'The requested Microsoft 365 action is not supported.',
+  license_unavailable: 'No Microsoft 365 licence seat is available for the requested subscription.',
+  unsupported_group_type:
+    'This group\'s membership is managed by Microsoft 365 (dynamic or role-assignable) and cannot be edited directly.',
+  device_not_found: 'The target Intune managed device was not found.',
+  user_already_exists: 'A Microsoft 365 user with that sign-in name already exists.',
 };
 
 type ConnectionNotReadyState = 'missing' | 'wrong-org' | M365ConnectionStatus | 'no-tenant';
@@ -89,7 +114,10 @@ function connectionNotReadyState(
  *
  * Ladder (all fail-closed): feature flag (no DB) -> load connection (ambient
  * RLS) -> readiness (missing / wrong-org / status not executable / no-tenant
- * -> connection_not_ready) -> write budget (write_rate_limited) -> executor
+ * -> connection_not_ready) -> app-role check against the authoritative
+ * observed grants (consent_upgrade_required on a manifest-stale row,
+ * connection_not_ready on a current one; audited) -> write budget
+ * (write_rate_limited) -> executor
  * call (executor_unavailable) -> executor-reported failure -> success. Every
  * outcome from the connection-loaded step onward is audited via
  * recordM365WriteActionEvent; refusals before the connection loads (just the
@@ -98,8 +126,25 @@ function connectionNotReadyState(
 export async function executeM365WriteActionByOrg(
   orgId: string,
   action: M365WriteAction,
-  opts?: { actorId?: string; auditRequest?: RequestLike; idempotencyKey?: string },
+  opts?: { actorId?: string; auditRequest?: RequestLike; idempotencyKey?: string; actionIntentId?: string },
 ): Promise<M365WriteActionServiceResult> {
+  // Caller verification W05 (#6354): the two protected identity actions only
+  // ever dispatch as the release of a durable intent, by pinned object id,
+  // with the intent id as the executor idempotency key. Refused here (before
+  // any DB/budget/executor work) rather than at the guard so a missing intent
+  // or an identifier-only payload can never reach the executor.
+  const protectedAction = action.type === 'm365.user.disable' ? 'disable_user' as const
+    : action.type === 'm365.user.reset_password' ? 'reset_password' as const : null;
+  if (protectedAction) {
+    const oid = 'oid' in action ? action.oid : undefined;
+    if (!opts?.actionIntentId || opts.idempotencyKey !== opts.actionIntentId || !oid
+      || ('userIdentifier' in action && action.userIdentifier !== undefined)) {
+      throw new CallerVerificationRequiredError({
+        orgId, contactId: null, action: protectedAction, requiredTier: 2,
+        reason: !opts?.actionIntentId ? 'no_fresh_verification' : 'subject_unmatched', latest: null,
+      });
+    }
+  }
   if (!isM365GraphActionsEnabledForOrg(orgId)) {
     return {
       ok: false,
@@ -129,6 +174,40 @@ export async function executeM365WriteActionByOrg(
   // defined and org-matched.
   const ready = connection as M365ConnectionRow;
 
+  // Spec §7.2: a connection on an older manifest keeps working for the
+  // actions its grants cover; an action needing a role the customer has not
+  // consented to yet refuses with its OWN code so the UI can offer upgrade
+  // consent instead of saying the tenant is disconnected. Only refuses on an
+  // AUTHORITATIVE observation (grantsVerifiedAt set) — a never-reconciled
+  // connection falls through and lets Graph answer, which keeps every shipped
+  // connection's disable/reset executing unchanged (plan Decision 5).
+  const manifest = getM365PermissionProfile(PROFILE);
+  const missingRoles = missingRolesForAction(ready, manifest, action.type);
+  if (missingRoles && missingRoles.length > 0) {
+    // Upgrade consent only exists for a row whose manifest is behind the
+    // code's (initiateUpgradeConsent refuses `manifest_current`). A current
+    // row missing a role lost it outside the consent flow; prompting an
+    // upgrade there would be a dead end, so it is not-ready instead.
+    const upgradeable = ready.permissionManifestVersion < manifest.version;
+    const code = upgradeable ? 'consent_upgrade_required' as const : 'connection_not_ready' as const;
+    recordM365WriteActionEvent(opts?.auditRequest ?? requestLikeFromSnapshot({}), {
+      orgId,
+      connectionId: ready.id,
+      actionType: action.type,
+      outcome: code,
+      actorId: opts?.actorId,
+    });
+    return {
+      ok: false,
+      code,
+      message: upgradeable
+        ? 'This Microsoft 365 action needs permissions the customer has not approved yet. '
+          + 'Re-consent Microsoft 365 for this organization to add them.'
+        : 'Microsoft 365 no longer holds a permission this action needs for this organization. '
+          + 'Retest the connection, then re-consent if it is still missing.',
+    };
+  }
+
   const budget = await consumeM365WriteActionBudget(ready.id);
   if (!budget.allowed) {
     return {
@@ -146,6 +225,23 @@ export async function executeM365WriteActionByOrg(
     actionType: action.type,
     actorId: opts?.actorId,
   };
+
+  // Last check before the executor call: pinned intent, consumed grant, both
+  // fences, and the committed dispatch marker — under the subject locks, with
+  // THIS connection row and tenant. A refusal throws (never a generic result).
+  switch (action.type) {
+    case 'm365.user.disable':
+    case 'm365.user.reset_password':
+      await prepareCallerDispatch({
+        orgId, intentId: opts?.actionIntentId,
+        action: action.type === 'm365.user.disable' ? 'disable_user' : 'reset_password',
+        connectionId: ready.id, backendTenantId: ready.tenantId as string,
+        oid: ('oid' in action ? action.oid : undefined) ?? '',
+      }, requireCallerVerification);
+      break;
+    default:
+      break;
+  }
 
   let result: WriteActionResult;
   try {
@@ -190,4 +286,47 @@ export async function executeM365WriteActionByOrg(
 
   recordM365WriteActionEvent(request, { ...auditBase, outcome: 'ok' });
   return { ok: true, result };
+}
+
+/**
+ * Chat-path entry for the typed Graph write actions. Mirrors
+ * readActionService.executeM365ReadAction's prologue (site scope -> org
+ * resolution -> the caller's own RLS context) and then runs exactly the
+ * ladder of executeM365WriteActionByOrg. Opening the context here from the
+ * caller's auth — never a system context — is what keeps a chat write inside
+ * the caller's tenant.
+ */
+export async function executeM365WriteActionForAuth(
+  auth: AuthContext,
+  action: M365MutatingAction,
+  inputOrgId?: string,
+  auditRequest?: RequestLike,
+): Promise<M365WriteActionServiceResult> {
+  // These are tenant-wide identity writes: the org-wide governance ceiling
+  // applies — a site-restricted caller (even with an empty allow-list) and a
+  // device-bound AI run are both refused, exactly as the Delegant pair is.
+  if (!canMutateOrgWideGovernance(auth)) {
+    return { ok: false, code: 'site_scope_denied', message: SITE_CEILING_WRITE_DENIED_MESSAGE };
+  }
+  // Belt over the type: the read-only probe arms are reachable from the
+  // effect probes only (executeM365WriteActionByOrg), never from chat.
+  if (isM365ProbeActionId(action.type)) {
+    return { ok: false, code: 'invalid_action', message: FAILURE_MESSAGES.invalid_action };
+  }
+  const resolved = resolveWritableToolOrgId(auth, inputOrgId);
+  if (!resolved.orgId) {
+    return {
+      ok: false,
+      code: 'org_context_required',
+      message: resolved.error ?? 'Organization context required',
+    };
+  }
+  const orgId = resolved.orgId;
+  return withDbAccessContext(
+    dbAccessContextFromAuth(auth),
+    () => executeM365WriteActionByOrg(orgId, action, {
+      actorId: auth.user.id,
+      ...(auditRequest ? { auditRequest } : {}),
+    }),
+  );
 }

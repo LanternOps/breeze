@@ -101,6 +101,12 @@ A baseline defines the CIS benchmark, security level, and optional exclusions fo
 
 When creating a baseline you choose its scope: **a single organization** or **all organizations** (a partner-wide baseline). A partner-wide baseline applies to devices in every organization under your partner and shows an **"All orgs"** badge in the baseline list. Ownership is chosen at creation and is immutable afterwards — to change scope, create a new baseline. Creating or editing partner-wide baselines requires full-partner access (technicians restricted to a subset of organizations can't manage them).
 
+### Who a scheduled scan runs as
+
+Saving a baseline arms its recurring scan, and remediation queues hardening commands on endpoints, so both are device-execution actions: creating or editing a baseline, requesting a remediation and approving one need the `devices:execute` permission and MFA. A scheduled baseline runs under the user who last saved it, and that user must be able to run commands on every device it targets.
+
+A schedule keeps running only while that user is active and still holds `devices:execute`. Baselines created before v0.122.1 keep running under the user who created them on the same terms. Otherwise the **Baselines** tab shows **Needs re-approval** on the schedule and scheduled scans pause until a user with `devices:execute` and MFA saves the baseline again. On-demand scans are not affected.
+
 ### Creating a Baseline
 
 ```bash
@@ -414,6 +420,15 @@ Authorization: Bearer <token>
   Only actions in `pending_approval` status with `pending` approval status can be approved or rejected. Actions that have already been approved, rejected, queued, or completed are skipped. The response includes both the processed and skipped action IDs.
 </Aside>
 
+### Approvals that go stale
+
+An approved remediation is dispatched under its approver's authority. It returns to `pending_approval` (approval status `pending`) instead of running when:
+
+- the approver is no longer active or no longer holds `devices:execute`; or
+- it was approved more than 7 days ago and still has not been dispatched.
+
+Someone with `devices:execute` and MFA must approve it again.
+
 ### Listing Remediation Actions
 
 ```bash
@@ -441,7 +456,7 @@ Each remediation action in the response includes the device hostname, baseline n
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/cis/baselines` | List baselines (requires `devices:read`) |
-| POST | `/cis/baselines` | Create or update a baseline (requires `orgs:write`) |
+| POST | `/cis/baselines` | Create or update a baseline (requires `devices:execute` and MFA) |
 
 ### Scanning
 
@@ -460,8 +475,8 @@ Each remediation action in the response includes the device hostname, baseline n
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/cis/remediate` | Request remediation for failing checks (requires `orgs:write`) |
-| POST | `/cis/remediate/approve` | Approve or reject pending remediation actions (requires `orgs:write`) |
+| POST | `/cis/remediate` | Request remediation for failing checks (requires `devices:execute` and MFA) |
+| POST | `/cis/remediate/approve` | Approve or reject pending remediation actions (requires `devices:execute` and MFA) |
 | GET | `/cis/remediations` | List remediation actions with filtering (requires `devices:read`) |
 
 <Aside>

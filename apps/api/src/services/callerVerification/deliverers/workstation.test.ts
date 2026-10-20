@@ -5,6 +5,7 @@ const m = vi.hoisted(() => ({
   contexts: [] as string[],
   inTx: true,
   enabled: true,
+  wsEnabled: true,
   ready: vi.fn(),
   trust: vi.fn(),
   insertCommand: vi.fn(),
@@ -18,7 +19,7 @@ vi.mock('../../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => { m.contexts.push('outside'); return fn(); },
   withSystemDbAccessContext: (fn: () => unknown, label?: string) => { m.contexts.push(`system:${label ?? ''}`); return fn(); },
 }));
-vi.mock('../../../config/env', () => ({ callerVerificationEnabled: () => m.enabled }));
+vi.mock('../../../config/env', () => ({ callerVerificationEnabled: () => m.enabled, callerVerificationWorkstationEnabled: () => m.wsEnabled }));
 vi.mock('../workstationCapabilities', () => ({ workstationReadiness: m.ready }));
 vi.mock('../../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../partnerTrust.commands', async () => {
@@ -56,7 +57,7 @@ let state: ReturnType<typeof makeDbMock>;
 const inserted = () => m.insertCommand.mock.calls.map((c) => c[1] as Record<string, any>);
 beforeEach(() => {
   vi.clearAllMocks();
-  m.contexts = []; m.inTx = true; m.enabled = true;
+  m.contexts = []; m.inTx = true; m.enabled = true; m.wsEnabled = true;
   state = makeDbMock(); m.db = state.db;
   m.ready.mockImplementation(async (_org: string, ids: string[]) => new Map(ids.map((id) => [id, ['alex']])));
   m.trust.mockResolvedValue(undefined);
@@ -99,6 +100,12 @@ describe('prepareWorkstationVerification', () => {
     arrangeHappy();
     await prepareWorkstationVerification({ ...row, actionScope });
     expect(inserted()[0]!.payload.actionLabel).toBe(label);
+  });
+
+  it('sends the verification expiry as the absolute deadline (#8668)', async () => {
+    arrangeHappy();
+    await prepareWorkstationVerification(row);
+    expect(inserted()[0]!.payload.deadlineAt).toBe(row.expiresAt.toISOString());
   });
 
   it('clamps the helper deadline into the shared bounds', async () => {
@@ -187,6 +194,15 @@ describe('deliverWorkstation', () => {
     expect(m.dispatch).not.toHaveBeenCalled();
   });
 
+  it('does not claim or push while the workstation tier is off, even for a pending row created earlier', async () => {
+    m.wsEnabled = false;
+    state.results.push([loaded]);
+    await deliverWorkstation(ID);
+    expect(m.claim).not.toHaveBeenCalled();
+    expect(m.dispatch).not.toHaveBeenCalled();
+    expect(m.release).not.toHaveBeenCalled();
+  });
+
   it('does nothing for a row that is no longer deliverable', async () => {
     state.results.push([]);
     await deliverWorkstation(ID);
@@ -202,6 +218,15 @@ describe('deliverWorkstation', () => {
     expect(m.dispatch).toHaveBeenCalledWith('agent-1', { id: CMD, type: 'caller_verify', payload: loaded.payload });
     expect(m.release).not.toHaveBeenCalled();
     expect(m.contexts[0]).toBe('outside');
+  });
+
+  it('pushes a stored payload that carries the absolute deadline unchanged (#8668)', async () => {
+    const withDeadline = { ...loaded, payload: { ...payload, deadlineAt: '2026-10-16T12:02:00.000Z' } };
+    state.results.push([withDeadline]);
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt });
+    m.dispatch.mockResolvedValue({ status: 'sent', via: 'local' });
+    await deliverWorkstation(ID);
+    expect(m.dispatch).toHaveBeenCalledWith('agent-1', { id: CMD, type: 'caller_verify', payload: withDeadline.payload });
   });
 
   it.each(['held', 'not_claimable', 'cancelled'])('never pushes a %s claim', async (status) => {

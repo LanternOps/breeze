@@ -15,13 +15,25 @@
  * The gate runs in its own short system transactions (the boundary is
  * internal), with mailbox I/O between them. A caller inside a request
  * transaction must invoke it after that transaction closes.
+ *
+ * W05 dispatch exception: inside `prepareCallerDispatch` (a private
+ * AsyncLocalStorage context, see dispatchGateContext.ts) the gate runs every
+ * read in the caller's marker transaction instead, evaluates only the grant
+ * the intent already consumed, and uses prefetched mailbox hashes — so the
+ * final fence check and the dispatch marker commit atomically under the
+ * subject locks a rejection also takes.
+ *
+ * Link-tier-only (owner decision 2026-10-17): while
+ * CALLER_VERIFICATION_WORKSTATION_ENABLED is off, a `workstation` grant —
+ * including one created before the flag was turned off — never satisfies the
+ * gate.
  */
-import { and, eq, desc, isNull } from 'drizzle-orm';
+import { and, eq, desc, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { callerVerifications as v, callerVerificationSubjectBindings as b } from '../../db/schema/callerVerification';
 import { contacts } from '../../db/schema/contacts';
 import { devices } from '../../db/schema/devices';
-import { callerVerificationEnabled } from '../../config/env';
+import { callerVerificationEnabled, callerVerificationWorkstationEnabled } from '../../config/env';
 import { captureException } from '../sentry';
 import type { CallerVerificationAction, EntraSubject, VerificationRow } from './types';
 import { CallerVerificationRequiredError, type CallerVerificationRefusal } from './errors';
@@ -33,6 +45,7 @@ import { computeTier } from './tiers';
 import { withSubjectLocks } from './locks';
 import { callerVerificationPorts as ports } from './ports';
 import { withMailboxReader } from './mailboxReader';
+import { currentDispatchGate } from './dispatchGateContext';
 
 export interface GateInput {
   orgId: string;
@@ -67,7 +80,13 @@ function requiredTierFor(p: EffectiveCallerVerificationPolicy, action: CallerVer
   return action === 'reset_password' ? p.requiredTierResetPassword : p.requiredTierDisableUser;
 }
 
-export async function requireCallerVerification(input: GateInput): Promise<{ verificationId: string; tier: number }> {
+export async function requireCallerVerification(rawInput: GateInput): Promise<{ verificationId: string; tier: number }> {
+  // Entra ids are GUIDs: compare canonically (lower case) everywhere below.
+  const input: GateInput = {
+    ...rawInput,
+    backendTenantId: rawInput.backendTenantId.toLowerCase(),
+    target: { entraTenantId: rawInput.target.entraTenantId.toLowerCase(), entraOid: rawInput.target.entraOid.toLowerCase() },
+  };
   let latest: VerificationRow | null = null;
   let requiredTier = 2;
   let contactId: string | null = null;
@@ -79,8 +98,21 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
   };
   if (!isCallerVerificationEnabled()) refuse('feature_disabled');
 
-  return runOutsideDbContext(async () => {
-    const initial = await withSystemDbAccessContext(async () => {
+  const dispatch = currentDispatchGate();
+  if (dispatch && (input.mode !== 'check' || !sameGateInput(input, {
+    ...dispatch.input,
+    backendTenantId: dispatch.input.backendTenantId.toLowerCase(),
+    target: { entraTenantId: dispatch.input.target.entraTenantId.toLowerCase(), entraOid: dispatch.input.target.entraOid.toLowerCase() },
+  }))) {
+    throw new Error('Dispatch gate context does not match the pinned operation');
+  }
+  // Inside a dispatch the marker transaction IS the scope; elsewhere every
+  // step opens (and commits) its own short system transaction.
+  const scoped = <T>(fn: () => Promise<T>, label: string): Promise<T> =>
+    dispatch ? fn() : withSystemDbAccessContext(fn, label);
+
+  const evaluate = async () => {
+    const initial = await scoped(async () => {
       const p = await getEffectivePolicy(input.orgId);
       requiredTier = requiredTierFor(p, input.action);
       if (requiredTier === 0) return { p, target: null, rows: [] as VerificationRow[] };
@@ -92,7 +124,9 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
         if (e instanceof CallerVerificationRequiredError) {
           // A subject that WAS bound and is now unmatched/ambiguous was rebound.
           const [historical] = await db.select().from(v)
-            .where(and(eq(v.orgId, input.orgId), eq(v.targetEntraTenantId, input.target.entraTenantId), eq(v.targetEntraOid, input.target.entraOid)))
+            .where(and(eq(v.orgId, input.orgId),
+              sql`lower(${v.targetEntraTenantId}) = ${input.target.entraTenantId}`,
+              sql`lower(${v.targetEntraOid}) = ${input.target.entraOid}`))
             .orderBy(desc(v.createdAt)).limit(1);
           latest = historical ?? null;
           if (historical) refuse('target_rebound');
@@ -102,7 +136,14 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
       }
       contactId = target.contactId;
       const rows = await db.select().from(v)
-        .where(and(eq(v.orgId, input.orgId), eq(v.targetBindingId, target.id)))
+        .where(and(
+          eq(v.orgId, input.orgId), eq(v.targetBindingId, target.id),
+          // Dispatch evaluates only the grant this intent consumed.
+          ...(dispatch ? [
+            eq(v.id, dispatch.verificationId ?? '00000000-0000-0000-0000-000000000000'),
+            eq(v.consumedIntentRef, input.intentId),
+          ] : []),
+        ))
         .orderBy(desc(v.createdAt));
       latest = rows[0] ?? null;
       await withSubjectLocks(db, [target.id, ...rows.filter((r) => r.status === 'verified').map((r) => r.requesterBindingId)], async () => {
@@ -117,8 +158,8 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
 
     // Mailbox read only when an email candidate exists; a failure is
     // remembered for email candidates and never applied to other methods.
-    let mailboxHashes: Set<string> | null = null;
-    if (initial.rows.some((r) => r.status === 'verified' && r.method === 'email')) {
+    let mailboxHashes: Set<string> | null = dispatch ? dispatch.mailboxHashes : null;
+    if (!dispatch && initial.rows.some((r) => r.status === 'verified' && r.method === 'email')) {
       try {
         mailboxHashes = new Set(
           // Attributed to the technician the gate acts for (headless: no
@@ -150,7 +191,7 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
       ...initial.rows.filter((r) => r.consumedIntentRef !== input.intentId),
     ];
     for (const candidate of candidates) {
-      const result = await withSystemDbAccessContext(() => withSubjectLocks(db, [candidate.requesterBindingId, initial.target!.id], async () => {
+      const result = await scoped(() => withSubjectLocks(db, [candidate.requesterBindingId, initial.target!.id], async () => {
         // Everything below is re-read under the consume locks.
         const p = await getEffectivePolicy(input.orgId);
         requiredTier = requiredTierFor(p, input.action);
@@ -162,12 +203,16 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
         latest = r;
         if (await fencedUntil(input.orgId, r.contactId, p)) refuse('contact_fenced');
         if (r.status !== 'verified') { if (r.status === 'revoked') reason = 'target_rebound'; return null; }
-        if (r.targetBindingId !== target.id || r.targetEntraTenantId !== input.target.entraTenantId || r.targetEntraOid !== input.target.entraOid) {
+        if (r.targetBindingId !== target.id || r.targetEntraTenantId?.toLowerCase() !== input.target.entraTenantId
+          || r.targetEntraOid?.toLowerCase() !== input.target.entraOid) {
           reason = 'target_rebound'; return null;
         }
         if (r.consumedAt && r.consumedIntentRef !== input.intentId) { reason = 'grant_consumed'; return null; }
         if (r.actionScope !== input.action && r.actionScope !== 'any') return null;
         if (!p.allowCrossTechnicianUse && r.initiatedByUserId !== input.technicianUserId) { reason = 'technician_mismatch'; return null; }
+        // Link-tier-only: a dark workstation tier never authorizes, even for
+        // a grant created while it was enabled.
+        if (r.method === 'workstation' && !callerVerificationWorkstationEnabled()) return null;
         let bound = false;
         let destinationEstablished = false;
         if (r.method === 'administrative_stepup') {
@@ -221,9 +266,17 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
       if (result) return result;
     }
     // No grant must not suppress an existing target fence.
-    await withSystemDbAccessContext(() => withSubjectLocks(db, [initial.target!.id], async () => {
+    await scoped(() => withSubjectLocks(db, [initial.target!.id], async () => {
       if (await fencedUntil(input.orgId, initial.target!.contactId, initial.p)) refuse('contact_fenced');
     }), 'callerVerification.gate.empty');
     return refuse(reason);
-  });
+  };
+  return dispatch ? evaluate() : runOutsideDbContext(evaluate);
+}
+
+function sameGateInput(a: GateInput, b: GateInput): boolean {
+  // Both sides are canonical (lower-case) by the time this runs.
+  return a.orgId === b.orgId && a.action === b.action && a.backendTenantId === b.backendTenantId
+    && a.technicianUserId === b.technicianUserId && a.intentId === b.intentId && a.mode === b.mode
+    && a.target.entraTenantId === b.target.entraTenantId && a.target.entraOid === b.target.entraOid;
 }

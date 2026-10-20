@@ -93,6 +93,10 @@ export const m365Connections = pgTable(
     // session needs its own target index rather than reusing the org-axis one.
     userAttemptIdentityUniq: uniqueIndex('m365_connections_id_user_profile_attempt_uniq')
       .on(t.id, t.userId, t.profile, t.consentAttemptId),
+    // Connection health broken set (migration 2026-12-29-190000).
+    unhealthyIdx: index('m365_connections_unhealthy_idx')
+      .on(t.id)
+      .where(sql`${t.orgId} IS NOT NULL AND ${t.status} IN ('degraded', 'suspended')`),
   }),
 );
 
@@ -100,16 +104,17 @@ export type M365ConnectionRow = typeof m365Connections.$inferSelect;
 export type NewM365ConnectionRow = typeof m365Connections.$inferInsert;
 
 /**
- * `tenant_confirmation` is reserved for the W03 confirm-tenant interstitial
- * (#7910); W02 never writes it.
+ * `tenant_confirmation` is the parked confirm-tenant interstitial phase
+ * (#7910 W03): an `/organizations` sign-in waits there for the operator to
+ * confirm the verified tenant before the admin-consent redirect.
  */
 export type M365ConsentPhase = 'admin_consent' | 'identity_verification' | 'tenant_confirmation';
 
 /**
- * Consent-session layout. 1 = pre-identity-first rows (in-flight at the W02
- * deploy; never consumed by current code, removed in W04). 2 = identity-first.
+ * Consent-session layout. Only 2 (identity-first) remains: the pre-identity-first
+ * layout (1) was deleted and forbidden by migration 2026-12-31-170000 (#7910 W04).
  */
-export type M365ConsentFlowVersion = 1 | 2;
+export type M365ConsentFlowVersion = 2;
 
 /**
  * Which flow a consent session belongs to. `initial` is a first-time (or
@@ -141,7 +146,7 @@ export const m365ConsentSessions = pgTable(
       .$type<M365ConsentPurpose>()
       .notNull()
       .default('initial'),
-    flowVersion: smallint('flow_version').$type<M365ConsentFlowVersion>().notNull().default(1),
+    flowVersion: smallint('flow_version').$type<M365ConsentFlowVersion>().notNull().default(2),
     /** Tenant the identity phase cryptographically verified (flow 2, post-identity phases only). */
     verifiedTenantId: uuid('verified_tenant_id'),
     verifiedAdminObjectId: uuid('verified_admin_object_id'),
@@ -186,23 +191,11 @@ export const m365ConsentSessions = pgTable(
     ),
     flowVersionCheck: check(
       'm365_consent_sessions_flow_version_check',
-      sql`${t.flowVersion} IN (1, 2)`,
+      sql`${t.flowVersion} = 2`,
     ),
     phaseFieldsCheck: check(
       'm365_consent_sessions_phase_fields_check',
       sql`(
-        ${t.flowVersion} = 1
-        AND ${t.verifiedTenantId} IS NULL
-        AND ${t.verifiedAdminObjectId} IS NULL
-        AND ${t.verifiedAdminUsername} IS NULL
-        AND ${t.identityVerifiedAt} IS NULL
-        AND (
-          (${t.phase} = 'admin_consent'
-            AND ${t.tenantHintHash} IS NULL AND ${t.nonce} IS NULL AND ${t.codeVerifier} IS NULL)
-          OR (${t.phase} = 'identity_verification'
-            AND ${t.tenantHintHash} IS NOT NULL AND ${t.nonce} IS NOT NULL AND ${t.codeVerifier} IS NOT NULL)
-        )
-      ) OR (
         ${t.flowVersion} = 2
         AND ${t.phase} = 'identity_verification'
         AND ${t.nonce} IS NOT NULL
@@ -239,11 +232,11 @@ export type NewM365ConsentSessionRow = typeof m365ConsentSessions.$inferInsert;
  * table has `org_id NOT NULL` and a composite FK into the org-axis unique index, so it
  * structurally cannot hold a user-owned row.
  *
- * Note the absence of `tenantHintHash`, which is the substantive difference rather than an
- * omission. The shipped `identity_verification` phase requires a tenant GUID *before*
- * authorization, because an admin consented for a known customer tenant. A user's first
- * delegated sign-in happens at `/common` and Breeze learns `tid` only from the ID token
- * that comes back — there is nothing to hash beforehand.
+ * Note the absence of `tenantHintHash`, which is deliberate rather than an omission. The
+ * org-axis `identity_verification` phase hashes the tenant it is pinned to when one is
+ * already bound (reconnect, manifest upgrade). A user's delegated sign-in happens at
+ * `/common` and Breeze learns `tid` only from the ID token that comes back, so there is
+ * never a tenant to pin beforehand.
  */
 export type M365DelegatedConsentPhase = 'delegated_consent';
 

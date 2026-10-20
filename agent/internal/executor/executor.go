@@ -126,6 +126,32 @@ type ScriptExecution struct {
 	// pre-#5129 behaviour (fail closed), so an older API talking to a newer
 	// agent cannot loosen anything.
 	AcknowledgedSecurityPatterns []string `json:"acknowledgedSecurityPatterns,omitempty"`
+
+	// BeforeLaunch, when set, runs at most once, after the content refusals in
+	// Execute (duplicate id, queued cancel, type, platform, parameter
+	// rendering, security validation, script-file write, bash syntax gate) and
+	// BEFORE the script's timeout clock starts or any process exists. The
+	// service-side script handler takes its #4609 System Restore checkpoint
+	// here, so a script refused for its content never consumes the day's one
+	// restore point and the checkpoint never eats timeoutSeconds.
+	//
+	// The few environment refusals that need the built command (no shell,
+	// configureRunAs / prepareScriptForRunAs failure) and a cancel that lands
+	// during the hook (beginStart) come AFTER it: they can leave a checkpoint
+	// behind for a script that never ran. That is the safe direction, and
+	// moving the hook past them would put it inside the timeout context.
+	// Never serialized.
+	BeforeLaunch func() `json:"-"`
+}
+
+// DuplicateExecutionError is Execute's refusal of an id that is already
+// running (a server redelivery after the agent's dedup window). Typed so a
+// caller can tell "another execution owns this" from a real failure; the
+// message is unchanged from the untyped error it replaced.
+type DuplicateExecutionError struct{ ID string }
+
+func (e *DuplicateExecutionError) Error() string {
+	return fmt.Sprintf("execution %s is already running", e.ID)
 }
 
 // ScriptResult represents the result of a script execution
@@ -405,7 +431,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 		// Deliberately NOT released: we do not own this reservation, and closing
 		// its done channel would unblock a Cancel waiting on the ORIGINAL
 		// execution and let it report `terminated` while that process runs on.
-		err := fmt.Errorf("execution %s is already running", script.ID)
+		err := &DuplicateExecutionError{ID: script.ID}
 		result.ExitCode = -1
 		result.Error = err.Error()
 		result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
@@ -502,6 +528,12 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 			result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			return result, err
 		}
+	}
+
+	// #4609: the last point before the script can change anything, and before
+	// its timeout context exists (see ScriptExecution.BeforeLaunch).
+	if script.BeforeLaunch != nil {
+		script.BeforeLaunch()
 	}
 
 	// Determine timeout

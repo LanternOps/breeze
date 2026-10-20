@@ -2,7 +2,7 @@ import { defineMiddleware } from 'astro:middleware';
 import { randomBytes } from 'node:crypto';
 import { hasPortalSessionCookie } from './lib/session';
 import { isOutsideBase, stripBase, withBase } from './lib/basePath';
-import { buildFallbackCspDirectives, resolvePortalCspHeader } from './lib/csp';
+import { buildFallbackCspDirectives, resolvePortalCspHeader, withFrameAncestors } from './lib/csp';
 import { prefixDevAssetUrls, shouldPrefixDevAssetUrls } from './lib/devAssetBase';
 import { loadPortalBrandingWithStatus } from './lib/server';
 import { resolveAuthenticatedLanding } from './lib/landing';
@@ -129,12 +129,29 @@ export const onRequest = defineMiddleware(async (context, next) => {
     fallback: buildFallbackCspDirectives({ isDev }),
     styleNonce: context.locals.cspNonce
   });
+  // Trust Center W03a: the embed card is the ONE framable surface. Only a loaded 200 whose page set a non-empty
+  // live allowlist gets `frame-ancestors <origins>`, and X-Frame-Options is dropped only when that enforced CSP was
+  // actually emitted — in dev without CSP_STRICT_DEV the CSP is deleted, and dropping XFO there would leave the card
+  // with no framing control at all (quorum A4). Every other case keeps 'none' + DENY.
+  const isEmbed = pathname.startsWith('/trust/embed/');
+  const embedOrigins = isEmbed && response.status === 200 ? (context.locals.trustEmbedOrigins ?? []) : [];
+  let framable = false;
   if (decision.action === 'delete') {
     headers.delete('Content-Security-Policy');
+  } else if (embedOrigins.length > 0) {
+    try {
+      headers.set('Content-Security-Policy', withFrameAncestors(decision.value, embedOrigins));
+      framable = true;
+    } catch (err) {
+      // Fail closed: an origin that is not a normalized https origin never reaches a header.
+      console.error('[portal] refusing an invalid trust embed origin; keeping frame-ancestors none', { pathname, err });
+      headers.set('Content-Security-Policy', withFrameAncestors(decision.value, []));
+    }
   } else {
-    headers.set('Content-Security-Policy', decision.value);
+    headers.set('Content-Security-Policy', isEmbed ? withFrameAncestors(decision.value, []) : decision.value);
   }
   applyBaseSecurityHeaders(headers);
+  if (framable) headers.delete('X-Frame-Options');
 
   // Token-bearing public document pages (/quote/<token>, /invoice/<token> and
   // its checkout-return trampoline): the URL itself is the capability, so it
@@ -145,6 +162,36 @@ export const onRequest = defineMiddleware(async (context, next) => {
     headers.set('Referrer-Policy', 'no-referrer');
     headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
     headers.set('Cache-Control', 'no-store');
+  }
+
+  // Public trust pages (spec trust-center §8): shareable and cacheable, unlike token pages. The
+  // layout owns the robots meta from the page's search_indexable flag; the header mirrors the
+  // conservative default so a crawler that ignores meta still gets noindex unless the page opted in
+  // (the API sets X-Robots-Tag on the data itself). Previews are drafts: never cached, never indexed.
+  if (isEmbed) {
+    // The embed's framing policy is live (an origin removed from the allowlist must stop framing on the next load),
+    // so neither the card nor its 404 is ever cached; an embed is never a search result of its own.
+    headers.set('Cache-Control', 'no-store');
+    headers.set('X-Robots-Tag', 'noindex');
+  } else if (pathname.startsWith('/trust/preview/')) {
+    headers.set('Cache-Control', 'no-store');
+    headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    headers.set('Referrer-Policy', 'no-referrer');
+  } else if (pathname.startsWith('/trust/access/')) {
+    // Gated-document token pages (Trust Center W2, amendment 32): the token rides in the URL fragment, so
+    // never cache, never index, and never leak the page URL to a third party.
+    headers.set('Cache-Control', 'no-store');
+    headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    headers.set('Referrer-Policy', 'no-referrer');
+  } else if (pathname.startsWith('/trust/')) {
+    // Only a fully loaded card page is shareable-cacheable; 404s and the degraded
+    // shell (card fetch failed) must not be pinned in shared caches.
+    headers.set(
+      'Cache-Control',
+      response.status === 200 && context.locals.trustCacheable === true
+        ? 'public, max-age=300, stale-while-revalidate=600'
+        : 'no-store'
+    );
   }
 
   // #3906 — dev only: Astro hardcodes a few dev-server URLs straight into the

@@ -8,6 +8,7 @@
     "existingAcceptedNoDetail": "Mevcut nokta yeniden kullanıldı",
     "skippedDisabled": "Atlandı — Sistem Geri Yükleme bu cihazda kapalı",
     "skippedDefinitionOnly": "Atlandı — yalnızca tanım güncellemesi",
+    "skippedNoMutation": "Gerekmedi — hiçbir değişiklik yapılmadığı için geri yükleme noktası oluşturulmadı",
     "unsupported": "Bu cihazda kullanılamıyor",
     "busy": "Atlandı — birim gölge kopyası hizmeti kullanımdaydı",
     "insufficientPrivileges": "Atlandı — yetersiz ayrıcalık",

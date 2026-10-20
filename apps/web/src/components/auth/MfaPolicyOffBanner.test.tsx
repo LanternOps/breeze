@@ -218,4 +218,87 @@ describe('MfaPolicyOffBanner', () => {
     await waitFor(() => expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument());
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
   });
+
+  // #9031: the banner sits above the h1 on every page; a live region re-announces
+  // on every load, and a stacked CTA made it 80-140px tall.
+  it('is not a live region (no role=status/alert)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(partnerResponse(false));
+    render(<MfaPolicyOffBanner />);
+    const banner = await screen.findByTestId(TEST_ID);
+    expect(banner).not.toHaveAttribute('role', 'status');
+    expect(banner).not.toHaveAttribute('role', 'alert');
+    expect(banner.getAttribute('aria-live')).toBeNull();
+    expect(banner.tagName).toBe('ASIDE');
+    expect(banner).toHaveAttribute('aria-label', 'mfaPolicyOffBanner.label');
+  });
+
+  it('renders the CTA inline with the message on one row', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(partnerResponse(false));
+    render(<MfaPolicyOffBanner />);
+    const banner = await screen.findByTestId(TEST_ID);
+    const message = screen.getByText('mfaPolicyOffBanner.message');
+    const cta = screen.getByRole('link', { name: 'mfaPolicyOffBanner.cta' });
+    // Message and CTA are siblings in one wrapping row, not a stacked block.
+    expect(cta.parentElement).toBe(message.parentElement);
+    expect(message.parentElement?.className).toMatch(/\bflex-wrap\b/);
+  });
+
+  describe('route ownership on /settings/partner (#9171)', () => {
+    const setPath = (path: string) => window.history.pushState({}, '', path);
+    afterEach(() => setPath('/'));
+
+    it('layout instance renders nothing on /settings/partner (the page owns it)', async () => {
+      setPath('/settings/partner');
+      fetchWithAuthMock.mockResolvedValue(partnerResponse(undefined));
+      render(<MfaPolicyOffBanner />);
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+      await act(async () => {});
+      expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+    });
+
+    it('layout instance hides on soft navigation in and reappears on the way out', async () => {
+      setPath('/devices');
+      fetchWithAuthMock.mockResolvedValue(partnerResponse(undefined));
+      render(<MfaPolicyOffBanner />);
+      expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
+      act(() => {
+        setPath('/settings/partner');
+        document.dispatchEvent(new Event('astro:page-load'));
+      });
+      expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+      act(() => {
+        setPath('/devices');
+        document.dispatchEvent(new Event('astro:page-load'));
+      });
+      expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
+    });
+
+    it('layout instance picks up a dismissal made on the page copy after soft navigation away', async () => {
+      setPath('/devices');
+      fetchWithAuthMock.mockResolvedValue(partnerResponse(undefined));
+      render(<MfaPolicyOffBanner />);
+      expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
+      act(() => {
+        setPath('/settings/partner');
+        document.dispatchEvent(new Event('astro:page-load'));
+      });
+      // Page copy dismissed (it writes the shared per-day key).
+      window.localStorage.setItem(DISMISS_KEY, todayKey());
+      act(() => {
+        setPath('/devices');
+        document.dispatchEvent(new Event('astro:page-load'));
+      });
+      expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+    });
+
+    it('page placement renders on /settings/partner without the layout margin and shares the dismissal', async () => {
+      setPath('/settings/partner');
+      fetchWithAuthMock.mockResolvedValue(partnerResponse(undefined));
+      render(<MfaPolicyOffBanner placement="page" />);
+      const banner = await screen.findByTestId(TEST_ID);
+      expect(banner).not.toHaveClass('mb-4');
+      fireEvent.click(screen.getByRole('button', { name: 'mfaPolicyOffBanner.dismiss' }));
+      expect(window.localStorage.getItem(DISMISS_KEY)).toBe(todayKey());
+    });
+  });
 });

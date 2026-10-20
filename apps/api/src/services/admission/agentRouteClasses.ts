@@ -54,6 +54,10 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'PUT /:id/security/status': 'standard',
   'PUT /:id/management/posture': 'standard',
   'PUT /:id/security/recovery-keys': 'standard',
+  // YARA bundle fetch (#6263 W03a): once per rule-set version (the agent caches
+  // compiled rules); a refused fetch is a per-set error on that scan, never a
+  // failed scan, and the next scan retries.
+  'GET /:id/yara/rule-sets/:ruleSetId/:version': 'standard',
   'PUT /:id/sessions': 'standard',
   'PUT /:id/changes': 'standard',
   'PUT /:id/patches': 'standard',

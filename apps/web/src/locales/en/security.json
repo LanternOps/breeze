@@ -2192,5 +2192,34 @@
     "scansTab": "Scans",
     "threatsTab": "Threats",
     "backToThreats": "Back to threats"
+  },
+  "securityAgentCoverage": {
+    "title": "Security agent coverage",
+    "states": {
+      "covered": "Covered",
+      "gap": "Gap",
+      "vendorOnly": "Vendor only",
+      "vendorOffline": "Vendor offline",
+      "mismatchedOrg": "Mismatched org",
+      "notApplicable": "Not applicable",
+      "pending": "Pending"
+    },
+    "reasons": {
+      "orgNotMapped": "Organization not mapped to the vendor",
+      "integrationInactive": "Integration inactive",
+      "orgKeyMissing": "Organization key missing",
+      "accountKeyMissing": "Account key missing",
+      "platformUnsupported": "Platform not supported",
+      "requiresMdmApproval": "Requires MDM approval",
+      "platformNotSelected": "Platform not selected",
+      "varMissing": "Deployment variable missing",
+      "vendorUnavailable": "Vendor unavailable",
+      "installFailed": "Install failed",
+      "installNotArmed": "Install not armed",
+      "installPending": "Install pending",
+      "awaitingVendorReport": "Awaiting vendor report",
+      "awaitingEvaluation": "Awaiting evaluation",
+      "vendorOrgMismatch": "Vendor reports a different organization"
+    }
   }
 }

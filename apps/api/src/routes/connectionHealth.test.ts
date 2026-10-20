@@ -3,11 +3,14 @@ import { Hono } from 'hono';
 import { sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { state, rowsMock, whereMock, orderByMock } = vi.hoisted(() => ({
+const { state, rowsMock, whereMock, orderByMock, limitMock, distinctMock, distinctWhereMock } = vi.hoisted(() => ({
   state: { scope: 'partner' as string, permissions: [] as Array<{ resource: string; action: string }> },
   rowsMock: vi.fn(),
   whereMock: vi.fn(),
   orderByMock: vi.fn(),
+  limitMock: vi.fn(),
+  distinctMock: vi.fn(),
+  distinctWhereMock: vi.fn(),
 }));
 
 vi.mock('../db', () => {
@@ -15,12 +18,18 @@ vi.mock('../db', () => {
     from: () => chain,
     where: (w: unknown) => { whereMock(w); return chain; },
     orderBy: (...o: unknown[]) => { orderByMock(...o); return chain; },
-    limit: () => rowsMock(),
+    limit: (n: number) => { limitMock(n); return rowsMock(); },
   };
-  return { db: { select: () => chain } };
+  const distinct: any = {
+    from: () => distinct,
+    where: (w: unknown) => { distinctWhereMock(w); return Promise.resolve(distinctMock()); },
+  };
+  return { db: { select: () => chain, selectDistinct: () => distinct } };
 });
 
 vi.mock('../middleware/auth', () => ({
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  hasSatisfiedMfa: vi.fn(() => true),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', { user: { id: 'user-1' }, scope: state.scope, partnerId: 'p-1', orgId: null });
     return next();
@@ -69,6 +78,7 @@ describe('GET /connection-health/incidents', () => {
     state.scope = 'partner';
     state.permissions = [ORGS_READ, { resource: 'connected_apps', action: 'read' }];
     rowsMock.mockResolvedValue([]);
+    distinctMock.mockReturnValue([{ viewPermission: 'connected_apps:read' }, { viewPermission: 'backup:read' }]);
     app = new Hono();
     app.onError((err, c) => c.json({ unhandled: err.message }, 500));
     app.route('/connection-health', connectionHealthRoutes);
@@ -85,6 +95,46 @@ describe('GET /connection-health/incidents', () => {
     state.permissions = [ORGS_READ];
     rowsMock.mockResolvedValue([row()]);
     expect((await (await get()).json()).data).toEqual([]);
+  });
+
+  it('limit applies after the permission filter: the permitted view permissions are in the row WHERE', async () => {
+    distinctMock.mockReturnValue([
+      { viewPermission: 'connected_apps:read' }, { viewPermission: 'backup:read' }, { viewPermission: 'organizations:read' },
+    ]);
+    await get();
+    const q = new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0]);
+    expect(q.sql).toMatch(/"view_permission" in \(\$\d+, \$\d+\)/i);
+    expect(q.params).toEqual(expect.arrayContaining(['connected_apps:read', 'organizations:read']));
+    expect(q.params).not.toContain('backup:read');
+    expect(limitMock).toHaveBeenCalledWith(501);
+  });
+
+  it('the distinct-permission probe uses the same status filter as the rows', async () => {
+    await get();
+    expect(new PgDialect().sqlToQuery(distinctWhereMock.mock.calls.at(-1)![0]).sql).toMatch(/"resolved_at" is null/i);
+  });
+
+  it('a caller holding none of the present view permissions gets nothing, without the row query', async () => {
+    distinctMock.mockReturnValue([{ viewPermission: 'backup:read' }]);
+    const body = await (await get()).json();
+    expect(body).toEqual({ data: [], truncated: false });
+    expect(rowsMock).not.toHaveBeenCalled();
+  });
+
+  it('flags truncation only when more than 500 rows match, and returns at most 500', async () => {
+    rowsMock.mockResolvedValue(Array.from({ length: 501 }, (_, i) => row({ id: `r${i}` })));
+    const over = await (await get()).json();
+    expect(over.truncated).toBe(true);
+    expect(over.data).toHaveLength(500);
+    rowsMock.mockResolvedValue(Array.from({ length: 500 }, (_, i) => row({ id: `r${i}` })));
+    expect((await (await get()).json()).truncated).toBe(false);
+  });
+
+  it('system scope skips the permission probe and filter', async () => {
+    state.scope = 'system';
+    await get();
+    expect(distinctMock).not.toHaveBeenCalled();
+    expect(new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0]).sql).not.toMatch(/view_permission/i);
   });
 
   it('system scope sees every row without the permission filter', async () => {

@@ -114,7 +114,8 @@
     "ticketsIncidents": "Incidents",
     "ticketsServiceRequests": "Demandes de service",
     "ticketsProblems": "Problèmes",
-    "ticketsChanges": "Changements"
+    "ticketsChanges": "Changements",
+    "endpointMessages": "Messagerie"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -315,6 +316,17 @@
       "target": "Cible",
       "time": "Temps"
     },
+    "recentlyViewed": {
+      "title": "Reprenez où vous en étiez",
+      "kind": {
+        "device": "Appareil",
+        "org": "Organisation",
+        "ticket": "Billet",
+        "alert": "Alerte",
+        "site": "Emplacement",
+        "page": "Écran"
+      }
+    },
     "alerts": {
       "title": "Alertes récentes",
       "viewAll": "Voir tout",
@@ -482,7 +494,10 @@
       "createFirst": "Créez votre premier filtre",
       "created": "Créé {{date}}",
       "deleteConfirm": "Supprimer ce filtre ?",
-      "duplicate": "Duplique"
+      "duplicate": "Duplique",
+      "saveFailed": "Impossible d'enregistrer le filtre",
+      "deleteFailed": "Impossible de supprimer le filtre",
+      "ownerOrgHint": "Les filtres enregistrés appartiennent à une organisation. Choisissez celle à laquelle ce filtre appartient."
     },
     "targets": {
       "modes": {
@@ -682,13 +697,30 @@
       "toast": {
         "showingAll": "Affichage de toutes les organisations",
         "showing": "Affichage de {{name}}",
-        "switched": "Changé pour {{name}}"
+        "switched": "Changé pour {{name}}",
+        "linkedOrgUnavailable": "L’organisation liée n’est pas disponible. Votre sélection actuelle est affichée à la place."
       },
       "fleetView": "Vue flotte · {{count}} organisations",
       "noSelection": "Sélectionner une organisation",
       "searchOrganizations": "Rechercher des organisations…",
       "noMatches": "Aucune organisation ne correspond",
-      "legacyFilterNotice": "Le filtrage par organisation suit désormais le sélecteur d’en-tête."
+      "legacyFilterNotice": "Le filtrage par organisation suit désormais le sélecteur d’en-tête.",
+      "recent": "Récents",
+      "pane": {
+        "destinations": {
+          "overview": "Aperçu",
+          "devices": "Appareils",
+          "tickets": "Billets",
+          "alerts": "Alertes",
+          "sites": "Emplacements",
+          "billing": "Facturation"
+        },
+        "offlineCount": "{{count}} hors ligne",
+        "openCount": "{{count}} ouverts",
+        "criticalCount": "{{count}} critiques",
+        "noCritical": "aucune",
+        "hint": "Cliquez sur un nom pour changer · cliquez sur une page pour changer et y aller"
+      }
     },
     "header": {
       "menu": "Menu",
@@ -805,9 +837,9 @@
       "expand": "Agrandir la barre latérale",
       "collapseSections": "Réduire toutes les sections",
       "closeMenu": "Fermer le menu",
-      "recentDevices": "Dispositifs récents",
-      "hideRecentDevices": "Masquer les dispositifs récents",
-      "showRecentDevices": "Afficher les dispositifs récents"
+      "recent": "Récents",
+      "hideRecent": "Masquer les récents",
+      "showRecent": "Afficher les récents"
     },
     "orgRequired": {
       "title": "Sélectionnez une organisation",
@@ -1335,6 +1367,14 @@
           "migrationWindowClosed": {
             "description": "Déclenché une fois par organisation à la fermeture d'une fenêtre de migration de billets, avec les nombres importés.",
             "label": "Fenêtre de migration fermée"
+          },
+          "integrationHealthOpened": {
+            "description": "Se déclenche lorsqu'un incident d'état est ouvert sur la connexion d'une organisation.",
+            "label": "Incident d'état de connexion ouvert"
+          },
+          "integrationHealthResolved": {
+            "description": "Se déclenche lorsqu'un incident d'état de connexion est résolu.",
+            "label": "Incident d'état de connexion résolu"
           }
         },
         "fields": {
@@ -2605,6 +2645,34 @@
         "sending": "Envoi…",
         "send": "Envoyer"
       }
+    },
+    "mcpDomains": {
+      "legend": "Accès aux outils",
+      "allLabel": "Tous les outils (y compris les domaines ajoutés plus tard)",
+      "selectedLabel": "Seulement ces domaines",
+      "coreLabel": "Noyau (toujours inclus)",
+      "error": "Sélectionnez au moins un domaine ou choisissez Tous les outils.",
+      "allEquivalentNote": "Tous les domaines sont sélectionnés : cela équivaut à Tous les outils, y compris les domaines ajoutés plus tard.",
+      "reconnectNote": "S’applique à cette connexion. Pour restreindre une connexion existante, révoquez-la sous Applications connectées, puis reconnectez-vous.",
+      "apiKeyHint": "Choisissez les domaines d’outils que cette clé peut utiliser par l’interface IA/MCP.",
+      "allTools": "Tous les outils",
+      "areaCount_one": "{{count}} domaine",
+      "areaCount_other": "{{count}} domaines",
+      "labels": {
+        "devices": "Appareils",
+        "scripts": "Scripts et automatisation",
+        "patching": "Correctifs et logiciels",
+        "monitoring": "Surveillance et alertes",
+        "network": "Réseau",
+        "security": "Sécurité et conformité",
+        "backup": "Sauvegarde et récupération",
+        "tickets": "Billets et temps",
+        "billing": "Facturation",
+        "accounts": "Comptes",
+        "integrations": "Intégrations",
+        "admin": "Gestion administrative",
+        "ai": "Agents IA"
+      }
     }
   },
   "whatsNew": {
@@ -2628,7 +2696,8 @@
     "dismiss": "Fermer le rappel d’authentification à deux facteurs"
   },
   "mfaPolicyOffBanner": {
-    "message": "L'authentification multifacteur n'est pas exigée pour votre équipe. Les sessions avec mot de passe seulement peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
+    "label": "Rappel AMF",
+    "message": "AMF non exigée pour votre équipe : un mot de passe seul permet de lancer des scripts.",
     "cta": "Exiger l'AMF",
     "dismiss": "Masquer le rappel de politique AMF pour aujourd'hui"
   },
@@ -2698,5 +2767,10 @@
     "errors": {
       "loadFailed": "Impossible de charger la mémoire des correctifs."
     }
+  },
+  "islandError": {
+    "title": "Cette section a planté",
+    "description": "Une erreur d’affichage a empêché cette page de s’afficher. Réessayez et, si le problème persiste, incluez le message ci-dessous dans votre signalement.",
+    "retry": "Réessayer"
   }
 }

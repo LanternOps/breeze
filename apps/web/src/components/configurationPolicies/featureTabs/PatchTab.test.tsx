@@ -136,8 +136,7 @@ describe('PatchTab', () => {
   });
 
   // #8187: approval and application rules live on the Update Ring. The tab
-  // must never send them: the API judges any sent `apps` / `autoApprove*` as an
-  // attempt to edit ring-owned rules (400 APPROVAL_RULES_MOVED_TO_RING).
+  // must never send them (since #8188 the API strips them from any write).
   const LEGACY_APPROVAL_KEYS = ['apps', 'autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays'];
   const STORED_LEGACY_INLINE = {
     sources: ['third_party'],
@@ -221,8 +220,6 @@ describe('PatchTab', () => {
     );
     const prompt = await screen.findByTestId('patch-ring-invalid');
     expect(prompt).toHaveTextContent('The linked Update Ring is no longer available');
-    // The legacy rules the replacement ring has to carry are named.
-    expect(prompt).toHaveTextContent('Firefox');
 
     fireEvent.change(screen.getByTestId('approval-ring-select'), { target: { value: 'ring-1' } });
     expect(screen.queryByTestId('patch-ring-invalid')).toBeNull();

@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Retour aux rapports",
+      "backupPreview": {
+        "description": "Génère l'instantané de sauvegarde actuel avec les options ci-dessus. Il ne s'exécute qu'à votre demande.",
+        "error": "Impossible de générer l'aperçu.",
+        "run": "Générer l'aperçu",
+        "title": "Aperçu"
+      },
       "description": "Mettre à jour la configuration pour « {{name}} ».",
       "errors": {
         "fetchReport": "Impossible de récupérer le rapport",
@@ -1067,6 +1073,13 @@
         "business": "Affaires",
         "general": "Général",
         "businessDescription": "Chiffres internes du MSP — respect des SLA, facturabilité des techniciens et comptes clients — réservés au personnel."
+      },
+      "delivery": {
+        "contactsLoading": "Chargement des contacts de l’organisation…",
+        "contactsFailed": "Impossible de charger les contacts de cette organisation. Vous pouvez quand même ajouter des adresses courriel.",
+        "noContacts": "Cette organisation n’a aucun contact avec une adresse courriel.",
+        "removeEmail": "Retirer {{email}}",
+        "recipientsFailed": "Le rapport « {{name}} » a été créé, mais tous ses destinataires n’ont pas pu être ajoutés. Ajoutez-les à partir du rapport."
       }
     },
     "threatDetectionOptions": {

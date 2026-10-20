@@ -3,7 +3,6 @@ package security
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -14,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/breeze-rmm/agent/internal/obfuscate"
+	"github.com/breeze-rmm/agent/internal/yarascan"
 )
 
 // Threat represents a detected security threat.
@@ -29,6 +29,24 @@ type Threat struct {
 	// and be indistinguishable to the server. Set only when AutoQuarantine
 	// was on and QuarantineThreat returned an error for this threat.
 	QuarantineFailed bool `json:"quarantineFailed,omitempty"`
+
+	// #6263 W02 — rule-level detail for YARA hits (contract C3). Empty for
+	// legacy signature hits, which keep the W01 shape plus SHA256.
+	RuleName       string                   `json:"ruleName,omitempty"`
+	RuleSetID      string                   `json:"ruleSetId,omitempty"`
+	RuleID         string                   `json:"ruleId,omitempty"`
+	Tags           []string                 `json:"tags,omitempty"`
+	MatchedStrings []yarascan.MatchedString `json:"matchedStrings,omitempty"`
+	// SHA256 of the file at scan time; empty when the file exceeds the
+	// hashing cap (maxHashBytes) or could not be re-read.
+	SHA256 string `json:"sha256,omitempty"`
+
+	// autoQuarantine is the matching rule set's own opt-in (spec D7): a YARA
+	// hit is auto-quarantined only when the policy AND its set allow it.
+	autoQuarantine bool
+	// hashFailed: the file matched but could not be hashed at scan time, so
+	// its identity cannot be re-verified and it is never auto-quarantined.
+	hashFailed bool
 }
 
 const (
@@ -155,152 +173,47 @@ func detectThreats(paths []string, options threatScanOptions) ([]Threat, error) 
 // A cancelled context returns what was found so far plus ctx.Err(); callers
 // decide whether that is a timeout (partial results, reported) or a real error.
 //
-// Deliberately still single-goroutine: the legacy signature table is cheap and
-// the walk is IO-bound. W02 replaces the matcher with YARA-X and lifts the
-// worker pool from tools.ScanSensitiveData at the same time — splitting those
-// two changes keeps this wave's blast radius on scheduling, not throughput.
+// Since #6263 W02 it is the legacy signature table driven through the shared
+// worker-pool walk (walkpool.go) with W01's exact semantics: one worker,
+// every regular file offered (filename signatures ignore the size cap), and
+// per-file errors joined into the returned error.
 func detectThreatsCtx(ctx context.Context, paths []string, options threatScanOptions) ([]Threat, int, error) {
-	cleanPaths := uniquePaths(paths)
-	var threats []Threat
-	seen := make(map[string]struct{})
-	var errs []error
-	filesScanned := 0
+	res, err := walkAndMatch(ctx, paths, options, legacyMatcher{options: options}, legacyWalkConfig())
+	return res.Threats, res.FilesScanned, err
+}
 
-	checkCtx := func() error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			return nil
-		}
+// legacyMatcher adapts the XOR-obfuscated signature table to the
+// yarascan.Matcher interface so both engines share one walk. Used whenever no
+// rule set is usable (no ruleSets, all failed, or the YARA engine could not
+// start).
+type legacyMatcher struct{ options threatScanOptions }
+
+func (legacyMatcher) Engine() string { return yarascan.EngineLegacy }
+func (legacyMatcher) Close()         {}
+func (l legacyMatcher) NewWorker() (yarascan.Worker, error) {
+	return legacyWorker(l), nil
+}
+
+type legacyWorker legacyMatcher
+
+func (legacyWorker) Close() {}
+
+func (l legacyWorker) ScanFile(path string) ([]yarascan.Match, error) {
+	// Lstat, as W01's walk used the DirEntry's own info: a path swapped for a
+	// symlink after the walk saw it is not followed.
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
 	}
-
-pathLoop:
-	for _, path := range cleanPaths {
-		if err := checkCtx(); err != nil {
-			errs = append(errs, err)
-			break
-		}
-
-		if path == "" {
-			continue
-		}
-		if isExcludedPath(path, options.ExcludePaths) {
-			continue
-		}
-
-		info, err := os.Lstat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			errs = append(errs, err)
-			continue
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-
-		if info.IsDir() {
-			walkErr := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
-				if err := checkCtx(); err != nil {
-					return err
-				}
-
-				if walkErr != nil {
-					if os.IsPermission(walkErr) {
-						return fs.SkipDir
-					}
-					errs = append(errs, walkErr)
-					return nil
-				}
-
-				if isExcludedPath(current, options.ExcludePaths) {
-					if entry.IsDir() {
-						return fs.SkipDir
-					}
-					return nil
-				}
-
-				if entry.Type()&os.ModeSymlink != 0 {
-					if entry.IsDir() {
-						return fs.SkipDir
-					}
-					return nil
-				}
-
-				if entry.IsDir() {
-					return nil
-				}
-
-				info, err := entry.Info()
-				if err != nil {
-					if os.IsPermission(err) {
-						return nil
-					}
-					errs = append(errs, err)
-					return nil
-				}
-
-				if !info.Mode().IsRegular() {
-					return nil
-				}
-
-				filesScanned++
-
-				found, err := scanFileForThreats(current, info, options)
-				if err != nil {
-					if !os.IsPermission(err) {
-						errs = append(errs, err)
-					}
-					return nil
-				}
-
-				for _, threat := range found {
-					key := threat.Name + "|" + threat.Path
-					if _, ok := seen[key]; ok {
-						continue
-					}
-					seen[key] = struct{}{}
-					threats = append(threats, threat)
-				}
-
-				return nil
-			})
-			if walkErr != nil {
-				if errors.Is(walkErr, context.Canceled) || errors.Is(walkErr, context.DeadlineExceeded) {
-					errs = append(errs, walkErr)
-					break pathLoop
-				}
-				if !os.IsPermission(walkErr) {
-					errs = append(errs, walkErr)
-				}
-			}
-			continue
-		}
-
-		if info.Mode().IsRegular() {
-			filesScanned++
-
-			found, err := scanFileForThreats(path, info, options)
-			if err != nil {
-				if !os.IsPermission(err) {
-					errs = append(errs, err)
-				}
-				continue
-			}
-			for _, threat := range found {
-				key := threat.Name + "|" + threat.Path
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = struct{}{}
-				threats = append(threats, threat)
-			}
-		}
+	if !info.Mode().IsRegular() {
+		return nil, nil
 	}
-
-	return threats, filesScanned, errors.Join(errs...)
+	found, err := scanFileForThreats(path, info, l.options)
+	out := make([]yarascan.Match, 0, len(found))
+	for _, th := range found {
+		out = append(out, yarascan.Match{RuleName: th.Name, Severity: th.Severity, ThreatType: th.Type})
+	}
+	return out, err
 }
 
 // QuarantineThreat neutralizes a detected threat and moves it into the

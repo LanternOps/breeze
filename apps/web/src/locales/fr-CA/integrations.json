@@ -201,6 +201,34 @@
       "revoke": "Pour révoquer l'accès plus tard, déconnectez ici ou retirez l'application d'entreprise Breeze dans Microsoft Entra.",
       "continue": "Continuer vers Microsoft",
       "defaultTarget": "le locataire Microsoft 365 de cette organisation"
+    },
+    "v2": {
+      "title": "Nouveau consentement requis pour les actions d'identité",
+      "intro": "Ce locataire a consenti à un ensemble d'autorisations antérieur. Un nouveau consentement conserve tout ce qui fonctionne aujourd'hui et ajoute les autorisations ci-dessous. Rien ne change pour le client tant qu'un administrateur n'a pas approuvé le nouveau consentement.",
+      "keepsWorking": "Désactiver un utilisateur et réinitialiser un mot de passe continuent de fonctionner avec le consentement actuel.",
+      "upgradeAction": "Examiner et approuver les nouvelles autorisations",
+      "upgradeFailed": "L'approbation des nouvelles autorisations n'a pas pu être démarrée.",
+      "revokedGrant": "Microsoft 365 n'affiche plus une autorisation que cette connexion possédait déjà : {{grants}}. Relancez le test, puis donnez un nouveau consentement si elle reste absente.",
+      "purpose": {
+        "userReadWrite": "Lire et modifier les comptes utilisateur — pour bloquer la connexion, modifier les licences et créer un utilisateur.",
+        "userPasswordProfile": "Définir le mot de passe d'un utilisateur — pour émettre un mot de passe temporaire lors d'une réinitialisation ou d'un nouveau compte.",
+        "userRevokeSessions": "Déconnecter un utilisateur de toutes ses sessions — pour révoquer les sessions de connexion lorsqu'un compte est compromis ou qu'un employé quitte l'entreprise.",
+        "groupMember": "Lire les groupes et modifier leurs membres — pour ajouter et retirer des appartenances. Ne permet ni de créer ni de supprimer un groupe.",
+        "intunePrivileged": "Mettre hors service un appareil géré par Intune — supprime les données d'entreprise et annule l'inscription. Breeze n'effectue jamais d'effacement complet.",
+        "mailboxSettings": "Lire et définir les paramètres de boîte aux lettres — pour activer ou désactiver une réponse automatique et vérifier son effet.",
+        "organizationRead": "Lire l'inventaire des abonnements du locataire — pour vérifier qu'un poste de licence est libre avant l'attribution.",
+        "unknown": "Utilisé par une action Microsoft 365 dans Breeze."
+      }
+    },
+    "staleManifest": {
+      "title": "Organisations nécessitant un nouveau consentement Microsoft 365",
+      "description": "Ces clients utilisent encore un ensemble d'autorisations antérieur. Ouvrez l'organisation pour lancer le nouveau consentement.",
+      "empty": "Aucune organisation ne nécessite de nouveau consentement.",
+      "columnOrganization": "Organisation",
+      "columnTenant": "Locataire",
+      "columnVersion": "Ensemble d'autorisations",
+      "columnLastVerified": "Dernière vérification",
+      "loadFailed": "La liste des nouveaux consentements n'a pas pu être chargée."
     }
   },
   "m365ConfirmTenant": {
@@ -295,30 +323,63 @@
     "saving": "Enregistrement...",
     "saveSettings": "Enregistrer les paramètres"
   },
-  "connectorStatusPanel": {
-    "healthy": "En bonne santé",
-    "degraded": "Dégradé",
-    "paused": "En pause",
-    "connectorStatus": "Statut du connecteur",
-    "trackIntegrationHealthAndRecentActivityAtA": "Suivez la santé de l’intégration et les activités récentes d’un coup d’œil. ",
-    "refreshAll": "Rafraîchir tout ",
-    "integration": "Intégration",
-    "health": "Santé",
-    "lastActivity": "Dernière activité",
-    "errors": "Erreurs",
-    "syncNow": "Synchronisez maintenant ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Surveillance",
-      "webhooks": "Webhooks",
-      "backup": "Sauvegarde"
+  "connectionHealthPanel": {
+    "title": "État des connexions",
+    "allHealthy": "Toutes les connexions sont opérationnelles",
+    "loadError": "Impossible de charger l'état des connexions.",
+    "retry": "Réessayer",
+    "since": "depuis {{time}}",
+    "fix": "Corriger",
+    "truncated": "Affichage des {{count}} premiers",
+    "recentlyResolved": "Résolus récemment ({{count}})",
+    "resolution": {
+      "recovered": "Rétablie",
+      "retired": "Retirée"
     },
-    "activity": {
-      "threeMinutesAgo": "Il y a 3 min",
-      "elevenMinutesAgo": "Il y a 11 minutes",
-      "fiveMinutesAgo": "Il y a 5 min",
-      "oneDayAgo": "Il y a 1 d"
+    "condition": {
+      "sync_failed": "Échec de la synchronisation",
+      "reauth_required": "Réautorisation requise",
+      "disconnected": "Déconnectée",
+      "error": "Erreur",
+      "mailbox_error": "Erreur de boîte aux lettres",
+      "poll_failing": "Échec de l'interrogation",
+      "needs_consent": "Consentement requis",
+      "degraded": "Dégradée",
+      "suspended": "Suspendue",
+      "grant_missing": "Autorisation manquante",
+      "grant_unexpected": "Autorisation inattendue",
+      "manifest_stale": "Manifeste désuet",
+      "application_token_invalid": "Jeton d'application invalide",
+      "tenant_mismatch": "Locataire non concordant",
+      "grant_reconciliation_unavailable": "Vérification d'autorisation indisponible",
+      "grant_revoked_reuse": "Autorisation révoquée (réutilisation de jeton)",
+      "grant_revoked": "Autorisation révoquée",
+      "delivery_failed": "Échec des livraisons",
+      "sync_stale": "Synchronisation bloquée",
+      "verification_failed": "Échec de la vérification",
+      "unknown": "Nécessite une intervention"
     }
+  },
+  "connectionHealthSettings": {
+    "title": "Notifications d'état",
+    "description": "Le personnel du MSP qui peut réparer une connexion défaillante reçoit toujours sa notification dans l'application et le résumé quotidien. Choisissez si les administrateurs des organisations clientes sont aussi informés des connexions de leur propre organisation.",
+    "partnerLabel": "Notifier les administrateurs clients par défaut",
+    "partnerDescription": "S'applique à chaque organisation qui n'a pas de paramètre propre. Les connexions à l'échelle du partenaire n'atteignent jamais les administrateurs clients.",
+    "partnerReadOnly": "Seuls les administrateurs du partenaire ayant accès à toutes les organisations peuvent modifier la valeur par défaut.",
+    "orgLabel": "Cette organisation",
+    "orgDescription": "Remplace la valeur par défaut pour l'organisation sélectionnée ci-dessus.",
+    "selectOrg": "Sélectionnez une organisation pour remplacer la valeur par défaut pour celle-ci.",
+    "inherit": "Hériter",
+    "inheritOn": "Hériter (activé, depuis {{from}})",
+    "inheritOff": "Hériter (désactivé, depuis {{from}})",
+    "fromPartner": "le paramètre du partenaire",
+    "fromDefault": "la valeur par défaut intégrée",
+    "on": "Activé",
+    "off": "Désactivé",
+    "loadFailed": "Impossible de charger les paramètres de notification d'état.",
+    "retry": "Réessayer",
+    "saved": "Paramètre de notification d'état enregistré",
+    "saveFailed": "Impossible d'enregistrer le paramètre de notification d'état"
   },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Connexion vérifiée et enregistrée.",
@@ -1305,7 +1366,8 @@
     "accessUrlHintPath": "L'adresse de l'API du fournisseur pour votre compte, y compris le chemin {{path}}.",
     "detectionIntervalLabel": "Intervalle de synchronisation des détections (minutes)",
     "inventoryIntervalLabel": "Intervalle de synchronisation de l'inventaire (minutes)",
-    "intervalHelp": "Laissez vide pour utiliser la valeur par défaut du fournisseur. Plage autorisée : de 1 à 1440 minutes.",
+    "intervalHelp": "Laissez vide pour utiliser la valeur par défaut du fournisseur. Plage autorisée : de 5 à 1440 minutes.",
+    "intervalInvalid": "Saisissez un nombre entier de 5 à 1440 minutes, ou laissez vide pour la valeur par défaut.",
     "noProviders": "Aucun fournisseur EDR n'est disponible sur ce serveur.",
     "partnerOnly": "Les fournisseurs EDR sont gérés au niveau du partenaire. Passez à un compte partenaire pour les gérer.",
     "readOnly": "Seuls les administrateurs partenaires ayant accès à toutes les organisations peuvent modifier les connexions EDR.",
@@ -1399,6 +1461,34 @@
       "degraded": "Dégradé",
       "unhealthy": "Défaillant",
       "unknown": "Inconnu"
-    }
+    },
+    "actionsLabel": "Autoriser les actions de réponse",
+    "actionsHelp": "Permet aux techniciens d’isoler des appareils et de lancer des analyses par cette connexion.",
+    "actionsConfirmTitle": "Autoriser les actions de réponse ?",
+    "actionsConfirmMessage": "Les techniciens ayant l’autorisation d’exécution sur les appareils pourront isoler et libérer des appareils et lancer des analyses sur les terminaux gérés par « {{name}} ».",
+    "actionsConfirmLabel": "Autoriser",
+    "actionsOnToast": "Actions de réponse autorisées",
+    "actionsOffToast": "Actions de réponse désactivées",
+    "actionsError": "Impossible de mettre à jour les actions de réponse.",
+    "pushLabel": "Événements push",
+    "pushHelp": "{{provider}} avise Breeze des nouveaux événements, ce qui déclenche une synchronisation plus tôt que le calendrier habituel. Les synchronisations planifiées continuent.",
+    "pushOnToast": "Événements push activés",
+    "pushOffToast": "Événements push désactivés",
+    "pushReplaceTitle": "Remplacer la destination push existante?",
+    "pushReplaceMessage": "{{provider}} envoie déjà les événements push vers une autre destination (par exemple un SIEM). La remplacer par Breeze interrompt ce flux.",
+    "pushReplaceConfirm": "Remplacer et activer",
+    "pushError": "Impossible de modifier les événements push.",
+    "pushErrors": {
+      "public_url_unset": "Définissez l’URL publique du serveur avant d’activer les événements push.",
+      "public_url_not_https": "Les événements push exigent une URL publique HTTPS.",
+      "connection_inactive": "Activez la connexion avant d’activer les événements push.",
+      "push_state_changed": "Les paramètres push ont changé pendant l’activation. Actualisez et réessayez."
+    },
+    "pushTest": "Envoyer un événement de test",
+    "pushTestQueuedToast": "Événement de test demandé",
+    "pushTestError": "Impossible d’envoyer l’événement de test.",
+    "pushTestNote": "L’événement de test peut prendre quelques minutes à arriver.",
+    "pushLast": "Dernier événement push : {{relative}}",
+    "pushNone": "Aucun événement push reçu pour l’instant"
   }
 }

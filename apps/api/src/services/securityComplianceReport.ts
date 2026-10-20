@@ -1,28 +1,3 @@
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
-import { db } from '../db';
-import { isEnforcing, loadPartnerPolicy } from './authenticatorPolicy';
-import {
-  backupConfigs,
-  c2cConnections,
-  devicePatches,
-  devices,
-  dnsFilterIntegrations,
-  elevationRequests,
-  googleWorkspaceConnections,
-  huntressAgents,
-  cisBaselineResults,
-  m365Connections,
-  organizations,
-  OUTSTANDING_DEVICE_PATCH_STATUSES,
-  pamOrgConfig,
-  pamRules,
-  patches,
-  s1Agents,
-  securityPostureOrgSnapshots,
-  securityStatus,
-  sites
-} from '../db/schema';
-import { EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
 import { securityCompliancePostureConfigSchema } from './reportConfigSchemas';
 import type { PostureSummary } from '@breeze/shared';
 import {
@@ -32,17 +7,11 @@ import {
 import type { OrgReportExecutionAuthority } from './siteScope';
 import {
   buildSecurityProductInventory,
-  categoryForEndpointProvider,
   prettySecurityProvider,
-  type SecurityProductEvidence
 } from './securityComplianceReportProducts';
-import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
-import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
-import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
 import { edrReportEvidenceAllowed } from './portal/edrVisibility';
-import { classifyDeviceProtection } from './portal/protection';
+import { loadPostureEvidence, postureEvidencePolicyFromReportConfig } from './postureEvidence';
 
-import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 const pct = (num: number, denom: number): number =>
   denom === 0 ? 0 : Math.round((num / denom) * 100);
 
@@ -53,11 +22,6 @@ const pct = (num: number, denom: number): number =>
  */
 const pctOrNull = (num: number, denom: number): number | null =>
   denom === 0 ? null : Math.round((num / denom) * 100);
-
-const daysAgo = (d: Date | null): number | null =>
-  d ? Math.floor((Date.now() - new Date(d).getTime()) / 86400000) : null;
-
-const isString = (value: unknown): value is string => typeof value === 'string';
 
 /** Build a human label for a device's detected protection products. */
 function protectionLabel(opts: {
@@ -74,29 +38,6 @@ function protectionLabel(opts: {
   return parts.join(' + ') + rtp;
 }
 
-/**
- * Tri-state password-policy evaluation: `null` when the device reported no usable
- * policy object (unknown — exclude from the denominator), otherwise pass/fail.
- * Never collapses "no data" into a fail.
- */
-function passwordComplexityResult(summary: unknown, minLength: number): boolean | null {
-  if (!summary || typeof summary !== 'object') return null;
-  const s = summary as Record<string, unknown>;
-  const hasLen = typeof s.minLength === 'number';
-  const hasLockout = typeof s.lockoutThreshold === 'number' || typeof s.lockoutEnabled === 'boolean';
-  if (!hasLen && !hasLockout) return null; // object present but no recognizable policy fields
-  const len = typeof s.minLength === 'number' ? s.minLength : 0;
-  const lockout =
-    typeof s.lockoutThreshold === 'number' ? s.lockoutThreshold > 0 : Boolean(s.lockoutEnabled);
-  return len >= minLength && lockout;
-}
-
-function localAdminCount(summary: unknown): number | null {
-  if (!summary || typeof summary !== 'object') return null;
-  const s = summary as Record<string, unknown>;
-  return typeof s.adminCount === 'number' ? s.adminCount : null;
-}
-
 function emptySummary(
   orgRow: { id: string; name: string } | undefined,
   generatedAt: string,
@@ -110,7 +51,9 @@ function emptySummary(
     deviceCount: 0,
     controls: {
       edrCoveragePct: null,
+      edrUnknownCount: 0,
       anyAvCoveragePct: null,
+      anyAvUnknownCount: 0,
       unprotectedCount: 0,
       encryptionPct: null,
       encryptionUnknownCount: 0,
@@ -148,19 +91,6 @@ function emptySummary(
   } satisfies PostureSummary;
 }
 
-function prettyDnsProvider(p: string): string {
-  const map: Record<string, string> = {
-    umbrella: 'Cisco Umbrella',
-    cloudflare: 'Cloudflare Gateway',
-    dnsfilter: 'DNSFilter',
-    pihole: 'Pi-hole',
-    opendns: 'OpenDNS',
-    quad9: 'Quad9',
-    adguard_home: 'AdGuard Home'
-  };
-  return map[p] ?? `DNS filtering (${p})`;
-}
-
 export async function generateSecurityCompliancePostureReport(
   orgId: string,
   rawConfig: Record<string, unknown>,
@@ -193,35 +123,17 @@ export async function generateSecurityCompliancePostureReport(
     };
   }
 
-  const [orgRow] = await db
-    .select({ id: organizations.id, name: organizations.name, partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-
-  // Ephemeral Quick Support devices stay inside accessibleOrgIds for RLS by
-  // design — exclude them from the compliance population explicitly.
-  const deviceConditions = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
-  if (cfg.sites.length > 0) {
-    deviceConditions.push(inArray(devices.siteId, cfg.sites));
-  }
-  if (authority.scope.kind === 'restricted') {
-    deviceConditions.push(inArray(devices.siteId, authority.scope.siteIds));
-  }
-
-  const deviceRows = await db
-    .select({
-      id: devices.id,
-      hostname: devices.hostname,
-      osType: devices.osType,
-      siteName: sites.name
-    })
-    .from(devices)
-    .leftJoin(sites, eq(devices.siteId, sites.id))
-    .where(and(...deviceConditions));
-
-  const deviceIds = deviceRows.map((d) => d.id);
-  if (deviceIds.length === 0) {
+  const evidence = await loadPostureEvidence(
+    authority.scope,
+    postureEvidencePolicyFromReportConfig(cfg),
+    new Date(generatedAt),
+    // EDR provider framework (#8166): a portal (customer self-service) run
+    // honours the strict portal EDR flag.
+    { edrEvidenceAllowed: () => edrReportEvidenceAllowed(orgId, authority) },
+  );
+  const orgRow = evidence.org ?? undefined;
+  const deviceCount = evidence.deviceCount;
+  if (deviceCount === 0) {
     return {
       rows: [],
       rowCount: 0,
@@ -236,409 +148,94 @@ export async function generateSecurityCompliancePostureReport(
     };
   }
 
-  const ssRows = await db
-    .select({
-      deviceId: securityStatus.deviceId,
-      provider: securityStatus.provider,
-      realTimeProtection: securityStatus.realTimeProtection,
-      definitionsDate: securityStatus.definitionsDate,
-      encryptionStatus: securityStatus.encryptionStatus,
-      firewallEnabled: securityStatus.firewallEnabled,
-      passwordPolicySummary: securityStatus.passwordPolicySummary,
-      localAdminSummary: securityStatus.localAdminSummary,
-      updatedAt: securityStatus.updatedAt
-    })
-    .from(securityStatus)
-    .where(and(eq(securityStatus.orgId, orgId), inArray(securityStatus.deviceId, deviceIds)));
-  const ssByDevice = new Map(ssRows.map((r) => [r.deviceId, r]));
+  const c = evidence.controls;
+  const w = evidence.report.orgWide;
+  const elevationsApproved = w ? w.elevationRows.filter((e) => e.approvedAt != null).length : 0;
+  const elevationsDenied = w ? w.elevationRows.filter((e) => e.deniedByUserId != null).length : 0;
 
-  const s1Rows = await db
-    .select({ deviceId: s1Agents.deviceId })
-    .from(s1Agents)
-    .where(and(eq(s1Agents.orgId, orgId), inArray(s1Agents.deviceId, deviceIds)));
-  const huntressRows = await db
-    .select({ deviceId: huntressAgents.deviceId })
-    .from(huntressAgents)
-    .where(and(eq(huntressAgents.orgId, orgId), inArray(huntressAgents.deviceId, deviceIds)));
-  const s1Devices = new Set(s1Rows.map((r) => r.deviceId).filter(isString));
-  const huntressDevices = new Set(huntressRows.map((r) => r.deviceId).filter(isString));
-
-  const patchRows = await db
-    // Effective per-device severity (patchSeverityOverlay.ts) — see the same
-    // note in securityPosture.ts. Per device_patches row, inside a query
-    // already scoped to this org + these deviceIds; never mixed across orgs.
-    .select({ deviceId: devicePatches.deviceId, severity: EFFECTIVE_PATCH_SEVERITY_SQL })
-    .from(devicePatches)
-    .innerJoin(patches, eq(devicePatches.patchId, patches.id))
-    .where(
-      and(
-        eq(devicePatches.orgId, orgId),
-        inArray(devicePatches.deviceId, deviceIds),
-        inArray(devicePatches.status, OUTSTANDING_DEVICE_PATCH_STATUSES)
-      )
-    );
-  const pendingByDevice = new Map<string, { total: number; critical: number }>();
-  for (const p of patchRows) {
-    const e = pendingByDevice.get(p.deviceId) ?? { total: 0, critical: 0 };
-    e.total += 1;
-    if (p.severity === 'critical') e.critical += 1;
-    pendingByDevice.set(p.deviceId, e);
-  }
-
-  const vulnByDevice = await loadOpenVulnerabilityCounts(deviceIds);
-  // Device-scoped like the Huntress/SentinelOne evidence above, so it is
-  // included for a site-restricted caller too — limited to their devices.
-  const backupProviders = await loadBackupProviderEvidence(orgId, deviceIds);
-  // EDR provider framework (#8164): devices an EDR connector reports healthy.
-  // Same device scoping as the Huntress/SentinelOne evidence above.
-  // A portal (customer self-service) run honours the strict portal EDR flag.
-  const edrDevices = (await edrReportEvidenceAllowed(orgId, authority))
-    ? await loadEdrDeviceCoverage(orgId, deviceIds)
-    : new Set<string>();
-
-  const includeOrgWideEvidence = authority.scope.kind === 'unrestricted';
-  const orgWideEvidence = includeOrgWideEvidence
-    ? await (async () => {
-      const [dns] = await db
-        .select({ isActive: dnsFilterIntegrations.isActive, provider: dnsFilterIntegrations.provider, lastSyncStatus: dnsFilterIntegrations.lastSyncStatus })
-        .from(dnsFilterIntegrations)
-        .where(and(eq(dnsFilterIntegrations.orgId, orgId), eq(dnsFilterIntegrations.isActive, true)))
-        .limit(1);
-      const [backup] = await db
-        .select({ isActive: backupConfigs.isActive, provider: backupConfigs.provider, encryption: backupConfigs.encryption })
-        .from(backupConfigs)
-        .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isActive, true)))
-        .limit(1);
-      const [c2c] = await db
-        .select({ status: c2cConnections.status, provider: c2cConnections.provider })
-        .from(c2cConnections)
-        .where(and(eq(c2cConnections.orgId, orgId), eq(c2cConnections.status, 'active')))
-        .limit(1);
-      const [m365] = await db
-        .select({ status: m365Connections.status })
-        .from(m365Connections)
-        .where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.status, 'active')))
-        .limit(1);
-      const [google] = await db
-        .select({ status: googleWorkspaceConnections.status })
-        .from(googleWorkspaceConnections)
-        .where(and(eq(googleWorkspaceConnections.orgId, orgId), eq(googleWorkspaceConnections.status, 'active')))
-        .limit(1);
-
-      const [pamCfg] = await db
-        .select({ uacInterceptionEnabled: pamOrgConfig.uacInterceptionEnabled })
-        .from(pamOrgConfig)
-        .where(eq(pamOrgConfig.orgId, orgId))
-        .limit(1);
-      const pamRuleRows = await db
-        .select({ id: pamRules.id })
-        .from(pamRules)
-        .where(and(eq(pamRules.orgId, orgId), eq(pamRules.enabled, true)));
-      const windowStart = new Date(Date.now() - cfg.windowDays * 86400000);
-      const elevationRows = await db
-        .select({ approvedAt: elevationRequests.approvedAt, deniedByUserId: elevationRequests.deniedByUserId })
-        .from(elevationRequests)
-        .where(and(eq(elevationRequests.orgId, orgId), gte(elevationRequests.requestedAt, windowStart)));
-
-      // Step-up counts as enforced when under-assured high AND critical
-      // approvals are refused right now — an explicit Required policy past its
-      // grace date, or the platform default once it applies. Read through
-      // loadPartnerPolicy (system-context partner-axis read) so an explicit
-      // "not required" row is never hidden and mistaken for the default.
-      const authPol = orgRow?.partnerId ? await loadPartnerPolicy(orgRow.partnerId) : null;
-      const policyNow = new Date();
-      const mfaStepUpEnforced =
-        isEnforcing(authPol, policyNow, 'high') && isEnforcing(authPol, policyNow, 'critical');
-
-      const [postureRow] = await db
-        .select({ overallScore: securityPostureOrgSnapshots.overallScore })
-        .from(securityPostureOrgSnapshots)
-        .where(eq(securityPostureOrgSnapshots.orgId, orgId))
-        .orderBy(desc(securityPostureOrgSnapshots.capturedAt))
-        .limit(1);
-
-      return { dns, backup, c2c, m365, google, pamCfg, pamRuleRows, elevationRows, mfaStepUpEnforced, postureRow };
-    })()
-    : {
-      dns: undefined,
-      backup: undefined,
-      c2c: undefined,
-      m365: undefined,
-      google: undefined,
-      pamCfg: undefined,
-      pamRuleRows: [],
-      elevationRows: [],
-      mfaStepUpEnforced: false,
-      postureRow: undefined,
-    };
-  const {
-    dns,
-    backup,
-    c2c,
-    m365,
-    google,
-    pamCfg,
-    pamRuleRows,
-    elevationRows,
-    mfaStepUpEnforced,
-    postureRow,
-  } = orgWideEvidence;
-  const elevationsApproved = elevationRows.filter((e) => e.approvedAt != null).length;
-  const elevationsDenied = elevationRows.filter((e) => e.deniedByUserId != null).length;
-
-  // CIS hardening pass-rate per device (latest scan), optional via config.includeCis.
-  // Uses the result's aggregate columns directly — no findings-jsonb parsing needed.
-  const cisByDevice = new Map<string, number>();
-  if (cfg.includeCis) {
-    const cisRows = await db
-      .select({
-        deviceId: cisBaselineResults.deviceId,
-        passedChecks: cisBaselineResults.passedChecks,
-        totalChecks: cisBaselineResults.totalChecks
-      })
-      .from(cisBaselineResults)
-      .where(and(eq(cisBaselineResults.orgId, orgId), inArray(cisBaselineResults.deviceId, deviceIds)))
-      .orderBy(desc(cisBaselineResults.checkedAt));
-    for (const r of cisRows) {
-      if (cisByDevice.has(r.deviceId)) continue; // desc order → first seen is the latest scan
-      cisByDevice.set(r.deviceId, r.totalChecks > 0 ? Math.round((r.passedChecks / r.totalChecks) * 100) : 0);
-    }
-  }
-  const cisValues = [...cisByDevice.values()];
-  const cisAvgPassRate =
-    cfg.includeCis && cisValues.length > 0
-      ? Math.round(cisValues.reduce((a, b) => a + b, 0) / cisValues.length)
-      : null;
-
-  // Patch-assessed set: a device counts toward patch currency only if it has at
-  // least one device_patches row (any status). Absence of patch data is "unknown",
-  // never silently scored as "current". (db.select — selectDistinct isn't mocked.)
-  const patchRowDevices = await db
-    .select({ deviceId: devicePatches.deviceId })
-    .from(devicePatches)
-    .where(and(eq(devicePatches.orgId, orgId), inArray(devicePatches.deviceId, deviceIds)));
-  const patchScannedDevices = new Set(patchRowDevices.map((r) => r.deviceId));
-
-  let reporting = 0; // devices reporting a security_status row
-  let managedEdr = 0;
-  let anyAv = 0;
-  let unprotected = 0;
-  // Each control tracks an "assessed" denominator separate from `reporting`, so a
-  // device that reported security_status but lacks data for a given control is an
-  // explicit unknown — never folded into pass or fail.
-  let encAssessed = 0;
-  let encrypted = 0;
-  let fwAssessed = 0;
-  let firewall = 0;
-  let pwAssessed = 0;
-  let pwPass = 0;
-  let adminAssessed = 0;
-  let adminFlagged = 0;
-  let patchScanned = 0;
-  let patchCurrent = 0;
-  let avDefAssessed = 0;
-  let avDefCurrent = 0;
-
-  const rows = deviceRows.map((d) => {
-    const ss = ssByDevice.get(d.id);
-    const managed: string[] = [];
-    if (huntressDevices.has(d.id)) managed.push('Huntress');
-    if (s1Devices.has(d.id)) managed.push('SentinelOne');
-    // Generic label: the report is a customer deliverable (see
-    // securityComplianceReportEdr.ts), so the EDR vendor is never named.
-    if (edrDevices.has(d.id)) managed.push(EDR_PRODUCT_LABEL);
-    const isManaged = managed.length > 0;
-    const rtp = ss?.realTimeProtection ?? null;
-    const hasNativeAv = Boolean(ss && ss.provider && ss.provider !== 'other' && ss.provider !== 'unknown' && rtp === true);
-
-    // A healthy EDR endpoint is managed protection, exactly like an S1 or
-    // Huntress agent (it outranks native AV state).
-    const protection = edrDevices.has(d.id)
-      ? 'protected'
-      : classifyDeviceProtection({
-          securityStatus: ss
-            ? {
-                provider: ss.provider,
-                realTimeProtection: ss.realTimeProtection,
-              }
-            : null,
-          hasS1Agent: s1Devices.has(d.id),
-          hasHuntressAgent: huntressDevices.has(d.id),
-        });
-
-    if (ss) reporting += 1;
-    if (isManaged) managedEdr += 1;
-    if (protection === 'protected') anyAv += 1;
-    // The report has no unknown protection bucket. An absent status row (and a
-    // null real-time-protection reading) has always counted as unprotected
-    // here, so preserve that public contract.
-    if (protection !== 'protected') unprotected += 1;
-
-    // Firewall/encryption are live device states that stop updating when a device
-    // goes offline, so a row older than the cutoff is treated as unknown rather
-    // than counted as a current pass/fail. (updatedAt is NOT NULL in schema; a
-    // null age can only be a legacy/edge row, which we fail-open as fresh.)
-    const ssAgeDays = ss ? daysAgo(ss.updatedAt) : null;
-    const ssFresh = Boolean(ss) && (ssAgeDays == null || ssAgeDays <= cfg.maxSecurityStatusAgeDays);
-
-    const enc = ss?.encryptionStatus ?? 'unknown';
-    if (ssFresh && enc !== 'unknown') {
-      encAssessed += 1;
-      if (enc === 'encrypted') encrypted += 1;
-    }
-    if (ss && ssFresh && ss.firewallEnabled != null) {
-      fwAssessed += 1;
-      if (ss.firewallEnabled === true) firewall += 1;
-    }
-    if (ss) {
-      const pw = passwordComplexityResult(ss.passwordPolicySummary, cfg.minPasswordLength);
-      if (pw !== null) {
-        pwAssessed += 1;
-        if (pw) pwPass += 1;
-      }
-    }
-    const admins = ss ? localAdminCount(ss.localAdminSummary) : null;
-    if (ss && admins != null) {
-      adminAssessed += 1;
-      if (admins > cfg.maxLocalAdmins) adminFlagged += 1;
-    }
-
-    const pend = pendingByDevice.get(d.id) ?? { total: 0, critical: 0 };
-    if (patchScannedDevices.has(d.id)) {
-      patchScanned += 1;
-      if (pend.critical === 0) patchCurrent += 1;
-    }
-
-    // AV definitions currency honors cfg.maxAvDefinitionsAgeDays, over native-AV
-    // devices that report a definitions date (managed-EDR-only devices have none).
-    const avAge = ss ? daysAgo(ss.definitionsDate) : null;
-    if (hasNativeAv && avAge != null) {
-      avDefAssessed += 1;
-      if (avAge <= cfg.maxAvDefinitionsAgeDays) avDefCurrent += 1;
-    }
-
-    const vuln = vulnByDevice.get(d.id) ?? { critical: 0, high: 0 };
-
+  const rows = evidence.devices.map((d) => {
+    const isManaged = d.managed.length > 0;
+    const vuln = evidence.report.vulnByDevice.get(d.id) ?? { critical: 0, high: 0 };
     return {
       hostname: d.hostname,
       site: d.siteName ?? null,
       os: d.osType ?? '',
-      protection: ss || isManaged ? protectionLabel({ managed, nativeProvider: ss?.provider ?? null, rtp }) : 'No data',
+      protection: d.hasStatusRow || isManaged
+        ? protectionLabel({ managed: d.managed, nativeProvider: d.nativeProvider, rtp: d.realTimeProtection })
+        : 'No data',
       protectionManaged: isManaged,
-      realTimeProtection: rtp,
-      avDefinitionsAgeDays: avAge,
-      encryption: ssFresh ? enc : 'no data',
-      firewall: ss && ssFresh ? ss.firewallEnabled : null,
-      localAdmins: admins,
-      patchAssessed: patchScannedDevices.has(d.id),
-      pendingPatches: pend.total,
-      criticalPatches: pend.critical,
+      realTimeProtection: d.realTimeProtection,
+      avDefinitionsAgeDays: d.avDefinitionsAgeDays,
+      encryption: d.statusFresh ? d.encryption : 'no data',
+      firewall: d.statusFresh ? d.firewall : null,
+      localAdmins: d.localAdmins,
+      patchAssessed: d.patchAssessed,
+      pendingPatches: d.pendingPatches,
+      criticalPatches: d.criticalPatches,
       openVulnCritical: vuln.critical,
       openVulnHigh: vuln.high,
-      cisPassRate: cisByDevice.get(d.id) ?? null,
+      cisPassRate: d.cisPassRate,
       posture: null
     };
   });
 
-  const deviceCount = deviceRows.length;
-
   // An integration that exists but is failing to sync is not "active" for the
   // purpose of an attestation. Treat lastSyncStatus 'error' as degraded.
-  const dnsSyncStatus = dns?.lastSyncStatus ?? null;
-  const dnsActive = Boolean(dns) && dnsSyncStatus !== 'error';
+  const dnsSyncStatus = w?.dns?.lastSyncStatus ?? null;
+  const dnsActive = Boolean(w?.dns) && dnsSyncStatus !== 'error';
 
-  const productEvidence: SecurityProductEvidence[] = [];
-  if (huntressDevices.size > 0) {
-    productEvidence.push({
-      product: 'Huntress',
-      category: 'mdr',
-      active: true,
-      lastSyncStatus: null,
-      deviceIds: huntressDevices
-    });
-  }
-  if (s1Devices.size > 0) {
-    productEvidence.push({
-      product: 'SentinelOne',
-      category: 'edr',
-      active: true,
-      lastSyncStatus: null,
-      deviceIds: s1Devices
-    });
-  }
-  if (edrDevices.size > 0) {
-    productEvidence.push({
-      product: EDR_PRODUCT_LABEL,
-      category: 'edr',
-      active: true,
-      lastSyncStatus: null,
-      deviceIds: edrDevices
-    });
-  }
-  for (const row of ssRows) {
-    if (row.provider === 'other' || row.provider === 'unknown') continue;
-    productEvidence.push({
-      product: prettySecurityProvider(row.provider),
-      category: categoryForEndpointProvider(row.provider),
-      active: row.realTimeProtection === true,
-      lastSyncStatus: null,
-      deviceIds: [row.deviceId]
-    });
-  }
-  if (dns) productEvidence.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus });
-  if (backup) productEvidence.push({ product: `Backup (${backup.provider})`, category: 'backup', active: true, lastSyncStatus: null });
-  if (c2c) productEvidence.push({ product: `SaaS backup (${c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null });
-  productEvidence.push(...backupProviders.evidence);
-  if (m365) productEvidence.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null });
-  if (google) productEvidence.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null });
-  const securityProducts = buildSecurityProductInventory(productEvidence);
+  const securityProducts = buildSecurityProductInventory(evidence.report.productEvidence);
 
   const summary = {
       org: { id: orgRow?.id ?? orgId, name: orgRow?.name ?? 'Unknown' },
       generatedAt,
       deviceCount,
       controls: {
-        edrCoveragePct: pctOrNull(managedEdr, deviceCount),
-        anyAvCoveragePct: pctOrNull(anyAv, deviceCount),
-        unprotectedCount: unprotected,
-        encryptionPct: pctOrNull(encrypted, encAssessed),
-        encryptionUnknownCount: deviceCount - encAssessed,
-        firewallPct: pctOrNull(firewall, fwAssessed),
-        firewallUnknownCount: deviceCount - fwAssessed,
-        patchCurrentPct: pctOrNull(patchCurrent, patchScanned),
-        patchUnknownCount: deviceCount - patchScanned,
-        passwordComplexityPct: pctOrNull(pwPass, pwAssessed),
-        passwordUnknownCount: reporting - pwAssessed,
-        localAdminExposurePct: pctOrNull(adminFlagged, adminAssessed),
-        localAdminUnknownCount: reporting - adminAssessed,
-        avDefinitionsCurrentPct: pctOrNull(avDefCurrent, avDefAssessed),
-        cisAvgPassRate,
+        // EDR/AV denominators are the ASSESSED devices (spec §19.7): a device
+        // Breeze has no evidence about is an explicit unknown, not a failure.
+        edrCoveragePct: pctOrNull(c.edr_coverage.passing, c.edr_coverage.assessed),
+        edrUnknownCount: evidence.report.edrUnknown,
+        anyAvCoveragePct: pctOrNull(c.endpoint_protection.passing, c.endpoint_protection.assessed),
+        anyAvUnknownCount: evidence.report.anyAvUnknown,
+        unprotectedCount: evidence.report.unprotected,
+        encryptionPct: pctOrNull(c.disk_encryption.passing, c.disk_encryption.assessed),
+        encryptionUnknownCount: deviceCount - c.disk_encryption.assessed,
+        firewallPct: pctOrNull(c.host_firewall.passing, c.host_firewall.assessed),
+        firewallUnknownCount: deviceCount - c.host_firewall.assessed,
+        patchCurrentPct: pctOrNull(c.os_patch_currency.passing, c.os_patch_currency.assessed),
+        patchUnknownCount: deviceCount - c.os_patch_currency.assessed,
+        passwordComplexityPct: pctOrNull(c.password_policy.passing, c.password_policy.assessed),
+        passwordUnknownCount: deviceCount - c.password_policy.assessed,
+        localAdminExposurePct: pctOrNull(c.least_privilege.assessed - c.least_privilege.passing, c.least_privilege.assessed),
+        localAdminUnknownCount: deviceCount - c.least_privilege.assessed,
+        avDefinitionsCurrentPct: pctOrNull(c.definitions_current.passing, c.definitions_current.assessed),
+        cisAvgPassRate: c.hardening_baseline.aggregatePct,
         cisIncluded: cfg.includeCis,
-        cisAssessedCount: cisByDevice.size,
+        cisAssessedCount: evidence.report.cisAssessedCount,
         backupRequired: cfg.backupRequired,
-        ...(includeOrgWideEvidence ? {
+        ...(w ? {
           // Proves an identity provider is CONNECTED, not that MFA is enforced.
           // Real MFA enforcement is privilegedAccess.mfaStepUpEnforced.
-          identityProviderConnected: Boolean(m365 || google),
+          identityProviderConnected: Boolean(w.m365 || w.google),
           // A third party counts once it has at least one fresh successful
           // backup on an in-scope device (#6012).
-          backupConfigured: Boolean(backup || c2c || backupProviders.coveredDeviceCount > 0),
-          backupEncrypted: backup ? Boolean(backup.encryption) : null,
+          backupConfigured: Boolean(w.backup || w.c2c || evidence.report.backupProviders.coveredDeviceCount > 0),
+          backupEncrypted: w.backup ? Boolean(w.backup.encryption) : null,
           dnsFilteringActive: dnsActive,
           dnsFilteringSyncStatus: dnsSyncStatus,
         } : {}),
       },
-      ...(includeOrgWideEvidence ? { privilegedAccess: {
-        uacInterceptionEnabled: Boolean(pamCfg?.uacInterceptionEnabled),
-        activePamRules: pamRuleRows.length,
+      ...(w ? { privilegedAccess: {
+        uacInterceptionEnabled: Boolean(w.pamCfg?.uacInterceptionEnabled),
+        activePamRules: w.pamRuleRows.length,
         windowDays: cfg.windowDays,
-        elevationsInWindow: elevationRows.length,
+        elevationsInWindow: w.elevationRows.length,
         elevationsApproved,
         elevationsDenied,
-        mfaStepUpEnforced
+        mfaStepUpEnforced: w.mfaStepUpEnforced
       } } : {}),
       securityProducts,
-      ...(includeOrgWideEvidence ? { postureScore: postureRow?.overallScore ?? null } : {}),
+      ...(w ? { postureScore: w.postureRow?.overallScore ?? null } : {}),
   } satisfies PostureSummary;
 
   return { rows, rowCount: rows.length, generatedAt, summary };

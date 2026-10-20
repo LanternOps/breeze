@@ -6,7 +6,7 @@ const removeRepeatableByKeyMock = vi.fn();
 const workerCtor = vi.fn();
 const runReconcileMock = vi.fn();
 const attachMock = vi.fn();
-const processor: { current?: () => Promise<unknown> } = {};
+const processor: { current?: (job: { name: string; data: unknown }) => Promise<unknown> } = {};
 
 vi.mock('bullmq', () => ({
   Queue: class {
@@ -16,7 +16,7 @@ vi.mock('bullmq', () => ({
     close = vi.fn();
   },
   Worker: class {
-    constructor(name: string, fn: () => Promise<unknown>, opts: unknown) {
+    constructor(name: string, fn: (job: { name: string; data: unknown }) => Promise<unknown>, opts: unknown) {
       workerCtor(name, opts);
       processor.current = fn;
     }
@@ -27,6 +27,8 @@ vi.mock('bullmq', () => ({
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: (...a: unknown[]) => attachMock(...a) }));
 vi.mock('../services/connectionHealth/reconcile', () => ({ runReconcile: (...a: unknown[]) => runReconcileMock(...a) }));
+const SOURCES = vi.hoisted(() => [{ kind: 'oauth_grant' }, { kind: 'huntress' }]);
+vi.mock('../services/connectionHealth/sources', () => ({ HEALTH_SOURCES: SOURCES }));
 
 import {
   CONNECTION_HEALTH_QUEUE,
@@ -65,9 +67,26 @@ describe('connectionHealthReconcile worker', () => {
   it('the processor runs one reconcile and lets its failure fail the job', async () => {
     await initializeConnectionHealthReconcileWorker();
     runReconcileMock.mockResolvedValueOnce({ kinds: [{ kind: 'oauth_grant', status: 'ok' }], notices: { delivered: 1, failed: 0 }, retained: 0 });
-    await expect(processor.current!()).resolves.toEqual({ kinds: [['oauth_grant', 'ok']], notices: { delivered: 1, failed: 0 }, retained: 0 });
+    const job = { name: 'reconcile', data: {} };
+    await expect(processor.current!(job)).resolves.toEqual({ kinds: [['oauth_grant', 'ok']], notices: { delivered: 1, failed: 0 }, retained: 0 });
+    expect(runReconcileMock).toHaveBeenLastCalledWith();
     runReconcileMock.mockRejectedValueOnce(new Error('pool exhausted'));
-    await expect(processor.current!()).rejects.toThrow('pool exhausted');
+    await expect(processor.current!(job)).rejects.toThrow('pool exhausted');
     expect(runReconcileMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a reconcile-kind nudge runs only that kind, in nudge mode (W4)', async () => {
+    await initializeConnectionHealthReconcileWorker();
+    runReconcileMock.mockResolvedValueOnce({ kinds: [{ kind: 'huntress', status: 'ok' }], notices: { delivered: 0, failed: 0 }, retained: 0 });
+    await expect(processor.current!({ name: 'reconcile-kind', data: { kind: 'huntress' } }))
+      .resolves.toMatchObject({ kinds: [['huntress', 'ok']] });
+    expect(runReconcileMock).toHaveBeenCalledWith({ sources: [SOURCES[1]], mode: 'nudge' });
+  });
+
+  it('a nudge for an unknown kind is dropped without a run', async () => {
+    await initializeConnectionHealthReconcileWorker();
+    await expect(processor.current!({ name: 'reconcile-kind', data: { kind: 'nope' } })).resolves.toEqual({ skipped: 'unknown_kind' });
+    await expect(processor.current!({ name: 'reconcile-kind', data: null })).resolves.toEqual({ skipped: 'unknown_kind' });
+    expect(runReconcileMock).not.toHaveBeenCalled();
   });
 });

@@ -91,12 +91,15 @@ export function FilterValueEditor({
     onChange({ ...condition, value: v });
   };
 
-  // Org/Site name pickers replace operator dropdown UX — multi-select only.
+  // Org/Site/Group name pickers replace the free operator dropdown: they are
+// always multi-select, so the only operator choice is any-of vs none-of, and
+// only when the field offers the negated form (Device Group, #9215).
   if (isOrgField(field.key) && orgs) {
     return (
       <NamedMultiSelect
         label={t('filterValueEditor.organizations')}
         options={orgs}
+        field={field}
         condition={condition}
         onChange={onChange}
         testId="filter-org-picker"
@@ -108,6 +111,7 @@ export function FilterValueEditor({
       <NamedMultiSelect
         label={t('filterValueEditor.sites')}
         options={sites}
+        field={field}
         condition={condition}
         onChange={onChange}
         testId="filter-site-picker"
@@ -119,6 +123,7 @@ export function FilterValueEditor({
       <NamedMultiSelect
         label={t('filterValueEditor.deviceGroups')}
         options={groups}
+        field={field}
         condition={condition}
         onChange={onChange}
         testId="filter-group-picker"
@@ -165,16 +170,20 @@ export function FilterValueEditor({
 }
 
 // Searchable multi-select that renders names + stores UUIDs as condition.value.
-// Always uses operator `in` (multi). Single-value selection (operator
-// `equals`) is collapsed to in([one]) for UI consistency.
+// Always stores an array, so the operator is `in` or `notIn`. The scalar forms
+// (`equals` / `notEquals`) are collapsed to in([one]) / notIn([one]) when the
+// selection is edited, which is equivalent in the filter engine. Negation is
+// preserved on every edit: resetting it to `in` would silently turn an
+// exclusion into an inclusion.
 interface NamedMultiSelectProps {
+  field: FilterFieldDefinition;
   label: string;
   options: NamedRef[];
   condition: FilterCondition;
   onChange: (c: FilterCondition) => void;
   testId: string;
 }
-function NamedMultiSelect({ label, options, condition, onChange, testId }: NamedMultiSelectProps) {
+function NamedMultiSelect({ field, label, options, condition, onChange, testId }: NamedMultiSelectProps) {
   const { t } = useTranslation('devices');
   const [q, setQ] = useState('');
   const selected: string[] = Array.isArray(condition.value)
@@ -186,13 +195,32 @@ function NamedMultiSelect({ label, options, condition, onChange, testId }: Named
     const lc = q.toLowerCase().trim();
     return lc ? options.filter(o => o.name.toLowerCase().includes(lc)) : options;
   }, [q, options]);
-  const toggle = (id: string) => {
-    const next = selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id];
-    onChange({ ...condition, operator: 'in', value: next });
+  const negated = condition.operator === 'notIn' || condition.operator === 'notEquals';
+  const setSelection = (next: string[], nextNegated: boolean = negated) => {
+    onChange({ ...condition, operator: nextNegated ? 'notIn' : 'in', value: next });
   };
+  const toggle = (id: string) => {
+    setSelection(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+  };
+  // Only offer the any-of / none-of choice when the field supports both.
+  const canNegate = field.operators.includes('in') && field.operators.includes('notIn');
   const byId = useMemo(() => new Map(options.map(o => [o.id, o.name])), [options]);
   return (
     <div className="flex flex-col gap-2" data-testid={testId}>
+      {canNegate && (
+        <>
+          <label className="text-xs font-medium text-muted-foreground">{t('filterValueEditor.operator')}</label>
+          <select
+            data-testid="filter-operator-select"
+            value={negated ? 'notIn' : 'in'}
+            onChange={e => setSelection(selected, e.target.value === 'notIn')}
+            className="rounded border bg-background px-2 py-1 text-sm"
+          >
+            <option value="in">{operatorLabel('in')}</option>
+            <option value="notIn">{operatorLabel('notIn')}</option>
+          </select>
+        </>
+      )}
       <label className="text-xs font-medium text-muted-foreground">{label}</label>
       <div className="flex items-center gap-1 rounded border bg-background px-2 py-1">
         <Search className="h-3 w-3 text-muted-foreground" />

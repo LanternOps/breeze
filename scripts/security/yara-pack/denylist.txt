@@ -1,0 +1,7 @@
+# Rules excluded from the built-in YARA pack, one per line:
+#
+#   RULE_NAME  reason (required: the clean file it matched, or why it is unsafe)
+#
+# This is the fix path for the yara-pack-fp clean-corpus job: a rule that
+# matches a clean system file goes here with the file it matched. Changing
+# this file changes the pack: bump `version` in pack.lock.

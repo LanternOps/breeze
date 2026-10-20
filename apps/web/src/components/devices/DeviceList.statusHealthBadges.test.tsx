@@ -8,7 +8,7 @@ import { DEFAULT_VISIBLE_COLUMNS, writeColumnVisibility } from './columnVisibili
 // installed, update withheld) previously lived only in the Agent Version /
 // Helper Version columns, which are hidden by default — most users never see
 // them. They now also render as compact badges in the default-visible
-// Status column, matching the existing agent-silent / logs-silent pattern.
+// Status column, matching the existing agent-silent pattern.
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('@/stores/orgStore', () => ({
@@ -40,7 +40,6 @@ function device(id: string, hostname: string, overrides: Partial<Device> = {}): 
     siteId: 'site-1',
     siteName: 'HQ',
     agentVersion: '0.110.0',
-    lastLogAt: new Date().toISOString(),
     tags: [],
     ...overrides,
   };
@@ -116,7 +115,6 @@ describe('DeviceList — at most one secondary status pill (#8407)', () => {
   const conditions: Array<[string, string, Partial<Device>]> = [
     ['stuck', 'status-update-stuck', stuck],
     ['agent-silent', 'agent-silent-badge', { mainAgentSilentSince: new Date(Date.now() - 3_600_000).toISOString() }],
-    ['logs-silent', 'logs-silent-badge', { lastLogAt: new Date(Date.now() - 12 * 3_600_000).toISOString(), enrolledAt: '2020-01-01T00:00:00Z' }],
     ['duplicate', 'possible-duplicate-badge', { possibleReplacementOfDeviceId: '99999999-9999-9999-9999-999999999999' }],
     ['helper', 'status-helper-install-issue', { helperInstallIssue: 'awaiting_server_offer' }],
     ['withheld', 'status-update-withheld', { updateOfferWithheldReason: 'edition_gate' }],

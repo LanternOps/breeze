@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import AiToolCallCard from './AiToolCallCard';
@@ -258,6 +258,26 @@ describe('AiToolCallCard', () => {
       );
       expect(queryByTestId('ai-tool-failed-reason')).toBeNull();
       expect(queryByTestId('ai-tool-failed')).toBeNull();
+    });
+  });
+
+  describe('retention tombstone (#8855)', () => {
+    it('renders a scrubbed output as an expired notice, never the marker JSON', () => {
+      const { container, getByRole, getByTestId } = render(
+        <AiToolCallCard toolName="file_operations" input={{ action: 'read' }} output={{ _retention: 'scrubbed', at: '2026-10-01T00:00:00Z' }} />,
+      );
+      fireEvent.click(getByRole('button'));
+      expect(getByTestId('ai-tool-output-expired').textContent).toBe('aiToolCallCard.outputExpired');
+      expect(container.textContent).not.toContain('_retention');
+    });
+
+    it('still renders a normal output as JSON', () => {
+      const { container, getByRole, queryByTestId } = render(
+        <AiToolCallCard toolName="file_operations" output={{ content: 'hello' }} />,
+      );
+      fireEvent.click(getByRole('button'));
+      expect(queryByTestId('ai-tool-output-expired')).toBeNull();
+      expect(container.textContent).toContain('hello');
     });
   });
 });

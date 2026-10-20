@@ -33,6 +33,9 @@ vi.mock('../groupMembership', () => groupMembershipMock);
 const partnerWideMock = vi.hoisted(() => ({ canManagePartnerWidePolicies: vi.fn(() => false) }));
 vi.mock('../partnerWideAccess', () => partnerWideMock);
 
+const groupReevalMock = vi.hoisted(() => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
+vi.mock('../../jobs/deviceGroupJobs', () => groupReevalMock);
+
 const peripheralJobsMock = vi.hoisted(() => ({ schedulePeripheralPolicyDevice: vi.fn(async () => undefined) }));
 vi.mock('../../jobs/peripheralJobs', () => peripheralJobsMock);
 
@@ -533,6 +536,9 @@ describe('rollbackFleetDesign — role correction', () => {
 
     expect(dbHolder.updates[0]!.set).toMatchObject({ deviceRole: 'workstation', deviceRoleSource: 'discovered' });
     expect(result.rolledBack).toEqual(['roleCorrections:d9']);
+    expect(groupReevalMock.requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'd9', orgId: ORG, eventType: 'device.updated', changedFields: ['deviceRole'], reason: 'fleet_design_rollback',
+    }));
   });
 
   it('refuses when the device role source has moved on (no longer ai — e.g. a manual edit)', async () => {
@@ -543,6 +549,7 @@ describe('rollbackFleetDesign — role correction', () => {
     const result = await rollbackFleetDesign(makeAuth(), RUN);
 
     expect(result.refused).toEqual([{ itemRef: 'roleCorrections:d9', reason: 'modified_since_apply' }]);
+    expect(groupReevalMock.requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
   });
 });
 

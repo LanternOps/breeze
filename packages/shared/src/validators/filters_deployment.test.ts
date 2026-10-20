@@ -536,3 +536,18 @@ describe('automationTargetConfigSchema', () => {
     ).toBe(true);
   });
 });
+
+describe('rolloutConfigSchema batchSize message (#8369)', () => {
+  it('rejects a malformed percentage with a human message, never the regex', () => {
+    const result = rolloutConfigSchema.safeParse({
+      type: 'staggered',
+      staggered: { batchSize: '25pct', batchDelayMinutes: 5 },
+    });
+    expect(result.success).toBe(false);
+    // Only the messages reach the user (the issue's `pattern` field does not).
+    const text = result.error!.issues.map((i) => i.message).join('\n');
+    expect(text).not.toContain('/^');
+    expect(text).not.toMatch(/must match pattern/i);
+    expect(text).toContain('percentage');
+  });
+});

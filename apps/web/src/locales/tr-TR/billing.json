@@ -670,7 +670,16 @@
       "viewContract": "Sözleşmeyi görüntüle",
       "notLinked": "Bağlanmamış",
       "rowSubtitle": "{{date}} tarihinde {{signer}} tarafından {{quoteNumber}} numaralı fiyat teklifiyle kabul edildi",
-      "rowSubtitleNoQuote": "{{date}} tarihinde {{signer}} tarafından imzalandı"
+      "rowSubtitleNoQuote": "{{date}} tarihinde {{signer}} tarafından imzalandı",
+      "evidenceUnavailable": "Fiyat teklifiyle kabul edildi — kabul kanıtı mevcut değil",
+      "recordSigned": "İmzalı anlaşmayı kaydet",
+      "source": {
+        "quote": "{{number}} numaralı fiyat teklifi üzerinden",
+        "recorded": "MSP tarafından kaydedildi — {{method}}"
+      },
+      "fileType": {
+        "image": "taranmış kopya"
+      }
     },
     "templateEditor": {
       "usage": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor",
@@ -685,6 +694,36 @@
     },
     "contractPill": {
       "under": "{{template}} v{{n}} kapsamında"
+    },
+    "recordSigned": {
+      "title": "İmzalı anlaşmayı kaydet",
+      "organization": "Organizasyon",
+      "organizationPlaceholder": "Bir organizasyon seçin",
+      "orgFallback": "bu organizasyon",
+      "template": "Anlaşma şablonu",
+      "templatePlaceholder": "Bir anlaşma şablonu seçin",
+      "templatesError": "Anlaşma şablonları yüklenemedi.",
+      "orgsError": "Kuruluşlar yüklenemedi.",
+      "contractError": "Bu sözleşme yüklenemedi.",
+      "contractsError": "Bu kuruluşun sözleşmeleri yüklenemedi. Anlaşmayı yine de kaydedebilir ve daha sonra bir sözleşmeye bağlayabilirsiniz.",
+      "contract": "Sözleşme (isteğe bağlı)",
+      "contractNone": "Bir sözleşmeye bağlı değil",
+      "method": "Nasıl onaylandı",
+      "reference": "Referans",
+      "referenceHelp": "Bir denetçinin imzalı anlaşmayı nerede bulacağı — bir sipariş numarası, tarihli bir e-posta ya da bir kayıt.",
+      "signerName": "Onayı veren kişi",
+      "signerEmail": "E-posta adresi (isteğe bağlı)",
+      "signedAt": "İmza tarihi",
+      "file": "İmzalı kopya (isteğe bağlı)",
+      "fileHelp": "PDF, PNG veya JPEG, en fazla 10 MB. İmzalı bir kopya eklendiğinde dosyaya kaydedilen o dosya olur.",
+      "fileTooLarge": "Bu dosya 10 MB'tan büyük.",
+      "fileWrongType": "Bir PDF, PNG veya JPEG dosyası ekleyin.",
+      "variables": "Anlaşma bilgileri",
+      "unresolved": "Şunlar için bir değer girin: {{names}}",
+      "consequence": "Bu işlem {{org}} için imzalı bir anlaşma kaydeder. Sonradan silinemez.",
+      "submit": "İmzalı anlaşmayı kaydet",
+      "success": "İmzalı anlaşma kaydedildi.",
+      "error": "İmzalı anlaşma kaydedilemedi."
     }
   },
   "quotes": {
@@ -1066,8 +1105,8 @@
         "title": "Altbilgi satırı (her sayfa)",
         "helper": "Her sayfanın altında yazdırılan kısa bir satır — örn. geçerlilik tarihleri. Varsayılan altbilgiyi kullanmak için boş bırakın. Küçük yazılar buraya değil Şartlar ve Koşullar'a eklenmelidir.",
         "placeholder": "Boş = varsayılan altbilgiyi kullan",
-        "inheritedPartner": "Ayarlar'daki ortak fatura altbilgisi kullanılıyor: “{{text}}”",
-        "inheritedBrand": "Marka kiti altbilgi metni kullanılıyor: “{{text}}”",
+        "inheritedPartner": "Faturalandırma ayarlarındaki iş ortağı belge altbilgisi kullanılıyor: “{{text}}”",
+        "inheritedBrand": "Bu kuruluşun Portal ayarlarındaki altbilgi metni kullanılıyor: “{{text}}”",
         "inheritedNone": "Ayarlar'da varsayılan bir altbilgi ayarlanmamış — sayfa altbilgisi boş olacak.",
         "counter": "{{count}} / {{max}}"
       },
@@ -2050,7 +2089,10 @@
       "syncingToProvider": "Eşitleniyor…",
       "providerSyncFailed": "{{provider}} eşitlemesi başarısız oldu",
       "reverseInProviderToo": "Bu ödemeyi {{provider}} tarafında da iptal edin",
-      "overpayment": "Tutar, ödenmesi gereken bakiyeden ({{balance}}) fazla."
+      "overpayment": "Tutar, ödenmesi gereken bakiyeden ({{balance}}) fazla.",
+      "fillLabel": "Tutarı doldur",
+      "fillDeposit": "Depozito ({{amount}})",
+      "fillBalance": "Tüm bakiye ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fatura gönderildi",
@@ -2065,7 +2107,8 @@
       "paid": "Ücretli",
       "subtotal": "Ara Toplam",
       "tax": "Vergi",
-      "total": "Toplam"
+      "total": "Toplam",
+      "depositDueNow": "Şimdi ödenecek depozito"
     },
     "terms": "Şartlar ve Koşullar",
     "void": {
@@ -2281,6 +2324,7 @@
       "title": "Para birimi",
       "description": "Bu organizasyon için yeni teklifler, faturalar, sözleşmeler, zaman kayıtları ve parçalar bu para birimiyle damgalanır. Hiçbir mevcut kayıt değiştirilmez.",
       "label": "Faturalama para birimi",
+      "partnerDefault": "Devralınmaz: her kuruluş kendi faturalandırma para birimini korur. İş ortağı varsayılanı ({{currency}}) yalnızca bundan sonra oluşturulan kuruluşlara uygulanır.",
       "loading": "{{currency}} birimine geçişin neleri etkileyeceği kontrol ediliyor…",
       "error": "Para birimi değişikliği özeti yüklenemedi.",
       "panelTitle": "Faturalama para birimi {{currency}} olarak değiştirilsin mi?",
@@ -2365,10 +2409,11 @@
       "autoEmailInvoiceHelp": "Bir müşteri teklifi kabul ettiğinde, düzenlenen fatura güvenli bir görüntüleme ve ödeme bağlantısıyla hemen e-postayla gönderilir — oturum açma gerekmez.",
       "notifyOnBehalfAcceptance": "Müşteri adına bir kabul kaydettiğinizde müşteriye e-posta gönder",
       "notifyOnBehalfAcceptanceHelp": "Ekibinizden biri bir müşteri adına teklifi kabul ettiğinde, müşteri kabulü kimin ve ne zaman kaydettiğini belirten kısa bir not alır; bir fatura düzenlendiyse fatura numarası da eklenir. Yanlışsa yanıtlayabilir. Varsayılan olarak kapalı.",
-      "currencyCode": "Para birimi kodu",
+      "currencyCode": "Yeni kuruluşlar için varsayılan para birimi",
+      "currencyHelp": "Yeni kuruluşlar bu para birimiyle başlar. Mevcut kuruluşlar kendi para birimlerini korur; değiştirmek için ilgili kuruluşun Faturalandırma sekmesini kullanın.",
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",
-      "description": "Müşterileriniz genelinde yeni fiyat tekliflerine ve faturalara uygulanan para birimi, vergi, numaralandırma ve koşullar.",
+      "description": "Müşterilerinizin fiyat teklifleri ve faturaları için varsayılanlar. Bir kuruluş kendi vergi oranını ve ödeme koşullarını belirleyebilir. Para birimi buradaki varsayılan para birimiyle başlar ve kuruluşun Faturalandırma sekmesinden değiştirilir.",
       "deviceAppendix": "Fatura PDF'lerine faturalanan cihazlar ekini dahil et",
       "deviceAppendixHelp": "Her fatura satırında sayılan tüm cihazları listeleyen bir sayfa ekler. Varsayılan olarak kapalıdır; seçim fatura düzenlendiğinde dondurulur.",
       "documentPageSize": "Sayfa boyutu",
@@ -2377,7 +2422,8 @@
       "documentTheme": "Belge yazı tipleri",
       "documentThemeClassic": "Helvetica",
       "documentThemeCondensed": "Barlow Condensed + DM Sans",
-      "invoiceFooter": "Fatura altbilgisi",
+      "invoiceFooter": "Belge altbilgisi",
+      "invoiceFooterHelp": "Fiyat tekliflerinizin ve faturalarınızın her sayfasının altına basılır. Bir kuruluşun kendi altbilgi metni (Portal ayarlarında) o kuruluş için bunun yerine geçer; bir fiyat teklifinin kendi altbilgi satırı ise ikisinin de yerine geçer.",
       "invoiceFooterPlaceholder": "Ödeme talimatları, teşekkür notu vb.",
       "invoiceNumberPrefix": "Fatura numarası öneki",
       "markupHelp": "Katalog ürünlerini içe aktarırken satış fiyatını önceden doldurmak için kullanılan, distribütör maliyeti üzerinden varsayılan kar marjı. Ortaya çıkan brüt kar marjı siz içe aktardıkça gösterilir.",

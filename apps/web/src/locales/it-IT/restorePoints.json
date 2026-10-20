@@ -8,6 +8,7 @@
     "existingAcceptedNoDetail": "Punto esistente riutilizzato",
     "skippedDisabled": "Saltato — Ripristino configurazione di sistema è disattivato su questo dispositivo",
     "skippedDefinitionOnly": "Saltato — solo aggiornamento delle definizioni",
+    "skippedNoMutation": "Non necessario — non è stata apportata alcuna modifica, quindi non è stato creato alcun punto di ripristino",
     "unsupported": "Non disponibile su questo dispositivo",
     "busy": "Saltato — il servizio Copia shadow del volume era in uso",
     "insufficientPrivileges": "Saltato — privilegi insufficienti",

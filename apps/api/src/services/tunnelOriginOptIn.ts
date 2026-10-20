@@ -2,22 +2,12 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema';
+import { tunnelOriginOptInFromSettings } from '@breeze/shared';
 
-/**
- * Whether a partner's Network Proxy sessions use the dedicated tunnel origin
- * when the region offers one (TUNNEL_ORIGIN_TEMPLATE). Flips to `true` only
- * after the tunnel domain's Public Suffix List inclusion is verified in
- * shipped browsers (plan W04 Task 19); until then it is opt-in per partner.
- */
-export const TUNNEL_ORIGIN_PARTNER_DEFAULT = false;
-
-export function tunnelOriginOptInFromSettings(settings: unknown): boolean {
-  if (!settings || typeof settings !== 'object') return TUNNEL_ORIGIN_PARTNER_DEFAULT;
-  const networkProxy = (settings as Record<string, unknown>).networkProxy;
-  if (!networkProxy || typeof networkProxy !== 'object') return TUNNEL_ORIGIN_PARTNER_DEFAULT;
-  const value = (networkProxy as Record<string, unknown>).dedicatedTunnelOrigin;
-  return typeof value === 'boolean' ? value : TUNNEL_ORIGIN_PARTNER_DEFAULT;
-}
+// The default and the settings parser live in @breeze/shared so the Partner
+// Settings toggle (apps/web PartnerRemoteAccessTab) shows the same effective
+// value this resolver applies.
+export { TUNNEL_ORIGIN_PARTNER_DEFAULT, tunnelOriginOptInFromSettings } from '@breeze/shared';
 
 /**
  * Resolver for the per-partner opt-in, keyed by the tunnel session's org.

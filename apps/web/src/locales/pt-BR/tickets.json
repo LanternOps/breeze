@@ -81,7 +81,9 @@
       "high": "Alta",
       "normal": "Normal",
       "low": "Baixa"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} etapas",
+    "checklistTitle": "Checklist: {{done}} de {{total}} etapas concluídas"
   },
   "ticketArchivedList": {
     "emptyTitle": "Nenhum chamado arquivado.",
@@ -521,7 +523,11 @@
     },
     "device": {
       "none": "Sem dispositivo",
-      "unlink": "Desvincular"
+      "unlink": "Desvincular",
+      "link": "Vincular dispositivo",
+      "change": "Alterar dispositivo",
+      "cancel": "Cancelar",
+      "assigneeWarning": "Alterar o dispositivo revalida o responsável. Um técnico sem acesso ao novo dispositivo será desatribuído."
     },
     "toast": {
       "statusUpdated": "Status atualizado",

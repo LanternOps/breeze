@@ -72,6 +72,13 @@ vi.mock('../db', () => ({
   },
 }));
 
+const { ruleSetGateMock } = vi.hoisted(() => ({
+  ruleSetGateMock: vi.fn(async (): Promise<unknown> => ({ ok: true })),
+}));
+vi.mock('../routes/configurationPolicies/securityRuleSetGate', () => ({
+  checkSecurityRuleSetsWrite: ruleSetGateMock,
+}));
+
 vi.mock('../db/schema', () => ({
   configurationPolicies: {
     id: 'configurationPolicies.id',
@@ -143,7 +150,6 @@ import {
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import { GENERIC_TOOL_ERROR_MESSAGE } from './aiToolErrors';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
-import { PolicyApprovalFieldMovedError } from './configPolicyPatching';
 import { MFA_GATED_TOOL_ACTIONS, isMfaGatedToolAction, isToolWhollyMfaGated, mfaGatedActionsForTool } from './aiToolMfaGate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -726,42 +732,47 @@ describe('configuration policy AI tools', () => {
     expect(updated.error).toContain('needs a human');
   });
 
-  // #8186: app rules / auto-approval moved to the Update Ring. The service's
-  // 400 must reach the model as a readable redirect, not the generic sanitizer.
-  it('surfaces PolicyApprovalFieldMovedError as a readable redirect on add and update', async () => {
+  // #8188: policy-level app rules / auto-approval are retired. A patch link
+  // write that still carries them succeeds; the service strips the keys.
+  it('accepts a patch link add and update that still carry the retired approval keys', async () => {
     vi.mocked(getConfigPolicy).mockResolvedValue({
       id: POLICY_ID,
       orgId: ORG_ID,
       partnerId: null,
       name: 'Org policy',
     } as any);
-    vi.mocked(addFeatureLink).mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
-    vi.mocked(updateFeatureLink).mockRejectedValueOnce(new PolicyApprovalFieldMovedError());
+    vi.mocked(addFeatureLink).mockResolvedValueOnce({ id: 'link-1', featureType: 'patch' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValueOnce({ id: 'link-1', featureType: 'patch' } as any);
     mockSelectRows([{ featureType: 'patch' }]);
 
     const tools = new Map<string, any>();
     registerConfigPolicyTools(tools);
-    const rule = { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' };
+    const stale = {
+      sources: ['os'],
+      autoApprove: true,
+      autoApproveSeverities: ['critical'],
+      apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+    };
 
     const added = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
       action: 'add',
       configPolicyId: POLICY_ID,
       featureType: 'patch',
-      inlineSettings: { sources: ['os'], apps: [rule] },
+      inlineSettings: stale,
     }, makeAuth()));
     const updated = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
       action: 'update',
       configPolicyId: POLICY_ID,
       featureLinkId: 'link-1',
-      inlineSettings: { sources: ['os'], apps: [rule] },
+      inlineSettings: stale,
     }, makeAuth()));
 
     for (const res of [added, updated]) {
-      expect(res.error).not.toBe(GENERIC_TOOL_ERROR_MESSAGE);
-      expect(res.error).toContain('Update Ring');
-      expect(res.error).toContain('manage_update_rings');
-      expect(res.code).toBe('APPROVAL_RULES_MOVED_TO_RING');
+      expect(res.error).toBeUndefined();
+      expect(res.success).toBe(true);
     }
+    expect(addFeatureLink).toHaveBeenCalledTimes(1);
+    expect(updateFeatureLink).toHaveBeenCalledTimes(1);
   });
 
   // #1724 regression: partner-OWNED policies (org_id NULL) were invisible to the
@@ -1631,6 +1642,63 @@ describe('manage_policy_feature_link security auto-quarantine warning', () => {
     }, makeAuth());
 
     expect(JSON.parse(output)).not.toHaveProperty('warning');
+  });
+});
+
+// #6263 W03: the AI tool writes `security` links too, so it must run the same
+// ruleSetIds gate as the HTTP route (tenancy review finding on #9156).
+describe('manage_policy_feature_link security ruleSetIds gate', () => {
+  const SET = 'aaaaaaaa-0000-4000-8000-00000000000a';
+  const REFUSAL = { ok: false, status: 400, body: { error: 'nope', code: 'YARA_RULE_SET_NOT_ATTACHABLE', ruleSetIds: [SET] } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    ruleSetGateMock.mockReset().mockResolvedValue({ ok: true });
+    enable2faState.value = true;
+  });
+
+  function toolsWithPolicy(owner: { orgId: string | null; partnerId: string | null } = { orgId: ORG_ID, partnerId: null }) {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, ...owner, name: 'Policy' } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools;
+  }
+
+  it('add: a refused list is an error and nothing is written; the gate sees the policy owner', async () => {
+    ruleSetGateMock.mockResolvedValue(REFUSAL);
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'security',
+      inlineSettings: { autoQuarantine: false, ruleSetIds: [SET] },
+    }, makeAuth());
+    expect(JSON.parse(output)).toMatchObject({ error: 'nope', code: 'YARA_RULE_SET_NOT_ATTACHABLE' });
+    expect(ruleSetGateMock).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: null }, expect.objectContaining({ ruleSetIds: [SET] }));
+    expect(addFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('update: a refused list is an error and nothing is written', async () => {
+    const tools = toolsWithPolicy();
+    mockSelectRows([{ featureType: 'security' }]);
+    ruleSetGateMock.mockResolvedValue(REFUSAL);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1',
+      inlineSettings: { autoQuarantine: false, ruleSetIds: [SET] },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toBe('nope');
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('a non-security link never consults the gate', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'patch' } as any);
+    await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'patch', inlineSettings: {},
+    }, makeAuth());
+    expect(ruleSetGateMock).not.toHaveBeenCalled();
   });
 });
 

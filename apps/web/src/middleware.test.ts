@@ -187,3 +187,21 @@ describe('redirect responses are never cacheable (#7985)', () => {
     expect(response.headers.get('Cache-Control')).toBe('private, max-age=60');
   });
 });
+
+describe('Referrer-Policy is a default, not an override (#8964)', () => {
+  it('keeps a page-level no-referrer (capability-URL pages)', async () => {
+    const res = await onRequest(
+      makeContext(undefined) as never,
+      (async () => new Response('ok', { headers: { 'Referrer-Policy': 'no-referrer' } })) as never,
+    );
+    expect((res as Response).headers.get('Referrer-Policy')).toBe('no-referrer');
+  });
+
+  it('applies strict-origin-when-cross-origin when the page set none', async () => {
+    const res = await onRequest(
+      makeContext(undefined) as never,
+      (async () => new Response('ok')) as never,
+    );
+    expect((res as Response).headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+  });
+});

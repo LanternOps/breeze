@@ -98,6 +98,10 @@ export const portalBranding = pgTable('portal_branding', {
   // vendor-neutral "Managed endpoint protection" leg of the security view.
   // Inside "Enable all" (not sensitive: no vendor/product names are exposed).
   enableEdrVisibility: boolean('enable_edr_visibility').notNull().default(false),
+  // Trust Center W3d: permission flag (PORTAL_PERMISSION_FLAG_KEYS). Lets the
+  // org's admin contacts edit part of the trust page draft from the portal.
+  // Never in "Enable all"; publishing stays with the MSP.
+  enableTrustPageEditing: boolean('enable_trust_page_editing').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

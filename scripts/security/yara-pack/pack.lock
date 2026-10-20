@@ -1,0 +1,4 @@
+# Built-in YARA pack version lock (#6263 W03b) — see README.md.
+# Bump version on ANY input change; build-pack.sh --print-inputs-hash gives inputs_sha256.
+version=1
+inputs_sha256=1af8b0d760d70643f3c8ca790ff1605ddc0a6c6bca32558adc22cf488763d617

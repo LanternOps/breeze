@@ -228,6 +228,10 @@ export const heartbeatSchema = z.object({
     callerVerify: z.boolean(),
     usernames: z.array(z.string().min(1).max(255)).max(32),
   }).optional().catch(undefined),
+  // #8869 — Encrypted Client Hello telemetry. Both are informational counters
+  // only (no DB column): a malformed value drops to absent, never a 400.
+  echActive: z.boolean().optional().catch(undefined),
+  filterSignatureSeenAt: z.string().datetime({ offset: true }).optional().catch(undefined),
   // #6925 — Breeze Assist install problem the agent is stuck on (e.g.
   // 'awaiting_server_offer'). Omitted when there is none, and the route reads
   // absence as "healthy, clear it". A present but malformed value therefore
@@ -620,7 +624,7 @@ export function isAgentCommandErrorCode(value: unknown): value is AgentCommandEr
 }
 
 /**
- * The nine statuses an agent can report for a System Restore checkpoint
+ * The ten statuses an agent can report for a System Restore checkpoint
  * attempt (#4609, W06 #4757). Mirrors `Status` in
  * agent/internal/systemrestore/types.go. 'requested' is deliberately absent:
  * it is server-only, written at command-creation time, and an agent claiming
@@ -632,6 +636,7 @@ export const RESTORE_POINT_OUTCOME_STATUSES = [
   'existing_accepted',
   'skipped_disabled',
   'skipped_definition_only',
+  'skipped_no_mutation',
   'unsupported',
   'busy',
   'insufficient_privileges',
@@ -688,7 +693,7 @@ export type RestorePointOutcomeClassification =
 /**
  * Validate a raw agent-supplied `restorePoint` value. Never throws.
  * `unknown_status` is an otherwise-recognisable outcome whose status is not one
- * of the nine (a future agent value, or the server-only 'requested');
+ * of the ten (a future agent value, or the server-only 'requested');
  * everything else that fails is `malformed`.
  */
 export function classifyRestorePointOutcome(raw: unknown): RestorePointOutcomeClassification {

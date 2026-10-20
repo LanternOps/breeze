@@ -10,7 +10,7 @@ Customer Graph Read uses one dedicated multitenant Entra application, the fixed 
 - user-owned delegated mail and Teams communications;
 - future Graph mutation and Exchange PowerShell executors.
 
-Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/verify-identity`, `POST /v1/retest`, `POST /v1/read-action`, and `POST /v1/sync-action`. (`POST /v1/complete-consent` still exists for one release so an API older than the identity-first flow keeps working; the current API never calls it, and it is removed in a later release.) `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
+Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/verify-identity`, `POST /v1/retest`, `POST /v1/read-action`, and `POST /v1/sync-action`. The pre-identity-first `POST /v1/complete-consent` operation has been removed (#7910); the executor answers it with 404. `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
 
 `POST /v1/read-action` executes one typed Microsoft Graph read (the twelve actions behind the `m365_query_*` AI tools) and uses the same internal EdDSA request authentication as the other two operations — no separate trust boundary. It is additive, so deploy order is safe in either direction: an executor deployed before this operation exists returns a plain `404` for the route, and the API's executor client treats that the same as any other unreachable/unhealthy executor, surfacing the existing `executor_unavailable` outcome rather than failing insecurely or leaking a raw transport error.
 
@@ -278,7 +278,7 @@ Deploy the repository plus the signed `sha256` digest, not a mutable version or 
 
 1. Keep `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED=false` and confirm the legacy M365 card/routes still work.
 2. Confirm the executor process is healthy at private `GET /healthz` and returns only `{"status":"ok"}`.
-3. Confirm no public route reaches `/v1/verify-identity`, `/v1/complete-consent`, `/v1/retest`, `/v1/read-action`, `/v1/sync-action`, or `/healthz`.
+3. Confirm no public route reaches `/v1/verify-identity`, `/v1/retest`, `/v1/read-action`, `/v1/sync-action`, or `/healthz`.
 4. Confirm the executor identity can read only the pinned Key Vault secret version and API/general identities cannot.
 5. Confirm controlled egress permits the fixed Microsoft/Key Vault dependencies and blocks an unrelated destination.
 6. Enable one internal organization UUID, complete the real-tenant checklist, and watch `breeze_m365_customer_graph_read_events_total{event,outcome}` plus the fixed audit event names below.

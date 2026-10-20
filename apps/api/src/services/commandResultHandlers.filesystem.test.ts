@@ -31,7 +31,7 @@ vi.mock('../routes/agents/helpers', () => ({
   handleFilesystemAnalysisCommandResult: vi.fn(async () => {}),
 }));
 
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -47,7 +47,7 @@ vi.mock('../db', () => ({
 import { db } from '../db';
 import { commandResultHandlers } from './commandResultHandlers';
 import { handleFilesystemAnalysisCommandResult } from '../routes/agents/helpers';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 
 describe('filesystem_analysis result handler registration', () => {
   beforeEach(() => {
@@ -117,11 +117,13 @@ describe('filesystem_analysis result handler registration', () => {
     });
 
     expect(handleFilesystemAnalysisCommandResult).not.toHaveBeenCalled();
-    expect(captureException).toHaveBeenCalledWith(
-      expect.any(Error),
-      undefined,
-      expect.objectContaining({ commandId: 'cmd-2', resolvedDeviceId: 'dev-missing' }),
-    );
+    // #8024: an exception's value and these untagged ids were scrubbed, so the
+    // drop reached Sentry contentless. A registered event code survives.
+    expect(captureException).not.toHaveBeenCalled();
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), {
+      eventCode: 'filesystem_analysis_result_unknown_device',
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cmd-2'));
     warn.mockRestore();
   });
 });

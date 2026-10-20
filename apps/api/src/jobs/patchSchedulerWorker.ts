@@ -563,8 +563,11 @@ async function scanAndCreateJobs(): Promise<{
       if (!policyLocal) continue;
 
       if (!policyLocal.ring.valid) {
+        // Repeats every tick until the link is repointed (or, for a deleted
+        // ring, the ring re-enabled, #8678); name the ring so it is actionable.
         console.error(
-          `[PatchScheduler] Skipping config policy ${row.configPolicyId}: invalid ring reference (${policyLocal.ring.classification})`
+          `[PatchScheduler] Skipping config policy ${row.configPolicyId}: invalid ring reference ` +
+            `${policyLocal.featurePolicyId ?? '(none)'} (${policyLocal.ring.classification})`
         );
         continue;
       }

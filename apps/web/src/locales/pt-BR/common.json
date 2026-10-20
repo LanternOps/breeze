@@ -114,7 +114,8 @@
     "ticketsIncidents": "Incidentes",
     "ticketsServiceRequests": "Solicitações de serviço",
     "ticketsProblems": "Problemas",
-    "ticketsChanges": "Mudanças"
+    "ticketsChanges": "Mudanças",
+    "endpointMessages": "Mensagens"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -315,6 +316,17 @@
       "target": "Destino",
       "time": "Hora"
     },
+    "recentlyViewed": {
+      "title": "Continue de onde parou",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organização",
+        "ticket": "Chamado",
+        "alert": "Alerta",
+        "site": "Site",
+        "page": "Página"
+      }
+    },
     "alerts": {
       "title": "Alertas recentes",
       "viewAll": "Ver todos",
@@ -482,7 +494,10 @@
       "createFirst": "Crie seu primeiro filtro",
       "created": "Criado em {{date}}",
       "deleteConfirm": "Excluir este filtro?",
-      "duplicate": "Duplicar"
+      "duplicate": "Duplicar",
+      "saveFailed": "Não foi possível salvar o filtro",
+      "deleteFailed": "Não foi possível excluir o filtro",
+      "ownerOrgHint": "Os filtros salvos pertencem a uma organização. Escolha a qual organização este filtro pertence."
     },
     "targets": {
       "modes": {
@@ -682,13 +697,30 @@
       "toast": {
         "showingAll": "Mostrando todas as organizações",
         "showing": "Mostrando {{name}}",
-        "switched": "Alterado para {{name}}"
+        "switched": "Alterado para {{name}}",
+        "linkedOrgUnavailable": "A organização vinculada não está disponível. Mostrando sua seleção atual."
       },
       "fleetView": "Visão de frota · {{count}} organizações",
       "noSelection": "Selecionar organização",
       "searchOrganizations": "Buscar organizações…",
       "noMatches": "Nenhuma organização corresponde",
-      "legacyFilterNotice": "A filtragem por organização agora segue o seletor do cabeçalho."
+      "legacyFilterNotice": "A filtragem por organização agora segue o seletor do cabeçalho.",
+      "recent": "Recentes",
+      "pane": {
+        "destinations": {
+          "overview": "Visão geral",
+          "devices": "Dispositivos",
+          "tickets": "Chamados",
+          "alerts": "Alertas",
+          "sites": "Locais",
+          "billing": "Faturamento"
+        },
+        "offlineCount": "{{count}} sem conexão",
+        "openCount": "{{count}} abertos",
+        "criticalCount": "{{count}} críticos",
+        "noCritical": "nenhum",
+        "hint": "Clique em um nome para trocar · clique em uma página para trocar e ir até ela"
+      }
     },
     "header": {
       "menu": "Menu",
@@ -805,9 +837,9 @@
       "expand": "Expandir barra lateral",
       "collapseSections": "Recolher todas as seções",
       "closeMenu": "Fechar menu",
-      "recentDevices": "Dispositivos recentes",
-      "hideRecentDevices": "Ocultar dispositivos recentes",
-      "showRecentDevices": "Mostrar dispositivos recentes"
+      "recent": "Recentes",
+      "hideRecent": "Ocultar recentes",
+      "showRecent": "Mostrar recentes"
     },
     "orgRequired": {
       "title": "Selecione uma organização",
@@ -1335,6 +1367,14 @@
           "migrationWindowClosed": {
             "description": "Acionado uma vez por organização quando uma janela de migração de tickets é encerrada, com as contagens importadas.",
             "label": "Janela de migração encerrada"
+          },
+          "integrationHealthOpened": {
+            "description": "Acionado quando um incidente de integridade é aberto na conexão de uma organização.",
+            "label": "Incidente de integridade da conexão aberto"
+          },
+          "integrationHealthResolved": {
+            "description": "Acionado quando um incidente de integridade de uma conexão é resolvido.",
+            "label": "Incidente de integridade da conexão resolvido"
           }
         },
         "fields": {
@@ -2605,6 +2645,34 @@
         "sending": "Enviando…",
         "send": "Enviar"
       }
+    },
+    "mcpDomains": {
+      "legend": "Acesso a ferramentas",
+      "allLabel": "Todas as ferramentas (incluindo áreas adicionadas depois)",
+      "selectedLabel": "Somente estas áreas",
+      "coreLabel": "Núcleo (sempre incluído)",
+      "error": "Selecione pelo menos uma área ou escolha Todas as ferramentas.",
+      "allEquivalentNote": "Todas as áreas estão selecionadas, então isso equivale a Todas as ferramentas, incluindo áreas adicionadas depois.",
+      "reconnectNote": "Vale para esta conexão. Para restringir uma conexão existente, revogue-a em Aplicativos conectados e conecte novamente.",
+      "apiKeyHint": "Escolha quais áreas de ferramentas esta chave pode usar pela interface de IA/MCP.",
+      "allTools": "Todas as ferramentas",
+      "areaCount_one": "{{count}} área",
+      "areaCount_other": "{{count}} áreas",
+      "labels": {
+        "devices": "Dispositivos",
+        "scripts": "Scripts e automação",
+        "patching": "Patches e software",
+        "monitoring": "Monitoramento e alertas",
+        "network": "Rede",
+        "security": "Segurança e conformidade",
+        "backup": "Backup e recuperação",
+        "tickets": "Chamados e tempo",
+        "billing": "Faturamento",
+        "accounts": "Contas",
+        "integrations": "Integrações",
+        "admin": "Administração",
+        "ai": "Agentes de IA"
+      }
     }
   },
   "whatsNew": {
@@ -2628,7 +2696,8 @@
     "dismiss": "Dispensar lembrete de autenticação de dois fatores"
   },
   "mfaPolicyOffBanner": {
-    "message": "A autenticação multifator não é obrigatória para a sua equipe. Sessões apenas com senha podem executar scripts, mover dispositivos e alterar políticas.",
+    "label": "Lembrete de MFA",
+    "message": "A MFA não é obrigatória para sua equipe. Sessões só com senha podem executar scripts.",
     "cta": "Exigir MFA",
     "dismiss": "Dispensar o lembrete da política de MFA por hoje"
   },
@@ -2698,5 +2767,10 @@
     "errors": {
       "loadFailed": "Não foi possível carregar a memória de correções."
     }
+  },
+  "islandError": {
+    "title": "Esta seção falhou",
+    "description": "Um erro de renderização impediu a exibição desta página. Tente novamente e, se continuar acontecendo, inclua a mensagem abaixo ao relatar o problema.",
+    "retry": "Tentar novamente"
   }
 }

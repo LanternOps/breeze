@@ -9,6 +9,7 @@
  *
  * - edr_endpoint_action (base Tier 3; scan Tier 2): isolate / release / scan
  *   through `dispatchEdrAction`, the ONE action door (#8167 W03)
+ * - sync_edr_data (Tier 2): queue a "sync now" read for EDR connections (#8167 W03 PR-B)
  *
  * Every result carries `coverage`: an empty list with `coverage.partial` true
  * is NOT proof of "no threats".
@@ -33,6 +34,11 @@ import {
   type EdrReadScope,
 } from './edrProviders/read';
 import { runFrozenDeviceIds, siteAllowlistOf, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { and, eq } from 'drizzle-orm';
+import { db, runOutsideDbContext } from '../db';
+import { edrConnections, edrTenants } from '../db/schema';
+import { isGateFailure, requireEdrPartnerAdmin } from '../routes/edr/access';
+import { enqueueEdrSync } from '../jobs/edrProviderSync';
 
 const DEFAULT_LIMIT = 25;
 /** MITRE ATT&CK technique / sub-technique id, e.g. T1059 or T1059.001. */
@@ -263,5 +269,89 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
         throw err;
       }
     },
+  });
+
+  registerTool({
+    tier: 2,
+    domain: 'integrations',
+    searchHint: 'EDR sync now: refresh endpoints and detections from connected EDR vendors',
+    definition: {
+      name: 'sync_edr_data',
+      description:
+        'Queue an immediate EDR sync (endpoints and detections) for one connection, the connections serving one org, or all of the partner\'s connections. Results arrive over the next minutes.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          connectionId: { type: 'string', description: 'Optional EDR connection UUID' },
+          orgId: { type: 'string', description: 'Optional org UUID: sync the connections mapped to it' },
+        },
+      },
+    },
+    handler: async (input, auth) => syncEdrData(input, auth),
+  });
+}
+
+/** At most this many connections per call (the route syncs one; the tool is rate limited too). */
+const SYNC_MAX_CONNECTIONS = 20;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * `sync_edr_data` (#8167 W03 PR-B, Tier 2). The same gate as
+ * `POST /edr/connections/:id/sync` (partner admin: no org tokens, no
+ * selected-org users) because a sync acts for every org under the connection.
+ * Read-only toward the vendor and coalesced on the job id; writes no users FK.
+ */
+async function syncEdrData(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
+  const gate = requireEdrPartnerAdmin(auth);
+  if (isGateFailure(gate)) return JSON.stringify({ error: gate.error });
+  // Route parity: POST /edr/connections/:id/sync is behind requireMfa().
+  if (!hasSatisfiedMfa(auth)) return JSON.stringify({ error: 'MFA required' });
+  const connectionId = typeof input.connectionId === 'string' && input.connectionId ? input.connectionId : undefined;
+  const orgId = typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined;
+  if ((connectionId && !UUID_RE.test(connectionId)) || (orgId && !UUID_RE.test(orgId))) {
+    return JSON.stringify({ error: 'connectionId and orgId must be UUIDs' });
+  }
+  if (orgId && !auth.canAccessOrg(orgId)) return JSON.stringify({ error: 'Access to this organization denied' });
+
+  const rows = await withAuthDbAccessContext(auth, async () => {
+    const cols = { id: edrConnections.id, provider: edrConnections.provider, isActive: edrConnections.isActive };
+    const partner = eq(edrConnections.partnerId, gate.partnerId);
+    if (orgId) {
+      return db.selectDistinct(cols).from(edrConnections)
+        .innerJoin(edrTenants, eq(edrTenants.connectionId, edrConnections.id))
+        .where(and(partner, eq(edrTenants.orgId, orgId), ...(connectionId ? [eq(edrConnections.id, connectionId)] : [])))
+        .limit(SYNC_MAX_CONNECTIONS);
+    }
+    return db.select(cols).from(edrConnections)
+      .where(and(partner, ...(connectionId ? [eq(edrConnections.id, connectionId)] : [])))
+      .limit(SYNC_MAX_CONNECTIONS);
+  });
+  if (rows.length === 0) {
+    return JSON.stringify({ error: connectionId ? 'EDR connection not found' : 'No EDR connections to sync' });
+  }
+
+  const queued: Array<{ connectionId: string; provider: string }> = [];
+  const skipped: Array<{ connectionId: string; reason: string }> = [];
+  for (const r of rows) {
+    if (!r.isActive) {
+      skipped.push({ connectionId: r.id, reason: 'Connection is disabled; re-enable it before syncing' });
+      continue;
+    }
+    try {
+      // Outside every DB context: the queue is instrumented with the #1105 tripwire.
+      await runOutsideDbContext(async () => {
+        await enqueueEdrSync(r.id, 'inventory');
+        await enqueueEdrSync(r.id, 'detections');
+      });
+      queued.push({ connectionId: r.id, provider: r.provider });
+    } catch (err) {
+      console.error(`[aiToolsEdr] sync_edr_data failed to queue ${r.id}:`, err instanceof Error ? err.message : err);
+      return JSON.stringify({ error: 'Could not queue the sync. Try again shortly.', queued });
+    }
+  }
+  return JSON.stringify({
+    queued,
+    ...(skipped.length > 0 ? { skipped } : {}),
+    note: 'Sync queued; new data appears within a few minutes (vendor rate limits apply).',
   });
 }

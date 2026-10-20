@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
 import { sites, organizations } from '../../db/schema';
 import {
   authMiddleware,
@@ -31,8 +31,13 @@ import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuar
 import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { expireDiagnosticApprovalsForMovedDevice } from '../../services/diagnosticAccess/deviceMove';
-import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
+import {
+  PAM_MOVE_GUARD_CONSTRAINT,
+  PAM_MOVE_OPEN_ACTUATION_CONSTRAINT,
+  PamDeviceMoveBlockedError,
+} from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
+import { invalidateDevicePolicyCaches } from '../../services/devicePolicyCache';
 import { checkPoolMembershipTransition } from '../../services/unassignedPool/orgType';
 import { TicketServiceError } from '../../services/ticketService';
 import { scheduleTicketLinkRemovalNotes } from '../../services/ticketLinkMoveNotes';
@@ -244,25 +249,39 @@ moveOrgRoutes.post(
       });
     } catch (err) {
       const pgNode = pgErrorNode(err);
-      if (
-        err instanceof PamDeviceMoveBlockedError
+      // PAM ownership epochs W6 (#8208): transfer on + a departing actuation
+      // not closed yet (typed precondition, or the trigger's own constraint
+      // when the race was lost) → wait-and-retry ACTIVE; transfer off + any
+      // PAM history → BLOCKED, as before.
+      const pamActive = (err instanceof PamDeviceMoveBlockedError && err.code === 'PAM_DEVICE_MOVE_ACTIVE')
         || (
           // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
           pgNode?.code === '23514'
-          && pgNode.constraint_name === 'devices_pam_history_move_guard'
+          && pgNode.constraint_name === PAM_MOVE_OPEN_ACTUATION_CONSTRAINT
+        );
+      if (
+        pamActive
+        || err instanceof PamDeviceMoveBlockedError
+        || (
+          // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
+          pgNode?.code === '23514'
+          && pgNode.constraint_name === PAM_MOVE_GUARD_CONSTRAINT
         )
       ) {
+        const code = pamActive ? 'PAM_DEVICE_MOVE_ACTIVE' : 'PAM_DEVICE_MOVE_BLOCKED';
         writeRouteAudit(c, {
           orgId: sourceOrgId,
           action: 'device.move_org.failed',
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname,
-          details: { code: 'PAM_DEVICE_MOVE_BLOCKED' },
+          details: { code },
         });
         return c.json({
-          error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
-          code: 'PAM_DEVICE_MOVE_BLOCKED',
+          error: pamActive
+            ? 'Device organization move is blocked until its PAM elevation sessions finish cleanup'
+            : 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+          code,
         }, 409);
       }
       // A consumed/invalidated grant is a refusal, not a failure: the
@@ -322,6 +341,12 @@ moveOrgRoutes.post(
     // tickets. Registered here, once the move is final, and run only after
     // the request transaction commits (never inside the move: see moveTicketOrg).
     scheduleTicketLinkRemovalNotes(moved!.removedTicketLinks);
+
+    // #8257: drop the device's cached heartbeat policy config once the move
+    // has committed. The entries are org-bound, so this is belt and braces —
+    // an entry a racing beat writes for the source org is never served to the
+    // target org either.
+    runAfterDbContextCommit('devices.moveOrg.policyCacheInvalidate', () => invalidateDevicePolicyCaches(deviceId));
 
     await expireDiagnosticApprovalsForMovedDevice(deviceId).catch((error) => {
       console.error(`[devices.moveOrg] failed to expire diagnostic access approvals for ${deviceId}:`, error);

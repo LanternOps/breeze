@@ -5,6 +5,7 @@ import {
   httpUrlField,
   nullableHttpUrlField,
   httpUrlErrorMessage,
+  keptSecretOrHttpUrlValue,
   HTTP_URL_MAX_LENGTH,
 } from './httpUrl';
 
@@ -130,5 +131,45 @@ describe('nullableHttpUrlField', () => {
 
   it('applies the narrowed max length', () => {
     expect(schema.safeParse(`https://example.com/${'a'.repeat(300)}`).success).toBe(false);
+  });
+});
+
+// Every message a zod failure can surface, including the per-branch messages
+// zod v4 buries under an `invalid_union` issue's `errors` — the API's 400
+// formatter (apps/api/src/lib/validation.ts) recurses into those, so a branch
+// message reaches the user exactly like a top-level one (#8369).
+function allIssueMessages(issues: ReadonlyArray<unknown>): string[] {
+  const out: string[] = [];
+  for (const raw of issues) {
+    const issue = raw as { message: string; errors?: ReadonlyArray<ReadonlyArray<unknown>> };
+    out.push(issue.message);
+    for (const branch of issue.errors ?? []) out.push(...allIssueMessages(branch));
+  }
+  return out;
+}
+
+describe('keptSecretOrHttpUrlValue (#8369)', () => {
+  const schema = keptSecretOrHttpUrlValue('Slack webhook URL');
+
+  it('accepts the masked keep-stored marker, keyed or bare', () => {
+    expect(schema.safeParse('********').success).toBe(true);
+    expect(schema.safeParse('********:0a1b2c').success).toBe(true);
+  });
+
+  it('accepts a typed http(s) URL and the empty string', () => {
+    expect(schema.safeParse('https://hooks.slack.com/services/T0/B0/x').success).toBe(true);
+    expect(schema.safeParse('').success).toBe(true);
+  });
+
+  it.each(DANGEROUS)('rejects %s with only the human message — never the marker regex', (value) => {
+    const result = schema.safeParse(value);
+    expect(result.success).toBe(false);
+    const messages = allIssueMessages(result.error!.issues);
+    expect(messages.length).toBeGreaterThan(0);
+    for (const m of messages) {
+      expect(m).not.toContain('/^');
+      expect(m).not.toMatch(/must match pattern/i);
+    }
+    expect(messages).toContain(httpUrlErrorMessage('Slack webhook URL'));
   });
 });

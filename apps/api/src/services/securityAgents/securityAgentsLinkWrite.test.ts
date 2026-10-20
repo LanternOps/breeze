@@ -12,6 +12,8 @@ import { addFeatureLink, updateFeatureLink } from '../configurationPolicy';
 
 const DISABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: false }] };
 const ENABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: true }] };
+const S1_ENABLED = { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] };
+const NEXTDNS_ENABLED = { version: 1, agents: [{ vendor: 'nextdns', enabled: true }] };
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
 
 function code(input: Parameters<typeof checkSecurityAgentsLinkWrite>[0]) {
@@ -28,8 +30,54 @@ describe('checkSecurityAgentsLinkWrite (#6960)', () => {
       .toBe('security_agents_feature_policy_not_allowed');
     expect(code({ featurePolicyId: null, inlineSettings: { ...ENABLED, apiKey: 'x' }, armAuthorized: true }))
       .toBe('security_agents_invalid_settings');
-    expect(code({ featurePolicyId: null, inlineSettings: ENABLED, armAuthorized: true }))
+    expect(code({ featurePolicyId: null, inlineSettings: NEXTDNS_ENABLED, armAuthorized: true }))
       .toBe('vendor_not_enableable');
+  });
+
+  it('SentinelOne is enableable with arming authority (W04); the MSI gate lives in the generator', () => {
+    expect(code({ featurePolicyId: null, inlineSettings: S1_ENABLED, armAuthorized: true })).toBe('ok');
+  });
+
+  it('SentinelOne still needs arming authority: 403 comes before anything else', () => {
+    expect(code({ featurePolicyId: null, inlineSettings: S1_ENABLED, armAuthorized: false })).toBe('security_agents_execute_required');
+  });
+
+  it('SentinelOne cannot be limited to macOS or Linux (Windows only)', () => {
+    expect(code({
+      inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true, platforms: ['windows', 'macos'] }] },
+      armAuthorized: true,
+    })).toBe('security_agents_platform_unsupported');
+  });
+
+  it('Huntress is enableable with arming authority (W02)', () => {
+    expect(code({ featurePolicyId: null, inlineSettings: ENABLED, armAuthorized: true })).toBe('ok');
+  });
+
+  it('an enabled vendor cannot be limited to a platform it does not support', () => {
+    const r = checkSecurityAgentsLinkWrite({
+      inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: true, platforms: ['windows', 'linux'] }] },
+      armAuthorized: true,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.refusal.status).toBe(400);
+      expect(r.refusal.body.code).toBe('security_agents_platform_unsupported');
+      expect(r.refusal.body.vendors).toEqual(['huntress']);
+    }
+  });
+
+  it('macOS (MDM approval) may be selected: those devices are shown not applicable, not refused', () => {
+    expect(code({
+      inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: true, platforms: ['windows', 'macos'] }] },
+      armAuthorized: true,
+    })).toBe('ok');
+  });
+
+  it('a disabled vendor is not checked for platforms', () => {
+    expect(code({
+      inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: false, platforms: ['linux'] }] },
+      armAuthorized: false,
+    })).toBe('ok');
   });
 
   it('allows disabled-only and empty settings without arming authority', () => {
@@ -43,13 +91,13 @@ describe('checkSecurityAgentsLinkWrite (#6960)', () => {
     expect(code({ inlineSettings: null, armAuthorized: true })).toBe('security_agents_invalid_settings');
   });
 
-  it('every enabled vendor is refused in W01, and the refusal names them all', () => {
+  it('every enabled vendor that is not enableable is refused, and the refusal names them all', () => {
     const r = checkSecurityAgentsLinkWrite({
-      inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: true }, { vendor: 'nextdns', enabled: true }, { vendor: 'controld', enabled: false }] },
+      inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }, { vendor: 'huntress', enabled: true }, { vendor: 'nextdns', enabled: true }, { vendor: 'controld', enabled: true }] },
       armAuthorized: true,
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.refusal.body.vendors).toEqual(['huntress', 'nextdns']);
+    if (!r.ok) expect(r.refusal.body.vendors).toEqual(['nextdns', 'controld']);
   });
 });
 
@@ -68,9 +116,19 @@ describe('service backstop: addFeatureLink / updateFeatureLink (#6960)', () => {
       .rejects.toMatchObject({ code: 'security_agents_invalid_settings' });
   });
 
-  it('addFeatureLink refuses enabled:true even with arming authority (nothing enableable in W01)', async () => {
-    await expect(addFeatureLink(POLICY_ID, 'security_agents', null, ENABLED, undefined, undefined, { securityAgentsArmAuthorized: true }))
+  it('addFeatureLink refuses a vendor that is not enableable even with arming authority', async () => {
+    await expect(addFeatureLink(POLICY_ID, 'security_agents', null, NEXTDNS_ENABLED, undefined, undefined, { securityAgentsArmAuthorized: true }))
       .rejects.toMatchObject({ code: 'vendor_not_enableable' });
+  });
+
+  it('addFeatureLink lets an authorized SentinelOne enable through to the write (the MSI gate runs there)', async () => {
+    await expect(addFeatureLink(POLICY_ID, 'security_agents', null, S1_ENABLED, undefined, undefined, { securityAgentsArmAuthorized: true }))
+      .rejects.toThrow('db must not be reached');
+  });
+
+  it('addFeatureLink lets an authorized Huntress enable through to the write', async () => {
+    await expect(addFeatureLink(POLICY_ID, 'security_agents', null, ENABLED, undefined, undefined, { securityAgentsArmAuthorized: true }))
+      .rejects.toThrow('db must not be reached');
   });
 
   it('updateFeatureLink applies the same backstop inside its transaction', async () => {

@@ -63,9 +63,12 @@ The storage configuration wizard walks you through four steps:
      snapshot's own row stays deferred on that device's destination until every device sharing it has
      upgraded — update the agent to enable full reclamation.
 
-     Deleting a device or an organization also reclaims its backups: the underlying restore points are
-     removed immediately, and the storage sweep collects their now-unreferenced data once it has sat
-     idle for 9 days.
+     Permanently deleting (purging) a device or erasing an organization removes its restore points from
+     Breeze, but from v0.122.1 it does **not** reclaim their storage: the backup files stay in the storage
+     target, and the storage sweep never deletes them later, including data already past its retention
+     window. They are kept until an explicit backup-deletion feature ships. A legal hold on a snapshot,
+     on the backup policy it ran under, or in a configuration policy's backup settings blocks a device purge
+     (`409`, `BACKUP_PROTECTED`) and an organization erasure until the hold is released.
    </Aside>
 </Steps>
 

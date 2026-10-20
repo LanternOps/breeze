@@ -71,6 +71,23 @@ COPY apps/api/package.json ./apps/api/package.json
 COPY apps/api/migrations ./apps/api/migrations
 COPY apps/api/assets ./apps/api/assets
 
+# YARA rule pre-check (#6263 W03a): `breeze-yarac` is the agent's own compiler
+# and compile policy (agent/cmd/breeze-yarac), so a rule set that validates
+# here compiles on every agent of the same engine. Cross-compiled on the build
+# platform (pure Go, CGO off) instead of under QEMU for each target arch. The
+# Go tag must equal agent/go.mod's `go` directive
+# (scripts/security/check-go-version-pins.sh); the digest pins the image.
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS yarac
+ARG TARGETOS
+ARG TARGETARCH
+ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
+WORKDIR /src/agent
+COPY agent/go.mod agent/go.sum ./
+RUN go mod download
+COPY agent/cmd/breeze-yarac ./cmd/breeze-yarac
+COPY agent/internal ./internal
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /out/breeze-yarac ./cmd/breeze-yarac
+
 # Stage 4: Production runner
 FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runner
 WORKDIR /app
@@ -117,6 +134,9 @@ COPY --from=runtime-source --chown=hono:nodejs /app/apps/api/migrations ./apps/a
 # from process.cwd(), and this runner's cwd ends at /app/apps/api (WORKDIR
 # below), so the destination mirrors the migrations copy above.
 COPY --from=runtime-source --chown=hono:nodejs /app/apps/api/assets ./apps/api/assets
+# YARA pre-check binary (services/yaraPrecheck.ts default path). Root-owned and
+# not writable by the runtime user.
+COPY --from=yarac /out/breeze-yarac /usr/local/bin/breeze-yarac
 # Run the API from its workspace path so module resolution uses apps/api/node_modules first.
 WORKDIR /app/apps/api
 

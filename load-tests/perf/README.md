@@ -59,6 +59,7 @@ Exit codes: `0` pass, `1` regression (with `--confirm`, only if the confirm run 
 `.github/workflows/perf.yml` runs on a dedicated self-hosted runner labelled `breeze-perf`. It never runs on pull requests, because this is a public repository.
 
 - **Nightly** (cron): runs only when the repository variable `PERF_NIGHTLY_ENABLED` is `true`. Measures `nightly-200`, compares with `baselines/nightly-200.json`, and runs a confirm run on a regression. On failure a second job opens or comments on the single open issue labelled `perf-regression`.
+- **Storm suite** (#8642, `storm` job, after the KPI job): `run-perf.sh --storm storm-suite` runs `load-tests/agentsim/storm.sh storm-suite` (400 agents, admission `enforce`, caddy port pinned) with `--gate-heartbeat-p95 1s --gate-pool-min-ratio 0.8 --gate-pool-recovery 30s` (values in the workflow `env`). **Warn-only** (`continue-on-error`) until the repository variable `PERF_GATES_ENFORCE` is `true`; flip it on or after 2026-10-31. Report: artifact `perf-storm-*`, `storm/storm.json`.
 - **Manual dispatch**: same measurement, no issue filed. With input `inject=slow-heartbeat` it runs a clean run, applies `inject/slow-heartbeat.patch` to the throwaway checkout, runs again, and compares the two with `--expect regression`. That job **passes only if the gate goes red**, naming both agent cost and heartbeat p95. It needs no committed baseline and is the self-test that the gate can fail.
 
 ## Reading a red

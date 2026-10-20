@@ -106,7 +106,9 @@ export type ContractTemplateServiceErrorCode =
   | 'ENCRYPTED_FILE'
   | 'VERSION_IMMUTABLE'
   | 'VERSION_MISSING_FILE'
-  | 'VERSION_PUBLISH_FAILED';
+  | 'VERSION_PUBLISH_FAILED'
+  | 'VERSION_NOT_PUBLISHED'
+  | 'TEMPLATE_NOT_VISIBLE';
 
 export class ContractTemplateServiceError extends Error {
   constructor(
@@ -560,4 +562,54 @@ export async function publishVersion(auth: AuthContext, templateId: string, vers
     .returning();
   if (!updated) throw new ContractTemplateServiceError('Failed to publish version', 500, 'VERSION_PUBLISH_FAILED');
   return updated;
+}
+
+// ---------------------------------------------------------------------------
+// Usability gate for a pinned template version (#8865 W1a) — shared by quote
+// contract blocks (quoteService.assertContractBlockValid wraps it) and, from
+// W1b on, standalone agreement requests. Kept here, not in quoteService, so
+// this file stays a leaf: it must never import quoteTypes.
+// ---------------------------------------------------------------------------
+
+export interface TemplateVersionRef {
+  templateId: string;
+  templateVersionId: string;
+}
+
+/** A template version may be pinned into a document for `target` only when the
+ *  version is PUBLISHED and belongs to `ref.templateId`, the template exists and
+ *  is not archived, and the template is visible to the target org. Reads through
+ *  `dbc` so a caller inside a transaction checks against its own snapshot.
+ *
+ *  Throws ContractTemplateServiceError 422 with:
+ *   - VERSION_NOT_PUBLISHED — version missing, belongs to another template, or not 'published'
+ *   - TEMPLATE_ARCHIVED     — template missing or archived
+ *   - TEMPLATE_NOT_VISIBLE  — org-owned by another org, or partner-wide under another partner */
+export async function assertTemplateVersionUsable(
+  ref: TemplateVersionRef,
+  target: { orgId: string; partnerId: string },
+  dbc: Pick<typeof db, 'select'> = db,
+): Promise<void> {
+  const [version] = await dbc.select({
+    templateId: contractTemplateVersions.templateId,
+    status: contractTemplateVersions.status,
+  }).from(contractTemplateVersions).where(eq(contractTemplateVersions.id, ref.templateVersionId)).limit(1);
+  if (!version || version.templateId !== ref.templateId || version.status !== 'published') {
+    throw new ContractTemplateServiceError('Contract template version is not published', 422, 'VERSION_NOT_PUBLISHED');
+  }
+  const [template] = await dbc.select({
+    status: contractTemplates.status,
+    orgId: contractTemplates.orgId,
+    partnerId: contractTemplates.partnerId,
+  }).from(contractTemplates).where(eq(contractTemplates.id, ref.templateId)).limit(1);
+  if (!template || template.status === 'archived') {
+    throw new ContractTemplateServiceError('Contract template is archived or no longer exists', 422, 'TEMPLATE_ARCHIVED');
+  }
+  // XOR ownership (contract_templates_one_owner_chk): org-owned templates are
+  // visible only to that org; partner-wide templates (orgId NULL) are visible
+  // to every org of that partner.
+  const visible = template.orgId !== null ? template.orgId === target.orgId : template.partnerId === target.partnerId;
+  if (!visible) {
+    throw new ContractTemplateServiceError('Contract template is not visible to this organization', 422, 'TEMPLATE_NOT_VISIBLE');
+  }
 }

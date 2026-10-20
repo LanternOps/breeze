@@ -339,6 +339,27 @@ vi.mock('../services/aiOperator/operationService', async (importOriginal) => {
     recordOperationResult: operationServiceMock.recordOperationResult,
   };
 });
+// Pass-through spy over the REAL revalidation so one test can inject the typed
+// caller-verification refusal that the orchestrator's revalidation now returns
+// (#6354 W05); every other test keeps the real behaviour.
+vi.mock('../services/actionIntents/revalidateRelease', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/actionIntents/revalidateRelease')>();
+  return { ...actual, revalidateApprovedIntentForRelease: vi.fn(actual.revalidateApprovedIntentForRelease) };
+});
+// The release revalidation now consumes a caller verification for the two
+// protected M365 actions (#6354 W05). The gate/policy/backend are stubbed so
+// the worker tests exercise the worker, not the gate's own DB reads.
+const callerGateMock = vi.hoisted(() => ({
+  requireCallerVerification: vi.fn(async () => ({ verificationId: 'ver-1', tier: 2 })),
+  getEffectivePolicy: vi.fn(async () => ({ requiredTierResetPassword: 2, requiredTierDisableUser: 2 })),
+  loadPinnedCallerBackend: vi.fn(async () => ({ backend: 'controlPlane', orgId: 'org-1', connectionId: 'connection', tenantId: 'tenant' })),
+}));
+vi.mock('../services/callerVerification/gate', () => ({ requireCallerVerification: callerGateMock.requireCallerVerification }));
+vi.mock('../services/callerVerification/policy', () => ({ getEffectivePolicy: callerGateMock.getEffectivePolicy }));
+vi.mock('../services/actionIntents/callerTarget', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/actionIntents/callerTarget')>()),
+  loadPinnedCallerBackend: callerGateMock.loadPinnedCallerBackend,
+}));
 vi.mock('../services/actionIntents/policyDecide', () => {
   // A local (not imported-from-real) `PolicyDecisionTransientError` — the
   // real module pulls in the full db/schema graph transitively, which this
@@ -543,6 +564,8 @@ import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { withAuthDbAccessContext as mockedWithAuthContext } from '../middleware/auth';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
+import { CallerVerificationRequiredError } from '../services/callerVerification/errors';
+import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 // Deliberately REAL (not mocked) — assertNoPlaintextSecret is the exact guard
 // the worker calls on both persistence paths; testing it directly here pins
@@ -558,6 +581,11 @@ function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
     orgId: 'org-1',
     partnerId: null,
     requestedByUserId: 'user-1',
+    // Pinned caller-verification target (#6354 W05); only the two protected
+    // M365 actions read these, every other fixture ignores them.
+    targetEntraTenantId: 'tenant',
+    targetEntraOid: 'oid',
+    targetConnectionRef: 'connection',
     requestingApiKeyId: null,
     source: 'chat',
     requestingClientLabel: null,
@@ -2015,6 +2043,76 @@ describe('releaseApprovedIntent', () => {
         intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'connection_unavailable' }),
       );
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    });
+  });
+
+  // #6354 W05 — typed caller-verification refusals through the worker.
+  describe('caller-verification refusals', () => {
+    const payload = {
+      orgId: 'org-1', contactId: null, action: 'disable_user' as const,
+      requiredTier: 2, reason: 'contact_fenced' as const, latest: null,
+    };
+    const refusal = { error: 'Caller verification required', requiresCallerVerification: payload };
+    // Runs the REAL revalidation (so every `*Once` mock primeThroughRevalidation
+    // queued is consumed and cannot leak into later tests), then substitutes
+    // the refusal the orchestrator's consume step would return.
+    async function refuseRevalidationOnce(errorCode: string) {
+      const actual = await vi.importActual<typeof import('../services/actionIntents/revalidateRelease')>(
+        '../services/actionIntents/revalidateRelease',
+      );
+      vi.mocked(revalidateApprovedIntentForRelease).mockImplementationOnce(async (...args) => {
+        await actual.revalidateApprovedIntentForRelease(...args);
+        return { ok: false, errorCode, details: { requiresCallerVerification: payload } };
+      });
+    }
+
+    it('a typed refusal from dispatch terminalises once as caller_verification_required with the result and does not rethrow', async () => {
+      const intent = baseIntent({ actionName: 'm365_disable_user' });
+      primeThroughRevalidation(intent);
+      m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(true);
+      m365HeadlessMock.executeM365ToolHeadless.mockRejectedValueOnce(new CallerVerificationRequiredError(payload));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+      const failedCalls = intentServiceMock.transitionIntent.mock.calls.filter((c) => c[2] === 'failed');
+      expect(failedCalls).toHaveLength(1);
+      expect(failedCalls[0]).toEqual([
+        intent.id, 'executing', 'failed',
+        expect.objectContaining({ errorCode: 'caller_verification_required', result: refusal }),
+      ]);
+      // Nothing was sent, so it is not an attempted execution.
+      expect((failedCalls[0]![3] as Record<string, unknown>).executedAt).toBeUndefined();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    });
+
+    it('a revalidation refusal persists the typed result for that code', async () => {
+      const intent = baseIntent({ actionName: 'm365_disable_user' });
+      primeThroughRevalidation(intent);
+      await refuseRevalidationOnce('caller_verification_required');
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed',
+        expect.objectContaining({ errorCode: 'caller_verification_required', result: refusal }),
+      );
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(m365HeadlessMock.executeM365ToolHeadless).not.toHaveBeenCalled();
+    });
+
+    it('other failure codes never persist a result even when details carry a payload', async () => {
+      const intent = baseIntent({ actionName: 'm365_disable_user' });
+      primeThroughRevalidation(intent);
+      await refuseRevalidationOnce('actor_invalid');
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      const patch = intentServiceMock.transitionIntent.mock.calls.at(-1)![3] as Record<string, unknown>;
+      expect(patch.errorCode).toBe('actor_invalid');
+      expect(patch).not.toHaveProperty('result');
     });
   });
 

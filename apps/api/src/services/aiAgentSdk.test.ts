@@ -18,6 +18,7 @@ import type { IntentReleaseRevalidation } from './actionIntents/revalidateReleas
 import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
 import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { CallerVerificationRequiredError } from './callerVerification/errors';
 
 const mockResolveLiveSessionToolAuthority = vi.fn(async (session: any): Promise<any> => ({
   ok: true,
@@ -100,7 +101,10 @@ vi.mock('./aiCostTracker', () => ({
 
 const mockSanitizeUserMessage = vi.fn();
 const mockSanitizePageContext = vi.fn();
-vi.mock('./aiInputSanitizer', () => ({
+// Partial: the output compactor (aiToolOutput.ts) fences device text with the
+// real sanitizer (#8852 W04); only the two chat-input entry points are stubbed.
+vi.mock('./aiInputSanitizer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiInputSanitizer')>()),
   sanitizeUserMessage: (...args: unknown[]) => mockSanitizeUserMessage(...args),
   sanitizePageContext: (...args: unknown[]) => mockSanitizePageContext(...args),
 }));
@@ -1631,6 +1635,91 @@ describe('createSessionPreToolUse', () => {
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
     });
 
+    // #6354 W05 — typed caller-verification refusals survive the SDK adapter.
+    const callerPayload = {
+      orgId: 'org-1', contactId: null, action: 'disable_user' as const,
+      requiredTier: 2, reason: 'no_fresh_verification' as const, latest: null,
+    };
+
+    it('creation refusal reaches the SDK pre-tool result intact and binds the chat session', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Disable user', warnings: [],
+      } as any);
+      mockInsertReturning({ id: 'exec-caller' });
+      mockCreateActionIntent.mockRejectedValueOnce(new CallerVerificationRequiredError(callerPayload));
+      const session = makeActiveSession();
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Caller verification required',
+        requiresCallerVerification: callerPayload,
+      });
+      expect(mockCreateActionIntent).toHaveBeenCalledWith(
+        session.auth,
+        expect.objectContaining({ m365SessionId: session.breezeSessionId }),
+      );
+    });
+
+    it('inline release persists and returns the caller payload after its claim', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Disable user',
+      } as any);
+      mockInsertReturning({ id: 'exec-inline-caller' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: 'intent-inline-caller', approvalRequestIds: ['approval-caller'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+        ok: false, errorCode: 'caller_verification_required',
+        details: { requiresCallerVerification: callerPayload, secretDetail: 'must not leak' },
+      });
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Caller verification required',
+        requiresCallerVerification: callerPayload,
+      });
+      expect(mockTransitionIntent).toHaveBeenCalledWith(
+        'intent-inline-caller', 'executing', 'failed',
+        expect.objectContaining({
+          errorCode: 'caller_verification_required',
+          result: { error: 'Caller verification required', requiresCallerVerification: callerPayload },
+        }),
+      );
+    });
+
+    it('inline revalidation failure for any other code never exposes details or a result', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-inline-other' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: 'intent-inline-other', approvalRequestIds: ['approval-other'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+        ok: false, errorCode: 'actor_invalid',
+        details: { requiresCallerVerification: callerPayload },
+      });
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Authorization for this action could no longer be verified; it was not executed.',
+      });
+      const patch = mockTransitionIntent.mock.calls.find((c) => c[2] === 'failed')?.[3] as Record<string, unknown>;
+      expect(patch).toEqual({ errorCode: 'actor_invalid' });
+    });
+
     it('does NOT execute inline when the session loses the release CAS to the durable worker (no double execution)', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
@@ -1782,6 +1871,58 @@ describe('createSessionPreToolUse', () => {
         { id: 'intent-6', orgId: 'org-1', taskId: null },
         'intent_completed',
       );
+    });
+
+    it('terminalizes a handler-thrown caller refusal as caller_verification_required with the typed result', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Disable user',
+      } as any);
+      mockInsertReturning({ id: 'exec-guard' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-guard', approvalRequestIds: ['appr-guard'] }));
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+      await createSessionPreToolUse(session)('execute_command', {});
+
+      const payload = {
+        orgId: 'org-1', contactId: null, action: 'disable_user' as const,
+        requiredTier: 2, reason: 'contact_fenced' as const, latest: null,
+      };
+      const refusal = { error: 'Caller verification required', requiresCallerVerification: payload };
+      mockTransitionIntent.mockClear();
+      await createSessionPostToolUse(session)(
+        'execute_command', {}, JSON.stringify(refusal), true, 5,
+      );
+
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-guard', 'executing', 'failed', expect.objectContaining({
+        errorCode: 'caller_verification_required',
+        result: refusal,
+      }));
+    });
+
+    it('keeps tool_execution_failed for an ordinary tool error that merely resembles a refusal without a payload', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plain-err' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-plain-err', approvalRequestIds: ['appr-pe'] }));
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+      await createSessionPreToolUse(session)('execute_command', {});
+      mockTransitionIntent.mockClear();
+      await createSessionPostToolUse(session)(
+        'execute_command', {}, JSON.stringify({ error: 'Caller verification required' }), true, 5,
+      );
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-plain-err', 'executing', 'failed', expect.objectContaining({
+        errorCode: 'tool_execution_failed',
+      }));
     });
 
     // ---------------------------------------------------------------------

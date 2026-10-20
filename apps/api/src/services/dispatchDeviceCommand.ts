@@ -273,8 +273,8 @@ async function deliverPreparedDeviceCommand(
   // queued reboot could land in the middle of a running script.
   //
   // Review round 2 (J): a blanket skip was too blunt. `maintenanceRebootWorker`
-  // and the fleet-findings dispatch map both issue reboots that ALWAYS pushed
-  // before #5128, and downgrading them to "wait for the next heartbeat" delays
+  // (Linux, until #9181 moved it onto schedule_reboot) and the fleet-findings
+  // dispatch map both issued reboots that ALWAYS pushed before #5128, and downgrading them to "wait for the next heartbeat" delays
   // a maintenance-window reboot by a whole heartbeat interval. So apply the
   // barrier's actual condition instead: push only when nothing is in flight on
   // this device, which is exactly what the heartbeat claim checks.

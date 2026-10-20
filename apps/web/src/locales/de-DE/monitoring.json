@@ -545,6 +545,7 @@
     },
     "errorCodes": {
       "preview_stale": "Die Richtlinie wurde seit dieser Vorschau geändert. Erstellen Sie vor der Konvertierung erneut eine Vorschau.",
+      "conversion_contended": "Gleichzeitige Änderungen haben die Konvertierung unterbrochen. Es wurde nichts geändert. Versuchen Sie es erneut.",
       "preview_failed": "Die Vorschau konnte nicht erstellt werden. Versuchen Sie es später erneut.",
       "equivalence_delta": "Die konvertierten Monitore würden sich nicht auf jedem Gerät wie die Legacy-Regeln verhalten. Prüfen Sie die Vorschau vor der Konvertierung.",
       "CONVERSION_PREREQUISITE_MISSING": "Ein erforderliches Plattform-Update wurde noch nicht bereitgestellt, daher ist keine Konvertierung möglich.",

@@ -1,14 +1,10 @@
 import {
-  completeConsentRequestSchema,
-  completeConsentResultSchema,
   retestRequestSchema,
   retestResultSchema,
   verifyConsentIdentityRequestSchema,
   verifyConsentIdentityResultSchema,
   writeActionRequestSchema,
   writeActionResultSchema,
-  type CompleteConsentRequest,
-  type CompleteConsentResult,
   type RetestRequest,
   type RetestResult,
   type VerifyConsentIdentityRequest,
@@ -23,7 +19,6 @@ const DEFAULT_MAX_BODY_BYTES = 16 * 1024;
 
 export interface ExecutorAppDependencies {
   authenticator: InternalRequestAuthenticator;
-  completeConsent(request: CompleteConsentRequest): Promise<CompleteConsentResult>;
   verifyIdentity(request: VerifyConsentIdentityRequest): Promise<VerifyConsentIdentityResult>;
   retest(request: RetestRequest): Promise<RetestResult>;
   executeAction(request: WriteActionRequest): Promise<WriteActionResult>;
@@ -125,23 +120,6 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
         return context.json({ error: 'internal_error' }, 500);
       }
     }
-    if (operation === 'complete-consent') {
-      const request = completeConsentRequestSchema.safeParse(parsed);
-      if (!request.success) return context.json({ error: 'invalid_request' }, 400);
-      if (request.data.correlationId !== authentication.correlationId) {
-        return context.json({ error: 'unauthorized' }, 401);
-      }
-      try {
-        const result = completeConsentResultSchema.safeParse(
-          await dependencies.completeConsent(request.data),
-        );
-        return result.success
-          ? context.json(result.data)
-          : context.json({ error: 'internal_error' }, 500);
-      } catch {
-        return context.json({ error: 'internal_error' }, 500);
-      }
-    }
     if (operation === 'retest') {
       const request = retestRequestSchema.safeParse(parsed);
       if (!request.success) return context.json({ error: 'invalid_request' }, 400);
@@ -171,7 +149,6 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
   }
 
   app.get('/healthz', (context) => context.json({ status: 'ok' }));
-  app.post('/v1/complete-consent', (context) => execute(context, 'complete-consent'));
   app.post('/v1/verify-identity', (context) => execute(context, 'verify-identity'));
   app.post('/v1/retest', (context) => execute(context, 'retest'));
   app.post('/v1/execute-action', (context) => execute(context, 'execute-action'));

@@ -81,7 +81,9 @@
       "high": "Élevée",
       "normal": "Normal",
       "low": "Faible"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} étapes",
+    "checklistTitle": "Liste de contrôle : {{done}} étapes sur {{total}} terminées"
   },
   "ticketArchivedList": {
     "emptyTitle": "Pas de tickets archivés.",
@@ -521,7 +523,11 @@
     },
     "device": {
       "none": "Aucun appareil",
-      "unlink": "Délier"
+      "unlink": "Délier",
+      "link": "Lier un appareil",
+      "change": "Changer l'appareil",
+      "cancel": "Annuler",
+      "assigneeWarning": "Changer l'appareil revalide la personne assignée. Un technicien sans accès au nouvel appareil sera désassigné."
     },
     "toast": {
       "statusUpdated": "Statut mis à jour",

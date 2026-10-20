@@ -11,6 +11,7 @@ import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgIdParamSwitch } from '@/hooks/useOrgIdParamSwitch';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { fillDevicePlaceholders, type FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
@@ -109,6 +110,10 @@ export default function AlertsPage() {
   // once currentOrgId lands — two identical GETs at nearly the same instant
   // (sweep A3).
   const orgScopeResolving = useOrgScope().status === 'loading';
+  // `/alerts?orgId=<id>` (the org record's links) opens THAT org's alerts by
+  // switching the working org to it (#9108); hold the fetch until that settles
+  // so the previously-selected org's alerts never load for such a link.
+  const orgIdParamPending = useOrgIdParamSwitch('/alerts');
   const fleetDeviceOptions = useDeviceOptions({ orgId: currentOrgId ?? undefined });
   const deviceStatus = fleetDeviceOptions.state === 'error'
     ? 'error'
@@ -189,9 +194,9 @@ export default function AlertsPage() {
     // superseded in-flight response. Skip while the org scope is still
     // resolving (#4147/sweep A3) — firing now would go out unscoped, then
     // fire again the instant currentOrgId lands.
-    if (orgScopeResolving) return;
+    if (orgScopeResolving || orgIdParamPending) return;
     fetchAlerts();
-  }, [fetchAlerts, orgScopeResolving]);
+  }, [fetchAlerts, orgScopeResolving, orgIdParamPending]);
 
   const { ids: deviceFilterIds, loading: deviceFilterLoading, state: deviceFilterState, refetch: retryDeviceFilter } = useAdvancedFilterIds(deviceFilter, `${currentOrgId}:${allOrgs}`);
   const deviceFilterBlocked = deviceFilterLoading || deviceFilterState === 'error';

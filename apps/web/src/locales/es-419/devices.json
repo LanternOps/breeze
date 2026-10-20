@@ -10,7 +10,7 @@
     "site": "Sitio",
     "policy": "Política",
     "states": {
-      "not_reported": "Aún no hay datos de hora — se necesita una actualización del agente que incluya sincronización horaria",
+      "not_reported": "Aún no hay datos de hora — se requiere actualizar el agente para la sincronización horaria",
       "unsupported_os": "Aún no se admite en este sistema operativo"
     },
     "health": {
@@ -384,6 +384,7 @@
     "hide": "ocultar"
   },
   "deviceActions": {
+    "moreActions": "Más acciones",
     "unavailable": {
       "offline": "El dispositivo está fuera de línea",
       "maintenance": "El dispositivo está en modo de mantenimiento.",
@@ -473,7 +474,7 @@
     },
     "runScript": "Ejecutar secuencia de comandos",
     "remoteTools": "Herramientas remotas",
-    "reRunAgentInventoryCollectorsSo": "Vuelva a ejecutar los recopiladores de inventario de agentes para que UI vea datos nuevos de hardware/software/red sin esperar el siguiente ciclo de latidos.",
+    "reRunAgentInventoryCollectorsSo": "Recopilar inventario ahora",
     "refresh": "Actualizar",
     "reboot": "Reiniciar",
     "wake": "Despertar",
@@ -864,7 +865,10 @@
     "loadingDevice": "Cargando dispositivo...",
     "backToDevices": "Volver a dispositivos",
     "goBack": "Volver",
-    "devices": "Dispositivos"
+    "devices": "Dispositivos",
+    "devicesCrumbOtherOrg": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo sigue siendo {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo no cambia",
+    "switchOrgFailed": "No se pudo cambiar de organización. Inténtalo de nuevo."
   },
   "deviceDetails": {
     "overview": "Descripción general",
@@ -898,7 +902,7 @@
     "scriptExecutionHistory": "Historial de ejecución de scripts",
     "management": "Gestión",
     "agentSettingsAndDeviceManagement": "Configuración de agentes y administración de dispositivos",
-    "config": "configuración",
+    "config": "Configuración",
     "resolvedConfigurationFromAllAssignedPolicies": "Configuración resuelta de todas las políticas asignadas.",
     "security": "Seguridad",
     "playbooks": "Playbooks",
@@ -950,7 +954,13 @@
       "extensions": "Extensiones"
     },
     "workloads": "Cargas de trabajo",
-    "workloadsTitle": "Contenedores y máquinas virtuales en este host"
+    "workloadsTitle": "Contenedores y máquinas virtuales en este host",
+    "offlineLastSeen": "Sin conexión · visto por última vez {{ago}}",
+    "locatedIn": "en <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Estás viendo un dispositivo de {{org}}",
+      "switch": "Cambiar a {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -973,7 +983,9 @@
     "sentineloneWillCutTheDeviceOff": "SentinelOne desconectará el dispositivo de la red hasta que elimine el aislamiento. Las sesiones activas disminuirán.",
     "sentineloneWillRestoreThisDeviceS": "SentinelOne restaurará la conectividad de red de este dispositivo.",
     "cancel": "Cancelar",
-    "isolate": "Aislar"
+    "isolate": "Aislar",
+    "managedSecurityAgents": "Agentes de seguridad administrados",
+    "since": "Desde {{date}}"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Cargando configuración efectiva...",
@@ -1208,6 +1220,8 @@
   "deviceFilterToolbar": {
     "searchDevices": "Buscar dispositivos",
     "quickFilters": "Filtros rápidos",
+    "scrollChipsLeft": "Desplazar filtros a la izquierda",
+    "scrollChipsRight": "Desplazar filtros a la derecha",
     "addFilter": "Agregar filtro",
     "advanced": "Avanzado",
     "clear": "Limpiar"
@@ -1357,8 +1371,6 @@
     "ratedSpeed": "nominal {{speed}}"
   },
   "deviceInfoTab": {
-    "logsSilent": "Este dispositivo está en línea pero no ha enviado registros desde {{since}}. El envío de registros puede estar deshabilitado, fallando o no llegar al servidor — revise la configuración de envío de registros del agente en el dispositivo.",
-    "logsSilentNeverShipped": "Este dispositivo está en línea pero nunca ha enviado un registro. El envío de registros puede estar deshabilitado, fallando o no llegar al servidor — revise la configuración de envío de registros del agente en el dispositivo.",
     "updateStuck": "La actualización del agente a {{target}} parece atascada: {{attempts}} intentos desde {{since}} y el dispositivo sigue en su versión anterior. El actualizador reintenta en cada heartbeat; revise los registros del agente, o el propio dispositivo si no envía ninguno.",
     "updateOfferWithheld": "Las ofertas de actualización están retenidas para este dispositivo (desde {{since}}): no se puede confirmar que la compilación de su agente acepte la edición que sirve este servidor, por lo que permanece en su versión actual. Recupérelo con un instalador de la edición servida o con una versión del agente que informe su edición.",
     "helperInstallIssue": {
@@ -1367,7 +1379,7 @@
       "unknown": "Breeze Assist está habilitado pero no instalado (desde {{since}})."
     },
     "watchdogInstall": {
-      "gaveUp": "No se pudo instalar el watchdog automáticamente (desde {{since}}): {{reason}}. Ejecute `breeze-agent service install --watchdog` en el equipo para reintentar.",
+      "gaveUp": "No se pudo instalar el watchdog automáticamente (desde {{since}}): {{reason}}. Ejecute <code>breeze-agent service install --watchdog</code> en el equipo para reintentar.",
       "unsupported": "La instalación automática del watchdog no es compatible con este equipo (desde {{since}}).",
       "reason": {
         "network": "no se pudo acceder a la descarga",
@@ -1509,7 +1521,8 @@
     "tags": "Etiquetas",
     "customFields": "Campos personalizados",
     "text2": "*",
-    "edit": "Editar"
+    "edit": "Editar",
+    "roleNotAssessed": "Rol aún no evaluado"
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -1591,6 +1604,7 @@
       "os": "OS",
       "role": "Rol",
       "status": "Estado",
+      "attention": "Atención",
       "cpu": "CPU %",
       "ram": "RAM %",
       "lastSeen": "Visto por última vez",
@@ -1751,8 +1765,6 @@
       "manual": "Manual"
     },
     "updateWithheld": "Actualizaciones retenidas",
-    "logsSilent": "Registros silenciosos",
-    "logsSilentTooltip": "Este dispositivo está en línea pero no ha enviado registros en más de 6 horas. El envío de registros puede estar deshabilitado, fallando o no llegar al servidor.",
     "updateStuck": "Actualización atascada",
     "updateStuckTooltip": "Este dispositivo lleva más de una hora reintentando la actualización del agente a {{target}} sin completarla.",
     "updateWithheldTooltip": "El servidor no ofrece actualizaciones a este dispositivo porque no se puede confirmar que la compilación de su agente acepte la edición servida. Permanece en su versión actual hasta que se recupere.",
@@ -1766,7 +1778,54 @@
       "equalTooltip": "Coincide con la versión efectiva {{version}}",
       "aheadTooltip": "Por delante del pin {{version}}",
       "behindTooltip": "Por detrás del pin {{version}}"
-    }
+    },
+    "attention": {
+      "alerts": {
+        "critical_one": "{{count}} crítica",
+        "critical_other": "{{count}} críticas",
+        "high_one": "{{count}} alta",
+        "high_other": "{{count}} altas",
+        "medium_one": "{{count}} media",
+        "medium_other": "{{count}} medias",
+        "low_one": "{{count}} baja",
+        "low_other": "{{count}} bajas",
+        "info_one": "{{count}} informativa",
+        "info_other": "{{count}} informativas"
+      },
+      "tickets_one": "{{count}} ticket abierto",
+      "tickets_other": "{{count}} tickets abiertos",
+      "alertsTitle": "Alertas abiertas: {{breakdown}}",
+      "none": "Nada pendiente",
+      "unavailable": "Recuentos de alertas y tickets no disponibles",
+      "loading": "Cargando recuentos de alertas y tickets"
+    },
+    "columnChooser": {
+      "title": "Columnas",
+      "searchLabel": "Filtrar columnas",
+      "searchPlaceholder": "Filtrar columnas…",
+      "noMatches": "Ninguna columna coincide con “{{query}}”",
+      "alwaysShown": "Siempre visible",
+      "showColumn": "Mostrar {{column}}",
+      "hideColumn": "Ocultar {{column}}",
+      "moveColumnUp": "Mover {{column}} hacia arriba",
+      "moveColumnDown": "Mover {{column}} hacia abajo",
+      "gate": {
+        "agentOnlyFleet": "Oculta en flotas solo con agentes",
+        "networkOnlyView": "Oculta mientras solo se muestran dispositivos de red",
+        "noManualAssets": "Visible solo cuando se muestran activos manuales"
+      },
+      "groups": {
+        "identity": "Identidad",
+        "platform": "Plataforma",
+        "health": "Estado",
+        "versions": "Versiones",
+        "network": "Red",
+        "inventory": "Inventario"
+      }
+    },
+    "countLine_one": "{{shown}} de {{count}} dispositivo",
+    "countLine_other": "{{shown}} de {{count}} dispositivos",
+    "noMatchesTitle": "Ningún dispositivo coincide con estos filtros"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",
@@ -2022,13 +2081,15 @@
       "cpu": "CPU",
       "disk": "Disco",
       "download": "Descargar",
-      "ram": "Ram",
+      "ram": "Memoria RAM",
       "readThroughput": "Rendimiento de lectura",
       "upload": "Subir",
       "writeThroughput": "Rendimiento de escritura"
     },
     "networkBandwidth": "Ancho de banda de red",
-    "title": "Gráficos de rendimiento"
+    "title": "Gráficos de rendimiento",
+    "noSamples": "Sin muestras en las últimas {{range}}",
+    "offlineSince": "Dispositivo sin conexión · visto por última vez {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2105,7 +2166,7 @@
     "details": "detalles",
     "disabled": "La puntuación de confiabilidad está deshabilitada para esta organización.",
     "distinctEvents": "Eventos distintos del {{window}}.",
-    "empty": "Aún no hay una instantánea de confiabilidad disponible.",
+    "empty": "Aún no hay datos de confiabilidad",
     "errors": {
       "loadDetail": "No se pudieron cargar los detalles de confiabilidad",
       "loadScore": "No se pudo cargar la puntuación de confiabilidad",
@@ -2451,7 +2512,7 @@
     "loadFailed": "No se pudo cargar la garantía.",
     "lookupUnavailable": "La búsqueda de garantía no está disponible para este fabricante",
     "manufacturer": "Fabricante",
-    "noInformation": "Sin información de garantía",
+    "noInformation": "No hay garantía registrada",
     "renews": "Renueva",
     "serialNumber": "Número de serie",
     "source": "Fuente: {{source}}",
@@ -2477,7 +2538,8 @@
       "refreshing": "Garantía actualizada...",
       "stillInProgress": "La actualización de la garantía aún está en curso; la tarjeta se actualizará cuando se complete.",
       "updated": "Información de garantía actualizada."
-    }
+    },
+    "lookUp": "Consultar"
   },
   "devicesPage": {
     "accessDenied": "No tiene permiso para ver dispositivos.",
@@ -2494,8 +2556,9 @@
       "confirm": "Eliminar definitivamente",
       "message": "Esto no se puede deshacer. Todos los registros de estos dispositivos (historial, alertas, scripts, sesiones) se eliminan con ellos. Los tickets se conservan y se desvinculan.",
       "multipleOrgs": "Esta selección abarca {{count}} organizaciones. Revise el alcance de organización antes de continuar.",
-      "title": "¿Eliminar definitivamente {{count}} dispositivo(s)?",
-      "typeCount": "Escriba {{count}} para confirmar"
+      "typeCount": "Escriba {{count}} para confirmar",
+      "title_one": "¿Eliminar definitivamente {{count}} dispositivo?",
+      "title_other": "¿Eliminar definitivamente {{count}} dispositivos?"
     },
     "confirmRunAction": "Ejecute {{script}}",
     "confirmScriptRun": "Confirmar ejecución del script",
@@ -2522,26 +2585,11 @@
       "agentOnlyActionManual": "Esta acción se aplica únicamente a los dispositivos del agente. Los activos manuales no tienen agente.",
       "alreadyPendingTail": "Cola ya pendiente",
       "bulkActionFailed": "Error en la acción masiva",
-      "bulkAllDecommissioned": "Los {{total}} dispositivo(s) seleccionados ya están quitados.",
-      "bulkCommandPartialFailed": "{{action}} enviado a {{count}} dispositivo(s){{queuedTail}}{{skippedTail}}; {{failed}} fallaron: {{failureSummary}}",
-      "bulkCommandSent": "{{action}} enviado a {{count}} dispositivo(s){{queuedTail}}{{skippedTail}}",
-      "bulkDecommissionAllFailed": "No se pudo quitar ninguno de los {{count}} dispositivos: {{devices}}",
-      "bulkDecommissionFailed": "{{succeeded}} dispositivo(s) quitado(s); {{failed}} con error: {{devices}}",
-      "bulkDecommissioned": "{{count}} dispositivo(s) quitado(s)",
-      "bulkMaintenanceAllFailed": "No se pudo actualizar el modo de mantenimiento para todos los dispositivos {{count}}: {{devices}}",
-      "bulkMaintenanceSomeFailed": "{{succeeded}} dispositivo(s) {{verb}} modo de mantenimiento; {{failed}} falló: {{devices}}",
       "bulkMaintenanceSuccess": "dispositivos {{count}} {{verb}} modo de mantenimiento",
       "bulkMaintenanceSuccess_one": "dispositivo {{count}} {{verb}} modo de mantenimiento",
       "bulkMaintenanceSuccess_other": "dispositivos {{count}} {{verb}} modo de mantenimiento",
-      "bulkPurgeDone": "{{count}} dispositivo(s) eliminado(s) definitivamente",
-      "bulkPurgeDoneWithSkips": "{{purged}} dispositivo(s) eliminado(s) definitivamente; {{skipped}} omitido(s) ({{reasons}})",
       "bulkPurgeFailed": "Error al eliminar definitivamente: {{reason}}",
       "bulkPurgeNoneDeleted": "No se eliminó ningún dispositivo: {{reasons}}",
-      "bulkPurgeStarted": "Eliminando definitivamente {{count}} dispositivo(s)…",
-      "bulkRestoreAllFailed": "No se pudo restaurar ninguno de los {{count}} dispositivo(s)",
-      "bulkRestoreSomeFailed": "{{succeeded}} dispositivo(s) restaurado(s); {{failed}} con errores",
-      "bulkRestoreUninstallAlreadySent": "{{count}} dispositivo(s) ya habían recibido la desinstalación; puede que haya que reinstalar el agente en esas máquinas.",
-      "bulkRestored": "{{count}} dispositivo(s) restaurado(s)",
       "bulkWakeAllFailed": "Error en la reactivación masiva de todos",
       "bulkWakeSent": "Despertador masivo enviado",
       "bulkWakeSomeFailed": "Despertar en masa algunos falló",
@@ -2589,7 +2637,37 @@
       "nonAgentSkipped": "{{count}} dispositivos sin agente omitidos — esta acción solo se aplica a dispositivos con agente.",
       "bulkManualDeleted": "Se eliminaron {{count}} activos manuales.",
       "bulkManualDeleteAllFailed": "No se pudieron eliminar los {{count}} activos manuales: {{devices}}.",
-      "bulkManualDeleteSomeFailed": "Se eliminaron {{succeeded}}; {{failed}} fallaron: {{devices}}."
+      "bulkManualDeleteSomeFailed": "Se eliminaron {{succeeded}}; {{failed}} fallaron: {{devices}}.",
+      "bulkAllDecommissioned_one": "{{count}} dispositivo seleccionado ya está quitado.",
+      "bulkAllDecommissioned_other": "Los {{count}} dispositivos seleccionados ya están quitados.",
+      "bulkCommandPartialFailed_one": "{{action}} enviado a {{count}} dispositivo{{queuedTail}}{{skippedTail}}; {{failed}} fallaron: {{failureSummary}}",
+      "bulkCommandPartialFailed_other": "{{action}} enviado a {{count}} dispositivos{{queuedTail}}{{skippedTail}}; {{failed}} fallaron: {{failureSummary}}",
+      "bulkCommandSent_one": "{{action}} enviado a {{count}} dispositivo{{queuedTail}}{{skippedTail}}",
+      "bulkCommandSent_other": "{{action}} enviado a {{count}} dispositivos{{queuedTail}}{{skippedTail}}",
+      "bulkDecommissionAllFailed_one": "No se pudo quitar {{count}} dispositivo: {{devices}}",
+      "bulkDecommissionAllFailed_other": "No se pudo quitar ninguno de los {{count}} dispositivos: {{devices}}",
+      "bulkDecommissionFailed_one": "{{count}} dispositivo quitado; {{failed}} con error: {{devices}}",
+      "bulkDecommissionFailed_other": "{{count}} dispositivos quitados; {{failed}} con error: {{devices}}",
+      "bulkDecommissioned_one": "{{count}} dispositivo quitado",
+      "bulkDecommissioned_other": "{{count}} dispositivos quitados",
+      "bulkMaintenanceAllFailed_one": "No se pudo actualizar el modo de mantenimiento para {{count}} dispositivo: {{devices}}",
+      "bulkMaintenanceAllFailed_other": "No se pudo actualizar el modo de mantenimiento para los {{count}} dispositivos: {{devices}}",
+      "bulkMaintenanceSomeFailed_one": "{{count}} dispositivo {{verb}} modo de mantenimiento; {{failed}} falló: {{devices}}",
+      "bulkMaintenanceSomeFailed_other": "{{count}} dispositivos {{verb}} modo de mantenimiento; {{failed}} falló: {{devices}}",
+      "bulkPurgeDone_one": "{{count}} dispositivo eliminado definitivamente",
+      "bulkPurgeDone_other": "{{count}} dispositivos eliminados definitivamente",
+      "bulkPurgeDoneWithSkips_one": "{{count}} dispositivo eliminado definitivamente; {{skipped}} omitidos ({{reasons}})",
+      "bulkPurgeDoneWithSkips_other": "{{count}} dispositivos eliminados definitivamente; {{skipped}} omitidos ({{reasons}})",
+      "bulkPurgeStarted_one": "Eliminando definitivamente {{count}} dispositivo…",
+      "bulkPurgeStarted_other": "Eliminando definitivamente {{count}} dispositivos…",
+      "bulkRestoreAllFailed_one": "No se pudo restaurar {{count}} dispositivo",
+      "bulkRestoreAllFailed_other": "No se pudo restaurar ninguno de los {{count}} dispositivos",
+      "bulkRestoreSomeFailed_one": "{{count}} dispositivo restaurado; {{failed}} con errores",
+      "bulkRestoreSomeFailed_other": "{{count}} dispositivos restaurados; {{failed}} con errores",
+      "bulkRestoreUninstallAlreadySent_one": "{{count}} dispositivo ya había recibido la desinstalación; puede que haya que reinstalar el agente en esa máquina.",
+      "bulkRestoreUninstallAlreadySent_other": "{{count}} dispositivos ya habían recibido la desinstalación; puede que haya que reinstalar el agente en esas máquinas.",
+      "bulkRestored_one": "{{count}} dispositivo restaurado",
+      "bulkRestored_other": "{{count}} dispositivos restaurados"
     },
     "tryAgain": "Intentar otra vez",
     "unknownDevice": "Desconocido",
@@ -2597,8 +2675,9 @@
     "unknownSite": "Sitio desconocido",
     "viewInstallationGuide": "Ver guía de instalación",
     "confirmDecommissionedSkip": {
-      "message": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con los {{eligible}} dispositivo(s) restantes? Los que estén sin conexión lo ejecutarán en su próximo registro.",
-      "title": "Algunos dispositivos seleccionados están quitados"
+      "title": "Algunos dispositivos seleccionados están quitados",
+      "message_one": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con {{count}} dispositivo restante? Los que estén sin conexión lo ejecutarán en su próximo registro.",
+      "message_other": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con los {{count}} dispositivos restantes? Los que estén sin conexión lo ejecutarán en su próximo registro."
     },
     "importFromRmm": "Importar desde otro RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} ocultos — {{fields}} solo se aplica a dispositivos con agente.",
@@ -2612,7 +2691,27 @@
       "installAgent": "Instalar agente…",
       "addNetworkAsset": "Agregar activo de red…",
       "addManualAsset": "Agregar activo manualmente…"
-    }
+    },
+    "confirmBulkCommand": {
+      "message": "Se enviará {{action}} a {{count}} dispositivo(s) {{scope}}.",
+      "messageSplit": "Se enviará {{action}} a {{count}} dispositivo(s) {{scope}}: {{online}} en línea ahora · {{queued}} en cola para el próximo check-in.",
+      "scopeMulti": "en {{count}} organizaciones ({{orgs}})",
+      "scopeSingle": "en {{org}}",
+      "title": "¿{{action}} {{count}} dispositivo(s)?",
+      "verbs": {
+        "lock": "Bloquear",
+        "maintenanceOff": "Finalizar mantenimiento",
+        "reboot": "Reiniciar",
+        "reboot_safe_mode": "Reiniciar en modo seguro",
+        "shutdown": "Apagar",
+        "wake": "Activar (Wake)"
+      }
+    },
+    "emptyOrgTitle": "Todavía no hay dispositivos en {{org}}",
+    "emptyOrgTitleUnnamed": "Todavía no hay dispositivos en esta organización",
+    "emptyOrgDescription": "Instala el agente en un equipo de esta organización para empezar a supervisarlo, o cambia a todas las organizaciones para ver el resto de tu flota.",
+    "viewAllOrganizations": "Ver todas las organizaciones",
+    "importFromRmmShort": "Importar"
   },
   "filterAddDropdown": {
     "addFilter": "Agregar filtro",
@@ -2941,7 +3040,9 @@
     "submitting": "Procesando…",
     "cancel": "Cancelar",
     "genericError": "No se pudo mover el dispositivo.",
-    "timeout": "El traslado está tardando más de lo esperado y es posible que aún se esté completando en el servidor. Espera un minuto y luego actualiza la página para comprobar en qué organización está el dispositivo antes de volver a intentarlo."
+    "timeout": "El traslado está tardando más de lo esperado y es posible que aún se esté completando en el servidor. Espera un minuto y luego actualiza la página para comprobar en qué organización está el dispositivo antes de volver a intentarlo.",
+    "pamMoveActive": "Este dispositivo tiene una sesión de acceso privilegiado (PAM) que aún no terminó de limpiarse. Espere a que se cierre y luego vuelva a mover el dispositivo.",
+    "pamMoveBlocked": "Este dispositivo tiene historial de acceso privilegiado (PAM), y mover dispositivos con PAM entre organizaciones no está habilitado en esta implementación."
   },
   "networkDeviceDetailPage": {
     "approval": {
@@ -4085,7 +4186,7 @@
       "offNote": "Los runtimes siempre se detectan, pero la lista de cargas de trabajo permanece desactivada hasta que una política la habilite.",
       "enabled": "Enumerar cargas de trabajo",
       "runtimesHeading": "Runtimes a enumerar",
-      "laterRelease": "La lista de Hyper-V y Proxmox VE llegará con una versión posterior del agente; estos interruptores surtirán efecto entonces.",
+      "agentSupport": "Los interruptores de Hyper-V y Proxmox VE solo surten efecto en agentes que incluyen estos controladores; los agentes más antiguos los ignoran.",
       "interval": "Intervalo de recopilación (minutos)",
       "invalidInterval": "El intervalo debe ser un número entero de minutos entre {{min}} y {{max}}."
     },
@@ -4160,6 +4261,42 @@
       "false_positive": "Falso positivo",
       "dismissed": "Descartada",
       "unknown": "Desconocido"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Aislar dispositivo",
+        "unisolate": "Liberar aislamiento",
+        "scan": "Ejecutar análisis",
+        "update_agent": "Actualizar agente"
+      },
+      "unavailable": "No disponible",
+      "mfaRequired": "Verifica con MFA para ejecutar acciones de respuesta",
+      "error": "No se pudo solicitar la acción de respuesta.",
+      "requested": "{{action}} solicitado para {{device}}",
+      "inProgress": "Ya hay otra acción de respuesta en curso para este dispositivo.",
+      "confirming": "Solicitado — confirmando con {{vendor}}",
+      "reasonLabel": "Motivo (opcional)",
+      "confirm": {
+        "isolate": {
+          "title": "¿Aislar {{device}}?",
+          "message": "{{vendor}} aislará {{device}}: el dispositivo pierde el acceso a la red excepto a {{vendor}}. Puedes liberar el aislamiento más tarde."
+        },
+        "unisolate": {
+          "title": "¿Liberar el aislamiento de {{device}}?",
+          "message": "{{vendor}} restablecerá el acceso normal a la red de {{device}}."
+        }
+      }
+    },
+    "history": {
+      "heading": "Acciones de respuesta recientes",
+      "checking": "Verificando",
+      "aiBadge": "IA",
+      "status": {
+        "queued": "En cola",
+        "submitted": "En curso",
+        "succeeded": "Correcto",
+        "failed": "Fallido"
+      }
     }
   },
   "endpointMessages": {
@@ -4238,6 +4375,161 @@
       "titleHtml": "No se permite HTML en el título.",
       "titleLinks": "No se permiten enlaces en el título.",
       "invalid": "El mensaje contiene contenido no permitido."
+    },
+    "history": {
+      "title": "Mensajes al equipo",
+      "description": "Mensajes enviados a las personas en sus dispositivos y qué pasó con cada uno.",
+      "empty": "Aún no se ha enviado ningún mensaje.",
+      "loading": "Cargando...",
+      "loadFailed": "No se pudieron cargar los mensajes.",
+      "retry": "Reintentar",
+      "loadMore": "Cargar más",
+      "selectPrompt": "Selecciona un mensaje para ver los detalles de entrega.",
+      "detailLoadFailed": "No se pudo cargar este mensaje.",
+      "notFound": "No se encontró este mensaje.",
+      "noAccess": "No tienes permiso para ver los mensajes al equipo.",
+      "purgedTitle": "Contenido eliminado",
+      "purgedBody": "El texto del mensaje se eliminó después de 90 días. El historial de entrega se conserva.",
+      "purgedListTitle": "(contenido eliminado)",
+      "badgeRetracted": "Retirado",
+      "badgeAi": "IA",
+      "devicesLabel": "Dispositivos: {{count}}",
+      "fields": {
+        "body": "Mensaje",
+        "deliveries": "Dispositivos",
+        "host": "Dispositivo",
+        "status": "Estado",
+        "surface": "Mostrado en",
+        "error": "Falla",
+        "sent": "Enviado",
+        "expires": "Vence",
+        "delivered": "Entregado",
+        "displayed": "Mostrado",
+        "acknowledged": "Confirmado",
+        "dismissed": "Descartado",
+        "retracted": "Retirado",
+        "receipts": "Recibos",
+        "noReceipts": "Ninguno",
+        "requiresAck": "Requiere confirmación"
+      },
+      "receiptEvents": {
+        "displayed": "Mostrado",
+        "acknowledged": "Confirmado",
+        "dismissed": "Descartado",
+        "expired": "Vencido"
+      },
+      "surface": {
+        "assist": "Tarjeta de Assist",
+        "native": "Notificación nativa"
+      },
+      "statuses": {
+        "queued": "En cola",
+        "delivered": "Entregado",
+        "displayed": "Mostrado",
+        "acknowledged": "Confirmado",
+        "dismissed": "Descartado",
+        "expired": "Vencido",
+        "retracted": "Retirado",
+        "failed": "Fallido",
+        "superseded": "Reemplazado"
+      },
+      "actions": {
+        "retract": "Retirar",
+        "retracting": "Retirando...",
+        "resend": "Reenviar a fallidos o vencidos",
+        "resending": "Reenviando..."
+      },
+      "retractConfirm": {
+        "title": "¿Retirar este mensaje?",
+        "message": "Se quitará de los dispositivos que lo muestran ahora. Los dispositivos que aún no lo recibieron ya no lo recibirán.",
+        "confirm": "Retirar"
+      },
+      "messages": {
+        "retractSuccess": "Mensaje retirado.",
+        "retractPartial": "Mensaje retirado, pero no se pudieron actualizar {{count}} dispositivos.",
+        "retractFailed": "No se pudo retirar el mensaje.",
+        "resendSuccess": "Mensaje reenviado. Dispositivos: {{count}}.",
+        "resendFailed": "No se pudo reenviar el mensaje."
+      },
+      "resendErrors": {
+        "retracted": "Este mensaje fue retirado y no se puede reenviar.",
+        "body_purged": "El texto del mensaje se eliminó, así que no se puede reenviar.",
+        "in_progress": "Ya hay un envío en curso para este mensaje.",
+        "idempotency_conflict": "Este reenvío ya se envió con otros datos.",
+        "nothing_to_resend": "No hay dispositivos fallidos o vencidos a los que reenviar."
+      }
     }
+  },
+  "endpointChat": {
+    "tabLabel": "Chat en vivo",
+    "tabTitle": "Chat en vivo con la persona que usa este dispositivo",
+    "unsupported": "Este dispositivo no tiene chat. El chat requiere Breeze Assist en una sesión de consola de Windows.",
+    "footer": "El usuario lo ve como una ventana de chat. Un chat nunca otorga acceso remoto.",
+    "startHeading": "Iniciar un chat",
+    "firstMessageLabel": "Primer mensaje",
+    "startChat": "Iniciar chat",
+    "starting": "Iniciando...",
+    "recentHeading": "Chats recientes",
+    "empty": "Aún no hay chats con este dispositivo.",
+    "loadFailed": "No se pudieron cargar los chats.",
+    "loading": "Cargando...",
+    "back": "Volver a los chats",
+    "endChat": "Finalizar chat",
+    "ending": "Finalizando...",
+    "messageLabel": "Mensaje",
+    "send": "Enviar",
+    "sending": "Enviando...",
+    "openExisting": "Abrir el chat existente",
+    "user": "Usuario",
+    "technician": "Técnico",
+    "fromUser": "{{name}} (usuario)",
+    "undelivered": "No entregado",
+    "status": {
+      "opening": "Esperando a que el usuario vea la ventana de chat...",
+      "open": "Chat abierto",
+      "closed": "Este chat finalizó.",
+      "expired": "Este chat finalizó tras 30 minutos de inactividad.",
+      "failed": "No se pudo iniciar el chat."
+    },
+    "statusShort": {
+      "opening": "Abriendo",
+      "open": "Abierto",
+      "closed": "Finalizado",
+      "expired": "Vencido",
+      "failed": "Con error"
+    },
+    "errors": {
+      "chat_requires_assist": "El chat requiere Breeze Assist en una sesión de consola de Windows.",
+      "agent_unsupported": "El agente de este dispositivo aún no admite el chat.",
+      "device_offline": "El dispositivo está sin conexión. Inténtalo de nuevo cuando esté en línea.",
+      "platform_unsupported": "El chat solo está disponible en dispositivos Windows.",
+      "conversation_active": "Ya hay un chat en curso con este dispositivo.",
+      "rate_limited": "Se enviaron demasiados chats o mensajes recientemente. Inténtalo de nuevo más tarde.",
+      "open_timeout": "El dispositivo no respondió a tiempo, por lo que no se inició el chat.",
+      "chat_window_failed": "El dispositivo no pudo mostrar la ventana de chat.",
+      "conversation_not_open": "Este chat ya no está abierto.",
+      "feature_disabled": "El chat no está habilitado para esta organización.",
+      "no_permission": "No tienes permiso para chatear con este dispositivo.",
+      "device_not_found": "No se encontró este dispositivo.",
+      "generic": "Algo salió mal con el chat. Inténtalo de nuevo.",
+      "open_failed": "No se pudo iniciar el chat. Inténtalo de nuevo.",
+      "send_failed": "No se pudo enviar el mensaje. Inténtalo de nuevo.",
+      "close_failed": "No se pudo finalizar el chat. Inténtalo de nuevo."
+    },
+    "updatesPaused": "Actualizaciones en vivo en pausa — reintentando",
+    "closeNotAnnounced": "El chat está cerrado aquí. Es posible que la ventana de chat del usuario siga abierta hasta que su dispositivo se reconecte o él responda.",
+    "unavailable": "Este chat ya no está disponible"
+  },
+  "deviceOverviewState": {
+    "label": "Estado del dispositivo",
+    "lastCheckIn": "Último reporte {{ago}}",
+    "openAlerts_one": "{{count}} alerta abierta",
+    "openAlerts_other": "{{count}} alertas abiertas",
+    "openTickets_one": "{{count}} ticket abierto",
+    "openTickets_other": "{{count}} tickets abiertos",
+    "noOpenAlerts": "No hay alertas abiertas",
+    "untitledAlert": "Alerta reportada",
+    "alertsUnavailable": "No se pudieron cargar las alertas abiertas",
+    "viewAlerts": "Ver alertas"
   }
 }

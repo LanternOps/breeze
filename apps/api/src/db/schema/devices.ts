@@ -123,10 +123,9 @@ export const devices = pgTable('devices', {
   // logs ingest route (agents/logs.ts), throttled to a conditional UPDATE so
   // a batch that moved the value < 5 min doesn't cost a write on the hot
   // ingest path. NULL = never shipped a log (or predates this column).
-  // Combined with `status`, this is what lets the server tell "a heartbeating
-  // device that is quiet by design" from "a heartbeating device whose log
-  // shipping is mute" without depending on the (possibly broken) log channel
-  // itself — see isDeviceLogSilent in @breeze/shared.
+  // Not a health signal on its own: agents ship warn+ by default, so a
+  // healthy agent can be log-quiet for hours. Shipping health comes from the
+  // agent's heartbeat instead (#7067).
   lastLogAt: timestamp('last_log_at', { withTimezone: true }),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   // Bare-metal recovery W04a: stamped by the heartbeat check-in that completes

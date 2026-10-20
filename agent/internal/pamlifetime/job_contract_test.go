@@ -269,6 +269,7 @@ func (f *fakeWindowsPrimitives) CloseJob(job jobOwnership) {
 
 type fakeAccountLifecycle struct {
 	order            *[]string
+	promoteErr       error
 	deprovision      elevaccount.AccountEvidence
 	deprovisionErr   error
 	verified         elevaccount.AccountEvidence
@@ -279,6 +280,9 @@ type fakeAccountLifecycle struct {
 
 func (f *fakeAccountLifecycle) Promote(context.Context) (elevaccount.Credential, error) {
 	*f.order = append(*f.order, "promote dormant account")
+	if f.promoteErr != nil {
+		return elevaccount.Credential{}, f.promoteErr
+	}
 	return elevaccount.Credential{Username: elevaccount.AccountName, Password: "ephemeral"}, nil
 }
 

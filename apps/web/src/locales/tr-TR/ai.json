@@ -137,7 +137,8 @@
     "approvedCompleted": "Onaylandı · tamamlandı",
     "input": "Giriş:",
     "error": "Hata:",
-    "output": "Çıktı:"
+    "output": "Çıktı:",
+    "outputExpired": "Çıktının saklama politikası kapsamındaki süresi doldu"
   },
   "aiForOfficePage": {
     "title": "Office için AI",

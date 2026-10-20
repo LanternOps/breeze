@@ -14,22 +14,12 @@ import type {
 } from './configPolicyPatching';
 
 /**
- * The subset of a loaded policy-local patch config the snapshot reads.
- *
- * The auto-approve fields are optional here (unlike the normalized
- * `PatchInlineSettings`) because legacy rows stored before those fields
- * existed may surface settings without them — the `?? false` / `?? []` /
- * `?? 0` fallbacks mirror the schema defaults on purpose. The policy's own
- * inline `apps` list is deliberately absent: the ring owns app rules (#8186).
+ * The subset of a loaded policy-local patch config the snapshot reads. Only
+ * the policy's sources: auto-approval and per-app rules are ring-owned
+ * (#8186, #8188).
  */
 export interface PatchesSnapshotInput {
-  settings: Pick<PatchInlineSettings, 'sources'> &
-    Partial<
-      Pick<
-        PatchInlineSettings,
-        'autoApprove' | 'autoApproveSeverities' | 'autoApproveDeferralDays'
-      >
-    >;
+  settings: Pick<PatchInlineSettings, 'sources'>;
   ring: PatchRingResolution;
 }
 
@@ -42,20 +32,11 @@ export interface PatchesSnapshot {
   excludeCategories: string[];
   autoApprove: Record<string, unknown> | boolean;
   sources: PatchInlineSettings['sources'];
-  policyAutoApprove: {
-    enabled: boolean;
-    severities: PatchInlineSettings['autoApproveSeverities'];
-    deferralDays: number;
-  };
   /**
-   * The legacy app-rule key every executor version reads. Since #8186 it
-   * mirrors `ringAppRules`, written for executors that predate that key
-   * (rolling deploy); W04 stops writing it.
-   */
-  apps: PatchRingResolution['appRules'];
-  /**
-   * The ring's per-app rules (#8184). The executor enforces both keys,
-   * stricter verdict winning, and keeps parsing both for frozen snapshots.
+   * The ring's per-app rules (#8184). Every supported executor reads this key.
+   * The legacy `apps` mirror (and the inert `policyAutoApprove` block) are no
+   * longer written (#8188); the executor still parses `apps` from frozen
+   * snapshots so in-flight jobs keep their rules.
    */
   ringAppRules: PatchRingResolution['appRules'];
   ringValidation: {
@@ -73,13 +54,6 @@ export function buildPatchesSnapshot(policyLocal: PatchesSnapshotInput): Patches
     excludeCategories: policyLocal.ring.excludeCategories,
     autoApprove: policyLocal.ring.autoApprove,
     sources: policyLocal.settings.sources,
-    policyAutoApprove: {
-      enabled: policyLocal.settings.autoApprove ?? false,
-      severities: policyLocal.settings.autoApproveSeverities ?? [],
-      deferralDays: policyLocal.settings.autoApproveDeferralDays ?? 0,
-    },
-    // Written for executors that predate `ringAppRules`; W04 removes it.
-    apps: policyLocal.ring.appRules,
     ringAppRules: policyLocal.ring.appRules,
     ringValidation: {
       classification: policyLocal.ring.classification,

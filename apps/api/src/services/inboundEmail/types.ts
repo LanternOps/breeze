@@ -19,14 +19,25 @@ export type SenderAuthVerdict = 'pass' | 'fail' | 'neutral' | 'none' | 'unknown'
 // Sender-authentication summary for the From domain (R4). The From header is
 // spoofable, so identity/state actions (treating a sender as a known portal user,
 // or threading a reply by ticket token) must gate on `verified`. `verified` is the
-// derived trust decision: aligned SPF+DKIM pass, OR a DMARC pass. When the provider
-// omits all verdicts, `verified` is false (fail closed) — mail is quarantined for
-// human review, never auto-trusted and never hard-dropped.
+// derived trust decision: a trusted DMARC pass, or (Microsoft 365 mailbox only)
+// Exchange's intra-tenant stamp — see `source`. When the provider omits all
+// verdicts, `verified` is false (fail closed) — mail is quarantined for human
+// review, never auto-trusted and never hard-dropped.
 export interface SenderAuth {
   spf: SenderAuthVerdict;
   dkim: SenderAuthVerdict;
   dmarc: SenderAuthVerdict;
   verified: boolean;
+  /**
+   * Set only when `verified` came from something other than the provider's
+   * Authentication-Results verdicts. 'exchange-internal': a Microsoft 365 mailbox
+   * received mail that the tenant's own Exchange stamped as sent from inside the
+   * tenant (normalizeGraphMessage, #8299). That proves the message originated
+   * inside the tenant, not that the From address is the real sender: a tenant user
+   * or connector allowed to send as another address passes too. Absent: `verified`
+   * is the DMARC result.
+   */
+  source?: 'exchange-internal';
 }
 
 // Why a message ended up WITHOUT a usable provider sender-auth verdict, as opposed to a

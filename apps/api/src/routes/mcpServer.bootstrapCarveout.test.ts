@@ -184,6 +184,7 @@ describe('MCP bootstrap carve-out', () => {
       partnerId: 'partner-1',
       name: 'test',
       keyPrefix: 'brz_test',
+      mcpDomains: null,
       scopes: ['ai:read', 'ai:execute'],
       rateLimit: 1000,
       createdBy: 'user-1',

@@ -670,7 +670,16 @@
       "viewContract": "Ver contrato",
       "notLinked": "Sem vínculo",
       "rowSubtitle": "Aceito com o orçamento {{quoteNumber}} por {{signer}} em {{date}}",
-      "rowSubtitleNoQuote": "Assinado por {{signer}} em {{date}}"
+      "rowSubtitleNoQuote": "Assinado por {{signer}} em {{date}}",
+      "evidenceUnavailable": "Aceito por orçamento — evidência de aceite indisponível",
+      "recordSigned": "Registrar acordo assinado",
+      "source": {
+        "quote": "via orçamento {{number}}",
+        "recorded": "registrado pelo MSP — {{method}}"
+      },
+      "fileType": {
+        "image": "cópia digitalizada"
+      }
     },
     "templateEditor": {
       "usage": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados",
@@ -685,6 +694,36 @@
     },
     "contractPill": {
       "under": "Sob {{template}} v{{n}}"
+    },
+    "recordSigned": {
+      "title": "Registrar acordo assinado",
+      "organization": "Organização",
+      "organizationPlaceholder": "Selecione uma organização",
+      "orgFallback": "esta organização",
+      "template": "Modelo de acordo",
+      "templatePlaceholder": "Selecione um modelo de acordo",
+      "templatesError": "Não foi possível carregar os modelos de acordo.",
+      "orgsError": "Não foi possível carregar as organizações.",
+      "contractError": "Não foi possível carregar este contrato.",
+      "contractsError": "Não foi possível carregar os contratos desta organização. Você ainda pode registrar o acordo e vinculá-lo a um contrato depois.",
+      "contract": "Contrato (opcional)",
+      "contractNone": "Não vinculado a um contrato",
+      "method": "Como foi acordado",
+      "reference": "Referência",
+      "referenceHelp": "Onde um revisor encontraria o acordo assinado — um número de ordem de compra, um e-mail com data, ou um chamado.",
+      "signerName": "Quem concordou",
+      "signerEmail": "E-mail dessa pessoa (opcional)",
+      "signedAt": "Data da assinatura",
+      "file": "Cópia assinada (opcional)",
+      "fileHelp": "PDF, PNG ou JPEG, até 10 MB. Com uma cópia assinada anexada, é esse arquivo que fica arquivado.",
+      "fileTooLarge": "Esse arquivo tem mais de 10 MB.",
+      "fileWrongType": "Anexe um arquivo PDF, PNG ou JPEG.",
+      "variables": "Dados do acordo",
+      "unresolved": "Informe um valor para: {{names}}",
+      "consequence": "Isso arquiva um acordo assinado para {{org}}. Ele não poderá ser excluído depois.",
+      "submit": "Registrar acordo assinado",
+      "success": "Acordo assinado registrado.",
+      "error": "Não foi possível registrar o acordo assinado."
     }
   },
   "quotes": {
@@ -1058,8 +1097,8 @@
         "title": "Linha de rodapé (todas as páginas)",
         "helper": "Uma linha curta impressa na parte inferior de cada página — por exemplo, datas de validade. Deixe em branco para usar o rodapé padrão. Letras miúdas vão em Termos e Condições, não aqui.",
         "placeholder": "Em branco = usar o rodapé padrão",
-        "inheritedPartner": "Usando o rodapé de fatura do parceiro das Configurações: “{{text}}”",
-        "inheritedBrand": "Usando o texto de rodapé do kit de marca: “{{text}}”",
+        "inheritedPartner": "Usando o rodapé dos documentos do parceiro das configurações de faturamento: “{{text}}”",
+        "inheritedBrand": "Usando o texto de rodapé desta organização das configurações do portal dela: “{{text}}”",
         "inheritedNone": "Nenhum rodapé padrão definido nas Configurações — o rodapé da página ficará vazio.",
         "counter": "{{count}} / {{max}}"
       },
@@ -2050,7 +2089,10 @@
       "syncingToProvider": "Sincronizando…",
       "providerSyncFailed": "Falha na sincronização com o {{provider}}",
       "reverseInProviderToo": "Estorne este pagamento também no {{provider}}",
-      "overpayment": "O valor é maior que o saldo devido ({{balance}})."
+      "overpayment": "O valor é maior que o saldo devido ({{balance}}).",
+      "fillLabel": "Preencher valor",
+      "fillDeposit": "Entrada ({{amount}})",
+      "fillBalance": "Saldo total ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fatura enviada",
@@ -2065,7 +2107,8 @@
       "paid": "Paga",
       "subtotal": "Subtotal",
       "tax": "Imposto",
-      "total": "Total"
+      "total": "Total",
+      "depositDueNow": "Entrada devida agora"
     },
     "terms": "Termos e condições",
     "void": {
@@ -2281,6 +2324,7 @@
       "title": "Moeda",
       "description": "Novos orçamentos, faturas, contratos, apontamentos de tempo e peças desta organização são carimbados com esta moeda. Nada do que já existe é alterado.",
       "label": "Moeda de faturamento",
+      "partnerDefault": "Não herdada: cada organização mantém sua própria moeda de faturamento. O padrão do parceiro ({{currency}}) só se aplica às organizações criadas daqui em diante.",
       "loading": "Verificando o que uma mudança para {{currency}} afetaria…",
       "error": "Não foi possível carregar o resumo da mudança de moeda.",
       "panelTitle": "Alterar a moeda de faturamento para {{currency}}?",
@@ -2365,10 +2409,11 @@
       "autoEmailInvoiceHelp": "Quando um cliente aceita uma proposta, a fatura emitida é enviada imediatamente por e-mail com um link seguro para ver e pagar — sem login.",
       "notifyOnBehalfAcceptance": "Avisar o cliente por e-mail quando você registrar um aceite em nome dele",
       "notifyOnBehalfAcceptanceHelp": "Quando alguém da sua equipe aceita um orçamento por um cliente, o cliente recebe uma nota curta dizendo quem registrou e quando, com o número da fatura se uma tiver sido emitida. Ele pode responder se algo estiver errado. Desativado por padrão.",
-      "currencyCode": "Código da moeda",
+      "currencyCode": "Moeda padrão para novas organizações",
+      "currencyHelp": "Novas organizações começam nesta moeda. As organizações existentes mantêm a sua — altere-a na aba Faturamento de cada organização.",
       "defaultMarkup": "Margem padrão (%)",
       "defaultTaxRate": "Alíquota de imposto padrão (%)",
-      "description": "Moeda, impostos, numeração e termos aplicados a novas cotações e faturas de todos os clientes.",
+      "description": "Padrões para cotações e faturas dos seus clientes. Uma organização pode definir sua própria alíquota de imposto e seus termos de pagamento. A moeda parte da moeda padrão definida aqui e é alterada na aba Faturamento da organização.",
       "deviceAppendix": "Incluir o apêndice de dispositivos faturados nos PDFs das faturas",
       "deviceAppendixHelp": "Adiciona uma página listando cada dispositivo contado em cada linha da fatura. Desativado por padrão; a escolha é congelada na emissão.",
       "documentPageSize": "Tamanho da página",
@@ -2377,7 +2422,8 @@
       "documentTheme": "Fontes do documento",
       "documentThemeClassic": "Helvetica",
       "documentThemeCondensed": "Barlow Condensed + DM Sans",
-      "invoiceFooter": "Rodapé da fatura",
+      "invoiceFooter": "Rodapé dos documentos",
+      "invoiceFooterHelp": "Impresso no fim de cada página das suas cotações e faturas. O texto de rodapé próprio de uma organização (nas configurações do portal dela) o substitui para essa organização, e o rodapé próprio de uma cotação substitui ambos.",
       "invoiceFooterPlaceholder": "Instruções de pagamento, agradecimento etc.",
       "invoiceNumberPrefix": "Prefixo do número da fatura",
       "markupHelp": "Margem padrão sobre o custo do distribuidor, usada para preencher o preço de venda ao importar itens do catálogo. A margem bruta resultante é exibida durante a importação.",

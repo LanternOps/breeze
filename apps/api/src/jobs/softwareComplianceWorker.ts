@@ -28,6 +28,16 @@ import {
 } from '../services/softwarePolicyService';
 import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
 import { readLatestPolicyOwnedInstallByDevice } from '../services/softwarePolicyInstallRemediation';
+import { repairManagedSoftwarePolicies } from '../services/securityAgents/managedPolicyGenerator';
+import {
+  pruneAllForPolicy,
+  recordManagedPolicyApplicability,
+  type ManagedApplicabilityEntry,
+} from '../services/securityAgents/coverageStatusStore';
+import {
+  loadManagedRuleApplicability,
+  type ManagedRuleApplicability,
+} from '../services/securityAgents/managedRuleApplicability';
 import {
   scheduleSoftwareInstallRemediation,
   scheduleSoftwareRemediation,
@@ -503,7 +513,21 @@ export function getSoftwareComplianceQueue(): Queue<SoftwareComplianceJobData> {
   return softwareComplianceQueue;
 }
 
-async function processScanPolicies(): Promise<{ queued: number }> {
+/** Exported for tests and for the BullMQ processor switch. */
+export async function processScanPolicies(): Promise<{ queued: number }> {
+  // #6960: re-derive every security_agents link's generated software policy
+  // first, so drift is repaired and a policy activated by the repair is in this
+  // scan. Best effort: the scan of every other policy must not depend on it.
+  try {
+    const repair = await repairManagedSoftwarePolicies();
+    if (repair.failed > 0) {
+      console.error('[SoftwareComplianceWorker] Generated software policy repair failed for some links', repair);
+    }
+  } catch (error) {
+    console.error('[SoftwareComplianceWorker] Generated software policy repair sweep failed', error);
+    captureException(error);
+  }
+
   const activePolicies = await db
     .select({ id: softwarePolicies.id })
     .from(softwarePolicies)
@@ -542,6 +566,15 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   violations: number;
   remediationQueued: number;
   installRemediationQueued: number;
+  /**
+   * #6960, generated (security agents) policies only: devices with at least one
+   * rule that is not applicable to them (org not mapped, platform unsupported,
+   * …), and the (device, rule) pairs per reason. W03 persists the per-(device,
+   * vendor) reasons in `security_agent_device_status`; these counts remain for
+   * the pass log.
+   */
+  notApplicable?: number;
+  notApplicableByReason?: Record<string, number>;
 }> {
   const [policy] = await db
     .select()
@@ -602,16 +635,26 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   // then narrowing deviceIds to what it returned keeps them out of compliance
   // evaluation AND out of the remediation (software install/uninstall) queue.
   const orgByDevice = new Map<string, string>();
+  const osTypeByDevice = new Map<string, string>();
   for (const chunk of chunkArray(deviceIds)) {
     const rows = await db
-      .select({ id: devices.id, orgId: devices.orgId })
+      .select({ id: devices.id, orgId: devices.orgId, osType: devices.osType })
       .from(devices)
       .where(and(inArray(devices.id, chunk), eq(devices.isEphemeral, false), notParkedDeviceCondition()));
-    for (const row of rows) orgByDevice.set(row.id, row.orgId);
+    for (const row of rows) {
+      orgByDevice.set(row.id, row.orgId);
+      osTypeByDevice.set(row.id, row.osType);
+    }
   }
   deviceIds = deviceIds.filter((id) => orgByDevice.has(id));
+  const isFullPass = !(Array.isArray(data.deviceIds) && data.deviceIds.length > 0);
 
   if (deviceIds.length === 0) {
+    // #6960 W03: a generated policy that reaches nobody any more owns no
+    // coverage rows either.
+    if (policy.managedByLinkId && isFullPass) {
+      await reportCoverageFailure(policy.id, () => pruneAllForPolicy(policy.id));
+    }
     return {
       policyId: policy.id,
       devicesEvaluated: 0,
@@ -623,6 +666,25 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
   const normalizedRules = normalizeSoftwarePolicyRules(policy.rules);
   const remediationOptions = readRemediationOptions(policy.remediationOptions);
+  // #6960: a policy generated from a security_agents link installs a vendor's
+  // agent with per-org keys. A (device, rule) the vendor cannot serve (org not
+  // mapped, platform unsupported, …) is NOT APPLICABLE: its `missing` violation
+  // is dropped before anything below reads it, so the device is not reported
+  // non-compliant, nothing is queued for it, and it never consumes the
+  // (policy, device) attempt budget or cooldown another vendor relies on.
+  const managedApplicability: ManagedRuleApplicability | null = policy.managedByLinkId
+    ? await loadManagedRuleApplicability(
+      { id: policy.id, managedByLinkId: policy.managedByLinkId, rules: normalizedRules },
+      deviceIds.map((deviceId) => ({
+        deviceId,
+        orgId: orgByDevice.get(deviceId)!,
+        osType: osTypeByDevice.get(deviceId) ?? '',
+      })),
+    )
+    : null;
+  const notApplicableByReason: Record<string, number> = {};
+  const notApplicableSample: Array<{ deviceId: string; reasons: string[] }> = [];
+  let notApplicableDevices = 0;
   // Contract D11: ONE arming truth, shared with softwareRemediationWorker.ts and
   // the AI compliance tool. Evaluated once per pass — the policy row cannot
   // change mid-loop, and the generation gate above already refused a job whose
@@ -666,8 +728,22 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       const existing = existingByDevice.get(deviceId);
       const inventory = inventoryByDevice.get(deviceId) ?? [];
       const evaluated = evaluateSoftwarePolicyAgainstInventory(policy, inventory);
+      let evaluatedViolations = evaluated.violations;
+      if (managedApplicability) {
+        const filtered = managedApplicability.filterViolations(deviceId, evaluatedViolations);
+        evaluatedViolations = filtered.violations;
+        if (filtered.notApplicable.length > 0) {
+          notApplicableDevices += 1;
+          if (notApplicableSample.length < 10) {
+            notApplicableSample.push({ deviceId, reasons: filtered.notApplicable.map((entry) => entry.reason) });
+          }
+          for (const entry of filtered.notApplicable) {
+            notApplicableByReason[entry.reason] = (notApplicableByReason[entry.reason] ?? 0) + 1;
+          }
+        }
+      }
       const violationsWithStableTimestamps = withStableViolationTimestamps(
-        evaluated.violations,
+        evaluatedViolations,
         existing?.violations ?? null
       );
       const status = violationsWithStableTimestamps.length > 0 ? 'violation' : 'compliant';
@@ -966,13 +1042,67 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     recordSoftwareRemediationDecision('install_scheduled', installRemediationQueued);
   }
 
+  if (managedApplicability) {
+    // #6960 W03: durable per-(device, vendor) applicability, keyed on the
+    // DEVICE's org (orgByDevice), never the policy owner's.
+    const applicability = managedApplicability;
+    await reportCoverageFailure(policy.id, () => {
+      const entries: ManagedApplicabilityEntry[] = [];
+      for (const deviceId of deviceIds) {
+        for (const readiness of applicability.evaluateDevice(deviceId)) {
+          entries.push({
+            deviceId,
+            orgId: orgByDevice.get(deviceId)!,
+            vendor: readiness.vendor,
+            notApplicableReason: readiness.result.ok ? null : readiness.result.reason,
+          });
+        }
+      }
+      return recordManagedPolicyApplicability({
+        policyId: policy.id,
+        entries,
+        prune: isFullPass ? { deviceIds, vendors: applicability.vendors() } : null,
+      });
+    });
+  }
+
+  if (managedApplicability && notApplicableDevices > 0) {
+    console.info('[SoftwareComplianceWorker] Managed security-agent rules not applicable to some devices', {
+      policyId: policy.id,
+      managedByLinkId: policy.managedByLinkId,
+      devices: notApplicableDevices,
+      byReason: notApplicableByReason,
+      sample: notApplicableSample,
+    });
+  }
+
   return {
     policyId: policy.id,
     devicesEvaluated: deviceIds.length,
     violations,
     remediationQueued,
     installRemediationQueued,
+    ...(managedApplicability ? { notApplicable: notApplicableDevices, notApplicableByReason } : {}),
   };
+}
+
+/**
+ * Coverage state is observability for the security-agents feature, not part of
+ * compliance enforcement: a failed write is reported (and retried by the next
+ * pass) but never fails the compliance pass that already queued installs.
+ * The store runs in its own transaction, so it cannot poison this one.
+ */
+async function reportCoverageFailure(policyId: string, write: () => Promise<unknown>): Promise<void> {
+  try {
+    await write();
+  } catch (error) {
+    console.error('[SoftwareComplianceWorker] Failed to persist security-agent coverage applicability', { policyId, error });
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      service: 'securityAgentCoverage',
+      operation: 'recordManagedPolicyApplicability',
+      policyId,
+    });
+  }
 }
 
 export function createSoftwareComplianceWorker(): Worker<SoftwareComplianceJobData> {

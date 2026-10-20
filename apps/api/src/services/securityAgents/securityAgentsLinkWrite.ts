@@ -22,6 +22,17 @@ import { getVendor, type VendorKey } from './securityAgentVendors';
  *   3. Strict inline-settings parse (no secrets, no unknown keys, no duplicate
  *      vendors).
  *   4. Every enabled vendor must be enableable in the registry.
+ *   5. An enabled vendor may not be limited to a platform it does not support
+ *      (macOS MDM-approval is allowed: those devices show as not applicable).
+ *
+ * The generator adds two refusals of its own inside the write transaction,
+ * both after every check above (so a caller without `devices.execute` still
+ * gets the 403 first):
+ *   - `security_agents_catalog_missing` when the partner has no catalog
+ *     package for an enabled vendor (its integration is not connected);
+ *   - `security_agents_binary_missing` when the package needs a
+ *     partner-uploaded installer (SentinelOne's MSI) and has no deployable
+ *     version yet.
  *
  * The caller states whether it has authorized arming (`armAuthorized`); the
  * check never infers it.
@@ -31,11 +42,23 @@ export type SecurityAgentsLinkWriteCode =
   | 'security_agents_execute_required'
   | 'security_agents_feature_policy_not_allowed'
   | 'security_agents_invalid_settings'
-  | 'vendor_not_enableable';
+  | 'vendor_not_enableable'
+  | 'security_agents_platform_unsupported'
+  | 'security_agents_catalog_missing'
+  | 'security_agents_binary_missing';
 
 export type SecurityAgentsLinkWriteRefusal = {
   status: 400 | 403;
-  body: { error: string; code: SecurityAgentsLinkWriteCode; vendors?: VendorKey[] };
+  body: {
+    error: string;
+    code: SecurityAgentsLinkWriteCode;
+    vendors?: VendorKey[];
+    /**
+     * Web path where the prerequisite is fixed: the integration page
+     * (catalog_missing) or the package's Versions tab (binary_missing).
+     */
+    setupPath?: string;
+  };
 };
 
 export const SECURITY_AGENTS_EXECUTE_REQUIRED_MESSAGE =
@@ -119,6 +142,25 @@ export function checkSecurityAgentsLinkWrite(
           error: `Security agent ${notEnableable.join(', ')} cannot be enabled yet.`,
           code: 'vendor_not_enableable',
           vendors: notEnableable,
+        },
+      },
+    };
+  }
+
+  const platformUnsupported = parsed.data.agents
+    .filter((agent) => agent.enabled && (agent.platforms ?? []).some(
+      (platform) => getVendor(agent.vendor).platforms[platform] === 'unsupported',
+    ))
+    .map((agent) => agent.vendor);
+  if (platformUnsupported.length > 0) {
+    return {
+      ok: false,
+      refusal: {
+        status: 400,
+        body: {
+          error: `Security agent ${platformUnsupported.join(', ')} is limited to a platform it does not support.`,
+          code: 'security_agents_platform_unsupported',
+          vendors: platformUnsupported,
         },
       },
     };

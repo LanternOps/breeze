@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Back to Reports",
+      "backupPreview": {
+        "title": "Preview",
+        "description": "Builds the current backup snapshot with the options above. It runs only when you ask.",
+        "run": "Generate preview",
+        "error": "Could not generate the preview."
+      },
       "description": "Update the configuration for \"{{name}}\".",
       "errors": {
         "fetchReport": "Failed to fetch report",
@@ -1067,6 +1073,13 @@
         "business": "Business",
         "general": "General",
         "businessDescription": "MSP-facing numbers — SLA attainment, technician billability, and accounts receivable — for staff only."
+      },
+      "delivery": {
+        "contactsLoading": "Loading organization contacts…",
+        "contactsFailed": "Could not load this organization's contacts. You can still add email addresses.",
+        "noContacts": "This organization has no contacts with an email address.",
+        "removeEmail": "Remove {{email}}",
+        "recipientsFailed": "The report \"{{name}}\" was created, but its recipients could not all be added. Add them from the report."
       }
     },
     "threatDetectionOptions": {

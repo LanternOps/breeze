@@ -27,7 +27,7 @@
     "viewTask": "Aufgabe ansehen",
     "badgeTitle": "Von einer KI-Operator-Aufgabe erstellt. Abhaken, wenn die Arbeit erledigt ist – die Aufgabe läuft dann weiter."
   },
-  "editDoneWarning": "Das Bearbeiten eines erledigten Schritts löscht, wer ihn wann erledigt hat.",
+  "editDoneWarning": "Wenn Sie den Schritttext ändern, werden Bearbeiter und Zeitpunkt der Erledigung gelöscht. Bei reiner Notizänderung bleibt der Haken erhalten.",
   "resolveConfirm": {
     "title": "Unvollständige Checkliste",
     "body_one": "{{count}} von {{total}} Schritten ist nicht erledigt. Trotzdem lösen?",
@@ -74,7 +74,20 @@
       "loadFailed": "Checklisten-Vorlagen konnten nicht geladen werden.",
       "saveFailed": "Checklisten-Vorlage konnte nicht gespeichert werden.",
       "applyFailed": "Checklisten-Vorlage konnte nicht angewendet werden.",
-      "operatorStepWaiting": "Eine Operator-Aufgabe wartet auf einen nicht erledigten Schritt dieses Tickets – die Vorlage kann die Schritte daher nicht ersetzen. Wählen Sie stattdessen „Diese Schritte zur bestehenden Checkliste hinzufügen“, haken Sie den Schritt ab, wenn die Arbeit erledigt ist, oder stoppen Sie zuerst die Aufgabe."
+      "operatorStepWaiting": "Eine Operator-Aufgabe wartet auf einen nicht erledigten Schritt dieses Tickets – die Vorlage kann die Schritte daher nicht ersetzen. Wählen Sie stattdessen „Diese Schritte zur bestehenden Checkliste hinzufügen“, haken Sie den Schritt ab, wenn die Arbeit erledigt ist, oder stoppen Sie zuerst die Aufgabe.",
+      "saveAsFailed": "Die Checkliste konnte nicht als Vorlage gespeichert werden.",
+      "noSteps": "Dieses Ticket hat keine wiederverwendbaren Schritte zum Speichern.",
+      "duplicateFailed": "Die Checklistenvorlage konnte nicht dupliziert werden."
+    },
+    "duplicate": "Duplizieren",
+    "duplicateSuccess": "Als „{{name}}“ dupliziert.",
+    "saveAs": {
+      "cta": "Als Vorlage speichern",
+      "name": "Name der Vorlage",
+      "allOrganizations": "Für alle Organisationen verfügbar machen",
+      "submit": "Vorlage speichern",
+      "success": "Als Vorlage „{{name}}“ gespeichert.",
+      "skipped": "Nicht übernommen: {{operator}} Operator-Schritt(e) und {{duplicates}} doppelte(r) Schritt(e)."
     }
   }
 }

@@ -1,5 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import TicketQueueList from './TicketQueueList';
 import type { TicketSummary } from './ticketConfig';
@@ -69,5 +71,84 @@ describe('TicketQueueList type chip (#7900)', () => {
       <TicketQueueList tickets={[makeTicket({ id: 'tk-old' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
     );
     expect(screen.getByTestId('ticket-type-chip-tk-old')).toHaveAttribute('data-ticket-type', 'incident');
+  });
+});
+
+describe('TicketQueueList org link and row activation (ui-flow W03)', () => {
+  it('links the org name to the org record without selecting the row', () => {
+    const onSelect = vi.fn();
+    render(<TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={onSelect} loading={false} />);
+    const link = screen.getByTestId('org-record-link');
+    expect(link).toHaveAttribute('href', '/organizations/org-1');
+    expect(link).toHaveTextContent('Acme');
+    fireEvent.click(link);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('selects on row click, Enter and Space', () => {
+    const onSelect = vi.fn();
+    const ticket = makeTicket({ id: 'tk-1' });
+    render(<TicketQueueList tickets={[ticket]} selectedId={null} onSelect={onSelect} loading={false} />);
+    const row = screen.getByTestId('ticket-row-tk-1');
+    expect(row).toHaveAttribute('role', 'option');
+    fireEvent.click(row);
+    row.focus();
+    fireEvent.keyDown(row, { key: 'Enter' });
+    fireEvent.keyDown(row, { key: ' ' });
+    expect(onSelect).toHaveBeenCalledTimes(3);
+    expect(onSelect).toHaveBeenCalledWith(ticket);
+  });
+
+  it('does not hijack Enter pressed on the org link inside the row', () => {
+    const onSelect = vi.fn();
+    render(<TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={onSelect} loading={false} />);
+    fireEvent.keyDown(screen.getByTestId('org-record-link'), { key: 'Enter' });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('renders no org link when hideOrg or orgName is null', () => {
+    const { unmount } = render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={vi.fn()} loading={false} hideOrg />
+    );
+    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    unmount();
+    render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-2', orgName: null })]} selectedId={null} onSelect={vi.fn()} loading={false} />
+    );
+    expect(screen.queryByTestId('org-record-link')).toBeNull();
+  });
+});
+
+describe('TicketQueueList checklist progress (#9180)', () => {
+  it('shows done/total for a ticket with steps, from the row payload (no per-row fetch)', () => {
+    render(
+      <TicketQueueList
+        tickets={[makeTicket({ id: 'tk-1', checklist: { done: 2, total: 5 } })]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    const chip = screen.getByTestId('ticket-checklist-chip-tk-1');
+    expect(chip).toHaveTextContent('2/5');
+    expect(chip.getAttribute('title')).toContain('2 of 5');
+  });
+
+  it('renders no chip when the ticket has no steps, the field is absent, or total is 0', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-null', checklist: null }),
+          makeTicket({ id: 'tk-absent' }),
+          makeTicket({ id: 'tk-zero', checklist: { done: 0, total: 0 } }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.queryByTestId('ticket-checklist-chip-tk-null')).toBeNull();
+    expect(screen.queryByTestId('ticket-checklist-chip-tk-absent')).toBeNull();
+    expect(screen.queryByTestId('ticket-checklist-chip-tk-zero')).toBeNull();
   });
 });

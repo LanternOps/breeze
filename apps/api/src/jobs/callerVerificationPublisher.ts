@@ -46,9 +46,10 @@ const scoped = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystem
 
 export async function publishCallerVerificationEffects(): Promise<void> {
   const rows = await scoped(() => db.select().from(v).where(or(
+    and(eq(v.method, 'administrative_stepup'), isNull(v.deliveryPublishedAt)),
     and(eq(v.status, 'rejected_by_user'), isNull(v.rejectionNotifiedAt)),
     and(eq(v.status, 'pending'), or(isNull(v.deliveryPublishedAt), and(ne(v.method, 'callback_attestation'), sql`${v.expiresAt}<=now()`))),
-  )).limit(BATCH));
+  )).orderBy(v.createdAt).limit(BATCH));
   for (const row of rows) {
     try {
       await publishRow(row);
@@ -61,13 +62,34 @@ export async function publishCallerVerificationEffects(): Promise<void> {
 
 type Row = typeof v.$inferSelect;
 
+/** Thrown after all in-app notifications succeeded but an email send failed. */
+class RejectionEmailError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'RejectionEmailError';
+  }
+}
+
 async function handleRowFailure(row: Row, err: unknown): Promise<void> {
   const error = err instanceof Error ? err : new Error(String(err));
-  console.error('[CallerVerificationPublisher] Row failed:', { verificationId: row.id, error: error.name });
+  console.error('[CallerVerificationPublisher] Row failed:', { verificationId: row.id, error: error.message });
   captureException(error, undefined, { verificationId: row.id });
   const count = (failures.get(row.id) ?? 0) + 1;
   failures.set(row.id, count);
-  if (count < MAX_DELIVERY_FAILURES || row.status !== 'pending' || row.method === 'callback_attestation') return;
+  if (count < MAX_DELIVERY_FAILURES) return;
+  if (row.status === 'rejected_by_user') {
+    if (!(err instanceof RejectionEmailError)) return; // notification phase: keep retrying
+    // Give up on a rejected row too (#8998): the in-app notification is
+    // deduplicated and the email is best-effort, so stop the 5 s retry loop.
+    failures.delete(row.id);
+    try {
+      await scoped(() => db.update(v).set({ rejectionNotifiedAt: new Date() }).where(eq(v.id, row.id)));
+    } catch (inner) {
+      captureException(inner instanceof Error ? inner : new Error(String(inner)), undefined, { verificationId: row.id });
+    }
+    return;
+  }
+  if (row.status !== 'pending' || row.method === 'callback_attestation') return;
   failures.delete(row.id);
   try {
     // Workstation give-ups use helper_outdated: it is the only workstation
@@ -82,6 +104,52 @@ async function handleRowFailure(row: Row, err: unknown): Promise<void> {
 
 async function publishRow(row: Row): Promise<void> {
   {
+    // Administrative rows carry no caller challenge: notify security, then mark.
+    // Never routed through `ports.deliver`. The marker is independent of
+    // `rejectionNotifiedAt`, so a later rejection still reaches the branch below.
+    if (row.method === 'administrative_stepup' && !row.deliveryPublishedAt) {
+      // In-app first (deduplicated, so a retry never duplicates it); email is
+      // best-effort per recipient so one bad address or a missing transport
+      // can neither block the in-app record nor re-email earlier recipients.
+      // The administrative audit row was written transactionally at creation.
+      const recipients = await scoped(() => securityRecipients(row.orgId));
+      if (recipients.length === 0) {
+        const error = new Error('Administrative disable authorised but the org has no security notification recipients');
+        console.error('[CallerVerificationPublisher]', { verificationId: row.id, orgId: row.orgId, error: error.message });
+        captureException(error, undefined, { verificationId: row.id });
+      }
+      for (const person of recipients) {
+        await scoped(() => createNotification({
+          userId: person.id, orgId: row.orgId, type: 'security', priority: 'high',
+          title: 'Administrative account disable authorised',
+          message: row.reason ?? 'Review the contact verification record.',
+          link: '/security/incidents',
+          dedupeKey: `caller-administrative-${row.id}`,
+          metadata: { verificationId: row.id, contactId: row.contactId },
+        }));
+      }
+      const email = getEmailService();
+      if (!email && recipients.length > 0) {
+        captureException(new Error('Administrative notification email transport unavailable; in-app notifications sent'), undefined, { verificationId: row.id });
+      }
+      for (const person of email ? recipients : []) {
+        try {
+          await email!.sendEmail({
+            to: person.email,
+            subject: 'Administrative account disable authorised',
+            html: '<p>Review the administrative verification and its reason in Breeze.</p>',
+            text: `Administrative verification ${row.id}. Reason: ${row.reason ?? ''}`,
+            headers: { 'Message-ID': `<caller-admin-${row.id}-${person.id}@notifications.invalid>` },
+            purpose: 'security.caller_rejection',
+          });
+        } catch (err) {
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, { verificationId: row.id, recipientId: person.id });
+        }
+      }
+      await scoped(() => db.update(v).set({ deliveryPublishedAt: new Date() }).where(eq(v.id, row.id)));
+      return;
+    }
+    if (row.method === 'administrative_stepup' && row.status !== 'rejected_by_user') return;
     if (row.status === 'pending') {
       if (row.method !== 'callback_attestation' && row.expiresAt.getTime() <= Date.now()) {
         await applyDecision({ verificationId: row.id, decision: { kind: 'timeout' } });
@@ -93,7 +161,13 @@ async function publishRow(row: Row): Promise<void> {
     }
     const recipients = await scoped(() => securityRecipients(row.orgId));
     const email = getEmailService();
-    if (!email) throw new Error('Caller rejection email transport unavailable');
+    // Email is best-effort: with no transport the in-app notification is the
+    // delivery and the row is still marked notified (#8998).
+    if (recipients.length === 0) {
+      console.warn('[CallerVerificationPublisher] No security recipients for rejection:', { verificationId: row.id });
+    }
+    // Phase 1: every in-app notification (deduplicated). A failure here is
+    // never given up on: it is the notice itself.
     for (const person of recipients) {
       await scoped(() => createNotification({
         userId: person.id, orgId: row.orgId, type: 'security', priority: 'high',
@@ -103,15 +177,26 @@ async function publishRow(row: Row): Promise<void> {
         dedupeKey: `caller-rejection-${row.id}`,
         metadata: { verificationId: row.id },
       }));
-      await email.sendEmail({
-        to: person.email,
-        subject: 'Caller verification security incident',
-        html: '<p>A caller rejected an identity-change request. Open Breeze security incidents to review the subject fence and related actions.</p>',
-        text: 'A caller rejected an identity-change request. Open Breeze security incidents to review.',
-        headers: { 'Message-ID': `<caller-${row.id}-${person.id}@notifications.invalid>` },
-        purpose: 'security.caller_rejection',
-      });
     }
+    // Phase 2: best-effort email. Failures are retried, then given up on.
+    let emailError: unknown = null;
+    if (email) {
+      for (const person of recipients) {
+        try {
+          await email.sendEmail({
+            to: person.email,
+            subject: 'Caller verification security incident',
+            html: '<p>A caller rejected an identity-change request. Open Breeze security incidents to review the subject fence and related actions.</p>',
+            text: 'A caller rejected an identity-change request. Open Breeze security incidents to review.',
+            headers: { 'Message-ID': `<caller-${row.id}-${person.id}@notifications.invalid>` },
+            purpose: 'security.caller_rejection',
+          });
+        } catch (err) {
+          emailError ??= err;
+        }
+      }
+    }
+    if (emailError) throw new RejectionEmailError(emailError);
     await scoped(() => db.update(v).set({ rejectionNotifiedAt: new Date() }).where(eq(v.id, row.id)));
   }
 }

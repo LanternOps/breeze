@@ -213,6 +213,25 @@ export async function executeGraphReadAction(
         }, fields);
       }
 
+      // Targeted membership probe. `userId` is schema-validated as a GUID (no
+      // quotes/backslashes), so it is safe to splice into the $filter literal,
+      // same as the note at the top of this file. Filtering /members by id
+      // needs the advanced-query triple: ConsistencyLevel: eventual + $count=true.
+      // https://learn.microsoft.com/en-us/graph/aad-advanced-queries
+      case 'm365.group.member.get': {
+        const query = selectQuery(fields, undefined);
+        query['$filter'] = `id eq '${action.userId}'`;
+        query['$count'] = 'true';
+        return await projectedCollection(graphClient, {
+          accessToken,
+          path: `/groups/${encodeURIComponent(action.groupId)}/members`,
+          query,
+          consistencyLevelEventual: true,
+          maxItems: 1,
+          maxPages: 1,
+        }, fields);
+      }
+
       case 'm365.org.get': {
         // /organization is a collection endpoint that returns at most one
         // row for a single-tenant app registration; project the first item

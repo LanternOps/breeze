@@ -982,6 +982,43 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
   return { buffer, verified };
 }
 
+/**
+ * Fetches and signature-verifies ONLY the manifest pair (a few KB) and returns
+ * the verified entry for one asset, without downloading the asset itself.
+ * Lets a cache refresher compare the signed sha256 against what it already
+ * holds and skip the (up to 128 MiB) body download when nothing changed.
+ */
+export async function peekVerifiedGithubReleaseArtifact(args: {
+  assetName: string;
+  manifestUrl: string;
+  signatureUrl: string;
+  expectedRepository?: string;
+  expectedRelease?: string | null;
+  expectedPlatformTrust?: string;
+  expectedEdition?: string;
+  requireMacosPublisher?: boolean;
+}): Promise<VerifiedReleaseArtifact> {
+  if (!isReleaseArtifactManifestVerificationConfigured()) {
+    throw new Error(
+      "Release artifact manifest public key is required for privileged installer downloads",
+    );
+  }
+  const [manifestBytes, signatureBytes] = await Promise.all([
+    fetchSmallBuffer(args.manifestUrl, "release artifact manifest"),
+    fetchSmallBuffer(args.signatureUrl, "release artifact manifest Ed25519 signature"),
+  ]);
+  return verifyReleaseArtifactManifestAsset({
+    assetName: args.assetName,
+    manifestBytes,
+    signatureBytes,
+    expectedRepository: args.expectedRepository,
+    expectedRelease: args.expectedRelease,
+    expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition: args.expectedEdition,
+    requireMacosPublisher: args.requireMacosPublisher,
+  });
+}
+
 export async function verifyGithubReleaseArtifactBuffer(args: {
   assetName: string;
   assetBuffer: Buffer;

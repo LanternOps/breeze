@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runAfterDbContextCommit } from '../db';
 import { partners } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { createAuditLog } from '../services/auditService';
 import { sendEvidenceCard } from '../services/partnerTrustEvidenceCard';
+import { sendTrustReviewReceivedEmail } from '../services/partnerTrustPartnerMail';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 export const partnerTrustRoutes = new Hono();
@@ -52,16 +53,35 @@ partnerTrustRoutes.post('/request-review', async (c) => {
     details: { requestedAt: requestedAt.toISOString() },
   });
 
-  try {
-    await sendEvidenceCard(partnerId, 'review_requested');
-  } catch (error) {
-    // Best-effort: the review request itself already succeeded (audit row
-    // written above) — a notification failure must never fail the request.
-    console.warn('[PartnerTrust] Failed to send evidence card for review request', {
-      partnerId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+  // Both notifications are deferred until the request transaction commits:
+  // they do their own DB reads and a transport round trip, which must not
+  // run on (or hold) the request's pooled connection, and must not announce
+  // a request that rolls back. Each is best-effort — the review request
+  // itself already succeeded (audit row written above) — so a failure is
+  // logged and never fails the request. The review-received email sits after
+  // the UPDATE … RETURNING, so it fires once per accepted request and never
+  // on the 24h-cooldown 429 above.
+  runAfterDbContextCommit('partnerTrust.evidenceCard', async () => {
+    try {
+      await sendEvidenceCard(partnerId, 'review_requested');
+    } catch (error) {
+      console.warn('[PartnerTrust] Failed to send evidence card for review request', {
+        partnerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  runAfterDbContextCommit('partnerTrust.reviewReceivedEmail', async () => {
+    try {
+      await sendTrustReviewReceivedEmail({ partnerId, requestedByUserId: auth.user.id });
+    } catch (error) {
+      console.warn('[PartnerTrust] Failed to send review-received email', {
+        partnerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
 
   return c.json({ requested: true });
 });

@@ -56,6 +56,24 @@ function mockInitialLoad(displayName: string | null) {
   });
 }
 
+describe('DeviceInfoTab — headings and role copy (#9030)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('starts at h2 (no h1 → h3 skip) and says an unassessed role is not assessed yet', async () => {
+    mockInitialLoad(null);
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    const headings = screen.getAllByRole('heading');
+    expect(headings.length).toBeGreaterThan(0);
+    expect(headings[0]!.tagName).toBe('H2');
+    expect(screen.queryAllByRole('heading', { level: 3 })).toHaveLength(0);
+    expect(screen.getByText('Role not assessed yet')).toBeInTheDocument();
+    expect(screen.queryByText(/^Unknown$/)).toBeNull();
+  });
+});
+
 describe('DeviceInfoTab — OS version display', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -240,7 +258,7 @@ describe('DeviceInfoTab — stuck agent update (#4073)', () => {
   });
 });
 
-describe('DeviceInfoTab — logs silent (#7067)', () => {
+describe('DeviceInfoTab — no logs-silent notice (#7067)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -257,37 +275,17 @@ describe('DeviceInfoTab — logs silent (#7067)', () => {
     });
   }
 
-  it('shows the logs-silent notice for an online device quiet past the threshold', async () => {
+  // Agents ship warn+ by default, so log quiet is normal — no notice from
+  // last_log_at recency alone, whether stale or never set.
+  it('shows no notice for an online device log-quiet past six hours', async () => {
     load({ lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
-    render(<DeviceInfoTab deviceId={deviceId} />);
-    expect(await screen.findByTestId('logs-silent')).toBeInTheDocument();
-  });
-
-  it('formats the logs-silent date without seconds, like the stuck-update notice', async () => {
-    const d = new Date(Date.now() - 7 * 60 * 60_000);
-    d.setSeconds(37, 0);
-    load({ lastLogAt: d.toISOString() });
-    render(<DeviceInfoTab deviceId={deviceId} />);
-    const notice = await screen.findByTestId('logs-silent');
-    expect(notice.textContent).not.toMatch(/\d:\d\d:37/);
-    expect(notice.textContent).toMatch(/\d:\d\d/);
-  });
-
-  it('shows the never-shipped variant when the device has no last_log_at but has been enrolled long enough', async () => {
-    load({ lastLogAt: null, enrolledAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
-    render(<DeviceInfoTab deviceId={deviceId} />);
-    expect(await screen.findByTestId('logs-silent')).toBeInTheDocument();
-  });
-
-  it('shows no notice for an online device with recent logs', async () => {
-    load({ lastLogAt: new Date(Date.now() - 60_000).toISOString() });
     render(<DeviceInfoTab deviceId={deviceId} />);
     await screen.findByText('Operating System');
     expect(screen.queryByTestId('logs-silent')).toBeNull();
   });
 
-  it('shows no notice for an offline device with a stale last_log_at', async () => {
-    load({ status: 'offline', lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
+  it('shows no notice for a long-enrolled device that has never shipped a log', async () => {
+    load({ lastLogAt: null, enrolledAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
     render(<DeviceInfoTab deviceId={deviceId} />);
     await screen.findByText('Operating System');
     expect(screen.queryByTestId('logs-silent')).toBeNull();
@@ -732,6 +730,17 @@ describe('DeviceInfoTab — watchdog install banner (#8620)', () => {
     expect(notice.textContent).toContain(new Date(SINCE).toLocaleDateString());
     // The raw class token is never rendered.
     expect(notice.textContent).not.toContain('install_cmd');
+  });
+
+  it('renders the retry command as inline code, not literal backticks (#8667)', async () => {
+    load({ watchdogInstall: { state: 'gave_up', errorClass: 'signature', since: SINCE } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('watchdog-install-issue');
+    expect(notice.textContent).not.toContain('`');
+    const code = notice.querySelector('code');
+    expect(code).not.toBeNull();
+    expect(code?.textContent).toBe('breeze-agent service install --watchdog');
+    expect(notice.textContent).toMatch(/on the host to retry\.$/);
   });
 
   it('maps an error class through the fixed phrase table, never the raw token', async () => {

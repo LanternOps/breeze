@@ -134,6 +134,23 @@ describe('TicketWorkbench — organization record link', () => {
     expect(link).toHaveAttribute('href', '/organizations/org-9');
     expect(link).toHaveTextContent('Globex Inc');
   });
+
+  it('links the header device hostname to /devices/:id (ui-flow W03)', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    expect(screen.getByTestId('device-record-link')).toHaveAttribute('href', '/devices/dev-1');
+  });
+
+  it('prints the header hostname as text when the ticket has no deviceId', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
+    expect(screen.getAllByText('DESKTOP-123').length).toBeGreaterThan(0);
+  });
 });
 
 describe('TicketWorkbench — page item name', () => {
@@ -2347,6 +2364,78 @@ describe('TicketWorkbench device link/unlink', () => {
 
     await screen.findByTestId('ticket-workbench-device');
     expect(screen.queryByTestId('ticket-workbench-device-unlink')).toBeNull();
+  });
+});
+
+describe('TicketWorkbench device link/change (#8962)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const DEVICES = [
+    { id: 'dev-7', hostname: 'DESK-7', displayName: null, osType: 'windows', status: 'online' },
+    { id: 'dev-8', hostname: 'DESK-8', displayName: 'Front desk', osType: 'macos', status: 'offline' },
+  ];
+
+  function mockWithDevices(ticket: TicketDetail) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/devices/options')) {
+        return makeJsonResponse({ data: DEVICES, page: { hasMore: false, total: 2, nextCursor: null } });
+      }
+      if (!init?.method || init.method === 'GET') {
+        if (url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('offers Link device on a ticket with no device and PATCHes the chosen deviceId scoped to the ticket org', async () => {
+    mockWithDevices(makeTicket({ orgId: 'org-1', deviceId: null, deviceHostname: null }));
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    fireEvent.click(screen.getByTestId('ticket-workbench-device-edit'));
+    expect(screen.getByTestId('ticket-workbench-device-edit')).toHaveTextContent('Link device');
+
+    const choice = await screen.findByLabelText(/DESK-7/);
+    fireEvent.click(choice);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ deviceId: 'dev-7' }) })
+      );
+    });
+    const optionCalls = fetchMock.mock.calls.filter(([u]) => String(u).startsWith('/devices/options'));
+    expect(optionCalls.length).toBeGreaterThan(0);
+    expect(String(optionCalls[0][0])).toContain('orgId=org-1');
+  });
+
+  it('offers Change device on a linked ticket, keeps Unlink, and replaces the device', async () => {
+    mockWithDevices(makeTicket({ orgId: 'org-1', deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }));
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.getByTestId('ticket-workbench-device-unlink')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-workbench-device-edit')).toHaveTextContent('Change device');
+    fireEvent.click(screen.getByTestId('ticket-workbench-device-edit'));
+
+    fireEvent.click(await screen.findByLabelText(/Front desk/));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ deviceId: 'dev-8' }) })
+      );
+    });
+  });
+
+  it('warns that changing the device on an assigned ticket can unassign the technician', async () => {
+    mockWithDevices(makeTicket({ orgId: 'org-1', deviceId: 'dev-1', deviceHostname: 'DESKTOP-123', assignedTo: 'u-1' } as Partial<TicketDetail>));
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    fireEvent.click(screen.getByTestId('ticket-workbench-device-edit'));
+    expect(await screen.findByTestId('ticket-workbench-device-assignee-warning')).toBeInTheDocument();
   });
 });
 

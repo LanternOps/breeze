@@ -16,7 +16,7 @@
 //    server-side upstream via useAdvancedFilterIds. Status/OS/Role/Org/Site/
 //    Group are NO LONGER inline client state — they are group conditions/chips.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, Check, Plus, SlidersHorizontal } from "lucide-react";
+import { Search, Check, ChevronLeft, ChevronRight, Plus, SlidersHorizontal } from "lucide-react";
 import type { FilterCondition, FilterConditionGroup } from "@breeze/shared";
 import { type NamedRef } from "./FilterValueEditor";
 import { FilterSentenceBuilder } from "./FilterSentenceBuilder";
@@ -221,6 +221,13 @@ export function DeviceFilterToolbar({
   // scroll + resize.
   const chipsRef = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ left: false, right: false });
+  // Scroll the strip by most of its visible width so the last partly-clipped
+  // chip lands fully in view; `updateEdges` runs on the resulting scroll event.
+  const scrollChips = useCallback((direction: -1 | 1) => {
+    const el = chipsRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction * Math.max(80, el.clientWidth * 0.8), behavior: "smooth" });
+  }, []);
   const updateEdges = useCallback(() => {
     const el = chipsRef.current;
     if (!el) return;
@@ -388,17 +395,41 @@ export function DeviceFilterToolbar({
               );
             })}
           </div>
+          {/* Clipped edges get a fade AND an explicit scroll button: the fade
+              alone was the only cue that more chips existed (#9037). */}
           {edges.left && (
-            <div
-              className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-linear-to-r from-background to-transparent"
-              aria-hidden="true"
-            />
+            <>
+              <div
+                className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-linear-to-r from-background to-transparent"
+                aria-hidden="true"
+              />
+              <button
+                type="button"
+                data-testid="quick-chips-scroll-left"
+                aria-label={t("deviceFilterToolbar.scrollChipsLeft")}
+                onClick={() => scrollChips(-1)}
+                className="absolute left-0 flex h-6 w-6 items-center justify-center rounded-full border bg-background shadow-sm hover:bg-muted"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </>
           )}
           {edges.right && (
-            <div
-              className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-linear-to-l from-background to-transparent"
-              aria-hidden="true"
-            />
+            <>
+              <div
+                className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-linear-to-l from-background to-transparent"
+                aria-hidden="true"
+              />
+              <button
+                type="button"
+                data-testid="quick-chips-scroll-right"
+                aria-label={t("deviceFilterToolbar.scrollChipsRight")}
+                onClick={() => scrollChips(1)}
+                className="absolute right-0 flex h-6 w-6 items-center justify-center rounded-full border bg-background shadow-sm hover:bg-muted"
+              >
+                <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </>
           )}
         </div>
 

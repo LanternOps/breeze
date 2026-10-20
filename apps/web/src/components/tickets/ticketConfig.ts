@@ -24,6 +24,8 @@ export interface TicketSummary {
   categoryId: string | null;
   dueDate: string | null;
   tags?: string[];
+  /** Checklist progress for the queue (#9180). null/absent = no steps (or an org-scoped viewer). */
+  checklist?: { done: number; total: number } | null;
   slaBreachedAt: string | null;
   resolutionSlaMinutes?: number | null;
   responseSlaMinutes?: number | null;

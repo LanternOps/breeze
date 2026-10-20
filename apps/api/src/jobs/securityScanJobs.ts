@@ -17,7 +17,8 @@ import {
   resolvePartnerTimezoneForOrg,
   type SecurityScanSchedulable,
 } from '../services/featureConfigResolver';
-import { securityScanCron, type SecurityScanSettings } from '@breeze/shared';
+import { securityScanCron, type SecurityScanSettings, type YaraRuleSetRef } from '@breeze/shared';
+import { planYaraScan } from '../services/yaraScanRefs';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import {
   resolveSecurityScanQuarantineAuthority,
@@ -146,6 +147,7 @@ export async function processDispatchScan(data: DispatchScanJobData): Promise<{
       scanType: securityScans.scanType,
       status: securityScans.status,
       deviceOrgId: devices.orgId,
+      deviceAgentVersion: devices.agentVersion,
     })
     .from(securityScans)
     .innerJoin(devices, eq(devices.id, securityScans.deviceId))
@@ -196,11 +198,25 @@ export async function processDispatchScan(data: DispatchScanJobData): Promise<{
       );
     }
   }
-  const payload = buildSecurityScanPayload(scan.id, scan.scanType, settings);
+  // #6263 W03: the policy's rule sets -> W02 `ruleSets` refs, behind the
+  // minimum agent version. The outcome (yara | legacy + why) is recorded on
+  // the row so degraded coverage is never presented as a YARA scan.
+  const yara = await planYaraScan({
+    deviceId: scan.deviceId,
+    agentVersion: scan.deviceAgentVersion,
+    ruleSetIds: settings?.ruleSetIds ?? [],
+  });
+  const payload = buildSecurityScanPayload(scan.id, scan.scanType, settings, undefined, yara.ruleSets);
 
   // Claim before dispatching: two workers must never both queue a command.
   const claimed = await db.update(securityScans)
-    .set({ status: 'running', startedAt: new Date(), autoQuarantineSuppressedReason })
+    .set({
+      status: 'running',
+      startedAt: new Date(),
+      autoQuarantineSuppressedReason,
+      engine: yara.engine,
+      ruleSetErrors: yara.ruleSetErrors,
+    })
     .where(and(eq(securityScans.id, scan.id), eq(securityScans.status, 'queued')))
     .returning({ id: securityScans.id });
   if (claimed.length !== 1) return { dispatched: false, commandId: null };
@@ -227,13 +243,15 @@ export async function processDispatchScan(data: DispatchScanJobData): Promise<{
 /**
  * The ONLY place a security_scan command payload is built. `settings === null`
  * means no policy governs the device: the agent's built-in defaults apply and
- * nothing is auto-quarantined.
+ * nothing is auto-quarantined. `ruleSets` (W02 §C1) is emitted only when
+ * non-empty, so a legacy scan's payload is byte-identical to W01's.
  */
 export function buildSecurityScanPayload(
   scanRecordId: string,
   scanType: string,
   settings: SecurityScanSettings | null,
   paths?: string[],
+  ruleSets?: readonly YaraRuleSetRef[],
 ): Record<string, unknown> {
   return {
     scanRecordId,
@@ -247,6 +265,9 @@ export function buildSecurityScanPayload(
           timeoutMinutes: settings.scanTimeoutMinutes,
           autoQuarantine: settings.autoQuarantine,
         }
+      : {}),
+    ...(ruleSets && ruleSets.length > 0
+      ? { ruleSets: ruleSets.map((r) => ({ id: r.id, version: r.version, sha256: r.sha256, url: r.url })) }
       : {}),
   };
 }

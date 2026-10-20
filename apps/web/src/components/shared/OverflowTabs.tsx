@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useLayoutEffect, type KeyboardEvent } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useMediaQuery } from '@/lib/useMediaQuery';
 
 export type OverflowTab = {
   /** Override the interactive test id without changing tab or panel IDs. */
@@ -65,7 +66,10 @@ export function overflowPanelId(id: string, testIdPrefix?: string): string {
   return testIdPrefix ? `${testIdPrefix}${id}-panel` : `tab-${id}-panel`;
 }
 
-export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
+/** How long the container's width must hold still before the strip reflows. */
+const RESIZE_SETTLE_MS = 120;
+
+export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobileMode }: {
   tabs: OverflowTab[];
   activeTab: string;
   onTabChange: (id: string) => void;
@@ -73,8 +77,15 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
    *  `data-testid={testIdPrefix + tab.id}`. Omitted by default so existing
    *  consumers are unaffected. */
   testIdPrefix?: string;
+  /** `'scroll'`: below md, every primary tab stays in a horizontally
+   *  scrolling, scroll-snapping strip (secondaries stay in "More") instead of
+   *  collapsing by width — on a phone the width rule leaves one tab (#9028).
+   *  md and up is unchanged. */
+  mobileMode?: 'scroll';
 }) {
   const { t } = useTranslation('common');
+  const narrow = useMediaQuery('(max-width: 767px)');
+  const scrollMode = mobileMode === 'scroll' && narrow;
   const containerRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLElement>(null);
   const tabWidths = useRef<number[]>([]);
@@ -83,6 +94,12 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   const secondaryTabs = tabs.filter(t => t.secondary);
   const [visibleCount, setVisibleCount] = useState(primaryTabs.length);
   const [measured, setMeasured] = useState(false);
+  // True once the first pass has put a slice on screen. Every later pass
+  // (webfonts settling, a count badge arriving) keeps that slice where it is
+  // and measures the overflowed tabs as hidden ghosts instead, so a re-measure
+  // can never flash a different tab set (#9024: 9 → 7 → 9 at 1366px).
+  const [everMeasured, setEverMeasured] = useState(false);
+  const ghostRef = useRef<HTMLDivElement>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
@@ -108,9 +125,12 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   useLayoutEffect(() => {
     const nav = navRef.current;
     if (!nav || measured) return;
-    const buttons = nav.querySelectorAll<HTMLButtonElement>(':scope > span > button, :scope > button');
+    const tabButtons = (root: Element | null) =>
+      root ? Array.from(root.querySelectorAll<HTMLButtonElement>(':scope > span > button, :scope > button')) : [];
+    // Live tabs first, then the ghosts: together they are `primaryTabs` in order.
+    const buttons = [...tabButtons(nav), ...tabButtons(ghostRef.current)];
     // Measure each tab's total width including any preceding separator
-    tabWidths.current = Array.from(buttons).map(b => {
+    tabWidths.current = buttons.map(b => {
       const wrapper = b.parentElement;
       if (wrapper && wrapper.tagName === 'SPAN') {
         // Wrapper with display:contents — measure the separator too if present
@@ -120,6 +140,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
       return b.offsetWidth;
     });
     setMeasured(true);
+    setEverMeasured(true);
   }, [measured]);
 
   // Self-hosted webfonts (Plus Jakarta Sans, `font-display: swap`) paint the
@@ -183,14 +204,34 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
     computeVisible();
   }, [measured, computeVisible]);
 
+  // Trailing debounce: a burst of container resizes (a scrollbar appearing
+  // and vanishing while the page below loads, a sidebar animating) computes
+  // ONCE on the settled width instead of stepping the strip through every
+  // intermediate width (#9024). The visible count holds until then.
   useEffect(() => {
     if (!measured) return;
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => computeVisible());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ro = new ResizeObserver(() => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        computeVisible();
+      }, RESIZE_SETTLE_MS);
+    });
     ro.observe(container);
-    return () => ro.disconnect();
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+      ro.disconnect();
+    };
   }, [measured, computeVisible]);
+
+  // Scroll strip: keep the active tab in view (e.g. a deep link to #alerts).
+  useEffect(() => {
+    if (!scrollMode) return;
+    tabButtonRefs.current[activeTab]?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [scrollMode, activeTab]);
 
   const closeMenu = useCallback((returnFocus: boolean) => {
     setMoreOpen(false);
@@ -221,14 +262,18 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   }, [moreOpen, closeMenu]);
 
   // Secondary tabs are pinned into "More"; primaries spill in after them
-  // when the row is too narrow. Before measurement every primary is rendered
-  // (invisibly) so its width can be read.
-  const visibleTabs = measured ? primaryTabs.slice(0, visibleCount) : primaryTabs;
+  // when the row is too narrow. Before the FIRST measurement every primary is
+  // rendered (invisibly) so its width can be read; later passes measure the
+  // spilled ones as ghosts (`ghostTabs`) and leave the live slice alone. In
+  // the phone scroll strip every primary is always rendered (no ghosts).
+  const showAllPrimaries = scrollMode || !everMeasured;
+  const visibleTabs = showAllPrimaries ? primaryTabs : primaryTabs.slice(0, visibleCount);
+  const ghostTabs = !scrollMode && everMeasured && !measured ? primaryTabs.slice(visibleCount) : [];
   // Overflow is ordered group-first (groups in the order they first appear in
   // `tabs`, ungrouped first), so a primary that spilled for width lands in
   // its own section of "More" instead of forming a stray run at the top that
   // repeats the group headers below it.
-  const overflowIds = new Set([...primaryTabs.slice(measured ? visibleCount : primaryTabs.length), ...secondaryTabs].map(t => t.id));
+  const overflowIds = new Set([...primaryTabs.slice(showAllPrimaries ? primaryTabs.length : visibleCount), ...secondaryTabs].map(t => t.id));
   const groupOrder = new Map<string, number>();
   for (const tab of tabs) {
     if (tab.group && !groupOrder.has(tab.group)) groupOrder.set(tab.group, groupOrder.size);
@@ -329,16 +374,20 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
     }`;
 
   return (
-    <div ref={containerRef} className="border-b">
+    <div ref={containerRef} className="relative border-b">
       {/* The "More" trigger is a menu-disclosure button, not a tab, so it
           must sit as a sibling of the tablist rather than inside it — a
           role="tablist" is only allowed to contain role="tab" children
           (axe: aria-required-children). */}
-      <div className={`-mb-px flex items-center gap-3 ${measured ? '' : 'invisible'}`}>
+      <div className={`-mb-px flex items-center gap-3 ${everMeasured || scrollMode ? '' : 'invisible'}`}>
         <nav
           ref={navRef as React.RefObject<HTMLElement>}
           role="tablist"
-          className="flex items-center gap-3"
+          className={
+            scrollMode
+              ? 'flex min-w-0 flex-1 snap-x snap-mandatory items-center gap-3 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+              : 'flex items-center gap-3'
+          }
         >
           {visibleTabs.map((tab, index) => {
             const isActive = activeTab === tab.id;
@@ -365,7 +414,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
                   ref={(el) => { tabButtonRefs.current[tab.id] = el; }}
                   onClick={() => onTabChange(tab.id)}
                   onKeyDown={(e) => handleTabKeyDown(e, index)}
-                  className={`${tabClass(isActive)} focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring`}
+                  className={`${tabClass(isActive)} ${scrollMode ? 'shrink-0 snap-start focus-visible:ring-inset' : ''} focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring`}
                 >
                   {tab.icon}
                   {tab.label}
@@ -448,6 +497,28 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
           </div>
         )}
       </div>
+      {ghostTabs.length > 0 && (
+        // Measurement-only copies of the spilled tabs (see `everMeasured`):
+        // out of flow, invisible, hidden from AT and focus, and gone again in
+        // the same layout pass that reads them.
+        <div
+          ref={ghostRef}
+          aria-hidden="true"
+          className="pointer-events-none invisible absolute left-0 top-0 flex items-center gap-3 whitespace-nowrap"
+        >
+          {ghostTabs.map((tab) => (
+            <span key={tab.id} className="contents">
+              {tab.separator && <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />}
+              <button type="button" tabIndex={-1} className={tabClass(activeTab === tab.id)}>
+                {tab.icon}
+                {tab.label}
+                <CountBadge count={tab.count} />
+                {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

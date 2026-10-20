@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the row lookup, secret decryption, and token acquisition so the test
 // focuses on invokeDirect's Graph endpoint/method/body mapping.
-const mockRow = { tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1', clientSecret: 'enc-secret' };
+const mockRow = { id: 'conn-1', tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1', clientSecret: 'enc-secret' };
 let selectRows: unknown[] = [mockRow];
 let wherePredicate: unknown;
 const dbContexts = vi.hoisted(() => [] as string[]);
@@ -28,6 +28,16 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((column: unknown, value: unknown) => `${String(column)}=${String(value)}`),
   and: vi.fn((...conditions: unknown[]) => conditions),
 }));
+const randomBytesMock = vi.hoisted(() => vi.fn());
+vi.mock('crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('crypto')>();
+  randomBytesMock.mockImplementation(actual.randomBytes);
+  return { ...actual, default: actual, randomBytes: randomBytesMock };
+});
+const prepareMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+const gateMock = vi.hoisted(() => vi.fn());
+vi.mock('./callerVerification/dispatch', () => ({ prepareCallerDispatch: prepareMock }));
+vi.mock('./callerVerification/gate', () => ({ requireCallerVerification: gateMock }));
 const captureExceptionMock = vi.hoisted(() => vi.fn());
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./secretCrypto', () => ({ decryptForColumn: vi.fn(() => 'plaintext-secret') }));
@@ -45,6 +55,7 @@ import {
   readMailboxesDirect,
 } from './m365DirectGraph';
 import { acquireClientCredentialsToken } from './c2cM365';
+import { CallerVerificationRequiredError, CallerVerificationValidationError } from './callerVerification/errors';
 import { decryptForColumn } from './secretCrypto';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
@@ -66,6 +77,8 @@ beforeEach(() => {
   selectRows = [mockRow];
   wherePredicate = undefined;
   dbContexts.length = 0;
+  prepareMock.mockReset();
+  prepareMock.mockResolvedValue(undefined);
 });
 
 describe('readMailboxesDirect (#6354 W03)', () => {
@@ -183,7 +196,7 @@ describe('m365DirectGraph.invokeDirect endpoint mapping', () => {
 
   it('disable_user → PATCH /users/{id} with accountEnabled:false', async () => {
     const f = mockFetch(204, null);
-    const res = await invokeDirect('org-1', 'disable_user', { userId: 'u1', reason: 'offboard' });
+    const res = await invokeDirect('org-1', 'disable_user', { userId: 'u1', reason: 'offboard' }, { actionIntentId: 'intent-1' });
     expect(res.kind).toBe('ok');
     const [url, opts] = f.mock.calls[0]!;
     expect(url).toBe(`${GRAPH}/users/u1`);
@@ -193,7 +206,7 @@ describe('m365DirectGraph.invokeDirect endpoint mapping', () => {
 
   it('reset_user_password → PATCH passwordProfile and returns a generated temp password', async () => {
     const f = mockFetch(204, null);
-    const res = await invokeDirect('org-1', 'reset_user_password', { userId: 'u1', reason: 'lockout' });
+    const res = await invokeDirect('org-1', 'reset_user_password', { userId: 'u1', reason: 'lockout' }, { actionIntentId: 'intent-1' });
     expect(res.kind).toBe('ok');
     expect((res as { kind: 'ok'; data: { temporaryPassword?: string } }).data.temporaryPassword).toBeTruthy();
     const body = JSON.parse(f.mock.calls[0]![1].body as string);
@@ -236,9 +249,9 @@ describe('m365DirectGraph.invokeDirect endpoint mapping', () => {
 describe('getToken caching', () => {
   it('a second call within the token expiry does not re-acquire', async () => {
     const a = await getToken('org-1');
-    expect(a).toEqual({ token: 'TOKEN-123' });
+    expect(a).toEqual({ token: 'TOKEN-123', connectionId: 'conn-1', tenantId: mockRow.tenantId });
     const b = await getToken('org-1');
-    expect(b).toEqual({ token: 'TOKEN-123' });
+    expect(b).toEqual({ token: 'TOKEN-123', connectionId: 'conn-1', tenantId: mockRow.tenantId });
     expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(1);
   });
 
@@ -263,18 +276,18 @@ describe('getToken caching', () => {
     vi.useFakeTimers();
     try {
       const a = await getToken('org-1');
-      expect(a).toEqual({ token: 'SHORT-1' });
+      expect(a).toEqual({ token: 'SHORT-1', connectionId: 'conn-1', tenantId: mockRow.tenantId });
 
       // 120s expiry - 60s skew = 60s cached TTL.
       vi.advanceTimersByTime(60_000 - 1);
       const b = await getToken('org-1');
-      expect(b).toEqual({ token: 'SHORT-1' }); // still cached
+      expect(b).toEqual({ token: 'SHORT-1', connectionId: 'conn-1', tenantId: mockRow.tenantId }); // still cached
       expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(1);
 
       (acquireClientCredentialsToken as any).mockResolvedValueOnce({ accessToken: 'SHORT-2', expiresIn: 120 });
       vi.advanceTimersByTime(2);
       const c = await getToken('org-1');
-      expect(c).toEqual({ token: 'SHORT-2' });
+      expect(c).toEqual({ token: 'SHORT-2', connectionId: 'conn-1', tenantId: mockRow.tenantId });
       expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -285,7 +298,7 @@ describe('getToken caching', () => {
     vi.useFakeTimers();
     try {
       const a = await getToken('org-1');
-      expect(a).toEqual({ token: 'TOKEN-123' });
+      expect(a).toEqual({ token: 'TOKEN-123', connectionId: 'conn-1', tenantId: mockRow.tenantId });
       expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(1);
 
       // Let the cache expire, then simulate a broken secret on the next acquisition.
@@ -298,7 +311,7 @@ describe('getToken caching', () => {
       // Secret is fixed — the very next call re-acquires rather than being blocked.
       (acquireClientCredentialsToken as any).mockResolvedValueOnce({ accessToken: 'TOKEN-456', expiresIn: 3600 });
       const c = await getToken('org-1');
-      expect(c).toEqual({ token: 'TOKEN-456' });
+      expect(c).toEqual({ token: 'TOKEN-456', connectionId: 'conn-1', tenantId: mockRow.tenantId });
       expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
@@ -331,7 +344,7 @@ describe('getToken with a supplied connection (#8142)', () => {
     const { db } = await import('../db');
     vi.mocked(db.select).mockClear();
     const result = await getToken('org-1', { connection: { ...mockRow, orgId: 'org-1' } as never });
-    expect(result).toEqual({ token: 'TOKEN-123' });
+    expect(result).toEqual({ token: 'TOKEN-123', connectionId: 'conn-1', tenantId: mockRow.tenantId });
     expect(db.select).not.toHaveBeenCalled();
   });
 
@@ -359,5 +372,115 @@ describe('getToken with a supplied connection (#8142)', () => {
     captureExceptionMock.mockClear();
     expect(await getToken('org-1', { connection: null })).toMatchObject({ code: 'no_connection' });
     expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('protected direct mutations (#6354 W05)', () => {
+  const OID = '44444444-4444-4444-8444-444444444444';
+  const refusal = () => new CallerVerificationRequiredError({
+    orgId: 'org-1', contactId: null, action: 'disable_user', requiredTier: 2,
+    reason: 'no_fresh_verification', latest: null,
+  });
+
+  it('disable_user refusal propagates and sends zero PATCH', async () => {
+    prepareMock.mockRejectedValueOnce(refusal());
+    const f = mockFetch(204, null);
+    await expect(invokeDirect('org-1', 'disable_user', { userId: OID }, { actionIntentId: 'intent-1' }))
+      .rejects.toBeInstanceOf(CallerVerificationRequiredError);
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('reset_user_password refusal sends zero PATCH and never generates a password', async () => {
+    prepareMock.mockRejectedValueOnce(refusal());
+    const f = mockFetch(204, null);
+    randomBytesMock.mockClear();
+    await expect(invokeDirect('org-1', 'reset_user_password', { userId: OID }, { actionIntentId: 'intent-1' }))
+      .rejects.toBeInstanceOf(CallerVerificationRequiredError);
+    expect(f).not.toHaveBeenCalled();
+    expect(randomBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('disable_user pass sends exactly one PATCH to /users/<oid>; guard gets the token connection id and tenant', async () => {
+    const f = mockFetch(204, null);
+    const res = await invokeDirect('org-1', 'disable_user', { userId: OID }, { actionIntentId: 'intent-1' });
+    expect(res.kind).toBe('ok');
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(f.mock.calls[0]![0]).toBe(`${GRAPH}/users/${OID}`);
+    expect(f.mock.calls[0]![1].method).toBe('PATCH');
+    expect(prepareMock).toHaveBeenCalledTimes(1);
+    expect(prepareMock.mock.calls[0]![0]).toEqual({
+      orgId: 'org-1', intentId: 'intent-1', action: 'disable_user',
+      connectionId: 'conn-1', backendTenantId: mockRow.tenantId, oid: OID,
+    });
+    expect(prepareMock.mock.calls[0]![1]).toBe(gateMock);
+  });
+
+  it('reset_user_password pass sends exactly one PATCH and guards as reset_password', async () => {
+    const f = mockFetch(204, null);
+    const res = await invokeDirect('org-1', 'reset_user_password', { userId: OID }, { actionIntentId: 'intent-1' });
+    expect(res.kind).toBe('ok');
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(f.mock.calls[0]![0]).toBe(`${GRAPH}/users/${OID}`);
+    expect(prepareMock.mock.calls[0]![0]).toMatchObject({ action: 'reset_password', connectionId: 'conn-1', oid: OID });
+  });
+
+  it('a protected mutation without an intent id still reaches the guard with intentId undefined (guard refuses)', async () => {
+    prepareMock.mockRejectedValueOnce(refusal());
+    const f = mockFetch(204, null);
+    await expect(invokeDirect('org-1', 'disable_user', { userId: OID })).rejects.toBeInstanceOf(CallerVerificationRequiredError);
+    expect(prepareMock.mock.calls[0]![0]).toMatchObject({ intentId: undefined });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('read tools never call the guard', async () => {
+    mockFetch(200, {});
+    await invokeDirect('org-1', 'get_user', { userId: OID });
+    await invokeDirect('org-1', 'list_groups', {});
+    expect(prepareMock).not.toHaveBeenCalled();
+  });
+
+  it('expectedConnection mismatch throws tenant_mismatch before any Graph call or guard', async () => {
+    const f = mockFetch(204, null);
+    await expect(invokeDirect('org-1', 'disable_user', { userId: OID }, {
+      actionIntentId: 'intent-1', expectedConnection: { connectionId: 'conn-OTHER', tenantId: mockRow.tenantId },
+    })).rejects.toMatchObject({ name: 'CallerVerificationValidationError', code: 'tenant_mismatch' });
+    await expect(invokeDirect('org-1', 'disable_user', { userId: OID }, {
+      actionIntentId: 'intent-1', expectedConnection: { connectionId: 'conn-1', tenantId: '33333333-3333-4333-8333-333333333333' },
+    })).rejects.toBeInstanceOf(CallerVerificationValidationError);
+    expect(f).not.toHaveBeenCalled();
+    expect(prepareMock).not.toHaveBeenCalled();
+  });
+
+  it('expectedConnection match (tenant case-insensitive) proceeds', async () => {
+    const f = mockFetch(200, {});
+    const res = await invokeDirect('org-1', 'get_user', { userId: OID }, {
+      expectedConnection: { connectionId: 'conn-1', tenantId: mockRow.tenantId.toUpperCase() },
+    });
+    expect(res.kind).toBe('ok');
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('token cache connection binding (#6354 W05)', () => {
+  it('a changed connection id alone forces a new token acquisition', async () => {
+    await getToken('org-1');
+    selectRows = [{ ...mockRow, id: 'conn-2' }];
+    const second = await getToken('org-1');
+    expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(2);
+    expect(second).toMatchObject({ connectionId: 'conn-2' });
+  });
+
+  it('an unchanged connection reuses the cached token and still reports its id and tenant', async () => {
+    await getToken('org-1');
+    const again = await getToken('org-1');
+    expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(1);
+    expect(again).toEqual({ token: 'TOKEN-123', connectionId: 'conn-1', tenantId: mockRow.tenantId });
+  });
+
+  it('a non-GUID tenant is rejected before the cache even when a token is cached for that row id', async () => {
+    await getToken('org-1');
+    selectRows = [{ ...mockRow, tenantId: 'contoso.onmicrosoft.com' }];
+    expect(await getToken('org-1')).toMatchObject({ kind: 'error', code: 'connection_key_error' });
   });
 });

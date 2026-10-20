@@ -10,7 +10,7 @@
     "site": "Konum",
     "policy": "İlke",
     "states": {
-      "not_reported": "Henüz saat verisi yok — saat eşitlemeyi içeren bir aracı güncellemesi gerekiyor",
+      "not_reported": "Henüz saat verisi yok — saat eşitleme için aracı güncellemesi gerekli",
       "unsupported_os": "Bu işletim sisteminde henüz desteklenmiyor"
     },
     "health": {
@@ -384,6 +384,7 @@
     "hide": "gizle"
   },
   "deviceActions": {
+    "moreActions": "Diğer işlemler",
     "unavailable": {
       "offline": "Cihaz çevrimdışı",
       "maintenance": "Cihaz bakım modunda",
@@ -473,7 +474,7 @@
     },
     "runScript": "Komut Dosyasını Çalıştır",
     "remoteTools": "Uzaktan Araçlar",
-    "reRunAgentInventoryCollectorsSo": "Kullanıcı arayüzünün bir sonraki kalp atışı döngüsünü beklemeden yeni donanım/yazılım/ağ verilerini görmesi için aracı envanter toplayıcılarını yeniden çalıştırın",
+    "reRunAgentInventoryCollectorsSo": "Envanteri şimdi topla",
     "refresh": "Yenile",
     "reboot": "Yeniden başlat",
     "wake": "Uyan",
@@ -864,7 +865,10 @@
     "loadingDevice": "Cihaz yükleniyor...",
     "backToDevices": "Cihazlara geri dön",
     "goBack": "Geri dön",
-    "devices": "Cihazlar"
+    "devices": "Cihazlar",
+    "devicesCrumbOtherOrg": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz {{workingOrg}} olarak kalır",
+    "devicesCrumbOtherOrgUnnamed": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz değişmez",
+    "switchOrgFailed": "Kuruluş değiştirilemedi. Tekrar deneyin."
   },
   "deviceDetails": {
     "overview": "Genel Bakış",
@@ -913,7 +917,7 @@
     "changeHistoryTitle": "Bu cihaz için takip edilen yapılandırma ve envanter değişiklikleri",
     "diskCleanup": "Disk Temizleme",
     "diskUsageAnalysisAndCleanup": "Disk kullanım analizi ve temizleme",
-    "bootPerf": "Önyükleme Performansı",
+    "bootPerf": "Önyükleme performansı",
     "systemRestore": "Sistem Geri Yükleme",
     "startupTimeAndBootProcessAnalysis": "Başlatma süresi ve önyükleme süreci analizi",
     "backup": "Yedekleme",
@@ -950,7 +954,13 @@
       "extensions": "Uzantılar"
     },
     "workloads": "İş yükleri",
-    "workloadsTitle": "Bu ana makinedeki kapsayıcılar ve sanal makineler"
+    "workloadsTitle": "Bu ana makinedeki kapsayıcılar ve sanal makineler",
+    "offlineLastSeen": "Çevrimdışı · son görülme {{ago}}",
+    "locatedIn": "<org/> › <site/> içinde",
+    "scopeCue": {
+      "viewing": "{{org}} cihazını görüntülüyorsunuz",
+      "switch": "{{org}} kuruluşuna geç"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -973,7 +983,9 @@
     "sentineloneWillCutTheDeviceOff": "SentinelOne, siz izolasyonu kaldırana kadar cihazın ağ bağlantısını kesecektir. Aktif oturumlar düşecek.",
     "sentineloneWillRestoreThisDeviceS": "SentinelOne bu cihazın ağ bağlantısını geri yükleyecektir.",
     "cancel": "İptal",
-    "isolate": "İzole"
+    "isolate": "İzole",
+    "managedSecurityAgents": "Yönetilen güvenlik aracıları",
+    "since": "{{date}} tarihinden beri"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Etkili yapılandırma yükleniyor...",
@@ -1208,6 +1220,8 @@
   "deviceFilterToolbar": {
     "searchDevices": "Cihazları arayın",
     "quickFilters": "Hızlı filtreler",
+    "scrollChipsLeft": "Filtreleri sola kaydır",
+    "scrollChipsRight": "Filtreleri sağa kaydır",
     "addFilter": "Filtre ekle",
     "advanced": "Gelişmiş",
     "clear": "Temizle"
@@ -1357,8 +1371,6 @@
     "ratedSpeed": "nominal {{speed}}"
   },
   "deviceInfoTab": {
-    "logsSilent": "Bu cihaz çevrimiçi ancak {{since}} tarihinden bu yana günlük göndermedi. Günlük gönderimi devre dışı bırakılmış, başarısız olmuş veya sunucuya ulaşmıyor olabilir — cihazdaki ajan günlük gönderim yapılandırmasını kontrol edin.",
-    "logsSilentNeverShipped": "Bu cihaz çevrimiçi ancak hiç günlük göndermedi. Günlük gönderimi devre dışı bırakılmış, başarısız olmuş veya sunucuya ulaşmıyor olabilir — cihazdaki ajan günlük gönderim yapılandırmasını kontrol edin.",
     "updateStuck": "{{target}} sürümüne ajan güncellemesi takılmış görünüyor: {{since}} tarihinden bu yana {{attempts}} deneme yapıldı ve cihaz hâlâ eski sürümünde. Güncelleyici her heartbeat'te yeniden deniyor; ajan günlüklerini veya hiç günlük göndermiyorsa cihazın kendisini kontrol edin.",
     "updateOfferWithheld": "Bu cihaz için güncelleme teklifleri durduruldu ({{since}} tarihinden beri): aracı sürümünün bu sunucunun sunduğu sürümü kabul ettiği doğrulanamıyor, bu nedenle mevcut sürümünde kalıyor. Sunulan sürümün yükleyicisiyle veya sürümünü bildiren bir aracı sürümüyle kurtarın.",
     "helperInstallIssue": {
@@ -1367,7 +1379,7 @@
       "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
     },
     "watchdogInstall": {
-      "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede `breeze-agent service install --watchdog` komutunu çalıştırın.",
+      "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede <code>breeze-agent service install --watchdog</code> komutunu çalıştırın.",
       "unsupported": "Otomatik watchdog kurulumu bu ana makinede desteklenmiyor ({{since}} tarihinden beri).",
       "reason": {
         "network": "indirme adresine ulaşılamadı",
@@ -1509,7 +1521,8 @@
     "tags": "Etiketler",
     "customFields": "Özel Alanlar",
     "text2": "*",
-    "edit": "Düzenle"
+    "edit": "Düzenle",
+    "roleNotAssessed": "Rol henüz değerlendirilmedi"
   },
   "deviceIpHistoryTab": {
     "true": "doğru",
@@ -1591,6 +1604,7 @@
       "os": "İşletim Sistemi",
       "role": "Rol",
       "status": "Durum",
+      "attention": "Dikkat",
       "cpu": "CPU %'si",
       "ram": "RAM %'si",
       "lastSeen": "Son Görülme",
@@ -1751,8 +1765,6 @@
       "manual": "Manuel"
     },
     "updateWithheld": "Güncellemeler durduruldu",
-    "logsSilent": "Günlükler sessiz",
-    "logsSilentTooltip": "Bu cihaz çevrimiçi ancak 6 saatten uzun süredir günlük göndermedi. Günlük gönderimi devre dışı bırakılmış, başarısız olmuş veya sunucuya ulaşmıyor olabilir.",
     "updateStuck": "Güncelleme takıldı",
     "updateStuckTooltip": "Bu cihaz bir saatten uzun süredir {{target}} sürümüne ajan güncellemesini tamamlayamadan yeniden deniyor.",
     "updateWithheldTooltip": "Sunucu, aracı sürümünün sunulan sürümü kabul ettiği doğrulanamadığı için bu cihaza güncelleme sunmuyor. Kurtarılana kadar mevcut sürümünde kalır.",
@@ -1766,7 +1778,54 @@
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
       "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",
       "behindTooltip": "{{version}} sabitlemesinin gerisinde"
-    }
+    },
+    "attention": {
+      "alerts": {
+        "critical_one": "{{count}} kritik",
+        "critical_other": "{{count}} kritik",
+        "high_one": "{{count}} yüksek",
+        "high_other": "{{count}} yüksek",
+        "medium_one": "{{count}} orta",
+        "medium_other": "{{count}} orta",
+        "low_one": "{{count}} düşük",
+        "low_other": "{{count}} düşük",
+        "info_one": "{{count}} bilgi",
+        "info_other": "{{count}} bilgi"
+      },
+      "tickets_one": "{{count}} açık bilet",
+      "tickets_other": "{{count}} açık bilet",
+      "alertsTitle": "Açık uyarılar: {{breakdown}}",
+      "none": "Açık öğe yok",
+      "unavailable": "Uyarı ve bilet sayıları kullanılamıyor",
+      "loading": "Uyarı ve bilet sayıları yükleniyor"
+    },
+    "columnChooser": {
+      "title": "Sütunlar",
+      "searchLabel": "Sütunları filtrele",
+      "searchPlaceholder": "Sütunları filtrele…",
+      "noMatches": "“{{query}}” ile eşleşen sütun yok",
+      "alwaysShown": "Her zaman gösterilir",
+      "showColumn": "{{column}} sütununu göster",
+      "hideColumn": "{{column}} sütununu gizle",
+      "moveColumnUp": "{{column}} sütununu yukarı taşı",
+      "moveColumnDown": "{{column}} sütununu aşağı taşı",
+      "gate": {
+        "agentOnlyFleet": "Yalnızca ajan içeren filolarda gizli",
+        "networkOnlyView": "Yalnızca ağ cihazları listelenirken gizli",
+        "noManualAssets": "Yalnızca manuel varlıklar listelendiğinde gösterilir"
+      },
+      "groups": {
+        "identity": "Kimlik",
+        "platform": "İşletim platformu",
+        "health": "Durum",
+        "versions": "Sürümler",
+        "network": "Ağ",
+        "inventory": "Envanter"
+      }
+    },
+    "countLine_one": "{{shown}} / {{count}} cihaz",
+    "countLine_other": "{{shown}} / {{count}} cihaz",
+    "noMatchesTitle": "Bu filtrelerle eşleşen cihaz yok"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -2022,13 +2081,15 @@
       "cpu": "İşlemci",
       "disk": "Disk",
       "download": "İndir",
-      "ram": "Ram",
+      "ram": "Bellek",
       "readThroughput": "Okuma Verimi",
       "upload": "Yükle",
       "writeThroughput": "Yazma Verimi"
     },
     "networkBandwidth": "Ağ Bant Genişliği",
-    "title": "Performans Grafikleri"
+    "title": "Performans Grafikleri",
+    "noSamples": "Son {{range}} içinde örnek yok",
+    "offlineSince": "Cihaz çevrimdışı · son görülme {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2105,7 +2166,7 @@
     "details": "ayrıntılar",
     "disabled": "Bu kuruluş için güvenilirlik puanlaması devre dışı bırakıldı.",
     "distinctEvents": "{{window}}'den farklı olaylar.",
-    "empty": "Henüz güvenilirlik anlık görüntüsü mevcut değil.",
+    "empty": "Henüz güvenilirlik verisi yok",
     "errors": {
       "loadDetail": "Güvenilirlik ayrıntıları yüklenemedi",
       "loadScore": "Güvenilirlik puanı yüklenemedi",
@@ -2451,7 +2512,7 @@
     "loadFailed": "Garanti yüklenemedi.",
     "lookupUnavailable": "Bu üretici için garanti araması mevcut değil",
     "manufacturer": "Üretici",
-    "noInformation": "Garanti bilgisi yok",
+    "noInformation": "Kayıtlı garanti yok",
     "renews": "Yenilenir",
     "serialNumber": "Seri Numarası",
     "source": "Kaynak: {{source}}",
@@ -2477,7 +2538,8 @@
       "refreshing": "Garanti yenileniyor…",
       "stillInProgress": "Garanti yenileme işlemi halen devam etmektedir; kart tamamlandığında güncellenecektir.",
       "updated": "Garanti bilgileri güncellendi."
-    }
+    },
+    "lookUp": "Sorgula"
   },
   "devicesPage": {
     "accessDenied": "Cihazları görüntüleme izniniz yok.",
@@ -2494,12 +2556,14 @@
       "confirm": "Kalıcı olarak sil",
       "message": "Bu işlem geri alınamaz. Bu cihazlara ait tüm kayıtlar — geçmiş, uyarılar, betikler, oturumlar — birlikte silinir. Talepler korunur ve bağlantısı kaldırılır.",
       "multipleOrgs": "Bu seçim {{count}} kuruluşu kapsıyor. Devam etmeden önce kuruluş kapsamını kontrol edin.",
-      "title": "{{count}} cihaz kalıcı olarak silinsin mi?",
-      "typeCount": "Onaylamak için {{count}} yazın"
+      "typeCount": "Onaylamak için {{count}} yazın",
+      "title_one": "{{count}} cihaz kalıcı olarak silinsin mi?",
+      "title_other": "{{count}} cihaz kalıcı olarak silinsin mi?"
     },
     "confirmDecommissionedSkip": {
-      "message": "Seçilen {{total}} cihazdan {{skipped}} tanesi çıkarıldı ve atlanacak — artık yönetilen bir aracıları yok. Kalan {{eligible}} cihazla devam edilsin mi? Çevrimdışı olanlar bir sonraki bağlantıda bunu çalıştıracaktır.",
-      "title": "Seçilen bazı cihazlar çıkarıldı"
+      "title": "Seçilen bazı cihazlar çıkarıldı",
+      "message_one": "Seçilen {{total}} cihazdan {{skipped}} tanesi çıkarıldı ve atlanacak — artık yönetilen bir aracıları yok. Kalan {{count}} cihazla devam edilsin mi? Çevrimdışı olanlar bir sonraki bağlantıda bunu çalıştıracaktır.",
+      "message_other": "Seçilen {{total}} cihazdan {{skipped}} tanesi çıkarıldı ve atlanacak — artık yönetilen bir aracıları yok. Kalan {{count}} cihazla devam edilsin mi? Çevrimdışı olanlar bir sonraki bağlantıda bunu çalıştıracaktır."
     },
     "confirmRunAction": "Çalıştır {{script}}",
     "confirmScriptRun": "Komut dosyasının çalıştırılmasını onaylayın",
@@ -2526,26 +2590,11 @@
       "agentOnlyActionManual": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Manuel varlıkların aracısı yoktur.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
-      "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz zaten çıkarılmış.",
-      "bulkCommandPartialFailed": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}; {{failed}} başarısız oldu: {{failureSummary}}",
-      "bulkCommandSent": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}",
-      "bulkDecommissionAllFailed": "Tüm {{count}} cihaz çıkarılamadı: {{devices}}",
-      "bulkDecommissionFailed": "{{succeeded}} cihaz çıkarıldı; {{failed}} başarısız: {{devices}}",
-      "bulkDecommissioned": "{{count}} cihaz çıkarıldı",
-      "bulkMaintenanceAllFailed": "Tüm {{count}} cihazları için bakım modu güncellenemedi: {{devices}}",
-      "bulkMaintenanceSomeFailed": "{{succeeded}} cihaz(lar) {{verb}} bakım modu; {{failed}} başarısız oldu: {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} cihazlar {{verb}} bakım modu",
       "bulkMaintenanceSuccess_one": "{{count}} cihaz {{verb}} bakım modu",
       "bulkMaintenanceSuccess_other": "{{count}} cihazlar {{verb}} bakım modu",
-      "bulkPurgeDone": "{{count}} cihaz kalıcı olarak silindi",
-      "bulkPurgeDoneWithSkips": "{{purged}} cihaz kalıcı olarak silindi; {{skipped}} atlandı ({{reasons}})",
       "bulkPurgeFailed": "Kalıcı silme başarısız: {{reason}}",
       "bulkPurgeNoneDeleted": "Hiçbir cihaz silinmedi: {{reasons}}",
-      "bulkPurgeStarted": "{{count}} cihaz kalıcı olarak siliniyor…",
-      "bulkRestoreAllFailed": "{{count}} cihazın tamamı geri yüklenemedi",
-      "bulkRestoreSomeFailed": "{{succeeded}} cihaz geri yüklendi; {{failed}} başarısız",
-      "bulkRestoreUninstallAlreadySent": "{{count}} cihaz kaldırma komutunu zaten almıştı — bu makinelerde aracının yeniden kurulması gerekebilir.",
-      "bulkRestored": "{{count}} cihaz geri yüklendi",
       "bulkWakeAllFailed": "Toplu Uyandırma Hepsi Başarısız",
       "bulkWakeSent": "Toplu Uyandırma Gönderildi",
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
@@ -2593,7 +2642,37 @@
       "nonAgentSkipped": "{{count}} aracısız cihaz atlandı — bu eylem yalnızca aracılı cihazlar için geçerlidir.",
       "bulkManualDeleted": "{{count}} manuel varlık silindi.",
       "bulkManualDeleteAllFailed": "{{count}} manuel varlığın tümü silinemedi: {{devices}}.",
-      "bulkManualDeleteSomeFailed": "{{succeeded}} silindi; {{failed}} başarısız oldu: {{devices}}."
+      "bulkManualDeleteSomeFailed": "{{succeeded}} silindi; {{failed}} başarısız oldu: {{devices}}.",
+      "bulkAllDecommissioned_one": "Seçilen tüm {{count}} cihaz zaten çıkarılmış.",
+      "bulkAllDecommissioned_other": "Seçilen tüm {{count}} cihaz zaten çıkarılmış.",
+      "bulkCommandPartialFailed_one": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}; {{failed}} başarısız oldu: {{failureSummary}}",
+      "bulkCommandPartialFailed_other": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}; {{failed}} başarısız oldu: {{failureSummary}}",
+      "bulkCommandSent_one": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}",
+      "bulkCommandSent_other": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}",
+      "bulkDecommissionAllFailed_one": "Tüm {{count}} cihaz çıkarılamadı: {{devices}}",
+      "bulkDecommissionAllFailed_other": "Tüm {{count}} cihaz çıkarılamadı: {{devices}}",
+      "bulkDecommissionFailed_one": "{{count}} cihaz çıkarıldı; {{failed}} başarısız: {{devices}}",
+      "bulkDecommissionFailed_other": "{{count}} cihaz çıkarıldı; {{failed}} başarısız: {{devices}}",
+      "bulkDecommissioned_one": "{{count}} cihaz çıkarıldı",
+      "bulkDecommissioned_other": "{{count}} cihaz çıkarıldı",
+      "bulkMaintenanceAllFailed_one": "Tüm {{count}} cihaz için bakım modu güncellenemedi: {{devices}}",
+      "bulkMaintenanceAllFailed_other": "Tüm {{count}} cihaz için bakım modu güncellenemedi: {{devices}}",
+      "bulkMaintenanceSomeFailed_one": "{{count}} cihaz {{verb}} bakım modu; {{failed}} başarısız oldu: {{devices}}",
+      "bulkMaintenanceSomeFailed_other": "{{count}} cihaz {{verb}} bakım modu; {{failed}} başarısız oldu: {{devices}}",
+      "bulkPurgeDone_one": "{{count}} cihaz kalıcı olarak silindi",
+      "bulkPurgeDone_other": "{{count}} cihaz kalıcı olarak silindi",
+      "bulkPurgeDoneWithSkips_one": "{{count}} cihaz kalıcı olarak silindi; {{skipped}} atlandı ({{reasons}})",
+      "bulkPurgeDoneWithSkips_other": "{{count}} cihaz kalıcı olarak silindi; {{skipped}} atlandı ({{reasons}})",
+      "bulkPurgeStarted_one": "{{count}} cihaz kalıcı olarak siliniyor…",
+      "bulkPurgeStarted_other": "{{count}} cihaz kalıcı olarak siliniyor…",
+      "bulkRestoreAllFailed_one": "{{count}} cihazın tamamı geri yüklenemedi",
+      "bulkRestoreAllFailed_other": "{{count}} cihazın tamamı geri yüklenemedi",
+      "bulkRestoreSomeFailed_one": "{{count}} cihaz geri yüklendi; {{failed}} başarısız",
+      "bulkRestoreSomeFailed_other": "{{count}} cihaz geri yüklendi; {{failed}} başarısız",
+      "bulkRestoreUninstallAlreadySent_one": "{{count}} cihaz kaldırma komutunu zaten almıştı — bu makinelerde aracının yeniden kurulması gerekebilir.",
+      "bulkRestoreUninstallAlreadySent_other": "{{count}} cihaz kaldırma komutunu zaten almıştı — bu makinelerde aracının yeniden kurulması gerekebilir.",
+      "bulkRestored_one": "{{count}} cihaz geri yüklendi",
+      "bulkRestored_other": "{{count}} cihaz geri yüklendi"
     },
     "tryAgain": "Tekrar deneyin",
     "unknownDevice": "Bilinmiyor",
@@ -2612,7 +2691,27 @@
       "installAgent": "Aracı yükle…",
       "addNetworkAsset": "Ağ varlığı ekle…",
       "addManualAsset": "Varlığı manuel olarak ekle…"
-    }
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} komutu {{count}} cihaza {{scope}} gönderilecek.",
+      "messageSplit": "{{action}} komutu {{count}} cihaza {{scope}} gönderilecek: {{online}} şu an çevrimiçi · {{queued}} sonraki check-in için sırada.",
+      "scopeMulti": "{{count}} kuruluş genelinde ({{orgs}})",
+      "scopeSingle": "{{org}} içinde",
+      "title": "{{action}}: {{count}} cihaz?",
+      "verbs": {
+        "lock": "Kilitle",
+        "maintenanceOff": "Bakım modunu bitir",
+        "reboot": "Yeniden başlat",
+        "reboot_safe_mode": "Güvenli modda yeniden başlat",
+        "shutdown": "Kapat",
+        "wake": "Uyandır"
+      }
+    },
+    "emptyOrgTitle": "{{org}} içinde henüz cihaz yok",
+    "emptyOrgTitleUnnamed": "Bu kuruluşta henüz cihaz yok",
+    "emptyOrgDescription": "İzlemeye başlamak için ajanı bu kuruluştaki bir makineye kurun veya filonuzun geri kalanını görmek için tüm kuruluşlara geçin.",
+    "viewAllOrganizations": "Tüm kuruluşları görüntüle",
+    "importFromRmmShort": "İçe aktar"
   },
   "filterAddDropdown": {
     "addFilter": "Filtre ekle",
@@ -2941,7 +3040,9 @@
     "submitting": "İşleniyor…",
     "cancel": "İptal",
     "genericError": "Cihaz taşınamadı.",
-    "timeout": "Taşıma beklenenden uzun sürüyor ve sunucuda hâlâ tamamlanıyor olabilir. Bir dakika bekleyin, ardından yeniden denemeden önce cihazın hangi kuruluşta olduğunu kontrol etmek için sayfayı yenileyin."
+    "timeout": "Taşıma beklenenden uzun sürüyor ve sunucuda hâlâ tamamlanıyor olabilir. Bir dakika bekleyin, ardından yeniden denemeden önce cihazın hangi kuruluşta olduğunu kontrol etmek için sayfayı yenileyin.",
+    "pamMoveActive": "Bu cihazda temizliği henüz tamamlanmamış bir ayrıcalıklı erişim (PAM) oturumu var. Oturumun kapanmasını bekleyin, ardından cihazı yeniden taşıyın.",
+    "pamMoveBlocked": "Bu cihazın ayrıcalıklı erişim (PAM) geçmişi var ve PAM içeren cihazların kuruluşlar arasında taşınması bu dağıtımda etkin değil."
   },
   "networkDeviceDetailPage": {
     "approval": {
@@ -4085,7 +4186,7 @@
       "offNote": "Çalışma zamanları her zaman algılanır, ancak bir ilke etkinleştirene kadar iş yükü listeleme kapalıdır.",
       "enabled": "İş yüklerini listele",
       "runtimesHeading": "Listelenecek çalışma zamanları",
-      "laterRelease": "Hyper-V ve Proxmox VE listeleme, aracının sonraki bir sürümüyle gelecek; bu anahtarlar o zaman etkili olur.",
+      "agentSupport": "Hyper-V ve Proxmox VE anahtarları yalnızca bu sürücüleri içeren aracılarda etkili olur; eski aracılar bunları yok sayar.",
       "interval": "Toplama aralığı (dakika)",
       "invalidInterval": "Aralık, {{min}} ile {{max}} arasında tam sayı dakika olmalıdır."
     },
@@ -4160,6 +4261,42 @@
       "false_positive": "Yanlış pozitif",
       "dismissed": "Yoksayıldı",
       "unknown": "Bilinmiyor"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Cihazı izole et",
+        "unisolate": "İzolasyonu kaldır",
+        "scan": "Tarama başlat",
+        "update_agent": "Aracıyı güncelle"
+      },
+      "unavailable": "Kullanılamıyor",
+      "mfaRequired": "Müdahale eylemlerini çalıştırmak için MFA ile doğrulayın",
+      "error": "Müdahale eylemi istenemedi.",
+      "requested": "{{device}} için {{action}} istendi",
+      "inProgress": "Bu cihaz için başka bir müdahale eylemi zaten sürüyor.",
+      "confirming": "İstendi — {{vendor}} ile doğrulanıyor",
+      "reasonLabel": "Neden (isteğe bağlı)",
+      "confirm": {
+        "isolate": {
+          "title": "{{device}} izole edilsin mi?",
+          "message": "{{vendor}}, {{device}} cihazını izole edecek: cihaz, {{vendor}} dışında ağ erişimini kaybeder. İzolasyonu daha sonra kaldırabilirsiniz."
+        },
+        "unisolate": {
+          "title": "{{device}} izolasyonu kaldırılsın mı?",
+          "message": "{{vendor}}, {{device}} için normal ağ erişimini geri yükleyecek."
+        }
+      }
+    },
+    "history": {
+      "heading": "Son müdahale eylemleri",
+      "checking": "Kontrol ediliyor",
+      "aiBadge": "YZ",
+      "status": {
+        "queued": "Sırada",
+        "submitted": "Devam ediyor",
+        "succeeded": "Başarılı",
+        "failed": "Başarısız"
+      }
     }
   },
   "endpointMessages": {
@@ -4238,6 +4375,161 @@
       "titleHtml": "Başlıkta HTML kullanılamaz.",
       "titleLinks": "Başlıkta bağlantı kullanılamaz.",
       "invalid": "Mesaj izin verilmeyen içerik barındırıyor."
+    },
+    "history": {
+      "title": "Uç nokta mesajları",
+      "description": "Kişilere cihazlarında gönderilen mesajlar ve her birine ne olduğu.",
+      "empty": "Henüz mesaj gönderilmedi.",
+      "loading": "Yükleniyor...",
+      "loadFailed": "Mesajlar yüklenemedi.",
+      "retry": "Tekrar dene",
+      "loadMore": "Daha fazla yükle",
+      "selectPrompt": "Teslimat ayrıntılarını görmek için bir mesaj seçin.",
+      "detailLoadFailed": "Bu mesaj yüklenemedi.",
+      "notFound": "Bu mesaj bulunamadı.",
+      "noAccess": "Uç nokta mesajlarını görüntüleme izniniz yok.",
+      "purgedTitle": "İçerik kaldırıldı",
+      "purgedBody": "Mesaj metni 90 gün sonra kaldırıldı. Teslimat geçmişi saklanır.",
+      "purgedListTitle": "(içerik kaldırıldı)",
+      "badgeRetracted": "Geri çekildi",
+      "badgeAi": "Yapay zekâ",
+      "devicesLabel": "Cihazlar: {{count}}",
+      "fields": {
+        "body": "Mesaj",
+        "deliveries": "Cihazlar",
+        "host": "Cihaz",
+        "status": "Durum",
+        "surface": "Gösterildiği yer",
+        "error": "Hata",
+        "sent": "Gönderildi",
+        "expires": "Sona erer",
+        "delivered": "Teslim edildi",
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "retracted": "Geri çekildi",
+        "receipts": "Makbuzlar",
+        "noReceipts": "Yok",
+        "requiresAck": "Onay gerekir"
+      },
+      "receiptEvents": {
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "expired": "Süresi doldu"
+      },
+      "surface": {
+        "assist": "Assist kartı",
+        "native": "Yerel bildirim"
+      },
+      "statuses": {
+        "queued": "Kuyrukta",
+        "delivered": "Teslim edildi",
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "expired": "Süresi doldu",
+        "retracted": "Geri çekildi",
+        "failed": "Başarısız",
+        "superseded": "Değiştirildi"
+      },
+      "actions": {
+        "retract": "Geri çek",
+        "retracting": "Geri çekiliyor...",
+        "resend": "Başarısız veya süresi dolanlara yeniden gönder",
+        "resending": "Yeniden gönderiliyor..."
+      },
+      "retractConfirm": {
+        "title": "Bu mesaj geri çekilsin mi?",
+        "message": "Şu anda gösteren cihazlardan kaldırılır. Henüz almamış cihazlar mesajı almaz.",
+        "confirm": "Geri çek"
+      },
+      "messages": {
+        "retractSuccess": "Mesaj geri çekildi.",
+        "retractPartial": "Mesaj geri çekildi, ancak {{count}} cihaz güncellenemedi.",
+        "retractFailed": "Mesaj geri çekilemedi.",
+        "resendSuccess": "Mesaj yeniden gönderildi. Cihazlar: {{count}}.",
+        "resendFailed": "Mesaj yeniden gönderilemedi."
+      },
+      "resendErrors": {
+        "retracted": "Bu mesaj geri çekildi ve yeniden gönderilemez.",
+        "body_purged": "Mesaj metni kaldırıldığı için yeniden gönderilemez.",
+        "in_progress": "Bu mesaj için bir gönderim zaten sürüyor.",
+        "idempotency_conflict": "Bu yeniden gönderim zaten farklı ayrıntılarla iletildi.",
+        "nothing_to_resend": "Yeniden gönderilecek başarısız veya süresi dolmuş cihaz yok."
+      }
     }
+  },
+  "endpointChat": {
+    "tabLabel": "Sohbet",
+    "tabTitle": "Bu cihazdaki kişiyle canlı sohbet",
+    "unsupported": "Bu cihazda sohbet yok. Sohbet, bir Windows konsol oturumunda Breeze Assist gerektirir.",
+    "footer": "Kullanıcı bunu bir sohbet penceresi olarak görür. Sohbet hiçbir zaman uzaktan erişim vermez.",
+    "startHeading": "Sohbet başlat",
+    "firstMessageLabel": "İlk mesaj",
+    "startChat": "Sohbeti başlat",
+    "starting": "Başlatılıyor...",
+    "recentHeading": "Son sohbetler",
+    "empty": "Bu cihazla henüz sohbet yok.",
+    "loadFailed": "Sohbetler yüklenemedi.",
+    "loading": "Yükleniyor...",
+    "back": "Sohbetlere dön",
+    "endChat": "Sohbeti bitir",
+    "ending": "Bitiriliyor...",
+    "messageLabel": "Mesaj",
+    "send": "Gönder",
+    "sending": "Gönderiliyor...",
+    "openExisting": "Mevcut sohbeti aç",
+    "user": "Kullanıcı",
+    "technician": "Teknisyen",
+    "fromUser": "{{name}} (kullanıcı)",
+    "undelivered": "Teslim edilmedi",
+    "status": {
+      "opening": "Kullanıcının sohbet penceresini görmesi bekleniyor...",
+      "open": "Sohbet açık",
+      "closed": "Bu sohbet sona erdi.",
+      "expired": "Bu sohbet 30 dakikalık hareketsizlikten sonra sona erdi.",
+      "failed": "Sohbet başlatılamadı."
+    },
+    "statusShort": {
+      "opening": "Açılıyor",
+      "open": "Açık",
+      "closed": "Bitti",
+      "expired": "Süresi doldu",
+      "failed": "Başarısız"
+    },
+    "errors": {
+      "chat_requires_assist": "Sohbet, bir Windows konsol oturumunda Breeze Assist gerektirir.",
+      "agent_unsupported": "Bu cihazdaki aracı henüz sohbeti desteklemiyor.",
+      "device_offline": "Cihaz çevrimdışı. Çevrimiçi olduğunda tekrar deneyin.",
+      "platform_unsupported": "Sohbet yalnızca Windows cihazlarda kullanılabilir.",
+      "conversation_active": "Bu cihazla zaten devam eden bir sohbet var.",
+      "rate_limited": "Yakın zamanda çok fazla sohbet veya mesaj gönderildi. Daha sonra tekrar deneyin.",
+      "open_timeout": "Cihaz zamanında yanıt vermedi, bu yüzden sohbet başlatılmadı.",
+      "chat_window_failed": "Cihaz sohbet penceresini gösteremedi.",
+      "conversation_not_open": "Bu sohbet artık açık değil.",
+      "feature_disabled": "Sohbet bu kuruluş için etkin değil.",
+      "no_permission": "Bu cihazla sohbet etme izniniz yok.",
+      "device_not_found": "Bu cihaz bulunamadı.",
+      "generic": "Sohbetle ilgili bir sorun oluştu. Tekrar deneyin.",
+      "open_failed": "Sohbet başlatılamadı. Tekrar deneyin.",
+      "send_failed": "Mesaj gönderilemedi. Tekrar deneyin.",
+      "close_failed": "Sohbet bitirilemedi. Tekrar deneyin."
+    },
+    "updatesPaused": "Canlı güncellemeler duraklatıldı — yeniden deneniyor",
+    "closeNotAnnounced": "Sohbet burada kapatıldı. Kullanıcının sohbet penceresi, cihazı yeniden bağlanana veya kullanıcı yanıt verene kadar açık kalabilir.",
+    "unavailable": "Bu sohbet artık kullanılamıyor"
+  },
+  "deviceOverviewState": {
+    "label": "Cihaz durumu",
+    "lastCheckIn": "Son bildirim {{ago}}",
+    "openAlerts_one": "{{count}} açık uyarı",
+    "openAlerts_other": "{{count}} açık uyarı",
+    "openTickets_one": "{{count}} açık talep",
+    "openTickets_other": "{{count}} açık talep",
+    "noOpenAlerts": "Açık uyarı yok",
+    "untitledAlert": "Uyarı bildirildi",
+    "alertsUnavailable": "Açık uyarılar yüklenemedi",
+    "viewAlerts": "Uyarıları görüntüle"
   }
 }

@@ -25,6 +25,7 @@ import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 import { formatPercent } from '@/lib/i18n/format';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { EntityLink } from '@/components/shared/EntityLink';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -929,9 +930,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
             {invoice.billToName ? (
               <>
                 <p className="text-sm">
-                  <a href={`/organizations/${encodeURIComponent(invoice.orgId)}`} data-testid="org-record-link" className="hover:underline">
-                    {invoice.billToName}
-                  </a>
+                  <EntityLink kind="org" id={invoice.orgId} name={invoice.billToName} />
                 </p>
                 {/* Draft-only fallback (sweep paper cut #16): set by the API
                     ONLY alongside a fallen-back billToName — see invoiceTypes.

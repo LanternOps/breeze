@@ -1,4 +1,4 @@
-import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from '@breeze/shared';
+import { RESTORE_POINT_PAYLOAD_KEY, SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from '@breeze/shared';
 import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStaleness';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
@@ -32,6 +32,7 @@ import {
 import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
+import { releaseFilesystemScanGenerationForCommand } from '../services/filesystemScanGenerationRelease';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
@@ -320,6 +321,23 @@ export async function propagateTimedOutDeviceCommand(params: {
         `[StaleCommandReaper] Timed-out ${params.commandType} command ${commandId} names no valid backup job id; ` +
         'its job is left to the backup reaper',
       );
+    }
+  }
+
+  // #9105 — a filesystem_analysis command the reaper times out never reaches
+  // handleFilesystemAnalysisCommandResult, so release the volume's scan
+  // generation here (conditionally on this command still owning it) or older
+  // good results keep being dropped as superseded. Contained like the blocks
+  // above: a failure must not skip the DR reconcile.
+  if (params.commandType === 'filesystem_analysis' && params.deviceId) {
+    try {
+      await releaseFilesystemScanGenerationForCommand(
+        { id: commandId, deviceId: params.deviceId, payload },
+        params.kind ?? 'timeout',
+      );
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to release filesystem scan generation for timed-out command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
 
@@ -729,14 +747,15 @@ export async function reapStaleScriptExecutions(): Promise<number> {
     // The per-row deadline must use the script's own value too. Leaving this
     // check on a fixed constant would keep enforcing the old floor and make
     // the fix inert for exactly the short-timeout case #3190 describes.
-    const timeoutMs = getCommandTimeoutMs(CommandTypes.SCRIPT, {
-      timeoutSeconds: resolveExecutionTimeoutSeconds(exec),
-    });
+    const timeoutSeconds = resolveExecutionTimeoutSeconds(exec);
     const referenceTime = exec.status === 'running' && exec.startedAt
       ? exec.startedAt.getTime()
       : exec.createdAt.getTime();
 
-    if (now - referenceTime < timeoutMs) continue;
+    // Cheap first pass on the execution row alone. The restore-point budget
+    // below can only LENGTHEN the deadline, so a row not due without it is not
+    // due at all — and skips the command lookup.
+    if (now - referenceTime < getCommandTimeoutMs(CommandTypes.SCRIPT, { timeoutSeconds })) continue;
 
     // #3097: this lookup used to happen AFTER the update, purely to find the
     // batch. It runs first now because it also answers whether the agent
@@ -770,6 +789,18 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       .limit(1);
 
     const cmd = relatedCmd[0];
+
+    // #9162: the restore-point stamp lives on the COMMAND payload, not the
+    // execution row. Re-check the deadline with it, so this reaper and
+    // `reapStaleDeviceCommands` (which passes the full payload) agree on when a
+    // stamped script is overdue. Only the stamp is taken from the command: the
+    // timeout stays the execution's own snapshot.
+    const cmdPayload = cmd?.payload as Record<string, unknown> | null | undefined;
+    const timeoutMs = getCommandTimeoutMs(CommandTypes.SCRIPT, {
+      timeoutSeconds,
+      [RESTORE_POINT_PAYLOAD_KEY]: cmdPayload?.[RESTORE_POINT_PAYLOAD_KEY],
+    });
+    if (now - referenceTime < timeoutMs) continue;
 
     // #5128 — THE DELIVERY CLOCK HAS ONE OWNER. A not-yet-running execution
     // whose command row is still `pending` or `sent` is waiting for the device,

@@ -29,12 +29,14 @@
  */
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { computeEffectSetDigest } from '@breeze/shared/canonicalize/effectSet';
+import { M365_WRITE_ACTION_IDEMPOTENCY } from '@breeze/shared/m365';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiOperatorOperations, type AiOperatorTaskRow } from '../../db/schema/aiOperatorTasks';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiOperatorPlanApprovalEffects, type AiOperatorEffectIdempotencyClass } from '../../db/schema/aiOperatorPlanApprovals';
 import { aiOperatorTaskTargetAccounts, aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { buildActionLabel } from '../actionIntents/actionLabel';
+import { M365_HEADLESS_ACTIONS } from '../m365ToolsHeadless';
 import { probeEffect, type EffectProbeResult } from './effectProbes';
 import {
   checkPlanEffectMembershipSystem,
@@ -57,7 +59,9 @@ export const PLAN_POLL_WAKE_MS = 5 * 60 * 1000;
  * Spec §6.6 per-action classification, stated next to the action. A tool
  * this table does not name is `non_idempotent` — the strictest class, so an
  * unclassified effect is never auto-retried and an unknown pre-state hands
- * off. M365 entries arrive with the M1 write catalog.
+ * off. M365 entries are derived from the M1 write catalog's per-action class
+ * (M365_WRITE_ACTION_IDEMPOTENCY), keyed by tool through the headless map, so
+ * the two can never drift.
  */
 const EFFECT_IDEMPOTENCY: Readonly<Record<string, AiOperatorEffectIdempotencyClass>> = Object.freeze({
   google_remove_from_group: 'idempotent',
@@ -67,6 +71,8 @@ const EFFECT_IDEMPOTENCY: Readonly<Record<string, AiOperatorEffectIdempotencyCla
   google_set_vacation: 'idempotent_by_probe',
   google_set_forwarding: 'idempotent_by_probe',
   google_add_mail_delegate: 'idempotent_by_probe',
+  ...Object.fromEntries(Object.entries(M365_HEADLESS_ACTIONS)
+    .map(([tool, actionId]) => [tool, M365_WRITE_ACTION_IDEMPOTENCY[actionId]])),
 });
 
 export function classifyEffectIdempotency(toolName: string): AiOperatorEffectIdempotencyClass {

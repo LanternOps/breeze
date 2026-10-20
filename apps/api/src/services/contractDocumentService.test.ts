@@ -38,19 +38,43 @@ vi.mock('../db', () => {
 
 import {
   createExecutedDocuments,
+  freezeSignedAgreement,
   listContractDocuments,
   buildContractHashParts,
   assertContractRenderDataComplete,
   getContractDocumentPdf,
   linkContractDocument,
   ContractDocumentServiceError,
+  type SignedAgreementEvidence,
 } from './contractDocumentService';
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
-import type { ContractBlockRenderData } from './contractTemplateRender';
+import { renderContextFromQuote, type AgreementRenderContext, type ContractBlockRenderData } from './contractTemplateRender';
 import { QuoteServiceError } from './quoteTypes';
+import { captureException } from './sentry';
+
+// Spy on the accept-time unresolved-variable alert without touching real Sentry.
+vi.mock('./sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./sentry')>()),
+  captureException: vi.fn(),
+}));
 
 const EFFECTIVE = '2026-07-16';
+
+// Quote-path evidence snapshot (#8865 W1b) — what acceptQuote hands
+// createExecutedDocuments as its 8th argument.
+const EVIDENCE: SignedAgreementEvidence = {
+  signerName: 'Jane Doe', signerEmail: 'jane@example.test', signedAt: new Date('2026-07-16T12:00:00Z'),
+  signerIp: '203.0.113.7', signerUserAgent: 'UA/1',
+  acceptanceOrigin: 'customer', acceptanceMethod: 'typed-signature', acceptanceReference: null,
+  recordedByUserId: null, contentSha256: 'e'.repeat(64), contentHashVersion: 2, acceptanceRenderLocale: 'en',
+};
+const EVIDENCE_COLUMNS = {
+  signerName: 'Jane Doe', signerEmail: 'jane@example.test', signedAt: EVIDENCE.signedAt,
+  signerIp: '203.0.113.7', signerUserAgent: 'UA/1',
+  acceptanceOrigin: 'customer', acceptanceMethod: 'typed-signature', acceptanceReference: null,
+  recordedByUserId: null, contentSha256: 'e'.repeat(64), contentHashVersion: 2, acceptanceRenderLocale: 'en',
+};
 
 function makeQuote(overrides: Record<string, unknown> = {}) {
   return {
@@ -108,7 +132,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
 
   it('inserts one authored contract_documents row linked to the acceptance + FIRST contract, sha256 over the pdf bytes', async () => {
     const ids = await createExecutedDocuments(
-      makeQuote(), 'acc1', ['contractA', 'contractB'], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en',
+      makeQuote(), 'acc1', ['contractA', 'contractB'], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en', EVIDENCE,
     );
 
     expect(ids).toEqual(['doc-1']);
@@ -143,7 +167,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
     });
     const hostileBlock = { id: 'cb1', blockType: 'contract', content: { variableValues: { link: 'javascript:alert(1)' } } };
 
-    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE, 'en');
+    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE, 'en', EVIDENCE);
     const row = insertedValues[0]!;
 
     // Stored rendered_html carries no live javascript: link.
@@ -157,7 +181,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
   it('re-sanitizes a protocol-relative //host href variable value in the executed snapshot', async () => {
     const hrefRenderData = authoredRenderData({ bodyHtml: '<p>See <a href="{{link}}">the portal</a></p>' });
     const hostileBlock = { id: 'cb1', blockType: 'contract', content: { variableValues: { link: '//evil.example' } } };
-    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE, 'en');
+    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE, 'en', EVIDENCE);
     const row = insertedValues[0]!;
     expect(String(row.renderedHtml)).not.toContain('//evil.example');
     expect((row.pdfData as Buffer).toString('latin1')).not.toContain('//evil.example');
@@ -168,7 +192,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
     await createExecutedDocuments(
       makeQuote(), 'acc1', ['contractA'],
       [authoredRenderData({ blockId: 'cb2', sourceType: 'uploaded', bodyHtml: null, fileData })],
-      [{ id: 'cb2', blockType: 'contract', content: {} }], EFFECTIVE, 'en',
+      [{ id: 'cb2', blockType: 'contract', content: {} }], EFFECTIVE, 'en', EVIDENCE,
     );
     const row = insertedValues[0]!;
     expect(row.renderedHtml).toBeNull();
@@ -184,7 +208,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
   it('draws executed-PDF money through the pdf-safe formatter (₹ → INR code form) while rendered_html keeps the symbol', async () => {
     await createExecutedDocuments(
       makeQuote({ currencyCode: 'INR', total: '1000.00' }), 'acc1', ['contractA'],
-      [authoredRenderData({ bodyHtml: '<p>Total due {{totals.total}}.</p>' })], [authoredBlock], EFFECTIVE, 'en',
+      [authoredRenderData({ bodyHtml: '<p>Total due {{totals.total}}.</p>' })], [authoredBlock], EFFECTIVE, 'en', EVIDENCE,
     );
     const row = insertedValues[0]!;
     expect(String(row.renderedHtml)).toContain('₹1,000.00');
@@ -198,7 +222,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
     'never writes a non-WinAnsi currency symbol into the executed PDF (%s %s)', async (currencyCode, renderLocale) => {
       await createExecutedDocuments(
         makeQuote({ currencyCode, total: '1000.00' }), 'acc1', ['contractA'],
-        [authoredRenderData({ bodyHtml: '<p>Total {{totals.total}}</p>' })], [authoredBlock], EFFECTIVE, renderLocale,
+        [authoredRenderData({ bodyHtml: '<p>Total {{totals.total}}</p>' })], [authoredBlock], EFFECTIVE, renderLocale, EVIDENCE,
       );
       const text = extractPdfText(insertedValues[0]!.pdfData as Buffer);
       expect(text).toContain(currencyCode);
@@ -211,7 +235,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
   it('folds fr-FR narrow no-break grouping spaces in the executed PDF (no " /" garbage between digit groups)', async () => {
     await createExecutedDocuments(
       makeQuote({ currencyCode: 'EUR', total: '1000.00' }), 'acc1', ['contractA'],
-      [authoredRenderData({ bodyHtml: '<p>Total {{totals.total}}</p>' })], [authoredBlock], EFFECTIVE, 'fr-FR',
+      [authoredRenderData({ bodyHtml: '<p>Total {{totals.total}}</p>' })], [authoredBlock], EFFECTIVE, 'fr-FR', EVIDENCE,
     );
     const row = insertedValues[0]!;
     expect(String(row.renderedHtml)).toContain('1\u202f000,00');
@@ -220,15 +244,248 @@ describe('contractDocumentService.createExecutedDocuments', () => {
     expect(text).not.toContain('1 /000');
   });
 
+  // The loop → freezeSignedAgreement wiring (#8865 W1a review): the block's
+  // manual variableValues must reach the executed document, not just the hash.
+  // rendered_html pinned exactly; equal to origin/main 3cb835cee1's output for
+  // this fixture (verified by a one-off main-vs-branch comparison).
+  it('applies the block manual values to rendered_html and the PDF (fr-FR, override beats auto)', async () => {
+    const block = { id: 'cb1', blockType: 'contract', content: { templateId: 't1', templateVersionId: 'v1', variableValues: { 'client.name': 'Override SARL', 'custom.po': 'PO-7' } } };
+    await createExecutedDocuments(
+      makeQuote({ currencyCode: 'EUR', total: '1000.00' }), 'acc1', ['contractA'],
+      [authoredRenderData({ bodyHtml: '<p>{{client.name}} {{custom.po}} {{totals.total}} {{dates.effective}}</p>' })], [block], EFFECTIVE, 'fr-FR', EVIDENCE,
+    );
+    const row = insertedValues[0]!;
+    expect(row.renderedHtml).toBe('<p>Override SARL PO-7 1 000,00 € Jul 16, 2026</p>');
+    const text = extractPdfText(row.pdfData as Buffer);
+    expect(text).toContain('Override SARL');
+    expect(text).toContain('PO-7');
+    expect(text).toContain('1 000,00 \u0080');
+    expect(text).not.toContain('Acme Co Q'); // auto client.name never drawn in the body
+  });
+
+  it('quote accept keeps the unresolved-variable fallback: logs + alerts, blanks html AND pdf, never throws', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const ids = await createExecutedDocuments(
+        makeQuote(), 'acc1', ['contractA'],
+        [authoredRenderData({ bodyHtml: '<p>Term {{governing_state}} for {{client.name}}</p>' })], [authoredBlock], EFFECTIVE, 'en', EVIDENCE,
+      );
+      expect(ids).toEqual(['doc-1']);
+      const row = insertedValues[0]!;
+      expect(row.renderedHtml).toBe('<p>Term  for Acme Co</p>');
+      const text = extractPdfText(row.pdfData as Buffer);
+      expect(text).not.toContain('{{');
+      expect(text).not.toContain('governing_state');
+      expect(errSpy).toHaveBeenCalledWith(
+        '[contractDocumentService] unresolved variable(s) at accept-time snapshot',
+        { blockId: 'cb1', quoteId: 'q1', missing: ['governing_state'] },
+      );
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect((vi.mocked(captureException).mock.calls[0]![0] as Error).message).toBe(
+        '[contractDocumentService] unresolved variable(s) at accept-time snapshot: blockId=cb1 quoteId=q1 missing=governing_state',
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('names the block in the no-bytes error for an uploaded block (accept rolls back)', async () => {
+    await expect(createExecutedDocuments(
+      makeQuote(), 'acc1', ['contractA'],
+      [authoredRenderData({ blockId: 'cb9', sourceType: 'uploaded', bodyHtml: null, fileData: null })],
+      [{ id: 'cb9', blockType: 'contract', content: {} }], EFFECTIVE, 'en', EVIDENCE,
+    )).rejects.toMatchObject({ status: 500, code: 'CONTRACT_RENDER_DATA_MISSING', message: 'Uploaded contract block cb9 has no stored file to snapshot' });
+    expect(insertedValues).toHaveLength(0);
+  });
+
   it('links contract_id to null when no billing contract was created', async () => {
-    await createExecutedDocuments(makeQuote(), 'acc1', [], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en');
+    await createExecutedDocuments(makeQuote(), 'acc1', [], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en', EVIDENCE);
     expect(insertedValues[0]!.contractId).toBeNull();
   });
 
   it('inserts nothing when there is no contract render data', async () => {
-    const ids = await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [], [], EFFECTIVE, 'en');
+    const ids = await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [], [], EFFECTIVE, 'en', EVIDENCE);
     expect(ids).toEqual([]);
     expect(insertedValues).toHaveLength(0);
+  });
+});
+
+describe('contractDocumentService.freezeSignedAgreement (quote source)', () => {
+  beforeEach(() => { insertedValues.length = 0; vi.clearAllMocks(); });
+  const ctx: AgreementRenderContext = {
+    clientName: 'Acme Co', clientAddress: null, sellerName: 'MSP LLC', currencyCode: 'USD', renderLocale: 'en', effectiveDate: EFFECTIVE,
+    quote: { number: 'Q-1', title: 'Proposal', expiryDate: '2026-08-01', totals: { oneTime: '100.00', monthly: '10.00', annual: '0.00', total: '110.00' } },
+  };
+  const base = {
+    source: { kind: 'quote' as const, quoteId: 'q1', quoteAcceptanceId: 'acc1', blockId: 'cb1' }, orgId: 'org1', contractId: 'contractA',
+    templateId: 't1', templateVersionId: 'v1', ctx, manualValues: {}, allowUnresolvedFallback: true, evidence: EVIDENCE,
+  };
+  const authored = (bodyHtml: string) =>
+    ({ sourceType: 'authored' as const, bodyHtml, fileData: null, templateName: 'MSA', versionSha256: 'a'.repeat(64) });
+
+  // ---- #8865 W1b: request source, external bytes, evidence snapshot ----
+  const requestCtx: AgreementRenderContext = {
+    clientName: 'Acme Co', clientAddress: null, sellerName: 'MSP LLC', currencyCode: 'USD', renderLocale: 'en', effectiveDate: EFFECTIVE,
+  };
+  const requestEvidence: SignedAgreementEvidence = {
+    ...EVIDENCE, acceptanceOrigin: 'on_behalf', acceptanceMethod: 'signed_document', acceptanceReference: 'Signed PDF from client',
+    recordedByUserId: 'tech-1', contentSha256: 'f'.repeat(64), contentHashVersion: 1, signerIp: null, signerUserAgent: null,
+  };
+  const requestBase = {
+    source: { kind: 'request' as const, agreementRequestId: 'ar1', label: 'MSA 2026' }, orgId: 'org1', contractId: null,
+    templateId: 't1', templateVersionId: 'v1', ctx: requestCtx, manualValues: {}, allowUnresolvedFallback: false, evidence: requestEvidence,
+  };
+
+  it("source.kind='request' inserts agreement_request_id, no quote columns, source_kind 'request'", async () => {
+    await freezeSignedAgreement({ ...requestBase, render: authored('<p>{{client.name}} effective {{dates.effective}}</p>') });
+    const row = insertedValues[0]!;
+    expect(row).toMatchObject({ orgId: 'org1', sourceKind: 'request', agreementRequestId: 'ar1', contractId: null, mime: 'application/pdf' });
+    expect(row).not.toHaveProperty('quoteId');
+    expect(row).not.toHaveProperty('quoteAcceptanceId');
+    expect(row.renderedHtml).toContain('Acme Co');
+    // The diagnostics label is never persisted.
+    expect(JSON.stringify(Object.keys(row))).not.toContain('label');
+  });
+
+  it("source.kind='quote' writes source_kind 'quote' and no agreement_request_id", async () => {
+    await freezeSignedAgreement({ ...base, render: authored('<p>x</p>') });
+    const row = insertedValues[0]!;
+    expect(row).toMatchObject({ sourceKind: 'quote', quoteId: 'q1', quoteAcceptanceId: 'acc1', mime: 'application/pdf' });
+    expect(row).not.toHaveProperty('agreementRequestId');
+    expect(row).not.toHaveProperty('blockId');
+  });
+
+  it('externalBytes are stored verbatim with the sniffed mime and rendered_html null (no render)', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const out = await freezeSignedAgreement({
+      ...requestBase,
+      // A template body with an unresolvable token: never rendered, so it cannot 422.
+      render: authored('<p>{{totals.monthly}}</p>'),
+      externalBytes: { data: png, mime: 'image/png' },
+    });
+    const row = insertedValues[0]!;
+    expect((row.pdfData as Buffer).equals(png)).toBe(true);
+    expect(row).toMatchObject({ mime: 'image/png', renderedHtml: null, byteSize: png.length, sourceKind: 'request' });
+    expect(out.sha256).toBe(createHash('sha256').update(png).digest('hex'));
+  });
+
+  it('empty externalBytes throw CONTRACT_RENDER_DATA_MISSING (500) naming the request, inserting nothing', async () => {
+    const err = await freezeSignedAgreement({
+      ...requestBase, render: authored('<p>x</p>'), externalBytes: { data: Buffer.alloc(0), mime: 'application/pdf' },
+    }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 500, code: 'CONTRACT_RENDER_DATA_MISSING' });
+    expect((err as Error).message).toContain('ar1');
+    expect(insertedValues).toHaveLength(0);
+  });
+
+  it('evidence columns are written for both sources', async () => {
+    await freezeSignedAgreement({ ...base, render: authored('<p>x</p>') });
+    await freezeSignedAgreement({ ...requestBase, render: authored('<p>x</p>') });
+    expect(insertedValues[0]).toMatchObject(EVIDENCE_COLUMNS);
+    expect(insertedValues[1]).toMatchObject({
+      ...EVIDENCE_COLUMNS, acceptanceOrigin: 'on_behalf', acceptanceMethod: 'signed_document',
+      acceptanceReference: 'Signed PDF from client', recordedByUserId: 'tech-1', contentSha256: 'f'.repeat(64),
+      contentHashVersion: 1, signerIp: null, signerUserAgent: null,
+    });
+  });
+
+  it('request path (allowUnresolvedFallback=false): a quote-only token throws 422 AGREEMENT_VARIABLES_UNRESOLVED and inserts nothing', async () => {
+    const err = await freezeSignedAgreement({ ...requestBase, render: authored('<p>{{client.name}} pays {{totals.monthly}}</p>') })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(QuoteServiceError);
+    expect(err).toMatchObject({ status: 422, code: 'AGREEMENT_VARIABLES_UNRESOLVED' });
+    expect((err as Error).message).toContain('totals.monthly');
+    expect(insertedValues).toHaveLength(0);
+  });
+
+  it('createExecutedDocuments passes the evidence through to every frozen block', async () => {
+    await createExecutedDocuments(
+      makeQuote(), 'acc1', ['contractA'], [authoredRenderData(), authoredRenderData({ blockId: 'cb2' })],
+      [authoredBlock, { ...authoredBlock, id: 'cb2' }], EFFECTIVE, 'en', EVIDENCE,
+    );
+    expect(insertedValues).toHaveLength(2);
+    for (const row of insertedValues) expect(row).toMatchObject({ ...EVIDENCE_COLUMNS, sourceKind: 'quote' });
+  });
+
+  it('inserts one row with quote linkage, rendered_html from the HTML map and sha256 over the pdf', async () => {
+    const out = await freezeSignedAgreement({ ...base, render: authored('<p>{{client.name}} {{totals.monthly}}</p>') });
+    const row = insertedValues[0]!;
+    expect(insertedValues).toHaveLength(1);
+    expect(out).toEqual({ id: 'doc-1', sha256: row.sha256 });
+    expect(row).toMatchObject({ orgId: 'org1', quoteId: 'q1', quoteAcceptanceId: 'acc1', contractId: 'contractA', templateId: 't1', templateVersionId: 'v1' });
+    expect(row.renderedHtml).toContain('Acme Co');
+    expect(row.renderedHtml).toContain('$10.00');
+    const pdf = row.pdfData as Buffer;
+    expect(row.byteSize).toBe(pdf.length);
+    expect(row.sha256).toBe(createHash('sha256').update(pdf).digest('hex'));
+  });
+
+  it('draws the PDF header parties + effective date from the context', async () => {
+    await freezeSignedAgreement({ ...base, render: authored('<p>Body</p>') });
+    const text = extractPdfText(insertedValues[0]!.pdfData as Buffer);
+    expect(text).toContain('MSP LLC');
+    expect(text).toContain('Acme Co');
+    expect(text).toContain('Effective Jul 16, 2026');
+  });
+
+  it('manual values win over auto values', async () => {
+    await freezeSignedAgreement({ ...base, manualValues: { 'client.name': 'Override' }, render: authored('<p>{{client.name}}</p>') });
+    expect(insertedValues[0]!.renderedHtml).toContain('Override');
+    expect(insertedValues[0]!.renderedHtml).not.toContain('Acme Co');
+  });
+
+  it('uploaded render stores fileData verbatim with rendered_html null', async () => {
+    const fileData = Buffer.from('%PDF-1.4 x');
+    const out = await freezeSignedAgreement({ ...base, render: { sourceType: 'uploaded', bodyHtml: null, fileData, templateName: 'MSA', versionSha256: 'a'.repeat(64) } });
+    const row = insertedValues[0]!;
+    expect(row.renderedHtml).toBeNull();
+    expect((row.pdfData as Buffer).equals(fileData)).toBe(true);
+    expect(out.sha256).toBe(createHash('sha256').update(fileData).digest('hex'));
+  });
+
+  it('throws CONTRACT_RENDER_DATA_MISSING (500) for an uploaded render with no bytes, inserting nothing', async () => {
+    await expect(freezeSignedAgreement({ ...base, render: { sourceType: 'uploaded', bodyHtml: null, fileData: null, templateName: 'MSA', versionSha256: 'a'.repeat(64) } }))
+      .rejects.toMatchObject({ status: 500, code: 'CONTRACT_RENDER_DATA_MISSING' });
+    expect(insertedValues).toHaveLength(0);
+  });
+
+  it('allowUnresolvedFallback: true blanks a raw {{token}} rather than persisting it (quote path, pre-W1 behaviour)', async () => {
+    await freezeSignedAgreement({ ...base, render: authored('<p>Term {{governing_state}} for {{client.name}}</p>') });
+    const html = String(insertedValues[0]!.renderedHtml);
+    expect(html).not.toContain('{{');
+    expect(html).toContain('Term  for Acme Co');
+  });
+
+  it('allowUnresolvedFallback: false throws 422 AGREEMENT_VARIABLES_UNRESOLVED naming the variables, inserting nothing', async () => {
+    const err = await freezeSignedAgreement({ ...base, allowUnresolvedFallback: false, render: authored('<p>{{zeta}} {{alpha}} {{client.name}}</p>') })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(QuoteServiceError);
+    expect(err).toMatchObject({ status: 422, code: 'AGREEMENT_VARIABLES_UNRESOLVED' });
+    expect((err as Error).message).toContain('zeta');
+    expect((err as Error).message).toContain('alpha');
+    expect(insertedValues).toHaveLength(0);
+  });
+
+  it('createExecutedDocuments produces byte-identical rows to a direct freezeSignedAgreement call', async () => {
+    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en', EVIDENCE);
+    const viaLoop = { ...insertedValues[0]! };
+    insertedValues.length = 0;
+    await freezeSignedAgreement({
+      ...base,
+      render: { sourceType: 'authored', bodyHtml: authoredRenderData().bodyHtml, fileData: null, templateName: 'Master Services Agreement', versionSha256: 'a'.repeat(64) },
+      ctx: renderContextFromQuote(makeQuote(), { effectiveDate: EFFECTIVE, renderLocale: 'en' }),
+    });
+    const direct = insertedValues[0]!;
+    expect(direct.renderedHtml).toBe(viaLoop.renderedHtml);
+    // pdfkit stamps CreationDate and derives the trailer /ID from it
+    // (PDFSecurity.generateFileID(info)); compare everything but those two.
+    const strip = (b: Buffer) => b.toString('latin1')
+      .replace(/\/CreationDate \(D:[^)]*\)/, '')
+      .replace(/\/ID \[<[0-9a-f]+> <[0-9a-f]+>\]/i, '');
+    expect(strip(direct.pdfData as Buffer)).toBe(strip(viaLoop.pdfData as Buffer));
+    const { pdfData: _a, sha256: _b, byteSize: _c, ...directRest } = direct;
+    const { pdfData: _d, sha256: _e, byteSize: _f, ...loopRest } = viaLoop;
+    expect(directRest).toEqual(loopRest);
   });
 });
 
@@ -413,6 +670,34 @@ describe('contractDocumentService.listContractDocuments predicates', () => {
     const sqlText = await whereSqlFor({});
     expect(sqlText).toContain('is null');
     expect(sqlText).not.toContain('is not null');
+  });
+
+  it('projects signer fields from the contract_documents evidence snapshot, not quote_acceptances (#8865 W1b)', async () => {
+    const { contractDocuments } = await import('../db/schema/contractDocuments');
+    const { quoteAcceptances, quotes } = await import('../db/schema/quotes');
+    const auth = { orgCondition: (col: AnyPgColumn) => inArray(col, ['org-1']) } as unknown as AuthContext;
+    queueResult([]);
+    await listContractDocuments(auth, { linked: 'all' });
+    const chain = db as unknown as Record<string, { mock: { calls: unknown[][] } }>;
+    const projection = chain.select!.mock.calls.at(-1)![0] as Record<string, unknown>;
+
+    expect(projection.signerName).toBe(contractDocuments.signerName);
+    expect(projection.signedAt).toBe(contractDocuments.signedAt);
+    expect(projection.signerEmail).toBe(contractDocuments.signerEmail);
+    expect(projection.sourceKind).toBe(contractDocuments.sourceKind);
+    expect(projection.agreementRequestId).toBe(contractDocuments.agreementRequestId);
+    expect(projection.mime).toBe(contractDocuments.mime);
+    expect(projection.acceptanceOrigin).toBe(contractDocuments.acceptanceOrigin);
+    expect(projection.acceptanceMethod).toBe(contractDocuments.acceptanceMethod);
+    expect(projection.acceptanceReference).toBe(contractDocuments.acceptanceReference);
+    expect(new PgDialect().sqlToQuery(projection.evidenceAvailable as SQL).sql.toLowerCase())
+      .toBe('"contract_documents"."signed_at" is not null');
+
+    // The quote_acceptances join is gone (deleting a quote no longer blanks the
+    // signer); the quotes join stays for quoteNumber.
+    const joined = chain.leftJoin!.mock.calls.map((c) => c[0]); // mocks cleared in beforeEach
+    expect(joined).not.toContain(quoteAcceptances);
+    expect(joined).toContain(quotes);
   });
 
   it('ANDs orgId with the caller org condition rather than substituting for it', async () => {

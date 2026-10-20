@@ -720,3 +720,27 @@ describe('OrgBillingSettings payment-settings Save and second-factor confirmatio
     expect(screen.getByTestId('org-billing-taxid')).toHaveValue('GB123');
   });
 });
+
+// #7510: org currency is NOT inherited — organizations.currency_code is NOT NULL,
+// stamped from the partner default when the org is created. Settings rule 3
+// requires a stated exception to say so where it applies, so the field names the
+// partner default and that it only applies to new organizations.
+describe('OrgBillingSettings — currency is not inherited (#7510)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('names the partner default currency and says it only applies to new organizations', async () => {
+    fetchMock.mockResolvedValue(orgPayload({ currencyCode: 'CAD', partnerDefaultCurrencyCode: 'EUR' }));
+    render(<OrgBillingSettings orgId="org-1" />);
+    const note = await screen.findByTestId('org-billing-currency-partner-default');
+    expect(note).toHaveTextContent('EUR');
+    expect(note).toHaveTextContent(/not inherited/i);
+    expect(note).toHaveTextContent(/organizations created from now on/i);
+  });
+
+  it('omits the note when the partner default is unknown', async () => {
+    fetchMock.mockResolvedValue(orgPayload({ currencyCode: 'CAD' }));
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
+    expect(screen.queryByTestId('org-billing-currency-partner-default')).not.toBeInTheDocument();
+  });
+});

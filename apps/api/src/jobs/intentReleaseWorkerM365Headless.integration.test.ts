@@ -103,9 +103,11 @@ afterAll(() => {
 import { db, withSystemDbAccessContext } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { approvalRequests } from '../db/schema/approvals';
-import { createActionIntent, transitionIntent } from '../services/actionIntents/intentService';
+import { contacts } from '../db/schema/contacts';
+import { contactRoles } from '../db/schema/contactRoles';
+import { callerVerifications, callerVerificationSubjectBindings, callerVerificationPolicies } from '../db/schema/callerVerification';
+import { computeArgumentDigest, canonicalizeArguments } from '../services/actionIntents/canonicalize';
 import { seedActionsConnection } from '../services/m365ControlPlane/__testHelpers__/seedActionsConnection';
-import { buildOrgAccessClosures, type AuthContext } from '../middleware/auth';
 import {
   createOrganization,
   createPartner,
@@ -126,52 +128,33 @@ import { releaseApprovedIntent } from './intentReleaseWorker';
 const M365_EXECUTE = { resource: 'organizations', action: 'write' } as const;
 const APPROVALS_DECIDE = { resource: 'approvals', action: 'decide' } as const;
 
-/** Real org-scope AuthContext for the requester, same shape authMiddleware
- * produces (reuses buildOrgAccessClosures so org-access semantics can't drift
- * from the live path). Mirrors the Google headless sibling's helper. */
-function requesterAuth(
-  user: { id: string; email: string },
-  orgId: string,
-  partnerId: string,
-  roleId: string,
-): AuthContext {
-  const { orgCondition, canAccessOrg } = buildOrgAccessClosures([orgId]);
-  return {
-    principal: { kind: 'user_session' },
-    user: { id: user.id, email: user.email, name: 'Requester', isPlatformAdmin: false },
-    token: {
-      sub: user.id,
-      email: user.email,
-      roleId,
-      orgId,
-      partnerId,
-      scope: 'organization',
-      type: 'access',
-      mfa: true,
-    },
-    partnerId,
-    orgId,
-    scope: 'organization',
-    accessibleOrgIds: [orgId],
-    orgCondition,
-    canAccessOrg,
-  };
-}
+type ConnectionMode = 'active' | 'revoked' | 'none' | 'wrong-org';
 
 interface Scenario {
   orgId: string;
   intentId: string;
+  targetOid: string;
 }
 
 /**
  * Seeds partner + active org + a requester (holding m365.execute) + a second
- * eligible approver (holding approvals.decide), creates a real M365 Tier-3
- * intent via createActionIntent, then drives it to a GENUINE `approved`
- * state that PASSES release-time revalidation. Does NOT seed the M365
- * customer-graph-actions connection — each case seeds/omits that itself.
+ * eligible approver (holding approvals.decide), the actions connection (FIRST,
+ * so its id and tenant can be pinned), and the W05 caller-verification state
+ * (contacts, two subject bindings in the connection tenant, an org-scope
+ * `admin` responsibility, a verified callback_attestation grant, and a
+ * partner policy requiring tier 1). The intent is inserted DIRECTLY already
+ * pinned and `approved` with a bound winning approval row, so it PASSES
+ * release-time revalidation and control reaches the M365 dispatch.
+ *
+ * `connection` controls what the pin points at:
+ *   active / revoked: a connection in the intent's own org;
+ *   none: a pin to a connection id that does not exist;
+ *   wrong-org: a pin to an active connection owned by ANOTHER org.
+ * For reset, requester and target are the SAME binding (self-service).
  */
 async function seedApprovedM365Intent(
   toolName: 'm365_disable_user' | 'm365_reset_password',
+  connection: ConnectionMode = 'active',
 ): Promise<Scenario> {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
@@ -196,34 +179,58 @@ async function seedApprovedM365Intent(
   });
   await assignUserToOrganization(approver.id, org.id, approverRole.id);
 
-  const auth = requesterAuth(
-    { id: requester.id, email: requester.email },
-    org.id,
-    partner.id,
-    requesterRole.id,
-  );
+  const tenant = randomUUID();
+  let connectionRef: string;
+  if (connection === 'none') {
+    connectionRef = randomUUID();
+  } else if (connection === 'wrong-org') {
+    const otherPartner = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+    connectionRef = (await seedActionsConnection({ orgId: otherOrg.id, tenantId: tenant, status: 'active' })).id;
+  } else {
+    connectionRef = (await seedActionsConnection({ orgId: org.id, tenantId: tenant, status: connection })).id;
+  }
 
-  const snapshot = await createActionIntent(auth, {
-    toolName,
-    input: { userIdentifier: 'target@customer.example', reason: 'offboarding' },
-    source: 'chat',
-  });
-  expect(snapshot.status).toBe('pending_approval');
-  expect(snapshot.approvalRequestIds.length).toBeGreaterThan(0);
+  const isReset = toolName === 'm365_reset_password';
+  const action = isReset ? 'reset_password' : 'disable_user';
+  const args = { userIdentifier: 'target@customer.example', reason: 'offboarding' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
 
-  await withSystemDbAccessContext(async () => {
-    await db
-      .update(approvalRequests)
-      .set({ status: 'approved' })
-      .where(eq(approvalRequests.intentId, snapshot.id));
+  const seeded = await withSystemDbAccessContext(async () => {
+    const [manager] = await db.insert(contacts).values({ orgId: org.id, name: 'Requester manager', roles: ['admin'] }).returning();
+    const [person] = await db.insert(contacts).values({ orgId: org.id, name: 'Target person' }).returning();
+    await db.insert(contactRoles).values({ orgId: org.id, contactId: manager!.id, role: 'admin' });
+    const [requesterBinding, targetBinding] = await db.insert(callerVerificationSubjectBindings).values([
+      { orgId: org.id, contactId: manager!.id, entraTenantId: tenant, entraOid: randomUUID(), source: 'technician_attested', upnSnapshot: 'manager@customer.test' },
+      { orgId: org.id, contactId: person!.id, entraTenantId: tenant, entraOid: randomUUID(), source: 'technician_attested', upnSnapshot: 'target@customer.test' },
+    ]).returning();
+    // Self-service reset: the requester IS the target.
+    const target = isReset ? requesterBinding! : targetBinding!;
+    await db.insert(callerVerifications).values({
+      orgId: org.id, contactId: manager!.id, requesterBindingId: requesterBinding!.id, targetBindingId: target.id,
+      targetEntraTenantId: tenant, targetEntraOid: target.entraOid, initiatedByUserId: requester.id, technicianLabel: 'Tech',
+      actionScope: action, method: 'callback_attestation', status: 'verified', tier: 1, tierReason: 'attestation',
+      matchValue: '42', decoyValues: ['17', '63'], reverseCode: '7319', attemptNo: 1,
+      decidedAt: new Date(), expiresAt: new Date(Date.now() + 1800_000),
+    });
+    await db.insert(callerVerificationPolicies).values({ partnerId: partner.id, requiredTierDisableUser: 1, requiredTierResetPassword: 1 });
+    const [intent] = await db.insert(actionIntents).values({
+      orgId: org.id, partnerId: partner.id, requestedByUserId: requester.id, originPrincipalKind: 'user_session', source: 'chat',
+      actionName: toolName, arguments: args, argumentDigest: digest,
+      targetSummary: 'M365 target', impactSummary: 'M365 change', riskTier: 3,
+      idempotencyKey: randomUUID(), correlationId: randomUUID(), expiresAt: new Date(Date.now() + 3600_000),
+      status: 'approved', decidedAt: new Date(), decidedByUserId: approver.id,
+      targetEntraTenantId: tenant, targetEntraOid: target.entraOid!, targetConnectionRef: connectionRef,
+    }).returning();
+    await db.insert(approvalRequests).values({
+      userId: requester.id, requestingClientLabel: 'M365 headless', actionLabel: 'M365 change',
+      actionToolName: toolName, actionArguments: args, riskTier: 'high', riskSummary: 'M365 change',
+      status: 'approved', expiresAt: new Date(Date.now() + 3600_000), intentId: intent!.id, boundArgumentDigest: digest,
+    });
+    return { intentId: intent!.id, targetOid: target.entraOid! };
   });
-  const promoted = await transitionIntent(snapshot.id, 'pending_approval', 'approved', {
-    decidedAt: new Date(),
-    decidedByUserId: approver.id,
-  });
-  expect(promoted).toBe(true);
 
-  return { orgId: org.id, intentId: snapshot.id };
+  return { orgId: org.id, ...seeded };
 }
 
 async function readIntent(intentId: string) {
@@ -243,8 +250,7 @@ beforeEach(() => {
 
 describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_app)', () => {
   it('disables a user headlessly and completes the intent — NOT session_required', async () => {
-    const { orgId, intentId } = await seedApprovedM365Intent('m365_disable_user');
-    await seedActionsConnection({ orgId, tenantId: randomUUID(), status: 'active' });
+    const { intentId, targetOid } = await seedApprovedM365Intent('m365_disable_user');
 
     h.executeWriteAction.mockResolvedValue({ success: true, action: 'm365.user.disable', userId: 'u1' });
 
@@ -257,7 +263,7 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
       expect.objectContaining({
         idempotencyKey: intentId,
         tenantId: expect.any(String),
-        action: { type: 'm365.user.disable', userIdentifier: 'target@customer.example', reason: 'offboarding' },
+        action: { type: 'm365.user.disable', oid: targetOid, reason: 'offboarding' },
       }),
     );
 
@@ -271,8 +277,7 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
   });
 
   it('resets a password headlessly and stores a SEALED temporaryPasswordEnc in intent.result', async () => {
-    const { orgId, intentId } = await seedApprovedM365Intent('m365_reset_password');
-    await seedActionsConnection({ orgId, tenantId: randomUUID(), status: 'active' });
+    const { intentId, targetOid } = await seedApprovedM365Intent('m365_reset_password');
 
     const plaintextTemporaryPassword = 'Tmp!23xyz789';
     h.executeWriteAction.mockResolvedValue({
@@ -286,6 +291,12 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
     await releaseApprovedIntent(intentId);
 
     expect(h.executeWriteAction).toHaveBeenCalledTimes(1);
+    expect(h.executeWriteAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: intentId,
+        action: { type: 'm365.user.reset_password', oid: targetOid, reason: 'offboarding' },
+      }),
+    );
 
     const intent = await readIntent(intentId);
     expect(intent.status).toBe('completed');
@@ -297,12 +308,10 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
   });
 
   it('revoked connection: fails connection_unavailable with NO executor call', async () => {
-    const { orgId, intentId } = await seedApprovedM365Intent('m365_disable_user');
-    // Connection exists but was revoked during the approval wait —
-    // executeM365WriteActionByOrg refuses a non-'active' status, so the
-    // seam throws M365ConnectionUnavailableError and the worker fails closed
-    // BEFORE any outbound Graph call.
-    await seedActionsConnection({ orgId, tenantId: randomUUID(), status: 'revoked' });
+    // The pinned connection was revoked during the approval wait —
+    // the write seam refuses a non-'active' status and the worker fails
+    // closed BEFORE any outbound Graph call.
+    const { intentId } = await seedApprovedM365Intent('m365_disable_user', 'revoked');
 
     await releaseApprovedIntent(intentId);
 
@@ -314,8 +323,8 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
   });
 
   it('no connection at all: fails connection_unavailable with NO executor call', async () => {
-    const { intentId } = await seedApprovedM365Intent('m365_disable_user');
-    // Deliberately no seedActionsConnection call for this org.
+    // The pinned connection no longer exists (pin points at an unknown id).
+    const { intentId } = await seedApprovedM365Intent('m365_disable_user', 'none');
 
     await releaseApprovedIntent(intentId);
 
@@ -327,13 +336,9 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
   });
 
   it('wrong-org connection: a connection belonging to a DIFFERENT org fails closed with NO executor call', async () => {
-    const { intentId } = await seedApprovedM365Intent('m365_disable_user');
-    // Seed an active connection for an entirely unrelated org — the RLS +
-    // eq(orgId) filter in executeM365WriteActionByOrg must never let this
-    // satisfy the intent's own org's lookup.
-    const otherPartner = await createPartner();
-    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
-    await seedActionsConnection({ orgId: otherOrg.id, tenantId: randomUUID(), status: 'active' });
+    // The pin points at an active connection owned by an entirely unrelated
+    // org — the RLS + org filter must never let it satisfy this intent.
+    const { intentId } = await seedApprovedM365Intent('m365_disable_user', 'wrong-org');
 
     await releaseApprovedIntent(intentId);
 
@@ -346,8 +351,7 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
 
   it('no longer fails session_required for m365_disable_user / m365_reset_password with an active connection', async () => {
     for (const toolName of ['m365_disable_user', 'm365_reset_password'] as const) {
-      const { orgId, intentId } = await seedApprovedM365Intent(toolName);
-      await seedActionsConnection({ orgId, tenantId: randomUUID(), status: 'active' });
+      const { intentId } = await seedApprovedM365Intent(toolName);
       h.executeWriteAction.mockResolvedValue(
         toolName === 'm365_disable_user'
           ? { success: true, action: 'm365.user.disable', userId: 'u1' }

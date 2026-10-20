@@ -1,0 +1,36 @@
+---
+title: Caller verification
+description: Verify a caller before resetting a Microsoft 365 password or disabling an account.
+sidebar:
+  order: 8
+---
+
+Breeze requires caller verification before Microsoft 365 password resets and account disables. A verification is usable once, for the named action and target, by the initiating technician. The default minimum assurance is tier 2 and the default freshness window is 30 minutes.
+
+## Verify a caller
+
+Open **Verify caller** on a ticket, contact or device. Confirm the requester, action and target. Choose an available method and explain the action shown on the challenge card. The caller selects the matching number; never ask them to read a code back.
+
+In this release the available methods are SMS link, email link and callback attestation. SMS and email reach tier 2 only through an established destination. Imported or AI-written destinations require technician attestation. Callback attestation is tier 1. Email to any of the target account's mailbox addresses cannot verify a reset of that mailbox.
+
+**Workstation verification is not available in this release.** The prompt that appears on a bound workstation (tier 3) ships dark behind `CALLER_VERIFICATION_WORKSTATION_ENABLED`, which defaults to `false`. While it is off, the workstation method is reported as unavailable, and tier 3 cannot be selected in the policy: the policy editor and API cap the required tier at 2. Because tier 3 is reachable only through a bound workstation, a policy that required it could never be satisfied.
+
+Number matching confirms the request; it does not prove the technician's identity or prevent a coached caller from being relayed. If uncertain, the caller should hang up and call the MSP on a number they already trust.
+
+## Disable an account without contacting its owner
+
+An org-level contact with an allowed authoriser role can verify a disable of another account. A site's primary contact has no automatic org-wide authority. For offboarding or containment, use **Administrative disable** through the API: enter a reason of at least 20 characters and complete interactive MFA step-up. This option requires organization write permission and an effective policy that permits it. It cannot authorise password resets, and ordinary action approval still applies.
+
+## Rejection and failures
+
+**This is not me** fences the requester and relevant targets, opens a security incident, and cancels pending or approved actions. An action that already started dispatch appears in the incident for investigation; confirm in Entra whether the change landed. Expired challenges can still report a suspicious request within the rejection window.
+
+A verification remains used when dispatch fails. Re-verify before creating another intent. A retry of the same intent does not consume a second grant, but an already-started dispatch must be reconciled rather than blindly repeated.
+
+## Rollout
+
+Bind contacts to their Entra principals and attest imported destinations before relying on tier 2. Renaming a UPN does not change an intent's pinned account.
+
+`CALLER_VERIFICATION_ENABLED` defaults to `true`. An explicit `false` hides entry points and refuses protected execution; it does not disable the safety gate while leaving mutations available. Only the exact value `true` enables the feature, so any other explicit value (including an empty string) turns it off. Self-hosted deployments must map this variable into the API service environment as well as setting it in `.env`. Deploy the OID-capable Graph actions executor before the API, so pinned actions are accepted when enforcement starts.
+
+`CALLER_VERIFICATION_WORKSTATION_ENABLED` defaults to `false` and also requires the exact value `true`. Leave it unset until workstation verification is announced.

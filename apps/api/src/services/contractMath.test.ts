@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { addMonthsClamped, computePeriod, periodIndexFor, nextBillingDate, isExpired, addDaysISO, duePeriodStartFor, isWithinNoticeWindow, extendTermPastDue } from './contractMath';
+import { addMonthsClamped, computePeriod, periodIndexFor, nextBillingDate, isExpired, addDaysISO, duePeriodStartFor, isWithinNoticeWindow, extendTermPastDue, contractInTermForReporting, isPastEndForReporting } from './contractMath';
 
 describe('addMonthsClamped', () => {
   it('preserves day-of-month when valid', () => {
@@ -154,5 +154,72 @@ describe('advancePastClaimed — pause -> resume lands the pointer on a claimed 
   it('walks month-end boundaries from the START date (03-31 contract)', () => {
     expect(advancePastClaimed('2026-03-31', new Set(['2026-03-31']), '2026-03-31', 1)).toBe('2026-04-30');
     expect(advancePastClaimed('2026-03-31', new Set(['2026-03-31', '2026-04-30']), '2026-03-31', 1)).toBe('2026-05-31');
+  });
+});
+
+// #9220 (spec #9218 trap T8): `expired` does not mean ended. generateDueInvoice
+// flips an ADVANCE contract to expired the moment it bills the final period, so
+// "in term" for reporting is judged on the dates plus a billed covering period,
+// never on the status alone.
+describe('contractInTermForReporting (#9220)', () => {
+  const annualAdvance = {
+    status: 'active', billingTiming: 'advance' as const, intervalMonths: 12,
+    startDate: '2026-01-01', endDate: '2027-01-01', nextBillingAt: '2027-01-01',
+  };
+  // What generateDueInvoice leaves behind after billing the only (final) period.
+  const billedAndFlipped = { ...annualAdvance, status: 'expired', nextBillingAt: null };
+
+  it('counts an active contract mid-term', () => {
+    // Two-year term: after the first annual bill the pointer (2027-01-01) is still before end.
+    expect(contractInTermForReporting({ ...annualAdvance, endDate: '2028-01-01' }, '2026-06-15', false)).toBe('active');
+  });
+
+  it('counts an advance contract flipped to expired by its final invoice while a billed period covers asOf', () => {
+    expect(contractInTermForReporting(billedAndFlipped, '2026-01-01', true)).toBe('billed_final_term');
+    expect(contractInTermForReporting(billedAndFlipped, '2026-06-15', true)).toBe('billed_final_term');
+    expect(contractInTermForReporting(billedAndFlipped, '2026-12-31', true)).toBe('billed_final_term');
+  });
+
+  it('drops the billed final term on and after end_date (end_date is exclusive, like isExpired)', () => {
+    expect(contractInTermForReporting(billedAndFlipped, '2027-01-01', true)).toBeNull();
+    expect(contractInTermForReporting(billedAndFlipped, '2027-03-01', true)).toBeNull();
+  });
+
+  it('does not count an expired contract with no billed period covering asOf', () => {
+    expect(contractInTermForReporting(billedAndFlipped, '2026-06-15', false)).toBeNull();
+  });
+
+  it('excludes a contract that has not started yet, whatever its status', () => {
+    expect(contractInTermForReporting({ ...annualAdvance, startDate: '2026-11-01', nextBillingAt: '2026-11-01' }, '2026-10-18', false)).toBeNull();
+    expect(contractInTermForReporting({ ...billedAndFlipped, startDate: '2026-11-01' }, '2026-10-18', true)).toBeNull();
+  });
+
+  it('excludes an active arrears contract whose term is over but whose last period is not yet billed', () => {
+    const arrears = {
+      status: 'active', billingTiming: 'arrears' as const, intervalMonths: 1,
+      startDate: '2026-01-01', endDate: '2026-10-01', nextBillingAt: '2026-10-01',
+    };
+    expect(contractInTermForReporting(arrears, '2026-09-30', false)).toBe('active');
+    expect(contractInTermForReporting(arrears, '2026-10-01', false)).toBeNull();
+  });
+
+  it('keeps the billing-pointer guard for active contracts (isPastEndForReporting)', () => {
+    const pastPointer = { ...annualAdvance, endDate: '2026-07-31', nextBillingAt: '2026-07-01' , intervalMonths: 1 };
+    // Next billed period starts 2026-07-01 < end → still billing → in term.
+    expect(contractInTermForReporting(pastPointer, '2026-07-15', false)).toBe('active');
+    // Pointer at/after end_date: billing will expire it, never bill it.
+    const ended = { ...pastPointer, nextBillingAt: '2026-08-01' };
+    expect(isPastEndForReporting(ended, '2026-07-15')).toBe(true);
+    expect(contractInTermForReporting(ended, '2026-07-15', false)).toBeNull();
+  });
+
+  it('keeps an open-ended active contract in term', () => {
+    expect(contractInTermForReporting({ ...annualAdvance, endDate: null, nextBillingAt: '2030-01-01' }, '2030-01-01', false)).toBe('active');
+  });
+
+  it('never counts paused, cancelled or draft contracts, even with a billed covering period', () => {
+    for (const status of ['paused', 'cancelled', 'draft']) {
+      expect(contractInTermForReporting({ ...annualAdvance, endDate: '2028-01-01', status }, '2026-06-15', true)).toBeNull();
+    }
   });
 });

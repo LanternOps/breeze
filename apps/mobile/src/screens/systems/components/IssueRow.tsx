@@ -106,6 +106,11 @@ export function IssueRow({
       entering={FadeIn.duration(180)}
       exiting={FadeOut.duration(180)}
       layout={LinearTransition.duration(220)}
+      // Opaque when swipeable (#8890): the Acknowledge action is rendered
+      // behind the row, so a transparent row lets the green show through at
+      // rest. bg0 matches the Systems screen background. Left transparent
+      // otherwise so non-swipeable uses (onboarding) keep their own backdrop.
+      style={onSwipeAcknowledge && !selectable ? { backgroundColor: theme.bg0 } : undefined}
     >
       <Pressable
         onPress={() => {

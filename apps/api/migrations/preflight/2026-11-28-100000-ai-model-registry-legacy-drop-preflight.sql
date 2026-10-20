@@ -1,7 +1,10 @@
 -- READ-ONLY preflight for the AI model registry legacy removal (#7606):
 --   gate G1 — before W08a (code removal) merges, run against release R0;
---   gate G2 — before W08b (2026-11-28-100000-ai-model-registry-legacy-drop.sql)
---             merges, run against release R1.
+--   gate G2 — before W08b (2026-12-30-200000-ai-model-registry-legacy-drop.sql;
+--             planned as 2026-11-28-100000, renamed to sort after main's
+--             newest migration) merges, run against release R1.
+-- After W08b is applied the objects this file reads no longer exist: it is
+-- history (its integration test was deleted with them).
 -- Run on EACH prod region. Send the output to Todd; never paste it into a PR
 -- (it names partner ids).
 --

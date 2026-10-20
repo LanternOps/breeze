@@ -170,6 +170,7 @@
       "partner": "Livello partner",
       "org": "Organizzazione"
     },
+    "tierCapHint": "Il livello massimo è {{max}}. Il livello 3 richiede la verifica dalla workstation, non disponibile in questa versione.",
     "ignored": "Alcune impostazioni sono meno restrittive della base di riferimento del partner e vengono ignorate: {{fields}}",
     "readOnly": "Puoi visualizzare questa policy ma non modificarla.",
     "save": "Salva policy",

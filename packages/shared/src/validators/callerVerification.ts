@@ -40,7 +40,8 @@ export const callerVerificationFenceOverrideSchema = z.object({ reason }).strict
 
 export const administrativeCallerVerificationSchema = z.object({
   targetContactId: id,
-  reason,
+  // Bounds match the step-up resource binding (20..2000) so a grant can always be spent.
+  reason: z.string().trim().min(20).max(2000),
   stepUpGrantId: id,
 }).strict();
 

@@ -12,13 +12,24 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { configPolicyRoutes } from '../../routes/configurationPolicies';
 import { softwarePoliciesRoutes } from '../../routes/softwarePolicies';
-import { configPolicyFeatureLinks, configurationPolicies, softwarePolicies } from '../../db/schema';
+import { softwareRoutes } from '../../routes/software';
+import {
+  configPolicyFeatureLinks,
+  configurationPolicies,
+  softwarePolicies,
+  softwarePolicyAudit,
+  softwareVersions,
+} from '../../db/schema';
+import { repairManagedSoftwarePolicies } from '../../services/securityAgents/managedPolicyGenerator';
+import { withSystemDbAccessContext } from '../../db';
 import { createAccessToken } from '../../services/jwt';
+import { ensureBuiltinPackage } from '../../services/builtinDeploymentPackages';
 import {
   assignUserToOrganization,
+  assignUserToPartner,
   createOrganization,
   createPartner,
   createRole,
@@ -31,11 +42,14 @@ function buildApp(): Hono {
   const app = new Hono();
   app.route('/configuration-policies', configPolicyRoutes);
   app.route('/software-policies', softwarePoliciesRoutes);
+  app.route('/software', softwareRoutes);
   return app;
 }
 
 const DISABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: false }] };
 const ENABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: true }] };
+const S1_ENABLED = { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] };
+const NEXTDNS_ENABLED = { version: 1, agents: [{ vendor: 'nextdns', enabled: true }] };
 
 async function seed(permissions: Array<{ resource: string; action: string }>) {
   const partner = await createPartner();
@@ -62,7 +76,7 @@ async function seed(permissions: Array<{ resource: string; action: string }>) {
     .insert(configurationPolicies)
     .values({ orgId: org.id, name: `SA routes ${randomUUID().slice(0, 8)}`, status: 'active' })
     .returning({ id: configurationPolicies.id });
-  return { orgId: org.id, token, configPolicyId: cp.id as string };
+  return { orgId: org.id, partnerId: partner.id as string, token, configPolicyId: cp.id as string };
 }
 
 function call(app: Hono, token: string, method: string, path: string, body?: unknown) {
@@ -84,7 +98,7 @@ const RW_ONLY = [
 ];
 
 describe('security_agents feature-link writes through the real route (#6960)', () => {
-  it('stores a disabled-only link; refuses featurePolicyId, unknown keys and enabling', async () => {
+  it('stores a disabled-only link; refuses featurePolicyId, unknown keys, a not-enableable vendor, and Huntress without its catalog package', async () => {
     const app = buildApp();
     const { token, configPolicyId } = await seed(RW_EXECUTE);
     const base = `/configuration-policies/${configPolicyId}/features`;
@@ -100,9 +114,24 @@ describe('security_agents feature-link writes through the real route (#6960)', (
     });
     expect(secret.status).toBe(400);
 
+    const enablingDns = await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: NEXTDNS_ENABLED });
+    expect(enablingDns.status).toBe(400);
+    expect((await enablingDns.json()).code).toBe('vendor_not_enableable');
+
+    // No Huntress integration connected → no partner catalog package → the
+    // generator refuses inside the write transaction, and nothing is stored.
     const enabling = await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: ENABLED });
     expect(enabling.status).toBe(400);
-    expect((await enabling.json()).code).toBe('vendor_not_enableable');
+    expect(await enabling.json()).toMatchObject({
+      code: 'security_agents_catalog_missing',
+      vendors: ['huntress'],
+      setupPath: '/integrations#huntress',
+    });
+    const afterRefusal = await (getTestDb() as any)
+      .select({ id: configPolicyFeatureLinks.id })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+    expect(afterRefusal).toEqual([]);
 
     const ok = await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: DISABLED });
     expect(ok.status).toBe(201);
@@ -184,5 +213,360 @@ describe('generated software policies are read-only through the real route (#696
       .from(softwarePolicies)
       .where(eq(softwarePolicies.orgId, orgId));
     expect(rows).toEqual([]);
+  });
+});
+
+async function generatedFor(linkId: string) {
+  const rows = await (getTestDb() as any)
+    .select()
+    .from(softwarePolicies)
+    .where(eq(softwarePolicies.managedByLinkId, linkId));
+  return rows as Array<typeof softwarePolicies.$inferSelect>;
+}
+
+describe('the generated software policy follows the link through the real route (#6960 W02)', () => {
+  it('enable creates it; disable deactivates (same row); re-enable reuses it; generation bumps only on change', async () => {
+    const app = buildApp();
+    const { orgId, partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'huntress', partnerId });
+    const base = `/configuration-policies/${configPolicyId}/features`;
+
+    const created = await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: ENABLED });
+    expect(created.status).toBe(201);
+    const link = await created.json();
+
+    const [policy] = await generatedFor(link.id);
+    expect(policy).toMatchObject({
+      orgId,
+      partnerId: null,
+      mode: 'allowlist',
+      enforceMode: true,
+      isActive: true,
+      approvalGeneration: 1,
+      remediationOptions: { autoInstall: true, autoUninstall: false },
+    });
+    expect(policy!.rules).toMatchObject({ allowUnknown: true, software: [{ name: 'Huntress Agent*', catalogId }] });
+
+    const audits = await (getTestDb() as any)
+      .select({ action: softwarePolicyAudit.action, actor: softwarePolicyAudit.actor })
+      .from(softwarePolicyAudit)
+      .where(eq(softwarePolicyAudit.policyId, policy!.id));
+    expect(audits).toEqual([{ action: 'policy_created', actor: 'user' }]);
+
+    const disabled = await call(app, token, 'PATCH', `${base}/${link.id}`, { inlineSettings: DISABLED });
+    expect(disabled.status).toBe(200);
+    const afterDisable = await generatedFor(link.id);
+    expect(afterDisable).toHaveLength(1);
+    expect(afterDisable[0]).toMatchObject({ id: policy!.id, isActive: false, approvalGeneration: 2 });
+    expect(afterDisable[0]!.rules.software).toEqual([]);
+
+    // Saving the same settings again changes nothing (no generation churn).
+    await call(app, token, 'PATCH', `${base}/${link.id}`, { inlineSettings: DISABLED });
+    expect((await generatedFor(link.id))[0]).toMatchObject({ approvalGeneration: 2 });
+
+    const reEnabled = await call(app, token, 'PATCH', `${base}/${link.id}`, { inlineSettings: ENABLED });
+    expect(reEnabled.status).toBe(200);
+    expect((await generatedFor(link.id))[0]).toMatchObject({ id: policy!.id, isActive: true, approvalGeneration: 3 });
+
+    // The generated row is read-only through the software-policy route…
+    const patchGenerated = await call(app, token, 'PATCH', `/software-policies/${policy!.id}`, { name: 'Hijacked' });
+    expect(patchGenerated.status).toBe(409);
+    // …and cannot be linked as an ordinary software_policy feature.
+    const linkGenerated = await call(app, token, 'POST', base, { featureType: 'software_policy', featurePolicyId: policy!.id });
+    expect(linkGenerated.status).toBe(400);
+
+    // Removing the link removes the generated policy (cascade), never uninstalls.
+    const removed = await call(app, token, 'DELETE', `${base}/${link.id}`);
+    expect(removed.status).toBe(200);
+    expect(await generatedFor(link.id)).toEqual([]);
+  });
+
+  it('a writer without devices.execute may disable an enabled vendor (disarming), and it deactivates', async () => {
+    const app = buildApp();
+    const { partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    await ensureBuiltinPackage({ provider: 'huntress', partnerId });
+    const base = `/configuration-policies/${configPolicyId}/features`;
+    const link = await (await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: ENABLED })).json();
+
+    const { token: writerToken } = await (async () => {
+      const tdb = getTestDb() as any;
+      const [cpRow] = await tdb.select({ orgId: configurationPolicies.orgId }).from(configurationPolicies)
+        .where(eq(configurationPolicies.id, configPolicyId));
+      const role = await createRole({ scope: 'organization', orgId: cpRow.orgId, partnerId });
+      await grantRolePermissions(role.id, RW_ONLY);
+      const user = await createUser({ partnerId, orgId: cpRow.orgId, email: `sa-w-${randomUUID().slice(0, 8)}@example.test` });
+      await assignUserToOrganization(user.id, cpRow.orgId, role.id);
+      return {
+        token: await createAccessToken({
+          sub: user.id, email: user.email, roleId: role.id, orgId: cpRow.orgId, partnerId,
+          scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+        }),
+      };
+    })();
+
+    const res = await call(app, writerToken, 'PATCH', `${base}/${link.id}`, { inlineSettings: DISABLED });
+    expect(res.status).toBe(200);
+    expect((await generatedFor(link.id))[0]).toMatchObject({ isActive: false });
+  });
+
+  it('a partner-wide config policy generates a PARTNER-owned policy (org_id NULL)', async () => {
+    const app = buildApp();
+    const partner = await createPartner();
+    await createOrganization({ partnerId: partner.id });
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'huntress', partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, orgId: null, email: `sa-p-${randomUUID().slice(0, 8)}@example.test` });
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const token = await createAccessToken({
+      sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId: partner.id, scope: 'partner',
+      mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const [cp] = await (getTestDb() as any)
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId: partner.id, name: `SA partner-wide ${randomUUID().slice(0, 8)}`, status: 'active' })
+      .returning({ id: configurationPolicies.id });
+
+    const res = await call(app, token, 'POST', `/configuration-policies/${cp.id}/features`, {
+      featureType: 'security_agents', inlineSettings: ENABLED,
+    });
+    expect(res.status).toBe(201);
+    const link = await res.json();
+    const [policy] = await generatedFor(link.id);
+    expect(policy).toMatchObject({ orgId: null, partnerId: partner.id, isActive: true });
+    expect(policy!.rules.software).toEqual([expect.objectContaining({ catalogId })]);
+
+    const partnerAudit = await (getTestDb() as any)
+      .select({ partnerId: softwarePolicyAudit.partnerId, orgId: softwarePolicyAudit.orgId })
+      .from(softwarePolicyAudit)
+      .where(and(eq(softwarePolicyAudit.policyId, policy!.id), eq(softwarePolicyAudit.action, 'policy_created')));
+    expect(partnerAudit).toEqual([{ partnerId: partner.id, orgId: null }]);
+  });
+});
+
+/** A partner-uploaded SentinelOne MSI as the Versions tab stores it (placeholder object key). */
+async function uploadS1Msi(catalogId: string) {
+  const [version] = await (getTestDb() as any)
+    .insert(softwareVersions)
+    .values({
+      catalogId,
+      version: '1.0.0',
+      s3Key: `software/${catalogId}/placeholder-sentinelone.msi`,
+      fileType: 'msi',
+      originalFileName: 'placeholder-sentinelone.msi',
+      supportedOs: ['windows'],
+      silentInstallArgs: 'SITE_TOKEN={s1_site_token} /q /NORESTART',
+      isLatest: true,
+    })
+    .returning({ id: softwareVersions.id });
+  return version.id as string;
+}
+
+async function linksOf(configPolicyId: string) {
+  return (getTestDb() as any)
+    .select({ id: configPolicyFeatureLinks.id })
+    .from(configPolicyFeatureLinks)
+    .where(eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+}
+
+describe('SentinelOne: the partner-uploaded MSI gate through the real route (#6960 W04)', () => {
+  it('integration connected but no MSI: enabling is refused 400 security_agents_binary_missing with a Versions deep link; nothing stored', async () => {
+    const app = buildApp();
+    const { partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'sentinelone', partnerId });
+    const res = await call(app, token, 'POST', `/configuration-policies/${configPolicyId}/features`, {
+      featureType: 'security_agents', inlineSettings: S1_ENABLED,
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'security_agents_binary_missing',
+      vendors: ['sentinelone'],
+      setupPath: `/software#versions=${catalogId}`,
+    });
+    // Names the placeholder to type, never a secret or the column holding one.
+    expect(JSON.stringify(body)).not.toMatch(/registration_token|<site-token>|api_token/i);
+    expect(await linksOf(configPolicyId)).toEqual([]);
+    const policies = await (getTestDb() as any).select({ id: softwarePolicies.id }).from(softwarePolicies)
+      .where(eq(softwarePolicies.name, `Security agents: ${configPolicyId}`));
+    expect(policies).toEqual([]);
+  });
+
+  it.each<[string, { s3Key: string | null; downloadUrl: string | null }]>([
+    ['no object key and no URL', { s3Key: null, downloadUrl: null }],
+    ['a blank object key', { s3Key: '   ', downloadUrl: null }],
+    ['an empty URL', { s3Key: null, downloadUrl: '' }],
+  ])('a latest version with %s is not a deployable installer: refused, nothing stored', async (_name, installer) => {
+    const app = buildApp();
+    const { partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'sentinelone', partnerId });
+    await (getTestDb() as any).insert(softwareVersions).values({
+      catalogId, version: '1.0.0', isLatest: true, fileType: 'msi', supportedOs: ['windows'],
+      silentInstallArgs: 'SITE_TOKEN={s1_site_token} /q /NORESTART', ...installer,
+    });
+    const res = await call(app, token, 'POST', `/configuration-policies/${configPolicyId}/features`, {
+      featureType: 'security_agents', inlineSettings: S1_ENABLED,
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('security_agents_binary_missing');
+    expect(await linksOf(configPolicyId)).toEqual([]);
+  });
+
+  it('PATCH adding SentinelOne without its MSI is refused and rolls back: the Huntress link and its policy are unchanged', async () => {
+    const app = buildApp();
+    const { partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    await ensureBuiltinPackage({ provider: 'huntress', partnerId });
+    await ensureBuiltinPackage({ provider: 'sentinelone', partnerId });
+    const base = `/configuration-policies/${configPolicyId}/features`;
+    const link = await (await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: ENABLED })).json();
+    const [before] = await generatedFor(link.id);
+
+    const both = { version: 1, agents: [{ vendor: 'huntress', enabled: true }, { vendor: 'sentinelone', enabled: true }] };
+    const res = await call(app, token, 'PATCH', `${base}/${link.id}`, { inlineSettings: both });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('security_agents_binary_missing');
+
+    const [stored] = await (getTestDb() as any)
+      .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, link.id));
+    expect(stored.inlineSettings).toEqual(ENABLED);
+    const [after] = await generatedFor(link.id);
+    expect(after!.rules).toEqual(before!.rules);
+    expect(after!.approvalGeneration).toBe(before!.approvalGeneration);
+  });
+
+  it('turning SentinelOne off still works after its MSI is gone (the gate only judges enabled vendors)', async () => {
+    const app = buildApp();
+    const { partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'sentinelone', partnerId });
+    const versionId = await uploadS1Msi(catalogId);
+    const base = `/configuration-policies/${configPolicyId}/features`;
+    const link = await (await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: S1_ENABLED })).json();
+    await (getTestDb() as any).update(softwareVersions).set({ isLatest: false }).where(eq(softwareVersions.id, versionId));
+
+    const res = await call(app, token, 'PATCH', `${base}/${link.id}`, {
+      inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: false }] },
+    });
+    expect(res.status).toBe(200);
+    expect((await generatedFor(link.id))[0]).toMatchObject({ isActive: false });
+  });
+
+  it('a writer without devices.execute gets 403 first, even when the MSI is also missing', async () => {
+    const app = buildApp();
+    const { partnerId, token, configPolicyId } = await seed(RW_ONLY);
+    await ensureBuiltinPackage({ provider: 'sentinelone', partnerId });
+    const res = await call(app, token, 'POST', `/configuration-policies/${configPolicyId}/features`, {
+      featureType: 'security_agents', inlineSettings: S1_ENABLED,
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('security_agents_execute_required');
+  });
+
+  it('S1 not connected at all (no catalog row): catalog-missing with the S1 integration deep link', async () => {
+    const app = buildApp();
+    const { token, configPolicyId } = await seed(RW_EXECUTE);
+    const res = await call(app, token, 'POST', `/configuration-policies/${configPolicyId}/features`, {
+      featureType: 'security_agents', inlineSettings: S1_ENABLED,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'security_agents_catalog_missing', vendors: ['sentinelone'], setupPath: '/integrations#sentinelone',
+    });
+  });
+
+  it('with the MSI uploaded the rule is generated and armed; removing the MSI makes the sweep drop it (fail closed)', async () => {
+    const app = buildApp();
+    const { partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'sentinelone', partnerId });
+    const versionId = await uploadS1Msi(catalogId);
+
+    const res = await call(app, token, 'POST', `/configuration-policies/${configPolicyId}/features`, {
+      featureType: 'security_agents', inlineSettings: S1_ENABLED,
+    });
+    expect(res.status).toBe(201);
+    const link = await res.json();
+    const [policy] = await generatedFor(link.id);
+    expect(policy).toMatchObject({ isActive: true, enforceMode: true, remediationOptions: { autoInstall: true, autoUninstall: false } });
+    expect(policy!.rules.software).toEqual([expect.objectContaining({ name: 'Sentinel Agent*', catalogId })]);
+
+    // The partner removes the MSI (no latest version left): the next sweep
+    // deactivates the generated policy rather than arming an install with no binary.
+    await (getTestDb() as any).update(softwareVersions).set({ isLatest: false }).where(eq(softwareVersions.id, versionId));
+    // The compliance worker runs the sweep inside its system context.
+    const repair = await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
+    expect(repair.failed).toBe(0);
+    const [afterSweep] = await generatedFor(link.id);
+    expect(afterSweep).toMatchObject({ id: policy!.id, isActive: false });
+    expect(afterSweep!.rules.software).toEqual([]);
+    expect(afterSweep!.approvalGeneration).toBeGreaterThan(policy!.approvalGeneration);
+
+    // Re-uploading the MSI re-arms it on the next sweep.
+    await (getTestDb() as any).update(softwareVersions).set({ isLatest: true }).where(eq(softwareVersions.id, versionId));
+    await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
+    const [rearmed] = await generatedFor(link.id);
+    expect(rearmed).toMatchObject({ id: policy!.id, isActive: true });
+    expect(rearmed!.rules.software).toEqual([expect.objectContaining({ name: 'Sentinel Agent*', catalogId })]);
+    expect(rearmed!.approvalGeneration).toBeGreaterThan(afterSweep!.approvalGeneration);
+  });
+
+  it("a partner-wide link is refused when the PARTNER's package has no MSI, and armed once it has one", async () => {
+    const app = buildApp();
+    const partner = await createPartner();
+    await createOrganization({ partnerId: partner.id });
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'sentinelone', partnerId: partner.id });
+    // Another partner HAS an MSI: it must not count for this one.
+    const other = await createPartner();
+    const { catalogId: otherCatalogId } = await ensureBuiltinPackage({ provider: 'sentinelone', partnerId: other.id });
+    await uploadS1Msi(otherCatalogId);
+
+    const user = await createUser({ partnerId: partner.id, orgId: null, email: `sa-s1-${randomUUID().slice(0, 8)}@example.test` });
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const token = await createAccessToken({
+      sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId: partner.id, scope: 'partner',
+      mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const [cp] = await (getTestDb() as any)
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId: partner.id, name: `SA S1 partner-wide ${randomUUID().slice(0, 8)}`, status: 'active' })
+      .returning({ id: configurationPolicies.id });
+
+    const enable = () => call(app, token, 'POST', `/configuration-policies/${cp.id}/features`, {
+      featureType: 'security_agents', inlineSettings: S1_ENABLED,
+    });
+    const refused = await enable();
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ code: 'security_agents_binary_missing', setupPath: `/software#versions=${catalogId}` });
+    expect(await linksOf(cp.id)).toEqual([]);
+
+    // The partner adds the MSI through the REAL Versions route with the args
+    // left blank: the route fills in the generic msiexec default, which carries
+    // no site token, so enabling is still refused.
+    const created = await call(app, token, 'POST', `/software/catalog/${catalogId}/versions`, {
+      version: '1.0.0',
+      downloadUrl: 'https://downloads.example.invalid/placeholder-sentinelone.msi',
+      supportedOs: ['windows'],
+    });
+    expect(created.status).toBe(201);
+    const version = (await created.json()).data;
+    expect(version.silentInstallArgs ?? '').not.toContain('{s1_site_token}');
+    const stillRefused = await enable();
+    expect(stillRefused.status).toBe(400);
+    expect((await stillRefused.json()).code).toBe('security_agents_binary_missing');
+
+    // Editing the version's args to pass the site token makes it deployable.
+    const edited = await call(app, token, 'PATCH', `/software/catalog/${catalogId}/versions/${version.id}`, {
+      silentInstallArgs: 'SITE_TOKEN={s1_site_token} /q /NORESTART',
+    });
+    expect(edited.status).toBe(200);
+    const ok = await call(app, token, 'POST', `/configuration-policies/${cp.id}/features`, {
+      featureType: 'security_agents', inlineSettings: S1_ENABLED,
+    });
+    expect(ok.status).toBe(201);
+    const [policy] = await generatedFor((await ok.json()).id);
+    expect(policy).toMatchObject({ orgId: null, partnerId: partner.id, isActive: true });
+    expect(policy!.rules.software).toEqual([expect.objectContaining({ catalogId })]);
   });
 });

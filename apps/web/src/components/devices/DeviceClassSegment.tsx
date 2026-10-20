@@ -78,7 +78,8 @@ export function DeviceClassSegment({
               className={`rounded-full px-1.5 text-xs tabular-nums ${
                 active
                   ? "bg-primary/10 text-primary"
-                  : "bg-muted text-muted-foreground"
+                  : // #9037: foreground on the pill — muted-on-muted measured 4.2:1.
+                    "bg-background text-foreground"
               }`}
             >
               {counts[id]}

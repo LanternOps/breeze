@@ -57,6 +57,27 @@ export function getBuiltinPackage(provider: BuiltinProvider): BuiltinPackageDef 
   return BUILTIN_PACKAGES[provider];
 }
 
+/** Single-brace `{name}` placeholders the package's install-args template substitutes at dispatch. */
+export function installArgPlaceholders(provider: BuiltinProvider): string[] {
+  return Array.from(getBuiltinPackage(provider).silentInstallArgsTemplate.matchAll(/(?<!\{)\{[a-z0-9_]+\}(?!\})/g), (m) => m[0]);
+}
+
+/**
+ * Whether a version's install args carry every placeholder of the package's
+ * template as a SINGLE-brace token, so dispatch substitutes the per-org secret.
+ * A version created through the Versions tab with blank args gets the generic
+ * `msiexec` default (no placeholder): installing that would run the vendor's
+ * installer without its key. `{{name}}` (the tenant-variable form) does not
+ * count: the resolver's replace would leave the outer braces in place.
+ */
+export function installArgsCarryPlaceholders(provider: BuiltinProvider, args: string | null | undefined): boolean {
+  if (!args) return false;
+  return installArgPlaceholders(provider).every((placeholder) => {
+    const escaped = placeholder.replace(/[{}]/g, (brace) => `\\${brace}`);
+    return new RegExp(`(?<!\\{)${escaped}(?!\\})`).test(args);
+  });
+}
+
 /**
  * Idempotently upsert the partner-scoped built-in package (and its templated
  * version, when the binary URL is derivable). Safe to call on every integration

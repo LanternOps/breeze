@@ -42,3 +42,14 @@ describe('DeviceClassSegment', () => {
     }
   });
 });
+
+// #9037: inactive count badges measured 4.2:1 (muted text on a muted pill).
+describe('DeviceClassSegment badge contrast (#9037)', () => {
+  it('draws inactive count badges in the foreground colour, not the muted one', () => {
+    render(<DeviceClassSegment value="all" counts={{ all: 15, agent: 10, network: 2, manual: 3 }} onChange={() => {}} />);
+    const badge = screen.getByTestId('device-class-segment-agent').querySelector('span.tabular-nums');
+    expect(badge).not.toBeNull();
+    expect(badge).toHaveClass('text-foreground');
+    expect(badge).not.toHaveClass('text-muted-foreground');
+  });
+});

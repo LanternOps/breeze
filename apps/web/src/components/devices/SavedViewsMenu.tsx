@@ -82,6 +82,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
   const [defaultId, setDefaultId] = useState<string | null>(() => readDefaultViewId());
   const rootRef = useRef<HTMLDivElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   // One-shot guard so the default view auto-applies at most once per mount.
   const autoAppliedRef = useRef(false);
 
@@ -197,9 +198,10 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
   return (
     <div ref={rootRef} className="relative shrink-0">
       <button
+        ref={triggerRef}
         type="button"
         data-testid="saved-views-button"
-        aria-haspopup="true"
+        aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
         className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
@@ -212,12 +214,25 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
       </button>
 
       {open && (
+        // #9037: a dialog, not a menu — it holds buttons, a star toggle and a
+        // name input. Escape closes and hands focus back to the trigger (while
+        // naming, Escape only cancels the name input); below
+        // `sm` it pins to the viewport gutters instead of hanging off the left
+        // edge from its right-aligned anchor.
         <div
           data-testid="saved-views-menu"
-          role="menu"
-          className="absolute right-0 top-9 z-30 w-72 rounded-md border bg-popover p-1 shadow-lg"
+          role="dialog"
+          aria-modal="false"
+          aria-label={t('savedViewsMenu.title')}
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape' || naming) return;
+            e.stopPropagation();
+            setOpen(false);
+            triggerRef.current?.focus();
+          }}
+          className="absolute right-0 top-9 z-30 w-72 rounded-md border bg-popover p-1 shadow-lg max-sm:fixed max-sm:inset-x-4 max-sm:top-auto max-sm:mt-1 max-sm:w-auto"
         >
-          <p className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <p className="px-2 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             {t('savedViewsMenu.title')}
           </p>
 

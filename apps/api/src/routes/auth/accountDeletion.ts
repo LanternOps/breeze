@@ -1,14 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, ne } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import {
   accountDeletionRequests,
   organizationUsers,
   partners,
   partnerUsers,
-  roles,
   users,
 } from '../../db/schema';
 import {
@@ -18,6 +17,7 @@ import {
 } from '../../services';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { getEmailService } from '../../services/email';
+import { listActivePartnerAdmins } from '../../services/partnerAdminRecipients';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   getClientRateLimitKey,
@@ -68,33 +68,13 @@ async function findOrgAdminRecipients(opts: {
   partnerId: string | null;
   excludeUserId: string;
 }): Promise<AdminRecipient[]> {
-  const partnerId = opts.partnerId;
-  if (!partnerId) return [];
-
-  // Anyone with a `Partner Admin` role under the same partner — these are
-  // the staff with full admin access for this tenant. System scope so the
-  // org-user-scoped auth context that triggered this notification can still
-  // reach partner-axis tables.
-  const rows = await runWithSystemDbAccess(async () =>
-    db
-      .select({
-        email: users.email,
-        name: users.name,
-      })
-      .from(partnerUsers)
-      .innerJoin(users, eq(users.id, partnerUsers.userId))
-      .innerJoin(roles, eq(roles.id, partnerUsers.roleId))
-      .where(
-        and(
-          eq(partnerUsers.partnerId, partnerId),
-          eq(roles.name, 'Partner Admin'),
-          ne(users.id, opts.excludeUserId),
-          eq(users.status, 'active'),
-        )
-      )
-  );
-
-  return rows.map((r) => ({ email: r.email, name: r.name ?? null }));
+  if (!opts.partnerId) return [];
+  // Anyone with a `Partner Admin` role under the same partner — the staff with
+  // full admin access for this tenant — except the requester themselves.
+  const admins = await listActivePartnerAdmins(opts.partnerId);
+  return admins
+    .filter((admin) => admin.id !== opts.excludeUserId)
+    .map((admin) => ({ email: admin.email, name: admin.name }));
 }
 
 async function findPartnerBillingEmail(partnerId: string | null): Promise<string | null> {

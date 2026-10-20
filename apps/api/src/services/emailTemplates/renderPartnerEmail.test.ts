@@ -11,7 +11,7 @@ function commentArgs(overrides: Partial<RenderPartnerEmailArgs> = {}): RenderPar
     id: 'ticket_comment_notification',
     vars: {},
     ctaUrl: PORTAL_HREF,
-    internalNumber: 'T-2026-0001',
+    ticketNumber: 'T-2026-0001',
     ticketSubject: 'Printer is down',
     ...overrides,
   };
@@ -102,7 +102,7 @@ describe('renderPartnerEmail', () => {
       id: 'ticket_autoresponse',
       custom: null,
       vars: { requester_name: 'Ada' },
-      internalNumber: 'T-2026-0001',
+      ticketNumber: 'T-2026-0001',
       ticketSubject: 'Printer is down',
       inboundAutoresponseFallback: { subject: null, body: 'Hello {{requester_name}}' },
     });
@@ -126,7 +126,7 @@ describe('renderPartnerEmail', () => {
       id: 'ticket_resolved',
       vars: { resolution_note: 'Replaced the roller' },
       ctaUrl: PORTAL_HREF,
-      internalNumber: 'T-2026-0001',
+      ticketNumber: 'T-2026-0001',
       ticketSubject: 'Printer is down',
     });
     expect(out.subject).toBe('[T-2026-0001] Resolved: Printer is down');
@@ -218,7 +218,7 @@ describe('renderPartnerEmail', () => {
       id: 'ticket_resolved',
       vars: { resolution_note: '' },
       ctaUrl: PORTAL_HREF,
-      internalNumber: 'T-2026-0001',
+      ticketNumber: 'T-2026-0001',
       ticketSubject: 'Printer is down',
     });
     expect(out.html).toContain('Your ticket has been resolved.');

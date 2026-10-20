@@ -170,6 +170,7 @@
       "partner": "İş ortağı",
       "org": "Kuruluş"
     },
+    "tierCapHint": "En yüksek seviye {{max}}. 3. seviye iş istasyonu doğrulaması gerektirir ve bu sürümde mevcut değildir.",
     "ignored": "Bazı ayarlar iş ortağı temel düzeyinden daha gevşek olduğu için yok sayılıyor: {{fields}}",
     "readOnly": "Bu ilkeyi görüntüleyebilirsiniz ancak değiştiremezsiniz.",
     "save": "İlkeyi kaydet",

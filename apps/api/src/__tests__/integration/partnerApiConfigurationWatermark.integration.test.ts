@@ -513,10 +513,11 @@ describe('partner desired-configuration material watermarks', () => {
     expect(settings).not.toHaveProperty('alert_rule');
     expect(settings.automation).toEqual({ items: [] });
     expect(settings.compliance).toEqual({ items: [] });
+    // #8188 (W04): the retired policy-level approval keys (autoApprove,
+    // autoApproveSeverities, autoApproveDeferralDays, apps) are absent, not
+    // empty, even though this link's mirror still carries two of them.
     expect(settings.patch).toEqual({
-      sources: ['os'], autoApprove: false, autoApproveSeverities: [],
-      autoApproveDeferralDays: 7,
-      apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
+      sources: ['os'],
       scheduleFrequency: 'weekly', scheduleTime: '02:00', scheduleDayOfWeek: 'sun',
       scheduleDayOfMonth: 1, offlineBehavior: 'queue',
       rebootPolicy: 'if_required', rebootDelayMinutes: 15,
@@ -575,8 +576,9 @@ describe('partner desired-configuration material watermarks', () => {
     };
     const malformedPatch = malformedBody.data[0]!.features
       .find((feature) => feature.type === 'patch')!.settings;
-    expect(malformedPatch.autoApproveDeferralDays).toBe(0);
-    expect(malformedPatch.apps).toEqual([]);
+    for (const key of ['apps', 'autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays']) {
+      expect(malformedPatch).not.toHaveProperty(key);
+    }
     expect(JSON.stringify(malformedBody)).not.toContain('drop-me');
   });
 

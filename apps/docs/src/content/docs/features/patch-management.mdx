@@ -13,7 +13,7 @@ Patch Management gives you full control over the complete update lifecycle for e
 
 Every patch goes through an approval workflow before it can be deployed. Approvals are managed at the **partner (MSP) level**: a patch you approve, decline, or defer applies across all the organizations you manage, so you set each patch's posture once instead of repeating the decision per customer. Approvals can optionally be tied to a specific [update ring](/features/update-rings/), in which case they apply only to the devices that ring covers; a ring-less approval is a partner-wide blanket decision. Only partner-level and system administrators can approve patches — organization-scoped users cannot.
 
-Compliance reports give you a point-in-time snapshot of your fleet's patch status, suitable for internal audit reviews and customer-facing reporting. Reports are generated asynchronously and can be exported as CSV or PDF.
+Compliance reports give you a point-in-time snapshot of your fleet's patch status, suitable for internal audit reviews and customer-facing reporting. Reports are generated asynchronously and exported as CSV.
 
 ---
 
@@ -328,6 +328,8 @@ The patch agent only acts on devices and organizations it has been explicitly gr
 
 ### Generating a Report
 
+In the dashboard, open **Patches → Compliance**, select an organization (you can also narrow the view by update ring, but the export always covers the selected organization) and click **Export**. Breeze queues the report, waits for it to finish and downloads the CSV to your browser.
+
 Compliance reports are generated asynchronously. Call the report endpoint with your desired filters — the response is immediate and contains a `reportId` to track progress:
 
 ```bash
@@ -398,7 +400,7 @@ Outstanding patches are split into **Approved** and **Pending Approval**: approv
 
 ## Patch Scheduling via Configuration Policies
 
-Patch *scheduling and settings* — when to scan, which severities to auto-approve, and what reboot policy to apply — are managed through [Configuration Policies](/features/configuration-policies/). This is the primary way to automate patching at scale. The legacy `PATCH /patch-policies` and `DELETE /patch-policies` routes have been removed; `GET /patch-policies` remains for backwards compatibility only.
+Patch *scheduling and settings* — which sources to patch, when to run, and what reboot policy to apply — are managed through [Configuration Policies](/features/configuration-policies/). *Approval* — which severities and categories auto-approve, after what deferral, and which applications are blocked or pinned — is set on the [update ring](/features/update-rings/) the patch feature links to. This is the primary way to automate patching at scale. The legacy `PATCH /patch-policies` and `DELETE /patch-policies` routes have been removed; `GET /patch-policies` remains for backwards compatibility only.
 
 A patch feature can be added to a [partner-wide (all organizations)](/features/configuration-policies/#policy-ownership-organization-vs-partner-wide) configuration policy, including linking an [update ring](/features/update-rings/) directly to it — you set the schedule, auto-approve rules, and ring once and it schedules across every organization you manage. Deployment jobs created from a partner-wide policy are still grouped and tracked one-per-organization, so per-customer compliance reporting is unaffected.
 
@@ -412,10 +414,6 @@ Content-Type: application/json
   "featureType": "patch",
   "inlineSettings": {
     "sources": ["os", "third_party"],
-    "apps": [
-      { "source": "third_party", "packageId": "Mozilla.Firefox", "action": "block" },
-      { "source": "third_party", "packageId": "Google.Chrome", "action": "pin", "pinnedVersion": "120.0.1" }
-    ],
     "scheduleFrequency": "weekly",
     "scheduleTime": "02:00",
     "scheduleDayOfWeek": "sun",
@@ -429,8 +427,7 @@ Content-Type: application/json
 | Field | Type | Description |
 |-------|------|-------------|
 | `sources` | string[] | Which patch sources this policy covers — **at least one is required**. See [Patch Sources](#patch-sources-1) below |
-| `autoApprove`, `autoApproveSeverities`, `autoApproveDeferralDays` | | **Not used for approval.** These policy-level fields are still accepted and stored, but Breeze does not read them when it decides what to install. Set auto-approval, severities and deferral on the [update ring](/features/update-rings/) instead. The device **Config** tab leaves them out and shows where approval comes from |
-| `apps` | object[] | Per-application **block** and **pin** rules. See [Application Rules](#application-rules) below |
+| `autoApprove`, `autoApproveSeverities`, `autoApproveDeferralDays`, `apps` | | **Removed.** Auto-approval and per-application rules are set on the [update ring](/features/update-rings/) (see [Application Rules](#application-rules)). A request that still sends these fields is accepted, and the fields are ignored and not stored. The partner API configuration export no longer includes them |
 | `scheduleFrequency` | string | How often to run patching: `daily`, `weekly`, or `monthly` |
 | `scheduleTime` | string | Time of day in `HH:MM` format (24-hour, UTC unless timezone configured at site level) |
 | `scheduleDayOfWeek` | string | For weekly schedules: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
@@ -469,10 +466,10 @@ Breeze ships no desktop helper for Linux, so the agent draws the restart dialog 
 - **`zenity` must be installed.** It ships with most GNOME and XFCE desktops; on a minimal install you may need `apt install zenity` / `dnf install zenity`. Without it the user still gets a desktop notification through `notify-send` — they are warned, they just can't postpone from it.
 - **Only local graphical sessions get the dialog.** X11 and Wayland sessions belonging to a signed-in user qualify. SSH and other remote sessions, text consoles, the display manager's own greeter, and sessions being torn down are all skipped — there is no local screen to draw on.
 - **Multiple signed-in users each get the dialog**, and the first answer decides for the machine; the other dialogs close by themselves.
-- **A headless Linux box behaves exactly as before.** No dialog, no error: the `shutdown -r +N` wall message that terminal sessions already receive remains the warning, and the restart happens on schedule.
+- **A headless Linux box gets the warnings through `wall`.** When no graphical session is signed in, or none of them could show the warning, each warning in the countdown (and any notice that a restart was cancelled or blocked) is broadcast with `wall` to logged-in terminal and SSH sessions instead, carrying your [custom restart-prompt text](#custom-restart-prompt-text) when set. There is nothing to click in a terminal, so a headless box cannot postpone; the restart happens on schedule.
 - **If the dialog can't reach the screen** — a stale X cookie, a compositor restarting — Breeze falls back to a desktop notification rather than assuming the user saw something. The worst case is a duplicate warning, never a silent restart.
 
-Note that this covers restarts that Breeze **schedules** — post-patch restarts. A restart triggered by a maintenance window's [Reboot if a reboot is pending](/features/maintenance-windows/#rebooting-devices-with-a-pending-reboot) setting is issued directly on Linux and is **not** postponable; it warns through `wall` only.
+This covers every restart Breeze schedules on Linux: post-patch restarts and restarts triggered by a maintenance window's [Reboot if a reboot is pending](/features/maintenance-windows/#rebooting-devices-with-a-pending-reboot) setting. A maintenance-window restart can't be postponed past the end of its window.
 
 **What a technician sees.** The device page shows a **Restart scheduled** badge (or **Restarting**, once the scheduled time has passed) whenever a restart is booked; hovering it shows what requested the restart — a patch installation, a maintenance window, or a technician — along with the scheduled time and deadline. When the resolved deferral budget for that restart is greater than zero, a second badge shows **Postponed N of M**, present from the moment the restart is scheduled (starting at `Postponed 0 of M`) rather than only after the first postponement; a restart with deferral off instead shows a **Cannot be postponed** badge. Neither deferral badge appears for a device running an agent built before this reporting existed, since that agent never sends a deferral budget at all.
 
@@ -507,7 +504,7 @@ Each patch policy must declare which **patch sources** it manages, and at least 
 
 #### Application Rules
 
-Application rules give you per-app control over third-party and custom updates within a policy. Each rule targets a specific package and chooses one of two actions:
+Application rules give you per-app control over third-party and custom updates. They are part of the [update ring](/features/update-rings/) (the ring's `appRules` list, under **Application rules** in the ring editor), so they apply to every configuration policy that links that ring. Each rule targets a specific package and chooses one of two actions:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -516,7 +513,7 @@ Application rules give you per-app control over third-party and custom updates w
 | `action` | string | `block` to prevent the application from being updated, or `pin` to hold it at a specific version |
 | `pinnedVersion` | string | **Required when `action` is `pin`** — the version the application is held at. Updates beyond this version are withheld until the pin is changed |
 
-A **block** rule keeps the application off the approved/installable list entirely. A **pin** rule allows the application up to the pinned version but holds back anything newer, which is useful when a vendor's latest release is known to break a line-of-business workflow. A policy can carry up to 200 application rules.
+A **block** rule keeps the application off the approved/installable list entirely. A **pin** rule allows the application up to the pinned version but holds back anything newer, which is useful when a vendor's latest release is known to break a line-of-business workflow. A ring can carry up to 200 application rules, one per package. A rule overrides a manual approval: a blocked application is not installed by a scheduled run even when someone approved the patch.
 
 ### Creating a patch deployment job from a policy
 

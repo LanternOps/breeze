@@ -21,8 +21,12 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('../../db/lockTimeout', () => ({ tightenStatementTimeout: (...a: [unknown, number]) => tightenMock(...a) }));
 vi.mock('../opsAlerts', () => ({ sendOpsAlert: vi.fn() }));
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException: (...a: unknown[]) => captureExceptionMock(...a) }));
 vi.mock('../redis', () => ({ getRedis: vi.fn(() => null) }));
 vi.mock('./notifier', () => ({ deliverPendingNotices: vi.fn() }));
+const publishEventsMock = vi.hoisted(() => vi.fn(async () => ({ published: 0, failed: 0 })));
+vi.mock('./events', () => ({ publishPendingEvents: (...a: unknown[]) => publishEventsMock(...(a as [])) }));
 vi.mock('./sources', () => ({ HEALTH_SOURCES: [] }));
 vi.mock('./store', () => ({
   loadTracked: (...a: unknown[]) => loadTrackedMock(...a),
@@ -34,6 +38,9 @@ vi.mock('./transitions', () => ({ planTransitions: (...a: unknown[]) => planMock
 
 import { runKindInSystemScope, runReconcile } from './reconcile';
 import type { HealthSource } from './types';
+
+// The contract fields the reconciler never reads.
+const CONTRACT_STUB = { tables: [] as string[], fixHrefs: [] as string[], brokenQuery: () => ({ getSQL: () => { throw new Error('unused'); } }) } as Pick<HealthSource, 'tables' | 'fixHrefs' | 'brokenQuery'>;
 
 function fakeRedis() {
   const store = new Map<string, string>();
@@ -51,11 +58,12 @@ function fakeRedis() {
 const src = (kind: string, intervalMinutes: number): HealthSource => ({
   kind: kind as HealthSource['kind'],
   intervalMinutes,
+  ...CONTRACT_STUB,
   observe: async () => { throw new Error('observe must not be called; runKind is injected'); },
 });
 const okCounts = { opened: 0, resolved: 0, pending: 0, observations: 0 };
 const noopsExceptAlert = {
-  deliver: async () => ({ delivered: 0, failed: 0 }),
+  deliver: async () => ({ delivered: 0, failed: 0, zeroRecipients: 0 }),
   retention: async () => 0,
 };
 const noops = { ...noopsExceptAlert, alert: async () => true };
@@ -71,6 +79,51 @@ beforeEach(() => {
 });
 
 describe('runReconcile', () => {
+  it('publishes health events after notices and before retention, and reports them (W5)', async () => {
+    const order: string[] = [];
+    const r = await runReconcile({
+      sources: [src('a', 15)], redis: fakeRedis(), now: () => T0, alert: async () => true,
+      runKind: vi.fn(async () => { order.push('kind'); return okCounts; }),
+      deliver: vi.fn(async () => { order.push('deliver'); return { delivered: 0, failed: 0, zeroRecipients: 0 }; }),
+      publishEvents: vi.fn(async () => { order.push('events'); return { published: 2, failed: 1 }; }),
+      retention: vi.fn(async () => { order.push('retention'); return 0; }),
+    });
+    expect(order).toEqual(['kind', 'deliver', 'events', 'retention']);
+    expect(r.events).toEqual({ published: 2, failed: 1 });
+  });
+
+  it('an event publisher failure still runs retention, writes no heartbeat, and fails the job (W5)', async () => {
+    const redis = fakeRedis();
+    const retention = vi.fn().mockResolvedValue(0);
+    await expect(runReconcile({
+      sources: [], redis, now: () => T0, alert: async () => true, retention,
+      deliver: async () => ({ delivered: 0, failed: 0, zeroRecipients: 0 }),
+      publishEvents: vi.fn().mockRejectedValue(new Error('outbox scan failed')),
+    })).rejects.toThrow('outbox scan failed');
+    expect(retention).toHaveBeenCalledTimes(1);
+    expect(redis.store.has('connection-health:reconcile:heartbeat')).toBe(false);
+  });
+
+  it('reports a degraded event drain (failures and nothing published) to Sentry, once per run (W5)', async () => {
+    await runReconcile({
+      sources: [], redis: null, now: () => T0, ...noops,
+      publishEvents: async () => ({ published: 0, failed: 3 }),
+    });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(String(captureExceptionMock.mock.calls[0]![0])).toContain('connection_health_events_degraded');
+    captureExceptionMock.mockClear();
+    await runReconcile({
+      sources: [], redis: null, now: () => T0, ...noops,
+      publishEvents: async () => ({ published: 2, failed: 1 }),
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('defaults the event publisher to the outbox drain', async () => {
+    await runReconcile({ sources: [], redis: null, now: () => T0, ...noops });
+    expect(publishEventsMock).toHaveBeenCalledWith(T0);
+  });
+
   it('runs a due kind, records last-ok, and seeds on its first run only', async () => {
     const redis = fakeRedis();
     const runKind = vi.fn().mockResolvedValue({ opened: 1, resolved: 0, pending: 0, observations: 1 });
@@ -80,6 +133,24 @@ describe('runReconcile', () => {
     expect(redis.store.get('connection-health:kind:a:seeded')).toBe('1');
     await runReconcile({ sources: [src('a', 15)], redis, runKind, now: () => plusMin(T0, 15), ...noops });
     expect(runKind).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'a' }), plusMin(T0, 15), false);
+  });
+
+  it('nudge mode runs the kind even when not due, delivers notices, and skips retention and the heartbeat (W4)', async () => {
+    const redis = fakeRedis();
+    const runKind = vi.fn().mockResolvedValue(okCounts);
+    const retention = vi.fn(async () => 0);
+    const deliver = vi.fn(async () => ({ delivered: 1, failed: 0, zeroRecipients: 0 }));
+    await runReconcile({ sources: [src('a', 60)], redis, runKind, now: () => T0, ...noops });
+    redis.store.delete('connection-health:reconcile:heartbeat');
+    const r = await runReconcile({
+      sources: [src('a', 60)], redis, runKind, now: () => plusMin(T0, 2), mode: 'nudge', deliver, retention, alert: async () => true,
+    });
+    expect(r.kinds[0]!.status).toBe('ok');
+    expect(runKind).toHaveBeenCalledTimes(2);
+    expect(runKind).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'a' }), plusMin(T0, 2), false);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(retention).not.toHaveBeenCalled();
+    expect(redis.store.has('connection-health:reconcile:heartbeat')).toBe(false);
   });
 
   it('skips a kind whose interval has not elapsed', async () => {
@@ -99,22 +170,25 @@ describe('runReconcile', () => {
     expect(runKind).toHaveBeenCalledTimes(2);
   });
 
-  it('treats every kind as due and never seeds without Redis', async () => {
+  it("without Redis every kind is due in 'defer' mode, and a deferred kind is skipped_unseeded", async () => {
     const runKind = vi.fn().mockResolvedValue(okCounts);
     await runReconcile({ sources: [src('a', 60)], redis: null, runKind, now: () => T0, ...noops });
     await runReconcile({ sources: [src('a', 60)], redis: null, runKind, now: () => plusMin(T0, 1), ...noops });
     expect(runKind).toHaveBeenCalledTimes(2);
-    expect(runKind.mock.calls.every((c) => c[2] === false)).toBe(true);
+    expect(runKind.mock.calls.every((c) => c[2] === 'defer')).toBe(true);
+    const deferred = vi.fn().mockResolvedValue('deferred');
+    const r = await runReconcile({ sources: [src('a', 60)], redis: null, runKind: deferred, now: () => T0, ...noops });
+    expect(r.kinds).toEqual([expect.objectContaining({ kind: 'a', status: 'skipped_unseeded' })]);
   });
 
-  it('treats a kind as due and never seeds when Redis reads throw', async () => {
+  it("treats a kind as due and in 'defer' mode when Redis reads throw", async () => {
     const redis = fakeRedis();
     redis.get.mockRejectedValue(new Error('ECONNRESET'));
     redis.set.mockRejectedValue(new Error('ECONNRESET'));
     redis.del.mockRejectedValue(new Error('ECONNRESET'));
     const runKind = vi.fn().mockResolvedValue(okCounts);
     const r = await runReconcile({ sources: [src('a', 60)], redis, runKind, now: () => T0, ...noops });
-    expect(runKind).toHaveBeenCalledWith(expect.objectContaining({ kind: 'a' }), T0, false);
+    expect(runKind).toHaveBeenCalledWith(expect.objectContaining({ kind: 'a' }), T0, 'defer');
     expect(r.kinds[0]!.status).toBe('ok');
   });
 
@@ -171,11 +245,30 @@ describe('runReconcile', () => {
     expect(runKind).toHaveBeenCalledTimes(2);
   });
 
+  it('runs due kinds oldest last-ok first, so a tight budget cannot starve the same kinds every run', async () => {
+    const redis = fakeRedis();
+    redis.store.set('connection-health:kind:a:last-ok', String(plusMin(T0, -30).getTime()));
+    redis.store.set('connection-health:kind:c:last-ok', String(plusMin(T0, -60).getTime()));
+    let t = T0.getTime();
+    const runKind = vi.fn(async (_source: HealthSource, _now: Date, _seed: unknown) => { t += 40_000; return okCounts; });
+    const r = await runReconcile({ sources: [src('a', 15), src('b', 15), src('c', 15)], redis, runKind, now: () => new Date(t), budgetMs: 60_000, ...noops });
+    expect(runKind.mock.calls.map((c) => c[0].kind)).toEqual(['b', 'c']);
+    expect(r.kinds.map((k) => [k.kind, k.status])).toEqual([['b', 'ok'], ['c', 'ok'], ['a', 'skipped_budget']]);
+  });
+
+  it('reports zero-recipient notices in the run result', async () => {
+    const r = await runReconcile({
+      sources: [], redis: null, now: () => T0, retention: async () => 0, alert: async () => true,
+      deliver: async () => ({ delivered: 2, failed: 0, zeroRecipients: 1 }),
+    });
+    expect(r.notices).toEqual({ delivered: 2, failed: 0, zeroRecipients: 1 });
+  });
+
   it('delivers notices and runs retention after kinds, and writes the heartbeat', async () => {
     const redis = fakeRedis();
     const order: string[] = [];
     const runKind = vi.fn(async () => { order.push('kind'); return okCounts; });
-    const deliver = vi.fn(async () => { order.push('deliver'); return { delivered: 2, failed: 0 }; });
+    const deliver = vi.fn(async () => { order.push('deliver'); return { delivered: 2, failed: 0, zeroRecipients: 0 }; });
     const retention = vi.fn(async () => { order.push('retention'); return 3; });
     const r = await runReconcile({ sources: [src('a', 15)], redis, runKind, deliver, retention, alert: vi.fn(), now: () => T0 });
     expect(order).toEqual(['kind', 'deliver', 'retention']);
@@ -242,6 +335,7 @@ describe('runKindInSystemScope', () => {
     const source: HealthSource = {
       kind: 'oauth_grant',
       intervalMinutes: 15,
+      ...CONTRACT_STUB,
       observe: vi.fn(async () => { calls.push('observe'); return [observation] as never; }),
     };
     loadTrackedMock.mockImplementation(async () => { calls.push('load'); return tracked; });
@@ -253,10 +347,42 @@ describe('runKindInSystemScope', () => {
     expect(r).toEqual({ opened: 1, resolved: 2, pending: 3, observations: 1, seeded: true });
     expect(calls).toEqual(['outside', 'system:connectionHealth.reconcile.oauth_grant', 'lock', 'tighten:5000', 'has-rows', 'load', 'observe', 'plan', 'apply']);
     expect(hasIncidentsMock).toHaveBeenCalledWith('oauth_grant');
-    expect(loadTrackedMock).toHaveBeenCalledWith('oauth_grant', T0);
+    expect(loadTrackedMock).toHaveBeenCalledWith('oauth_grant', T0, 60 * 60 * 1000);
     expect(source.observe).toHaveBeenCalledWith(T0, ['s1']);
-    expect(planMock).toHaveBeenCalledWith({ observations: [observation], tracked, now: T0, seed: true });
+    expect(planMock).toHaveBeenCalledWith({ observations: [observation], tracked, now: T0, seed: true, reopenWindowMs: 60 * 60 * 1000 });
     expect(applyActionsMock).toHaveBeenCalledWith([{ type: 'deletePending', incidentId: 'i1' }], T0);
+  });
+
+  it('runs prepare() first, outside any DB context, before the kind transaction opens (W4)', async () => {
+    const source: HealthSource = {
+      kind: 'google_workspace',
+      intervalMinutes: 30,
+      ...CONTRACT_STUB,
+      prepare: vi.fn(async () => { calls.push('prepare'); }),
+      observe: vi.fn(async () => { calls.push('observe'); return []; }),
+    };
+    loadTrackedMock.mockResolvedValue([]);
+    planMock.mockReturnValue([]);
+    applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
+
+    await runKindInSystemScope(source, T0, false);
+
+    expect(calls.slice(0, 3)).toEqual(['outside', 'prepare', 'outside']);
+    expect(calls[3]).toBe('system:connectionHealth.reconcile.google_workspace');
+    expect(source.prepare).toHaveBeenCalledWith(T0);
+  });
+
+  it('a prepare() failure fails the kind before its transaction opens', async () => {
+    const source: HealthSource = {
+      kind: 'google_workspace',
+      intervalMinutes: 30,
+      ...CONTRACT_STUB,
+      prepare: vi.fn(async () => { throw new Error('claim failed'); }),
+      observe: vi.fn(async () => []),
+    };
+    await expect(runKindInSystemScope(source, T0, false)).rejects.toThrow('claim failed');
+    expect(calls.some((c) => c.startsWith('system:'))).toBe(false);
+    expect(source.observe).not.toHaveBeenCalled();
   });
 
   it('a seed candidate does not seed when the kind already has incident rows (lost Redis key)', async () => {
@@ -264,17 +390,36 @@ describe('runKindInSystemScope', () => {
     hasIncidentsMock.mockResolvedValueOnce(true);
     planMock.mockReturnValue([]);
     applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
-    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: async () => [] };
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: async () => [] };
     const r = await runKindInSystemScope(source, T0, true);
     expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
     expect(r).toMatchObject({ seeded: false });
+  });
+
+  it("defer mode skips a kind with no rows without observing it", async () => {
+    loadTrackedMock.mockResolvedValue([]);
+    hasIncidentsMock.mockResolvedValueOnce(false);
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: vi.fn(async () => []) };
+    expect(await runKindInSystemScope(source, T0, 'defer')).toBe('deferred');
+    expect(source.observe).not.toHaveBeenCalled();
+    expect(applyActionsMock).not.toHaveBeenCalled();
+  });
+
+  it("defer mode runs a kind that has rows normally, never seeding", async () => {
+    loadTrackedMock.mockResolvedValue(tracked);
+    hasIncidentsMock.mockResolvedValueOnce(true);
+    planMock.mockReturnValue([]);
+    applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: async () => [] };
+    expect(await runKindInSystemScope(source, T0, 'defer')).toMatchObject({ seeded: false });
+    expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
   });
 
   it('a non-seed run never checks for rows', async () => {
     loadTrackedMock.mockResolvedValue(tracked);
     planMock.mockReturnValue([]);
     applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
-    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: async () => [] };
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: async () => [] };
     await runKindInSystemScope(source, T0, false);
     expect(hasIncidentsMock).not.toHaveBeenCalled();
     expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
@@ -282,7 +427,7 @@ describe('runKindInSystemScope', () => {
 
   it('returns locked without touching incidents when the per-kind advisory lock is taken', async () => {
     executeMock.mockImplementationOnce(async () => { calls.push('lock'); return [{ acquired: false }]; });
-    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: vi.fn(async () => []) };
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: vi.fn(async () => []) };
     expect(await runKindInSystemScope(source, T0, true)).toBe('locked');
     expect(calls).toEqual(['outside', 'system:connectionHealth.reconcile.oauth_grant', 'lock']);
     expect(source.observe).not.toHaveBeenCalled();
@@ -291,7 +436,7 @@ describe('runKindInSystemScope', () => {
 
   it('propagates an observe failure without applying anything', async () => {
     loadTrackedMock.mockResolvedValue(tracked);
-    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: async () => { throw new Error('boom'); } };
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: async () => { throw new Error('boom'); } };
     await expect(runKindInSystemScope(source, T0, false)).rejects.toThrow('boom');
     expect(planMock).not.toHaveBeenCalled();
     expect(applyActionsMock).not.toHaveBeenCalled();

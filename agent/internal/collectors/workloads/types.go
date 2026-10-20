@@ -81,6 +81,10 @@ type Detection struct {
 	State   string // DetectionPresent | DetectionAbsent | DetectionUnknown
 	Version string
 	Reason  string // machine code, see the Reason* constants; empty when none
+
+	// apiVersion is the engine's REST API version ("1.54") as GET /version
+	// reported it, used only to pick request options. Never reported.
+	apiVersion string
 }
 
 // Result is what a driver returns from Collect.

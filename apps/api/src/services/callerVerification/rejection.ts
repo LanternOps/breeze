@@ -66,7 +66,11 @@ export async function handleRejection(verificationId: string): Promise<void> {
     ));
     const outcome = await revokeIntentsForSubject({ orgId: row.orgId, bindingIds: bindings.map((r) => r.id), verificationId: row.id });
     await recordEffect(row, 'rejected');
-    const summary = `Caller rejection fenced the subject. Already executing: ${outcome.alreadyExecuting.join(', ') || 'none'}. `
+    // W05: an executing intent whose dispatch had not started is stopped by
+    // the fence at dispatch (prepareCallerDispatch re-checks under the same
+    // locks); only an already-dispatched one needs confirming in Entra.
+    const summary = `Caller rejection fenced the subject. Cancelled: ${outcome.cancelled.join(', ') || 'none'}. `
+      + `Executing but not yet dispatched (will be refused at dispatch): ${outcome.alreadyExecuting.join(', ') || 'none'}. `
       + `Dispatched before rejection; confirm in Entra whether the change landed: ${outcome.alreadyDispatched.join(', ') || 'none'}.`;
     await db.execute(sql`UPDATE incidents SET summary=${summary}
       WHERE org_id=${row.orgId}::uuid AND source_type='caller_verification' AND source_ref=${row.id}`);

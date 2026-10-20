@@ -34,6 +34,8 @@ Dynamic groups use a `filterConditions` object to define membership rules. When 
 
 <Aside type="tip">
 Dynamic group membership is also re-evaluated when individual device attributes change, but only for groups whose `filterFieldsUsed` overlap with the changed fields. This avoids unnecessary re-evaluation across the entire group set.
+
+From v0.123.0 this includes changes to a device's **tags** and **custom field values**, whether they are edited on the device, imported from CSV, written back by a script or changed by the AI assistant. A custom-field write re-evaluates only when the value actually changed. Before v0.123.0 a group that filtered on tags or custom fields stayed stale until someone re-saved it.
 </Aside>
 
 ## Creating a group
@@ -255,6 +257,8 @@ Fields are organized by category. Each field supports a specific set of operator
 | `custom.*` | Custom Fields | string | `equals`, `contains`, `startsWith` |
 
 Custom fields use the prefix `custom.` followed by the field key (e.g., `custom.department`).
+
+The rule builder lists your organization's and partner's custom fields under **Custom Fields** (v0.123.0+), and the group card shows the field's name rather than its key, for example "Asset disposition equals Retired".
 </TabItem>
 </Tabs>
 

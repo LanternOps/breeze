@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText } from 'lucide-react';
+import { QUOTE_ACCEPT_ON_BEHALF_METHODS } from '@breeze/shared';
 import '@/lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { listContractDocuments, contractDocumentPdfPath, linkContractDocument, type ContractDocument } from '../../lib/api/contractDocuments';
+import { listContractDocuments, contractDocumentPdfPath, linkContractDocument, signedAgreementFilename, type ContractDocument } from '../../lib/api/contractDocuments';
 import { listContracts, type ContractSummary } from '../../lib/api/contracts';
 import { usePdfDownload } from '../billing/shared/usePdfDownload';
 import { formatDate } from '../billing/invoiceTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePermissions } from '../../lib/permissions';
+import RecordSignedAgreementDialog from './RecordSignedAgreementDialog';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -26,7 +29,7 @@ function DocumentDownloadButton({ doc }: { doc: ContractDocument }) {
   const { t } = useTranslation('billing');
   const { download, downloading } = usePdfDownload({
     path: contractDocumentPdfPath(doc.id),
-    filename: `contract-document-${doc.id}.pdf`,
+    filename: signedAgreementFilename(doc),
     errorMessage: t('contracts.contractDetail.documents.downloadError'),
   });
   return (
@@ -37,7 +40,10 @@ function DocumentDownloadButton({ doc }: { doc: ContractDocument }) {
       data-testid={`contract-document-download-${doc.id}`}
       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
     >
-      {downloading ? t('contracts.documentsTab.preparing') : t('contracts.documentsTab.download')}
+      {downloading
+        ? t('contracts.documentsTab.preparing')
+        // An externally signed scan downloads as a PNG/JPEG — don't promise a PDF.
+        : doc.mime?.startsWith('image/') ? t('common:actions.download') : t('contracts.documentsTab.download')}
     </button>
   );
 }
@@ -66,6 +72,10 @@ export default function SignedAgreementsPage({
   const { t } = useTranslation('billing');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const locked = Boolean(lockedOrgId || lockedContractId);
+  const { can } = usePermissions();
+  // UX only — the record-signed route re-checks agreements:write server-side.
+  const canRecord = can('agreements', 'write');
+  const [recordOpen, setRecordOpen] = useState(false);
 
   // CLAUDE.md: hash for transient UI state, never query params. Embeds do NOT
   // read the hash — two lists on one page (org record) would fight over it.
@@ -157,6 +167,26 @@ export default function SignedAgreementsPage({
     })();
   };
 
+  /** An MSP-recorded agreement is not the customer's own acceptance, so the row
+   *  must not read "Accepted with quote … by …". Method label reuses the
+   *  accept-on-behalf set (already translated); an unknown method is shown raw
+   *  rather than hidden. A PNG/JPEG upload is a photo or scan, not a PDF, so
+   *  say so. */
+  const onBehalfSubtitle = (doc: ContractDocument): string => {
+    const known = (QUOTE_ACCEPT_ON_BEHALF_METHODS as readonly string[]).includes(doc.acceptanceMethod ?? '');
+    const method = known
+      // i18n-dynamic: the key is built from the shared enum member.
+      ? t(/* i18n-dynamic */ `quotes.actions.acceptOnBehalf.method.${doc.acceptanceMethod}`)
+      : doc.acceptanceMethod ?? '—';
+    const parts = [t('agreements.signedPage.source.recorded', { method })];
+    if (doc.sourceKind === 'quote' && doc.quoteNumber) {
+      parts.push(t('agreements.signedPage.source.quote', { number: doc.quoteNumber }));
+    }
+    parts.push(doc.signerName ?? '—', doc.signedAt ? formatDate(doc.signedAt) : '—');
+    if (doc.mime?.startsWith('image/')) parts.push(t('agreements.signedPage.fileType.image'));
+    return parts.join(' · ');
+  };
+
   const confirmLink = async () => {
     if (!linkingDoc || !selectedContractId) {
       setLinkError(t('contracts.documentsTab.linkDialog.selectContract'));
@@ -183,11 +213,29 @@ export default function SignedAgreementsPage({
   return (
     <div className="space-y-4" data-testid="signed-agreements-tab">
       {/* Inside an embed the surrounding section already names this list (the
-          org record's <summary>, the contract page's own heading). */}
-      {!locked && (
-        <div>
-          <h2 className="text-lg font-semibold">{t('agreements.signedPage.title')}</h2>
-          <p className="text-sm text-muted-foreground">{t('agreements.signedPage.description')}</p>
+          org record's <summary>, the contract page's own heading), so the
+          header row there holds only the record button. The button lives in
+          this row on all three surfaces. */}
+      {(!locked || canRecord) && (
+        <div className="flex items-start justify-between gap-3">
+          {!locked ? (
+            <div>
+              <h2 className="text-lg font-semibold">{t('agreements.signedPage.title')}</h2>
+              <p className="text-sm text-muted-foreground">{t('agreements.signedPage.description')}</p>
+            </div>
+          ) : (
+            <span />
+          )}
+          {canRecord && (
+            <button
+              type="button"
+              onClick={() => setRecordOpen(true)}
+              data-testid="agreements-record-open"
+              className="shrink-0 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              {t('agreements.signedPage.recordSigned')}
+            </button>
+          )}
         </div>
       )}
 
@@ -262,7 +310,11 @@ export default function SignedAgreementsPage({
                     {/* The no-quote variant exists because quoteId/quoteNumber are
                         left-joined and genuinely null for a deleted quote. */}
                     <div className="text-xs text-muted-foreground" data-testid="signed-agreement-subtitle">
-                      {doc.quoteNumber
+                      {doc.evidenceAvailable === false
+                        ? t('agreements.signedPage.evidenceUnavailable')
+                        : doc.acceptanceOrigin === 'on_behalf'
+                        ? onBehalfSubtitle(doc)
+                        : doc.quoteNumber
                         ? t('agreements.signedPage.rowSubtitle', {
                             quoteNumber: doc.quoteNumber,
                             signer: doc.signerName ?? '—',
@@ -277,7 +329,11 @@ export default function SignedAgreementsPage({
                   {!lockedOrgId && (
                     <td className="px-3 py-2 text-muted-foreground">{orgNames[doc.orgId] ?? '—'}</td>
                   )}
-                  <td className="px-3 py-2">{doc.signerName ?? '—'}</td>
+                  {/* Evidence snapshot (#8865 W1b): NULL only on a legacy quote row
+                      whose acceptance was deleted before the back-fill. */}
+                  <td className="px-3 py-2" data-testid="signed-agreement-signer">
+                    {doc.signerName ?? t('agreements.signedPage.evidenceUnavailable')}
+                  </td>
                   <td className="px-3 py-2">{doc.signedAt ? formatDate(doc.signedAt) : '—'}</td>
                   <td className="px-3 py-2">
                     {doc.quoteId ? (
@@ -330,6 +386,19 @@ export default function SignedAgreementsPage({
             </tbody>
           </table>
         </div>
+      )}
+
+      {canRecord && (
+        <RecordSignedAgreementDialog
+          open={recordOpen}
+          onClose={() => setRecordOpen(false)}
+          lockedOrgId={lockedOrgId}
+          lockedContractId={lockedContractId}
+          onRecorded={() => {
+            setRecordOpen(false);
+            void load();
+          }}
+        />
       )}
 
       {linkingDoc && (

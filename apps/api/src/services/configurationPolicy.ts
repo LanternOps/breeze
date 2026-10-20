@@ -2,6 +2,7 @@ import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
 import { assertSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
+import { syncManagedSoftwarePolicy } from './securityAgents/managedPolicyGenerator';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -75,15 +76,7 @@ import {
 } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import {
-  assertNoPolicyApprovalEdits,
-  withStoredLegacyApprovalKeys,
-  enforcedAppRuleSet,
-  loadConfigPolicyPartnerId,
   normalizePatchInlineSettings,
-  PolicyApprovalFieldMovedError,
-  resolvePatchPolicyReference,
-  sameAppRuleSet,
-  storedLegacyAppRuleSet,
   tryNormalizePatchInlineSettings,
 } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
@@ -866,8 +859,6 @@ async function decomposeInlineSettings(
       await tx.insert(configPolicyPatchSettings).values({
         featureLinkId: linkId,
         sources: parsed.sources,
-        autoApprove: parsed.autoApprove,
-        autoApproveSeverities: parsed.autoApproveSeverities,
         scheduleFrequency: parsed.scheduleFrequency,
         scheduleTime: parsed.scheduleTime,
         scheduleDayOfWeek: parsed.scheduleDayOfWeek,
@@ -1369,15 +1360,10 @@ async function assembleInlineSettings(
         .where(eq(configPolicyPatchSettings.featureLinkId, linkId))
         .limit(1);
       if (!row) return null;
-      // NOTE: autoApproveDeferralDays and apps (block/pin rules) are intentionally
-      // absent here — config_policy_patch_settings has no columns for them; they
-      // live ONLY in the feature link's inline JSONB. Callers (listFeatureLinks)
-      // MUST merge them back in from the stored inlineSettings, otherwise reads
-      // come back with apps: [] and the next save destroys every app rule.
+      // Every patch setting has a column here. Auto-approval and per-app
+      // block/pin rules belong to the Update Ring (#8188), not the policy.
       return {
         sources: row.sources,
-        autoApprove: row.autoApprove,
-        autoApproveSeverities: row.autoApproveSeverities ?? [],
         scheduleFrequency: row.scheduleFrequency,
         scheduleTime: row.scheduleTime,
         scheduleDayOfWeek: row.scheduleDayOfWeek,
@@ -1880,16 +1866,6 @@ export async function addFeatureLink(
     });
   }
 
-  // #8186: app rules live on the Update Ring. A new link may carry an `apps`
-  // list only when the ring it links already enforces exactly that list: the
-  // Patch tab's Override copies the inherited link (rules + ring) verbatim.
-  // Anything else would be rules the runtime no longer reads. Policy-level
-  // autoApprove is inert (not consulted since 2026-08) and is accepted on add
-  // so that same Override copy still saves; W04 drops it.
-  if (featureType === 'patch' && inlineSettings !== undefined && inlineSettings !== null) {
-    await assertNewPatchLinkAppRulesOnRing(configPolicyId, featurePolicyId, inlineSettings);
-  }
-
   const normalizedAutomation = featureType === 'automation'
     ? await normalizeConfigPolicyAutomationSettings(inlineSettings)
     : null;
@@ -1942,6 +1918,17 @@ export async function addFeatureLink(
       );
     }
 
+    // #6960: generate the software policy this link enforces, in the same
+    // transaction, so an enable returns with its rule in place and a missing
+    // catalog package refuses the whole write.
+    if (featureType === 'security_agents') {
+      await syncManagedSoftwarePolicy(
+        tx,
+        { id: link.id, configPolicyId, inlineSettings: effectiveInlineSettings ?? null },
+        { actorUserId: consentActor?.userId ?? null, onMissingCatalog: 'refuse' },
+      );
+    }
+
     return featureType === 'monitors' ? reloadMonitorsInterval(link, tx) : link;
   });
   // A policy that gains compliance can take precedence over the policy whose
@@ -1963,58 +1950,6 @@ export async function getRetiredFeatureLink(configPolicyId: string, linkId: stri
     ))
     .limit(1);
   return link ?? null;
-}
-
-function nonEmptyAppsList(inline: unknown): boolean {
-  if (!inline || typeof inline !== 'object' || Array.isArray(inline)) return false;
-  const apps = (inline as Record<string, unknown>).apps;
-  return Array.isArray(apps) && apps.length > 0;
-}
-
-/** A new patch link's `apps` must already be enforced by the ring it links (#8186). */
-async function assertNewPatchLinkAppRulesOnRing(
-  configPolicyId: string,
-  featurePolicyId: string | null | undefined,
-  inline: unknown,
-): Promise<void> {
-  if (!nonEmptyAppsList(inline)) return;
-  const incomingSet = enforcedAppRuleSet((inline as Record<string, unknown>).apps);
-  if (incomingSet.length === 0) return;
-  if (!featurePolicyId) throw new PolicyApprovalFieldMovedError();
-  const target = await resolvePatchPolicyReference(await loadConfigPolicyPartnerId(configPolicyId), featurePolicyId);
-  if (!target.valid || !target.ringId || !sameAppRuleSet(enforcedAppRuleSet(target.appRules), incomingSet)) {
-    throw new PolicyApprovalFieldMovedError();
-  }
-}
-
-/**
- * A patch link's ring is changing (#8186). Two ways that could drop rules:
- *  - The request re-sends a non-empty `apps` list. Only a client loaded before
- *    the cutover does that (it sends the list it loaded alongside the ring it
- *    loaded), so it would relink a migrated policy to its old ring, or to none.
- *  - The link has legacy inline rules that no ring carries yet: its current
- *    reference does not resolve to a valid ring (the backfill skips those), so
- *    the target ring has to enforce exactly those rules.
- * Moving from a valid ring to another needs nothing: the ring owns the rules.
- */
-async function assertPatchRingChangeKeepsAppRules(
-  existing: { id: string; configPolicyId: string; featurePolicyId: string | null; inlineSettings: unknown },
-  targetRef: string | null,
-  incomingInline: unknown,
-): Promise<void> {
-  if (nonEmptyAppsList(incomingInline)) throw new PolicyApprovalFieldMovedError();
-  const legacy = storedLegacyAppRuleSet(existing.inlineSettings, {
-    configPolicyId: existing.configPolicyId,
-    featureLinkId: existing.id,
-  });
-  if (legacy.length === 0) return;
-  const partnerId = await loadConfigPolicyPartnerId(existing.configPolicyId);
-  const current = await resolvePatchPolicyReference(partnerId, existing.featurePolicyId);
-  if (current.valid && current.ringId) return;
-  const target = await resolvePatchPolicyReference(partnerId, targetRef);
-  if (!target.valid || !target.ringId || !sameAppRuleSet(enforcedAppRuleSet(target.appRules), legacy)) {
-    throw new PolicyApprovalFieldMovedError();
-  }
 }
 
 export async function updateFeatureLink(
@@ -2048,56 +1983,6 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'pam' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       pamInlineSettingsSchema.parse(updates.inlineSettings);
-    }
-
-    // #8186: before any write — a changed app-rule list or a newly enabled
-    // policy auto-approve belongs on the Update Ring; an unchanged round-trip
-    // from a client that loaded this link passes.
-    if (existing.featureType === 'patch' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
-      // The read path serves autoApprove from the relational settings row
-      // (assembleInlineSettings), so a stale tab may echo a `true` that the
-      // link JSONB lacks. Treat either source as "already stored".
-      const [relational] = await tx
-        .select({
-          autoApprove: configPolicyPatchSettings.autoApprove,
-          autoApproveSeverities: configPolicyPatchSettings.autoApproveSeverities,
-        })
-        .from(configPolicyPatchSettings)
-        .where(eq(configPolicyPatchSettings.featureLinkId, existing.id))
-        .limit(1);
-      const storedInline = existing.inlineSettings && typeof existing.inlineSettings === 'object' && !Array.isArray(existing.inlineSettings)
-        ? existing.inlineSettings as Record<string, unknown>
-        : null;
-      const relationalSeverities = Array.isArray(relational?.autoApproveSeverities) && relational.autoApproveSeverities.length > 0
-        ? { autoApproveSeverities: relational.autoApproveSeverities }
-        : {};
-      const stored = relational?.autoApprove === true
-        ? { ...(storedInline ?? {}), ...relationalSeverities, autoApprove: true }
-        : existing.inlineSettings;
-      const linkContext = { configPolicyId: existing.configPolicyId, featureLinkId: existing.id };
-      // Only the approval keys the caller sent are judged; an absent key means
-      // "unchanged" (#8671).
-      assertNoPolicyApprovalEdits(stored, updates.inlineSettings, linkContext);
-      if (
-        updates.featurePolicyId !== undefined
-        && (updates.featurePolicyId ?? null) !== (existing.featurePolicyId ?? null)
-      ) {
-        // #8186: a ring change must not drop app rules. See assertPatchRingChangeKeepsAppRules.
-        await assertPatchRingChangeKeepsAppRules(existing, updates.featurePolicyId ?? null, updates.inlineSettings);
-      }
-      // ...and is written back as stored, not reset to schema defaults.
-      updates.inlineSettings = withStoredLegacyApprovalKeys(
-        updates.inlineSettings as Record<string, unknown>,
-        stored,
-        linkContext,
-      );
-    } else if (
-      existing.featureType === 'patch'
-      && updates.featurePolicyId !== undefined
-      && (updates.featurePolicyId ?? null) !== (existing.featurePolicyId ?? null)
-    ) {
-      // #8186: a ring change must not drop app rules. See assertPatchRingChangeKeepsAppRules.
-      await assertPatchRingChangeKeepsAppRules(existing, updates.featurePolicyId ?? null, updates.inlineSettings);
     }
 
     if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
@@ -2223,6 +2108,14 @@ export async function updateFeatureLink(
     }
 
     if (!updated) return null;
+    // #6960: re-derive the generated software policy from the new settings.
+    if (existing.featureType === 'security_agents' && updates.inlineSettings !== undefined) {
+      await syncManagedSoftwarePolicy(
+        tx,
+        { id: updated.id, configPolicyId: updated.configPolicyId, inlineSettings: updated.inlineSettings },
+        { actorUserId: consentActor?.userId ?? null, onMissingCatalog: 'refuse' },
+      );
+    }
     if (existing.featureType === 'compliance') updatedComplianceOf = existing.configPolicyId;
     return existing.featureType === 'monitors' ? reloadMonitorsInterval(updated, tx) : updated;
   });
@@ -2330,24 +2223,13 @@ export async function listFeatureLinks(configPolicyId: string, executor: DbExecu
       const assembled = await assembleInlineSettings(featureType, link.id, executor);
       let effectiveInlineSettings: unknown;
       if (featureType === 'patch') {
-        // CONSTRAINT: autoApproveDeferralDays and apps (block/pin rules) have NO
-        // columns on config_policy_patch_settings — they live ONLY in the feature
-        // link's inline JSONB. They must be merged in even when the relational row
-        // wins, exactly mirroring loadPolicyLocalPatchConfig in configPolicyPatching.ts.
-        // Without this merge every read returns apps: [] / autoApproveDeferralDays: 0,
-        // and the next save writes that emptiness back to the JSONB — permanently
-        // destroying all app rules with no warning (blocked apps then auto-install).
-        // A maintainer "cleaning up" this mixed sourcing must first add columns and
-        // a backfill migration. Malformed stored JSON must not throw; it falls back
-        // to schema defaults for just these fields via tryNormalizePatchInlineSettings.
-        const storedInline = tryNormalizePatchInlineSettings(link.inlineSettings).settings;
+        // Every patch setting has a column on config_policy_patch_settings, so
+        // the normalized row wins outright; the link JSONB is the fallback for
+        // a link with no row. Malformed stored JSON must not throw: it falls
+        // back to schema defaults via tryNormalizePatchInlineSettings.
         effectiveInlineSettings = assembled
-          ? normalizePatchInlineSettings({
-              ...(assembled as Record<string, unknown>),
-              autoApproveDeferralDays: storedInline.autoApproveDeferralDays,
-              apps: storedInline.apps,
-            })
-          : storedInline;
+          ? normalizePatchInlineSettings(assembled)
+          : tryNormalizePatchInlineSettings(link.inlineSettings).settings;
       } else if (featureType === 'remote_access' && assembled) {
         // The normalized row (config_policy_remote_access_settings) holds ONLY
         // the session-consent fields (#1694); the capability toggles the
@@ -3229,7 +3111,7 @@ export async function validateFeaturePolicyExists(
     // owner above, so escaping RLS here cannot reach another partner's rings.
     const [ring] = await readWithPartnerAxisVisibility(() =>
       db
-        .select({ id: patchPolicies.id })
+        .select({ id: patchPolicies.id, enabled: patchPolicies.enabled })
         .from(patchPolicies)
         .where(
           and(
@@ -3243,6 +3125,12 @@ export async function validateFeaturePolicyExists(
 
     if (!ring) {
       return { valid: false, error: `Update ring "${featurePolicyId}" not found for this partner` };
+    }
+    // #8678: DELETE /update-rings/:id is a soft delete. The resolver treats a
+    // disabled ring as an invalid reference (patching held), so linking one
+    // would create a policy that is broken on arrival.
+    if (ring.enabled !== true) {
+      return { valid: false, error: `Update ring "${featurePolicyId}" has been deleted or disabled` };
     }
 
     return { valid: true };
@@ -3353,10 +3241,14 @@ export async function validateFeaturePolicyExists(
       return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found — no owning organization or partner` };
     }
 
+    // #6960: a software policy GENERATED from a security_agents link belongs to
+    // that link and resolves through its own dimension; linking it as an
+    // ordinary software_policy would let a customer link arm or shadow it.
+    const managedExclusion = featureType === 'software_policy' ? [isNull(softwarePolicies.managedByLinkId)] : [];
     const [row] = await db
       .select({ id: dualAxis.table.id })
       .from(dualAxis.table)
-      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions)))
+      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions), ...managedExclusion))
       .limit(1);
 
     if (!row) {

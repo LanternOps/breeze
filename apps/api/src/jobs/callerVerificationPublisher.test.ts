@@ -8,7 +8,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: (f: () => unknown) => f(),
   withSystemDbAccessContext: (f: () => unknown) => f(),
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: async () => m.rows }) }) }),
+    select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ limit: async () => m.rows }), limit: async () => m.rows }) }) }),
     update: () => ({ set: (v: Record<string, unknown>) => ({ where: async () => { m.updates.push(v); } }) }),
   },
 }));
@@ -100,13 +100,47 @@ it('notifies every security recipient with a per-verification dedupe key, emails
   expect(m.updates).toEqual([{ rejectionNotifiedAt: expect.any(Date) }]);
 });
 
-it('refuses to mark a rejection notified when no email transport exists', async () => {
+it('with no email transport, still sends the in-app notifications and marks the rejection notified (email is best-effort)', async () => {
   m.rows = [row({ status: 'rejected_by_user' })];
   m.emailService = null;
   await expect(publishCallerVerificationEffects()).resolves.toBeUndefined();
-  expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('email transport unavailable') }), undefined, { verificationId: 'v1' });
-  expect(m.notify).not.toHaveBeenCalled();
+  expect(m.notify).toHaveBeenCalledTimes(2);
+  expect(m.sendEmail).not.toHaveBeenCalled();
+  expect(m.capture).not.toHaveBeenCalled();
+  expect(m.updates).toEqual([{ rejectionNotifiedAt: expect.any(Date) }]);
+});
+
+it('gives up on a rejected row after 3 consecutive failures by marking it notified, logging error.message', async () => {
+  m.rows = [row({ id: 'rej-flaky', status: 'rejected_by_user' })];
+  m.sendEmail.mockRejectedValue(new Error('smtp down'));
+  const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  await publishCallerVerificationEffects();
+  await publishCallerVerificationEffects();
   expect(m.updates).toEqual([]);
+  await publishCallerVerificationEffects();
+  expect(m.updates).toEqual([{ rejectionNotifiedAt: expect.any(Date) }]);
+  expect(spy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ error: 'smtp down' }));
+  m.updates = [];
+  await publishCallerVerificationEffects();
+  expect(m.updates).toEqual([]); // counter reset after give-up; first failure of a fresh run does not mark
+  spy.mockRestore();
+});
+
+it('a failing email to the first recipient still notifies every recipient in-app before retrying', async () => {
+  m.rows = [row({ id: 'multi', status: 'rejected_by_user' })];
+  m.sendEmail.mockRejectedValueOnce(new Error('smtp'));
+  await publishCallerVerificationEffects();
+  expect(m.notify).toHaveBeenCalledTimes(2);
+  expect(m.sendEmail).toHaveBeenCalledTimes(2);
+  expect(m.updates).toEqual([]);
+});
+
+it('never gives up on a rejected row whose in-app notification keeps failing', async () => {
+  m.rows = [row({ id: 'notif-fail', status: 'rejected_by_user' })];
+  m.notify.mockRejectedValue(new Error('db'));
+  for (let i = 0; i < 5; i++) await publishCallerVerificationEffects();
+  expect(m.updates).toEqual([]);
+  m.notify.mockReset();
 });
 
 it('leaves the rejection unmarked when one email send fails (at-least-once)', async () => {
@@ -115,4 +149,52 @@ it('leaves the rejection unmarked when one email send fails (at-least-once)', as
   await expect(publishCallerVerificationEffects()).resolves.toBeUndefined();
   expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: 'smtp' }), undefined, { verificationId: 'v1' });
   expect(m.updates).toEqual([]);
+});
+
+it('publishes an unmarked administrative row as one notification per recipient, never a caller challenge', async () => {
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', contactId: 'c1', reason: 'Confirmed offboarding with the HR manager', deliveryPublishedAt: null })];
+  await publishCallerVerificationEffects();
+  expect(m.deliver).not.toHaveBeenCalled();
+  expect(m.applyDecision).not.toHaveBeenCalled();
+  expect(m.notify).toHaveBeenCalledTimes(2);
+  expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({
+    orgId: ORG, type: 'security', dedupeKey: 'caller-administrative-v1', metadata: { verificationId: 'v1', contactId: 'c1' },
+  }));
+  expect(m.sendEmail).toHaveBeenCalledTimes(2);
+  expect(m.updates.map((u) => Object.keys(u))).toEqual([['deliveryPublishedAt']]);
+});
+
+it('does not republish an administrative row whose marker is set', async () => {
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: new Date() })];
+  await publishCallerVerificationEffects();
+  expect(m.notify).not.toHaveBeenCalled();
+  expect(m.sendEmail).not.toHaveBeenCalled();
+  expect(m.deliver).not.toHaveBeenCalled();
+  expect(m.updates).toEqual([]);
+});
+
+it('administrative row without an email transport still notifies in-app, reports, and is marked (no retry loop)', async () => {
+  m.emailService = null;
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: null })];
+  await publishCallerVerificationEffects();
+  expect(m.notify).toHaveBeenCalledTimes(2);
+  expect(m.updates).toHaveLength(1);
+  expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('email transport unavailable') }), undefined, { verificationId: 'v1' });
+});
+
+it('administrative row: one failing email does not block the others or the marker', async () => {
+  m.emailService = { sendEmail: m.sendEmail };
+  m.sendEmail.mockRejectedValueOnce(new Error('smtp 550')).mockResolvedValue(undefined);
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: null })];
+  await publishCallerVerificationEffects();
+  expect(m.sendEmail).toHaveBeenCalledTimes(2);
+  expect(m.updates).toHaveLength(1);
+  expect(m.capture).toHaveBeenCalled();
+});
+
+it('administrative row with zero recipients is reported loudly', async () => {
+  m.recipients.mockResolvedValueOnce([]);
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: null })];
+  await publishCallerVerificationEffects();
+  expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('no security notification recipients') }), undefined, { verificationId: 'v1' });
 });

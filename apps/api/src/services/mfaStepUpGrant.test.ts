@@ -22,7 +22,7 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation, type ScriptLaneWideningDelta } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, callerVerificationAdministrativeDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation, type ScriptLaneWideningDelta } from './mfaStepUpGrant';
 import { scriptLaneStepUpResource, partnerScriptCeilingStepUpResource } from '../routes/auth/schemas';
 
 const bind = (operation: StepUpOperation) => ({
@@ -499,5 +499,22 @@ describe('readStepUpGrant', () => {
   it('does not make the context part of the binding', async () => {
     const id = await mintStepUpGrant(bind('add_factor'), { anything: 'at all' });
     await expect(validateStepUpGrant(id!, bind('add_factor'))).resolves.toBe(true);
+  });
+});
+
+describe('callerVerificationAdministrativeDigest', () => {
+  it('binds administrative step-up to org, tenant, OID and trimmed reason', () => {
+    const input = {
+      orgId: '11111111-1111-4111-8111-111111111111',
+      entraTenantId: '22222222-2222-4222-8222-222222222222',
+      entraOid: '33333333-3333-4333-8333-333333333333',
+      reason: 'Confirmed offboarding request',
+    };
+    const digest = callerVerificationAdministrativeDigest(input);
+    expect(digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(callerVerificationAdministrativeDigest({ ...input, reason: ` ${input.reason} ` })).toBe(digest);
+    for (const key of ['orgId', 'entraTenantId', 'entraOid', 'reason'] as const) {
+      expect(callerVerificationAdministrativeDigest({ ...input, [key]: input[key] + 'x' })).not.toBe(digest);
+    }
   });
 });

@@ -32,10 +32,6 @@ import {
   readPendingCustomerGraphReadTenantConfirmation,
 } from '../../services/m365ControlPlane/connectionService';
 import {
-  consumeConsentSession,
-  readConsentSessionPurpose,
-} from '../../services/m365ControlPlane/consentSessionService';
-import {
   actionsConnectionService,
   cancelCustomerGraphActionsTenantConfirmation,
   continueCustomerGraphActionsConsent,
@@ -431,30 +427,25 @@ describe.each(['customer-graph-read', 'customer-graph-actions'] as const)('%s id
     });
   });
 
-  runDb('legacy in-flight row: a flow_version 1 session can be neither read for purpose nor consumed', async () => {
+  runDb('a flow_version 1 session can no longer be written (#7910 W04)', async () => {
     const owner = await ownerFixture();
     const { connectionId } = await initiate(profile, owner);
     const row = await connectionRow(owner.orgId, profile);
-    const rawState = `legacy-${randomUUID()}`;
-    await withSystemDbAccessContext(() => db.insert(m365ConsentSessions).values({
-      stateHash: createHash('sha256').update(rawState).digest('hex'),
+    await expect(withSystemDbAccessContext(() => db.insert(m365ConsentSessions).values({
+      stateHash: createHash('sha256').update(`legacy-${randomUUID()}`).digest('hex'),
       phase: 'admin_consent',
-      flowVersion: 1,
+      flowVersion: 1 as never,
       connectionId,
       orgId: owner.orgId,
       profile,
       consentAttemptId: row!.consentAttemptId!,
       userId: owner.actorId,
       expiresAt: new Date(Date.now() + 300_000),
-    }));
-    const lookup = { rawState, phase: 'admin_consent' as const, connectionId, consentAttemptId: row!.consentAttemptId!, profile };
-
-    expect(await readConsentSessionPurpose(lookup)).toBeNull();
-    expect(await consumeConsentSession({ ...lookup, orgId: owner.orgId })).toBeNull();
-    expect((await sessionRows(owner.orgId, profile)).filter((s) => s.flowVersion === 1)).toHaveLength(1);
+    }))).rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'm365_consent_sessions_flow_version_check' } });
+    expect(await sessionRows(owner.orgId, profile)).toHaveLength(1);
   });
 
-  runDb('a legacy v1 browser cookie from before the deploy restarts with consent_expired', async () => {
+  runDb('a correctly-signed v1 browser cookie is no longer recognised: consent_state_mismatch (#7910 W04)', async () => {
     const owner = await ownerFixture();
     const { connectionId } = await initiate(profile, owner);
     const row = await connectionRow(owner.orgId, profile);
@@ -468,10 +459,13 @@ describe.each(['customer-graph-read', 'customer-graph-actions'] as const)('%s id
     })).toString('base64url');
     const mac = createHmac('sha256', process.env.APP_ENCRYPTION_KEY!).update(`${context}.${payload}`).digest('base64url');
 
+    const sessionsBefore = await sessionRows(owner.orgId, profile);
     const res = await callback(profile, `${name}=${payload}.${mac}`, { state: 'old', tenant: randomUUID(), admin_consent: 'True' });
 
-    expect(res.location).toMatch(/\/consent_expired$/);
+    expect(res.location).toMatch(/\/consent_state_mismatch$/);
     expect(await connectionRow(owner.orgId, profile)).toMatchObject({ status: 'pending-consent', tenantId: null });
+    // Nothing consumed: the in-flight v2 identity session is untouched.
+    expect(await sessionRows(owner.orgId, profile)).toEqual(sessionsBefore);
   });
 
   // ---- W03 confirm-tenant interstitial -----------------------------------

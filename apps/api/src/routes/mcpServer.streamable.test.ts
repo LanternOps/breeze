@@ -37,6 +37,7 @@ const setApiKeyContext = (c: any, scopes: string[] = ['ai:read']) => {
     orgId: 'org-1',
     name: 'test',
     keyPrefix: 'brz_test',
+    mcpDomains: null,
     partnerId: 'partner-1',
     scopes,
     rateLimit: 1000,
@@ -676,7 +677,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
 
     it('sorts by name and decorates every tool with title, annotations and _meta', async () => {
       const { tools: listed, nextCursor } = await listWith();
-      expect(listed.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services', 'query_devices']);
+      expect(listed.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services', 'query_devices', 'whoami']);
       expect(nextCursor).toBeUndefined();
       expect(listed[0]).toMatchObject({ title: 'Get backup status', annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, _meta: { 'app.breeze/domain': expect.any(String) } });
       expect(listed[1]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
@@ -690,7 +691,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
         expect(page1.tools.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services']);
         expect(page1.nextCursor).toEqual(expect.any(String));
         const page2 = await listWith({ cursor: page1.nextCursor });
-        expect(page2.tools.map((t) => t.name)).toEqual(['query_devices']);
+        expect(page2.tools.map((t) => t.name)).toEqual(['query_devices', 'whoami']);
         expect(page2.nextCursor).toBeUndefined();
         const app = appWithMcpRoutes();
         const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) });

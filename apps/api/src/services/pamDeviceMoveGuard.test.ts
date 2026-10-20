@@ -57,3 +57,107 @@ describe('assertPamDeviceOrgMoveAllowed', () => {
     expect(rendered.sql).not.toMatch(/observed_state|desired_state|generation|current_command_id/i);
   });
 });
+
+describe('PAM ownership epoch transfer (W6, #8208)', () => {
+  it('reads the env flag strictly: only true/1/on enable it', async () => {
+    const { isPamEpochTransferEnvEnabled } = await import('./pamDeviceMoveGuard');
+    for (const [value, expected] of [
+      [undefined, false], ['', false], ['false', false], ['0', false], ['yes', false],
+      ['true', true], ['1', true], ['on', true], [' TRUE ', true],
+    ] as const) {
+      expect(isPamEpochTransferEnvEnabled({ PAM_OWNERSHIP_EPOCH_TRANSFER: value }), String(value)).toBe(expected);
+    }
+  });
+
+  it('resolves transfer only when BOTH the env flag and the database switch are on', async () => {
+    const { resolvePamEpochTransfer } = await import('./pamDeviceMoveGuard');
+    const dbOn = { execute: vi.fn(async (_q: unknown) => [{ enabled: true }]) };
+    const dbOff = { execute: vi.fn(async (_q: unknown) => [{ enabled: false }]) };
+
+    await expect(resolvePamEpochTransfer(dbOn as never, { PAM_OWNERSHIP_EPOCH_TRANSFER: 'true' })).resolves.toBe(true);
+    await expect(resolvePamEpochTransfer(dbOff as never, { PAM_OWNERSHIP_EPOCH_TRANSFER: 'true' })).resolves.toBe(false);
+    const untouched = { execute: vi.fn(async (_q: unknown) => [{ enabled: true }]) };
+    await expect(resolvePamEpochTransfer(untouched as never, {})).resolves.toBe(false);
+    // Env off never asks the database.
+    expect(untouched.execute).not.toHaveBeenCalled();
+    const rendered = dialect.sqlToQuery(dbOn.execute.mock.calls[0]![0] as unknown as SQL);
+    expect(rendered.sql).toMatch(/breeze_pam_epoch_transfer_enabled\(\)/);
+  });
+
+  it('arms the cause GUC always and the transfer GUC only when transfer is on, transaction-local', async () => {
+    const { armOwnershipChange } = await import('./pamDeviceMoveGuard');
+    const execute = vi.fn(async (_q: unknown) => []);
+    await armOwnershipChange({ execute } as never, 'device_move', false);
+    let rendered = dialect.sqlToQuery(execute.mock.calls[0]![0] as unknown as SQL);
+    expect(rendered.sql).toMatch(/set_config\('breeze\.ownership_change_cause', \$1, true\)/);
+    expect(rendered.sql).toMatch(/set_config\('breeze\.pam_epoch_transfer', \$2, true\)/);
+    expect(rendered.params).toEqual(['device_move', 'off']);
+
+    execute.mockClear();
+    await armOwnershipChange({ execute } as never, 'org_merge', true);
+    rendered = dialect.sqlToQuery(execute.mock.calls[0]![0] as unknown as SQL);
+    expect(rendered.params).toEqual(['org_merge', 'on']);
+  });
+
+  it('with transfer on refuses only a not-closed actuation, with PAM_DEVICE_MOVE_ACTIVE', async () => {
+    const { PamDeviceMoveActiveError } = await import('./pamDeviceMoveGuard');
+    const { tx, execute } = makeTx(true);
+    const error = await assertPamDeviceOrgMoveAllowed(tx, {
+      deviceId: DEVICE_ID,
+      sourceOrgId: SOURCE_ORG_ID,
+      transferEnabled: true,
+    }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(PamDeviceMoveActiveError);
+    expect(error.code).toBe('PAM_DEVICE_MOVE_ACTIVE');
+    const rendered = dialect.sqlToQuery(execute.mock.calls[0]![0] as unknown as SQL);
+    expect(rendered.sql).toMatch(/not pam_actuation_is_closed\(a\)/i);
+    expect(rendered.params).toEqual([DEVICE_ID, SOURCE_ORG_ID]);
+  });
+
+  it('with transfer on resolves when every departing actuation is closed', async () => {
+    const { tx } = makeTx(false);
+    await expect(assertPamDeviceOrgMoveAllowed(tx, {
+      deviceId: DEVICE_ID,
+      sourceOrgId: SOURCE_ORG_ID,
+      transferEnabled: true,
+    })).resolves.toBeUndefined();
+  });
+
+  it('fails closed (throws) when the precondition query returns no row, in both modes', async () => {
+    for (const transferEnabled of [false, true]) {
+      const tx = { execute: vi.fn(async (_q: unknown) => ({ rows: [] })) } as never;
+      await expect(assertPamDeviceOrgMoveAllowed(tx, {
+        deviceId: DEVICE_ID,
+        sourceOrgId: SOURCE_ORG_ID,
+        transferEnabled,
+      })).rejects.toThrow(/returned no row/);
+    }
+  });
+
+  it('OD4: expires pending un-actuated requests with reason ownership_changed and audits each', async () => {
+    const { expireUnactuatedElevationRequests } = await import('./pamDeviceMoveGuard');
+    const execute = vi.fn(async (_q: unknown) => [{ id: 'r1' }, { id: 'r2' }]);
+    await expect(expireUnactuatedElevationRequests({ execute } as never, {
+      orgId: SOURCE_ORG_ID,
+      deviceId: DEVICE_ID,
+    })).resolves.toBe(2);
+    const rendered = dialect.sqlToQuery(execute.mock.calls[0]![0] as unknown as SQL);
+    expect(rendered.sql).toMatch(/status in \('pending', 'approved', 'auto_approved', 'actuating'\)/i);
+    expect(rendered.sql).toMatch(/not exists \(select 1 from pam_actuations a where a\.elevation_request_id = r\.id\)/i);
+    expect(rendered.sql).toMatch(/insert into elevation_audit/i);
+    // The cause is a bound value, not a SQL literal: the elevation_audit writer
+    // inventory (pamAuditExport.test.ts) reads every quoted name in a
+    // jsonb_build_object as a details key.
+    expect(rendered.sql).toMatch(/jsonb_build_object\('cause', \$3::text, 'prior_status', f\.prior_status\)/);
+    expect(rendered.params).toEqual([SOURCE_ORG_ID, DEVICE_ID, 'ownership_changed']);
+  });
+
+  it('OD4 for a merge scopes to the whole loser org (no device filter)', async () => {
+    const { expireUnactuatedElevationRequests } = await import('./pamDeviceMoveGuard');
+    const execute = vi.fn(async (_q: unknown) => []);
+    await expect(expireUnactuatedElevationRequests({ execute } as never, { orgId: SOURCE_ORG_ID })).resolves.toBe(0);
+    const rendered = dialect.sqlToQuery(execute.mock.calls[0]![0] as unknown as SQL);
+    expect(rendered.sql).not.toMatch(/r\.device_id =/i);
+    expect(rendered.params).toEqual([SOURCE_ORG_ID, 'ownership_changed']);
+  });
+});

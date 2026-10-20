@@ -67,7 +67,10 @@ export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhos
  * ~35 requests (ice-servers + offer + ~34 answer polls across the 15s window),
  * so 600/min leaves room for roughly 16 attempts a minute from one IP — enough
  * for several techs behind one office NAT reconnecting, while still capping a
- * runaway client at ~10 req/s. Note the prefix covers ALL desktop-ws traffic,
+ * runaway client at ~10 req/s. Trickle ICE (#9182) adds at most ~30 more per
+ * attempt (a ≤30 s, 1 s-paced poll for the agent's late candidates that stops
+ * at its end-of-gathering marker, plus one POST per late viewer candidate) —
+ * still ~10 attempts a minute. Note the prefix covers ALL desktop-ws traffic,
  * so one runaway viewer can still throttle other remote sessions from the same
  * IP; it just can no longer touch the dashboard or auth budget.
  */
@@ -96,6 +99,21 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // route carries its own 600/min limiter and rejects anything unsigned, so
   // this bucket only needs to stay out of runaway territory.
   { prefix: '/api/v1/webhooks/email-provider/', name: 'emaildomainswebhook', limit: 1200 },
+  // EDR vendor push hints (W03 PR-B). One vendor egress IP delivers every
+  // partner's console events, so the shared per-IP budget would couple partners
+  // to each other and to dashboard traffic. The route carries its own
+  // per-connection 60/min limiter (checked before any DB read) and rejects
+  // anything without the connection's secret.
+  { prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 },
+  // Public trust pages (spec trust-center §8, §10): unauthenticated by design. Isolated so a scanner
+  // enumerating slugs cannot burn the shared budget; 120/min is generous for one human reading a page
+  // (payload + badge + a few documents). The SSR card path lives under /trust/card/ and is skip-listed
+  // instead, because portal SSR shares one IP — see routes/trustPagePublic.ts for why it is DB-free.
+  { prefix: '/api/v1/trust/public/', name: 'trustpublic', limit: 120 },
+  // Signed trust attestation + JWKS (Trust Center W3b): unauthenticated, read by insurer/auditor tooling that
+  // fetches one page at a time. Isolated from 'trustpublic' so a verifier polling attestations cannot starve a
+  // human reading the page, and vice versa.
+  { prefix: '/api/v1/trust/attestation/', name: 'trustattest', limit: 60 },
 ];
 
 export function registerGlobalRateLimitSkipPrefix(prefix: string): void {

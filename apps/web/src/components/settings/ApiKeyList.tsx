@@ -2,6 +2,7 @@ import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import type { McpGrantableDomain } from '@breeze/shared';
 import { FilterSelect } from '../shared/FilterSelect';
 
 export type ApiKeyStatus = 'active' | 'revoked' | 'expired';
@@ -19,6 +20,8 @@ export type ApiKey = {
   expiresAt: string | null;
   rateLimit: number | null;
   source?: ApiKeySource;
+  /** B-W02 #6156: null/absent = every MCP tool area. Only meaningful with an `ai:*` scope. */
+  mcpDomains?: McpGrantableDomain[] | null;
 };
 
 type ApiKeyListProps = {
@@ -53,6 +56,7 @@ export default function ApiKeyList({
   onPageChange
 }: ApiKeyListProps) {
   const { t } = useTranslation('settings');
+  const { t: tc } = useTranslation('common');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<ApiKeyStatus | 'all'>('all');
 
@@ -186,6 +190,16 @@ export default function ApiKeyList({
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground" title={apiKey.scopes.join(', ')}>
                     {formatScopes(apiKey.scopes)}
+                    {apiKey.scopes.some(s => s.startsWith('ai:')) && (
+                      <span
+                        data-testid={`api-key-mcp-domains-${apiKey.id}`}
+                        className="ml-2 inline-flex items-center rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700"
+                      >
+                        {apiKey.mcpDomains
+                          ? tc('longTail.mcpDomains.areaCount', { count: apiKey.mcpDomains.length })
+                          : tc('longTail.mcpDomains.allTools')}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{formatDate(apiKey.createdAt)}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{formatDate(apiKey.lastUsedAt)}</td>

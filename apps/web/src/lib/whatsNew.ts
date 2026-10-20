@@ -18,6 +18,32 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.124.0',
+    date: '2026-10-19',
+    title: 'A fuller Trust Center, connection health alerts, and Huntress and SentinelOne deployed from policy',
+    highlights: [
+      'Trust Center pages gain declared controls with yearly expiry, documents customers can request, framework views, subprocessors and an FAQ. A partner-wide template, a signed attestation, a website embed and questionnaire export round them out, and customers can edit the draft from the portal while you keep publishing.',
+      'A Connection Health panel on Integrations lists every broken integration with a fix link, including failing webhooks and stalled syncs. Admins who can fix an incident get one daily digest email. Notices to customer admins are opt-in.',
+      'Turn on Huntress or SentinelOne in a configuration policy’s Security Agents tab to deploy it with each organization’s own keys, then track per-device coverage and gaps. With this release’s agent, Windows devices also take a System Restore checkpoint before patches, scripts and software installs.',
+      'A new AI data & privacy setting controls whether AI can read device files (user profile folders are excluded by default) and how long AI tool outputs are kept. Microsoft 365 password resets and account disables now need a verified caller, and eight more M365 identity actions are available through AI with approval.',
+      'Getting around is faster: the header switcher goes Customer › Page with live counts, and organization, site, device and ticket names link everywhere. A Recent list sits in the sidebar and on the dashboard, and a new Attention column on the devices list shows open alerts and tickets.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
+    version: '0.123.0',
+    date: '2026-10-17',
+    title: 'Agents that get past ISP security filters, ticket types, and customer work approval',
+    highlights: [
+      'With this release’s agent, devices on home networks behind ISP “security” filters such as Comcast xFi Advanced Security and Spectrum Security Shield can connect to hosted Breeze. The agent switches to Encrypted Client Hello only after it detects the filter, and connects as before everywhere else.',
+      'Tickets now have a type (Incident, Service Request, Problem or Change), each with its own Service Desk entry, and a Related tickets panel links tickets to each other, such as incidents to the problem behind them.',
+      'Optional customer work approval: over-budget or after-hours time is held until the customer approves it in the portal, or you record their decision, and held time is never invoiced. Set a budget on the ticket and turn approval on in the time capture settings.',
+      'The remote viewer adds a keyboard mode (Type what I see, or Physical keys with this release’s agent) with IME and dead-key typing, plus view-only, block local input, screenshots, Fit or 100% scaling and a connection stats overlay.',
+      'Dynamic groups now update when a device’s tags or custom fields change, and the group rule builder offers custom fields.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.122.0',
     date: '2026-10-11',
     title: 'Larger remote clipboard transfers, AI that researches fixes, and a clearer network map',

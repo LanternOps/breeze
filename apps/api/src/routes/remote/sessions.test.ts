@@ -210,7 +210,7 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
   ),
 }));
 
-vi.mock('../agentWs', () => ({ sendCommandToAgent }));
+vi.mock('../agentWs', () => ({ sendCommandToAgent, sendDesktopIceCandidateToAgent: vi.fn(() => true) }));
 
 vi.mock('../../services/agentCommandRelay', () => ({ dispatchCommandToAgent }));
 
@@ -260,6 +260,16 @@ vi.mock('../../services/remoteRevocationLease', () => ({
 }));
 
 vi.mock('./recordingUrl', () => ({ normalizeRecordingUrl: vi.fn((u: unknown) => u) }));
+
+// #8947 in-flight marker: Redis-backed, so stubbed here; its own suite covers it.
+const readDesktopStartInFlight = vi.fn<(sessionId: string) => Promise<string | null>>(async () => null);
+const markDesktopStartInFlight = vi.fn(async () => undefined);
+const releaseDesktopStartInFlight = vi.fn(async () => undefined);
+vi.mock('../../services/desktopStartInFlight', () => ({
+  readDesktopStartInFlight: (...a: unknown[]) => readDesktopStartInFlight(...(a as [string])),
+  markDesktopStartInFlight: (...a: unknown[]) => markDesktopStartInFlight(...(a as [])),
+  releaseDesktopStartInFlight: (...a: unknown[]) => releaseDesktopStartInFlight(...(a as [])),
+}));
 
 import { sessionRoutes } from './sessions';
 import { db } from '../../db';
@@ -371,12 +381,18 @@ function rigDesktopStartIntent(options: {
   lockedStatus?: string;
   committedGeneration?: bigint;
   includeHardwareLookup?: boolean;
+  /** Extra columns on the row-locked read (#8947: the current start's command id / answer). */
+  lockedRow?: Record<string, unknown>;
+  /** Generation the pre-send re-read sees; differs from committedGeneration to model supersession. */
+  rereadGeneration?: bigint;
 } = {}) {
   const {
     lockedStatus = 'pending',
     committedGeneration = 1n,
     includeHardwareLookup = true,
+    lockedRow = {},
   } = options;
+  const rereadGeneration = options.rereadGeneration ?? committedGeneration;
 
   // A prior test in a describe whose beforeEach only calls vi.clearAllMocks()
   // (not mockReset()) can leave an unconsumed mockReturnValueOnce queued on
@@ -402,7 +418,7 @@ function rigDesktopStartIntent(options: {
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockReturnValue({
           for: vi.fn().mockResolvedValue([
-            { status: lockedStatus, terminationPhase: 'none', generation: 0n },
+            { status: lockedStatus, terminationPhase: 'none', generation: 0n, ...lockedRow },
           ]),
         }),
       }),
@@ -419,7 +435,7 @@ function rigDesktopStartIntent(options: {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue([
-          { terminationPhase: 'none', generation: committedGeneration },
+          { terminationPhase: 'none', generation: rereadGeneration },
         ]),
       }),
     }),
@@ -1316,6 +1332,107 @@ describe('remote sessions — site-scope enforcement', () => {
         desktopPromptMode: mode,
         desktopConsentUnavailableBehavior: bound,
       }));
+    });
+
+    // #8947: a concurrent second offer for a start still waiting on its answer
+    // is refused instead of superseding it (and orphaning the first peer).
+    describe('concurrent second offer (#8947)', () => {
+      const IN_FLIGHT_COMMAND = `desk-start-${SESSION_ID}-99999999-9999-4999-8999-999999999999`;
+
+      function primeOffer(lockedStatus: string, lockedRow: Record<string, unknown> = {}) {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: lockedStatus, deviceId: DEVICE_IN_ALLOWED },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
+        });
+        rigDesktopStartIntent({ lockedStatus, lockedRow });
+      }
+
+      function offer() {
+        return app.request(`/remote/sessions/${SESSION_ID}/offer`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+          body: offerBody,
+        });
+      }
+
+      it('refuses with 409 START_IN_FLIGHT and dispatches nothing', async () => {
+        primeOffer('connecting', { startCommandId: IN_FLIGHT_COMMAND, hasAnswer: false });
+        readDesktopStartInFlight.mockResolvedValueOnce(IN_FLIGHT_COMMAND);
+
+        const res = await offer();
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).code).toBe('START_IN_FLIGHT');
+        expect(db.update).not.toHaveBeenCalled();
+        expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
+      });
+
+      it('accepts a reconnect offer on an active session', async () => {
+        primeOffer('active', { startCommandId: IN_FLIGHT_COMMAND, hasAnswer: true });
+        readDesktopStartInFlight.mockResolvedValueOnce(IN_FLIGHT_COMMAND);
+
+        const res = await offer();
+
+        expect(res.status).toBe(200);
+        expect(vi.mocked(sendCommandToAgent)).toHaveBeenCalledTimes(1);
+      });
+
+      it('releases the marker when the agent is unreachable', async () => {
+        primeOffer('pending');
+        vi.mocked(sendCommandToAgent).mockReturnValueOnce(false);
+
+        const res = await offer();
+
+        expect(res.status).toBe(503);
+        const [, command] = vi.mocked(sendCommandToAgent).mock.calls.at(-1) as unknown as [string, { id: string }];
+        expect(releaseDesktopStartInFlight).toHaveBeenCalledWith(SESSION_ID, command.id);
+      });
+
+      it('releases the marker when the revocation lease cannot be minted', async () => {
+        primeOffer('pending');
+        prepareRevocationLeaseForStart.mockResolvedValueOnce({ ok: false, reason: 'redis_unavailable' } as never);
+
+        const res = await offer();
+
+        expect(res.status).toBe(503);
+        expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
+        expect(releaseDesktopStartInFlight).toHaveBeenCalledWith(SESSION_ID, expect.stringMatching(/^desk-start-/));
+      });
+
+      it('releases the marker when the request throws after the commit', async () => {
+        primeOffer('pending');
+        prepareRevocationLeaseForStart.mockRejectedValueOnce(new Error('lease mint exploded'));
+
+        const res = await offer();
+
+        expect(res.status).toBe(500);
+        expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
+        expect(releaseDesktopStartInFlight).toHaveBeenCalledWith(SESSION_ID, expect.stringMatching(/^desk-start-/));
+      });
+
+      it('releases the marker when the start was superseded before dispatch', async () => {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
+        });
+        // Commit returns generation 1; the pre-send re-read sees 2.
+        rigDesktopStartIntent({ lockedStatus: 'pending', committedGeneration: 1n, rereadGeneration: 2n });
+
+        const res = await offer();
+
+        expect(res.status).toBe(409);
+        expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
+        expect(releaseDesktopStartInFlight).toHaveBeenCalledWith(SESSION_ID, expect.stringMatching(/^desk-start-/));
+      });
+
+      it('keeps the marker once the start reached the agent', async () => {
+        primeOffer('pending');
+
+        const res = await offer();
+
+        expect(res.status).toBe(200);
+        expect(releaseDesktopStartInFlight).not.toHaveBeenCalled();
+      });
     });
 
     describe('offer consent start gates', () => {

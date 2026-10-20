@@ -1,5 +1,5 @@
 import { isAutopayEnabledForPartner } from './autopay/autopayGate';
-import { and, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
   contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
@@ -16,7 +16,8 @@ import {
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { computeOpenHourBlockPeriod } from './contractHourBlockEstimate';
-import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor, todayISO, firstUnclaimedPeriodStart, advancePastClaimed } from './contractMath';
+import { periodIndexFor, nextBillingDate, computePeriod, isExpired, todayISO, firstUnclaimedPeriodStart, advancePastClaimed, contractInTermForReporting } from './contractMath';
+import { loadBilledFinalTermValues } from './contractBilledFinalTerm';
 import { emitContractEvent } from './contractEvents';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 import { pgErrorNode, isPgUniqueViolation } from '../utils/pgErrors';
@@ -1088,24 +1089,12 @@ async function loadCatalogPriceInputs(
  * price-book row for that currency → the line's stamped snapshot on a gap), so
  * the dashboard agrees with the invoices it predicts. Never converts and never
  * falls through to another currency's price.
+ *
+ * Which contracts count is contractInTermForReporting (#9220), not the status
+ * stamp. A contract in its billed final term (flipped to 'expired' by the
+ * invoice for its last period, still before end_date) is valued at what that
+ * invoice billed, not re-resolved — see loadBilledFinalTermValues.
  */
-/**
- * The billing sites' expiry test, evaluated against the period the sweep is
- * NEXT going to bill (`duePeriodStartFor`, exactly as generateDueInvoice does).
- * A contract with no pointer can never produce another invoice, so it is judged
- * against today instead. Open-ended (endDate null) is never past its end.
- */
-function isPastEndForReporting(
-  c: { endDate: string | null; nextBillingAt: string | null; billingTiming: 'advance' | 'arrears'; intervalMonths: number },
-  asOfISO: string,
-): boolean {
-  if (c.endDate === null || c.endDate === undefined) return false;
-  const periodStart = c.nextBillingAt
-    ? duePeriodStartFor(c.billingTiming, c.nextBillingAt, c.intervalMonths > 0 ? c.intervalMonths : 1)
-    : asOfISO;
-  return isExpired({ endDate: c.endDate, periodStart });
-}
-
 export async function summarizeActiveContractMrrByOrg(
   orgIds: readonly string[],
   asOf: Date = new Date(),
@@ -1113,18 +1102,58 @@ export async function summarizeActiveContractMrrByOrg(
   const out = new Map<string, OrgCurrencyMrr[]>();
   if (orgIds.length === 0) return out;
 
-  const active = await db.select().from(contracts)
-    .where(and(inArray(contracts.orgId, [...orgIds]), eq(contracts.status, 'active' as never)));
-  // `status = 'active'` alone is NOT "still running": a contract is flipped to
-  // 'expired' LAZILY inside generateDueInvoice / renewal, at its next billing
-  // date — there is no expiry reaper — so an ended annual contract keeps the
-  // 'active' stamp for up to a whole interval. Billing already skips it via
-  // isExpired, so reporting it here would break this rollup's contract that the
-  // dashboard agrees with the invoices it predicts. Same guard, same inputs.
-  const rows = active.filter((c) => !isPastEndForReporting(c, todayISO(asOf)));
-  if (rows.length === 0) return out;
+  // Eligibility is "in term" (contractInTermForReporting, #9220 / spec T8), not
+  // the status stamp, which is wrong in BOTH directions:
+  //  - 'active' can be over: an ended contract is flipped to 'expired' LAZILY by
+  //    generateDueInvoice at its next billing date (there is no expiry reaper),
+  //    so it keeps 'active' for up to a whole interval while billing already
+  //    skips it via isExpired (isPastEndForReporting, same guard, same inputs).
+  //  - 'expired' can be running: generateDueInvoice flips an ADVANCE contract to
+  //    'expired' as soon as it bills the final period, which is paid for and
+  //    still being served until end_date. Those are valued at what was billed.
+  // Only expired contracts whose dates still put them in term are loaded, so
+  // expired history does not grow this query.
+  const asOfISO = todayISO(asOf);
+  const candidates = await db.select().from(contracts)
+    .where(and(
+      inArray(contracts.orgId, [...orgIds]),
+      or(
+        eq(contracts.status, 'active' as never),
+        and(eq(contracts.status, 'expired' as never), lte(contracts.startDate, asOfISO), gt(contracts.endDate, asOfISO)),
+      ),
+    ));
+  // An expired contract is in term only if a billed period covers asOf; look
+  // that up just for the ones the dates have not already ruled out.
+  const finalTermIds = candidates
+    .filter((c) => (c.status as string) === 'expired' && contractInTermForReporting(c, asOfISO, true) !== null)
+    .map((c) => c.id);
+  const finalTermValues = await loadBilledFinalTermValues(finalTermIds, asOfISO);
 
-  const allLines = await db.select().from(contractLines)
+  const totals = new Map<string, Map<string, number>>(); // orgId -> currency -> monthly
+  // Round each contract in ITS OWN currency before grouping — a JPY contract
+  // must never contribute a fractional yen.
+  const addMonthly = (c: { orgId: string; currencyCode: string; intervalMonths: number }, periodCents: number) => {
+    const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
+    const monthly = Number(roundToCurrency(Number(fromCents(periodCents)) / months, c.currencyCode));
+    const perOrg = totals.get(c.orgId) ?? new Map<string, number>();
+    perOrg.set(c.currencyCode, (perOrg.get(c.currencyCode) ?? 0) + monthly);
+    totals.set(c.orgId, perOrg);
+  };
+
+  const rows: typeof candidates = [];
+  for (const c of candidates) {
+    const value = finalTermValues.get(c.id);
+    const basis = contractInTermForReporting(c, asOfISO, value !== undefined);
+    if (basis === 'active') { rows.push(c); continue; }
+    if (basis !== 'billed_final_term' || value === undefined) continue;
+    if (value.cents === null) {
+      console.warn('[contracts] MRR rollup skipped final term of contract %s (org %s): %s', c.id, c.orgId, value.reason);
+      continue;
+    }
+    addMonthly(c, value.cents);
+  }
+
+  const allLines = rows.length === 0 ? [] : await db.select().from(contractLines)
     .where(inArray(contractLines.contractId, rows.map((r) => r.id)));
   const byContract = new Map<string, typeof allLines>();
   for (const l of allLines) {
@@ -1173,7 +1202,6 @@ export async function summarizeActiveContractMrrByOrg(
   // and a distinct org seat count each run exactly once for the whole dashboard.
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
-  const totals = new Map<string, Map<string, number>>(); // orgId -> currency -> monthly
 
   for (const c of rows) {
     let cents = 0;
@@ -1217,14 +1245,7 @@ export async function summarizeActiveContractMrrByOrg(
       throw err;
     }
     if (siteDeleted) continue;
-    const periodValue = Number(fromCents(cents));
-    const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
-    // Round each contract in ITS OWN currency before grouping — a JPY contract
-    // must never contribute a fractional yen.
-    const monthly = Number(roundToCurrency(periodValue / months, c.currencyCode));
-    const perOrg = totals.get(c.orgId) ?? new Map<string, number>();
-    perOrg.set(c.currencyCode, (perOrg.get(c.currencyCode) ?? 0) + monthly);
-    totals.set(c.orgId, perOrg);
+    addMonthly(c, cents);
   }
 
   for (const [orgId, perCurrency] of totals) {

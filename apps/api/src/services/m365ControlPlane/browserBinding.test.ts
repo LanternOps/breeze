@@ -134,53 +134,41 @@ describe('identity-first binding v2', () => {
       .toEqual({ status: 'valid', binding: IDENTITY_BINDING });
   });
 
-  it('reports a v1-signed cookie as legacy, not valid', () => {
+  // #7910 W04: v1 cookies are no longer recognised at all. A correctly-signed
+  // v1 cookie is indistinguishable from any other bad signature.
+  it.each([
+    ['current', { ...V1_PAYLOAD, expiresAt: 10_000 }, 1_000],
+    ['expired', { ...V1_PAYLOAD, phase: 'identity_verification', tenantHint: TENANT, expiresAt: 1 }, 1_000_000],
+  ])('reports a v1-signed read cookie (%s) as invalid', (_label, payload, nowMs) => {
     const v1 = signWithContext(
       'breeze_m365_graph_read_consent',
       'breeze:m365-customer-graph-read:browser-binding:v1',
-      { ...V1_PAYLOAD, expiresAt: 10_000 },
+      payload,
       env.APP_ENCRYPTION_KEY,
     );
-    expect(inspectM365ConsentBindingCookie(v1, env, new Date(1_000))).toEqual({ status: 'legacy' });
-    expect(verifyM365ConsentBindingCookie(v1, env, new Date(1_000))).toBeNull();
+    expect(inspectM365ConsentBindingCookie(v1, env, new Date(nowMs))).toEqual({ status: 'invalid' });
+    expect(verifyM365ConsentBindingCookie(v1, env, new Date(nowMs))).toBeNull();
   });
 
-  it('reports an expired v1 cookie as legacy too (restart is the only remedy either way)', () => {
-    const v1 = signWithContext(
-      'breeze_m365_graph_read_consent',
-      'breeze:m365-customer-graph-read:browser-binding:v1',
-      { ...V1_PAYLOAD, phase: 'identity_verification', tenantHint: TENANT, expiresAt: 1 },
-      env.APP_ENCRYPTION_KEY,
-    );
-    expect(inspectM365ConsentBindingCookie(v1, env, new Date(1_000_000))).toEqual({ status: 'legacy' });
-  });
-
-  it('reports a v1 actions cookie as legacy on the actions instance only', () => {
+  it('reports a v1-signed actions cookie as invalid', () => {
     const v1Actions = signWithContext(
       'breeze_m365_graph_actions_consent',
       'breeze:m365-customer-graph-actions:browser-binding:v1',
       { ...V1_PAYLOAD, expiresAt: 10_000 },
       env.APP_ENCRYPTION_KEY,
     );
-    expect(inspectM365ActionsConsentBindingCookie(v1Actions, env, new Date(1_000))).toEqual({ status: 'legacy' });
-    // The READ v1 context signed under the actions cookie name is not legacy for actions.
-    const crossProfile = signWithContext(
-      'breeze_m365_graph_actions_consent',
-      'breeze:m365-customer-graph-read:browser-binding:v1',
+    expect(inspectM365ActionsConsentBindingCookie(v1Actions, env, new Date(1_000))).toEqual({ status: 'invalid' });
+    expect(verifyM365ActionsConsentBindingCookie(v1Actions, env, new Date(1_000))).toBeNull();
+  });
+
+  it('rejects a v1-shaped payload even when signed with the v2 context', () => {
+    const v1Shape = signWithContext(
+      'breeze_m365_graph_read_consent',
+      'breeze:m365-customer-graph-read:browser-binding:v2',
       { ...V1_PAYLOAD, expiresAt: 10_000 },
       env.APP_ENCRYPTION_KEY,
     );
-    expect(inspectM365ActionsConsentBindingCookie(crossProfile, env, new Date(1_000))).toEqual({ status: 'invalid' });
-  });
-
-  it('a v1-context signature under a different key is invalid, not legacy', () => {
-    const v1 = signWithContext(
-      'breeze_m365_graph_read_consent',
-      'breeze:m365-customer-graph-read:browser-binding:v1',
-      { ...V1_PAYLOAD, expiresAt: 10_000 },
-      'some-other-key',
-    );
-    expect(inspectM365ConsentBindingCookie(v1, env, new Date(1_000))).toEqual({ status: 'invalid' });
+    expect(inspectM365ConsentBindingCookie(v1Shape, env, new Date(1_000))).toEqual({ status: 'invalid' });
   });
 
   it('never accepts a v2 read cookie on the actions instance', () => {

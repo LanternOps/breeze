@@ -39,6 +39,16 @@ vi.mock('../db', () => ({
   hasDbAccessContext: hasDbAccessContextMock,
 }));
 
+const { readInFlightMock, markInFlightMock } = vi.hoisted(() => ({
+  readInFlightMock: vi.fn<(sessionId: string) => Promise<string | null>>(async () => null),
+  markInFlightMock: vi.fn(async () => undefined),
+}));
+
+vi.mock('./desktopStartInFlight', () => ({
+  readDesktopStartInFlight: readInFlightMock,
+  markDesktopStartInFlight: markInFlightMock,
+}));
+
 vi.mock('../db/schema', () => ({
   remoteSessions: {
     id: 'remoteSessions.id',
@@ -61,7 +71,9 @@ import {
   commitDesktopStartIntent,
   commitDesktopStreamStartIntent,
   formatDesktopGeneration,
+  startIntentDenialCode,
 } from './remoteDesktopStartIntent';
+import { viewerAnswerTimeoutMs } from '../routes/remote/consentTiming';
 
 const INPUT = {
   sessionId: '11111111-1111-4111-8111-111111111111',
@@ -98,6 +110,7 @@ describe('remoteDesktopStartIntent', () => {
     hasDbAccessContextMock.mockReturnValue(true);
     forUpdateMock.mockResolvedValue([{ status: 'pending', terminationPhase: 'none', generation: 0n }]);
     returningMock.mockResolvedValue([{ generation: 1n }]);
+    readInFlightMock.mockResolvedValue(null);
   });
 
   it('refuses to run without an open db access context rather than downgrading the row lock', async () => {
@@ -168,6 +181,8 @@ describe('remoteDesktopStartIntent', () => {
       desktopConsentUnavailableBehavior: 'block',
       webrtcOffer: null,
       webrtcAnswer: null,
+      // #9182: no trickled ICE candidate from an earlier start survives.
+      iceCandidates: [],
     });
     // Activation belongs to the agent's accepted result, never to the start
     // decision. startedAt marks this start attempt: the stale-session cutoff
@@ -176,10 +191,126 @@ describe('remoteDesktopStartIntent', () => {
     expect(written.startedAt).toBeInstanceOf(Date);
   });
 
+  // #9182: trickled candidates belong to one start. A new offer starts a new
+  // ICE negotiation, so the previous start's entries must not reach it.
+  it('clears the previous start\'s trickled ICE candidates with the generation bump', async () => {
+    returningMock.mockResolvedValue([{ generation: 2n }]);
+    await commitDesktopStartIntent(INPUT);
+    const written = setMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(written).toMatchObject({ webrtcAnswer: null, iceCandidates: [] });
+  });
+
   it('returns the committed generation as a bigint and formats it as a decimal string', async () => {
     returningMock.mockResolvedValue([{ generation: '9007199254740993' }]);
     const result = await commitDesktopStartIntent(INPUT);
     expect(result).toEqual({ ok: true, generation: 9007199254740993n, previousStatus: 'pending' });
     expect(formatDesktopGeneration(9007199254740993n)).toBe('9007199254740993');
+  });
+});
+
+// #8947: one viewer window posted two offers ~250 ms apart for the same
+// session. Both were accepted, two start_desktop commands went out, and only
+// the second answer was kept — the first peer was orphaned. A second offer
+// while the first start is still waiting for its answer is now refused.
+describe('commitDesktopStartIntent — start already in flight (#8947)', () => {
+  const IN_FLIGHT_COMMAND = 'desk-start-11111111-1111-4111-8111-111111111111-99999999-9999-4999-8999-999999999999';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    hasDbAccessContextMock.mockReturnValue(true);
+    returningMock.mockResolvedValue([{ generation: 5n }]);
+    readInFlightMock.mockResolvedValue(null);
+  });
+
+  it('refuses a second offer while the first start is unanswered and still in flight', async () => {
+    forUpdateMock.mockResolvedValue([{
+      status: 'connecting', terminationPhase: 'none', generation: 4n,
+      startCommandId: IN_FLIGHT_COMMAND, hasAnswer: false,
+    }]);
+    readInFlightMock.mockResolvedValue(IN_FLIGHT_COMMAND);
+
+    await expect(commitDesktopStartIntent(INPUT)).resolves.toEqual({ ok: false, reason: 'start_in_flight' });
+    expect(readInFlightMock).toHaveBeenCalledWith(INPUT.sessionId);
+    // Nothing written, nothing marked: the in-flight start keeps its generation.
+    expect(setMock).not.toHaveBeenCalled();
+    expect(markInFlightMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts the offer once the in-flight marker has expired (the first viewer gave up waiting)', async () => {
+    forUpdateMock.mockResolvedValue([{
+      status: 'connecting', terminationPhase: 'none', generation: 4n,
+      startCommandId: IN_FLIGHT_COMMAND, hasAnswer: false,
+    }]);
+    readInFlightMock.mockResolvedValue(null);
+
+    await expect(commitDesktopStartIntent(INPUT)).resolves.toMatchObject({ ok: true, generation: 5n });
+  });
+
+  it('accepts the offer when the marker belongs to a different start (row superseded since)', async () => {
+    forUpdateMock.mockResolvedValue([{
+      status: 'connecting', terminationPhase: 'none', generation: 4n,
+      startCommandId: IN_FLIGHT_COMMAND, hasAnswer: false,
+    }]);
+    readInFlightMock.mockResolvedValue('desk-start-some-older-command');
+
+    await expect(commitDesktopStartIntent(INPUT)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('accepts a reconnect offer once the answer is stored, without consulting the marker', async () => {
+    forUpdateMock.mockResolvedValue([{
+      status: 'connecting', terminationPhase: 'none', generation: 4n,
+      startCommandId: IN_FLIGHT_COMMAND, hasAnswer: true,
+    }]);
+    readInFlightMock.mockResolvedValue(IN_FLIGHT_COMMAND);
+
+    await expect(commitDesktopStartIntent(INPUT)).resolves.toMatchObject({ ok: true });
+    expect(readInFlightMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a reconnect offer on an active session (peer dropped), without consulting the marker', async () => {
+    forUpdateMock.mockResolvedValue([{
+      status: 'active', terminationPhase: 'none', generation: 4n,
+      startCommandId: IN_FLIGHT_COMMAND, hasAnswer: true,
+    }]);
+    readInFlightMock.mockResolvedValue(IN_FLIGHT_COMMAND);
+
+    await expect(commitDesktopStartIntent(INPUT)).resolves.toMatchObject({ ok: true, previousStatus: 'active' });
+    expect(readInFlightMock).not.toHaveBeenCalled();
+  });
+
+  it('marks the committed start in flight for exactly as long as its viewer waits for the answer', async () => {
+    forUpdateMock.mockResolvedValue([{ status: 'pending', terminationPhase: 'none', generation: 0n }]);
+
+    await commitDesktopStartIntent({ ...INPUT, promptMode: 'consent' });
+
+    expect(markInFlightMock).toHaveBeenCalledWith(
+      INPUT.sessionId,
+      INPUT.startCommandId,
+      viewerAnswerTimeoutMs('consent'),
+    );
+  });
+
+  it('does not mark anything when the guarded UPDATE matched no row', async () => {
+    forUpdateMock.mockResolvedValue([{ status: 'pending', terminationPhase: 'none', generation: 0n }]);
+    returningMock.mockResolvedValue([]);
+
+    await expect(commitDesktopStartIntent(INPUT)).resolves.toEqual({ ok: false, reason: 'state_changed' });
+    expect(markInFlightMock).not.toHaveBeenCalled();
+  });
+
+  it('the WS-fallback start neither consults nor sets the WebRTC in-flight marker', async () => {
+    forUpdateMock.mockResolvedValue([{
+      status: 'connecting', terminationPhase: 'none', generation: 4n,
+      startCommandId: IN_FLIGHT_COMMAND, hasAnswer: false,
+    }]);
+    readInFlightMock.mockResolvedValue(IN_FLIGHT_COMMAND);
+
+    await expect(commitDesktopStreamStartIntent(STREAM_INPUT)).resolves.toMatchObject({ ok: true });
+    expect(readInFlightMock).not.toHaveBeenCalled();
+    expect(markInFlightMock).not.toHaveBeenCalled();
+  });
+
+  it('names the refusal START_IN_FLIGHT on the wire', () => {
+    expect(startIntentDenialCode('start_in_flight')).toBe('START_IN_FLIGHT');
   });
 });

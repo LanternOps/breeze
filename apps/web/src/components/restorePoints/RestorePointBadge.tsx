@@ -98,6 +98,7 @@ const STATUS_MAP: Record<RestorePointStatus, StatusEntry> = {
   },
   skipped_disabled: { tone: 'warning', text: (t) => t('badge.skippedDisabled') },
   skipped_definition_only: { tone: 'neutral', text: (t) => t('badge.skippedDefinitionOnly') },
+  skipped_no_mutation: { tone: 'neutral', text: (t) => t('badge.skippedNoMutation') },
   unsupported: { tone: 'neutral', text: (t) => t('badge.unsupported') },
   busy: { tone: 'warning', text: (t) => t('badge.busy') },
   insufficient_privileges: { tone: 'warning', text: (t) => t('badge.insufficientPrivileges') },

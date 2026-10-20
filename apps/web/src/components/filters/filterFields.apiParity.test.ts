@@ -36,4 +36,18 @@ describe('web filter catalog mirrors the API built-in catalog', () => {
     expect(apiCatalog().get('logShippingFailing')).toBe('boolean');
     expect(FILTER_FIELDS.find((f) => f.key === 'logShippingFailing')?.type).toBe('boolean');
   });
+
+  it('offers group exclusion operators on Device Group only (#9179)', () => {
+    const group = FILTER_FIELDS.find((f) => f.key === 'groupId')!;
+    expect(group.operators).toEqual(expect.arrayContaining(['equals', 'notEquals', 'in', 'notIn']));
+    for (const key of ['orgId', 'siteId']) {
+      const ops = FILTER_FIELDS.find((f) => f.key === key)!.operators;
+      expect(ops).not.toContain('notEquals');
+      expect(ops).not.toContain('notIn');
+    }
+    const source = readFileSync(resolve(__dirname, '../../../../api/src/services/filterEngine.ts'), 'utf8');
+    const apiLine = source.split('\n').find((l) => l.includes("key: 'groupId'"))!;
+    expect(apiLine).toContain("'notEquals'");
+    expect(apiLine).toContain("'notIn'");
+  });
 });

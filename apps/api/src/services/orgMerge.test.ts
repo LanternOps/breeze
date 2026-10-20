@@ -1058,3 +1058,27 @@ describe('runPostPassFixups: the QuickBooks payment outbox', () => {
     }
   });
 });
+
+describe('typedPamMergeRefusal (W6 #8208): devices trigger backstop -> typed refusal', () => {
+  const pgErr = (code: string, constraint_name?: string) =>
+    Object.assign(new Error('trigger refused'), { code, constraint_name, detail: 'device x' });
+
+  it('maps the open-actuation constraint to pam_open_actuation and keeps the raw error as cause', () => {
+    const raw = pgErr('23514', 'devices_pam_open_actuation_move_guard');
+    const typed = orgMergeModule.typedPamMergeRefusal(raw);
+    expect(typed).toBeInstanceOf(orgMergeModule.OrgMergeBlockedError);
+    expect(typed).toMatchObject({ code: 'ORG_MERGE_BLOCKED', reason: 'blocks_merge', blockerCodes: ['pam_open_actuation'] });
+    expect(typed?.cause).toBe(raw);
+  });
+
+  it('maps the state-blind history constraint to pam_evidence', () => {
+    const typed = orgMergeModule.typedPamMergeRefusal(pgErr('23514', 'devices_pam_history_move_guard'));
+    expect(typed).toMatchObject({ blockerCodes: ['pam_evidence'] });
+  });
+
+  it('passes every other error through (other constraint, other SQLSTATE, non-pg error)', () => {
+    expect(orgMergeModule.typedPamMergeRefusal(pgErr('23514', 'some_other_check'))).toBeNull();
+    expect(orgMergeModule.typedPamMergeRefusal(pgErr('23503', 'devices_pam_open_actuation_move_guard'))).toBeNull();
+    expect(orgMergeModule.typedPamMergeRefusal(new Error('boom'))).toBeNull();
+  });
+});

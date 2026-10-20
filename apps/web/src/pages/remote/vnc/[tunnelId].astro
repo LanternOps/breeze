@@ -1,6 +1,7 @@
 ---
 import Layout from '../../../layouts/Layout.astro';
 import AuthOverlay from '../../../components/auth/AuthOverlay';
+import ToastContainer from '../../../components/shared/Toast';
 import VncViewerPage from '../../../components/remote/VncViewerPage';
 
 const { tunnelId } = Astro.params;
@@ -15,6 +16,9 @@ if (!tunnelId) {
        AuthThrottledError from a throttled /auth/refresh here went unhandled —
        no waiting mask, no recovery, just a broken remote session. -->
   <AuthOverlay client:load />
+  <!-- #9154: bare Layout.astro has no toast host; without this every
+       showToast/runAction failure toast on this page was silently dropped. -->
+  <ToastContainer client:load />
   <div class="h-[calc(100vh-1rem)]">
     <VncViewerPage
       tunnelId={tunnelId}

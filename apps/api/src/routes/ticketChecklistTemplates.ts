@@ -33,6 +33,7 @@ import {
   createChecklistTemplateItemSchema,
   updateChecklistTemplateItemSchema,
   checklistTemplateItemReorderSchema,
+  duplicateChecklistTemplateSchema,
 } from '@breeze/shared';
 import {
   listChecklistTemplates,
@@ -40,6 +41,7 @@ import {
   createChecklistTemplate,
   updateChecklistTemplate,
   deleteChecklistTemplate,
+  duplicateChecklistTemplate,
   addChecklistTemplateItem,
   updateChecklistTemplateItem,
   removeChecklistTemplateItem,
@@ -242,6 +244,32 @@ ticketChecklistTemplateRoutes.delete(
     try {
       await deleteChecklistTemplate(c.req.valid('param').id, templateActorFrom(c));
       return c.json({ data: { ok: true } });
+    } catch (err) {
+      return handleChecklistTemplateError(c, err);
+    }
+  },
+);
+
+// Duplicate (#9180). The copy keeps the SOURCE's owner — no scope field is
+// accepted — so the same 403 (partner-wide) / 404 (invisible) rules as create apply.
+ticketChecklistTemplateRoutes.post(
+  '/:id/duplicate',
+  scopes,
+  writePerm,
+  zValidator('param', templateParam),
+  zValidator('json', duplicateChecklistTemplateSchema),
+  async (c) => {
+    try {
+      return c.json(
+        {
+          data: await duplicateChecklistTemplate(
+            c.req.valid('param').id,
+            c.req.valid('json'),
+            templateActorFrom(c),
+          ),
+        },
+        201,
+      );
     } catch (err) {
       return handleChecklistTemplateError(c, err);
     }

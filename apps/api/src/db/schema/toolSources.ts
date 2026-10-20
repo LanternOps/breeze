@@ -13,6 +13,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { ToolSourceDiscoverySummary } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 
@@ -56,6 +57,18 @@ export const toolSources = pgTable(
     endpointUrl: text('endpoint_url').notNull(),
     /** Origin the credential is pinned to — `new URL(endpointUrl).origin`. */
     credentialOrigin: text('credential_origin').notNull(),
+    /**
+     * W2: OpenAPI document URL; NULL for mcp sources
+     * (`tool_sources_spec_url_kind_chk`). For an openapi source `endpointUrl`
+     * is the API base URL — operations never route to the document's servers[].
+     */
+    specUrl: text('spec_url'),
+    /**
+     * W2 (D17): diagnostics of the last COMPLETED discovery — skipped
+     * operations with reasons, non-fatal warnings. Untouched by a failed run.
+     * Export policy: excludedOpen (jsonb).
+     */
+    lastDiscoverySummary: jsonb('last_discovery_summary').$type<ToolSourceDiscoverySummary | null>(),
     authKind: toolSourceAuthKindEnum('auth_kind').notNull().default('none'),
     authConfigEncrypted: text('auth_config_encrypted'),
     authFingerprint: text('auth_fingerprint'),

@@ -218,6 +218,8 @@ When a backup feature is linked to a configuration policy, the schedule, retenti
 
 Configure security policy settings for **Security**; check intervals and targets for **Monitoring**; and event triggers, cron schedules, and action chains for **Automation**.
 
+Saving **Security** settings with IOC auto-quarantine turned on needs `devices:execute` and MFA, and scheduled scans quarantine only under a user who still holds that permission; otherwise they run detect-only. See [Auto-quarantine runs under an approving user](/features/security/#auto-quarantine-runs-under-an-approving-user).
+
 ### Vulnerability Scanning
 
 The **Vulnerability** feature is a single on/off toggle that controls whether the devices in the policy's scope are scanned for CVEs. It is configured **inline** (the on/off state lives in the policy) and is **off by default** -- a device with no vulnerability policy is never scanned, and its Vulnerabilities tab stays empty.
@@ -264,6 +266,7 @@ The badge text is what a technician sees; the status is the value recorded in th
 | `existing_accepted` | Existing point reused | Windows' 24-hour limit meant no new point was made, and an earlier one was accepted. Nothing to do. The badge shows the age of the reused point when the device reports it. |
 | `skipped_disabled` | Skipped — System Restore is turned off on this device | System Restore is off for the system drive. **Breeze will not turn System Restore on for you.** If you want checkpoints on this device, enable System Protection for the system drive in Windows (System Properties → System Protection, or `Enable-ComputerRestore` from an elevated PowerShell) and the next action can request one. |
 | `skipped_definition_only` | Skipped — definitions-only update | The patch run only contained definition updates, which do not need a checkpoint. Nothing to do. |
+| `skipped_no_mutation` | Not needed — no changes were made, so no restore point was created | The command stopped before it changed anything (for example the package was already installed, or the request was rejected during validation or preflight), so no System Restore point was needed. Nothing to do. |
 | `unsupported` | Not available on this device | System Restore is not present on this Windows edition (for example the system library or provider is missing). Nothing to enable. See the support matrix below. |
 | `busy` | Skipped — the volume snapshot service was in use | Another volume snapshot operation held the service. Retry the action later if you want a checkpoint. |
 | `insufficient_privileges` | Skipped — not enough privileges | The agent was not running with the rights System Restore needs. Check how the agent service runs on this device. |
@@ -315,7 +318,7 @@ A partner-wide "servers only" assignment reaches server-role devices in every as
 
 3. Optionally set the same **Role Filter** and **OS Filter**. Empty means every device in that target.
 
-4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`).
+4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`). On an exact tie, the assignment created first wins.
 
 5. Click **Assign**.
 
@@ -457,4 +460,4 @@ Enforcement mode must be set to `enforce` and a remediation script must be linke
 
 **Feature type conflict between policies at the same level**
 
-When two policies at the same hierarchy level both define the same feature type, the one with the lower **Priority** number wins (priority `1` beats priority `2`). If priorities are equal, results are non-deterministic — assign distinct priorities to resolve the conflict.
+When two policies at the same hierarchy level both define the same feature type, the one with the lower **Priority** number wins (priority `1` beats priority `2`). If the assignments tie on every ranking key, the one created first wins. Before v0.122.1 an exact tie had no defined winner, so a device decided by one may change once after upgrading. Assign distinct priorities to make the choice explicit.

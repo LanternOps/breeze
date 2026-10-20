@@ -254,10 +254,8 @@ describe('GET /devices — response shape', () => {
       new Date('2026-05-26T19:24:00.000Z').toISOString(),
     );
     expect(row).toHaveProperty('helperInstallIssue', 'awaiting_server_offer');
-    // #7067 — the "logs silent" list badge (DeviceList.tsx) reads lastLogAt
-    // off the list row directly; the detail route already returns it via
-    // projectPublicDevice, but the list select/mapper needs the same fix as
-    // #7068/#7023 above or the badge silently never renders on the list.
+    // #7067 — lastLogAt stays on the list row (public API shape); the detail
+    // route already returns it via projectPublicDevice.
     expect(row).toHaveProperty(
       'lastLogAt',
       new Date('2026-05-26T19:30:00.000Z').toISOString(),

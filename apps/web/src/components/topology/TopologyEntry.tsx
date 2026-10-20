@@ -35,6 +35,9 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
    * org is not a user switch.
    */
   const linkOwner = useRef<{ siteId: string; orgId: string | null } | undefined>(undefined);
+  // The pin belongs to the link that set it (#8335): once the hash no longer names that site (a tab click, a router
+  // hash reset), a later link to the same site is a new link, not evidence of a user switch away from the old one.
+  if (linkOwner.current && linkOwner.current.siteId !== hashSite) linkOwner.current = undefined;
   if (!siteId && hashSite && currentOrgId && sites.some((site) => site.id === hashSite)) linkOwner.current = { siteId: hashSite, orgId: currentOrgId };
   useEffect(() => clearTopologyPrefetch, [currentOrgId]);
   const [settings, setSettings] = useState<TopologySettings>(), [focus, setFocus] = useState<string>(), [error, setError] = useState<string>(), [bindingResolved, setBindingResolved] = useState(false);

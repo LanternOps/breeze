@@ -37,7 +37,8 @@ export default function PartnerMlFeaturesCard({
   onSaved,
 }: {
   value: MlFeatureSettings | undefined;
-  onSaved: () => void;
+  /** Receives the saved ml state so the parent can update its copy without a refetch. */
+  onSaved: (ml: MlFeatureSettings) => void;
 }) {
   const { t } = useTranslation('settings');
   const [ml, setMl] = useState<MlState>(() => initialState(value));
@@ -60,7 +61,7 @@ export default function PartnerMlFeaturesCard({
         errorFallback: t('partnerSettingsPage.aiFeatures.saveFailed'),
         onUnauthorized: handleSessionExpired,
       });
-      onSaved();
+      onSaved({ ...ml, [section]: block });
     } catch (err) {
       setMl(previous);
       if (!(err instanceof ActionError)) throw err;

@@ -122,9 +122,14 @@ Together, these detect and reclaim database connections stuck at session start (
 | `AGENT_ENROLL_RATE_WINDOW_SECONDS` | `60` | | Window, in seconds, for `AGENT_ENROLL_RATE_LIMIT` |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
+| `PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR` | `1200` | | Ticket writes (create, update, status, assign, comment) per hour per service principal on the Partner API, still capped by the key's own rate limit. Ticket writes have their own bucket, separate from the 120-per-hour provisioning writes. v0.122.1+ |
+| `PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR` | `6000` | | Ticket writes per hour per partner, across all of that partner's service principals. Never lower than the per-principal limit. v0.122.1+ |
+| `PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED` | `true` | | Daily cleanup of stored `X-Idempotency-Key` claims for Partner API writes. `false` or `0` turns the cleanup off. v0.122.1+ |
+| `PARTNER_API_IDEMPOTENCY_RETENTION_DAYS` | `7` | | Days an idempotency claim is kept. A retry that arrives after the window creates a new resource instead of replaying the first response. v0.122.1+ |
 | `WEBAUTHN_RP_ID` | derived from `PUBLIC_APP_URL` | | Set only when the browser reaches the app on a different host than `PUBLIC_APP_URL` (for example `WEBAUTHN_RP_ID=localhost` on a local stack). Without a correct value, every passkey ceremony fails with "The RP ID ... is invalid for this domain." |
 | `WEBAUTHN_ORIGIN` | derived from `PUBLIC_APP_URL` | | Companion to `WEBAUTHN_RP_ID` — set together when passkeys are served from a non-default host. |
 | `WEBAUTHN_RP_NAME` | `Breeze RMM` | | Display name shown to the user during a passkey registration/sign-in ceremony. |
+| `CSP_REPORT_URI` | — | | URL that browsers send Content Security Policy violation reports to (`report-uri` and a `Report-To` group). Unset sends no reports. Passed to the API by both Compose files from v0.123.0. |
 
 Access-token (15m) and refresh-token (7d) lifetimes are fixed in code
 (`apps/api/src/services/jwt.ts`) — short-lived access tokens backed by
@@ -177,6 +182,7 @@ deployment env vars.
 | `MAILGUN_FROM` | `noreply@breeze.local` | Mailgun-specific sender address |
 | `SMTP_TIMEOUT_MS` | `30000` | How long an outbound SMTP send may take before it is abandoned. Applies to **all** outbound mail. Without a bound, a wedged mail host can hold a send open for nodemailer's ten-minute default |
 | `MAILGUN_TIMEOUT_MS` | `120000` | The same bound for the Mailgun HTTP transport |
+| `EMAIL_SUPPORT_ADDRESS` | — | Support address printed in system emails that do not carry one of their own. Unset leaves it out. |
 
 Sending customer-facing mail from a partner's own domain, rather than from
 `EMAIL_FROM`, is set up separately — see [Custom sender
@@ -292,6 +298,7 @@ From v0.118.0 each user may request 30 TURN credentials per 10 minutes. Tune it 
 | `PROMETHEUS_PORT` | `9090` | Prometheus web UI port (monitoring stack) |
 | `ALERTMANAGER_PORT` | `9093` | Alertmanager web UI port (monitoring stack) |
 | `LOKI_PORT` | `3100` | Loki log aggregation API port (monitoring stack) |
+| `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` | `3` | Number of 5-minute buckets a metric anomaly must span before it opens an episode; a shorter blip closes without one. The default was `2` before v0.122.1. |
 | `DEVICE_METRICS_RETENTION_DAYS` | `30` | Retention for the raw `device_metrics` series, clamped to 1–365. History charts are served from `metric_rollups` and are unaffected. **On first run after upgrading, older raw metrics are pruned — set this before starting the new version if you need more than 30 days.** |
 
 ### Background retention sweeps
@@ -324,6 +331,12 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `IP_HISTORY_RETENTION_DAYS` | `90` | Days to keep device IP-address history, clamped to 1–365 |
 | `IP_HISTORY_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `IP_HISTORY_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `RESTORE_POINT_ATTEMPT_RETENTION_DAYS` | `90` | Days to keep System Restore checkpoint attempts (the device's System Restore tab), clamped to 1–365. An attempt still awaiting the device is kept until its command can no longer report back, whatever this is set to |
+| `RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per sweep, per nightly run |
+| `WEBHOOK_DELIVERY_RETENTION_DAYS` | `90` | Days to keep delivered and failed webhook delivery records, clamped to 1–365. Pending and retrying deliveries are never deleted |
+| `WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
+| `WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
 | `SNMP_METRICS_RETENTION_DAYS` | `7` | Days to keep raw SNMP-polled metrics, clamped to 1–365 |
 | `SNMP_METRICS_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `SNMP_METRICS_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
@@ -703,6 +716,15 @@ Event-log rows per device are already limited by the event-log policy's hourly r
 
 The four `OFFLINE_DETECTOR_REEVAL_*` variables were removed in v0.118.0. The job that read them was retired with legacy alerting, so you can delete them from `.env`.
 
+## Agent connection switches
+
+**v0.123.0+.** Both are server-wide kill switches, on by default and mapped in both shipped Compose files. Each accepts only `true` or `false`; any other value stops the API from booting.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_ECH_ENABLED` | `true` | Lets agents that detect an ISP security filter on the TLS port connect with [Encrypted Client Hello](/agents/advanced-install/#encrypted-client-hello-ech). Agents receive the value in their heartbeat response. **Treat `false` as a last resort:** live connections stay up, but the next dial is plain, so a device that can only reach the API over ECH goes offline and cannot receive the setting back until it is on an unfiltered network. |
+| `HEARTBEAT_RETAIN_STATE_ENABLED` | `true` | An agent that supports it keeps its current PAM, Breeze Assist and remote-management state on a heartbeat where the server could not decide that setting (for example, a policy lookup failed), instead of being told to turn it off. `false` sends every agent the older heartbeat payload, as an earlier API would. |
+
 ## Database
 
 | Variable | Default | Description |
@@ -718,6 +740,11 @@ The four `OFFLINE_DETECTOR_REEVAL_*` variables were removed in v0.118.0. The job
 | `PATCH_REPORT_STORAGE_PATH` | `./data/patch-reports` | Patch compliance report storage |
 | `PATCH_REPORT_RETENTION_DAYS` | `30` | Days a generated patch compliance report file is kept after it completes (minimum `1`). A daily job then removes the file and marks the report `expired`. A value that is not a plain integer falls back to the default. |
 | `PATCH_REPORT_ORPHAN_MIN_AGE_MS` | `3600000` (1 hour) | How old a `<uuid>.csv` file in `PATCH_REPORT_STORAGE_PATH` that no report owns (for example, left behind when an organization was erased and the file could not be removed at the time) must be before the daily job removes it. Never below 10 minutes. |
+| `TUNNEL_ORIGIN_TEMPLATE` | unset | Serves Network Proxy content from a dedicated origin per tunnel (host mode), in the form `https://{id}.<suffix>`. Unset keeps path mode. The suffix must be on a different registrable domain from every app, API, portal, WebAuthn and CORS origin; a malformed template, or one that shares a registrable domain with any of them, stops the API from booting. Each partner also opts in under **Settings → Partner → Remote Access**. See [Network Proxy Dedicated Origin](/deploy/network-proxy-tunnel-origin/). |
+| `TUNNEL_FRAME_ANCESTOR` | origin of `PUBLIC_APP_URL` (else `DASHBOARD_URL`) | Exact `https://` origin allowed to frame tunnel content when `TUNNEL_ORIGIN_TEMPLATE` is set. Boot fails if it is unset and neither default exists. |
+| `TUNNEL_SITE_ADDRESS` | `http://tunnel-disabled.invalid` (matches nothing) | Caddy site address for the tunnel domain, for example `*.us.tunnel.example.net, *.*.us.tunnel.example.net` (use `http://` forms behind Cloudflare Tunnel). Must be on a different registrable domain from `CADDY_SITE_ADDRESS`. Never set it empty. |
+| `TUNNEL_HOST_SUFFIX` | `tunnel-disabled.invalid` (matches nothing) | Caddy: the bare tunnel suffix (`<region>.<tunnel-domain>`). Tunnel-domain hosts that miss the wildcards get `421` instead of being served as the app. Never set it empty. |
+| `TUNNEL_TLS_DIRECTIVE` | empty | Caddy: a full `tls <cert> <key>` line when Caddy terminates TLS for the tunnel domain with your own certificate. |
 
 ## Rollout Modes
 
@@ -766,6 +793,10 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `USE_AGENT_SDK` | — | Use Claude Agent SDK for AI chat |
 | `PORTAL_STATE_BACKEND` | `memory` | Portal state backend: `memory` or `redis` (auto `redis` in production) |
 | `PUBLIC_ENABLE_EDR_INTEGRATIONS` | `false` | Surface the EDR UI: the `/security/edr` fleet page, the device Security-tab EDR panel, and the Security dashboard summary cards. Set `true` at web image build time to enable. |
+| `BREEZE_EDR_ACTIONS_ENABLED` | `true` | **v0.123.0+.** Server-wide off switch for EDR response actions (isolate, release, scan). Each EDR connection must also be opted in by a partner admin with MFA, and that is off by default. Empty means on; `false` (or any value that is not a recognised true value) stops new actions after a restart. |
+| `GOOGLE_WORKSPACE_ENABLED` | `false` | Turns on the Google Workspace identity connector. While off, its screens and AI actions are unavailable. Passed to the API by both Compose files from v0.123.0. |
+| `M365_ENABLED` | `false` | Turns on the Microsoft 365 identity connector, as above. Passed to the API by both Compose files from v0.123.0. |
+| `PUBLIC_ENABLE_ENDPOINT_MESSAGING` | `false` | Surface the **Send message** entry points (Devices bulk action, organization header, site header). Off by default because the per-device rollout flag cannot be switched on from the UI yet; set `true` at web image build time to show them. |
 | `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` | `true` | Surface network-discovered assets alongside agent endpoints in the Devices list view (on by default since v0.111). Set `false` at web image build time to return to the agent-only list. |
 | `BREEZE_WORKSPACE_ENABLED` | `false` in the production compose files (`true` in the dev override) | Load the built-in **AI Workspace** extension. Off by default — leave it unset unless you want Workspace. **Requires a PostgreSQL image that provides the `pgvector` extension** (see the aside below). |
 | `BREEZE_AI_AGENTS_ENABLED` | `false` | Surface **AI Agents** (Settings → AI Agents). Off by default — no agent exists, runs, or appears in the UI until this is `true`. Enabling the flag does not by itself let an agent change anything: every agent starts in **Off**, and moving one to **Act** is a separate, MFA-confirmed opt-in per agent. Must also be mapped in the `api` service's `environment:` block, not just set in `.env`. |
@@ -773,7 +804,8 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED` | `false` | Sub-flag of `BREEZE_AI_AGENTS_ENABLED` (also requires `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`) that lets a sweep schedule opt into Act mode, so intents an AI sweep raises can reach the same policy-decide path as other agent actions. Off by default. |
 | `TOOL_SOURCES_ENABLED` | `false` | Enables external tool sources for AI Agents. Off by default; even when enabled, any tier-3 (destructive) external tool call still goes through the normal action-intent approval flow — this flag does not bypass approval. |
 | `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS` | `false` | Self-hosted only — refused when `IS_HOSTED=true`. Allows a tool source URL to resolve to a private, link-local, or loopback address. Leave off unless you specifically need a tool source on your internal network. |
-| `CALLER_VERIFICATION_ENABLED` | `false` | v0.116.0+. Backend-only in this release — there is no reachable UI yet. Must be the exact literal `true` to enable; every `/caller-verification` route answers `404` until then, and any other truthy-looking value (`1`, `yes`, `on`) is refused at boot rather than treated as enabled. Leave unset unless you are specifically testing this feature ahead of its UI. |
+| `CALLER_VERIFICATION_ENABLED` | `true` | Caller verification (anti-vishing). On by default: the technician workflow, the SMS/email link tier and the public `/verify/<token>` page are available, and **protected Microsoft 365 actions (`m365_disable_user`, `m365_reset_password`) require a fresh, unused caller verification** before they can be created or released. Unset means `true` (the shipped Compose files also map an empty value to `true`). Must be the exact literal `true` or `false`; any other value (`1`, `yes`, `on`) is refused at boot. Setting it to `false` hides the workflow (every caller verification route, including the public page, answers `404`, and every web surface is hidden) **and refuses those protected M365 resets and disables** — it is not a bypass. Configure email before relying on rejected-verification notifications: on a deployment with no email transport, a rejected workstation verification is retried every 5 seconds indefinitely (#8998). |
+| `CALLER_VERIFICATION_WORKSTATION_ENABLED` | `false` | The workstation verification tier (through the agent and Breeze Assist). Off by default and **not available in this release**: it is reported as unavailable, cannot be started, and a workstation grant is never accepted by the gate while this is off. Must be the exact literal `true` or `false`; other values are refused at boot. |
 | `DEVICE_COMMAND_QUEUE_TTL_HOURS` | `168` (7 days) | How long a queued **standard** action may wait for its device before it expires undelivered. Covers scripts, patch installs, patch scans, software installs, and automation actions. |
 | `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS` | `24` | Deadline for **self-superseding** queued work — inventory refreshes, log-level changes, agent auto-update and rollback, browser-policy application, and the audit, security, reliability, hardware and encryption-key collections. The next run of any of these replaces the last, so a week-old copy would be stale by the time it landed. |
 | `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | `24` | Deadline for queued **power-state** work: reboot, shutdown, and scheduled restart. |
@@ -815,6 +847,7 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Max concurrent SSE sessions per API key |
 | `MCP_REQUIRE_EXECUTE_ADMIN` | `true` | In production, Tier 3+ tools require the `ai:execute_admin` scope. Set to `false` to fall back to `ai:execute`. No effect outside production. |
 | `MCP_EXECUTE_TOOL_ALLOWLIST` | — | Comma-separated allowed Tier 3 tools (empty = deny all) |
+| `MCP_INSUFFICIENT_SCOPE_HTTP_403` | `false` | When `true`, an OAuth bearer's `tools/call` refused only for a missing tier scope (`ai:write` or `ai:execute`) returns HTTP 403 with an `insufficient_scope` `WWW-Authenticate` challenge (current plus required `mcp:*` scopes) instead of HTTP 200. Never applies to API-key callers, tool-domain, approval, MFA or RBAC denials, or the legacy HTTP+SSE transport. See [MCP Server](/features/mcp-server/#authentication-challenges). |
 | `MCP_UNATTENDED_TIER3_PRINCIPALS` | — | Operator opt-in, empty = nobody. By default every Tier 3 tool/action (and `collect_evidence`) is denied over MCP with `MCP_APPROVAL_REQUIRED` because MCP has no interactive approval step. Comma-separated `api_key:<api key id>` / `oauth_client_user:<client_id>/<user id>` / `partner_sp:<partner service principal id>` entries (OAuth binds client AND user; a shared client_id alone never qualifies; a `partner_sp` entry names the principal, so key rotation keeps it, and like an OAuth entry it applies in every org the principal reaches) lift only that deny, only for those principals (trusted unattended agents). `ai:execute`, `ai:execute_admin` (production), `MCP_EXECUTE_TOOL_ALLOWLIST` (production), RBAC, rate limits, the Tier 3 execution ledger and the audit log still apply, and `collect_evidence` is gated as Tier 3. Tier 4, tenant (BYO MCP) tools and the onboarding bootstrap tools stay approval-only. At startup the API logs a WARN listing the configured principals, and a separate WARN for any entry that is not well formed (it can never match). Each bypassed call's audit row carries `approvalBypass: "unattended_principal"` and `approvalBypassPrincipal` (the matched entry). |
 
 ## Cloudflare mTLS
@@ -909,6 +942,16 @@ These enable partners to connect a Microsoft 365 shared support mailbox so custo
 <Aside>
   Optional and independent of C2C backup. Register a **multi-tenant** app with Microsoft Graph **application** permissions `Mail.ReadWrite` and `Mail.Send`, plus the **delegated** permission `Directory.Read.All`, and add the redirect URI `<PUBLIC_APP_URL>/api/v1/tickets/mailbox/callback`. The Microsoft 365 mailbox card shows the exact value to register. The API builds it from `PUBLIC_URL`, then `PUBLIC_APP_URL`, then `DASHBOARD_URL`; the stock `docker-compose.yml` passes only `PUBLIC_APP_URL` to the API, so on a standard install it comes from `PUBLIC_APP_URL`. Open Breeze at that same scheme and host when you connect: the consent flow is bound to a browser cookie, and a different host drops it. `Directory.Read.All` lets Breeze confirm that the person completing consent is a Global Administrator or Privileged Role Administrator by reading their directory roles from Microsoft Graph when the ID token carries no `wids` claim; without it, consent in those tenants fails with *insufficient role* (the API logs `[ticketMailbox] consent admin-role check failed` with the failing check). When unset, the Microsoft 365 mailbox card is hidden and the connect routes return `400` -- nothing else is affected. See [Email-to-Ticket → Microsoft 365 support mailbox](/features/ticketing/#connecting-a-microsoft-365-support-mailbox).
 </Aside>
+
+## Ticket import migration windows
+
+**v0.123.0+, groundwork for the coming ticket importers.** A migration window is the time box and write budget an admin gives one ticket import. Mapped in the v0.123.0 root `docker-compose.yml`. `deploy/docker-compose.prod.yml` maps them from the next release; on v0.123.0 with that file, add them to the `api` service's `environment:` block if you need to change them.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MIGRATION_WINDOW_MAX_DAYS` | `14` | Longest window an admin can open. A longer migration opens a new window. |
+| `MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR` | `6000` | Import writes per hour a new window gets when the admin sets none. Kept between 600 and the maximum below. |
+| `MIGRATION_WINDOW_MAX_WRITES_PER_HOUR` | `20000` | Most import writes per hour an admin can set. Kept between 600 and 100000. |
 
 ## Customer Microsoft 365 Graph-read consent (optional)
 
@@ -1016,6 +1059,7 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 | `BILLING_SERVICE_URL` | — | URL of the billing service for AI credit checks and deductions. When unset, AI usage is unlimited. |
 | `BILLING_SERVICE_API_KEY` | — | API key for authenticating to the billing service |
 | `STRIPE_SESSION_REVOCATION_MODE` | `enforce` | **v0.113.0+.** How strictly Breeze cancels a customer's open Stripe Checkout payment link when the invoice it belongs to is reset, paid manually, voided, or the Stripe key is replaced. `enforce` (default) refuses the transition with `503 STRIPE_REVOCATION_PENDING` if it cannot prove every open Checkout session is dead; the revocation intent is kept and retried by a 60-second sweep, so the refusal is short-lived. `observe` still records the intent and calls Stripe, but a failure never blocks the transition — an incident de-escalation lever, not a normal setting. Any other value is treated as `enforce` with a warning. Roll back by flipping to `observe`, never by reverting the migration. |
+| `STRIPE_ACCOUNT_CACHE_REFRESH_ENABLED` | `true` | Runs a job at start-up and daily that fills in each connected Stripe account's currency and country where Breeze has not recorded them. `false` stops scheduling it. |
 
 <Aside>
   Billing integration is optional. When these variables are unset, AI chat sessions proceed without credit checks.
@@ -1033,6 +1077,7 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 | `AI_GATEWAY_HEADERS_TIMEOUT_SECONDS` | — | Optional. How long the AI model gateway waits for a bring-your-own OpenAI-compatible endpoint to start responding, in seconds. Defaults to 120 on self-hosted and 30 on hosted; clamped to 5–600. Raise it for slow or CPU-only local model servers with long prompt prefill. |
 | `AI_TOOL_SEARCH` | `auto` | AI chat tool loading. `auto`: on the Anthropic API, chat sends a small core tool set and loads the rest on demand through tool search; on any other `ANTHROPIC_BASE_URL` or BYO provider it sends every tool, because many gateways reject tool-search blocks. `on`: also use tool search on a custom base URL (only if your gateway forwards `tool_reference` blocks). `off`: always send every tool. Helper, scripts and AI agents always use a fixed tool set. |
 | `BREEZE_AI_SCRIPT_AUTHORING_ENABLED` | `true` | **v0.113.0+.** Lets the AI assistant and background agents write a script as a reviewed proposal ([AI Script Authoring](/features/ai-script-authoring/)). Set `false` to hide the `propose_script` / `get_script_proposal` tools and the `/api/v1/ai/script-proposals` routes entirely. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`; any other value stops the API from starting. The shipped Compose file defaults it to `true` as well. This flag does **not** control the unattended lane, which stays off until a partner raises its ceiling and an organization opts in. |
+| `BREEZE_TRUST_CIS_FRAMEWORK_VIEW` | `false` | Shows the CIS Controls v8 framework view on public [Trust Center](/security/trust-center/) pages and makes it selectable in the page editor. Leave it off until CIS licensing is confirmed; while off, the default framework view is NIST CSF 2.0. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`. |
 | `BREEZE_AI_ARTIFACT_CAPTURE_ENABLED` | `false` | **v0.117.0+.** Store oversized AI tool results (redacted) in your object storage so the assistant can page back through them with `read_artifact`, instead of receiving a truncated result. Off by default because it writes blobs your organizations can download. Setting it `true` requires an artifact bucket and keys: `ARTIFACT_S3_BUCKET_US` / `ARTIFACT_S3_BUCKET_EU` (matching your region) or `S3_BUCKET`, plus `ARTIFACT_S3_ACCESS_KEY` / `ARTIFACT_S3_SECRET_KEY` or `S3_ACCESS_KEY` / `S3_SECRET_KEY`. Without them, or with a value that is not a boolean, the API refuses to start. |
 
 ### AI Operator (preview, off by default)
@@ -1105,9 +1150,10 @@ The warranty worker looks each physical device's serial number up against its ma
 | `DELL_CLIENT_SECRET` | — | Matching Dell OAuth client secret. Both are required for Dell lookups. |
 | `LENOVO_API_KEY` | — | ClientID for Lenovo's official [Warranty API](https://supportapi.lenovo.com/Documentation/Warranty.html) (`supportapi.lenovo.com`), issued through a Lenovo partner manager |
 | `LENOVO_WARRANTY_ENABLED` | — | `true` enables credential-free Lenovo lookups through the JSON endpoint behind Lenovo's public warranty-lookup page. It is not documented by Lenovo and may stop working without notice, so it is opt-in. |
+| `HP_WARRANTY_ENABLED` | — | `true` or `1` enables HP lookups through HP's public support warranty endpoint, one serial at a time and rate limited. It is not an official API and may stop working without notice. |
 
 <Aside>
-  When both Lenovo settings are present the official API is authoritative: a definite "no warranty found" from it is final, and the public endpoint is only consulted when the official call itself fails (bad key, outage). HP has no lookup yet — HP's Warranty API is not available to MSP or RMM vendors, so HP devices stay `unknown`.
+  When both Lenovo settings are present the official API is authoritative: a definite "no warranty found" from it is final, and the public endpoint is only consulted when the official call itself fails (bad key, outage). HP's official Warranty API is not available to MSP or RMM vendors, so HP devices stay `unknown` unless you turn on `HP_WARRANTY_ENABLED`, which uses HP's public support endpoint instead.
 </Aside>
 
 ## Breeze AI for Office (add-ins, optional)

@@ -545,6 +545,7 @@
     },
     "errorCodes": {
       "preview_stale": "İlke bu önizlemeden sonra değişti. Dönüştürmeden önce yeniden önizleyin.",
+      "conversion_contended": "Eş zamanlı değişiklikler dönüştürmeyi kesintiye uğrattı. Hiçbir şey değiştirilmedi. Tekrar deneyin.",
       "preview_failed": "Önizleme oluşturulamadı. Daha sonra yeniden deneyin.",
       "equivalence_delta": "Dönüştürülen izleyiciler her cihazda eski kurallar gibi davranmayacak. Dönüştürmeden önce önizlemeyi inceleyin.",
       "CONVERSION_PREREQUISITE_MISSING": "Gerekli bir platform güncellemesi henüz dağıtılmadığı için dönüştürme yapılamıyor.",

@@ -72,7 +72,7 @@ describe('buildHelperConfigUpdate', () => {
     const settings = await buildHelperConfigUpdate('dev-1', 'org-1');
 
     expect(settings.enabled).toBe(true);
-    expect(redis.set).toHaveBeenCalledWith('helper:settings:device:dev-1', expect.any(String), 'EX', 120);
+    expect(redis.set).toHaveBeenCalledWith('helper:settings:v2:device:dev-1', expect.any(String), 'EX', 120);
   });
 
   it('skipCacheWrite: resolves the same value but never writes the device cache (#8616)', async () => {
@@ -113,16 +113,34 @@ describe('endpointMessaging rollout flag (#8741)', () => {
   const row = (inlineSettings: unknown) => [{ level: 'organization', assignmentPriority: 0, inlineSettings }];
 
   it('defaults to disabled when the policy does not mention it', () => {
-    expect(helperSettingsFromRows(row({ enabled: true }))?.endpointMessaging).toEqual({ enabled: false });
+    expect(helperSettingsFromRows(row({ enabled: true }))?.endpointMessaging).toEqual({ enabled: false, allowUserReply: true });
   });
 
   it('maps an explicit endpointMessaging.enabled from the winning policy', () => {
     expect(helperSettingsFromRows(row({ enabled: true, endpointMessaging: { enabled: true } }))?.endpointMessaging)
-      .toEqual({ enabled: true });
+      .toEqual({ enabled: true, allowUserReply: true });
   });
 
   it('ignores a non-boolean value (fail closed)', () => {
     expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: 'yes' } }))?.endpointMessaging)
-      .toEqual({ enabled: false });
+      .toEqual({ enabled: false, allowUserReply: true });
+  });
+});
+
+describe('endpointMessaging.allowUserReply chat toggle (#8743)', () => {
+  const row = (inlineSettings: unknown) => [{ level: 'organization', assignmentPriority: 0, inlineSettings }];
+
+  it('defaults ON when the policy does not mention it (owner decision: org toggle, default on)', () => {
+    expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: true } }))?.endpointMessaging?.allowUserReply).toBe(true);
+  });
+
+  it('honours an explicit false from the winning policy', () => {
+    expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: true, allowUserReply: false } }))?.endpointMessaging)
+      .toEqual({ enabled: true, allowUserReply: false });
+  });
+
+  it('treats a present but non-boolean value as off (fail closed)', () => {
+    expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: true, allowUserReply: 'yes' } }))?.endpointMessaging?.allowUserReply)
+      .toBe(false);
   });
 });

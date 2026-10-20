@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CatalogItemsTab from './CatalogItemsTab';
@@ -56,6 +56,7 @@ const ECONOMICS = {
   currencyCode: 'EUR', headlinePrice: '1500.00', priceBookComplete: true, marginAvailable: true,
   totalCost: '600.00', margin: '900.00', marginPct: 60, allocationTotal: '0.00', allocationMatchesHeadline: true,
   missingPriceComponentIds: [] as string[],
+  missingCostComponentIds: [] as string[],
 };
 
 function seed(active: CatalogItem[] = [WIDGET, LAPTOP, BUNDLE], economics: Record<string, unknown> = ECONOMICS) {
@@ -164,6 +165,41 @@ describe('CatalogItemsTab', () => {
     const econ2 = await screen.findByTestId('catalog-bundle-economics-b1');
     expect(econ2).toHaveTextContent('Margin unavailable');
     expect(econ2).not.toHaveTextContent('60.0%');
+  });
+
+  it('bundle margin with an unknown (NULL) component cost reads as unknown, never a number (#9223)', async () => {
+    seed([WIDGET, BUNDLE], { ...ECONOMICS, marginAvailable: false, totalCost: null, margin: null, marginPct: null, missingCostComponentIds: ['w1'] });
+    render(<CatalogItemsTab />);
+    await screen.findByText('Starter Bundle');
+    fireEvent.click(screen.getByTestId('catalog-bundle-toggle-b1'));
+    const econ = await screen.findByTestId('catalog-bundle-economics-b1');
+    expect(econ).toHaveTextContent('Margin unknown — 1 component has no cost');
+    expect(econ).not.toHaveTextContent('Margin unavailable');
+    expect(econ).not.toHaveTextContent('%');
+  });
+
+  it('unknown-cost margin: plural count, incomplete price book wins, and an older API payload without the field degrades (#9223)', async () => {
+    const open = async () => {
+      render(<CatalogItemsTab />);
+      await screen.findByText('Starter Bundle');
+      fireEvent.click(screen.getByTestId('catalog-bundle-toggle-b1'));
+      return screen.findByTestId('catalog-bundle-economics-b1');
+    };
+    const unknown = { ...ECONOMICS, marginAvailable: false, totalCost: null, margin: null, marginPct: null };
+
+    seed([WIDGET, BUNDLE], { ...unknown, missingCostComponentIds: ['w1', 'w2'] });
+    expect(await open()).toHaveTextContent('Margin unknown — 2 components have no cost');
+    cleanup();
+
+    seed([WIDGET, BUNDLE], { ...unknown, priceBookComplete: false, missingPriceComponentIds: ['w1'], missingCostComponentIds: ['w2'] });
+    const incomplete = await open();
+    expect(incomplete).toHaveTextContent('Incomplete price book');
+    expect(incomplete).not.toHaveTextContent('Margin unknown');
+    cleanup();
+
+    const { missingCostComponentIds: _omit, ...legacy } = unknown;
+    seed([WIDGET, BUNDLE], legacy);
+    expect(await open()).toHaveTextContent('Margin unavailable');
   });
 
   it('archives an item from the row overflow (kebab) menu — after a confirm step (#1368)', async () => {

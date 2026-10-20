@@ -1,11 +1,11 @@
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
-import { createEdDsaInternalRequestAuthenticator, type ExecutorOperation } from './internalAuth';
+import { createEdDsaInternalRequestAuthenticator } from './internalAuth';
 
 const CORRELATION_ID = '11111111-1111-4111-8111-111111111111';
 
 async function fixture(
-  overrides: { iat?: number; exp?: number; audience?: string | string[]; operation?: ExecutorOperation } = {},
+  overrides: { iat?: number; exp?: number; audience?: string | string[]; operation?: string } = {},
 ) {
   const { publicKey, privateKey } = await generateKeyPair('EdDSA');
   const publicJwk = { ...await exportJWK(publicKey), kid: 'api-key-1' };
@@ -13,7 +13,7 @@ async function fixture(
   const digest = await crypto.subtle.digest('SHA-256', body);
   const now = Math.floor(Date.now() / 1000);
   const token = await new SignJWT({
-    operation: overrides.operation ?? 'complete-consent',
+    operation: overrides.operation ?? 'verify-identity',
     correlationId: CORRELATION_ID,
     bodySha256: Buffer.from(digest).toString('base64url'),
   })
@@ -38,7 +38,7 @@ describe('executor internal request authentication', () => {
 
     await expect(authenticator.verify({
       authorization: `Bearer ${token}`,
-      operation: 'complete-consent',
+      operation: 'verify-identity',
       rawBody: body,
     })).resolves.toEqual({ correlationId: CORRELATION_ID });
   });
@@ -47,7 +47,7 @@ describe('executor internal request authentication', () => {
     const { authenticator, token } = await fixture();
     const changedBody = new TextEncoder().encode(` {"correlationId":"${CORRELATION_ID}"}`);
     for (const input of [
-      { operation: 'complete-consent' as const, rawBody: changedBody },
+      { operation: 'verify-identity' as const, rawBody: changedBody },
       { operation: 'retest' as const, rawBody: new TextEncoder().encode(`{"correlationId":"${CORRELATION_ID}"}`) },
     ]) {
       await expect(authenticator.verify({ authorization: `Bearer ${token}`, ...input }))
@@ -69,7 +69,7 @@ describe('executor internal request authentication', () => {
     const { authenticator, body, token } = await fixture({ iat: now + 30, exp: now + 60 });
     await expect(authenticator.verify({
       authorization: `Bearer ${token}`,
-      operation: 'complete-consent',
+      operation: 'verify-identity',
       rawBody: body,
     })).rejects.toMatchObject({ code: 'internal_request_unauthorized' });
   });
@@ -80,7 +80,7 @@ describe('executor internal request authentication', () => {
     });
     await expect(authenticator.verify({
       authorization: `Bearer ${token}`,
-      operation: 'complete-consent',
+      operation: 'verify-identity',
       rawBody: body,
     })).rejects.toMatchObject({ code: 'internal_request_unauthorized' });
   });
@@ -92,18 +92,17 @@ describe('executor internal request authentication', () => {
       operation: 'verify-identity',
       rawBody: body,
     })).resolves.toEqual({ correlationId: CORRELATION_ID });
-    for (const operation of ['complete-consent', 'retest'] as const) {
+    for (const operation of ['retest', 'read-action', 'sync-action'] as const) {
       await expect(authenticator.verify({ authorization: `Bearer ${token}`, operation, rawBody: body }))
         .rejects.toMatchObject({ code: 'internal_request_unauthorized' });
     }
   });
 
-  it('rejects a complete-consent token presented at verify-identity', async () => {
+  it('rejects a token whose operation claim is the removed complete-consent operation at every remaining operation', async () => {
     const { authenticator, body, token } = await fixture({ operation: 'complete-consent' });
-    await expect(authenticator.verify({
-      authorization: `Bearer ${token}`,
-      operation: 'verify-identity',
-      rawBody: body,
-    })).rejects.toMatchObject({ code: 'internal_request_unauthorized' });
+    for (const operation of ['verify-identity', 'retest', 'read-action', 'sync-action'] as const) {
+      await expect(authenticator.verify({ authorization: `Bearer ${token}`, operation, rawBody: body }))
+        .rejects.toMatchObject({ code: 'internal_request_unauthorized' });
+    }
   });
 });

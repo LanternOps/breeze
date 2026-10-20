@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getTableConfig } from 'drizzle-orm/pg-core';
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
 import { m365Connections, m365ConsentSessions, m365UserConsentSessions } from './m365';
 
 describe('m365Connections schema', () => {
@@ -36,6 +36,8 @@ describe('m365Connections schema', () => {
       // NULL column is not enforced at all under MATCH SIMPLE.
       'm365_connections_id_user_profile_attempt_uniq',
       'm365_connections_org_profile_uniq',
+      // Connection health broken set (W2, migration 2026-12-29-190000).
+      'm365_connections_unhealthy_idx',
       'm365_connections_user_profile_uniq',
       'm365_connections_verified_tenant_profile_uniq',
     ]);
@@ -85,6 +87,22 @@ describe('m365ConsentSessions schema', () => {
       'm365_consent_sessions_profile_check',
       'm365_consent_sessions_purpose_check',
     ]);
+  });
+
+  // #7910 W04: only the identity-first (flow_version 2) layout remains.
+  it('admits only flow_version 2 and defaults to it', () => {
+    const cfg = getTableConfig(m365ConsentSessions);
+    expect(cfg.columns.find((c) => c.name === 'flow_version')?.default).toBe(2);
+    const dialect = new PgDialect();
+    const checkSql = (name: string) => {
+      const found = cfg.checks.find((check) => check.name === name);
+      if (!found) throw new Error(`missing check ${name}`);
+      return dialect.sqlToQuery(found.value).sql.replace(/\s+/g, ' ');
+    };
+    expect(checkSql('m365_consent_sessions_flow_version_check')).toBe('"m365_consent_sessions"."flow_version" = 2');
+    const phaseFields = checkSql('m365_consent_sessions_phase_fields_check');
+    expect(phaseFields).not.toMatch(/flow_version" = 1/);
+    expect(phaseFields.match(/flow_version" = 2/g)).toHaveLength(2);
   });
 });
 

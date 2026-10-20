@@ -113,3 +113,23 @@ export function sqlUuidArray(ids: readonly string[]): SQL<unknown> {
         sql`, `,
       )}]`;
 }
+
+/**
+ * Bind a list of strings as a Postgres `text[]` for `&&` / `@>` / `= ANY(...)`
+ * in a hand-written template: `ARRAY[$1::text, $2::text]::text[]`, and
+ * `ARRAY[]::text[]` when the list is empty.
+ *
+ * Same trap as {@link sqlUuidArray}: a bare array interpolation renders as a
+ * row tuple, so ``sql`tags && ${['a']}` `` reaches Postgres as `tags && ($1)`
+ * ("malformed array literal") and two or more elements as `tags && ($1, $2)`
+ * ("operator does not exist: text[] && record"). (#8760, #8857; moved here from
+ * a private copy in services/filterEngine.ts.)
+ */
+export function sqlTextArray(values: readonly unknown[]): SQL<unknown> {
+  return values.length === 0
+    ? sql<unknown>`ARRAY[]::text[]`
+    : sql<unknown>`ARRAY[${sql.join(
+        values.map((value) => sql`${sqlValue(value)}::text`),
+        sql`, `,
+      )}]::text[]`;
+}

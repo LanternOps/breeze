@@ -79,21 +79,39 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
  * same-path navigation that carries a hash as a scroll-to-anchor and does not
  * swap the document, and hash state (selected tab/row) is org-specific anyway.
  *
- * `destination` overrides both: for a switch that is itself a navigation ("Work
- * in this org" on the organization record hands the user their new workspace's
- * dashboard), the caller knows where the user is going and the redirect table
- * has nothing to add.
+ * `destination` overrides both: for a switch that is itself a navigation (e.g.
+ * the org record's "Open in Devices"), the caller knows where the user is
+ * going and the redirect table has nothing to add. A destination equal to the
+ * current URL *including a hash* means "switch and stay": no navigation
+ * happens at all (a hashless same-path destination still soft-navigates so
+ * the page re-renders under the new org).
  */
 export async function applyOrgSwitch(
   orgId: string | null,
   toastMessage: string,
   destination?: string,
 ): Promise<void> {
+  // Read before the await: the caller built `destination` from the URL at
+  // click time, and a tab change during the refresh must not turn "stay"
+  // into a navigation back to the old hash.
+  const here = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const store = useOrgStore.getState();
-  if (orgId) store.selectOrganization(orgId);
-  else store.selectAllOrgs();
+  if (orgId) {
+    store.selectOrganization(orgId);
+    store.recordRecentOrg(orgId);
+  } else store.selectAllOrgs();
   stashSwitchToast(toastMessage);
   await waitForPendingRefresh();
+  // "Switch and stay" (#9019: the org record's own URL, hash included). The
+  // router treats a same-page URL with a hash as an anchor move and never
+  // swaps, so navigating would report 'hard' and strand the toast. The caller
+  // owns re-rendering here — its view must already be independent of the
+  // ambient org, as the org record's (every read pinned to the URL's org) is.
+  if (destination !== undefined && destination === here && here.includes('#')) {
+    const message = consumeSwitchToast();
+    if (message) showToast({ type: 'success', message });
+    return;
+  }
   const target = destination
     ?? getOrgSwitchRedirect(window.location.pathname)
     ?? `${window.location.pathname}${window.location.search}`;

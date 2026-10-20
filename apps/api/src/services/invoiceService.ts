@@ -365,7 +365,7 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
     const parent = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'bundle', sourceId: null, catalogItemId: bundleId, parentLineId: null, ticketId: null,
       name: bundle?.name ?? 'Bundle', description: bundle?.description ?? null, quantity: qty, unitPrice: econ.headlinePrice,
-      costBasis: econ.totalCost, // null when any component's cost is in another currency (margin unavailable)
+      costBasis: econ.totalCost, // null when any component's cost is unknown (NULL, #9223) or in another currency (margin unavailable)
       taxable: true, customerVisible: true,
       lineTotal: computeLineTotal(qty, econ.headlinePrice, inv.currencyCode), isUnapprovedTime: false
     });
@@ -1687,9 +1687,9 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     //    before the guarded write.
     const [org] = await db.select().from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
     const [partner] = await db.select().from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
-    // Portal-branding footer for the invoice's org — the last resort of the
-    // shared footer chain (resolveDocumentFooter, documentFooter.ts). Read here,
-    // after all locks, alongside the org/partner snapshot reads: a pure
+    // #7510: the portal-branding footer for the invoice's org is the org override
+    // in the shared footer chain (resolveDocumentFooter, documentFooter.ts),
+    // ahead of the partner default. Read here, after all locks, alongside the org/partner snapshot reads: a pure
     // additional SELECT on a read-only table, no new lock class.
     const [issueBranding] = await db.select({ footerText: portalBranding.footerText })
       .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
@@ -1728,7 +1728,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       taxRate, subtotal, taxTotal, total, balance: total,
       billToName: org?.name ?? null, billToAddress, billToTaxId: org?.taxId ?? null,
       billToTaxExempt: org?.taxExempt ?? false,
-      // `terms` is the small footer line (from partner.invoiceFooter); `termsAndConditions`
+      // `terms` is the small footer line (org footer, else partner.invoiceFooter); `termsAndConditions`
       // is the labeled Terms & Conditions block (from partner.billingTermsAndConditions).
       // Resolved through the SHARED chain (settings audit rule 5, finding 22)
       // so issue time sees the portal-branding fallback the render path always

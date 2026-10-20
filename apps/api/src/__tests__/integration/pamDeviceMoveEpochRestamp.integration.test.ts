@@ -8,8 +8,14 @@
  * The org-move restamp of `elevation_requests` (both the AFTER UPDATE trigger
  * `breeze_cascade_device_org_id()` and the route's own loop in
  * moveDeviceOrgInTransaction) must therefore leave actuated rows of every
- * epoch where they are, while an UN-actuated request still follows the device
- * into its new epoch (the guard re-anchors it).
+ * epoch where they are.
+ *
+ * W6 (#8208, spec §7.3/§8, OD4): on a DEVICE MOVE every request stays where
+ * it is — the route first expires a live un-actuated one with reason
+ * ownership_changed — because a real request carries elevation_audit rows
+ * whose (elevation_request_id, org_id) FK cannot follow it outside a merge.
+ * Only an org merge (cause org_merge) carries un-actuated requests, with
+ * their audit rows, into the device's new epoch.
  *
  * The device-move guard still refuses a move while the device has actuations
  * in its CURRENT org, so the fixture builds the A -> B history by hand
@@ -49,7 +55,7 @@ async function epoch1ChainMd5(requestId: string): Promise<string> {
   return row!.digest;
 }
 
-/** A -> B history (closed epoch-1 chain in A), plus an un-actuated request in B's epoch 2. */
+/** A -> B history (closed epoch-1 chain in A), plus an un-actuated request (with its `requested` audit row) in B's epoch 2. */
 async function seed() {
   const seeded = await seedMovedDeviceWithHistory({ path: ['A', 'B'] });
   const b = seeded.orgs.B!;
@@ -62,14 +68,17 @@ async function seed() {
       ${pendingId}::uuid, ${b.id}::uuid, ${b.siteId}::uuid, ${seeded.partnerId}::uuid, ${seeded.deviceId}::uuid,
       'uac_intercept', 'fixture-user', 'pending in epoch 2', 'C:\\fixture.exe', ${'b'.repeat(64)}, 'pending'
     )`));
+  await sys(() => db.execute(sql`
+    INSERT INTO elevation_audit (org_id, elevation_request_id, event_type, actor, details, occurred_at)
+    VALUES (${b.id}::uuid, ${pendingId}::uuid, 'requested', 'end_user', '{}'::jsonb, now())`));
   const c = await createOrganization({ partnerId: seeded.partnerId });
   const cSite = await createSite({ orgId: c.id });
   const user = await createUser({ partnerId: seeded.partnerId, orgId: null, email: `move-${pendingId}@epoch.test` });
   return { ...seeded, pendingId, c: { id: c.id, siteId: cSite!.id }, userId: user.id };
 }
 
-describe('org move leaves earlier-epoch actuated elevation requests in place (#8746)', () => {
-  it('a direct devices.org_id write (trigger path) keeps epoch-1 evidence and moves the un-actuated request', async () => {
+describe('org move leaves elevation requests in place; merge carries un-actuated ones (#8746, #8208)', () => {
+  it('a direct devices.org_id write (trigger path) keeps epoch-1 evidence and leaves the un-actuated request in its epoch', async () => {
     const s = await seed();
     const md5Before = await epoch1ChainMd5(s.epoch1.requestId);
 
@@ -78,10 +87,10 @@ describe('org move leaves earlier-epoch actuated elevation requests in place (#8
 
     expect(await requestRow(s.epoch1.requestId)).toMatchObject({ org_id: s.orgs.A!.id, device_epoch: 1 });
     expect(await epoch1ChainMd5(s.epoch1.requestId)).toBe(md5Before);
-    expect(await requestRow(s.pendingId)).toMatchObject({ org_id: s.c.id, device_epoch: 3 });
+    expect(await requestRow(s.pendingId)).toMatchObject({ org_id: s.orgs.B!.id, device_epoch: 2, site_id: s.orgs.B!.siteId });
   }, 120_000);
 
-  it('the move route transaction keeps epoch-1 evidence and moves the un-actuated request', async () => {
+  it('the move route transaction keeps epoch-1 evidence, expires the pending request (OD4) and leaves it in the source epoch', async () => {
     const s = await seed();
     const md5Before = await epoch1ChainMd5(s.epoch1.requestId);
 
@@ -100,7 +109,35 @@ describe('org move leaves earlier-epoch actuated elevation requests in place (#8
 
     expect(await requestRow(s.epoch1.requestId)).toMatchObject({ org_id: s.orgs.A!.id, device_epoch: 1 });
     expect(await epoch1ChainMd5(s.epoch1.requestId)).toBe(md5Before);
-    expect(await requestRow(s.pendingId)).toMatchObject({ org_id: s.c.id, device_epoch: 3, site_id: s.c.siteId });
+    expect(await requestRow(s.pendingId)).toMatchObject({ org_id: s.orgs.B!.id, device_epoch: 2, site_id: s.orgs.B!.siteId });
+    expect(rowsOf(await getTestDb().execute(sql`
+      SELECT r.status::text AS status, (r.expired_at IS NOT NULL) AS stamped,
+             (SELECT count(*)::int FROM elevation_audit e
+               WHERE e.elevation_request_id = r.id AND e.org_id = r.org_id AND e.event_type = 'expired'
+                 AND e.actor = 'system' AND e.details ->> 'cause' = 'ownership_changed'
+                 AND e.details ->> 'prior_status' = 'pending') AS expired_audits,
+             (SELECT count(*)::int FROM elevation_audit e WHERE e.elevation_request_id = r.id) AS audits
+        FROM elevation_requests r WHERE r.id = ${s.pendingId}::uuid`)))
+      .toEqual([{ status: 'expired', stamped: true, expired_audits: 1, audits: 2 }]);
+  }, 120_000);
+
+  it('cause org_merge (merge engine) carries the un-actuated request AND its audit rows into the new epoch', async () => {
+    const s = await seed();
+    const md5Before = await epoch1ChainMd5(s.epoch1.requestId);
+
+    await sys(() => db.transaction(async (tx) => {
+      await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await tx.execute(sql`SELECT set_config('breeze.ownership_change_cause', 'org_merge', true)`);
+      await tx.execute(sql`
+        UPDATE devices SET org_id = ${s.c.id}::uuid, site_id = ${s.c.siteId}::uuid WHERE id = ${s.deviceId}::uuid`);
+    }));
+
+    expect(await requestRow(s.epoch1.requestId)).toMatchObject({ org_id: s.orgs.A!.id, device_epoch: 1 });
+    expect(await epoch1ChainMd5(s.epoch1.requestId)).toBe(md5Before);
+    expect(await requestRow(s.pendingId)).toMatchObject({ org_id: s.c.id, device_epoch: 3 });
+    expect(rowsOf(await getTestDb().execute(sql`
+      SELECT org_id::text AS org_id FROM elevation_audit WHERE elevation_request_id = ${s.pendingId}::uuid`)))
+      .toEqual([{ org_id: s.c.id }]);
   }, 120_000);
 
   it('A -> B -> A: returning to the epoch-1 org still leaves epoch-1 evidence at epoch 1', async () => {
@@ -113,6 +150,6 @@ describe('org move leaves earlier-epoch actuated elevation requests in place (#8
 
     expect(await requestRow(s.epoch1.requestId)).toMatchObject({ org_id: s.orgs.A!.id, device_epoch: 1 });
     expect(await epoch1ChainMd5(s.epoch1.requestId)).toBe(md5Before);
-    expect(await requestRow(s.pendingId)).toMatchObject({ org_id: s.orgs.A!.id, device_epoch: 3 });
+    expect(await requestRow(s.pendingId)).toMatchObject({ org_id: s.orgs.B!.id, device_epoch: 2 });
   }, 120_000);
 });

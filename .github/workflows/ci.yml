@@ -267,6 +267,10 @@ jobs:
       - name: Guard Caddyfile internal-CA opt-in
         run: bash scripts/check-caddyfile-local-certs.sh
 
+      - name: Network Proxy tunnel site routing (real Caddy)
+        timeout-minutes: 10
+        run: bash scripts/check-tunnel-site-routing.sh
+
       # The quickstart tells self-hosters to `cp .env.example .env` and bring the
       # stack up, so a BREEZE_VERSION whose images were never published breaks
       # every new install. The pin sat at 0.81.0 for ~25 releases (portal images
@@ -991,6 +995,20 @@ jobs:
         working-directory: apps/mobile
         run: pnpm exec expo prebuild --platform ios --no-install
 
+      # iOS 27 refuses to launch an app linked against the iOS 27 SDK without
+      # the UIScene lifecycle (App Review 2.1(a) on 1.0.1 (84)). The simulator
+      # build below runs on an older iOS runtime and cannot detect the
+      # omission, and the app.json unit test only proves the flag is set, not
+      # that prebuild honoured it. Check the generated project directly.
+      - name: Assert UIScene lifecycle adoption in the generated project
+        working-directory: apps/mobile/ios
+        run: |
+          set -euo pipefail
+          plutil -extract UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName raw BreezeRMM/Info.plist | grep -qx EXExpoAppSceneDelegate \
+            || { echo "::error::Info.plist has no UIApplicationSceneManifest pointing at EXExpoAppSceneDelegate — iOS 27 will refuse to launch this build (see STORE_SUBMISSION.md)"; exit 1; }
+          grep -q 'class AppDelegate: ExpoAppDelegate, ExpoReactNativeFactoryProvider' BreezeRMM/AppDelegate.swift \
+            || { echo "::error::AppDelegate.swift does not conform to ExpoReactNativeFactoryProvider — scene support was not applied by expo-build-properties"; exit 1; }
+
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
         run: pod install
@@ -1388,6 +1406,42 @@ jobs:
       - name: Run release trust allowlist drift guard
         run: node scripts/security/check-release-trust-allowlist.mjs
 
+      # Built-in YARA pack (#6263 W03b). The API replaces the built-in rule set
+      # only with a NEWER pack version, so a pack input change without a
+      # version bump would never reach the fleet: the lock check blocks that.
+      # The clean-corpus false-positive scan lives in yara-pack.yml (non-blocking).
+      - name: Test built-in YARA pack build gates
+        run: node --test scripts/security/yara-pack/build-pack.test.mjs
+
+      # Against main's lock too: the version may never go backwards, and
+      # changed inputs need a strictly higher version. A failed fetch fails the
+      # step; only a main that has no pack.lock yet skips the comparison.
+      - name: Check built-in YARA pack version lock
+        run: |
+          set -euo pipefail
+          git fetch --quiet --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+          base="$RUNNER_TEMP/base-pack.lock"
+          if git cat-file -e origin/main:scripts/security/yara-pack/pack.lock 2>/dev/null; then
+            git show origin/main:scripts/security/yara-pack/pack.lock > "$base"
+            bash scripts/security/yara-pack/build-pack.sh --check-lock --base-lock "$base"
+          else
+            echo "::notice::main has no scripts/security/yara-pack/pack.lock yet; checking the lock against its inputs only"
+            bash scripts/security/yara-pack/build-pack.sh --check-lock
+          fi
+
+      - name: Setup Go (YARA pack filter)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Test built-in YARA pack filter (race)
+        working-directory: scripts/security/yara-pack
+        run: CGO_ENABLED=1 go test -race -count=1 ./...
+
+      - name: Test YARA pack clean-corpus checker
+        run: node --test scripts/security/yara-pack/check-scan.test.mjs
+
       - name: Run M365 signing secret runtime smoke
         run: bash scripts/security/check-m365-graph-read-runtime.sh
 
@@ -1740,12 +1794,26 @@ jobs:
             --goos "$GOOS" --goarch "$GOARCH" --version "$BUILD_VERSION" --windowsgui \
             --out "breeze-user-helper-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
+      # #6263 W02: breeze-yarac (YARA compile policy CLI — W03 server
+      # pre-check, lab benchmark). Not a release artifact; built here so a
+      # cross-compile break and any plaintext signature in the embedded
+      # engine are caught on every platform the agent ships to.
+      - name: Build breeze-yarac
+        shell: bash
+        working-directory: agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o "breeze-yarac-${GOOS}-${GOARCH}${{ matrix.suffix }}" ./cmd/breeze-yarac
+
       # Regression guard (#2797): built agent binaries must not contain
       # plaintext threat-signature strings — AV engines flag them as malware
       # (VT-confirmed Elastic Multi.EICAR on shipped exes).
       - name: Scan built binaries for plaintext threat signatures (#2797)
         run: |
           bins=("agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}")
+          bins+=("agent/breeze-yarac-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}")
           if [ "${{ matrix.goos }}" = "windows" ]; then
             bins+=("agent/breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}")
           fi
@@ -2129,6 +2197,54 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - the test was renamed or removed" }
 
+      # #7765: the heartbeat DHCP check reads adapter flags in-process
+      # (GetAdaptersAddresses) instead of spawning powershell Get-NetIPInterface
+      # per adapter IP. This compares the two sources on a real Windows host;
+      # heartbeat is not in the Windows package list above, so only this runs.
+      - name: Run Windows DHCP state test (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/heartbeat -run '^TestReadDHCPEnabledAliasesIPHelperMatchesGetNetIPInterface$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - the test was renamed or removed" }
+
+      # #9091: the user-helper's Windows toast tests had only ever compiled.
+      # internal/userhelper is not in the package list above (its other
+      # Windows-tagged tests have never been run natively), so these run by
+      # name: toast backend routing, including no PowerShell retry when
+      # toasts are disabled (so FallbackDialog fires); the NotificationSetting
+      # mapping; the hidden PowerShell fallback command and its own Setting
+      # check; and the real WinRT sequence, which must read get_Setting and
+      # fail no earlier than IToastNotifier::Show, judged by the rule
+      # TestWinRTSequenceVerdict pins. Show may be refused without an
+      # interactive desktop, but in run 39156151658 it returned S_OK while
+      # get_Setting returned ERROR_NOT_FOUND (0x80070490); that exact
+      # get_Setting failure is accepted next to a successful Show, any other
+      # is not.
+      # TestShowToastWinRTLive raises a visible toast and stays unselected.
+      - name: Run Windows user-helper toast tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/userhelper -run '^Test(ShowNotificationOS|NotificationSettingError|ToastPowerShellCommandIsHidden|ToastPowerShellScriptRefusesDisabledNotifier|WinRTSequenceVerdict|ShowToastWinRTFailsNoEarlierThanShow)$' -timeout 5m -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the user-helper toast tests SKIPPED" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 6) { throw "expected exactly 6 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          $subPasses = @($out | Select-String -Pattern '^\s+--- PASS: Test').Count
+          if ($subPasses -ne 21) { throw "expected exactly 21 subtest PASS lines, got $subPasses - a table case was renamed, removed, or added without updating this count" }
+
       # #7629: the agent re-secures its config folder if another account
       # created it, before reading anything from it. The tests plant
       # C:\ProgramData\Breeze-shaped folders as a simulated standard user
@@ -2440,6 +2556,23 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go test ./internal/collectors -run '^TestCollectorCommand|^TestCappedBuffer' -v
+
+      # The VPN collector's Windows service query (#8763) is a PowerShell
+      # pipeline that looks up Zscaler drivers by name; a non-zero exit when
+      # they are absent would silently drop every provider's service signal.
+      # Only a real Windows host can prove it exits 0 and emits Name<TAB>DisplayName.
+      - name: Run Windows VPN service query test
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^TestWindowsVPNServiceQuery$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: TestWindowsVPNServiceQuery').Count
+          if ($passes -ne 1) { throw "TestWindowsVPNServiceQuery did not run - renamed or removed without updating this step" }
 
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error

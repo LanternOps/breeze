@@ -41,6 +41,8 @@ export type BodyLimitRule =
   | 'ticket-attachment'
   | 'org-document'
   | 'quote-acceptance-evidence'
+  | 'agreement-signed-copy'
+  | 'edr-webhook'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
@@ -60,6 +62,12 @@ export interface BodyLimitPolicy {
 }
 
 export function bodyLimitForPath(path: string): BodyLimitPolicy {
+  // EDR vendor push webhook (W03 PR-B): unauthenticated ingress whose body is
+  // only a hint (opaque ids), so it is capped BELOW the default. GravityZone
+  // batches events; 256 KB is ample and bounds pre-auth work.
+  if (/^\/api\/v1\/webhooks\/edr\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) {
+    return { rule: 'edr-webhook', maxSize: 256 * 1024, error: 'Request body too large' };
+  }
   // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
   if (path.startsWith('/api/v1/dev/push')) {
     return { rule: 'dev-push', maxSize: 150 * 1024 * 1024, error: 'Binary too large (max 150MB)' };
@@ -167,6 +175,16 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
       rule: 'quote-acceptance-evidence',
       maxSize: 10 * 1024 * 1024 + 64 * 1024,
       error: 'Evidence file too large (max 10 MB)',
+    };
+  }
+  // Record signed agreement (#8865 W1c): one multipart form with an optional
+  // externally signed copy (PDF/PNG/JPEG), capped at 10 MiB by the route and
+  // agreementRequestService. Same 64 KiB slack as the evidence carve-out.
+  if (path.match(/^\/api\/v1\/contracts\/agreement-requests\/record-signed$/)) {
+    return {
+      rule: 'agreement-signed-copy',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Signed copy too large (max 10 MB)',
     };
   }
   if (path === '/api/v1/users/me/avatar') {

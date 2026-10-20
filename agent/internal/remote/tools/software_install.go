@@ -103,15 +103,24 @@ func InstallSoftware(payload map[string]any) CommandResult {
 // internally). A payload refused before either stage reports nothing.
 func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReporter) (result CommandResult) {
 	startTime := time.Now()
+	// #4609 W07: the command's one System Restore checkpoint, taken
+	// immediately before the first mutation (executeInstaller below, or the
+	// package manager's install). Declared above every early-return gate so
+	// the defer reports it on all of them: a stamped request that never
+	// reaches the boundary (already installed, a validation, network-policy,
+	// download or checksum refusal) is reported as skipped_no_mutation.
+	cp := newSoftwareCheckpoint(payload)
 	// Stamp StartedAt on every return path so the server can record the
 	// real start instead of reconstructing it from durationMs.
 	defer func() {
 		result.StartedAt = startTime.UTC().Format(time.RFC3339Nano)
+		result.RestorePoint = cp.Report()
 	}()
 
 	if _, ok := payload["installMethod"].(map[string]any); ok {
 		progress.report(ProgressStageInstalling)
-		return installViaManager(payload, defaultManagerDeps())
+		// Same checkpoint, so the manager path cannot take a second one.
+		return installViaManagerWithCheckpoint(payload, defaultManagerDeps(), cp)
 	}
 
 	downloadUrl, errResult := RequirePayloadString(payload, "downloadUrl")
@@ -161,6 +170,21 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 				"detail":             "already installed; " + pre.Detail,
 			}, time.Since(startTime).Milliseconds())
 		}
+	}
+
+	// #9165: an installer this OS cannot run is refused here, before the
+	// network policy and the download, rather than by executeInstaller after a
+	// full download + checksum + restore-point checkpoint. Nothing has been
+	// fetched or checkpointed, so the deferred Report gives
+	// skipped_no_mutation for a stamped request.
+	//
+	// It sits AFTER the detection gate on purpose: the gate never downloads or
+	// checkpoints either, and a package that is already present keeps
+	// reporting "already installed" even when the installer offered for it is
+	// for another OS (a version with no recorded file type is sent as "exe",
+	// so a cross-platform deployment can hit exactly that).
+	if !installerSupportedOnPlatform(fileType, runtime.GOOS) {
+		return NewErrorResult(unsupportedInstallerError(fileType, runtime.GOOS), time.Since(startTime).Milliseconds())
 	}
 
 	// Outbound network policy (Wave 6 Task 5, security remediation). The
@@ -220,6 +244,12 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 			)
 		}
 	}
+
+	// #4609: after download AND checksum, immediately before the first
+	// mutation. The platform check and the pre-install detection gate above
+	// return earlier, so neither a wrong-OS installer nor an already-installed
+	// package ever consumes the day's one restore point.
+	takeSoftwareCheckpoint(cp)
 
 	// Execute installer
 	progress.report(ProgressStageInstalling)
@@ -652,13 +682,19 @@ func executeInstaller(localPath, fileType, silentInstallArgs string, successExit
 	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 	defer cancel()
 
+	if !installerSupportedOnPlatform(fileType, runtime.GOOS) {
+		return 1, "", false, unsupportedInstallerError(fileType, runtime.GOOS)
+	}
+
 	var cmd *exec.Cmd
 
-	switch {
-	case fileType == "msi" && runtime.GOOS == "windows":
+	// installerSupportedOnPlatform above has already matched fileType to this
+	// OS, so each case only has to say how to run it.
+	switch fileType {
+	case "msi":
 		cmd = exec.CommandContext(ctx, "msiexec", buildMSIExecArgs(localPath, silentInstallArgs)...)
 
-	case fileType == "exe" && runtime.GOOS == "windows":
+	case "exe":
 		if silentInstallArgs != "" {
 			args := strings.ReplaceAll(silentInstallArgs, "{file}", localPath)
 			parts := splitCommandLine(args)
@@ -667,21 +703,50 @@ func executeInstaller(localPath, fileType, silentInstallArgs string, successExit
 			cmd = exec.CommandContext(ctx, localPath)
 		}
 
-	case fileType == "deb" && runtime.GOOS == "linux":
+	case "deb":
 		cmd = exec.CommandContext(ctx, "dpkg", "-i", localPath)
 
-	case fileType == "pkg" && runtime.GOOS == "darwin":
+	case "pkg":
 		cmd = exec.CommandContext(ctx, "installer", "-pkg", localPath, "-target", "/")
 
-	case fileType == "dmg" && runtime.GOOS == "darwin":
+	case "dmg":
 		// Mount, find .app or .pkg, install, unmount
 		return installDMG(ctx, localPath, successExitCodes)
 
 	default:
-		return 1, "", false, fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
+		// Unreachable while installerPlatforms and the cases above agree.
+		return 1, "", false, unsupportedInstallerError(fileType, runtime.GOOS)
 	}
 
 	return runInstallerCommand(ctx, cmd, fileType, successExitCodes)
+}
+
+// installerPlatforms is the ONE table of which installer file type runs on
+// which OS. InstallSoftwareWithProgress checks it before downloading (#9165)
+// and executeInstaller checks it again before dispatching, so the two cannot
+// drift. Keys are matched exactly, as executeInstaller's dispatch always was:
+// validateInstallInputs accepts any case ("MSI"), but only the lowercase form
+// has ever been runnable.
+var installerPlatforms = map[string]string{
+	"msi": "windows",
+	"exe": "windows",
+	"deb": "linux",
+	"pkg": "darwin",
+	"dmg": "darwin",
+}
+
+// installerSupportedOnPlatform reports whether an installer of fileType can
+// run on goos (a runtime.GOOS value).
+func installerSupportedOnPlatform(fileType, goos string) bool {
+	want, ok := installerPlatforms[fileType]
+	return ok && want == goos
+}
+
+// unsupportedInstallerError is the refusal for a pairing installerPlatforms
+// does not allow. The text is unchanged from when executeInstaller produced it
+// after the download, so anything matching on it keeps working.
+func unsupportedInstallerError(fileType, goos string) error {
+	return fmt.Errorf("unsupported file type %q on %s", fileType, goos)
 }
 
 // lockedBuffer collects an installer's merged stdout+stderr. CombinedOutput's

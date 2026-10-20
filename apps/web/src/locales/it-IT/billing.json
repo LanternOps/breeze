@@ -670,7 +670,16 @@
       "viewContract": "Vedi contratto",
       "notLinked": "Non collegato",
       "rowSubtitle": "Accettato con il preventivo {{quoteNumber}} da {{signer}} il {{date}}",
-      "rowSubtitleNoQuote": "Firmato da {{signer}} il {{date}}"
+      "rowSubtitleNoQuote": "Firmato da {{signer}} il {{date}}",
+      "evidenceUnavailable": "Accettato tramite preventivo — prova di accettazione non disponibile",
+      "recordSigned": "Registra accordo firmato",
+      "source": {
+        "quote": "tramite il preventivo {{number}}",
+        "recorded": "registrato dall'MSP — {{method}}"
+      },
+      "fileType": {
+        "image": "copia scansionata"
+      }
     },
     "templateEditor": {
       "usage": "Usato su {{quotes}} preventivi · {{signed}} accordi firmati",
@@ -685,6 +694,36 @@
     },
     "contractPill": {
       "under": "In base a {{template}} v{{n}}"
+    },
+    "recordSigned": {
+      "title": "Registra accordo firmato",
+      "organization": "Organizzazione",
+      "organizationPlaceholder": "Seleziona un'organizzazione",
+      "orgFallback": "questa organizzazione",
+      "template": "Modello di accordo",
+      "templatePlaceholder": "Seleziona un modello di accordo",
+      "templatesError": "Impossibile caricare i modelli di accordo.",
+      "orgsError": "Impossibile caricare le organizzazioni.",
+      "contractError": "Impossibile caricare questo contratto.",
+      "contractsError": "Impossibile caricare i contratti di questa organizzazione. Puoi comunque registrare l'accordo e collegarlo a un contratto in seguito.",
+      "contract": "Contratto (facoltativo)",
+      "contractNone": "Non collegato a un contratto",
+      "method": "Come è stato concordato",
+      "reference": "Riferimento",
+      "referenceHelp": "Dove un revisore troverebbe l'accordo firmato: un numero d'ordine, un'e-mail con data o un ticket.",
+      "signerName": "Chi ha dato l'assenso",
+      "signerEmail": "La sua e-mail (facoltativa)",
+      "signedAt": "Data di firma",
+      "file": "Copia firmata (facoltativa)",
+      "fileHelp": "PDF, PNG o JPEG, fino a 10 MB. Se alleghi una copia firmata, viene archiviato quel file.",
+      "fileTooLarge": "Il file supera i 10 MB.",
+      "fileWrongType": "Allega un file PDF, PNG o JPEG.",
+      "variables": "Dati dell'accordo",
+      "unresolved": "Indica un valore per: {{names}}",
+      "consequence": "Questo archivia un accordo firmato per {{org}}. In seguito non potrà essere eliminato.",
+      "submit": "Registra accordo firmato",
+      "success": "Accordo firmato registrato.",
+      "error": "Impossibile registrare l'accordo firmato."
     }
   },
   "quotes": {
@@ -1029,8 +1068,8 @@
         "title": "Riga del piè di pagina (ogni pagina)",
         "helper": "Una breve riga stampata in fondo a ogni pagina, ad esempio le date di validità. Lascia vuoto per usare il piè di pagina predefinito. Il testo in piccolo va in Termini e condizioni, non qui.",
         "placeholder": "Vuoto = usa il piè di pagina predefinito",
-        "inheritedPartner": "Utilizza il piè di pagina della fattura del partner dalle Impostazioni: “{{text}}”",
-        "inheritedBrand": "Utilizza il testo del piè di pagina del kit del marchio: “{{text}}”",
+        "inheritedPartner": "Utilizza il piè di pagina dei documenti del partner dalle impostazioni di fatturazione: “{{text}}”",
+        "inheritedBrand": "Utilizza il testo del piè di pagina di questa organizzazione dalle sue impostazioni del portale: “{{text}}”",
         "inheritedNone": "Nessun piè di pagina predefinito impostato nelle Impostazioni: il piè di pagina resterà vuoto.",
         "counter": "{{count}} / {{max}}"
       },
@@ -2050,7 +2089,10 @@
       "syncingToProvider": "Sincronizzazione…",
       "providerSyncFailed": "Sincronizzazione con {{provider}} non riuscita",
       "reverseInProviderToo": "Storna questo pagamento anche in {{provider}}",
-      "overpayment": "L'importo supera il saldo dovuto ({{balance}})."
+      "overpayment": "L'importo supera il saldo dovuto ({{balance}}).",
+      "fillLabel": "Compila importo",
+      "fillDeposit": "Acconto ({{amount}})",
+      "fillBalance": "Saldo totale ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fattura inviata",
@@ -2065,7 +2107,8 @@
       "paid": "Pagato",
       "subtotal": "Subtotale",
       "tax": "Imposta",
-      "total": "Totale"
+      "total": "Totale",
+      "depositDueNow": "Acconto dovuto ora"
     },
     "terms": "Termini e condizioni",
     "void": {
@@ -2281,6 +2324,7 @@
       "title": "Valuta",
       "description": "I nuovi preventivi, fatture, contratti, voci di tempo e ricambi di questa organizzazione vengono marcati con questa valuta. Nulla di già esistente viene modificato.",
       "label": "Valuta di fatturazione",
+      "partnerDefault": "Non ereditata: ogni organizzazione mantiene la propria valuta di fatturazione. Il predefinito partner ({{currency}}) si applica solo alle organizzazioni create da ora in poi.",
       "loading": "Verifica di cosa comporterebbe il passaggio a {{currency}}…",
       "error": "Impossibile caricare il riepilogo del cambio valuta.",
       "panelTitle": "Cambiare la valuta di fatturazione in {{currency}}?",
@@ -2365,10 +2409,11 @@
       "autoEmailInvoiceHelp": "Quando un cliente accetta una proposta, la fattura emessa viene inviata subito via email con un link sicuro per visualizzare e pagare — senza accesso.",
       "notifyOnBehalfAcceptance": "Avvisa il cliente via email quando registri un'accettazione per suo conto",
       "notifyOnBehalfAcceptanceHelp": "Quando qualcuno del tuo team accetta un preventivo per un cliente, il cliente riceve una breve nota che indica chi l'ha registrata e quando, con il numero di fattura se ne è stata emessa una. Può rispondere se qualcosa non è corretto. Disattivato per impostazione predefinita.",
-      "currencyCode": "Codice valuta",
+      "currencyCode": "Valuta predefinita per le nuove organizzazioni",
+      "currencyHelp": "Le nuove organizzazioni iniziano con questa valuta. Quelle esistenti mantengono la propria: modificala nella scheda Fatturazione di ciascuna organizzazione.",
       "defaultMarkup": "Ricarico predefinito (%)",
       "defaultTaxRate": "Aliquota fiscale predefinita (%)",
-      "description": "Valuta, imposte, numerazione e termini applicati a nuovi preventivi e fatture per tutti i clienti.",
+      "description": "Valori predefiniti per preventivi e fatture dei tuoi clienti. Un'organizzazione può impostare la propria aliquota fiscale e i propri termini di pagamento. La sua valuta parte da quella predefinita impostata qui e si modifica nella scheda Fatturazione dell'organizzazione.",
       "deviceAppendix": "Includi l'appendice dei dispositivi fatturati nei PDF delle fatture",
       "deviceAppendixHelp": "Aggiunge una pagina con tutti i dispositivi conteggiati su ogni riga della fattura. Disattivata per impostazione predefinita; la scelta viene congelata all'emissione.",
       "documentPageSize": "Formato pagina",
@@ -2377,7 +2422,8 @@
       "documentTheme": "Caratteri del documento",
       "documentThemeClassic": "Helvetica",
       "documentThemeCondensed": "Barlow Condensed + DM Sans",
-      "invoiceFooter": "Piè di pagina fattura",
+      "invoiceFooter": "Piè di pagina dei documenti",
+      "invoiceFooterHelp": "Stampato in fondo a ogni pagina di preventivi e fatture. Il testo del piè di pagina di un'organizzazione (nelle sue impostazioni del portale) lo sostituisce per quell'organizzazione, e il piè di pagina di un singolo preventivo sostituisce entrambi.",
       "invoiceFooterPlaceholder": "Istruzioni di pagamento, nota di ringraziamento, ecc.",
       "invoiceNumberPrefix": "Prefisso numero fattura",
       "markupHelp": "Ricarico predefinito sul costo del distributore, usato per precompilare il prezzo di vendita quando importi elementi di catalogo. Il margine lordo risultante viene mostrato durante l'importazione.",

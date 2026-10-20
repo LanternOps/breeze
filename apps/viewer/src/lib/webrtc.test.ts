@@ -252,3 +252,75 @@ describe('createWebRTCSession — RTCPeerConnection present but unusable', () =>
   });
 });
 
+
+// #9182: end to end through createWebRTCSession — a relay candidate the agent
+// gathered after its answer (and so after the viewer's 3 s gather window) is
+// still added, and the viewer's own late candidate is sent.
+describe('createWebRTCSession — trickle ICE', () => {
+  const params: AuthenticatedConnectionParams = {
+    sessionId: 'sess-9182',
+    apiUrl: 'https://api.example.com',
+    accessToken: 'viewer-token',
+  };
+  const RELAY = 'candidate:9 1 udp 16777215 198.51.100.7 3478 typ relay raddr 203.0.113.5 rport 50000';
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('adds a late agent candidate and posts a late local one', async () => {
+    vi.useFakeTimers();
+    const added: RTCIceCandidateInit[] = [];
+    let localListener: ((e: unknown) => void) | null = null;
+    vi.stubGlobal('RTCSessionDescription', class { constructor(init: RTCSessionDescriptionInit) { Object.assign(this, init); } });
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      class {
+        iceGatheringState = 'complete';
+        connectionState = 'connecting';
+        localDescription = { type: 'offer', sdp: 'v=0 offer' };
+        addTransceiver() {}
+        createDataChannel() { return { close() {} }; }
+        async createOffer() { return { type: 'offer', sdp: 'v=0 offer' }; }
+        async setLocalDescription() {}
+        async setRemoteDescription() {}
+        addEventListener(type: string, fn: (e: unknown) => void) { if (type === 'icecandidate') localListener = fn; }
+        removeEventListener() { localListener = null; }
+        async addIceCandidate(c: RTCIceCandidateInit) { added.push(c); }
+        close() {}
+      },
+    );
+
+    let sessionPolls = 0;
+    const posted: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const ok = (body: unknown) => ({ ok: true, status: 200, headers: new Headers(), json: async () => body, text: async () => JSON.stringify(body) });
+      if (url.endsWith('/viewer/ice-servers')) return ok({ iceServers: [] });
+      if (url.endsWith('/viewer/offer')) return ok({ status: 'connecting' });
+      if (url.endsWith('/viewer/ice')) { posted.push(JSON.parse(String(init?.body))); return ok({ accepted: true, forwarded: true }); }
+      sessionPolls++;
+      // First poll: the answer, without a=end-of-candidates (the agent's 500 ms
+      // early exit). Later polls: the relay candidate the agent got after it.
+      return ok({
+        status: 'connecting',
+        terminationPhase: 'none',
+        webrtcAnswer: 'v=0 answer',
+        agentIceCandidates: sessionPolls === 1 ? [] : [
+          { seq: 0, candidate: { candidate: RELAY, sdpMid: '0', sdpMLineIndex: 0 } },
+          { seq: 1, complete: true },
+        ],
+      });
+    }));
+
+    const session = await createWebRTCSession(params, document.createElement('video'));
+    expect(localListener).not.toBeNull();
+    localListener!({ candidate: { candidate: 'candidate:late-viewer-relay', toJSON: () => ({ candidate: 'candidate:late-viewer-relay', sdpMid: '0', sdpMLineIndex: 0 }) } });
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(added).toEqual([{ candidate: RELAY, sdpMid: '0', sdpMLineIndex: 0 }]);
+    expect(posted).toEqual([{ candidate: { candidate: 'candidate:late-viewer-relay', sdpMid: '0', sdpMLineIndex: 0 } }]);
+    session.close();
+    expect(localListener).toBeNull();
+  });
+});

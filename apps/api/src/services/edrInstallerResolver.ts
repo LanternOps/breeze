@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { huntressIntegrations, huntressOrgMappings, s1Integrations, s1OrgMappings } from '../db/schema';
 import { decryptForColumn } from './secretCrypto';
-import type { BuiltinProvider } from './builtinDeploymentPackages';
+import { installArgsCarryPlaceholders, type BuiltinProvider } from './builtinDeploymentPackages';
 
 export interface ResolvedInstaller {
   downloadUrl: string | null;
@@ -57,8 +57,18 @@ export async function resolveEdrInstaller(params: {
   downloadUrlTemplate: string | null;
   silentInstallArgsTemplate: string | null;
 }): Promise<ResolvedInstaller | EdrResolveError> {
-  if (params.provider === 'huntress') return resolveHuntress(params);
-  return resolveSentinelOne(params);
+  // Exhaustive (#6960): a provider without its own branch is refused, never
+  // handed to another vendor's key lookup.
+  switch (params.provider) {
+    case 'huntress':
+      return resolveHuntress(params);
+    case 'sentinelone':
+      return resolveSentinelOne(params);
+    default: {
+      const unsupported: never = params.provider;
+      return { error: `Unsupported integration provider: ${String(unsupported)}` };
+    }
+  }
 }
 
 async function resolveHuntress(params: {
@@ -127,6 +137,13 @@ async function resolveSentinelOne(params: {
   downloadUrlTemplate: string | null;
   silentInstallArgsTemplate: string | null;
 }): Promise<ResolvedInstaller | EdrResolveError> {
+  // The site token reaches the installer ONLY through this placeholder. Args
+  // without it (the generic msiexec default a Versions-tab upload gets) would
+  // install SentinelOne unregistered on every target, so refuse (#6960).
+  if (!installArgsCarryPlaceholders('sentinelone', params.silentInstallArgsTemplate)) {
+    return { error: 'SentinelOne install arguments must include SITE_TOKEN={s1_site_token} — edit the installer version' };
+  }
+
   // System context: s1_org_mappings and s1_integrations are partner-axis (Shape 3),
   // unreadable under an org-scoped request. Keyed off the trusted authenticated orgId.
   const ctx = await runOutsideDbContext(() =>

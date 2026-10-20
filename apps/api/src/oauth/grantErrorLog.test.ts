@@ -188,3 +188,32 @@ describe('grant.error logger', () => {
     expect(warnMock.mock.calls[0]![0].context).toMatchObject({ client_id: null, token_hash: null });
   });
 });
+
+describe('grant.error logger: connection-health retry hook (W4)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('reports every refresh-token-not-found from a resolved client, including suppressed repeats', () => {
+    const hook = vi.fn();
+    const log = createGrantErrorLogger({ now: () => 1, onRefreshTokenNotFound: hook });
+    log(refreshCtx('client-a'), invalidGrant());
+    log(refreshCtx('client-a'), invalidGrant());
+    expect(hook).toHaveBeenCalledTimes(2);
+    expect(hook).toHaveBeenCalledWith('client-a');
+    expect(warnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores unresolved (request-body) client ids, other details and other grant types', () => {
+    const hook = vi.fn();
+    const log = createGrantErrorLogger({ onRefreshTokenNotFound: hook });
+    log(refreshCtx(undefined, { paramsClientId: 'attacker-chosen' }), invalidGrant());
+    log(refreshCtx('client-a'), invalidGrant('grant request is invalid'));
+    log({ oidc: { client: { clientId: 'client-a' }, params: { grant_type: 'authorization_code', code: 'x' } } }, invalidGrant('authorization code not found'));
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it('a throwing hook never escapes the listener and the line is still logged', () => {
+    const log = createGrantErrorLogger({ onRefreshTokenNotFound: () => { throw new Error('boom'); } });
+    expect(() => log(refreshCtx('client-a'), invalidGrant())).not.toThrow();
+    expect(warnMock).toHaveBeenCalledTimes(1);
+  });
+});

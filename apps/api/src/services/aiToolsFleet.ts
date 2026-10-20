@@ -87,6 +87,7 @@ import {
   reportTypeRequiresPermissions,
 } from './reportTypePermissions';
 import { reportTypeDef } from './reportRegistry';
+import { GENERATE_REPORT_TYPES, isBusinessReportType, type GenerateReportType } from './aiReportTypes';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
 import {
@@ -206,6 +207,47 @@ function refuseFleetAgentPrincipal(action: string): string {
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+/** #9222: refusal for a business report type run under a site-restricted
+ *  authority. Tickets, time entries, invoices and the AI ledger carry no site
+ *  axis, so the HTTP routes would answer with an unmeasured placeholder; a chat
+ *  tool refuses instead of fabricating a figure. */
+const BUSINESS_REPORT_SITE_RESTRICTED_MESSAGE =
+  'Business report types are not available to site-restricted callers: tickets, time entries, invoices and AI usage have no site dimension.';
+
+/** #9222: the HTTP create/update routes require reports:export plus a fresh-MFA
+ *  session to set `config.emailRecipients` (a business report would mail MSP
+ *  financials off-platform on a timer). The AI tool cannot prove fresh MFA, so
+ *  it refuses recipients on a business type outright; set them in the web UI. */
+const BUSINESS_REPORT_RECIPIENTS_MESSAGE =
+  'Email recipients on a business report must be set in the web UI (requires the export permission and an MFA-verified session).';
+
+function configSetsEmailRecipients(config: unknown): boolean {
+  if (!config || typeof config !== 'object') return false;
+  const r = (config as Record<string, unknown>).emailRecipients;
+  return Array.isArray(r) ? r.length > 0 : Boolean(r);
+}
+
+/**
+ * #9222. The HTTP routes' type gates for the business report types, for the AI
+ * tool: msp_staff audience (ruling F1: an org-scope caller never runs one) and
+ * the per-type read permissions (ruling P8), from the caller's LIVE permission
+ * set. Legacy types pay nothing (no permission lookup). Returns the refusal
+ * body, or null when the caller may proceed to the site-scope check.
+ */
+async function businessReportTypeRefusal(
+  type: unknown,
+  auth: AuthContext,
+): Promise<{ error: string } | null> {
+  if (!isBusinessReportType(type)) return null;
+  if (reportTypeHiddenFromCaller(type, auth)) return { error: 'Insufficient permissions' };
+  if (reportTypeRequiresPermissions(type)) {
+    if (missingReportTypePermission(type, await aiCallerPermissions(auth))) {
+      return { error: 'Insufficient permissions' };
+    }
+  }
+  return null;
 }
 
 /**
@@ -2767,7 +2809,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           action: { type: 'string', enum: ['list', 'generate', 'data', 'create', 'update', 'delete', 'history', 'download'], description: 'The action to perform' },
           reportId: { type: 'string', description: 'Report UUID (for generate/update/delete/history)' },
           reportRunId: { type: 'string', description: 'Report run UUID (required for download)' },
-          reportType: { type: 'string', enum: ['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary'], description: 'Report type (for generate/data/create)' },
+          reportType: { type: 'string', enum: [...GENERATE_REPORT_TYPES], description: 'Report type (for generate/data/create). Business types are MSP-staff only and refused for site-restricted callers.' },
           name: { type: 'string', description: 'Report name (for create/update)' },
           config: { type: 'object', description: 'Report configuration (filters, options)' },
           schedule: { type: 'string', enum: ['one_time', 'daily', 'weekly', 'monthly'], description: 'Schedule (for create/update)' },
@@ -2883,6 +2925,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (auth.allowedDeviceIds) return JSON.stringify({ error: DEVICE_SCOPE_REPORT_DENIED_MESSAGE });
         if (!input.reportId && !input.reportType) return JSON.stringify({ error: 'reportId or reportType is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        // #9222: ad-hoc business type — audience + permission gate before any authority lookup.
+        if (!input.reportId) {
+          const refusal = await businessReportTypeRefusal(input.reportType, auth);
+          if (refusal) return JSON.stringify(refusal);
+        }
 
         let reportDef;
         let executionAuthority: ReportExecutionAuthority | null = null;
@@ -2948,6 +2995,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           }
         }
 
+        // #9222: a business type has no site axis — refuse a site-restricted run
+        // (stored definition or ad hoc) rather than mint an unmeasured placeholder.
+        if (
+          isBusinessReportType(reportDef?.type ?? input.reportType)
+          && executionAuthority.scope.kind === 'restricted'
+        ) {
+          return JSON.stringify({ error: BUSINESS_REPORT_SITE_RESTRICTED_MESSAGE });
+        }
+
         const reportConfig = (reportDef?.config ?? input.config ?? {}) as Record<string, unknown>;
         try {
           assertReportExecutionPreflight(orgId, reportConfig, executionAuthority);
@@ -2984,9 +3040,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'data') {
         if (!input.reportType) return JSON.stringify({ error: 'reportType is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const dataRefusal = await businessReportTypeRefusal(input.reportType, auth);
+        if (dataRefusal) return JSON.stringify(dataRefusal);
         const executionAuthority = await aiLiveReportAuthority(auth, orgId, 'read');
         if (!executionAuthority) {
           return JSON.stringify({ error: 'Access to report scope denied' });
+        }
+        if (isBusinessReportType(input.reportType) && executionAuthority.scope.kind === 'restricted') {
+          return JSON.stringify({ error: BUSINESS_REPORT_SITE_RESTRICTED_MESSAGE });
         }
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
@@ -3101,6 +3162,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const resolvedReportOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
         if (!resolvedReportOrg.orgId) return JSON.stringify({ error: resolvedReportOrg.error ?? 'Organization context required' });
         const reportOrgId = resolvedReportOrg.orgId;
+        const createRefusal = await businessReportTypeRefusal(input.reportType, auth);
+        if (createRefusal) return JSON.stringify(createRefusal);
+        if (isBusinessReportType(input.reportType) && configSetsEmailRecipients(input.config)) {
+          return JSON.stringify({ error: BUSINESS_REPORT_RECIPIENTS_MESSAGE });
+        }
         const authority = await aiLiveReportAuthority(auth, reportOrgId, 'write');
         if (
           !authority
@@ -3108,10 +3174,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         ) {
           return JSON.stringify({ error: 'Access to report scope denied' });
         }
+        if (isBusinessReportType(input.reportType) && authority.scope.kind === 'restricted') {
+          return JSON.stringify({ error: BUSINESS_REPORT_SITE_RESTRICTED_MESSAGE });
+        }
         const [report] = await db.insert(reports).values({
           orgId: reportOrgId,
           name: input.name as string,
-          type: input.reportType as 'device_inventory' | 'software_inventory' | 'alert_summary' | 'compliance' | 'performance' | 'executive_summary',
+          type: input.reportType as GenerateReportType,
           config: (input.config as Record<string, unknown>) ?? {},
           schedule: (input.schedule as 'one_time' | 'daily' | 'weekly' | 'monthly') ?? 'one_time',
           format: (input.format as 'csv' | 'pdf' | 'excel') ?? 'csv',
@@ -3134,6 +3203,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // Multi-org report series W02: a child's shared fields belong to its
         // series (spec §3.3 "Child writers").
         if (existing.seriesId) return JSON.stringify(seriesManagedRefusal(existing.seriesId));
+        if (isBusinessReportType(existing.type) && configSetsEmailRecipients(input.config)) {
+          return JSON.stringify({ error: BUSINESS_REPORT_RECIPIENTS_MESSAGE });
+        }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;

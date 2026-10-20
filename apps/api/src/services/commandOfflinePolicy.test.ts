@@ -222,4 +222,20 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(GATED_COMMAND_TYPES).toContain('notify_user');
     expect(LIFECYCLE_COMMAND_TYPES).not.toContain('notify_user');
   });
+
+  it('registers the endpoint chat types as live (never queued for an offline device) (#8743)', () => {
+    for (const type of ['chat_open', 'chat_message', 'chat_close']) {
+      expect(Object.values(CommandTypes)).toContain(type);
+      expect(EXPLICITLY_CLASSIFIED_COMMAND_TYPES).toContain(type);
+      // A chat line delivered hours later, to whoever is signed in by then,
+      // is worse than a refused send: offline is refused, never queued.
+      expect(defaultOfflinePolicy(type)).toEqual({ kind: 'reject' });
+    }
+    // Operator content is partner-trust gated; closing carries none.
+    expect(GATED_COMMAND_TYPES).toContain('chat_open');
+    expect(GATED_COMMAND_TYPES).toContain('chat_message');
+    expect(LIFECYCLE_COMMAND_TYPES).toContain('chat_close');
+    expect(LIFECYCLE_COMMAND_TYPES).not.toContain('chat_open');
+    expect(LIFECYCLE_COMMAND_TYPES).not.toContain('chat_message');
+  });
 });

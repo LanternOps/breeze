@@ -218,9 +218,13 @@ func InstantBoot(
 	}
 	slog.Info("instantboot: configuring boot loader")
 
-	if bootErr := configureBootLoader(driveLetter); bootErr != nil {
-		slog.Warn("instantboot: boot config failed, VM may not boot automatically",
-			"error", bootErr.Error())
+	if err := configureBootLoader(driveLetter); err != nil {
+		// A VM with no boot files is not an instant boot (#7494): fail before
+		// any VM exists, the same way as a missing boot-critical file — the
+		// deferred cleanup removes the restore directory.
+		dismountVHDX(baseVHDX)
+		result.Error = fmt.Sprintf("configure boot loader: %v", err)
+		return result, fmt.Errorf("instantboot: %s", result.Error)
 	}
 
 	if err := rootGuard.restoreDefaults(); err != nil {
@@ -339,7 +343,7 @@ func configureBootLoader(driveLetter string) error {
 
 	// bcdboot populates the EFI System Partition boot files.
 	if out, err := exec.Command(exe, args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("bcdboot (%s): %w: %s", exe, err, strings.TrimSpace(string(out)))
+		return bcdbootFailure(exe, out, err)
 	}
 	return nil
 }

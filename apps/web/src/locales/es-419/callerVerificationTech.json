@@ -170,6 +170,7 @@
       "partner": "Socio",
       "org": "Organización"
     },
+    "tierCapHint": "El nivel máximo es {{max}}. El nivel 3 requiere verificación en la estación de trabajo, que no está disponible en esta versión.",
     "ignored": "Algunos ajustes son más laxos que la base del socio y se ignoran: {{fields}}",
     "readOnly": "Puedes ver esta política, pero no modificarla.",
     "save": "Guardar política",

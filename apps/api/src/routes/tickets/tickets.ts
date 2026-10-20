@@ -8,6 +8,7 @@ import { requireScope, requirePermission } from '../../middleware/auth';
 import { alertInSiteScope, deviceInSiteScope, ticketSiteScopeCondition } from './siteScope';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { ticketSearchCondition } from '../../services/ticketSearch';
+import { checklistCountsForTickets } from '../../services/ticketChecklistService';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
@@ -419,7 +420,15 @@ ticketsRoutes.get(
       .where(whereCondition);
     const total = Number(countRows[0]?.count ?? 0);
 
-    return c.json({ data, pagination: { page: q.page, limit: q.limit, total } });
+    // #9180 — checklist progress for the queue: one grouped count for the page,
+    // never a per-row fetch. Checklists are internal MSP procedure (spec #5783
+    // §2): an organization-scoped caller gets no `checklist` key at all.
+    if (auth.scope === 'organization' || data.length === 0) {
+      return c.json({ data, pagination: { page: q.page, limit: q.limit, total } });
+    }
+    const counts = await checklistCountsForTickets(data.map((t) => t.id));
+    const withChecklist = data.map((t) => ({ ...t, checklist: counts.get(t.id) ?? null }));
+    return c.json({ data: withChecklist, pagination: { page: q.page, limit: q.limit, total } });
   }
 );
 

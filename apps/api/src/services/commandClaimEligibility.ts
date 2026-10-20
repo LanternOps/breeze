@@ -12,6 +12,7 @@ import {
 } from './partnerTrust.commands';
 import type { PartnerTrustState } from '../db/schema/orgs';
 import { captureException } from './sentry';
+import { callerVerificationEnabled, callerVerificationWorkstationEnabled } from '../config/env';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST } from './drainClaimAllowlist';
 import { PARKED_DEVICE_CANCEL_REASON } from './unassignedPool/deliveryEligibility';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
@@ -47,6 +48,8 @@ export type ClaimCancelReason =
 /** Why a claim candidate was withheld this heartbeat but left `pending`. */
 export type ClaimHoldReason =
   | 'held_maintenance_suppression'
+  /** A feature-gated type whose feature is currently dark; recoverable when re-enabled. */
+  | 'held_feature_disabled'
   | 'power_state_barrier'
   | 'eligibility_check_failed';
 
@@ -546,6 +549,14 @@ export async function partitionClaimable(
     }
     if (revalidation) {
       cancelled.push({ id: row.id, reason: revalidation });
+      continue;
+    }
+
+    // Workstation prompts created before the tier went dark (or while the
+    // feature is off) are not handed to an agent: held, not cancelled, so the
+    // row stays pending and expires normally, or resumes if re-enabled.
+    if (row.type === 'caller_verify' && !(callerVerificationEnabled() && callerVerificationWorkstationEnabled())) {
+      held.push({ id: row.id, reason: 'held_feature_disabled' });
       continue;
     }
 

@@ -4,6 +4,8 @@ import {
   BACKUP_JOB_ABSOLUTE_TIMEOUT_MS,
   CALLER_VERIFY_TIMEOUT_MS,
   getCommandTimeoutMs,
+  RESTORE_POINT_CHECKPOINT_BUDGET_MS,
+  SCRIPT_GRACE_BUFFER_MS,
   SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS,
 } from './commandTimeouts';
 import { CommandTypes } from './commandQueue';
@@ -76,5 +78,53 @@ describe('command timeouts', () => {
     // 30 minutes: the agent caps its own estimation phase at 3, so this is a
     // pure backstop rather than a working budget.
     expect(getCommandTimeoutMs('system_cleanup_list')).toBe(30 * 60 * 1000);
+  });
+
+  describe('script deadline with a stamped restore-point block (#9162)', () => {
+    const block = (enabled: boolean) => ({
+      v: 1,
+      requestId: '00000000-0000-4000-8000-000000000001',
+      enabled,
+      label: 'Breeze: script',
+      resolvedAt: '2026-10-18T00:00:00.000Z',
+      policyRevision: '',
+      validUntil: '2026-10-19T00:00:00.000Z',
+    });
+
+    it('mirrors the agent checkpoint budget (systemrestore.CommandBudget = 5m)', () => {
+      expect(RESTORE_POINT_CHECKPOINT_BUDGET_MS).toBe(5 * 60 * 1000);
+    });
+
+    it('adds the checkpoint budget when the block is enabled', () => {
+      expect(
+        getCommandTimeoutMs(CommandTypes.SCRIPT, { timeoutSeconds: 60, restorePoint: block(true) }),
+      ).toBe(60_000 + SCRIPT_GRACE_BUFFER_MS + RESTORE_POINT_CHECKPOINT_BUDGET_MS);
+    });
+
+    it('adds it on top of the default script timeout too', () => {
+      expect(getCommandTimeoutMs(CommandTypes.SCRIPT, { restorePoint: block(true) })).toBe(
+        300_000 + SCRIPT_GRACE_BUFFER_MS + RESTORE_POINT_CHECKPOINT_BUDGET_MS,
+      );
+    });
+
+    it('leaves the deadline unchanged with no block, a disabled block, or a malformed one', () => {
+      const base = 60_000 + SCRIPT_GRACE_BUFFER_MS;
+      expect(getCommandTimeoutMs(CommandTypes.SCRIPT, { timeoutSeconds: 60 })).toBe(base);
+      expect(
+        getCommandTimeoutMs(CommandTypes.SCRIPT, { timeoutSeconds: 60, restorePoint: block(false) }),
+      ).toBe(base);
+      for (const restorePoint of [null, 'yes', true, { enabled: 'true' }, []]) {
+        expect(getCommandTimeoutMs(CommandTypes.SCRIPT, { timeoutSeconds: 60, restorePoint })).toBe(base);
+      }
+    });
+
+    it('does not extend non-script command types', () => {
+      expect(
+        getCommandTimeoutMs(CommandTypes.SOFTWARE_INSTALL, { restorePoint: block(true) }),
+      ).toBe(getCommandTimeoutMs(CommandTypes.SOFTWARE_INSTALL));
+      expect(
+        getCommandTimeoutMs(CommandTypes.INSTALL_PATCHES, { restorePoint: block(true) }),
+      ).toBe(getCommandTimeoutMs(CommandTypes.INSTALL_PATCHES));
+    });
   });
 });

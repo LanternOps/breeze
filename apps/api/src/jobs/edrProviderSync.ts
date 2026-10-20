@@ -4,7 +4,8 @@ import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import * as dbModule from '../db';
 import { edrConnections, edrTenants } from '../db/schema';
-import { getBullMQConnection } from '../services/redis';
+import { getBullMQConnection, getRedis } from '../services/redis';
+import { ackEdrHints, readEdrHints, type EdrHintSnapshot } from '../services/edrProviders/hints';
 import { captureException } from '../services/sentry';
 import { decryptEdrSecret } from '../services/edrProviders/credentials';
 import { getEdrProvider } from '../services/edrProviders/registry';
@@ -37,7 +38,7 @@ import {
 } from '../services/edrProviders/alerts';
 import { EDR_ACTION_UNKNOWN_GIVEUP_MS, pollEdrActionStatus } from '../services/edrProviders/actionStatus';
 import { attachWorkerObservability } from './workerObservability';
-import { isFinalSyncAttempt } from './syncAttempt';
+import { isFinalSyncAttempt, reportTerminalSyncFailure } from './syncAttempt';
 
 /**
  * External EDR provider sync (#8164 W01b). Two independent streams per
@@ -153,6 +154,22 @@ export interface DueRow {
   lastDetectionSyncAt: Date | null;
   inventoryIntervalMinutes: number;
   detectionIntervalMinutes: number;
+  /** W03 PR-B: unacked push-hint marker (`edr_connections.pending_hint_at`). */
+  pendingHintAt?: Date | null;
+}
+
+/**
+ * A pending hint makes detections due when it is newer than the last detection
+ * sync, or when it outlived a sync that finished at least one sync-all period
+ * ago: the run that saw it queued a `rerun`, but that enqueue may have coalesced
+ * into an already-active rerun job, so the sweep is the durable fallback.
+ */
+function isHintDue(row: DueRow, now: Date): boolean {
+  const hint = row.pendingHintAt;
+  if (!hint) return false;
+  const last = row.lastDetectionSyncAt;
+  if (!last || hint.getTime() > last.getTime()) return true;
+  return now.getTime() - last.getTime() >= SYNC_ALL_INTERVAL_MINUTES * 60_000;
 }
 
 /** PURE: which (connection, stream) pairs are due now. Each stream uses its own interval. */
@@ -165,7 +182,7 @@ export function selectDueStreams(
     if (isStreamDue(row.lastInventorySyncAt, row.inventoryIntervalMinutes, now)) {
       out.push({ connectionId: row.connectionId, stream: 'inventory' });
     }
-    if (isStreamDue(row.lastDetectionSyncAt, row.detectionIntervalMinutes, now)) {
+    if (isStreamDue(row.lastDetectionSyncAt, row.detectionIntervalMinutes, now) || isHintDue(row, now)) {
       out.push({ connectionId: row.connectionId, stream: 'detections' });
     }
   }
@@ -217,6 +234,7 @@ async function processSyncAll(): Promise<{ queued: number }> {
       provider: edrConnections.provider,
       lastInventorySyncAt: edrConnections.lastInventorySyncAt,
       lastDetectionSyncAt: edrConnections.lastDetectionSyncAt,
+      pendingHintAt: edrConnections.pendingHintAt,
       effectiveInventory: edrConnections.effectiveInventoryIntervalMinutes,
       effectiveDetection: edrConnections.effectiveDetectionIntervalMinutes,
       requestedInventory: edrConnections.inventoryIntervalMinutes,
@@ -240,6 +258,7 @@ async function processSyncAll(): Promise<{ queued: number }> {
       connectionId: c.id,
       lastInventorySyncAt: c.lastInventorySyncAt,
       lastDetectionSyncAt: c.lastDetectionSyncAt,
+      pendingHintAt: c.pendingHintAt ?? null,
       inventoryIntervalMinutes: c.effectiveInventory ?? Math.max(c.requestedInventory ?? d.inventoryMinutes, d.inventoryMinutes),
       detectionIntervalMinutes: c.effectiveDetection ?? Math.max(c.requestedDetection ?? d.detectionsMinutes, d.detectionsMinutes),
     });
@@ -322,6 +341,31 @@ async function readCurrentTenants(
     vendorTenantId: string; orgId: string | null; detectionCursor: string | null;
   }>;
   return new Map(rows.map((r) => [r.vendorTenantId, r]));
+}
+
+/** W03 PR-B: push-hint snapshot for a detections run, outside any DB context; null on failure. */
+async function snapshotHints(connectionId: string): Promise<EdrHintSnapshot | null> {
+  try {
+    return await dbModule.runOutsideDbContext(() => readEdrHints(connectionId, getRedis()));
+  } catch (error) {
+    console.error(`[EdrProviderSync] Connection ${connectionId}: push-hint snapshot failed (marker kept):`, error);
+    return null;
+  }
+}
+
+/**
+ * W03 PR-B: after Phase 3 COMMITTED, ack exactly the snapshot. Returns true when
+ * a newer hint is still pending (the caller enqueues one rerun). A failure keeps
+ * the sync result and the marker; `sync-all` picks the connection up.
+ */
+async function acknowledgeHints(connectionId: string, snap: EdrHintSnapshot): Promise<boolean> {
+  try {
+    const { stillPending } = await dbModule.runOutsideDbContext(() => ackEdrHints(connectionId, snap, getRedis()));
+    return stillPending;
+  } catch (error) {
+    console.error(`[EdrProviderSync] Connection ${connectionId}: push-hint ack failed (sync result kept):`, error);
+    return false;
+  }
 }
 
 /** Best-effort re-run of a stream whose tenants were dropped by the per-tenant fence. */
@@ -593,6 +637,8 @@ async function handleSyncError(
   // fall through to a plain rethrow so BullMQ backs off; nothing was persisted.
   if (isFinalAttempt || reauth) {
     await recordSyncFailure(loaded, stream, message, reauth);
+    // Connection health (W4): observe this kind soon instead of at its next poll.
+    reportTerminalSyncFailure('edr');
   }
   if (reauth) {
     throw error instanceof UnrecoverableError ? error : new UnrecoverableError(`${EDR_REAUTH_MARKER} ${message}`);
@@ -779,6 +825,11 @@ export async function syncEdrDetections(
     // Unmapped tenants are not fetched.
     const mappedTenants = loaded.tenants.filter((t) => t.orgId);
 
+    // W03 PR-B: snapshot (never clear) the push hints BEFORE the vendor fetch,
+    // so everything in the snapshot is covered by this run's window. Acked only
+    // after Phase 3 commits. A read failure just skips the ack (marker survives).
+    const hintSnapshot = await snapshotHints(connectionId);
+
     // ---- phase 2 (NO DB) ---------------------------------------------
     const now = new Date();
     const results = await dbModule.runOutsideDbContext(() => mapWithConcurrency(
@@ -844,7 +895,8 @@ export async function syncEdrDetections(
       return { dropped };
     });
 
-    if (done && done.dropped > 0) await reenqueueStream(connectionId, 'detections');
+    const hintStillPending = done && hintSnapshot ? await acknowledgeHints(connectionId, hintSnapshot) : false;
+    if (done && (done.dropped > 0 || hintStillPending)) await reenqueueStream(connectionId, 'detections');
     if (done) await runPhase4('evaluateEdrAlerts', connectionId, () => evaluateEdrAlerts(connectionId, { now: new Date() }));
 
     if (!done) {

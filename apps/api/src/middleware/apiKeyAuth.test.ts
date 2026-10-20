@@ -1041,6 +1041,49 @@ describe('apiKeyAuth middleware', () => {
       expect(next).toHaveBeenCalled();
     });
   });
+
+  describe('B-W02 (#6156): mcpDomains on the principal context', () => {
+    const keyRow = (mcpDomains: string[] | null) => ({
+      id: 'key-mcp',
+      orgId: 'org-2',
+      name: 'Key',
+      keyPrefix: 'brz_',
+      keyHash: 'hash',
+      scopes: ['ai:read'],
+      expiresAt: null,
+      rateLimit: 5,
+      usageCount: 0,
+      status: 'active',
+      createdBy: 'user-2',
+      mcpDomains,
+    });
+
+    const run = async (mcpDomains: string[] | null) => {
+      buildSequentialSelectMock([[keyRow(mcpDomains)], [{ status: 'active' }]]);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+      } as any);
+      const c = createContext({ 'X-API-Key': 'brz_valid' });
+      const next = vi.fn();
+      await apiKeyAuthMiddleware(c, next);
+      expect(next).toHaveBeenCalled();
+      return c;
+    };
+
+    it('sets mcpDomains from the key row', async () => {
+      const c = await run(['tickets']);
+      // The key lookup must actually select the column, not rely on a mock row.
+      expect(Object.keys(vi.mocked(db.select).mock.calls[0]![0] as object)).toContain('mcpDomains');
+      expect(c.get('apiKey').mcpDomains).toEqual(['tickets']);
+    });
+
+    it('NULL row sets mcpDomains null', async () => {
+      const c = await run(null);
+      const ctx = c.get('apiKey');
+      expect('mcpDomains' in ctx).toBe(true);
+      expect(ctx.mcpDomains).toBeNull();
+    });
+  });
 });
 
 describe('requireApiKeyScope middleware', () => {

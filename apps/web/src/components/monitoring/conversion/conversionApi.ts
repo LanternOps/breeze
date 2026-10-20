@@ -76,7 +76,7 @@ function unwrap<T>(body: unknown): T {
  * `code`, so runAction's `errors:<code>` lookup never sees them.
  */
 export const CONVERSION_ERROR_CODES = [
-  'preview_stale', 'preview_failed', 'equivalence_delta', 'CONVERSION_PREREQUISITE_MISSING', 'blocked',
+  'preview_stale', 'conversion_contended', 'preview_failed', 'equivalence_delta', 'CONVERSION_PREREQUISITE_MISSING', 'blocked',
   'already_converted', 'partner_wide_denied', 'policy_not_found', 'source_not_found',
   'conversion_not_found', 'conversion_revert_unavailable', 'invalid_reason',
 ] as const;

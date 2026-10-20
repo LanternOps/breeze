@@ -265,6 +265,7 @@ describe('M365 consent sessions', () => {
         administratorUsername: null,
         verifiedAt: verified.verifiedAt,
       });
+      // Unreachable under m365_consent_sessions_flow_version_check; the guard stays as defense in depth.
       expect(verifiedIdentityFromSession({ ...row, flowVersion: 1 } as never)).toBeNull();
       expect(verifiedIdentityFromSession({ ...row, verifiedTenantId: null } as never)).toBeNull();
       expect(verifiedIdentityFromSession({ ...row, verifiedAdminObjectId: null } as never)).toBeNull();

@@ -18,6 +18,7 @@ const SETS = {
   disableUserAuthorizerRoles: ['billing', 'technical', 'escalation', 'admin', 'site', 'after_hours', 'portal'],
 } as const;
 const KEYS = [...Object.keys(NUMERIC), ...Object.keys(BOOLEANS), ...Object.keys(SETS)] as (keyof PolicyValues)[];
+const TIER_KEYS = ['requiredTierResetPassword', 'requiredTierDisableUser'] as const;
 
 export function inheritedDraft(): PolicyDraft {
   return Object.fromEntries(KEYS.map((k) => [k, null])) as PolicyDraft;
@@ -92,6 +93,9 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
   const update = (key: keyof PolicyValues, next: unknown) => setDraft((old) => ({ ...old, [key]: next }));
   const show = (v: unknown) => (Array.isArray(v) ? v.join(', ') || '—' : typeof v === 'boolean' ? (v ? t('policy.yes') : t('policy.no')) : String(v));
   const fieldLabel = (key: string) => t(/* i18n-dynamic */ `policy.fields.${key}`);
+  // Tier 3 needs the workstation tier; the server refuses it while that is dark.
+  const tierCap = (key: (typeof TIER_KEYS)[number]): number =>
+    (key === 'requiredTierResetPassword' ? data.maxAchievableTierResetPassword : data.maxAchievableTierDisableUser) ?? data.maxAchievableTier ?? 3;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,7 +103,10 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
     busy.current = true;
     setSaving(true);
     try {
-      const result = await putPolicy(owner, draft);
+      // A stored tier above what is achievable would be refused; send the achievable one.
+      const body = { ...draft };
+      for (const k of TIER_KEYS) if (body[k] !== null && body[k]! > tierCap(k)) body[k] = tierCap(k);
+      const result = await putPolicy(owner, body);
       setData(result);
       setDraft(draftFrom(result.row));
     } catch (err) {
@@ -130,8 +137,11 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
           const bool = BOOLEANS[key as keyof typeof BOOLEANS];
           const options = SETS[key as keyof typeof SETS];
           const base = data.baseline[key];
+          const isTier = (TIER_KEYS as readonly string[]).includes(key);
+          const tierMax = isTier ? tierCap(key as (typeof TIER_KEYS)[number]) : 3;
+          const cap = isTier ? Math.min(num?.[1] ?? tierMax, tierMax) : undefined;
           const min = num ? (org && num[2] === 'max' ? Math.max(num[0], base as number) : num[0]) : undefined;
-          const max = num ? (org && num[2] === 'min' ? Math.min(num[1], base as number) : num[1]) : undefined;
+          const max = num ? (org && num[2] === 'min' ? Math.min(num[1], base as number) : (cap ?? num[1])) : undefined;
           return (
             <div key={key} className="grid gap-1 border-b pb-3 last:border-0 sm:grid-cols-[1fr_auto] sm:items-start">
               <div className="space-y-1">
@@ -144,10 +154,13 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
                   <output data-testid={`${id}-effective`} className="sr-only">{show(data.effective[key])}</output>
                 </p>
                 {num && (
-                  <NumberField id={id} min={min!} max={max!} value={value(key) as number} onCommit={(n) => update(key, n)} />
+                  <NumberField id={id} min={Math.min(min!, max!)} max={max!} value={isTier ? Math.min(value(key) as number, max!) : (value(key) as number)} onCommit={(n) => update(key, n)} />
+                )}
+                {isTier && tierMax < 3 && (
+                  <p data-testid={`${id}-cap-hint`} className="text-xs text-muted-foreground">{t('policy.tierCapHint', { max: tierMax })}</p>
                 )}
                 {bool && (
-                  <select id={id} data-testid={id} value={String(value(key))} className="h-8 rounded-md border bg-background px-2"
+                  <select id={id} data-testid={id} value={String(value(key))} className="h-10 rounded-md border bg-background px-3 text-sm"
                     onChange={(e) => update(key, e.target.value === 'true')}>
                     {[true, false].map((v) => (
                       <option key={String(v)} value={String(v)}
@@ -195,12 +208,19 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
 
 /**
  * Integer input that keeps the raw text while typing (so "3" on the way to
- * "30" is not rejected) and commits on blur, clamped to [min, max]; an empty
+ * "30" is not rejected) and commits on blur or Enter, clamped to [min, max]; an empty
  * or non-numeric entry reverts to the current value.
  */
 function NumberField({ id, min, max, value, onCommit }: { id: string; min: number; max: number; value: number; onCommit: (n: number) => void }) {
   const [text, setText] = useState(String(value));
-  useEffect(() => { setText(String(value)); }, [value]);
+  // Re-sync the text when the committed value changes, during render rather
+  // than in an effect: a pending mount effect is flushed ahead of the next
+  // keystroke's re-render and would overwrite what was just typed (#8879).
+  const [synced, setSynced] = useState(value);
+  if (!Object.is(synced, value)) {
+    setSynced(value);
+    setText(String(value));
+  }
   const commit = () => {
     const n = Number.parseInt(text, 10);
     if (!Number.isFinite(n)) { setText(String(value)); return; }
@@ -210,7 +230,7 @@ function NumberField({ id, min, max, value, onCommit }: { id: string; min: numbe
   };
   return (
     <input id={id} data-testid={id} type="number" step={1} min={min} max={max} value={text}
-      className="h-8 w-28 rounded-md border bg-background px-2"
+      className="h-10 w-28 rounded-md border bg-background px-3 text-sm"
       onChange={(e) => setText(e.target.value)} onBlur={commit}
       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }} />
   );

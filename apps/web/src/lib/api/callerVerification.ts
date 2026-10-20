@@ -37,6 +37,8 @@ export type VerificationDetails = VerificationView & {
   usableUntil: string | null;
   incidentId: string | null;
   consumedAction: CallerVerificationAction | null;
+  /** Status of the consumed action intent ('failed' = verification used, action failed). Optional until every consumer supplies it. */
+  consumedIntentStatus?: 'pending_approval' | 'approved' | 'rejected' | 'executing' | 'completed' | 'failed' | 'expired' | 'cancelled' | null;
   undeliverableReason: 'no_session_for_user' | 'session_not_console' | 'helper_outdated' | 'sms_failed' | 'email_failed' | null;
 };
 
@@ -58,6 +60,11 @@ export type EffectiveCallerVerificationPolicy = PolicyValues & {
 /** null = inherit (partner baseline or code default). */
 export type PolicyDraft = { [K in keyof PolicyValues]: PolicyValues[K] | null };
 export interface PolicyResponse {
+  /** Highest tier the server can currently satisfy (2 while the workstation tier is dark). */
+  maxAchievableTier?: 2 | 3;
+  /** Per-action caps; disable_user can reach tier 3 via administrative step-up even while the workstation tier is dark. */
+  maxAchievableTierResetPassword?: 2 | 3;
+  maxAchievableTierDisableUser?: 2 | 3;
   /** The owner's own stored row (may carry extra server columns), null when none. */
   row: Partial<PolicyDraft> | null;
   defaults: PolicyValues;

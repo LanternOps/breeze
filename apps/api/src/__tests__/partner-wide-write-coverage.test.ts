@@ -108,6 +108,14 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // tenant records a licence denial. No caller-chosen value reaches either
   // row; the caller-facing config write (PATCH actionsEnabled) is gated in
   // routes/edr/connections.ts by requireEdrPartnerAdmin.
+  // #6263 W03a. The publisher writes only a set's version/publish columns and
+  // its rules' compile_error, for a set it re-locks FOR UPDATE under the
+  // caller's RLS (read-only partner-wide/built-in rows are not lockable). Its
+  // only callers are the mutating routes in routes/security/yara.ts, each of
+  // which runs `set.orgId === null && !canManagePartnerWidePolicies(auth)`
+  // (writeDenial) first; it refuses the built-in set outright.
+  'services/yaraBuiltinPackStore.ts': 'boot-only system-scope upsert of THE built-in set (both owners NULL); never reachable from a route or a caller — routes 403 the built-in set (#6263 W03b)',
+  'services/yaraRuleSetPublisher.ts': 'writes only version/publish columns + compile_error of a set the caller already passed routes/security/yara.ts writeDenial (canManagePartnerWidePolicies for partner-wide); re-locks FOR UPDATE under the caller RLS; refuses the built-in set',
   'services/edrProviders/actions.ts': 'vendor-outcome bookkeeping only (reauth_required on a rejected key, a licence denial on the acted-on tenant), system context, ids from the authorized row; no caller-chosen value',
   'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
@@ -164,6 +172,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // Enabling the lane is additionally gated at the route: approvals:decide +
   // MFA + a resource-bound ai_script_lane_grant step-up.
   'routes/ai/scriptPolicy.ts': 'org GRANT writes only (org_id always set); partner ceiling gated at routes/partnerAiScriptPolicy.ts — canManagePartnerWidePolicies on the PUT',
+  'routes/ai/dataPolicy.ts': 'org override writes only (org_id always set); partner default gated at routes/partnerAiDataPolicy.ts — canManagePartnerWidePolicies on the PUT',
   'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
 
   // ==========================================================================
@@ -240,6 +249,23 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/quickSupportOrg.ts': 'quick-support provisioning creates an org-axis container',
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
+  // #6960 / #8736. The generated software policy of a `security_agents` feature
+  // link. Its owner axis is never caller-chosen: it is COPIED from the config
+  // policy the link hangs off (partner-wide config policy → partner-owned row),
+  // inside the link-write transaction. syncManagedSoftwarePolicy's only
+  // request-path callers are services/configurationPolicy.ts addFeatureLink /
+  // updateFeatureLink, reached for a security_agents link only from
+  // routes/configurationPolicies/featureLinks.ts (POST + PATCH) and
+  // services/aiToolsConfigPolicy.ts (`manage_policy_feature_link`), which each
+  // refuse a partner-wide config policy without canManagePartnerWidePolicies
+  // BEFORE calling them. The monitor-family callers of add/updateFeatureLink
+  // currently pass only `monitors` links. The caller set is pinned by
+  // services/securityAgents/managedPolicyGenerator.callers.contract.test.ts. The other
+  // caller, repairManagedSoftwarePolicies (softwareComplianceWorker), runs in
+  // system context and only re-derives rows for links that already exist,
+  // again copying the config policy's own axis.
+  'services/securityAgents/managedPolicyGenerator.ts':
+    'derived write: owner axis copied from the security_agents link\'s config policy, never caller-chosen; request-path callers (routes/configurationPolicies/featureLinks.ts POST/PATCH, services/aiToolsConfigPolicy.ts manage_policy_feature_link) gate partner-wide config policies on canManagePartnerWidePolicies before addFeatureLink/updateFeatureLink reach it; the repair sweep runs in system context over existing links — verify those callers still gate when editing this file',
   'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
   // #4617 W02 customer approval: the gate holds/releases a ticket's own time
   // entries (awaiting_approval <-> not_billed/no_charge) under that ticket's
@@ -308,6 +334,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // #8164 W01b — same shape as routes/backup/providers.ts. NOT routes/edr/tenants.ts:
   // it delegates to the service and mutates nothing itself.
   'routes/edr/connections.ts': 'every connection write calls requireEdrPartnerAdmin (routes/edr/access.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE',
+  // #8167 W03 PR-B — the push opt-in/out/test routes, same gate.
+  'routes/edr/connectionPush.ts': 'every push write calls requireEdrPartnerAdmin (routes/edr/access.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE (connectionPush.test.ts "selected-org partner user -> 403")',
   'services/backupProviders/mapping.ts': 'remapCustomer has one caller, PUT /backup/providers/customers/:id/mapping, which passes requireProviderPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached',
   // #6008 W02. persistVendorSnapshot has exactly one caller, syncConnectionById
   // (jobs/backupProviderSync.ts), invoked only from the backup-provider-sync

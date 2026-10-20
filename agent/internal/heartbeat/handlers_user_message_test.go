@@ -1,7 +1,9 @@
 package heartbeat
 
 import (
+	"bytes"
 	"encoding/json"
+	"net"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,6 +27,71 @@ type helperProbe struct {
 	// beforePresented runs after message_show arrives and before the
 	// correlated message_presented reply (e.g. a racing user ack).
 	beforePresented func(show ipc.MessageShow)
+	// order, when set, receives "<label>:<type>" for every envelope the agent
+	// WRITES to this helper, in one log shared across probes. It is recorded at
+	// write time (agent send order), not when this helper's reader goroutine
+	// happens to run, so cross-probe ordering assertions are deterministic.
+	order *orderLog
+	label string
+}
+
+// orderLog is one ordered event log shared by several helperProbes.
+type orderLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (o *orderLog) add(ev string) {
+	o.mu.Lock()
+	o.events = append(o.events, ev)
+	o.mu.Unlock()
+}
+
+func (o *orderLog) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.events...)
+}
+
+func (o *orderLog) indexOf(ev string) int {
+	for i, got := range o.snapshot() {
+		if got == ev {
+			return i
+		}
+	}
+	return -1
+}
+
+// orderConn wraps the agent-side socket and appends each frame's type to the
+// probe's order log at Write time. ipc.Conn.Send writes a 4-byte length header
+// and then the JSON body under its own lock; only the body can contain the
+// type string, so each envelope is logged exactly once. Logging on the
+// helper's receive side instead races: each probe has its own reader goroutine,
+// so under -race the log order could differ from the agent's send order.
+type orderConn struct {
+	net.Conn
+	p *helperProbe
+}
+
+func (c *orderConn) Write(b []byte) (int, error) {
+	c.p.mu.Lock()
+	order, label := c.p.order, c.p.label
+	c.p.mu.Unlock()
+	if order != nil {
+		for _, typ := range []string{ipc.TypeMessageRetract, ipc.TypeNotify, ipc.TypeMessageShow} {
+			if bytes.Contains(b, []byte(`"type":"`+typ+`"`)) {
+				order.add(label + ":" + typ)
+				break
+			}
+		}
+	}
+	return c.Conn.Write(b)
+}
+
+func (p *helperProbe) trackOrder(o *orderLog, label string) {
+	p.mu.Lock()
+	p.order, p.label = o, label
+	p.mu.Unlock()
 }
 
 func (p *helperProbe) setPresent(status string, before func(ipc.MessageShow)) {
@@ -38,7 +105,7 @@ func newHelperProbe(t *testing.T, role ipc.HelperRole, username, winSession stri
 	t.Helper()
 	serverConn, clientConn := createTestSocketPair(t)
 	p := &helperProbe{client: ipc.NewConn(clientConn)}
-	p.session = sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "S-1-5-21-"+username, username, "", "sess-"+string(role)+"-"+username+"-"+winSession, scopes)
+	p.session = sessionbroker.NewSession(ipc.NewConn(&orderConn{Conn: serverConn, p: p}), 1000, "S-1-5-21-"+username, username, "", "sess-"+string(role)+"-"+username+"-"+winSession, scopes)
 	p.session.HelperRole = role
 	p.session.WinSessionID = winSession
 	go p.session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
@@ -58,11 +125,16 @@ func newHelperProbe(t *testing.T, role ipc.HelperRole, username, winSession stri
 				p.mu.Lock()
 				status, before := p.presentStatus, p.beforePresented
 				p.mu.Unlock()
-				if before != nil {
-					before(show)
-				}
-				payload, _ := json.Marshal(ipc.MessagePresented{MessageID: show.MessageID, Status: status})
-				_ = p.client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeMessagePresented, Payload: payload})
+				// Reply off the receive loop: a slow helper must still
+				// "receive" later envelopes (e.g. message_retract) on time, so
+				// the shared order log reflects arrival, not reply latency.
+				go func(id string) {
+					if before != nil {
+						before(show)
+					}
+					payload, _ := json.Marshal(ipc.MessagePresented{MessageID: show.MessageID, Status: status})
+					_ = p.client.Send(&ipc.Envelope{ID: id, Type: ipc.TypeMessagePresented, Payload: payload})
+				}(env.ID)
 			case ipc.TypeNotify:
 				payload, _ := json.Marshal(ipc.NotifyResult{Delivered: true})
 				_ = p.client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeNotifyResult, Payload: payload})

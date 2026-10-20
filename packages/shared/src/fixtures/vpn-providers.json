@@ -1,0 +1,17 @@
+{
+  "_comment": "Cross-language contract for VPN provider ids (#8763). The Go agent (agent/internal/collectors/vpn_contract_test.go) and the shared validator (packages/shared/src/validators/vpnProviders.contract.test.ts) both assert against this list. An id the agent sends that the API enum lacks is silently dropped at ingest, so a provider must be added to both sides and here together.",
+  "providers": [
+    "wireguard",
+    "tailscale",
+    "netbird",
+    "zerotier",
+    "openvpn",
+    "cloudflare-warp",
+    "zscaler",
+    "globalprotect",
+    "cisco-secure-client",
+    "forticlient",
+    "netskope",
+    "generic"
+  ]
+}

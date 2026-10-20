@@ -397,6 +397,107 @@ describe('toolSourcesRoutes', () => {
     });
   });
 
+  describe('openapi kind (W2)', () => {
+    const openapiBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+      name: 'Vendor', slug: 'vendor', kind: 'openapi',
+      endpointUrl: 'https://api.vendor.example/v1', specUrl: 'https://docs.vendor.example/openapi.json',
+      authKind: 'bearer', authConfig: { token: 'plaintext-token-xyz' },
+      ...overrides,
+    });
+    const openapiRow = (overrides: Partial<ToolSourceRow> = {}) => makeRow({
+      kind: 'openapi', slug: 'vendor', endpointUrl: 'https://api.vendor.example/v1',
+      specUrl: 'https://docs.vendor.example/openapi.json', credentialOrigin: 'https://api.vendor.example',
+      authKind: 'bearer', authConfigEncrypted: 'ciphertext-blob', lastDiscoverySummary: null,
+      ...overrides,
+    } as Partial<ToolSourceRow>);
+
+    beforeEach(() => {
+      setAuth(orgAuth());
+      vi.mocked(service.resolveToolSourceOwner).mockResolvedValue({ owner: { orgId: ORG_ID, partnerId: null } });
+      vi.mocked(service.slugShadowsPartnerSource).mockResolvedValue(false);
+      vi.mocked(service.createToolSourceRow).mockResolvedValue(openapiRow());
+    });
+
+    it('creates an openapi source, passing kind and specUrl through, and enqueues discovery exactly as for mcp', async () => {
+      const res = await app.request('/tool-sources', { method: 'POST', headers: JSON_HEADERS, body: openapiBody() });
+
+      expect(res.status).toBe(201);
+      expect(service.createToolSourceRow).toHaveBeenCalledWith(
+        { orgId: ORG_ID, partnerId: null },
+        expect.objectContaining({ kind: 'openapi', endpointUrl: 'https://api.vendor.example/v1', specUrl: 'https://docs.vendor.example/openapi.json' }),
+        'user-1',
+      );
+      expect(enqueueToolSourceDiscovery).toHaveBeenCalledWith(SRC_ID);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'tool_source.created', details: expect.objectContaining({ kind: 'openapi' }),
+      }));
+    });
+
+    it('returns specUrl and lastDiscoverySummary in the DTO and still omits the ciphertext', async () => {
+      const res = await app.request('/tool-sources', { method: 'POST', headers: JSON_HEADERS, body: openapiBody() });
+      const raw = await res.text();
+      expect(raw).not.toContain('ciphertext-blob');
+      expect(raw).not.toContain('plaintext-token-xyz');
+      const body = JSON.parse(raw);
+      expect(body.data.specUrl).toBe('https://docs.vendor.example/openapi.json');
+      expect(body.data.lastDiscoverySummary).toBeNull();
+      expect(body.data.authConfigEncrypted).toBeUndefined();
+    });
+
+    it.each([
+      ['no specUrl', { specUrl: undefined }],
+      ['an http specUrl without the private-egress flag', { specUrl: 'http://docs.vendor.example/openapi.json' }],
+      ['an mcp source carrying a specUrl', { kind: 'mcp' }],
+      ['an unknown kind', { kind: 'graphql' }],
+    ])('400s %s', async (_label, overrides) => {
+      const res = await app.request('/tool-sources', { method: 'POST', headers: JSON_HEADERS, body: openapiBody(overrides) });
+      expect(res.status).toBe(400);
+      expect(service.createToolSourceRow).not.toHaveBeenCalled();
+    });
+
+    it('still 403s a partner-wide openapi source for a selected-access partner user', async () => {
+      setAuth(partnerAuth({ partnerOrgAccess: 'selected' }));
+      vi.mocked(service.resolveToolSourceOwner).mockResolvedValue({
+        status: 403,
+        error: 'Partner-wide tool sources require full partner org access (orgAccess must be "all")',
+      });
+      const res = await app.request('/tool-sources', { method: 'POST', headers: JSON_HEADERS, body: openapiBody({ ownerScope: 'partner' }) });
+      expect(res.status).toBe(403);
+      expect(service.createToolSourceRow).not.toHaveBeenCalled();
+    });
+
+    it('PATCH re-enqueues discovery when the service reports a spec URL change', async () => {
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValue(openapiRow());
+      vi.mocked(service.updateToolSourceRow).mockResolvedValue({ row: openapiRow({ specUrl: 'https://docs.vendor.example/v2.json' }), discoveryTriggered: true });
+      const res = await app.request(`/tool-sources/${SRC_ID}`, {
+        method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ specUrl: 'https://docs.vendor.example/v2.json' }),
+      });
+      expect(res.status).toBe(200);
+      expect(service.updateToolSourceRow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ specUrl: 'https://docs.vendor.example/v2.json' }));
+      expect(enqueueToolSourceDiscovery).toHaveBeenCalledWith(SRC_ID);
+    });
+
+    it('PATCH surfaces spec_url_not_applicable from the service as a 400', async () => {
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValue(makeRow());
+      vi.mocked(service.updateToolSourceRow).mockResolvedValue({ status: 400, error: 'Only an OpenAPI tool source has a spec URL', code: 'spec_url_not_applicable' });
+      const res = await app.request(`/tool-sources/${SRC_ID}`, {
+        method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ specUrl: 'https://x.example/o.json' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'spec_url_not_applicable' });
+      expect(enqueueToolSourceDiscovery).not.toHaveBeenCalled();
+    });
+
+    it('PATCH still refuses a kind change', async () => {
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValue(makeRow());
+      const res = await app.request(`/tool-sources/${SRC_ID}`, {
+        method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ kind: 'openapi' }),
+      });
+      expect(res.status).toBe(400);
+      expect(service.updateToolSourceRow).not.toHaveBeenCalled();
+    });
+  });
+
   describe('PATCH /:id/tools/:toolId', () => {
     it('400s when tier is out of range', async () => {
       setAuth(orgAuth());

@@ -53,7 +53,8 @@ vi.mock('./aiCostTracker', () => ({
   getRemainingBudgetUsd: vi.fn(),
 }));
 
-vi.mock('./aiInputSanitizer', () => ({
+vi.mock('./aiInputSanitizer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiInputSanitizer')>()),
   sanitizeUserMessage: vi.fn(),
   sanitizePageContext: vi.fn(),
 }));

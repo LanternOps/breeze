@@ -64,6 +64,7 @@ vi.mock('../mfaStepUpGrant', async (importOriginal) => {
 vi.mock('../deviceUninstallDrain', () => ({ isDeviceUninstallDraining: vi.fn() }));
 vi.mock('../../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluation: vi.fn(async () => 'job') }));
 vi.mock('../agentOrgRateLimit', () => ({ invalidateOrgDeviceCount: vi.fn(async () => undefined) }));
+vi.mock('../devicePolicyCache', () => ({ invalidateDevicePolicyCaches: vi.fn(async () => undefined) }));
 vi.mock('../redis', () => ({ getRedis: vi.fn(() => ({ redis: true })) }));
 vi.mock('../../routes/agentWs', () => ({ disconnectAgent: vi.fn(() => 'disconnected') }));
 vi.mock('../deviceIdentityCollisionAlert', () => ({
@@ -98,6 +99,7 @@ import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { captureException } from '../sentry';
 import { scheduleTicketLinkRemovalNotes } from '../ticketLinkMoveNotes';
 import { invalidateOrgDeviceCount } from '../agentOrgRateLimit';
+import { invalidateDevicePolicyCaches } from '../devicePolicyCache';
 import { disconnectAgent } from '../../routes/agentWs';
 import { raiseDeviceIdentityCollisionAlert } from '../deviceIdentityCollisionAlert';
 import { writeAuditEvent } from '../auditEvents';
@@ -197,6 +199,7 @@ beforeEach(() => {
       alertChildRewrite: null,
       customFieldRehome: { rehomed: 0, dropped: 0 },
       removedTicketLinks: [],
+      expiredElevationRequests: 0,
     };
   });
 });
@@ -258,6 +261,8 @@ describe('assignParkedDevice', () => {
       deviceId: DEVICE, orgId: TARGET_ORG, eventType: 'device.updated', reason: 'parked_device_assigned',
     });
     expect(vi.mocked(invalidateOrgDeviceCount).mock.calls.map((c) => c[1]).sort()).toEqual([HOLDING_ORG, TARGET_ORG].sort());
+    // #8257: the holding org's cached heartbeat policy config is dropped.
+    expect(invalidateDevicePolicyCaches).toHaveBeenCalledWith(DEVICE);
     expect(disconnectAgent).toHaveBeenCalledWith(`agent-${DEVICE.slice(0, 4)}`, 4040, expect.any(String));
     expect(writeAuditEvent).toHaveBeenCalledWith(request, expect.objectContaining({
       orgId: TARGET_ORG,
@@ -273,7 +278,7 @@ describe('assignParkedDevice', () => {
     vi.mocked(moveDeviceOrgInTransaction).mockImplementationOnce(async () => ({
       updated: { id: DEVICE, agentId: 'agent-1' } as any,
       linkGroupDissolved: false, currencyGuard: null, alertChildRewrite: null,
-      customFieldRehome: { rehomed: 0, dropped: 0 }, removedTicketLinks: removed,
+      customFieldRehome: { rehomed: 0, dropped: 0 }, removedTicketLinks: removed, expiredElevationRequests: 0,
     }));
     await single();
     expect(scheduleTicketLinkRemovalNotes).toHaveBeenCalledWith(removed);
@@ -286,6 +291,7 @@ describe('assignParkedDevice', () => {
     expect(moveDeviceOrgInTransaction).not.toHaveBeenCalled();
     expect(writeAuditEvent).not.toHaveBeenCalled();
     expect(disconnectAgent).not.toHaveBeenCalled();
+    expect(invalidateDevicePolicyCaches).not.toHaveBeenCalled();
   });
 
   it("answers another partner's parked device, or a missing one, as not found", async () => {

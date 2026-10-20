@@ -40,18 +40,6 @@ export interface CategoryRule {
   deferralDaysOverride?: number | null;
 }
 
-/**
- * Policy-level auto-approve (ring-less path). Empty severities while enabled =
- * approve none (fail-closed). The ring auto-approve path is now fail-closed the
- * same way (see evaluatePatchApproval Priority 3), so the two paths share the
- * "enabled but no severities means approve nothing" invariant.
- */
-export interface PolicyAutoApproveConfig {
-  enabled: boolean;
-  severities: string[];
-  deferralDays: number;
-}
-
 export type PolicyAppRule =
   | { source: string; packageId: string; action: 'block' }
   | { source: string; packageId: string; action: 'pin'; pinnedVersion: string };
@@ -59,8 +47,8 @@ export type PolicyAppRule =
 export type AppRuleVerdict = 'allowed' | 'blocked' | 'held';
 
 /**
- * Evaluator input. Carries both ring-level config and policy-level config:
- * sources, app rules, and ring-less auto-approve.
+ * Evaluator input. Carries the ring-level config plus the policy's patch
+ * sources. Auto-approval and per-app rules are ring-owned (#8188).
  */
 export interface ApprovalEvaluationConfig {
   ringId: string | null;
@@ -89,20 +77,12 @@ export interface ApprovalEvaluationConfig {
   /** Policy-level source selections ('os', 'third_party', ...). Absent/empty = no filtering (legacy). */
   sources?: string[];
   /**
-   * Policy-level auto-approve. Still snapshotted and threaded, but NOT
-   * consulted by `decidePatchApproval`: with a ring the ring decides, and with
-   * no ring only manual approvals apply (see the evaluator test "ring-less
-   * path: only manual approvals apply"). The device Config tab labels it as
-   * unused for that reason (#7625).
-   */
-  policyAutoApprove?: PolicyAutoApproveConfig;
-  /**
-   * Legacy per-app block/pin rules from a configuration policy. Since the
-   * #8186 cutover the live resolver no longer fills this; it is read only from
-   * job snapshots (frozen pre-cutover jobs carry their rules here, and W02+
-   * snapshots mirror the ring rules here for older executors). Applied to
-   * every job approval path; manual per-device installs do not pass through
-   * this evaluator.
+   * Legacy per-app block/pin rules, read only from frozen job snapshots: jobs
+   * created before the #8186 cutover carry the policy's rules here, and
+   * W02/W03 snapshots mirrored the ring rules here for older executors. New
+   * snapshots stop writing it (#8188), but the executor keeps parsing it so
+   * an in-flight job keeps its rules. Applied to every job approval path;
+   * manual per-device installs do not pass through this evaluator.
    */
   apps?: PolicyAppRule[];
   /**
@@ -126,6 +106,8 @@ export type RingConfig = ApprovalEvaluationConfig;
 // 'ring_auto_approve' is the #1317 ring-owned auto-approval reason (enabled +
 // severities + deferral). The historical 'legacy_auto_approve' name is kept as
 // an alias so already-stored job rows / callers reading this string still work.
+// 'policy_auto_approve' is never produced (policy-level auto-approve is retired,
+// #8188) and is kept only so historical rows carrying it still type-check.
 export type ApprovalReason =
   | 'manual'
   | 'category_rule'

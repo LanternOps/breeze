@@ -1,3 +1,4 @@
+import { RESTORE_POINT_PAYLOAD_KEY } from '@breeze/shared';
 import { CommandTypes } from './commandTypes';
 import { WORKSTATION_TIMEOUT_MAX_MS } from './callerVerification/workstationProtocol';
 
@@ -14,6 +15,37 @@ const DEFAULT_TIMEOUT_MS = THIRTY_MINUTES;
 // nothing younger than the buffer can be due (#3190).
 export const SCRIPT_GRACE_BUFFER_MS = 5 * 60 * 1000;
 const DEFAULT_SCRIPT_TIMEOUT_S = 300;
+
+/**
+ * Extra time a SCRIPT command gets when its payload carries an ENABLED
+ * restore-point block (#9162). The agent takes the System Restore checkpoint
+ * before the script starts, on its own context bounded by
+ * `systemrestore.CommandBudget` (agent/internal/systemrestore/checkpoint.go,
+ * 5 min) — deliberately NOT out of the script's `timeoutSeconds`. Without this
+ * the server deadline (`timeoutSeconds` + grace) could pass while the agent is
+ * still inside a long checkpoint and the reaper would terminalise a command the
+ * agent is about to answer.
+ *
+ * Keep it equal to the agent constant. It is a best-effort bound, not a
+ * guarantee: the two native SRSetRestorePointW calls cannot be cancelled by
+ * that context (see the TIMEOUT CAVEAT on systemrestore.Create), so a wedged
+ * System Restore service can still outlast it.
+ */
+export const RESTORE_POINT_CHECKPOINT_BUDGET_MS = 5 * 60 * 1000;
+
+/**
+ * True when a command payload carries a restore-point block the agent will act
+ * on. Only `enabled: true` triggers a checkpoint; a missing, disabled or
+ * malformed block does not, so it gets no extra budget.
+ */
+function hasEnabledRestorePointBlock(payload?: Record<string, unknown> | null): boolean {
+  const block = payload?.[RESTORE_POINT_PAYLOAD_KEY];
+  return (
+    typeof block === 'object' &&
+    block !== null &&
+    (block as Record<string, unknown>).enabled === true
+  );
+}
 
 // ── Commands that should never be reaped (interactive sessions) ───
 export const EXCLUDED_COMMAND_TYPES = new Set<string>([
@@ -210,7 +242,8 @@ const LONG_TIMEOUT_TYPES = new Set<string>([
 /**
  * Returns the server-side timeout for a command type in milliseconds.
  * For 'script' commands, reads payload.timeoutSeconds and adds a grace buffer
- * so the agent-side timeout fires first.
+ * so the agent-side timeout fires first, plus the restore-point checkpoint
+ * budget when the payload carries an enabled `restorePoint` block (#9162).
  */
 export function getCommandTimeoutMs(
   commandType: string,
@@ -227,7 +260,10 @@ export function getCommandTimeoutMs(
       typeof payload?.timeoutSeconds === 'number'
         ? payload.timeoutSeconds
         : DEFAULT_SCRIPT_TIMEOUT_S;
-    return timeoutSeconds * 1000 + SCRIPT_GRACE_BUFFER_MS;
+    const checkpointBudgetMs = hasEnabledRestorePointBlock(payload)
+      ? RESTORE_POINT_CHECKPOINT_BUDGET_MS
+      : 0;
+    return timeoutSeconds * 1000 + SCRIPT_GRACE_BUFFER_MS + checkpointBudgetMs;
   }
   if (
     commandType === CommandTypes.NETWORK_DIAGNOSTIC ||

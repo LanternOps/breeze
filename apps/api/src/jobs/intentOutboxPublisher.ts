@@ -7,6 +7,15 @@ import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
+import { linkCallerIntentTerminal } from '../services/callerVerification/incidentLinks';
+
+const INTENT_TERMINAL_EVENTS: ReadonlySet<string> = new Set([
+  'intent_completed',
+  'intent_failed',
+  'intent_cancelled',
+  'intent_expired',
+  'intent_rejected',
+]);
 
 /**
  * Drains the `intent_outbox` transactional outbox (spec
@@ -243,6 +252,24 @@ async function enqueueClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
           },
         );
       } else if (row.intent_id) {
+        // Caller verification W05 (#6354): reflect a terminal outcome on any
+        // rejection incident already tracking this intent. Runs in its own
+        // short system context (closed before the Redis add). A failure
+        // throws into the catch below, leaving the row unpublished for retry.
+        if (INTENT_TERMINAL_EVENTS.has(row.event_type)) {
+          // Informational only (caller-verification incident timeline): a
+          // failure here must never block delivery of the terminal event
+          // itself, so it is reported and the publish continues.
+          try {
+            await linkCallerIntentTerminal(row.intent_id);
+          } catch (linkError) {
+            console.error('[IntentOutboxPublisher] caller-verification incident link failed; publishing anyway', {
+              intentId: row.intent_id, eventType: row.event_type,
+              error: linkError instanceof Error ? linkError.message : String(linkError),
+            });
+            captureException(linkError instanceof Error ? linkError : new Error(String(linkError)));
+          }
+        }
         await getActionIntentsQueue().add(
           row.event_type,
           { intentId: row.intent_id, eventType: row.event_type },

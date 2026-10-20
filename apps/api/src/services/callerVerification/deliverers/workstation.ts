@@ -23,7 +23,7 @@ import { and, eq, gt } from 'drizzle-orm';
 import { db, assertInTransaction, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
 import { deviceCommands, devices, organizations } from '../../../db/schema';
 import { callerVerifications as v } from '../../../db/schema/callerVerification';
-import { callerVerificationEnabled } from '../../../config/env';
+import { callerVerificationEnabled, callerVerificationWorkstationEnabled } from '../../../config/env';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../partnerTrust.commands';
 import { ParkedDeviceCommandRefusedError } from '../../unassignedPool/deliveryEligibility';
 import { insertQueuedCommandInTransaction } from '../../commandQueueInsert';
@@ -97,6 +97,8 @@ export async function prepareWorkstationVerification(row: VerificationRow): Prom
     reverseCode: row.reverseCode,
     choices,
     timeoutMs: Math.max(WORKSTATION_TIMEOUT_MIN_MS, Math.min(WORKSTATION_TIMEOUT_MAX_MS, lifetimeMs)),
+    // A late-claimed command must not restart a full countdown (#8668).
+    deadlineAt: row.expiresAt.toISOString(),
   });
   // A label the card cannot carry (empty technician name, over-long username)
   // is a request error, not a 500.
@@ -140,7 +142,9 @@ const system = <T>(fn: () => Promise<T>, label: string) =>
 export async function deliverWorkstation(verificationId: string): Promise<void> {
   // New prompts are not pushed while the feature is off; the pending row then
   // expires through the publisher. Results already issued are still applied.
-  if (!callerVerificationEnabled()) return;
+  // The workstation tier has its own dark flag: a row created before it went
+  // dark is left to expire (never pushed).
+  if (!callerVerificationEnabled() || !callerVerificationWorkstationEnabled()) return;
   const [row] = await system(() => db.select({
     id: v.id, commandId: deviceCommands.id, payload: deviceCommands.payload, agentId: devices.agentId,
   }).from(v)

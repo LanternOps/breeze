@@ -378,3 +378,150 @@ describe('generate_report never edits or deletes a multi-org series child (W02)'
     expect(new PgDialect().sqlToQuery(updateWheres[0] as SQL).sql).toContain('"reports"."series_id" is null');
   });
 });
+
+/**
+ * #9222 — the four business report types (ticket_sla_attainment,
+ * technician_time_billability, ar_aging, ai_usage_by_client) are reachable from
+ * generate_report with the same gates the HTTP routes apply: msp_staff audience
+ * (F1), per-type read permissions (P8), and a site-restricted caller refused
+ * (tickets/time/invoices/AI ledger have no site axis).
+ */
+describe('generate_report accepts the business report types behind the route gates (#9222)', () => {
+  const BUSINESS = ['ticket_sla_attainment', 'technician_time_billability', 'ar_aging', 'ai_usage_by_client'] as const;
+  const ALL_PERMS = { permissions: [{ resource: '*', action: '*' }] };
+  const restricted = () => ({
+    ok: true,
+    authority: {
+      principalKind: 'user',
+      scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: ['site-1'] },
+      principalUserId: 'u1',
+      capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+      fingerprint: 'f'.repeat(64),
+    },
+  });
+  let insertValues: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    permissionsMock.getUserPermissions.mockResolvedValue(ALL_PERMS);
+    insertValues = vi.fn(() => ({ returning: () => Promise.resolve([{ id: 'new-report', name: 'R' }]) }));
+    mockDb.insert.mockReturnValue({ values: insertValues });
+  });
+
+  it('the registry input_schema and the zod schema both enumerate the business types', async () => {
+    const reg = new Map<string, AiTool>();
+    registerFleetTools(reg);
+    const enumValues = (reg.get('generate_report')!.definition.input_schema.properties as any).reportType.enum;
+    const { fleetToolInputSchemas } = await import('./aiToolSchemasFleet');
+    for (const t of BUSINESS) {
+      expect(enumValues).toContain(t);
+      expect(fleetToolInputSchemas.generate_report!.safeParse({ action: 'data', reportType: t }).success).toBe(true);
+    }
+  });
+
+  it.each(BUSINESS)('create %s: a partner caller holding the permissions creates the definition', async (type) => {
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: type, orgId: ORG_ID }, partnerAuth(),
+    ));
+    expect(r.success).toBe(true);
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ type, orgId: ORG_ID }));
+  });
+
+  it.each(BUSINESS)('create %s: a site-restricted caller is refused, nothing written', async (type) => {
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue(restricted());
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: type, orgId: ORG_ID }, partnerAuth(),
+    ));
+    expect(r.success).not.toBe(true);
+    expect(r.error).toMatch(/site-restricted/i);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it.each(BUSINESS)('generate %s (ad hoc): a site-restricted caller is refused', async (type) => {
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue(restricted());
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportType: type }, partnerAuth()));
+    expect(r.success).not.toBe(true);
+    expect(r.error).toMatch(/site-restricted/i);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it.each(BUSINESS)('data %s: a site-restricted partner caller is refused; unrestricted passes the gate', async (type) => {
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue(restricted());
+    const refused = JSON.parse(await handlerFor('generate_report')({ action: 'data', reportType: type }, partnerAuth()));
+    expect(refused.error).toMatch(/site-restricted/i);
+    reportScopeMocks.resolveRequestReportAuthority.mockClear();
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue({
+      ok: true,
+      authority: {
+        principalKind: 'user', scope: { version: 1, kind: 'unrestricted', orgId: ORG_ID }, principalUserId: 'u1',
+        capturedAt: new Date(), fingerprint: 'f'.repeat(64),
+      },
+    });
+    const ok = JSON.parse(await handlerFor('generate_report')({ action: 'data', reportType: type }, partnerAuth()));
+    expect(ok.error).toBeUndefined();
+  });
+
+  it.each(BUSINESS)('generate %s (ad hoc): a partner caller with permissions and unrestricted scope is accepted', async (type) => {
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportType: type }, partnerAuth()));
+    expect(r.success).toBe(true);
+  });
+
+  it('create refuses email recipients on a business type (needs export + MFA in the routes); legacy unaffected', async () => {
+    const biz = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'ar_aging', orgId: ORG_ID, config: { emailRecipients: ['x@example.com'] } }, partnerAuth(),
+    ));
+    expect(biz.error).toMatch(/web UI/);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    const legacy = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'device_inventory', orgId: ORG_ID, config: { emailRecipients: ['x@example.com'] } }, partnerAuth(),
+    ));
+    expect(legacy.success).toBe(true);
+  });
+
+  it('update refuses email recipients on a stored business definition, no write', async () => {
+    selectReturning({ ...definition('ar_aging'), seriesId: null });
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'update', reportId: 'rep1', config: { emailRecipients: ['x@example.com'] } }, partnerAuth(),
+    ));
+    expect(r.error).toMatch(/web UI/);
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('generate by reportId: a site-restricted caller is refused for a stored business definition, no run row', async () => {
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue(restricted());
+    reportScopeMocks.intersectSiteScopes.mockReturnValue({ version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: ['site-1'] });
+    selectReturning(definition('ar_aging'));
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportId: 'rep1' }, partnerAuth()));
+    expect(r.success).not.toBe(true);
+    expect(r.error).toMatch(/site-restricted/i);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it.each(BUSINESS)('%s: an org-scope caller is refused (msp_staff audience), nothing written', async (type) => {
+    const create = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: type }, orgAuth(),
+    ));
+    expect(create.error).toBe('Insufficient permissions');
+    const gen = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportType: type }, orgAuth()));
+    expect(gen.error).toBe('Insufficient permissions');
+    const data = JSON.parse(await handlerFor('generate_report')({ action: 'data', reportType: type }, orgAuth()));
+    expect(data.error).toBe('Insufficient permissions');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('create ar_aging: a partner caller without invoices:read is refused', async () => {
+    permissionsMock.getUserPermissions.mockResolvedValue({ permissions: [{ resource: 'reports', action: '*' }] });
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'ar_aging', orgId: ORG_ID }, partnerAuth(),
+    ));
+    expect(r.error).toBe('Insufficient permissions');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('positive control: a legacy type is unaffected for a site-restricted caller', async () => {
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue(restricted());
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'device_inventory', orgId: ORG_ID }, partnerAuth(),
+    ));
+    expect(r.success).toBe(true);
+    expect(permissionsMock.getUserPermissions).not.toHaveBeenCalled();
+  });
+});

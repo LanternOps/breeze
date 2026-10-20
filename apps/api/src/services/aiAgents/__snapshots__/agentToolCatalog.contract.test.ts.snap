@@ -52,6 +52,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "revoke_diagnostic_access",
   "revoke_elevation",
   "search_c2c_items",
+  "send_endpoint_message",
   "test_webhook",
   "trigger_agent_restart",
   "trigger_agent_upgrade",

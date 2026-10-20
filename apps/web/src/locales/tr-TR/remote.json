@@ -109,7 +109,8 @@
       "waylandUnsupported": "Bu bir Wayland masaüstü — uzak masaüstünün daha yeni bir aracıya ihtiyacı var",
       "x11AuthFailed": "Görüntü sunucusunda kimlik doğrulaması yapılamadı (X yetkilisi)",
       "x11ConnectFailed": "Bu cihazdaki ekran sunucusuna bağlanılamadı"
-    }
+    },
+    "opensNewWindow": "(yeni bir pencerede açılır)"
   },
   "connectVncButton": {
     "creatingTunnel": "Tünel oluşturuluyor...",
@@ -321,11 +322,19 @@
   },
   "proxyTunnelPage": {
     "errors": {
+      "closeFailed": "Tünel kapatılamadı",
+      "invalidProxyUrl": "Sunucu geçersiz bir proxy adresi döndürdü.",
       "invalidTicket": "Bu bağlantı geçersiz veya süresi dolmuş.",
       "obtainTicket": "Tünel bileti alınamadı",
+      "popupBlocked": "Tarayıcınız yeni sekmeyi engelledi. Bu site için açılır pencerelere izin verip tekrar deneyin.",
       "prepareConnection": "Proxy bağlantısı hazırlanamadı",
       "tlsUntrusted": "Bu cihaz güvenilmeyen veya kendinden imzalı bir sertifika sundu.",
       "tunnelFailed": "Tünel açılamadı"
+    },
+    "cookieBlocked": {
+      "title": "Bu tarayıcı gömülü proxy oturumunu engelledi.",
+      "body": "Devam etmek için cihazı yeni bir sekmede açın.",
+      "storageBody": "Cihaz sayfasının ihtiyaç duyduğu site depolamasını gömülü sayfalarda engelliyor. Yeni bir sekme çalışır."
     },
     "openInNewTab": "Yeni Sekmede Aç",
     "preparingConnection": "Proxy bağlantısı hazırlanıyor…",

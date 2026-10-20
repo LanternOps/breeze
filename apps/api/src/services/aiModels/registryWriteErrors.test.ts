@@ -32,11 +32,11 @@ describe('toRegistryWriteError', () => {
 
   it('maps a unique violation to 409 conflict with the constraint name only', () => {
     const e = capture(() => toRegistryWriteError(
-      drizzleError('23505', 'partner_ai_connections_compat_uq', ['enc:v1:X']), 'Could not save.',
+      drizzleError('23505', 'partner_ai_models_connection_model_uq', ['enc:v1:X']), 'Could not save.',
     )) as RegistryWriteError;
     expect(e.status).toBe(409);
     expect(e.code).toBe('conflict');
-    expect(e.details).toEqual({ constraint: 'partner_ai_connections_compat_uq' });
+    expect(e.details).toEqual({ constraint: 'partner_ai_models_connection_model_uq' });
   });
 
   it('maps FK and CHECK violations to 422 invalid', () => {

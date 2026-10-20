@@ -51,10 +51,25 @@ import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
 import { redactToolOutputFields } from '../services/logRedaction';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
+import { callerRefusal } from '../services/callerVerification/refusal';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import { API_VERSION } from '../version';
 import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
+import {
+  boundDeniedName,
+  buildDomainNotGrantedError,
+  isDomainGranted,
+  isMcpToolGranted,
+  MCP_TENANT_TOOL_DOMAIN,
+  mcpResourceDomain,
+  mcpToolDomain,
+  parseStoredMcpDomains,
+  type McpDomainGrant,
+} from '../services/mcpDomains';
+import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
+import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
+import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
 import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
@@ -151,8 +166,8 @@ const MCP_MESSAGE_MAX_BODY_BYTES = envInt('MCP_MESSAGE_MAX_BODY_BYTES', 64 * 102
 
 function setWwwAuthenticate(c: Context) {
   if (!MCP_OAUTH_ENABLED) return;
-  const resourceUrl = `${OAUTH_ISSUER}/.well-known/oauth-protected-resource`;
-  c.header('WWW-Authenticate', `Bearer realm="breeze", resource_metadata="${resourceUrl}"`);
+  // B-W02 (#6156, D-B7): the challenge also names the mcp scopes.
+  c.header('WWW-Authenticate', buildBearerChallenge());
 }
 
 function requestIp(c: Context | undefined): string | null {
@@ -365,6 +380,10 @@ type McpApiKeyContext = {
   // Partner service principal (`brz_sp_` key) this request authenticated as;
   // `id` is then its partner_service_principal_keys row id.
   partnerServicePrincipalId?: string | null;
+  // B-W02 (#6156): MCP tool domains. `null` = unrestricted. REQUIRED: every
+  // MCP auth middleware sets it explicitly, and a value that is somehow
+  // missing at runtime fails CLOSED to core-only (parseStoredMcpDomains).
+  mcpDomains: readonly string[] | null;
 };
 
 type McpApiKeyWithAuthFields = McpApiKeyContext & {
@@ -590,6 +609,11 @@ async function preflightMcpRequest(
   }
 
   if (!apiKey || !apiKey.scopes.includes('ai:read')) {
+    // B-W02 (#6156, D-B7): a bearer learns which scope to re-authorize for.
+    // Additive (the status was already 403) and independent of the step-up flag.
+    if (apiKey?.oauthGrantId) {
+      c.header('WWW-Authenticate', buildBearerChallenge({ error: 'insufficient_scope', scope: ['mcp:read'] }));
+    }
     return { kind: 'response', status: 403, body: { jsonrpc: '2.0', id: body.id ?? null, error: { code: -32001, message: 'API key missing required scope: ai:read' } } satisfies JsonRpcResponse };
   }
 
@@ -650,6 +674,21 @@ async function buildCheckedAuthFromApiKey(
   return auth;
 }
 
+/**
+ * B-W02 (#6156, D-B11): a domain denial records WHAT was refused — the
+ * canonical tool (after alias resolution) or the resource URI — and its
+ * domain, so "who keeps hitting a domain they were not granted" is a query.
+ */
+function domainDenialAuditDetails(body: JsonRpcRequest, response: JsonRpcResponse): Record<string, unknown> {
+  const data = response.error?.data as { reason?: unknown; domain?: unknown } | undefined;
+  if (data?.reason !== 'domain_not_granted') return {};
+  const params = body.params ?? {};
+  const target = body.method === 'resources/read'
+    ? { resourceUri: typeof params.uri === 'string' ? boundDeniedName(params.uri) : null }
+    : { canonicalTool: typeof params.name === 'string' ? boundDeniedName(resolveDeprecatedToolAlias(params.name)) : null };
+  return { ...target, domain: data.domain, deniedReason: 'domain_not_granted' };
+}
+
 async function dispatchAndAudit(
   c: Context,
   body: JsonRpcRequest,
@@ -679,6 +718,7 @@ async function dispatchAndAudit(
       ...(apiKey.partnerServicePrincipalId
         ? { principalType: 'partner_service_principal', partnerServicePrincipalId: apiKey.partnerServicePrincipalId }
         : {}),
+      ...domainDenialAuditDetails(body, response),
     },
     result: response.error ? 'failure' : 'success',
     errorMessage: response.error?.message,
@@ -747,12 +787,15 @@ mcpServerRoutes.post(
     if (trustedSessionId) {
       const session = sseSessionQueues.get(trustedSessionId);
       if (session && session.principalKey === principalKey) {
+        // The 2024-11-05 HTTP+SSE transport predates MCP authorization: the
+        // error is delivered on the stream and the POST stays 202, never a
+        // step-up 403 (plan Open Decision 2, default A).
         session.queue.push(response);
         return c.json({ status: 'accepted' }, 202);
       }
     }
 
-    return c.json(response);
+    return c.json(response, applyInsufficientScopeChallenge(c, apiKey, response));
   }
 );
 
@@ -1003,7 +1046,7 @@ mcpServerRoutes.post(
     }
 
     const response = await dispatchAndAudit(c, pre.body, trustedSessionId, auth, apiKey);
-    return c.json(response);
+    return c.json(response, applyInsufficientScopeChallenge(c, apiKey, response));
   }
 );
 
@@ -1057,10 +1100,10 @@ async function handleJsonRpc(
         return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, sessionId);
 
       case 'resources/list':
-        return handleResourcesList(req.id);
+        return handleResourcesList(req.id, parseStoredMcpDomains(apiKey?.mcpDomains));
 
       case 'resources/read':
-        return await handleResourcesRead(req.id, req.params ?? {}, auth);
+        return await handleResourcesRead(req.id, req.params ?? {}, auth, parseStoredMcpDomains(apiKey?.mcpDomains));
 
       case 'prompts/list':
         return handlePromptsList(req.id);
@@ -1310,6 +1353,10 @@ async function handleToolsList(
   apiKey?: McpApiKeyContext,
 ): Promise<JsonRpcResponse> {
   const unattendedPrincipal = isUnattendedTier3PrincipalOverMcp(apiKey);
+  // B-W02 (#6156): per-grant tool domains — a second axis on the SAME filter,
+  // applied after every existing gate. Listed ⇒ callable: handleToolsCall
+  // applies the identical predicate to the canonical name.
+  const domainGrant = parseStoredMcpDomains(apiKey?.mcpDomains);
   const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
@@ -1341,6 +1388,8 @@ async function handleToolsList(
     const registryTier = getToolTier(tool.name);
     if (registryTier === undefined) return false;
     const tier = Math.max(registryTier, mcpTierFloor(tool.name));
+
+    if (!isMcpToolGranted(domainGrant, tool.name)) return false;
 
     // Tier 1 (read-only) = ai:read is enough
     if (tier <= 1) return true;
@@ -1385,6 +1434,11 @@ async function handleToolsList(
     };
   });
 
+  // B-W02 (#6156, #2550): `whoami` is server-intrinsic, tier 1 and domain
+  // `core` — listed for every principal (including a core-only grant) and
+  // sorted with the registry tools below.
+  result.push({ ...MCP_WHOAMI_TOOL_LIST_ENTRY });
+
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
   // outside the main registry and carry a FIXED Tier 3 classification, so
   // `isMcpApprovalRequired(name, 3)` is unconditionally true for every one of
@@ -1416,6 +1470,8 @@ async function handleToolsList(
       // (MCP_UNATTENDED_TIER3_PRINCIPALS does not apply to tenant tools — see
       // handleTenantToolCall.)
       .filter((d) => d.tier <= 1 || (d.tier === 2 && hasWrite))
+      // B-W02 (#6156): tenant (BYO MCP) tools are the `integrations` domain.
+      .filter(() => isDomainGranted(domainGrant, MCP_TENANT_TOOL_DOMAIN))
       .map((d) => ({
         ...buildMcpToolPresentation(d.definition, d.tier, 'integrations', { external: true }),
         name: d.definition.name,
@@ -1506,6 +1562,12 @@ function structuredFromSafeText(safeText: string): Record<string, unknown> | und
   }
 }
 
+// B-W02 (#6156, D-B7): ONLY the two tier-scope denials carry this reason —
+// the one thing a client can fix by re-authorizing with a wider mcp scope.
+// ai:execute_admin, approval, MFA, RBAC, allowlist and domain denials never do.
+const INSUFFICIENT_SCOPE_EXECUTE = { reason: 'insufficient_scope', requiredScope: 'ai:execute' } as const;
+const INSUFFICIENT_SCOPE_WRITE = { reason: 'insufficient_scope', requiredScope: 'ai:write' } as const;
+
 async function handleToolsCall(
   id: string | number,
   params: Record<string, unknown>,
@@ -1522,13 +1584,16 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
   }
 
+  // B-W02 (#6156): parsed once per call; a missing value fails closed.
+  const domainGrant = parseStoredMcpDomains(apiKey?.mcpDomains);
+
   // Tenant (BYO MCP) tools — Task A10. Named `<slug>__<name>` (never true of
   // any core registry name — asserted by aiToolsRegistryParity.test.ts), so
   // the dispatch is unambiguous by name shape alone. Handled by its own path
   // entirely: it never touches getToolTier/checkGuardrails/checkToolPermission,
   // which know nothing about tenant tools.
   if (isTenantToolName(requestedToolName)) {
-    return handleTenantToolCall(id, requestedToolName, toolInput, auth, scopes, apiKey, c, sessionId);
+    return handleTenantToolCall(id, requestedToolName, toolInput, auth, scopes, domainGrant, apiKey, c, sessionId);
   }
 
   // Resolve deprecated tool names ONCE, here, before any name-keyed gate below
@@ -1544,11 +1609,34 @@ async function handleToolsCall(
     );
   }
 
+  // B-W02 (#6156, #2550): `whoami` is core (always domain-granted) and tier 1
+  // (any principal that got past the ai:read preflight may call it). Pure:
+  // it reports what the gates below would decide, it does not bypass them.
+  if (toolName === MCP_WHOAMI_TOOL_NAME) {
+    return handleWhoamiCall(id, auth, scopes, domainGrant, apiKey);
+  }
+
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
   // outside the main aiTools registry but dispatch through this authed path.
   const bootstrapAuthTool = bootstrapModule?.authTools.find(
     (t) => t.definition.name === toolName,
   );
+
+  // B-W02 (#6156) domain gate, on the CANONICAL name (so a deprecated alias
+  // cannot reach a domain its grant lacks) and BEFORE the bootstrap branch,
+  // guardrails and every other gate — a restricted principal learns nothing
+  // about a tool outside its grant. It only ever adds a denial; the approval,
+  // scope, allowlist, RBAC and rate-limit gates below still run for anything
+  // it lets through. A name no registry knows keeps today's "Unknown tool"
+  // answer, so the gate is never an oracle for which tool names exist.
+  if (domainGrant.restricted && (bootstrapAuthTool || getToolTier(toolName) !== undefined)) {
+    const domain = mcpToolDomain(toolName);
+    if (!isDomainGranted(domainGrant, domain)) {
+      const denial = buildDomainNotGrantedError(toolName, domain);
+      return jsonRpcError(id, denial.code, denial.message, denial.data);
+    }
+  }
+
   if (bootstrapAuthTool) {
     // Onboarding-only tools: the unattended opt-in does not apply (they are
     // never listed, so listed ⇒ callable holds).
@@ -1640,13 +1728,13 @@ async function handleToolsCall(
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   if (tier >= 3 && !hasExecute) {
-    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`);
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`, INSUFFICIENT_SCOPE_EXECUTE);
   }
   if (tier >= 3 && requireExecuteAdmin && !hasExecuteAdmin) {
     return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute_admin scope in production`);
   }
   if (tier === 2 && !hasWrite) {
-    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`);
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
   }
 
   // In production, enforce tool allowlist for tier 3+ (destructive) tools
@@ -1799,8 +1887,11 @@ async function handleToolsCall(
 
       return { status: 'success', ledgerResult: safeResult, response };
     } catch (err) {
-      const message = sanitizeThrownToolError(toolName, err);
-      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      // Typed caller-verification refusal: emit the gate's payload intact (no
+      // message/stack, so nothing to sanitise) instead of a generic error.
+      const refusal = callerRefusal(err);
+      const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err);
+      const safeError = compactToolResultForChat(toolName, JSON.stringify(refusal ?? { error: message }));
       return {
         status: 'failure',
         error: err,
@@ -1827,6 +1918,38 @@ async function handleToolsCall(
   );
 }
 
+function handleWhoamiCall(
+  id: string | number,
+  auth: AuthContext,
+  scopes: string[],
+  domainGrant: McpDomainGrant,
+  apiKey?: McpApiKeyContext,
+): JsonRpcResponse {
+  const name = (apiKey as { name?: unknown } | undefined)?.name;
+  const principal = apiKey?.oauthGrantId
+    ? { kind: 'oauth' as const, id: apiKey.oauthGrantId, clientId: apiKey.oauthClientId ?? null }
+    : apiKey?.partnerServicePrincipalId
+      ? { kind: 'partner_service_principal' as const, id: apiKey.partnerServicePrincipalId, clientId: null }
+      : { kind: 'api_key' as const, id: apiKey?.id ?? 'unknown', clientId: null };
+  const unattendedPrincipal = isUnattendedTier3PrincipalOverMcp(apiKey);
+  const result = buildWhoamiResult({
+    principal: { ...principal, name: typeof name === 'string' ? name : null },
+    tenant: {
+      scope: auth.scope === 'partner' ? 'partner' : 'organization',
+      partnerId: auth.partnerId ?? apiKey?.partnerId ?? null,
+      orgId: auth.orgId ?? apiKey?.orgId ?? null,
+    },
+    scopes: scopes.filter((scope) => scope.startsWith('ai:')),
+    domainGrant,
+    approvalGate: { tier3RequiresWebApp: !unattendedPrincipal, unattendedPrincipal },
+    mfaGatedActionsUnavailable: mfaGateRefusesCaller(auth),
+  });
+  return jsonRpcResult(id, {
+    content: [{ type: 'text', text: JSON.stringify(result) }],
+    structuredContent: result,
+  });
+}
+
 /**
  * `tools/call` dispatch for a tenant (BYO MCP) tool — Task A10. Mirrors the
  * core `handleToolsCall` path's order of checks (resolve → MCP approval gate
@@ -1846,10 +1969,19 @@ async function handleTenantToolCall(
   toolInput: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
+  domainGrant: McpDomainGrant,
   apiKey?: McpApiKeyContext,
   c?: Context,
   sessionId?: string,
 ): Promise<JsonRpcResponse> {
+  // B-W02 (#6156): tenant tools are the `integrations` domain. Checked first,
+  // before any resolution: the answer depends only on the name SHAPE, so it
+  // reveals nothing about which tenant tools exist.
+  if (!isDomainGranted(domainGrant, MCP_TENANT_TOOL_DOMAIN)) {
+    const denial = buildDomainNotGrantedError(toolName, MCP_TENANT_TOOL_DOMAIN);
+    return jsonRpcError(id, denial.code, denial.message, denial.data);
+  }
+
   // Authoritative execution org — same resolver core tools use. Tenant tools
   // have no `deviceArgs` of their own, so device-target resolution is a no-op
   // and this always falls back to the attribution-only path. Resolved FIRST
@@ -1924,13 +2056,13 @@ async function handleTenantToolCall(
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   if (tier >= 3 && !hasExecute) {
-    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`);
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`, INSUFFICIENT_SCOPE_EXECUTE);
   }
   if (tier >= 3 && requireExecuteAdmin && !hasExecuteAdmin) {
     return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute_admin scope in production`);
   }
   if (tier === 2 && !hasWrite) {
-    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`);
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
   }
   // RBAC permission check
   try {
@@ -2460,36 +2592,40 @@ async function dispatchBootstrapAuthTool(
 // resources/list
 // ============================================
 
-function handleResourcesList(id: string | number): JsonRpcResponse {
+function handleResourcesList(id: string | number, domainGrant: McpDomainGrant): JsonRpcResponse {
   return jsonRpcResult(id, {
-    resources: [
-      {
-        uri: 'breeze://devices',
-        name: 'Device Inventory',
-        description: 'List of all managed devices',
-        mimeType: 'application/json'
-      },
-      {
-        uri: 'breeze://alerts',
-        name: 'Active Alerts',
-        description: 'Currently active alerts across all devices',
-        mimeType: 'application/json'
-      },
-      {
-        uri: 'breeze://scripts',
-        name: 'Script Library',
-        description: 'Available scripts for execution',
-        mimeType: 'application/json'
-      },
-      {
-        uri: 'breeze://automations',
-        name: 'Automation Rules',
-        description: 'Configured automation rules',
-        mimeType: 'application/json'
-      }
-    ]
+    // B-W02 (#6156): filtered by resource domain; resources/read applies the
+    // same predicate (listed ⇒ readable).
+    resources: MCP_RESOURCE_LIST.filter((r) => isDomainGranted(domainGrant, mcpResourceDomain(r.uri))),
   });
 }
+
+const MCP_RESOURCE_LIST = [
+  {
+    uri: 'breeze://devices',
+    name: 'Device Inventory',
+    description: 'List of all managed devices',
+    mimeType: 'application/json'
+  },
+  {
+    uri: 'breeze://alerts',
+    name: 'Active Alerts',
+    description: 'Currently active alerts across all devices',
+    mimeType: 'application/json'
+  },
+  {
+    uri: 'breeze://scripts',
+    name: 'Script Library',
+    description: 'Available scripts for execution',
+    mimeType: 'application/json'
+  },
+  {
+    uri: 'breeze://automations',
+    name: 'Automation Rules',
+    description: 'Configured automation rules',
+    mimeType: 'application/json'
+  }
+];
 
 // ============================================
 // prompts/list, prompts/get
@@ -2649,7 +2785,8 @@ export function dualAxisResourceCondition(
 async function handleResourcesRead(
   id: string | number,
   params: Record<string, unknown>,
-  auth: AuthContext
+  auth: AuthContext,
+  domainGrant: McpDomainGrant,
 ): Promise<JsonRpcResponse> {
   const uri = params.uri as string;
   if (!uri) {
@@ -2663,6 +2800,14 @@ async function handleResourcesRead(
   const requiredPermission = findMcpResourcePermission(uri);
   if (!requiredPermission) {
     return jsonRpcError(id, -32602, `Unknown resource URI: ${uri}`);
+  }
+  // B-W02 (#6156): domain gate after the (pure) unknown-URI check — so an
+  // unknown URI answers identically for every principal — and before RBAC
+  // and any DB read.
+  const resourceDomain = mcpResourceDomain(uri);
+  if (!isDomainGranted(domainGrant, resourceDomain)) {
+    const denial = buildDomainNotGrantedError(uri, resourceDomain);
+    return jsonRpcError(id, denial.code, denial.message, denial.data);
   }
   try {
     const permError = await checkPermissionRequirement(auth, requiredPermission);

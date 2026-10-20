@@ -207,3 +207,24 @@ func acquireSnapshotCreation(ctx context.Context) (release func(), err error) {
 func snapshotCreationBusy() bool {
 	return len(snapshotCreationGate) > 0
 }
+
+// AcquireSnapshotCreation is the exported form of acquireSnapshotCreation, for
+// non-backup callers that also enter the VSS snapshot-creation interval —
+// currently agent/internal/systemrestore, which creates Windows System Restore
+// checkpoints before risky actions (#4609).
+//
+// It is deliberately the SAME gate rather than a second one. A restore point
+// requested while a backup is inside StartSnapshotSet..DoSnapshotSet gets
+// VSS_E_SNAPSHOT_SET_IN_PROGRESS, and both operations compete for the same
+// shadow storage. Callers that cannot afford to wait should pass a short
+// context and treat ErrVSSSessionInProgress as "busy, skip this one" rather
+// than retrying.
+func AcquireSnapshotCreation(ctx context.Context) (release func(), err error) {
+	return acquireSnapshotCreation(ctx)
+}
+
+// SnapshotCreationBusy reports whether the process-wide creation gate is held.
+// Diagnostics only — the answer is stale the moment it returns.
+func SnapshotCreationBusy() bool {
+	return snapshotCreationBusy()
+}

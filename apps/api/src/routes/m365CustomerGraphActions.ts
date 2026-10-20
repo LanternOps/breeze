@@ -26,6 +26,7 @@ import {
   initiateCustomerGraphActionsConsent,
   initiateCustomerGraphActionsUpgradeConsent,
   listCustomerGraphActionsConnections,
+  listStaleManifestCustomerGraphActionsConnections,
   readPendingCustomerGraphActionsTenantConfirmation,
   retestCustomerGraphActionsConnection,
 } from '../services/m365ControlPlane/writeActionConnectionService';
@@ -220,6 +221,34 @@ function lifecycleFailure(c: Context, error: unknown) {
 export const m365CustomerGraphActionsRoutes = new Hono();
 
 m365CustomerGraphActionsRoutes.use('*', authMiddleware);
+
+// Registered above every `/connections/...` route so a path parameter can never
+// shadow it. Partner-scoped by design: an organization token already sees its
+// own connection on the card, so there is nothing useful to list. Runs under
+// the caller's RLS context (opened by authMiddleware), never a system context.
+m365CustomerGraphActionsRoutes.get('/connections/stale-manifest', requireOrgsRead, async (c) => {
+  if ([...new URL(c.req.url).searchParams.keys()].length > 0) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+  const auth = c.get('auth') as AuthContext;
+  if (auth.scope !== 'partner') {
+    return c.json({ error: 'This view is available to partner-scoped sessions.' }, 403);
+  }
+  const rows = await listStaleManifestCustomerGraphActionsConnections();
+  // Explicit allow-list: the DTO never widens when the service row does.
+  const connections = rows.map((row) => ({
+    id: row.id,
+    orgId: row.orgId,
+    orgName: row.orgName,
+    displayName: row.displayName,
+    tenantId: row.tenantId,
+    manifestVersion: row.manifestVersion,
+    currentManifestVersion: row.currentManifestVersion,
+    status: row.status,
+    lastVerifiedAt: row.lastVerifiedAt,
+  }));
+  return c.json({ currentManifestVersion: profileManifest.version, connections });
+});
 
 m365CustomerGraphActionsRoutes.get('/connections', requireOrgsRead, async (c) => {
   const parsed = parseOrganizationQuery(c);

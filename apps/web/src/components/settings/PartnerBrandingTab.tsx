@@ -79,15 +79,18 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerBranding.primaryColor')}</label>
+          <label id="partner-branding-primary-color-label" htmlFor="partner-branding-primary-color" className="text-sm font-medium">{t('partnerBranding.primaryColor')}</label>
           <div className="flex gap-2">
+            {/* The swatch and the hex field edit the same value; both carry the one label. */}
             <input
               type="color"
+              aria-labelledby="partner-branding-primary-color-label"
               value={data.primaryColor || '#3b82f6'}
               onChange={e => set({ primaryColor: e.target.value })}
               className="h-10 w-12 cursor-pointer rounded-md border bg-background p-1"
             />
             <input
+              id="partner-branding-primary-color"
               type="text"
               value={data.primaryColor ?? ''}
               onChange={e => set({ primaryColor: e.target.value || undefined })}
@@ -98,15 +101,18 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerBranding.secondaryColor')}</label>
+          <label id="partner-branding-secondary-color-label" htmlFor="partner-branding-secondary-color" className="text-sm font-medium">{t('partnerBranding.secondaryColor')}</label>
           <div className="flex gap-2">
+            {/* The swatch and the hex field edit the same value; both carry the one label. */}
             <input
               type="color"
+              aria-labelledby="partner-branding-secondary-color-label"
               value={data.secondaryColor || '#64748b'}
               onChange={e => set({ secondaryColor: e.target.value })}
               className="h-10 w-12 cursor-pointer rounded-md border bg-background p-1"
             />
             <input
+              id="partner-branding-secondary-color"
               type="text"
               value={data.secondaryColor ?? ''}
               onChange={e => set({ secondaryColor: e.target.value || undefined })}
@@ -117,8 +123,9 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerBranding.theme')}</label>
+          <label htmlFor="partner-branding-theme" className="text-sm font-medium">{t('partnerBranding.theme')}</label>
           <select
+            id="partner-branding-theme"
             value={data.theme ?? ''}
             onChange={e => set({ theme: (e.target.value || undefined) as InheritableBrandingSettings['theme'] })}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -195,15 +202,17 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-medium">{t('partnerBranding.customCss')}</label>
+        <label htmlFor="partner-branding-custom-css" className="text-sm font-medium">{t('partnerBranding.customCss')}</label>
         <textarea
+          id="partner-branding-custom-css"
+          aria-describedby="partner-branding-custom-css-help"
           value={data.customCss ?? ''}
           onChange={e => set({ customCss: e.target.value || undefined })}
           rows={5}
           className="w-full rounded-md border bg-background px-3 py-2 font-mono text-sm"
           placeholder={t('partnerBranding.customCssPlaceholder')}
         />
-        <p className="text-xs text-muted-foreground">
+        <p id="partner-branding-custom-css-help" className="text-xs text-muted-foreground">
           {t('partnerBranding.customCssHelp')}
         </p>
       </div>

@@ -170,6 +170,7 @@
       "partner": "Partenaire",
       "org": "Organisation"
     },
+    "tierCapHint": "Le niveau maximal est {{max}}. Le niveau 3 nécessite la vérification sur le poste de travail, qui n'est pas disponible dans cette version.",
     "ignored": "Certains paramètres sont moins stricts que la base de référence du partenaire et sont ignorés : {{fields}}",
     "readOnly": "Vous pouvez consulter cette politique, mais pas la modifier.",
     "save": "Enregistrer la politique",

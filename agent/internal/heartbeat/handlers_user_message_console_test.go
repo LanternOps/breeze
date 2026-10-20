@@ -135,6 +135,9 @@ func TestMessageCardTimeoutRetractsBeforeNativeFallback(t *testing.T) {
 	// The helper draws the card but its message_presented arrives after the
 	// agent stopped waiting.
 	assist.setPresent("", func(ipc.MessageShow) { time.Sleep(400 * time.Millisecond) })
+	order := &orderLog{}
+	assist.trackOrder(order, "assist")
+	user.trackOrder(order, "user")
 	h, rec := newMessagingHeartbeat(t, assist.session, user.session)
 
 	payload := messagePayload("critical", time.Now().Add(time.Hour))
@@ -164,6 +167,12 @@ func TestMessageCardTimeoutRetractsBeforeNativeFallback(t *testing.T) {
 	}
 	if n := countType(user, ipc.TypeNotify); n != 1 {
 		t.Fatalf("native toast shown %d times, want once", n)
+	}
+	// Ordering: the retract must reach the helper BEFORE the native fallback,
+	// or the user briefly sees both the card and the toast.
+	retractAt, nativeAt := order.indexOf("assist:"+ipc.TypeMessageRetract), order.indexOf("user:"+ipc.TypeNotify)
+	if retractAt < 0 || nativeAt < 0 || retractAt > nativeAt {
+		t.Fatalf("message_retract must precede the native toast; order = %v", order.snapshot())
 	}
 
 	// The late message_presented is not reported as a second display.

@@ -16,6 +16,7 @@ import { webhooks as webhooksTable } from '../db/schema';
 import { toWebhookConfig } from '../services/webhookConfig';
 import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
 import { scrubUrlsInText } from '../utils/endpointDisplay';
+import { isSelfDeliveryOfHealthEvent } from '../services/connectionHealth/eventPayload';
 
 const { db } = dbModule;
 
@@ -918,6 +919,11 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
   // (webhook_id, event_id) unique insert makes that safe.
   const failures: Array<{ webhookId: string; error: unknown }> = [];
   for (const webhook of webhooks) {
+    // Spec 2026-10-15 §9 W5: a connection health event about this very webhook
+    // is never delivered to it (a failing endpoint fed "you are failing"
+    // deliveries is a feedback loop). Skipped before the delivery record, so
+    // neither a retry nor the recovery sweep can revive it.
+    if (isSelfDeliveryOfHealthEvent(event, webhook.id)) continue;
     try {
       let deliveryId: string | undefined;
 

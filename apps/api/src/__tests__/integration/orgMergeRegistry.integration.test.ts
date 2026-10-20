@@ -208,6 +208,11 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // `derived` and the engine must never write them itself.
   'partner_export_device_material_state.breeze_partner_export_guard_direct_write': 'silent org_id revert at depth 0',
   'partner_export_site_material_state.breeze_partner_export_guard_direct_write': 'silent org_id revert at depth 0',
+  // #6263 W03a (2026-12-30-230000): copies org_id/partner_id/is_builtin from
+  // the parent yara_rule_sets row on every INSERT/UPDATE, so a direct repoint
+  // is silently reverted to the parent's org. The table is `derived`: the
+  // parent's AFTER UPDATE propagate trigger moves the children.
+  'yara_rules.yara_rules_inherit_owner_trg': 'silent org_id revert to the parent set\'s owner; derived table, moved by yara_rule_sets_propagate_owner',
   // PAM actuations: hardened to RAISE 42501 iff org_id changed (Track E
   // §Hardening, apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql).
   // Generation-decrease and cleanup-tombstone checks are unrelated to org_id
@@ -284,10 +289,21 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Caller verification W05 (#6354, 2026-12-30-220000): BEFORE UPDATE guard on
+  // the three pinned caller-target columns only. It never reads or reverts
+  // org_id, so a merge repoint of action_intents passes.
+  'action_intents.action_intents_caller_target_immutable': 'freezes target_entra_tenant_id/target_entra_oid/target_connection_ref only; never reads or reverts org_id',
   // Backup key root W01 (#8731, 2026-12-28-110000): BEFORE UPDATE OF key_layout, key_prefix.
   'backup_snapshots.backup_snapshots_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
   'backup_snapshot_id_reservations.backup_snapshot_id_reservations_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
   'backup_snapshot_retirements.backup_snapshot_retirements_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
+  // Trust Center W1 (2026-12-29-130100): BEFORE UPDATE immutability guard on
+  // the published snapshot. It RAISEs on any column change EXCEPT is_current
+  // and org_id, so a merge repoint (org_id only) passes. In practice the repoint
+  // sees zero rows: mergeTrustPages deletes the loser's page first and its
+  // snapshots go with it (ON DELETE CASCADE).
+  'trust_page_snapshots.trust_page_snapshots_immutable_trg': 'freezes every column except is_current and org_id; an org_id-only repoint passes',
+  'trust_page_declarations.trust_page_declarations_immutable_trg': 'freezes attribution and dates; allows SET NULL on FKs, one-way supersede/withdraw/reminder stamps, and org_id repoint',
   // PAM ownership epochs W1 (#8203, 2026-12-17-130000). The advance trigger
   // fires on the devices repoint and only APPENDS lineage (closes the loser
   // epoch, opens survivor epoch +1, writes retirement markers); it never
@@ -486,16 +502,24 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
  * classification reds with it.
  */
 const ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS: Readonly<
-  Record<string, { dischargedBy: string; requiredPolicyKind: 'blocks-merge'; note: string }>
+  Record<string, { dischargedBy: string; requiredPolicyKind: 'blocks-merge' | 'epoch-frozen'; note: string }>
 > = {
+  // PAM ownership epochs W6 (#8208): discharged by the epoch-frozen pre-walk,
+  // which refuses with the SAME predicate the trigger applies — any row with
+  // transfer off; a not-closed actuation with transfer on (the merge arms the
+  // transfer GUCs only when it is on). A merge that passes the pre-walk can
+  // therefore only meet this trigger on a race, which surfaces as the typed
+  // OrgMergeBlockedError (typedPamMergeRefusal).
   'devices.devices_pam_history_move_guard': {
     dischargedBy: 'pam_actuations',
-    requiredPolicyKind: 'blocks-merge',
-    note: 'RAISEs 23514 on any devices.org_id change while the device has a pam_actuations row; a loser org with such rows is refused by the blocks-merge policy before the devices repoint',
+    requiredPolicyKind: 'epoch-frozen',
+    note: 'RAISEs 23514 on a devices.org_id change while the device has a pam_actuations row (transfer off) or a not-closed one (transfer on); the epoch-frozen pre-walk refuses such a loser with the same predicate before the devices repoint',
   },
   // PAM ownership epochs W2 (#8204). Two branches on an org_id change:
   //  - the request has a pam_actuations row: RAISE 42501 (evidence is frozen
-  //    to its epoch). A loser with such a row is refused by blocks-merge.
+  //    to its epoch). Nothing in a merge writes such a row since W6 (#8208):
+  //    elevation_requests is `custom` (resolve-phase OD4 expiry only) and the
+  //    devices restamp trigger moves un-actuated requests only.
   //  - no actuation: the row is re-anchored to its device's current epoch,
   //    which requires the device to already be in the new org (else 23514).
   //    The walk guarantees it even though elevation_requests sorts BEFORE
@@ -508,8 +532,8 @@ const ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS: Readonly<
   //    follows its device into the survivor epoch').
   'elevation_requests.elevation_requests_epoch_guard': {
     dischargedBy: 'pam_actuations',
-    requiredPolicyKind: 'blocks-merge',
-    note: 'RAISEs 42501 on an org_id change of an actuated request (loser refused by blocks-merge); an un-actuated request is re-anchored to its device epoch, and follows its device via the devices repoint cascade',
+    requiredPolicyKind: 'epoch-frozen',
+    note: 'RAISEs 42501 on an org_id change of an actuated request — no merge writes one (elevation_requests is custom: resolve-only OD4 expiry); an un-actuated request is re-anchored to its device epoch when devices_restamp_unactuated_elevation_requests carries it with its device (cause org_merge)',
   },
 };
 
@@ -721,7 +745,7 @@ describe('Org merge policy registry contract', () => {
   it('no org_id-mutating policy sits on a table whose org_id a trigger blocks', async () => {
     // Kinds that never issue an `UPDATE ... SET org_id`. Everything else does,
     // `custom` included — every custom executor ends in buildRepoint().
-    const NON_MUTATING = new Set(['leave-for-erasure', 'derived', 'follows-parent', 'loser-shell', 'blocks-merge']);
+    const NON_MUTATING = new Set(['leave-for-erasure', 'derived', 'follows-parent', 'loser-shell', 'blocks-merge', 'epoch-frozen']);
 
     const rows = (await db.execute(sql`
       SELECT c.relname AS table_name, t.tgname AS trigger_name
@@ -764,7 +788,7 @@ describe('Org merge policy registry contract', () => {
       .map((r) => `${r.table_name}.${r.trigger_name}`);
     expect(
       unreviewed,
-      'new BEFORE UPDATE row trigger(s) on an org_id table — read each body and add it to ORG_ID_BLOCKING_TRIGGERS (it RAISEs on, or silently reverts, an org_id change), ORG_ID_BENIGN_TRIGGERS (with the reason it does not stop a repoint), or ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS (blocking in isolation, but discharged by a live blocks-merge policy)',
+      'new BEFORE UPDATE row trigger(s) on an org_id table — read each body and add it to ORG_ID_BLOCKING_TRIGGERS (it RAISEs on, or silently reverts, an org_id change), ORG_ID_BENIGN_TRIGGERS (with the reason it does not stop a repoint), or ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS (blocking in isolation, but discharged by a live blocks-merge or epoch-frozen policy)',
     ).toEqual([]);
 
     // A map entry whose trigger no longer exists is WARNED about, not failed.
@@ -871,7 +895,7 @@ describe('Org merge policy registry contract', () => {
     ).toEqual([]);
   });
 
-  it('every conditionally-blocking trigger is discharged by a live blocks-merge policy', () => {
+  it('every conditionally-blocking trigger is discharged by a live refusing (blocks-merge / epoch-frozen) policy', () => {
     for (const [key, cfg] of Object.entries(ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS)) {
       expect(policies.get(cfg.dischargedBy)?.kind, `${key} dischargedBy ${cfg.dischargedBy}`).toBe(cfg.requiredPolicyKind);
     }

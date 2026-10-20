@@ -20,25 +20,18 @@ async function signingFixture() {
   };
 }
 
-function completeResult() {
+function identityResult() {
   return {
     success: true as const,
     tenantId: TENANT_ID,
-    applicationId: APPLICATION_ID,
     administratorObjectId: ADMIN_ID,
-    organizationDisplayName: 'Contoso',
-    manifestVersion: 2,
+    administratorUsername: 'admin@tenant.example',
     verifiedAt: '2026-07-14T16:00:00.000Z',
-    grantReconciliation: 'complete' as const,
-    observedGrants: [],
-    missingGrants: [],
-    unexpectedGrants: [],
-    grantsVerifiedAt: '2026-07-14T16:00:00.000Z',
   };
 }
 
 describe('Graph-read executor client', () => {
-  it('serializes once and signs the exact complete-consent body and operation', async () => {
+  it('serializes once and signs the exact verify-identity body and operation', async () => {
     const { privateJwk, publicKey } = await signingFixture();
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = String(init?.body);
@@ -53,11 +46,11 @@ describe('Graph-read executor client', () => {
       expect(verified.protectedHeader).toMatchObject({ alg: 'EdDSA', kid: 'api-key-1' });
       expect(verified.payload).toMatchObject({
         correlationId: CORRELATION_ID,
-        operation: 'complete-consent',
+        operation: 'verify-identity',
         bodySha256: createHash('sha256').update(body).digest('base64url'),
       });
       expect((verified.payload.exp as number) - (verified.payload.iat as number)).toBeLessThanOrEqual(60);
-      return new Response(JSON.stringify(completeResult()), {
+      return new Response(JSON.stringify(identityResult()), {
         headers: { 'content-type': 'application/json' },
       });
     });
@@ -73,17 +66,19 @@ describe('Graph-read executor client', () => {
     const input = {
       correlationId: CORRELATION_ID,
       consentAttemptId: ATTEMPT_ID,
-      tenantHint: TENANT_ID,
+      expectedTenantId: TENANT_ID,
       authorizationCode: 'authorization-code',
       codeVerifier: 'v'.repeat(43),
       nonce: 'nonce',
       redirectUri: 'https://console.example.test/api/v1/m365/consent/callback',
     };
 
-    await expect(client.completeIdentityVerification(input)).resolves.toEqual(completeResult());
+    await expect(client.verifyConsentIdentity(input)).resolves.toEqual(identityResult());
+    // #7910 W04: the legacy single-call consent method is gone.
+    expect(client).not.toHaveProperty('completeIdentityVerification');
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      'https://executor.internal.example.test/v1/complete-consent',
+      'https://executor.internal.example.test/v1/verify-identity',
     );
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', redirect: 'error' });
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(input);

@@ -71,6 +71,8 @@ import {
 } from './ticketChecklistService';
 import {
   applyChecklistTemplateToTicket,
+  createChecklistTemplateFromTicket,
+  duplicateChecklistTemplate,
   getChecklistTemplate,
   listChecklistTemplates,
   type ChecklistTemplateActor,
@@ -481,6 +483,8 @@ const CHECKLIST_ACTIONS = [
   'apply_template',
   'list_templates',
   'get_template',
+  'save_as_template',
+  'duplicate_template',
 ] as const;
 
 /** Mirrors routes/ticketChecklistTemplates.ts templateActorFrom — the service needs scope AND partnerOrgAccess. */
@@ -535,10 +539,11 @@ function checklistErrorToJson(err: unknown): string | null {
 /**
  * A ticked step is a human attestation (spec #5783 §4.1). The HTTP route gates
  * the `done` branch on isInteractiveUserSession; this tool never offers `done`
- * at all. It ALSO refuses to edit or delete a step that is already ticked:
- * patchChecklistItem's RULE 3 clears the attestation on any text edit of a done
- * item, and a delete removes it outright, so either would let an agent withdraw
- * a person's sign-off. A human does that from the ticket page.
+ * at all. It ALSO refuses to delete, or edit the LABEL of, a step that is
+ * already ticked: patchChecklistItem's RULE 3 clears the attestation on a label
+ * edit of a done item, and a delete removes it outright, so either would let an
+ * agent withdraw a person's sign-off. A detail-only (note) edit keeps the tick
+ * (#9180) and is allowed. A human does that from the ticket page.
  */
 function refuseTickedItem(action: string): string {
   return checklistError(
@@ -1668,12 +1673,12 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     deviceArgs: [],
     domain: 'tickets',
-    searchHint: 'ticket checklist steps: list, add, edit, delete, reorder, apply a checklist template, list templates',
+    searchHint: 'ticket checklist steps and templates: list, edit, reorder, apply, save ticket steps as template, duplicate',
     definition: {
       name: 'manage_ticket_checklist',
       description:
-        'Ticket checklist steps and templates. Actions: list, add_item, update_item (label/detail), delete_item, reorder, apply_template, list_templates, get_template. ' +
-        'Ticking a step done needs a signed-in user on the ticket page; ticked steps cannot be edited or deleted here.',
+        'Ticket checklist steps and templates. Actions: list, add_item, update_item, delete_item, reorder, apply_template, list_templates, get_template, save_as_template, duplicate_template. ' +
+        'Ticking needs a signed-in user; a ticked step cannot be deleted or relabeled here.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1687,7 +1692,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             items: { type: 'string' },
             description: "reorder: the ticket's COMPLETE checklist item id list in the new order, each exactly once",
           },
-          templateId: { type: 'string', description: 'Checklist template UUID (apply_template/get_template)' },
+          templateId: { type: 'string', description: 'Checklist template UUID (apply_template/get_template/duplicate_template)' },
+          name: { type: 'string', description: 'save_as_template: template name (required). duplicate_template: optional copy name' },
+          description: { type: ['string', 'null'], description: 'save_as_template: optional template description' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: "save_as_template: 'organization' (default, ticket's org) or 'partner' (all orgs)" },
           mode: {
             type: 'string',
             enum: ['append', 'replace_unticked'],
@@ -1730,6 +1738,16 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ template: await getChecklistTemplate(input.templateId, checklistTemplateActorFrom(auth)) });
         }
 
+        if (action === 'duplicate_template') {
+          if (typeof input.templateId !== 'string') return jsonError('templateId is required for duplicate_template');
+          const template = await duplicateChecklistTemplate(
+            input.templateId,
+            typeof input.name === 'string' ? { name: input.name } : {},
+            checklistTemplateActorFrom(auth),
+          );
+          return JSON.stringify({ template });
+        }
+
         // ── by-item actions: scope through the item's OWN ticket ────────────
         if (action === 'update_item' || action === 'delete_item') {
           if (typeof input.itemId !== 'string') return jsonError(`itemId is required for ${action}`);
@@ -1743,7 +1761,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           // this check and the write below and then be cleared by it.
           const ticked = await isChecklistItemTickedForUpdate(item.id);
           if (ticked === null) return jsonError('Checklist item not found');
-          if (ticked) return refuseTickedItem(action);
+          // A ticked step can still take a NOTE edit (#9180): patchChecklistItem
+          // keeps the tick for a detail-only change. Delete and any label edit
+          // (which would clear the attestation) stay refused.
+          const labelEdit = action === 'update_item' && typeof input.label === 'string';
+          if (ticked && (action === 'delete_item' || labelEdit)) return refuseTickedItem(action);
 
           if (action === 'delete_item') {
             await deleteChecklistItem(item.id);
@@ -1777,6 +1799,19 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (action === 'reorder') {
           if (!Array.isArray(input.itemIds)) return jsonError('itemIds is required for reorder');
           return JSON.stringify({ checklist: await reorderChecklist(ticket.id, input.itemIds as string[]) });
+        }
+        if (action === 'save_as_template') {
+          if (typeof input.name !== 'string') return jsonError('name is required for save_as_template');
+          const saved = await createChecklistTemplateFromTicket(
+            { id: ticket.id, orgId: ticket.orgId },
+            {
+              name: input.name,
+              ownerScope: input.ownerScope === 'partner' ? 'partner' : 'organization',
+              ...(hasOwn(input, 'description') ? { description: input.description as string | null } : {}),
+            },
+            checklistTemplateActorFrom(auth),
+          );
+          return JSON.stringify(saved);
         }
         if (action === 'apply_template') {
           if (typeof input.templateId !== 'string') return jsonError('templateId is required for apply_template');

@@ -247,16 +247,22 @@ export async function patchChecklistItem(
     set.doneByUserId = null;
   }
 
-  // RULE 3 — editing the text of a COMPLETED item clears the attestation. The
-  // tick attested to the OLD text; carrying it onto new text is a falsified
+  // RULE 3 — editing the LABEL of a COMPLETED item clears the attestation. The
+  // tick attested to the OLD label; carrying it onto new text is a falsified
   // record. Only fires when the row is currently done, so an ordinary typo fix
-  // on an unticked step touches neither column.
+  // on an unticked step touches neither column. The note (`detail`) is working
+  // commentary, not what was attested to, so a detail-only edit of a done item
+  // keeps the tick (#9180).
   //
-  // `done: true` ARRIVING WITH a text edit is treated as an edit too: the text
-  // changes and the item ends UNTICKED, because the caller cannot attest to
-  // text they are changing in the same request. The UI never sends this
-  // combination; the rule exists so the API has one answer rather than none.
-  if (editsText && (existing.doneAt !== null || patch.done === true)) {
+  // `done: true` ARRIVING WITH a text edit (label or note) is treated as an
+  // edit too: the text changes and the item ends UNTICKED, because the caller
+  // cannot attest to text they are changing in the same request. The UI never
+  // sends this combination; the rule exists so the API has one answer rather
+  // than none.
+  if (
+    (patch.label !== undefined && patch.label !== existing.label && existing.doneAt !== null) ||
+    (editsText && patch.done === true)
+  ) {
     set.doneAt = null;
     set.doneByUserId = null;
   }

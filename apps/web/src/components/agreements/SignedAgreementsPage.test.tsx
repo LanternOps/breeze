@@ -24,6 +24,22 @@ vi.mock('../../lib/api/contracts', async (importOriginal) => {
   return { ...orig, ...contractsApi };
 });
 
+const perms = vi.hoisted(() => ({ granted: new Set<string>() }));
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => perms.granted.has(`${r}:${a}`) }),
+}));
+
+// The dialog has its own suite; here it is a stub that exposes the props the
+// page passes and a way to fire onRecorded.
+vi.mock('./RecordSignedAgreementDialog', () => ({
+  default: (p: { open: boolean; lockedOrgId?: string; lockedContractId?: string; onRecorded: (id: string) => void }) =>
+    p.open ? (
+      <div data-testid="agreements-record-dialog" data-org={p.lockedOrgId ?? ''} data-contract={p.lockedContractId ?? ''}>
+        <button type="button" data-testid="stub-recorded" onClick={() => p.onRecorded('sa-1')} />
+      </div>
+    ) : null,
+}));
+
 import SignedAgreementsPage from './SignedAgreementsPage';
 
 const resp = (payload: unknown, status = 200) =>
@@ -40,6 +56,14 @@ const UNATTACHED_DOC = {
   templateVersionNumber: 2,
   signerName: 'Jane Doe',
   signedAt: '2026-06-15T00:00:00Z',
+  signerEmail: null,
+  acceptanceOrigin: 'customer',
+  acceptanceMethod: 'typed-signature',
+  acceptanceReference: null,
+  evidenceAvailable: true,
+  sourceKind: 'quote',
+  agreementRequestId: null,
+  mime: 'application/pdf',
   quoteNumber: 'Q-2026-0001',
   byteSize: 2048,
   sha256: 'a'.repeat(64),
@@ -49,6 +73,7 @@ const UNATTACHED_DOC = {
 describe('SignedAgreementsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    perms.granted = new Set();
     window.location.hash = '';
     fetchWithAuth.mockResolvedValue(resp({ data: [{ id: 'org-1', name: 'Acme' }] }));
     docsApi.listContractDocuments.mockResolvedValue(resp({ data: [UNATTACHED_DOC] }));
@@ -151,6 +176,56 @@ describe('SignedAgreementsPage', () => {
       .toHaveTextContent(/Q-2026-0001.*Jane Doe/);
   });
 
+  it('says acceptance evidence is unavailable instead of a blank signer on a legacy row (#8865 W1b)', async () => {
+    docsApi.listContractDocuments.mockResolvedValue(resp({
+      data: [{
+        ...UNATTACHED_DOC, quoteId: null, quoteNumber: null, signerName: null, signedAt: null,
+        acceptanceOrigin: null, acceptanceMethod: null, evidenceAvailable: false,
+      }],
+    }));
+    render(<SignedAgreementsPage />);
+    const rows = await screen.findAllByTestId('contract-document-row');
+    expect(within(rows[0]).getByTestId('signed-agreement-signer'))
+      .toHaveTextContent('Accepted via quote — acceptance evidence unavailable');
+    // The subtitle says the same thing instead of "Signed by — on —".
+    const subtitle = within(rows[0]).getByTestId('signed-agreement-subtitle');
+    expect(subtitle).toHaveTextContent('Accepted via quote — acceptance evidence unavailable');
+    expect(subtitle).not.toHaveTextContent('—  on');
+    expect(subtitle.textContent).not.toMatch(/by — on —/);
+  });
+
+  it('says "recorded by MSP" with the method and "scanned copy" for a request-sourced on-behalf image (#8865 W1c)', async () => {
+    docsApi.listContractDocuments.mockResolvedValue(resp({
+      data: [{
+        ...UNATTACHED_DOC, sourceKind: 'request', agreementRequestId: 'ar-1', quoteId: null, quoteNumber: null,
+        acceptanceOrigin: 'on_behalf', acceptanceMethod: 'purchase_order', mime: 'image/png',
+      }],
+    }));
+    render(<SignedAgreementsPage />);
+    const rows = await screen.findAllByTestId('contract-document-row');
+    const subtitle = within(rows[0]).getByTestId('signed-agreement-subtitle');
+    expect(subtitle).toHaveTextContent('recorded by MSP — Purchase order');
+    expect(subtitle).toHaveTextContent('Jane Doe');
+    expect(subtitle).toHaveTextContent('scanned copy');
+    // Not the customer-acceptance wording.
+    expect(subtitle).not.toHaveTextContent(/Accepted with quote/);
+    // A scan downloads as an image, so the button must not promise a PDF.
+    expect(within(rows[0]).getByTestId('contract-document-download-doc-1')).toHaveTextContent(/^Download$/);
+  });
+
+  it('keeps a PDF on-behalf row free of the scanned-copy suffix and names the quote', async () => {
+    docsApi.listContractDocuments.mockResolvedValue(resp({
+      data: [{ ...UNATTACHED_DOC, acceptanceOrigin: 'on_behalf', acceptanceMethod: 'verbal' }],
+    }));
+    render(<SignedAgreementsPage />);
+    const rows = await screen.findAllByTestId('contract-document-row');
+    const subtitle = within(rows[0]).getByTestId('signed-agreement-subtitle');
+    expect(subtitle).toHaveTextContent('recorded by MSP — Verbally / by phone');
+    expect(subtitle).toHaveTextContent('via quote Q-2026-0001');
+    expect(subtitle).not.toHaveTextContent('scanned copy');
+    expect(within(rows[0]).getByTestId('contract-document-download-doc-1')).toHaveTextContent('Download PDF');
+  });
+
   it('links a linked row to its contract', async () => {
     docsApi.listContractDocuments.mockResolvedValue(resp({ data: [{ ...UNATTACHED_DOC, contractId: 'ct-9' }] }));
     render(<SignedAgreementsPage />);
@@ -167,5 +242,38 @@ describe('SignedAgreementsPage', () => {
     await waitFor(() =>
       expect(screen.getByTestId('contract-documents-empty')).toHaveTextContent(/No unlinked signed agreements/i),
     );
+  });
+
+  describe('Record signed agreement entry point (#8865 W1c)', () => {
+    it('renders the button only when the user holds agreements:write', async () => {
+      render(<SignedAgreementsPage />);
+      await screen.findByTestId('signed-agreements-tab');
+      expect(screen.queryByTestId('agreements-record-open')).not.toBeInTheDocument();
+    });
+
+    it('opens the dialog and reloads the list after a recording', async () => {
+      perms.granted = new Set(['agreements:write']);
+      render(<SignedAgreementsPage />);
+      fireEvent.click(await screen.findByTestId('agreements-record-open'));
+      expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-org', '');
+      const before = docsApi.listContractDocuments.mock.calls.length;
+      fireEvent.click(screen.getByTestId('stub-recorded'));
+      await waitFor(() => expect(docsApi.listContractDocuments.mock.calls.length).toBeGreaterThan(before));
+      expect(screen.queryByTestId('agreements-record-dialog')).not.toBeInTheDocument();
+    });
+
+    it('is available in the org embed with the org locked', async () => {
+      perms.granted = new Set(['agreements:write']);
+      render(<SignedAgreementsPage lockedOrgId="org-1" />);
+      fireEvent.click(await screen.findByTestId('agreements-record-open'));
+      expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-org', 'org-1');
+    });
+
+    it('is available in the contract embed with org-less contract lock', async () => {
+      perms.granted = new Set(['agreements:write']);
+      render(<SignedAgreementsPage lockedContractId="ct-1" />);
+      fireEvent.click(await screen.findByTestId('agreements-record-open'));
+      expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-contract', 'ct-1');
+    });
   });
 });

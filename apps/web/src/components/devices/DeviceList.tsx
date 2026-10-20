@@ -1,5 +1,6 @@
-import { Fragment, useMemo, useState, useEffect, useRef } from "react";
+import { Fragment, useMemo, useState, useEffect, useLayoutEffect, useRef } from "react";
 import { usePermissions } from "../../lib/permissions";
+import { ENABLE_ENDPOINT_MESSAGING } from "../../lib/featureFlags";
 import { createPortal } from "react-dom";
 import {
   ChevronLeft,
@@ -18,7 +19,6 @@ import {
   Shield,
   Trash2,
   Zap,
-  Columns3,
   Network,
   Package,
   Cpu,
@@ -36,7 +36,7 @@ import type {
   FilterConditionGroup,
   HardwareHealth,
 } from "@breeze/shared";
-import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck, isDeviceLogSilent } from "@breeze/shared";
+import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import {
   matchesMergedListFilters,
@@ -58,6 +58,7 @@ import {
 import { widthPercentClass, formatUptime } from "@/lib/utils";
 import { formatLastSeen } from "@/lib/formatTime";
 import { formatNumber } from "@/lib/i18n/format";
+import { toPercent } from "@/lib/deviceUtils";
 import {
   getDeviceRoleLabel,
   getDeviceRoleIcon,
@@ -78,13 +79,14 @@ import {
 } from "./pageSizePreference";
 import {
   COLUMN_IDS,
-  COLUMN_LABELS,
+  DEVICES_PAGE_COLUMN_PRESET,
   readColumnOrder,
   readColumnVisibility,
   resetColumns,
   writeColumnOrder,
   writeColumnVisibility,
   type ColumnId,
+  type ColumnPreset,
 } from "./columnVisibility";
 import {
   readVisibleCustomFieldKeys,
@@ -114,6 +116,10 @@ import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
 import { getAgentVersionRelation } from "./agentVersionRelation";
+import { EntityLink } from "@/components/shared/EntityLink";
+import { ColumnChooser, type ColumnGateReason } from "./ColumnChooser";
+import { readSortFromHash, writeSortToHash } from "./deviceListSort";
+import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -207,8 +213,6 @@ export type Device = {
   updateAttemptTargetVersion?: string | null;
   updateAttemptStartedAt?: string | null;
   updateAttemptLastAt?: string | null;
-  /** Latest agent-logs ingest time (#7067); drives the logs-silent badge. */
-  lastLogAt?: string | null;
   watchdogVersion?: string | null;
   /** Installed Breeze Assist helper version (devices.helper_version, #6751). */
   helperVersion?: string | null;
@@ -470,6 +474,8 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "reliability",
   "hardwareHealth",
   "vpn",
+  // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
+  "attention",
 ]);
 
 type DeviceListProps = {
@@ -546,6 +552,13 @@ type DeviceListProps = {
   // could be viewing this org's record while the switcher points at "All
   // organizations" or a different org entirely.
   forceSingleOrg?: boolean;
+  // The org record's Devices tab (#9023): drop the whole "Showing x to y" /
+  // per-page / pager footer while every row fits on one page. Off by default
+  // so the fleet page keeps its footer at any size.
+  // Which persisted column list this instance reads/writes. Read once at mount
+  // (like `pageSize`); the org record's Devices tab passes its own so its
+  // customisation never leaks into the fleet page.
+  columnPreset?: ColumnPreset;
   // Issue #5285: each visible org's effective agent-version target (its
   // agentVersionPins.agent pin, or the globally promoted version when
   // unpinned), resolved ONCE per page load by the caller (DevicesPage) — not
@@ -553,6 +566,18 @@ type DeviceListProps = {
   // means "not resolved yet" and the column renders unchanged (plain dash
   // stays plain, no tint).
   effectiveAgentVersionByOrgId?: Record<string, string | null | undefined>;
+  // #9035: page-owned controls (the list/grid toggle) rendered in the table's
+  // header strip next to Columns, so the count, view and column controls share
+  // one row instead of stacking above the table.
+  headerActions?: React.ReactNode;
+  // #9036: clears the page's clearable filters (advanced group, search, VPN).
+  // The page passes it only while one of those is active; when given, the
+  // no-match row offers "Clear filters".
+  onClearFilters?: () => void;
+  // #9037: mirror the sort into the URL hash (`sort=<column>.<dir>`) so a
+  // sorted view survives reload. Off by default: the organization record's
+  // Devices tab owns its hash for tab state.
+  sortInHash?: boolean;
 };
 
 // Agent Version column tint (#5285). No new colours: reuses the same
@@ -657,8 +682,23 @@ const osLabels: Record<OSType, string> = {
   linux: "Linux",
 };
 
+// SSR-safe layout effect for post-mount hash adoption (lib/useHashState.ts pattern).
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 type SortField = ColumnId | null;
 type SortDirection = "asc" | "desc";
+
+// Short headers that wrapped to two lines at their natural width (#9037).
+const NOWRAP_HEADERS: ReadonlySet<ColumnId> = new Set<ColumnId>(["cpu", "ram"]);
+
+// The chip bar renders a flat AND group as chips; only an OR or nested group
+// (the Advanced builder's territory) is invisible there and earns the
+// "Advanced filter active" pill (#9037). With no group to inspect (standalone
+// renders) the pill keeps its old meaning.
+function filterNeedsBuilder(group: FilterConditionGroup | null | undefined): boolean {
+  if (!group) return true;
+  return group.operator !== "AND" || group.conditions.some((c) => "conditions" in c);
+}
 
 // Meaningful ordering for the Status sort. Raw enum alphabetics would put
 // "decommissioned" before "online"; rank by operational severity instead.
@@ -738,6 +778,9 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   isHeadless: (d) =>
     typeof d.isHeadless === "boolean" ? (d.isHeadless ? 1 : 0) : null,
   status: (d) => statusSortRank[d.status],
+  // #9038: the header is not sortable (counts arrive per page, outside the
+  // list payload); this keeps the Record total and is never reached.
+  attention: () => null,
   // false/absent renders as a dash (see the cell), so it maps to null like
   // isHeadless — keeping the blanks-last invariant consistent for booleans.
   pendingReboot: (d) => (d.pendingReboot ? 1 : null),
@@ -836,11 +879,15 @@ export default function DeviceList({
   listFilters,
   onListFiltersChange,
   forceSingleOrg = false,
+  columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
+  headerActions,
+  onClearFilters,
+  sortInHash = false,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
-  const canSendMessage = can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send
+  const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send; #8968: hidden until the build enables messaging
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
@@ -878,13 +925,11 @@ export default function DeviceList({
   // Checkbox + Actions are always-on first/last; the rest live in
   // COLUMN_IDS and the order in columnOrder controls render sequence.
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
-    () => new Set(readColumnVisibility()),
+    () => new Set(readColumnVisibility(columnPreset)),
   );
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
-    readColumnOrder(),
+    readColumnOrder(columnPreset),
   );
-  const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
-  const columnsMenuRef = useRef<HTMLDivElement>(null);
   // Custom field columns (#6594) — additive, NOT part of ColumnId/COLUMN_IDS
   // (see customFieldColumnVisibility.ts for why). Definitions come from the
   // same store the advanced filter picker uses; visibility is a separate,
@@ -940,6 +985,19 @@ export default function DeviceList({
   // expanded, guests visible) — deliberately NOT persisted/hash-encoded.
   const [collapsedVmGroups, setCollapsedVmGroups] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
+  const bulkMenuRootRef = useRef<HTMLDivElement>(null);
+  const bulkTriggerRef = useRef<HTMLButtonElement>(null);
+  // #9037: the Bulk Actions popover closes on an outside click like the other
+  // list menus (Escape is handled on the menu itself, which returns focus).
+  useEffect(() => {
+    if (!bulkMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (bulkMenuRootRef.current?.contains(e.target as Node)) return;
+      setBulkMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [bulkMenuOpen]);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
   // Flip the row dropdown direction when the click happens close to the
   // viewport bottom — the menu has ~7 items × ~36px, so any row whose
@@ -958,6 +1016,16 @@ export default function DeviceList({
   const rowMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  // #9037: adopt a hash-carried sort post-mount but pre-paint, so the first
+  // client render still matches SSR (#2421; same pattern as useDeviceClassFilter).
+  useIsomorphicLayoutEffect(() => {
+    if (!sortInHash) return;
+    const fromHash = readSortFromHash(window.location.hash);
+    if (!fromHash) return;
+    setSortField(fromHash.field);
+    setSortDirection(fromHash.direction);
+    // Mount-only: later sorts are written by handleSort, not read back.
+  }, []);
 
   // Close row action menu on outside click
   useEffect(() => {
@@ -984,37 +1052,25 @@ export default function DeviceList({
     };
   }, [rowMenuOpenId]);
 
-  // Close columns visibility menu on outside click
-  useEffect(() => {
-    if (!columnsMenuOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        columnsMenuRef.current &&
-        !columnsMenuRef.current.contains(e.target as Node)
-      ) {
-        setColumnsMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [columnsMenuOpen]);
-
   // Hiding does not change columnOrder, so re-showing restores the slot.
   const toggleColumn = (id: ColumnId) => {
     setVisibleColumns((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      writeColumnVisibility(next);
+      writeColumnVisibility(next, columnPreset);
       return next;
     });
   };
 
-  // Neighbor is the visible column above/below; hidden columns in
-  // columnOrder are skipped so the swap matches what the user sees.
+  // Neighbor is the drawn column above/below; hidden, unavailable and
+  // class-gated columns are skipped so the swap matches what the user sees
+  // (the chooser's up/down state is computed from the same drawn set).
   const moveColumn = (id: ColumnId, direction: -1 | 1) => {
     setColumnOrder((prev) => {
-      const visibleIds = prev.filter((c) => visibleColumns.has(c));
+      const visibleIds = prev.filter(
+        (c) => visibleColumns.has(c) && isColumnAvailable(c) && classAllowsColumn(c),
+      );
       const visibleIdx = visibleIds.indexOf(id);
       if (visibleIdx === -1) return prev;
       const targetVisibleIdx = visibleIdx + direction;
@@ -1026,14 +1082,14 @@ export default function DeviceList({
       const next = [...prev];
       next[a] = swapWith;
       next[b] = id;
-      writeColumnOrder(next);
+      writeColumnOrder(next, columnPreset);
       return next;
     });
   };
 
   // Restores both visibility and order to the catalog defaults.
   const resetColumnsToDefault = () => {
-    const cols = resetColumns();
+    const cols = resetColumns(columnPreset);
     setColumnOrder(cols.map((c) => c.id));
     setVisibleColumns(new Set(cols.filter((c) => c.visible).map((c) => c.id)));
   };
@@ -1151,12 +1207,11 @@ export default function DeviceList({
   }, [vpnFilter, availableVpnProviders]);
 
   const handleSort = (field: ColumnId) => {
-    if (sortField === field) {
-      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortDirection("asc");
-    }
+    const direction: SortDirection =
+      sortField === field ? (sortDirection === "asc" ? "desc" : "asc") : "asc";
+    setSortField(field);
+    setSortDirection(direction);
+    if (sortInHash) writeSortToHash({ field, direction });
   };
 
   const sortedDevices = useMemo(() => {
@@ -1402,17 +1457,37 @@ export default function DeviceList({
     if (!hasAgentRows && vpnFilter !== "all") setVpnFilter("all");
   }, [hasAgentRows, vpnFilter]);
 
-  const classAllowsColumn = (id: ColumnId) =>
-    (hasAgentRows || !AGENT_ONLY_COLUMNS.has(id)) &&
-    (hasNetworkRows || hasManualRows || !NON_AGENT_COLUMNS.has(id)) &&
-    (hasManualRows || !MANUAL_ONLY_COLUMNS.has(id)) &&
-    (hasAgentRows || hasManualRows || !NETWORK_EXCLUDED_COLUMNS.has(id));
+  // Why the classes on screen keep a column off the table (null = drawn). The
+  // column chooser shows this reason instead of a checked box (#9034), so the
+  // table and the chooser read from one rule.
+  const columnGateReason = (id: ColumnId): ColumnGateReason | null => {
+    if (!hasAgentRows && AGENT_ONLY_COLUMNS.has(id)) return "networkOnlyView";
+    if (!hasNetworkRows && !hasManualRows && NON_AGENT_COLUMNS.has(id)) return "agentOnlyFleet";
+    if (!hasManualRows && MANUAL_ONLY_COLUMNS.has(id)) return "noManualAssets";
+    if (!hasAgentRows && !hasManualRows && NETWORK_EXCLUDED_COLUMNS.has(id)) return "networkOnlyView";
+    return null;
+  };
+  const classAllowsColumn = (id: ColumnId) => columnGateReason(id) === null;
 
   // Effective render sequence: user-chosen order, filtered to visible.
   // Checkbox and Actions are rendered separately as the first/last cells.
   const renderedColumns = columnOrder.filter(
     (id) =>
       visibleColumns.has(id) && isColumnAvailable(id) && classAllowsColumn(id),
+  );
+
+  // #9038 Attention column: one batched count request per page of rows, only
+  // while the column is rendered. Non-agent rows have no device record.
+  const attentionIds = useMemo(
+    () =>
+      paginatedDevices
+        .filter((d) => (d.deviceClass ?? "agent") === "agent")
+        .map((d) => d.id),
+    [paginatedDevices],
+  );
+  const attentionFor = useDeviceAttentionCounts(
+    attentionIds,
+    renderedColumns.includes("attention"),
   );
 
   // sortHeader factors out the repeated header pattern for sortable
@@ -1427,7 +1502,7 @@ export default function DeviceList({
     <th
       key={id}
       scope="col"
-      className={`px-3 py-3 select-none${alignRight ? " text-right" : ""}`}
+      className={`px-3 py-3 select-none${alignRight ? " text-right" : ""}${NOWRAP_HEADERS.has(id) ? " whitespace-nowrap" : ""}`}
       aria-sort={
         sortField === id
           ? sortDirection === "asc"
@@ -1468,8 +1543,10 @@ export default function DeviceList({
   // We still escalate amber → red at genuine pressure (≥75% / ≥90%) because a
   // pegged box is exactly what a tech must catch at a glance; the bar width
   // and the trailing number carry the exact value at every level.
-  const metricBar = (percent: number, online: boolean) =>
-    online ? (
+  const metricBar = (rawPercent: number, online: boolean) => {
+    // Round defensively: rows from any source may carry a raw float.
+    const percent = toPercent(rawPercent);
+    return online ? (
       <div className="flex items-center gap-2">
         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
           <div
@@ -1481,6 +1558,7 @@ export default function DeviceList({
     ) : (
       <span className="text-muted-foreground">{t("deviceList.text")}</span>
     );
+  };
 
   // Format helpers for hardware columns. RAM is reported in MB; convert
   // to GB rounded to one decimal. Disk is already reported in GB.
@@ -1597,7 +1675,11 @@ export default function DeviceList({
           <td key="hostname" className="max-w-[220px] px-3 py-3 text-sm">
             <div className="min-w-0">
               <span className="block truncate font-medium" title={primaryName}>
-                {primaryName}
+                {(device.deviceClass ?? "agent") === "agent" ? (
+                  <EntityLink kind="device" id={device.id} name={primaryName} tabIndex={-1} />
+                ) : (
+                  primaryName
+                )}
               </span>
               {hasDisplayName && (
                 <span
@@ -1634,7 +1716,7 @@ export default function DeviceList({
             <span
               data-testid={`device-${device.id}-class-badge`}
               title={title}
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${badgeClass}`}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${badgeClass}`}
             >
               {isManual ? (
                 <Package className="h-3 w-3" />
@@ -1704,7 +1786,7 @@ export default function DeviceList({
             data-testid={`device-${device.id}-source`}
           >
             {device.source === "manual" ? (
-              <span className="inline-flex items-center rounded-full border border-info/30 bg-info/15 px-2 py-0.5 text-[10px] font-medium text-info">
+              <span className="inline-flex items-center rounded-full border border-info/30 bg-info/15 px-2 py-0.5 text-[11px] font-medium text-info">
                 {sourceLabel}
               </span>
             ) : (
@@ -1720,10 +1802,12 @@ export default function DeviceList({
       cell: (device) => (
         <td
           key="organization"
-          className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
+          // #9037: grows into spare width (up to a quarter of the viewport)
+          // instead of truncating at a fixed 160px.
+          className="min-w-0 max-w-[min(20rem,25vw)] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.orgName}>
-            {device.orgName}
+            <EntityLink kind="org" id={device.orgId} name={device.orgName} tone="muted" tabIndex={-1} />
           </span>
         </td>
       ),
@@ -1736,7 +1820,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.siteName}>
-            {device.siteName}
+            <EntityLink kind="site" id={device.siteId} name={device.siteName} tone="muted" tabIndex={-1} />
           </span>
         </td>
       ),
@@ -1839,11 +1923,11 @@ export default function DeviceList({
         // #8407: primary status + at most ONE secondary pill (most severe
         // first); the rest fold into a "+N" chip whose popover keeps every
         // per-condition testid reachable. Order: update stuck > agent silent >
-        // logs silent > collision > Assist install issue > updates withheld.
+        // collision > Assist install issue > updates withheld.
         // Rule for new conditions: a list pill is only for something a tech
         // must act on for this device — diagnostics go on the detail page.
         const pillClass =
-          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30";
+          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium bg-warning/15 text-warning border-warning/30";
         const secondary: Array<{ key: string; node: React.ReactNode }> = [];
         if (
           isAgentUpdateStuck({
@@ -1876,28 +1960,6 @@ export default function DeviceList({
               >
                 {t("deviceList.agentSilent")}{" "}
                 {formatSilentDuration(device.mainAgentSilentSince!)}
-              </span>
-            ),
-          });
-        }
-        // #7067: a heartbeating device that has shipped no logs for over 6h —
-        // distinct from agent-silent (dead main agent with a live watchdog).
-        if (
-          isDeviceLogSilent({
-            status: device.status,
-            lastLogAt: device.lastLogAt,
-            enrolledAt: device.enrolledAt,
-          })
-        ) {
-          secondary.push({
-            key: "logs-silent",
-            node: (
-              <span
-                data-testid={`device-${device.id}-logs-silent-badge`}
-                title={t("deviceList.logsSilentTooltip")}
-                className={pillClass}
-              >
-                {t("deviceList.logsSilent")}
               </span>
             ),
           });
@@ -1949,7 +2011,6 @@ export default function DeviceList({
         const secondaryLabels: Record<string, string> = {
           stuck: t("deviceList.updateStuck"),
           "agent-silent": t("deviceList.agentSilent"),
-          "logs-silent": t("deviceList.logsSilent"),
           duplicate: t("deviceList.possibleDuplicate"),
           helper: t("deviceList.helperNotInstalled"),
           withheld: t("deviceList.updateWithheld"),
@@ -1977,7 +2038,7 @@ export default function DeviceList({
               <span
                 data-testid={`device-${device.id}-status-overflow`}
                 title={restSecondary.map((s) => secondaryLabels[s.key]).join(", ")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground bg-muted/40 cursor-default"
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground bg-muted/40 cursor-default"
               >
                 <span aria-hidden="true">+{restSecondary.length}</span>
                 <span className="sr-only">
@@ -2006,13 +2067,35 @@ export default function DeviceList({
         );
       },
     },
+    // #9038: not sortable yet — a server-side sort needs the counts in the
+    // list query; the counts are fetched per page instead.
+    attention: {
+      header: () => (
+        <th
+          key="attention"
+          scope="col"
+          data-testid="device-list-header-attention"
+          className="px-3 py-3"
+        >
+          {t("deviceList.tableColumns.attention")}
+        </th>
+      ),
+      cell: (device) => (
+        <td key="attention" className="px-3 py-3 text-sm">
+          {agentCell(
+            device,
+            <DeviceAttentionPills deviceId={device.id} entry={attentionFor(device.id)} />,
+          )}
+        </td>
+      ),
+    },
     pendingReboot: {
       header: () =>
         sortHeader("pendingReboot", "Pending Reboot", "Sort by pending reboot"),
       cell: (device) => (
         <td key="pendingReboot" className="px-3 py-3 text-sm whitespace-nowrap">
           {device.pendingReboot ? (
-            <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30">
+            <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium bg-warning/15 text-warning border-warning/30">
               {t("deviceList.rebootPending")}{" "}
             </span>
           ) : (
@@ -2689,12 +2772,17 @@ export default function DeviceList({
 
   return (
     <div>
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">
-            {filteredDevices.length} {t("deviceList.of")}{" "}
-            {countLineTotal}{" "}
-            {t("deviceList.devices")}{" "}
+      {/* #9035: one bordered card — header strip (count + list controls),
+          optional bulk bar, then the table — instead of a free-standing count
+          row and a gap above the table. Not overflow-hidden: the Columns and
+          Bulk Actions popovers hang out of it. */}
+      <div data-testid="device-list-table-card" className="rounded-md border">
+        <div
+          data-testid="device-list-header-strip"
+          className="flex flex-col gap-2 border-b px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <p data-testid="device-list-count" className="text-sm text-muted-foreground">
+            {t("deviceList.countLine", { shown: filteredDevices.length, count: countLineTotal })}{" "}
             {serverFilterError ? (
               <span
                 className="ml-2 inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
@@ -2706,7 +2794,7 @@ export default function DeviceList({
                 {onRetryServerFilter && <button type="button" onClick={onRetryServerFilter}>{t('common:actions.retry')}</button>}
               </span>
             ) : (
-              serverFilterIds !== null && (
+              serverFilterIds !== null && filterNeedsBuilder(advancedFilter) && (
                 <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                   <Filter className="h-3 w-3" />
                   {t("deviceList.advancedFilterActive")}{" "}
@@ -2737,7 +2825,8 @@ export default function DeviceList({
           {/* Search / Status / OS / quick chips / More / Advanced live in
               DeviceFilterToolbar and the class segment in DevicesPage. What
               stays next to the count is list-local: the VPN facet, the
-              "Collapse linked" toggle and the Columns menu. */}
+              "Collapse linked" toggle, the Columns chooser, the page's
+              headerActions (list/grid toggle) and per-page. */}
           <div className="flex flex-wrap items-center gap-2">
             {visibleColumns.has("vpn") && hasAgentRows && (
               <select
@@ -2745,7 +2834,7 @@ export default function DeviceList({
                 data-testid="device-vpn-filter"
                 value={vpnFilter}
                 onChange={(e) => setVpnFilter(e.target.value)}
-                className="h-10 rounded-md border bg-background px-2 text-sm text-muted-foreground"
+                className="h-8 rounded-md border bg-background px-2 text-sm text-muted-foreground"
               >
                 <option value="all">{t("deviceList.allVpn")}</option>
                 <option value="any">{t("deviceList.anyActiveVpn")}</option>
@@ -2767,7 +2856,7 @@ export default function DeviceList({
                   )
                 }
                 title={t("deviceList.multiBootMachinesTuckExpectedOffline")}
-                className={`flex h-10 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
+                className={`flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
                   linkedCollapse === "on"
                     ? "border-primary/40 bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-muted"
@@ -2781,129 +2870,52 @@ export default function DeviceList({
                 top-bar theme/display menu (Header.tsx). The table still
                 reflects the saved preference via densityTableClasses +
                 subscribeDensity below. */}
-            <div className="relative" ref={columnsMenuRef}>
-              <button
-                type="button"
-                onClick={() => setColumnsMenuOpen((o) => !o)}
-                aria-haspopup="true"
-                aria-expanded={columnsMenuOpen}
-                className="h-10 whitespace-nowrap rounded-md border px-3 text-sm font-medium hover:bg-muted flex items-center gap-1.5"
-              >
-                <Columns3 className="h-3.5 w-3.5" />
-                {t("deviceList.columns")}{" "}
-              </button>
-              {columnsMenuOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 z-20 mt-1 max-h-96 w-72 overflow-y-auto rounded-md border bg-card p-1 shadow-md"
+            <ColumnChooser
+              columnOrder={columnOrder}
+              visibleColumns={visibleColumns}
+              isColumnAvailable={isColumnAvailable}
+              gateReason={columnGateReason}
+              onToggle={toggleColumn}
+              onMove={moveColumn}
+              onReset={resetColumnsToDefault}
+              customFieldDefinitions={customFieldDefinitions}
+              visibleCustomFieldKeys={visibleCustomFieldKeys}
+              onToggleCustomField={toggleCustomFieldColumn}
+            />
+            {headerActions}
+            {/* A per-page picker only earns its slot when some page size could
+                split the list; below the smallest option it is a dead control
+                (#9023, #9035). */}
+            {sortedDevices.length > PAGE_SIZE_OPTIONS[0] && (
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="device-page-size"
+                  className="whitespace-nowrap text-sm text-muted-foreground"
                 >
-                  <p className="px-2 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t("deviceList.visibleInOrder")}{" "}
-                  </p>
-                  {columnOrder
-                    .filter(
-                      (id) => visibleColumns.has(id) && isColumnAvailable(id),
-                    )
-                    .map((id, idx, arr) => (
-                      <div
-                        key={id}
-                        className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                      >
-                        <input
-                          type="checkbox"
-                          checked
-                          onChange={() => toggleColumn(id)}
-                          className="h-4 w-4 rounded border-border"
-                          aria-label={`Hide ${COLUMN_LABELS[id]}`}
-                        />
-                        <span className="flex-1 cursor-default">
-                          {COLUMN_LABELS[id]}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={idx === 0}
-                          onClick={() => moveColumn(id, -1)}
-                          className="rounded p-0.5 hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
-                          aria-label={`Move ${COLUMN_LABELS[id]} up`}
-                          title={t("deviceList.moveUp")}
-                        >
-                          <ChevronUp className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={idx === arr.length - 1}
-                          onClick={() => moveColumn(id, 1)}
-                          className="rounded p-0.5 hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
-                          aria-label={`Move ${COLUMN_LABELS[id]} down`}
-                          title={t("deviceList.moveDown")}
-                        >
-                          <ChevronDown className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  <hr className="my-1" />
-                  <p className="px-2 pt-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t("deviceList.hidden")}{" "}
-                  </p>
-                  {columnOrder
-                    .filter(
-                      (id) => !visibleColumns.has(id) && isColumnAvailable(id),
-                    )
-                    .map((id) => (
-                      <label
-                        key={id}
-                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={false}
-                          onChange={() => toggleColumn(id)}
-                          className="h-4 w-4 rounded border-border"
-                        />
-                        <span>{COLUMN_LABELS[id]}</span>
-                      </label>
-                    ))}
-                  {customFieldDefinitions.length > 0 && (
-                    <>
-                      <hr className="my-1" />
-                      <p className="px-2 pt-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        {t("deviceList.customFields")}{" "}
-                      </p>
-                      {customFieldDefinitions.map((def) => (
-                        <label
-                          key={def.id}
-                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                        >
-                          <input
-                            type="checkbox"
-                            data-testid={`custom-column-toggle-${def.fieldKey}`}
-                            checked={visibleCustomFieldKeys.has(def.fieldKey)}
-                            onChange={() => toggleCustomFieldColumn(def.fieldKey)}
-                            className="h-4 w-4 rounded border-border"
-                          />
-                          <span>{def.name}</span>
-                        </label>
-                      ))}
-                    </>
-                  )}
-                  <hr className="my-1" />
-                  <button
-                    type="button"
-                    onClick={resetColumnsToDefault}
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    {t("deviceList.resetToDefaults")}{" "}
-                  </button>
-                </div>
-              )}
-            </div>
+                  {t("deviceList.perPage")}
+                </label>
+                <select
+                  id="device-page-size"
+                  value={effectivePageSize}
+                  aria-label={t("deviceList.devicesPerPage")}
+                  onChange={(event) =>
+                    handlePageSizeChange(Number(event.target.value))
+                  }
+                  className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  {PAGE_SIZE_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </div>
-      </div>
 
       {selectedIds.size > 0 && (
-        <div className="mt-4 flex items-center gap-3 rounded-md border bg-muted/40 px-4 py-2">
+        <div className="flex items-center gap-3 border-b bg-muted/40 px-4 py-2">
           <span className="text-sm font-medium" data-testid="bulk-selection-summary">
             {selectedIds.size} {t("deviceList.selected")}
             {selectedNonAgentCount > 0 && (
@@ -2919,10 +2931,14 @@ export default function DeviceList({
               </span>
             )}
           </span>
-          <div className="relative">
+          <div className="relative" ref={bulkMenuRootRef}>
             <button
+              ref={bulkTriggerRef}
               type="button"
+              data-testid="bulk-actions-trigger"
               disabled={filterBlocked}
+              aria-haspopup="menu"
+              aria-expanded={bulkMenuOpen && !filterBlocked}
               onClick={() => setBulkMenuOpen(!bulkMenuOpen)}
               className="flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
@@ -2932,6 +2948,12 @@ export default function DeviceList({
             {bulkMenuOpen && !filterBlocked && (
               <div
                 data-testid="bulk-actions-menu"
+                onKeyDown={(e) => {
+                  if (e.key !== "Escape") return;
+                  e.stopPropagation();
+                  setBulkMenuOpen(false);
+                  bulkTriggerRef.current?.focus();
+                }}
                 className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
               >
                 {selectionKind !== "removed" && (
@@ -3103,9 +3125,9 @@ export default function DeviceList({
         </div>
       )}
 
-      <div className="mt-6 overflow-x-auto rounded-md border">
+      <div className="overflow-x-auto rounded-b-md">
         <table className={`w-full divide-y ${densityTableClasses(density)}`}>
-          <thead className="bg-muted/40">
+          <thead className="bg-muted/30">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-3">
                 <input
@@ -3138,7 +3160,26 @@ export default function DeviceList({
                   }
                   className="px-3 py-6 text-center text-sm text-muted-foreground"
                 >
-                  {t("deviceList.noDevicesFoundTryAdjustingYour")}{" "}
+                  {devices.length > 0 ? (
+                    // Rows exist; the filters (search, VPN, advanced group) or
+                    // the hidden-removed rule excluded all of them (#9036 c).
+                    // The removed case has its own "show" hint on the count line.
+                    <div data-testid="device-list-no-matches" className="flex flex-col items-center gap-2">
+                      <p className="font-medium text-foreground">{t("deviceList.noMatchesTitle")}</p>
+                      {onClearFilters && (
+                        <button
+                          type="button"
+                          data-testid="device-list-clear-filters"
+                          onClick={onClearFilters}
+                          className="rounded-md border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted"
+                        >
+                          {t("deviceFilters.clearFilters")}
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    t("deviceList.noDevicesFoundTryAdjustingYour")
+                  )}
                 </td>
               </tr>
             ) : (
@@ -3146,14 +3187,24 @@ export default function DeviceList({
                 <Fragment key={device.id}>
                   <tr
                     onClick={() => onSelect?.(device)}
+                    // #9037: the row is the one keyboard stop for the record
+                    // (its cell links are tabIndex -1); the checkbox and the
+                    // row actions keep their own stops.
                     tabIndex={0}
+                    aria-label={[
+                      device.displayName || device.hostname,
+                      t(/* i18n-dynamic */ statusFullLabelKeys[device.status]),
+                    ].join(t("common:lists.separator"))}
                     onKeyDown={(e) => {
+                      // Keys typed on the checkbox or a button inside the row
+                      // are theirs, not an "open the device" gesture.
+                      if (e.target !== e.currentTarget) return;
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         onSelect?.(device);
                       }
                     }}
-                    className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    className="cursor-pointer transition hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
                     <td
                       className={`px-3 py-3 ${offlineGroup || vmRole ? "border-l-2 border-l-primary/40" : ""}`}
@@ -3641,7 +3692,7 @@ export default function DeviceList({
                             </span>
                             <span>{t("deviceList.inactive")}</span>
                           </span>
-                          <span className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-px text-[10px] font-medium">
+                          <span className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-px text-[11px] font-medium">
                             {t("deviceList.expectedOffline")}{" "}
                           </span>
                           <span>
@@ -3664,65 +3715,46 @@ export default function DeviceList({
           </tbody>
         </table>
       </div>
+      </div>
 
-      {sortedDevices.length > 0 && (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-3">
-            <p className="text-sm text-muted-foreground">
-              {t("deviceList.showing")} {startIndex + 1} {t("deviceList.to")}{" "}
-              {Math.min(startIndex + effectivePageSize, sortedDevices.length)}{" "}
-              {t("deviceList.of")} {sortedDevices.length}
-            </p>
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="device-page-size"
-                className="text-sm text-muted-foreground"
-              >
-                {t("deviceList.perPage")}{" "}
-              </label>
-              <select
-                id="device-page-size"
-                value={effectivePageSize}
-                aria-label={t("deviceList.devicesPerPage")}
-                onChange={(event) =>
-                  handlePageSizeChange(Number(event.target.value))
-                }
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
-              >
-                {PAGE_SIZE_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
-              </select>
-            </div>
+      {/* The count line already says "N of M devices"; the range and pager
+          only earn a row when there is a second page (#9035). */}
+      {totalPages > 1 && (
+        <div
+          data-testid="device-list-pagination"
+          className="mt-4 flex flex-wrap items-center justify-between gap-2"
+        >
+          <p className="text-sm text-muted-foreground">
+            {t("deviceList.showing")} {startIndex + 1} {t("deviceList.to")}{" "}
+            {Math.min(startIndex + effectivePageSize, sortedDevices.length)}{" "}
+            {t("deviceList.of")} {sortedDevices.length}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              aria-label={t("common:actions.previousPage")}
+              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="text-sm">
+              {t("deviceList.page")} {currentPage} {t("deviceList.of")}{" "}
+              {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setCurrentPage((p) => Math.min(totalPages, p + 1))
+              }
+              disabled={currentPage === totalPages}
+              aria-label={t("common:actions.nextPage")}
+              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
-          {totalPages > 1 && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <span className="text-sm">
-                {t("deviceList.page")} {currentPage} {t("deviceList.of")}{" "}
-                {totalPages}
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  setCurrentPage((p) => Math.min(totalPages, p + 1))
-                }
-                disabled={currentPage === totalPages}
-                className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>

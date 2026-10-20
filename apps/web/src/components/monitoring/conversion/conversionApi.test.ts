@@ -159,3 +159,12 @@ it('keeps retirement report fields when fetching pending counts', async () => {
   fetchMock.mockResolvedValue(json({ data }));
   await expect(fetchPendingCounts('org-1')).resolves.toEqual(data);
 });
+
+describe('conversion_contended', () => {
+  it('maps to a retry hint distinct from the stale-preview text', () => {
+    const contended = conversionErrorMessage({ error: 'conversion_contended' });
+    expect(contended).toBeTruthy();
+    expect(contended).not.toContain('conversion_contended');
+    expect(contended).not.toBe(conversionErrorMessage({ error: 'preview_stale' }));
+  });
+});

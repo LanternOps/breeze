@@ -201,12 +201,14 @@ export default function DeviceAlertHistory({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">
+          <h2 className="text-lg font-semibold">
             {t("deviceAlertHistory.alertHistory")}
-          </h3>
+          </h2>
         </div>
+        {/* #9030: the date filter is secondary to the list — outline/ghost
+            controls, right-aligned. */}
         {showFilters && (
-          <div className="flex flex-wrap items-center gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2 text-sm sm:justify-end">
             <div className="relative">
               <Calendar className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
@@ -231,23 +233,25 @@ export default function DeviceAlertHistory({
             <button
               type="button"
               onClick={handleApply}
-              className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+              className="h-9 rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted"
             >
               {t("deviceAlertHistory.apply")}{" "}
             </button>
             <button
               type="button"
               onClick={handleClear}
-              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
+              className="h-9 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               {t("deviceAlertHistory.clear")}{" "}
             </button>
           </div>
         )}
       </div>
-      <div className="mt-4 space-y-3">
+      {/* #9030: one border — rows are a divided list inside the tab card, not
+          bordered cards nested in it. */}
+      <div className="mt-4 divide-y border-t">
         {visibleAlerts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="pt-4 text-sm text-muted-foreground">
             {t("deviceAlertHistory.noAlertsReportedForThisDevice")}
           </p>
         ) : (
@@ -280,7 +284,7 @@ export default function DeviceAlertHistory({
                   `${alert.message ?? alert.summary ?? "alert"}-${index}`
                 }
                 data-testid={alertId ? `device-alert-row-${alertId}` : undefined}
-                className="rounded-md border p-4"
+                className="py-4"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>

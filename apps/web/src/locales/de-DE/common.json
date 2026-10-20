@@ -114,7 +114,8 @@
     "ticketsIncidents": "Störungen",
     "ticketsServiceRequests": "Serviceanfragen",
     "ticketsProblems": "Probleme",
-    "ticketsChanges": "Änderungen"
+    "ticketsChanges": "Änderungen",
+    "endpointMessages": "Nachrichten"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -315,6 +316,17 @@
       "target": "Ziel",
       "time": "Zeit"
     },
+    "recentlyViewed": {
+      "title": "Weitermachen, wo Sie aufgehört haben",
+      "kind": {
+        "device": "Gerät",
+        "org": "Organisation",
+        "ticket": "Vorgang",
+        "alert": "Alarm",
+        "site": "Standort",
+        "page": "Seite"
+      }
+    },
     "alerts": {
       "title": "Letzte Warnmeldungen",
       "viewAll": "Alle anzeigen",
@@ -482,7 +494,10 @@
       "createFirst": "Ersten Filter erstellen",
       "created": "Erstellt am {{date}}",
       "deleteConfirm": "Diesen Filter löschen?",
-      "duplicate": "Duplizieren"
+      "duplicate": "Duplizieren",
+      "saveFailed": "Filter konnte nicht gespeichert werden",
+      "deleteFailed": "Filter konnte nicht gelöscht werden",
+      "ownerOrgHint": "Gespeicherte Filter gehören zu einer Organisation. Wählen Sie die Organisation aus, der dieser Filter gehört."
     },
     "targets": {
       "modes": {
@@ -682,13 +697,30 @@
       "toast": {
         "showingAll": "Alle Organisationen werden angezeigt",
         "showing": "{{name}} wird angezeigt",
-        "switched": "Zu {{name}} gewechselt"
+        "switched": "Zu {{name}} gewechselt",
+        "linkedOrgUnavailable": "Die verlinkte Organisation ist nicht verfügbar. Stattdessen wird Ihre aktuelle Auswahl angezeigt."
       },
       "fleetView": "Flottenansicht · {{count}} Organisationen",
       "noSelection": "Organisation auswählen",
       "searchOrganizations": "Organisationen durchsuchen…",
       "noMatches": "Keine passenden Organisationen",
-      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl."
+      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl.",
+      "recent": "Zuletzt",
+      "pane": {
+        "destinations": {
+          "overview": "Übersicht",
+          "devices": "Geräte",
+          "tickets": "Support-Tickets",
+          "alerts": "Warnungen",
+          "sites": "Standorte",
+          "billing": "Abrechnung"
+        },
+        "offlineCount": "{{count}} nicht erreichbar",
+        "openCount": "{{count}} offen",
+        "criticalCount": "{{count}} kritisch",
+        "noCritical": "keine",
+        "hint": "Namen anklicken zum Wechseln · Seite anklicken zum Wechseln und Öffnen"
+      }
     },
     "header": {
       "menu": "Menü",
@@ -805,9 +837,9 @@
       "expand": "Seitenleiste ausklappen",
       "collapseSections": "Alle Bereiche einklappen",
       "closeMenu": "Menü schließen",
-      "recentDevices": "Zuletzt geöffnete Geräte",
-      "hideRecentDevices": "Zuletzt geöffnete Geräte ausblenden",
-      "showRecentDevices": "Zuletzt geöffnete Geräte anzeigen"
+      "recent": "Zuletzt",
+      "hideRecent": "Zuletzt geöffnete ausblenden",
+      "showRecent": "Zuletzt geöffnete anzeigen"
     },
     "orgRequired": {
       "title": "Organisation auswählen",
@@ -1335,6 +1367,14 @@
           "migrationWindowClosed": {
             "description": "Wird einmal pro Organisation ausgelöst, wenn ein Ticket-Migrationsfenster geschlossen wird, mit den importierten Zählungen.",
             "label": "Migrationsfenster geschlossen"
+          },
+          "integrationHealthOpened": {
+            "description": "Wird ausgelöst, wenn für die Verbindung einer Organisation ein Integritätsvorfall eröffnet wird.",
+            "label": "Integritätsvorfall bei Verbindung eröffnet"
+          },
+          "integrationHealthResolved": {
+            "description": "Wird ausgelöst, wenn ein Integritätsvorfall einer Verbindung behoben wird.",
+            "label": "Integritätsvorfall bei Verbindung behoben"
           }
         },
         "fields": {
@@ -2605,6 +2645,34 @@
         "sending": "Senden…",
         "send": "Senden"
       }
+    },
+    "mcpDomains": {
+      "legend": "Werkzeugzugriff",
+      "allLabel": "Alle Werkzeuge (einschließlich später hinzugefügter Bereiche)",
+      "selectedLabel": "Nur diese Bereiche",
+      "coreLabel": "Kern (immer enthalten)",
+      "error": "Wählen Sie mindestens einen Bereich oder „Alle Werkzeuge“.",
+      "allEquivalentNote": "Alle Bereiche sind ausgewählt. Das entspricht „Alle Werkzeuge“, einschließlich später hinzugefügter Bereiche.",
+      "reconnectNote": "Gilt für diese Verbindung. Um eine bestehende Verbindung einzuschränken, widerrufen Sie sie unter „Verbundene Apps“ und verbinden Sie sich erneut.",
+      "apiKeyHint": "Legen Sie fest, welche Werkzeugbereiche dieser Schlüssel über die KI-/MCP-Schnittstelle nutzen darf.",
+      "allTools": "Alle Werkzeuge",
+      "areaCount_one": "{{count}} Bereich",
+      "areaCount_other": "{{count}} Bereiche",
+      "labels": {
+        "devices": "Geräte",
+        "scripts": "Skripte & Automatisierung",
+        "patching": "Patching & Software",
+        "monitoring": "Überwachung & Warnungen",
+        "network": "Netzwerk",
+        "security": "Sicherheit & Compliance",
+        "backup": "Backup & Wiederherstellung",
+        "tickets": "Tickets & Zeiterfassung",
+        "billing": "Abrechnung",
+        "accounts": "Konten",
+        "integrations": "Integrationen",
+        "admin": "Verwaltung",
+        "ai": "KI-Agenten"
+      }
     }
   },
   "whatsNew": {
@@ -2628,7 +2696,8 @@
     "dismiss": "Erinnerung an die Zwei-Faktor-Authentifizierung schließen"
   },
   "mfaPolicyOffBanner": {
-    "message": "Für Ihr Team ist keine Multi-Faktor-Authentifizierung erforderlich. Sitzungen nur mit Passwort können Skripte ausführen, Geräte verschieben und Richtlinien ändern.",
+    "label": "MFA-Erinnerung",
+    "message": "MFA ist für Ihr Team nicht Pflicht. Reine Passwort-Sitzungen können Skripte ausführen.",
     "cta": "MFA erzwingen",
     "dismiss": "Erinnerung an die MFA-Richtlinie für heute schließen"
   },
@@ -2698,5 +2767,10 @@
     "errors": {
       "loadFailed": "Fix-Gedächtnis konnte nicht geladen werden."
     }
+  },
+  "islandError": {
+    "title": "Dieser Bereich ist abgestürzt",
+    "description": "Ein Darstellungsfehler hat die Anzeige dieser Seite verhindert. Versuche es erneut und gib bei wiederholtem Auftreten die folgende Meldung in deiner Fehlermeldung an.",
+    "retry": "Erneut versuchen"
   }
 }
