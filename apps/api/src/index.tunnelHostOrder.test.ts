@@ -20,7 +20,7 @@ describe('tunnel host middleware order (spec §3)', () => {
     const bodyLimit = at('createGlobalBodyLimitMiddleware(');
     const rateLimit = at("app.use('*', globalRateLimit())");
     const dispatch = at("app.use('*', tunnelHostDispatch(tunnelHostRoutes))");
-    const cors = at('cors({');
+    const cors = at('cors(CORS_MIDDLEWARE_OPTIONS)');
     expect(metrics).toBeLessThan(classifier);
     expect(logger).toBeLessThan(classifier);
     expect(classifier).toBeLessThan(bodyLimit);

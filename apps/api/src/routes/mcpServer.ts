@@ -76,6 +76,7 @@ import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsL
 import { classifyMcpRequest, validateJsonRpcEnvelope, MCP_HEADER_MISMATCH, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
 import { buildDiscoverResult, decorateModernResult, recordMcpHeaderMismatch, resolveMcpHttpStatus } from '../services/mcpModernResult';
 import { buildMcpRequestCorrelation, correlationAuditDetails, type McpRequestCorrelation } from '../services/mcpRequestCorrelation';
+import { checkMcpOrigin } from '../services/corsPolicy';
 import {
   beginMcpToolExecutionLedger,
   completeMcpToolExecutionLedger,
@@ -442,10 +443,28 @@ function mcpPrincipalKey(apiKey: {
 
 const sseSessionQueues = new Map<string, { queue: Array<JsonRpcResponse>; principalKey: string; createdAt: number }>();
 
+/**
+ * B-W03 (#6157, D-B22): the 2024-11-05 HTTP+SSE transport (`GET /sse` +
+ * `POST /message`) is announced for removal. Deprecated by the spec since
+ * protocol 2025-03-26 (RFC 9745 `@<epoch>`); the Sunset (RFC 8594) is
+ * PROVISIONAL — recompute at release as the latest of release+90d,
+ * SEP-2596 Final+3 months, and this date. Legacy *Streamable HTTP*
+ * (`POST /sse`) is not deprecated and gets neither header.
+ */
+export const MCP_HTTP_SSE_DEPRECATION = '@1742947200';
+export const MCP_HTTP_SSE_SUNSET = 'Sun, 31 Jan 2027 23:59:59 GMT';
+
+function setHttpSseDeprecationHeaders(c: Context): void {
+  c.header('Deprecation', MCP_HTTP_SSE_DEPRECATION);
+  c.header('Sunset', MCP_HTTP_SSE_SUNSET);
+}
+
 mcpServerRoutes.get(
   '/sse',
   requireApiKeyScope('ai:read'),
   async (c) => {
+    setHttpSseDeprecationHeaders(c);
+    checkMcpOrigin(c, 'legacy');
     const apiKey = c.get('apiKey');
     const principalKey = mcpPrincipalKey(apiKey);
 
@@ -487,6 +506,22 @@ mcpServerRoutes.get(
 
     // Initialize queue for this session with ownership info
     sseSessionQueues.set(sessionId, { queue: [], principalKey, createdAt: Date.now() });
+
+    // D-B22: count usage at stream establishment — an idle legacy client
+    // never reaches dispatch, so per-request rows alone would miss it. The
+    // removal gate is 30 consecutive days of zero of these rows.
+    const openAuditOrgId =
+      apiKey.orgId ?? (apiKey.partnerId ? await resolveDefaultOrgId(apiKey.partnerId) : null);
+    writeAuditEvent(c, {
+      orgId: openAuditOrgId,
+      actorType: 'api_key',
+      actorId: apiKey.id,
+      action: 'mcp.transport.http_sse.open',
+      resourceType: 'mcp_transport',
+      resourceId: sessionId,
+      details: { transport: 'http_sse', principalKey, sunset: MCP_HTTP_SSE_SUNSET },
+      result: 'success',
+    });
 
     return streamSSE(c, async (stream) => {
       let alive = true;
@@ -767,6 +802,8 @@ function mcpRejectionResponse(c: Context, body: JsonRpcRequest, rejection: McpRe
 mcpServerRoutes.post(
   '/message',
   async (c) => {
+    setHttpSseDeprecationHeaders(c);
+    checkMcpOrigin(c, 'legacy');
     const sessionIdFromQuery = c.req.query('sessionId');
     const pre = await preflightMcpRequest(c, sessionIdFromQuery);
     if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
@@ -971,6 +1008,10 @@ mcpServerRoutes.post(
       endpoint: 'streamable',
     });
     if (decision.era === 'reject') return mcpRejectionResponse(c, pre.body, decision.rejection);
+    // D-B23: an invalid Origin is 403 in the stateless era; log-only in legacy
+    // (Open Decision 4, default A).
+    const originDenied = checkMcpOrigin(c, decision.era);
+    if (originDenied) return originDenied;
     if (decision.era === 'modern') return handleModernStreamableRequest(c, pre.body, decision.meta);
 
     const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;

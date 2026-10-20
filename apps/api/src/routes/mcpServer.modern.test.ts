@@ -619,3 +619,84 @@ describe('stateless 2026-07-28 on POST /sse', () => {
     });
   });
 });
+
+describe('legacy HTTP+SSE deprecation and Origin (B-W03 Task 6)', () => {
+  const DEPRECATION = '@1742947200';
+  const SUNSET = 'Sun, 31 Jan 2027 23:59:59 GMT';
+
+  it('GET /sse sets Deprecation and Sunset and writes one mcp.transport.http_sse.open audit row', async () => {
+    const res = await app().request('/mcp/sse', { method: 'GET', headers: { 'X-API-Key': 'k' } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('deprecation')).toBe(DEPRECATION);
+    expect(res.headers.get('sunset')).toBe(SUNSET);
+    await res.body?.cancel();
+    const opens = mocks.writeAuditEvent.mock.calls
+      .map((call) => call[1] as Record<string, any>)
+      .filter((e) => e.action === 'mcp.transport.http_sse.open');
+    expect(opens).toHaveLength(1);
+    expect(opens[0]).toMatchObject({
+      actorType: 'api_key', actorId: KEY_A, orgId: 'org-1', resourceType: 'mcp_transport',
+      details: { transport: 'http_sse', sunset: SUNSET },
+    });
+    expect(opens[0]!.resourceId).toMatch(UUID_RE);
+  });
+
+  it('POST /message sets Deprecation and Sunset', async () => {
+    const res = await app().request('/mcp/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('deprecation')).toBe(DEPRECATION);
+    expect(res.headers.get('sunset')).toBe(SUNSET);
+  });
+
+  it('POST /message error responses carry the headers too', async () => {
+    const res = await app().request('/mcp/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: 'null',
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get('sunset')).toBe(SUNSET);
+  });
+
+  it('POST /sse (Streamable, either era) sets neither', async () => {
+    const legacyRes = await app().request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const modernRes = await modern('server/discover');
+    for (const res of [legacyRes, modernRes]) {
+      expect(res.status).toBe(200);
+      expect(res.headers.get('deprecation')).toBeNull();
+      expect(res.headers.get('sunset')).toBeNull();
+    }
+  });
+
+  it('modern request with a disallowed Origin → 403 with id-less -32600, not dispatched', async () => {
+    const res = await modern('tools/list', { headers: { Origin: 'https://evil.example.net' } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ jsonrpc: '2.0', error: { code: -32600, message: 'Origin not allowed' } });
+    expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('modern request with no Origin passes', async () => {
+    expect((await modern('tools/list')).status).toBe(200);
+  });
+
+  it('legacy request with a disallowed Origin passes (log-only)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sid = await legacyInit();
+    const res = await app().request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': sid, Origin: 'https://evil.example.net' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(200);
+    warn.mockRestore();
+  });
+});
+

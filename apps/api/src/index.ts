@@ -337,7 +337,7 @@ import { drainAuditRetryQueue, runWithAuditRequestTracking } from './services/au
 import { runShutdownPhases } from './services/shutdownPhases';
 import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { closeModelGateway } from './services/aiModels/gateway/server';
-import { createCorsOriginResolver } from './services/corsOrigins';
+import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { clearPermissionCache } from './services/permissions';
@@ -468,10 +468,6 @@ const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({ app });
 // per-route hook for `maxPayload`, so the `ws` library default of 100 MiB
 // would otherwise apply everywhere. Size it per route instead.
 installPerRouteMaxPayload(wss);
-const resolveCorsOrigin = createCorsOriginResolver({
-  configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
-  nodeEnv: process.env.NODE_ENV
-});
 
 // Global middleware
 // FIRST, deliberately: `http_requests_total` / `http_request_duration_seconds`
@@ -556,14 +552,8 @@ app.use('*', prettyJSON());
 app.use(
   '*',
   exceptTunnelHttp(
-    cors({
-      origin: (origin) => resolveCorsOrigin(origin),
-      credentials: true,
-      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'X-Breeze-CSRF'],
-      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      exposeHeaders: ['Content-Length', 'X-Request-Id'],
-      maxAge: 86400
-    })
+    // Origin resolver + header lists live in services/corsPolicy.ts (B-W03 #6157).
+    cors(CORS_MIDDLEWARE_OPTIONS)
   )
 );
 
