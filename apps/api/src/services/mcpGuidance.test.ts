@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { MCP_SERVER_INSTRUCTIONS, MCP_PROMPTS, listMcpPrompts, getMcpPrompt } from './mcpGuidance';
-import { BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
+import { BREEZE_AI_GUARDRAILS_CORE, BREEZE_MCP_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
 
 describe('MCP_SERVER_INSTRUCTIONS', () => {
   it('orients the client on the tenant hierarchy and tool selection', () => {
@@ -9,8 +9,28 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toMatch(/read before write/i);
   });
 
-  it('embeds the shared guardrails core (no drift)', () => {
-    expect(MCP_SERVER_INSTRUCTIONS).toContain(BREEZE_AI_GUARDRAILS_CORE);
+  // #9306 — MCP has no approval surface: routes/mcpServer.ts refuses every
+  // effective-Tier-3 call with MCP_APPROVAL_REQUIRED. The instructions must not
+  // promise the in-app chat's Approve/Deny prompt.
+  it('does not promise an Approve/Deny prompt and names MCP_APPROVAL_REQUIRED (#9306)', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).not.toMatch(/Approve\/Deny prompt/i);
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('MCP_APPROVAL_REQUIRED');
+    expect(MCP_SERVER_INSTRUCTIONS).toMatch(/Breeze web app AI assistant/);
+    expect(MCP_SERVER_INSTRUCTIONS).toMatch(/do not retry/i);
+  });
+
+  it('ships the MCP guardrails core, not the in-app approval rules (#9306)', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).toContain(BREEZE_MCP_GUARDRAILS_CORE);
+    expect(MCP_SERVER_INSTRUCTIONS).not.toContain(BREEZE_AI_GUARDRAILS_CORE);
+    // The in-app 3b/3c describe approved-and-running results MCP never returns.
+    expect(MCP_SERVER_INSTRUCTIONS).not.toMatch(/approved and already executing/i);
+  });
+
+  it('keeps every non-approval guardrail rule verbatim (no drift from the in-app core)', () => {
+    const approvalRule = /^3[abc]?\. /;
+    const shared = BREEZE_AI_GUARDRAILS_CORE.split('\n').filter((line) => !approvalRule.test(line));
+    expect(shared.length).toBeGreaterThan(5);
+    for (const line of shared) expect(MCP_SERVER_INSTRUCTIONS).toContain(line);
   });
 
   it('points clients to the workflow prompts', () => {
