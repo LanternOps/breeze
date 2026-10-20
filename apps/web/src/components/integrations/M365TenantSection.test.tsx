@@ -423,6 +423,14 @@ describe("M365TenantSection — tenant panel", () => {
     expect(screen.getByTestId("m365-tenant-identity")).not.toHaveTextContent("Contoso Ltd");
   });
 
+  it("shows the bare tenant name when connected but the org name is unavailable (#9318)", async () => {
+    state.organizations = undefined;
+    mockScenario({ consent: true, legacy: "none", read: readConnection() });
+    await renderSettled();
+    const heading = screen.getByRole("heading", { level: 2, name: "Northwind Traders" });
+    expect(heading).toHaveAttribute("title", "Northwind Traders");
+  });
+
   it("falls back to generic copy when the org name is not available client-side", async () => {
     state.organizations = undefined;
     mockScenario({ consent: true, legacy: "none" });

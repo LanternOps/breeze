@@ -47,7 +47,7 @@ import type { AiApprovalSettings, ResolvedAiApprovalTimeout } from '@breeze/shar
 import OrgAuditRetentionSettings from './OrgAuditRetentionSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, waitForPendingRefresh } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { formatDate, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
@@ -362,8 +362,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       // The Integrations page configures the WORKSPACE org, so select this
       // org first or the connection would land on whichever customer the
       // header switcher happens to point at.
-      useOrgStore.getState().selectOrganization(effectiveOrgId);
-      void navigateTo('/integrations#cloud-tenants', { replace: true });
+      const store = useOrgStore.getState();
+      store.selectOrganization(effectiveOrgId);
+      store.recordRecentOrg(effectiveOrgId);
+      // Wait out an in-flight /auth/refresh before leaving (same guard
+      // applyOrgSwitch uses, #950), so the Integrations cards don't fetch under
+      // a stale session. applyOrgSwitch itself can't be used: its navigation is
+      // a push, which would leave a Back-button trap onto this redirecting tab.
+      void waitForPendingRefresh().then(() => navigateTo('/integrations#cloud-tenants', { replace: true }));
     }
   }, [activeTab, effectiveOrgId]);
 

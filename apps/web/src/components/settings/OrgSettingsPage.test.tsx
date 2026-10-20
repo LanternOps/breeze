@@ -9,13 +9,14 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  waitForPendingRefresh: vi.fn().mockResolvedValue(undefined)
 }));
 
 const storeFetchOrganizations = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const storeSelectOrganization = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: Object.assign(vi.fn(), { getState: () => ({ fetchOrganizations: storeFetchOrganizations, selectOrganization: storeSelectOrganization }) })
+  useOrgStore: Object.assign(vi.fn(), { getState: () => ({ fetchOrganizations: storeFetchOrganizations, selectOrganization: storeSelectOrganization, recordRecentOrg: vi.fn() }) })
 }));
 
 vi.mock('../shared/Toast', () => ({

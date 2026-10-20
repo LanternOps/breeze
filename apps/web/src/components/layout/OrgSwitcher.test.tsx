@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '../../lib/i18n';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -246,6 +246,18 @@ describe('OrgSwitcher (unified control)', () => {
     expect(hrefSetter).not.toHaveBeenCalled();
     // #9027: no stay-on-record navigation either — nothing changed.
     expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('opens on the breeze:open-org-switcher event and stops listening on unmount (#9318)', () => {
+    stubLocation('/integrations');
+
+    const { unmount } = render(<OrgSwitcher />);
+    expect(screen.queryByTestId('org-option-all')).not.toBeInTheDocument();
+    act(() => { window.dispatchEvent(new CustomEvent('breeze:open-org-switcher')); });
+    expect(screen.getByTestId('org-option-all')).toBeInTheDocument();
+
+    unmount();
+    expect(() => window.dispatchEvent(new CustomEvent('breeze:open-org-switcher'))).not.toThrow();
   });
 
   it('renders a pinned "All organizations" fleet row with >1 org', () => {
