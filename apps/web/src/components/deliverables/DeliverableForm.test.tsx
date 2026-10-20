@@ -168,6 +168,31 @@ describe('DeliverableForm edit-mode contract move (#9302)', () => {
     expect(picker.options[picker.selectedIndex].textContent).toBe('Acme MSA');
   });
 
+  it('PATCHes null when "No contract" is chosen', async () => {
+    const fetcher = makeFetcher();
+    render(
+      <DeliverableForm fetcher={fetcher} orgId="org-1" contractOptions={MOVE_OPTIONS} initial={editing}
+        onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByTestId('deliverable-form-contract'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('deliverable-form-save'));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const [, init] = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH') as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).contractId).toBeNull();
+  });
+
+  it('an untouched picker re-sends the current contract id (no silent move)', async () => {
+    const fetcher = makeFetcher();
+    render(
+      <DeliverableForm fetcher={fetcher} orgId="org-1" contractOptions={MOVE_OPTIONS} initial={editing}
+        onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByTestId('deliverable-form-save'));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const [, init] = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH') as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).contractId).toBe('ct-1');
+  });
+
   it('PATCHes the newly chosen contract id', async () => {
     const fetcher = makeFetcher();
     render(

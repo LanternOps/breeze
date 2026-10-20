@@ -343,7 +343,9 @@ export async function updateDeliverable(orgId: string, id: string, patch: Update
     .from(serviceDeliverables)
     .where(and(eq(serviceDeliverables.id, id), eq(serviceDeliverables.orgId, orgId))).limit(1);
   if (!existing) throw notFound();
-  await validateReferences(orgId, patch);
+  // An unchanged contractId (the edit form re-sends it) is not a move: a
+  // deliverable on a since-cancelled contract must stay editable (#9302).
+  await validateReferences(orgId, patch.contractId === existing.contractId ? { ...patch, contractId: undefined } : patch);
   if (patch.name !== undefined || patch.contractId !== undefined) {
     await assertNameAvailable(
       orgId,
@@ -411,6 +413,8 @@ export async function moveDeliverables(
         .set({ contractId: targetId, updatedAt: new Date() })
         .where(and(eq(serviceDeliverables.orgId, orgId), inArray(serviceDeliverables.id, ids)))
         .returning({ id: serviceDeliverables.id });
+      // Roll the batch back rather than report a partial move as success.
+      if (updated.length !== ids.length) throw new DeliverableServiceError('Not every deliverable could be moved', 409, 'MOVE_INCOMPLETE');
       movedCount = updated.length;
     });
   } catch (err) {

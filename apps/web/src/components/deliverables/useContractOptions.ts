@@ -37,9 +37,10 @@ export function useContractOptions(
     (async () => {
       try {
         const list = await unwrapData<ContractRow[]>(await fetcher(contractsPath(orgId)));
+        if (!Array.isArray(list)) throw new Error('Malformed contracts response');
         if (cancelled) return;
         setOptions(
-          (Array.isArray(list) ? list : [])
+          list
             .filter((c) => c.status !== 'cancelled' && c.status !== 'expired')
             .map((c) => ({ id: c.id, name: c.name })),
         );

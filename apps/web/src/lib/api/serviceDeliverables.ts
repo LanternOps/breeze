@@ -199,7 +199,6 @@ export async function updateDeliverable(
   );
 }
 
-/** Soft-delete: the row stays for history, `active` flips to false. */
 /** #9302 — all-or-nothing bulk move; `contractId: null` makes them standalone. */
 export async function moveDeliverables(
   f: Fetcher,
@@ -209,6 +208,7 @@ export async function moveDeliverables(
   return unwrapData<{ moved: number }>(await f(`${base(orgId)}/move`, jsonInit('POST', body)));
 }
 
+/** Soft-delete: the row stays for history, `active` flips to false. */
 export async function deactivateDeliverable(f: Fetcher, orgId: string, id: string): Promise<void> {
   await unwrapData<unknown>(await f(`${base(orgId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }));
 }

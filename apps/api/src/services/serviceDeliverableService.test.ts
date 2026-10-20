@@ -298,6 +298,16 @@ describe('serviceDeliverableService', () => {
       expect(chain.update.mock.calls).toHaveLength(0);
     });
 
+    it('re-sending the unchanged contractId of a cancelled contract is not a move', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: CONTRACT_ID }]); // existing
+      queueResult([]); // name pre-check
+      queueResult([{ id: 'd1' }]); // update returning
+      queueResult([summaryRow({ contractId: CONTRACT_ID }, 'Old')]);
+      queueResult([]);
+      await expect(updateDeliverable('org1', 'd1', { contractId: CONTRACT_ID, description: 'x' }, actor)).resolves.toBeTruthy();
+      expect(chain.update.mock.calls).toHaveLength(1);
+    });
+
     it('rejects moving onto a contract in another org (CONTRACT_NOT_IN_ORG)', async () => {
       queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]);
       queueResult([]);
@@ -354,6 +364,8 @@ describe('serviceDeliverableService', () => {
       expect(lastSet().updatedAt).toBeInstanceOf(Date);
       // occurrences/evidence are history — only the deliverable rows are written
       expect(Object.keys(lastSet()).sort()).toEqual(['contractId', 'updatedAt']);
+      expect(chain.delete.mock.calls).toHaveLength(0);
+      expect(chain.insert.mock.calls).toHaveLength(0);
     });
 
     it('moves to "no contract" (null) without a contract lookup', async () => {
@@ -396,6 +408,39 @@ describe('serviceDeliverableService', () => {
       expect(chain.update.mock.calls).toHaveLength(0);
     });
 
+    it('rolls back (throws) when the UPDATE touches fewer rows than requested', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult(rows);
+      queueResult([]);
+      queueResult([{ id: ID1 }]); // only one of two updated
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ code: 'MOVE_INCOMPLETE' });
+    });
+
+    it('collision query is scoped to the target contract and excludes the moved ids themselves', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult(rows);
+      queueResult([]);
+      queueResult([{ id: ID1 }, { id: ID2 }]);
+      await moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor);
+      const dialect = new PgDialect();
+      const sqls = chain.where.mock.calls.map((c) => dialect.sqlToQuery(c[0] as SQL));
+      const collision = sqls.find((q) => /not in/i.test(q.sql));
+      expect(collision).toBeDefined();
+      expect(collision!.params).toEqual(expect.arrayContaining(['org1', CONTRACT_ID, 'Backups', 'Patching', ID1, ID2]));
+      expect(collision!.sql).toMatch(/"contract_id" = \$/);
+    });
+
+    it('a null target collides only against standalone rows (contract_id IS NULL)', async () => {
+      queueResult(rows);
+      queueResult([]);
+      queueResult([{ id: ID1 }, { id: ID2 }]);
+      await moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: null }, actor);
+      const dialect = new PgDialect();
+      const collision = chain.where.mock.calls.map((c) => dialect.sqlToQuery(c[0] as SQL)).find((q) => /not in/i.test(q.sql));
+      expect(collision!.sql).toMatch(/"contract_id" is null/i);
+    });
+
     it('maps a concurrent 23505 to 409 DUPLICATE_NAME', async () => {
       queueResult([{ id: CONTRACT_ID, status: 'active' }]);
       queueResult(rows);
@@ -405,10 +450,14 @@ describe('serviceDeliverableService', () => {
         .rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
     });
 
-    it('rejects a cancelled target and a foreign-org target', async () => {
+    it('rejects a cancelled target', async () => {
       queueResult([{ id: CONTRACT_ID, status: 'cancelled' }]);
       await expect(moveDeliverables('org1', { deliverableIds: [ID1], contractId: CONTRACT_ID }, actor))
         .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_ASSIGNABLE' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('rejects a foreign-org target', async () => {
       queueResult([]);
       await expect(moveDeliverables('org1', { deliverableIds: [ID1], contractId: CONTRACT_ID }, actor))
         .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
