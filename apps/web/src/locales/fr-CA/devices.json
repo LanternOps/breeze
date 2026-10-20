@@ -445,6 +445,7 @@
         "title": "Redémarrer l’agent Breeze?",
         "message": "Demander au watchdog de {{hostname}} de redémarrer le service de l’agent Breeze. Le watchdog s’en charge à sa prochaine connexion, généralement en moins d’une minute, et ne se connecte que pendant que l’agent est arrêté.",
         "watchdogLastSeen": "Dernier signal du watchdog : {{date}}.",
+        "watchdogStale": "Le dernier signal du watchdog date du {{date}}, trop ancien pour prendre la demande; elle sera refusée tant qu’il ne se reconnecte pas.",
         "watchdogNeverSeen": "Le watchdog ne s’est pas encore manifesté; la demande sera refusée tant qu’il ne se connecte pas.",
         "confirm": "Redémarrer l’agent"
       },

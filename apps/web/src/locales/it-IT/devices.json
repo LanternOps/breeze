@@ -445,6 +445,7 @@
         "title": "Riavviare l’agente Breeze?",
         "message": "Chiedi al watchdog su {{hostname}} di riavviare il servizio dell’agente Breeze. Il watchdog lo esegue al prossimo check-in, di solito entro un minuto, e si collega solo mentre l’agente è fermo.",
         "watchdogLastSeen": "Ultima segnalazione del watchdog: {{date}}.",
+        "watchdogStale": "L’ultima segnalazione del watchdog risale a {{date}}, troppo tempo fa per accettare la richiesta; verrà rifiutata finché non si ricollega.",
         "watchdogNeverSeen": "Il watchdog non ha ancora inviato segnalazioni, quindi la richiesta verrà rifiutata finché non si collega.",
         "confirm": "Riavvia agente"
       },

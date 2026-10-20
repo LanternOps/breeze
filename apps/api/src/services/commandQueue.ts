@@ -1886,7 +1886,20 @@ export type WatchdogRecoveryCommandType = (typeof WATCHDOG_RECOVERY_COMMAND_TYPE
 
 export type EnqueueWatchdogCommandResult =
   | { status: 'queued'; commandId: string }
-  | { status: 'failed'; error: string; trust?: CommandResult['trust'] };
+  | {
+      status: 'failed';
+      /**
+       * Why, so a caller maps it without matching prose:
+       * `not_found` — no such device in the deciding org (or it moved);
+       * `trust_denied` — partner trust refused (`trust` is set);
+       * `refused` — the device cannot take it now (watchdog not reporting,
+       *   parked device, edition gate);
+       * `insert_failed` — the INSERT returned no row (a server fault).
+       */
+      reason: 'not_found' | 'trust_denied' | 'refused' | 'insert_failed';
+      error: string;
+      trust?: CommandResult['trust'];
+    };
 
 /**
  * Queue a watchdog recovery command and return as soon as the row exists
@@ -1917,16 +1930,18 @@ export async function enqueueWatchdogCommand(
   };
   const precheck = await precheckCommandExecution(deviceId, type, {}, execOptions);
   if (!precheck.ok) {
-    return {
-      status: 'failed',
-      error: precheck.result.error ?? 'Command refused',
-      ...(precheck.result.trust ? { trust: precheck.result.trust } : {}),
-    };
+    const error = precheck.result.error ?? 'Command refused';
+    if (precheck.result.trust) {
+      return { status: 'failed', reason: 'trust_denied', error, trust: precheck.result.trust };
+    }
+    // The precheck's not-found string is shared by a genuine miss and the
+    // `expectedOrgId` refusal on purpose (#5264); this module owns it.
+    return { status: 'failed', reason: error === 'Device not found' ? 'not_found' : 'refused', error };
   }
   const command = await runOutsideDbContextSafe(() =>
     insertPreparedCommand(precheck.device, deviceId, type, {}, execOptions),
   );
-  if (!command) return { status: 'failed', error: 'Failed to create command' };
+  if (!command) return { status: 'failed', reason: 'insert_failed', error: 'Failed to create command' };
   return { status: 'queued', commandId: command.id };
 }
 

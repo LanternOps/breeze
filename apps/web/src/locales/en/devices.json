@@ -449,6 +449,7 @@
         "title": "Restart the Breeze agent?",
         "message": "Ask the watchdog on {{hostname}} to restart the Breeze agent service. The watchdog picks this up on its next check-in, usually within a minute, and only checks in while the agent is down.",
         "watchdogLastSeen": "Watchdog last reported {{date}}.",
+        "watchdogStale": "The watchdog last reported {{date}}, too long ago to take the request; it will be refused until the watchdog checks in again.",
         "watchdogNeverSeen": "The watchdog has not reported, so the request will be refused until it checks in.",
         "confirm": "Restart agent"
       },

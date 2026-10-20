@@ -1,23 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const pendingRows = vi.hoisted(() => ({ rows: [] as Array<{ id: string; type: string }> }));
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
+const pendingRows = vi.hoisted(() => ({
+  rows: [] as Array<{ id: string; type: string }>,
+  where: [] as unknown[],
+}));
+
+// The real schema (not a mock) so the in-flight filter can be rendered to SQL
+// and asserted on: a mocked select that ignores its WHERE would pass even if
+// the filter blocked restarts behind any unrelated pending command.
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(pendingRows.rows),
-        }),
+        where: (cond: unknown) => {
+          pendingRows.where.push(cond);
+          return { limit: () => Promise.resolve(pendingRows.rows) };
+        },
       }),
     })),
-  },
-}));
-
-vi.mock('../../db/schema', () => ({
-  deviceCommands: {
-    id: 'id', deviceId: 'deviceId', type: 'type', status: 'status', targetRole: 'targetRole',
   },
 }));
 
@@ -102,6 +106,7 @@ describe('POST /devices/:id/agent-recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     pendingRows.rows = [];
+    pendingRows.where = [];
     enqueueWatchdogCommandMock.mockReset();
     (getDeviceWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue(silentDevice);
     enqueueWatchdogCommandMock.mockResolvedValue({ status: 'queued', commandId: 'cmd-1' });
@@ -218,6 +223,18 @@ describe('POST /devices/:id/agent-recovery', () => {
     expect(enqueueWatchdogCommandMock).not.toHaveBeenCalled();
   });
 
+  it('looks for in-flight work only among this device\'s watchdog recovery rows', async () => {
+    await post();
+
+    expect(pendingRows.where).toHaveLength(1);
+    const { sql, params } = new PgDialect().sqlToQuery(pendingRows.where[0] as SQL);
+    expect(sql).toMatch(/"device_id" = \$\d/);
+    expect(sql).toMatch(/"target_role" = \$\d/);
+    expect(sql).toMatch(/"type" in \(\$\d, \$\d\)/);
+    expect(sql).toMatch(/"status" in \(\$\d, \$\d\)/);
+    expect(params).toEqual(['device-1', 'watchdog', 'restart_agent', 'start_agent', 'pending', 'sent']);
+  });
+
   it('409s while a watchdog recovery command is already pending for the device', async () => {
     pendingRows.rows = [{ id: 'cmd-old', type: 'restart_agent' }];
 
@@ -232,6 +249,7 @@ describe('POST /devices/:id/agent-recovery', () => {
   it('409s with the refusal when the watchdog is not reporting, and writes no audit row', async () => {
     enqueueWatchdogCommandMock.mockResolvedValue({
       status: 'failed',
+      reason: 'refused',
       error: 'Watchdog is not reporting; cannot dispatch watchdog command',
     });
 
@@ -248,6 +266,7 @@ describe('POST /devices/:id/agent-recovery', () => {
   it('403s with the trust body when partner trust refuses the command', async () => {
     enqueueWatchdogCommandMock.mockResolvedValue({
       status: 'failed',
+      reason: 'trust_denied',
       error: 'TRUST_PROBATION',
       trust: { capability: 'device_execute', reason: 'probation_default_deny' },
     });
@@ -260,10 +279,24 @@ describe('POST /devices/:id/agent-recovery', () => {
   });
 
   it('404s when the dispatch precheck no longer finds the device in this org', async () => {
-    enqueueWatchdogCommandMock.mockResolvedValue({ status: 'failed', error: 'Device not found' });
+    enqueueWatchdogCommandMock.mockResolvedValue({ status: 'failed', reason: 'not_found', error: 'Device not found' });
 
     const res = await post();
 
     expect(res.status).toBe(404);
+  });
+
+  it('500s (not 409) when the row could not be inserted, and writes no audit row', async () => {
+    enqueueWatchdogCommandMock.mockResolvedValue({
+      status: 'failed',
+      reason: 'insert_failed',
+      error: 'Failed to create command',
+    });
+
+    const res = await post();
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ code: 'ENQUEUE_FAILED' });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 });

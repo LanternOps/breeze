@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceDetailPage from './DeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
+import { TRUST_DENIED_EVENT } from '../../lib/trustProbation';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../../hooks/useEventStream', () => ({ useEventStream: () => ({ subscribe: vi.fn() }) }));
@@ -80,12 +81,36 @@ describe('DeviceDetailPage "Restart agent" (#9234)', () => {
 
     await waitFor(() =>
       expect(vi.mocked(showToast)).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'success', message: expect.stringContaining('alpha-01') }),
+        expect.objectContaining({ type: 'success', message: expect.stringMatching(/restart requested for alpha-01/i) }),
       ),
     );
     const calls = recoveryCalls();
     expect(calls).toHaveLength(1);
     expect(JSON.parse(String(calls[0]![1]!.body))).toEqual({ action: 'restart_agent' });
+    // Queued is not done: the copy must never claim the agent restarted.
+    const success = vi.mocked(showToast).mock.calls.find(([t]) => t.type === 'success')![0];
+    expect(success.message).not.toMatch(/\brestarted\b/i);
+  });
+
+  it('hands a partner-trust 403 to the probation banner like every runAction mutation', async () => {
+    rig(() => jsonResponse({
+      error: 'TRUST_PROBATION',
+      capability: 'device_execute',
+      reason: 'probation_default_deny',
+      reviewRequested: false,
+      meetingUrl: null,
+    }, 403));
+    const denied = vi.fn((e: Event) => e.preventDefault());
+    window.addEventListener(TRUST_DENIED_EVENT, denied);
+    try {
+      render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+      fireEvent.click(await screen.findByText('Restart agent'));
+
+      await waitFor(() => expect(denied).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(showToast)).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    } finally {
+      window.removeEventListener(TRUST_DENIED_EVENT, denied);
+    }
   });
 
   it('shows the refusal and never reports success when one is already waiting', async () => {

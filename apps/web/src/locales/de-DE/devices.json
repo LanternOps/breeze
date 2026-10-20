@@ -449,6 +449,7 @@
         "title": "Breeze-Agent neu starten?",
         "message": "Den Watchdog auf {{hostname}} anweisen, den Breeze-Agent-Dienst neu zu starten. Der Watchdog übernimmt das beim nächsten Check-in, meist innerhalb einer Minute, und meldet sich nur, solange der Agent nicht läuft.",
         "watchdogLastSeen": "Letzte Meldung des Watchdogs: {{date}}.",
+        "watchdogStale": "Der Watchdog hat sich zuletzt {{date}} gemeldet, zu lange her, um die Anfrage anzunehmen; sie wird abgelehnt, bis er sich wieder meldet.",
         "watchdogNeverSeen": "Der Watchdog hat sich noch nicht gemeldet; die Anfrage wird abgelehnt, bis er sich meldet.",
         "confirm": "Agent neu starten"
       },

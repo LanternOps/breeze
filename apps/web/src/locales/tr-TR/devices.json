@@ -449,6 +449,7 @@
         "title": "Breeze ajanı yeniden başlatılsın mı?",
         "message": "{{hostname}} üzerindeki watchdog'dan Breeze ajan hizmetini yeniden başlatmasını iste. Watchdog bunu bir sonraki bağlantısında, genellikle bir dakika içinde alır ve yalnızca ajan çalışmıyorken bağlanır.",
         "watchdogLastSeen": "Watchdog'un son bildirimi: {{date}}.",
+        "watchdogStale": "Watchdog en son {{date}} tarihinde bildirimde bulundu; isteği almak için çok eski. Tekrar bağlanana kadar istek reddedilir.",
         "watchdogNeverSeen": "Watchdog henüz bildirimde bulunmadı; bağlanana kadar istek reddedilir.",
         "confirm": "Ajanı yeniden başlat"
       },

@@ -449,6 +449,7 @@
         "title": "Reiniciar o agente do Breeze?",
         "message": "Pedir ao watchdog em {{hostname}} que reinicie o serviço do agente do Breeze. O watchdog executa isso no próximo check-in, geralmente em menos de um minuto, e só faz check-in enquanto o agente está parado.",
         "watchdogLastSeen": "Último relato do watchdog: {{date}}.",
+        "watchdogStale": "O último relato do watchdog foi em {{date}}, há tempo demais para aceitar a solicitação; ela será recusada até que ele faça check-in de novo.",
         "watchdogNeverSeen": "O watchdog ainda não relatou, então a solicitação será recusada até que ele faça check-in.",
         "confirm": "Reiniciar agente"
       },

@@ -94,7 +94,7 @@ agentRecoveryRoutes.post(
     });
 
     if (queued.status === 'failed') {
-      if (queued.trust) {
+      if (queued.reason === 'trust_denied' && queued.trust) {
         return c.json(
           trustDenyBody(
             {
@@ -108,11 +108,16 @@ agentRecoveryRoutes.post(
           403,
         );
       }
-      if (queued.error === 'Device not found') {
+      if (queued.reason === 'not_found') {
         return c.json({ error: 'Device not found' }, 404);
       }
-      // Watchdog not reporting, parked device, or the row failed to insert:
-      // the device is not in a state that can take the command right now.
+      if (queued.reason === 'insert_failed') {
+        // A server fault, not a device state: never tell the tech to wait.
+        console.error('[agentRecovery] watchdog command insert returned no row', { deviceId, action });
+        return c.json({ error: 'Failed to queue the agent restart', code: 'ENQUEUE_FAILED' }, 500);
+      }
+      // Watchdog not reporting, parked device, edition gate: the device is not
+      // in a state that can take the command right now.
       return c.json({ error: queued.error, code: 'WATCHDOG_REFUSED' }, 409);
     }
 

@@ -2620,13 +2620,14 @@ describe('enqueueWatchdogCommand', () => {
         targetRole: 'watchdog',
       }),
     );
+    // Same delivery clock as executeCommand's reject rows (no deliver_by).
+    expect(insertValues.mock.calls[0]![0]).toMatchObject({ deliverBy: null });
     // No WS push, and no poll. Had it polled, every read returns the device
     // row (no terminal status), so the call would spin until its 30s timeout
-    // and then write the timeout marker below. The two reads are the
-    // precheck's device lookup and resolveCommandCreatedBy's users probe.
+    // (past this test's) and then write the timeout marker below.
     expect(claimPendingCommandForDelivery).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
-    expect(deviceLookup).toHaveBeenCalledTimes(2);
+    expect(deviceLookup).toHaveBeenCalled();
     // Never marks the row failed on a timeout it did not wait for.
     expect(db.update).not.toHaveBeenCalled();
   });
@@ -2638,9 +2639,32 @@ describe('enqueueWatchdogCommand', () => {
 
     const result = await enqueueWatchdogCommand('dev-silent', 'start_agent', { userId: 'user-1' });
 
-    expect(result.status).toBe('failed');
+    expect(result).toMatchObject({ status: 'failed', reason: 'refused' });
     expect(result.status === 'failed' && result.error).toMatch(/watchdog is not reporting/i);
     expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it('refuses a device parked in a holding org', async () => {
+    mockDevice(silentDevice);
+    parkedDeviceIds.add('dev-silent');
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await enqueueWatchdogCommand('dev-silent', 'restart_agent', { userId: 'user-1' });
+
+    expect(result).toMatchObject({ status: 'failed', reason: 'refused' });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it('reports insert_failed when the INSERT returns no row', async () => {
+    mockDevice(silentDevice);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+    } as any);
+
+    const result = await enqueueWatchdogCommand('dev-silent', 'restart_agent', { userId: 'user-1' });
+
+    expect(result).toEqual({ status: 'failed', reason: 'insert_failed', error: 'Failed to create command' });
   });
 
   it('refuses a device that left the deciding organization', async () => {
@@ -2653,7 +2677,7 @@ describe('enqueueWatchdogCommand', () => {
       expectedOrgId: 'org-1',
     });
 
-    expect(result).toEqual({ status: 'failed', error: 'Device not found' });
+    expect(result).toEqual({ status: 'failed', reason: 'not_found', error: 'Device not found' });
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -2669,6 +2693,7 @@ describe('enqueueWatchdogCommand', () => {
 
     expect(result).toMatchObject({
       status: 'failed',
+      reason: 'trust_denied',
       error: 'TRUST_PROBATION',
       trust: { capability: 'device_execute' },
     });

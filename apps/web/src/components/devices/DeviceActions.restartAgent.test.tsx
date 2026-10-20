@@ -39,7 +39,8 @@ const silentDevice: Device = {
   agentVersion: '1.0.0',
   tags: [],
   watchdogStatus: 'failover',
-  watchdogLastSeen: '2026-10-20T12:00:00.000Z',
+  // Fresh: the watchdog is checking in (it only does so in failover).
+  watchdogLastSeen: new Date().toISOString(),
 };
 
 beforeEach(() => {
@@ -96,9 +97,20 @@ describe('DeviceActions "Restart agent" confirms before dispatch (#9234)', () =>
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveTextContent(/edge-01/);
     expect(dialog).toHaveTextContent(/watchdog last reported/i);
+    expect(dialog).not.toHaveTextContent(/too long ago/i);
 
     await userEvent.click(within(dialog).getByRole('button', { name: /restart agent/i }));
     expect(onAction).toHaveBeenCalledWith('restart-agent', silentDevice);
+  });
+
+  it('warns that the request will be refused when the watchdog report is stale', async () => {
+    h.granted.add('devices:recover_agent');
+    const staleSeen = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    render(<DeviceActions device={{ ...silentDevice, watchdogLastSeen: staleSeen }} compact onAction={vi.fn()} />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    await userEvent.click(screen.getByTestId('device-action-restart-agent'));
+
+    expect(screen.getByRole('dialog')).toHaveTextContent(/too long ago.*refused/i);
   });
 
   it('says so when the watchdog has never reported', async () => {

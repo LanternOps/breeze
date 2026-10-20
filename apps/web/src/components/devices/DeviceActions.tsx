@@ -113,6 +113,23 @@ function unavailableTitle(status: DeviceStatus, t: DeviceTranslation): string {
   }
 }
 
+// Mirrors WATCHDOG_STALE_MS in apps/api/src/services/commandQueue.ts: past
+// this the API refuses a watchdog command because nothing will claim it.
+const WATCHDOG_STALE_MS = 10 * 60 * 1000;
+
+/** What the confirm for "Restart agent" says about the watchdog (#9234). */
+function watchdogStateSentence(device: Device, t: DeviceTranslation): string {
+  if (!device.watchdogLastSeen) {
+    return t("deviceActions.confirm.restartAgent.watchdogNeverSeen");
+  }
+  const seenAt = new Date(device.watchdogLastSeen).getTime();
+  const date = formatDateTime(device.watchdogLastSeen);
+  if (Number.isNaN(seenAt) || Date.now() - seenAt > WATCHDOG_STALE_MS) {
+    return t("deviceActions.confirm.restartAgent.watchdogStale", { date });
+  }
+  return t("deviceActions.confirm.restartAgent.watchdogLastSeen", { date });
+}
+
 /**
  * Extra answers a confirm dialog collected from the operator (#3987). Today
  * only Remove has one: whether to queue the agent uninstall. Passed through to
@@ -222,13 +239,7 @@ function getModalConfig(
         title: t("deviceActions.confirm.restartAgent.title"),
         message: `${t("deviceActions.confirm.restartAgent.message", {
           hostname: device.hostname,
-        })} ${
-          device.watchdogLastSeen
-            ? t("deviceActions.confirm.restartAgent.watchdogLastSeen", {
-                date: formatDateTime(device.watchdogLastSeen),
-              })
-            : t("deviceActions.confirm.restartAgent.watchdogNeverSeen")
-        }`,
+        })} ${watchdogStateSentence(device, t)}`,
         confirmLabel: t("deviceActions.confirm.restartAgent.confirm"),
         variant: "warning",
       };
