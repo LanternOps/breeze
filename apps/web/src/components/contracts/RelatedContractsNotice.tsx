@@ -41,8 +41,9 @@ function cadenceLabel(t: TFunction, intervalMonths: number): string {
  */
 export interface AdoptDraftProps {
   contractId: string;
-  /** Called after a successful adopt; the parent re-reads the contract and
-   *  anything listing its deliverables or agreements. */
+  /** Called after a successful adopt — or when the draft turned out to be gone
+   *  or no longer a draft — so the parent re-reads the contract and anything
+   *  listing its deliverables or agreements. */
   onAdopted: () => void;
 }
 
@@ -126,7 +127,15 @@ export default function RelatedContractsNotice({
 function collisionNames(err: unknown): string[] | null {
   if (!(err instanceof ActionError) || err.code !== 'DUPLICATE_NAME') return null;
   const names = (err.body as { details?: { names?: unknown } } | undefined)?.details?.names;
-  return Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string') : null;
+  const list = Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string') : [];
+  return list.length > 0 ? list : null;
+}
+
+/** The draft is gone or no longer a draft (another tab adopted, deleted or
+ *  activated it): the notice is stale, so close and re-read instead of letting
+ *  Confirm fail again. */
+function draftIsStale(err: unknown): boolean {
+  return err instanceof ActionError && (err.code === 'CONTRACT_NOT_FOUND' || err.code === 'ADOPT_SOURCE_NOT_DRAFT');
 }
 
 /** Confirm for folding `source` (a draft) into contract `contractId`: says what
@@ -149,6 +158,7 @@ function AdoptDraftConfirm({
     if (busy) return;
     setBusy(true);
     setCollision(null);
+    let refresh = false;
     try {
       await runAction({
         request: () => adoptDraftContract(contractId, source.id),
@@ -156,14 +166,18 @@ function AdoptDraftConfirm({
         successMessage: t('contracts.relatedNotice.adopt.success', { name: source.name }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
-      onAdopted();
+      refresh = true;
     } catch (err) {
       const names = collisionNames(err);
       if (names) setCollision(names);
+      refresh = draftIsStale(err);
       handleActionError(err, errorFallback);
     } finally {
       setBusy(false);
     }
+    // Outside the try: a throw from the parent's refresh must not toast
+    // "could not fold" for an adopt that already succeeded.
+    if (refresh) onAdopted();
   };
 
   return (

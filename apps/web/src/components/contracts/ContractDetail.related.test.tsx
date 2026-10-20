@@ -22,6 +22,18 @@ vi.mock('../../stores/auth', () => ({
   ),
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+// Counts mounts so the #9346 test can assert the deliverables list re-reads
+// after an adopt (it fetches on mount only).
+const mounts = vi.hoisted(() => ({ deliverables: 0 }));
+vi.mock('./ContractDeliverablesSection', async () => {
+  const { useEffect } = await import('react');
+  return {
+    default: function DeliverablesStub() {
+      useEffect(() => { mounts.deliverables += 1; }, []);
+      return null;
+    },
+  };
+});
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../lib/api/contracts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api/contracts')>();
@@ -153,15 +165,45 @@ describe('ContractDetail — adopt a draft sibling (#9346)', () => {
     expect(contractsApi.adoptDraftContract).not.toHaveBeenCalled();
   });
 
-  it('Confirm adopts the draft into this contract and refreshes', async () => {
+  it('Confirm adopts the draft into this contract, refreshes, and re-reads the deliverables list', async () => {
     const onChanged = vi.fn();
     render(<ContractDetail detail={relatedDetail('active', [overlappingSibling])} onChanged={onChanged} />);
+    await waitFor(() => expect(mounts.deliverables).toBeGreaterThan(0));
+    const mountsBefore = mounts.deliverables;
     fireEvent.click(await screen.findByTestId('contract-related-adopt-ct-hand'));
     fireEvent.click(await screen.findByTestId('contract-adopt-draft-confirm-btn'));
     await waitFor(() => expect(contractsApi.adoptDraftContract).toHaveBeenCalledTimes(1));
     expect(contractsApi.adoptDraftContract).toHaveBeenCalledWith('ct-1', 'ct-hand');
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByTestId('contract-adopt-draft-confirm')).not.toBeInTheDocument());
+    // The moved deliverables only show if the section remounts (it reads on mount).
+    expect(mounts.deliverables).toBe(mountsBefore + 1);
+  });
+
+  it('a draft that is already gone (404) closes the dialog and refreshes instead of failing again', async () => {
+    const onChanged = vi.fn();
+    vi.mocked(contractsApi.adoptDraftContract).mockResolvedValue(resp(
+      { error: 'Contract not found', code: 'CONTRACT_NOT_FOUND' }, false, 404,
+    ));
+    render(<ContractDetail detail={relatedDetail('active', [overlappingSibling])} onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('contract-related-adopt-ct-hand'));
+    fireEvent.click(await screen.findByTestId('contract-adopt-draft-confirm-btn'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByTestId('contract-adopt-draft-confirm')).not.toBeInTheDocument());
+  });
+
+  it('a racing 409 with no names keeps the dialog open without an empty collision list', async () => {
+    const onChanged = vi.fn();
+    vi.mocked(contractsApi.adoptDraftContract).mockResolvedValue(resp(
+      { error: 'changed, try again', code: 'INVALID_STATE' }, false, 409,
+    ));
+    render(<ContractDetail detail={relatedDetail('active', [overlappingSibling])} onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('contract-related-adopt-ct-hand'));
+    fireEvent.click(await screen.findByTestId('contract-adopt-draft-confirm-btn'));
+    await waitFor(() => expect(contractsApi.adoptDraftContract).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('contract-adopt-draft-confirm')).toBeInTheDocument();
+    expect(screen.queryByTestId('contract-adopt-draft-collision')).not.toBeInTheDocument();
+    expect(onChanged).not.toHaveBeenCalled();
   });
 
   it('a 409 name collision keeps the dialog open and names the colliding deliverables', async () => {

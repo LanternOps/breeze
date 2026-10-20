@@ -12,6 +12,7 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
+import postgres from 'postgres';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   agreementRequests, contracts, contractDocuments, contractLines, contractTemplates, contractTemplateVersions,
@@ -221,6 +222,68 @@ describe('adoptDraftContract (#9346)', () => {
     await expect(withDbAccessContext(t.ctx, () => adoptDraftContract(x, { sourceContractId: y }, t.actor)))
       .rejects.toMatchObject({ status: 404, code: 'CONTRACT_NOT_FOUND' });
     expect(await snapshot([x, y])).toEqual(before);
+  });
+
+  runDb('403 SITE_DENIED for a site-restricted caller, and nothing changes', async () => {
+    const t = await seedTenant();
+    const x = await seedContract(t.orgA, 'X');
+    const y = await seedContract(t.orgA, 'Y');
+    await seedDeliverable(t.orgA, y, 'Review');
+    const before = await snapshot([x, y]);
+    // Both contracts carry a null-site (flat) line, which a restricted actor
+    // never reaches (contractLineSiteDenied is fail-closed).
+    const restricted = { ...t.actor, allowedSiteIds: ['99999999-9999-4999-8999-999999999999'] };
+    await expect(withDbAccessContext(t.ctx, () => adoptDraftContract(x, { sourceContractId: y }, restricted)))
+      .rejects.toMatchObject({ status: 403, code: 'SITE_DENIED' });
+    expect(await snapshot([x, y])).toEqual(before);
+  });
+
+  runDb('403 ORG_DENIED when the caller lacks the org, and nothing changes', async () => {
+    const t = await seedTenant();
+    const x = await seedContract(t.orgA, 'X');
+    const y = await seedContract(t.orgA, 'Y');
+    await seedDeliverable(t.orgA, y, 'Review');
+    const before = await snapshot([x, y]);
+    const orgBOnly = { ...t.actor, accessibleOrgIds: [t.orgB] };
+    await expect(withDbAccessContext(t.ctx, () => adoptDraftContract(x, { sourceContractId: y }, orgBOnly)))
+      .rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
+    expect(await snapshot([x, y])).toEqual(before);
+  });
+
+  runDb('a failure AFTER the moves (the draft delete) rolls every move back', async () => {
+    const t = await seedTenant();
+    const x = await seedContract(t.orgA, 'X');
+    const y = await seedContract(t.orgA, 'Undeletable draft 9346');
+    await seedDeliverable(t.orgA, y, 'Review');
+    await seedSignedAgreement(t.orgA, y);
+    await seedAgreementRequest(t.orgA, y);
+    const before = await snapshot([x, y]);
+    // Test-only trigger on the owner connection: refuse to delete THIS draft,
+    // so the adopt fails after deliverables, documents and requests have moved.
+    const admin = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
+    try {
+      await admin.unsafe(`
+        CREATE OR REPLACE FUNCTION test_9346_block_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF OLD.name = 'Undeletable draft 9346' THEN RAISE EXCEPTION 'test_9346: delete blocked'; END IF;
+          RETURN OLD;
+        END $$;
+        DROP TRIGGER IF EXISTS test_9346_block_delete ON contracts;
+        CREATE TRIGGER test_9346_block_delete BEFORE DELETE ON contracts
+          FOR EACH ROW EXECUTE FUNCTION test_9346_block_delete();
+      `);
+      const err = await withDbAccessContext(t.ctx, () => adoptDraftContract(x, { sourceContractId: y }, t.actor))
+        .then(() => null, (e: unknown) => e as Error & { cause?: Error });
+      // Drizzle wraps the trigger's exception ("Failed query: delete from contracts…").
+      expect(String(err?.cause?.message ?? err?.message)).toContain('test_9346: delete blocked');
+      expect(await snapshot([x, y])).toEqual(before);
+    } finally {
+      await admin.unsafe(`
+        DROP TRIGGER IF EXISTS test_9346_block_delete ON contracts;
+        DROP FUNCTION IF EXISTS test_9346_block_delete();
+      `);
+      await admin.end();
+    }
   });
 
   runDb('404 for another partner\'s draft (RLS-hidden), and nothing changes (cross-tenant)', async () => {
