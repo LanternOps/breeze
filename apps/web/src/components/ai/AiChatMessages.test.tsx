@@ -435,3 +435,76 @@ describe('script proposal link after a run (#7918)', () => {
     expect(queryByTestId('ai-script-proposal-link')).toBeNull();
   });
 });
+
+// Tool Catalog W3 (#5218): a saved draft_flow / get_flow result renders the
+// Flow card; anything else keeps the default tool card so errors stay visible.
+describe('flow card for draft_flow / get_flow results (#5218)', () => {
+  const FLOW_ID = '9f1c0f4e-0000-4000-8000-000000000001';
+  const flowPayload = (id = FLOW_ID) => ({
+    flow: {
+      id, slug: 'nightly', name: 'Nightly offline report', description: null, ownerScope: 'organization',
+      orgId: 'org-1', partnerId: null, status: 'draft', effectiveTier: 1, triggerType: 'manual',
+      definitionVersion: 1, updatedAt: '2026-10-20T02:00:00.000Z', createdAt: '2026-10-20T02:00:00.000Z',
+      createdByUserId: null, aiSessionId: null,
+      definition: {
+        version: 1, name: 'Nightly offline report', trigger: { type: 'manual' }, inputs: [],
+        steps: [
+          { id: 'a', tool: 'query_devices', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 300 },
+          { id: 'b', tool: 'query_alerts', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 300 },
+          { id: 'c', tool: 'send_email', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 300 },
+        ],
+      },
+    },
+    validation: {
+      valid: true, effectiveTier: 1, issues: [],
+      steps: ['a', 'b', 'c'].map((id) => ({ id, tool: 't', source: 'core', tier: 1, approval: 'default' })),
+    },
+  });
+  const result = (toolName: string, toolOutput: unknown) => [
+    { id: 'u1', role: 'tool_use', content: '', toolName, toolUseId: 't1', toolInput: {} },
+    { id: 'r1', role: 'tool_result', content: '', toolName, toolUseId: 't1', toolOutput },
+  ];
+
+  beforeEach(() => {
+    toolCallCards.props.length = 0;
+  });
+
+  it('renders the Flow card with 3 steps and a /flows/<uuid> link for a saved draft', () => {
+    const { getByTestId, getAllByTestId } = renderWithMessages(
+      result('draft_flow', { saved: true, ...flowPayload(), reviewPath: `/flows/${FLOW_ID}` }) as never,
+    );
+    expect(getByTestId('flow-draft-card')).toBeTruthy();
+    expect(getAllByTestId(/^flow-step-[abc]$/)).toHaveLength(3);
+    expect(getByTestId('flow-draft-review').getAttribute('href')).toBe(`/flows/${FLOW_ID}`);
+    // The tool_use row still shows its (running) card; the RESULT row must not
+    // add a second default card next to the Flow card.
+    expect(toolCallCards.props.some((p) => p.output !== undefined)).toBe(false);
+  });
+
+  it('renders no review link when the id is not a UUID', () => {
+    const { getByTestId, queryByTestId } = renderWithMessages(
+      result('draft_flow', { saved: true, ...flowPayload('nope/../x') }) as never,
+    );
+    expect(getByTestId('flow-draft-card')).toBeTruthy();
+    expect(queryByTestId('flow-draft-review')).toBeNull();
+  });
+
+  it('renders the card for a get_flow result', () => {
+    const { getByTestId } = renderWithMessages(result('get_flow', flowPayload()) as never);
+    expect(getByTestId('flow-draft-card')).toBeTruthy();
+  });
+
+  it('falls through to the default tool card when saved is false', () => {
+    const { queryByTestId } = renderWithMessages(
+      result('draft_flow', { saved: false, error: 'invalid' }) as never,
+    );
+    expect(queryByTestId('flow-draft-card')).toBeNull();
+    expect(toolCallCards.props.at(-1)?.toolName).toBe('draft_flow');
+  });
+
+  it('falls through to the default tool card for malformed JSON output', () => {
+    const { queryByTestId } = renderWithMessages(result('draft_flow', '{not json') as never);
+    expect(queryByTestId('flow-draft-card')).toBeNull();
+    expect(toolCallCards.props.at(-1)?.toolName).toBe('draft_flow');
+  });
+});

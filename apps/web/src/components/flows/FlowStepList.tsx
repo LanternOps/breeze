@@ -43,7 +43,7 @@ export function FlowStepList({
         return (
           <li
             key={step.id}
-            id={`${STEP_HASH_PREFIX}${step.id}`}
+            id={compact ? undefined : `${STEP_HASH_PREFIX}${step.id}`}
             data-testid={`flow-step-${step.id}`}
             aria-current={isSelected ? 'true' : undefined}
             className={cn('rounded-md border p-3 text-sm', isSelected && 'border-primary bg-primary/5')}
