@@ -21,6 +21,13 @@ describe('CharacterKeyShortcutsSettings', () => {
     expect(saveMock).toHaveBeenCalledWith({ characterKeyShortcuts: false }, expect.any(String));
   });
 
+  it('toggling back on from a stored false saves true', async () => {
+    saveMock.mockResolvedValue({ characterKeyShortcuts: true });
+    render(<CharacterKeyShortcutsSettings preferences={{ characterKeyShortcuts: false }} />);
+    fireEvent.click(screen.getByRole('checkbox'));
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith({ characterKeyShortcuts: true }, expect.any(String)));
+  });
+
   it('reflects a stored false', () => {
     render(<CharacterKeyShortcutsSettings preferences={{ characterKeyShortcuts: false }} />);
     expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);

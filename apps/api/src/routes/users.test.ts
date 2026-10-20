@@ -1698,11 +1698,11 @@ describe('user routes', () => {
       expect(body.error).toMatch(message);
     });
 
-    it('rejects a non-boolean characterKeyShortcuts preference (#9348)', async () => {
+    it.each(['off', 1, null])('rejects a non-boolean characterKeyShortcuts preference %s (#9348)', async (bad) => {
       const res = await app.request('/users/me', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ preferences: { characterKeyShortcuts: 'off' } })
+        body: JSON.stringify({ preferences: { characterKeyShortcuts: bad } })
       });
       expect(res.status).toBe(400);
       const body = await res.json();

@@ -45,9 +45,11 @@ describe('characterKeyShortcuts preference (#9348, WCAG 2.1.4)', () => {
   it('off: no bare key reaches the global handler', () => {
     setPref(false);
     renderHook(() => useGlobalShortcuts());
-    press('c'); press('c');
-    press('g'); press('d');
-    press('/'); press('['); press('?');
+    // Space the keys past the typing cadence so only the preference can block them.
+    for (const k of ['c', 'c', 'g', 'd', '/', '[', '?']) {
+      act(() => { vi.advanceTimersByTime(700); });
+      press(k);
+    }
     expect(navigateToMock).not.toHaveBeenCalled();
     expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
     expect(useUiStore.getState().isShortcutsHelpOpen).toBe(false);
@@ -94,6 +96,10 @@ describe('characterKeyShortcuts preference (#9348, WCAG 2.1.4)', () => {
       press('/');
       expect(useUiStore.getState().isCommandPaletteOpen).toBe(true);
       useUiStore.setState({ isCommandPaletteOpen: false });
+      act(() => { vi.advanceTimersByTime(700); });
+      press('?');
+      expect(useUiStore.getState().isShortcutsHelpOpen).toBe(true);
+      useUiStore.setState({ isShortcutsHelpOpen: false });
       unmount();
     }
   });
