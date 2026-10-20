@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cadenceMonths, coveredPeriod, firstAnchorAfter, nextPlannedDueDate, nthDueDate, planOccurrences, isInLeadWindow, isPastGrace } from './recurrence';
+import { cadenceMonths, coveredPeriod, firstAnchorAfter, nextPlannedDueDate, nthDueDate, planOccurrences, isInLeadWindow, isPastGrace, rebasedSchedule } from './recurrence';
 
 describe('recurrence', () => {
   it('maps cadence to months', () => {
@@ -123,5 +123,33 @@ describe('nextPlannedDueDate (#9308)', () => {
   });
   it('null once past effectiveUntil', () => {
     expect(nextPlannedDueDate({ ...base, effectiveUntil: '2026-10-30' })).toBeNull();
+  });
+});
+
+describe('rebasedSchedule (#9309: re-base a not-yet-materialized deliverable onto a new start)', () => {
+  it('recurring: effective_from becomes the new start and the anchor is the end of its first full period', () => {
+    expect(rebasedSchedule({ cadence: 'quarterly', anchorDueDate: '2026-12-31', effectiveFrom: '2026-10-01' }, '2027-01-15'))
+      .toEqual({ effectiveFrom: '2027-01-15', anchorDueDate: '2027-04-14' });
+  });
+  it('one-time from a template (due on the start) moves to the new start', () => {
+    expect(rebasedSchedule({ cadence: 'one_time', anchorDueDate: '2026-10-01', effectiveFrom: '2026-10-01' }, '2026-11-15'))
+      .toEqual({ effectiveFrom: '2026-11-15', anchorDueDate: '2026-11-15' });
+  });
+  it('one-time keeps its offset from the start (re-based relative to the start, not pulled onto it)', () => {
+    expect(rebasedSchedule({ cadence: 'one_time', anchorDueDate: '2026-10-31', effectiveFrom: '2026-10-01' }, '2026-11-15'))
+      .toEqual({ effectiveFrom: '2026-11-15', anchorDueDate: '2026-12-15' });
+  });
+  it('one-time due before its own effective_from (could never fire) is due on the new start', () => {
+    expect(rebasedSchedule({ cadence: 'one_time', anchorDueDate: '2026-09-20', effectiveFrom: '2026-10-01' }, '2026-11-15'))
+      .toEqual({ effectiveFrom: '2026-11-15', anchorDueDate: '2026-11-15' });
+  });
+  it('is idempotent: re-basing onto the same start again changes nothing', () => {
+    for (const d of [
+      { cadence: 'monthly' as const, anchorDueDate: '2026-10-31', effectiveFrom: '2026-10-01' },
+      { cadence: 'one_time' as const, anchorDueDate: '2026-10-31', effectiveFrom: '2026-10-01' },
+    ]) {
+      const once = rebasedSchedule(d, '2026-11-15');
+      expect(rebasedSchedule({ cadence: d.cadence, ...once }, '2026-11-15')).toEqual(once);
+    }
   });
 });

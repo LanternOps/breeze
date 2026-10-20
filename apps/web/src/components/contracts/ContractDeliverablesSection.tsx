@@ -14,6 +14,8 @@ interface Props {
   orgId: string;
   /** The contract's start date; the default effectiveFrom for new deliverables (#9308). */
   contractStartDate?: string | null;
+  /** The contract is still a draft: the sweep opens no tickets for it (#9309). */
+  contractIsDraft?: boolean;
 }
 
 /**
@@ -22,7 +24,7 @@ interface Props {
  * occurrence history in a drawer. The org record's Service tab shows the same
  * table across every contract of the org; this section pins it to one.
  */
-export default function ContractDeliverablesSection({ contractId, orgId, contractStartDate }: Props) {
+export default function ContractDeliverablesSection({ contractId, orgId, contractStartDate, contractIsDraft = false }: Props) {
   const { t } = useTranslation('deliverables');
   const [adding, setAdding] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
@@ -53,6 +55,12 @@ export default function ContractDeliverablesSection({ contractId, orgId, contrac
           </button>
         </div>
       </div>
+
+      {contractIsDraft && (
+        <p className="border-b px-3 py-1.5 text-xs text-muted-foreground" data-testid="contract-deliverables-paused">
+          {t('section.pausedDraft')}
+        </p>
+      )}
 
       <DeliverableTable
         fetcher={fetchWithAuth}

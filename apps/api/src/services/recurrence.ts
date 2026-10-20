@@ -91,6 +91,30 @@ export function firstAnchorAfter(effectiveFrom: string, cadence: Cadence): strin
   return addDaysISO(addMonthsClamped(effectiveFrom, months), -1);
 }
 
+function daysBetween(fromISO: string, toISO: string): number {
+  return Math.round((Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86_400_000);
+}
+
+/**
+ * #9309: the schedule a deliverable with NO occurrence yet gets when its
+ * contract's start moves to `newStart` (a draft's start-date edit, or
+ * activation). `effective_from` becomes the new start. A recurring item is
+ * re-anchored exactly as template apply would anchor it (firstAnchorAfter); a
+ * one-time item keeps its offset from its old `effective_from` — "re-based
+ * relative to the start" — so a template item due on the start stays due on
+ * the start, and one due 14 days in stays 14 days in. A negative offset (due
+ * before its own effective_from, so it could never fire) is clamped to the
+ * start. A pure function of the current row, so re-applying it is a no-op.
+ */
+export function rebasedSchedule(
+  d: { cadence: Cadence; anchorDueDate: string; effectiveFrom: string },
+  newStart: string,
+): { effectiveFrom: string; anchorDueDate: string } {
+  if (d.cadence !== 'one_time') return { effectiveFrom: newStart, anchorDueDate: firstAnchorAfter(newStart, d.cadence) };
+  const offset = Math.max(0, daysBetween(d.effectiveFrom, d.anchorDueDate));
+  return { effectiveFrom: newStart, anchorDueDate: addDaysISO(newStart, offset) };
+}
+
 /**
  * The next due date a deliverable will be planned for, without any occurrence row
  * (#9308): the first nthDueDate(n) that is >= effectiveFrom, strictly after the

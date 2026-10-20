@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Livrables de service",
+    "pausedDraft": "En pause jusqu'à l'activation du contrat. Un brouillon n'ouvre aucun ticket ; à l'activation, les livrables non commencés sont déplacés à la date de début du contrat.",
     "empty": "Aucun livrable pour l'instant. Ajoutez les rapports et revues récurrents dus à ce client."
   },
   "table": {

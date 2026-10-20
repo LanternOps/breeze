@@ -303,6 +303,11 @@ A deliverable is swept when `active` and `effective_from <= today` and
 (`effective_until IS NULL OR effective_until >= today`). Contract status is **not**
 consulted; the contract lifecycle writes `effective_until` instead (§5.4).
 
+**Amendment (#9309): `draft` is the one exception.** A deliverable whose contract is
+`draft` is not swept: a draft is not agreed yet, so it opens no tickets and marks
+nothing missed. `expired` and `paused` still sweep, as D1 intends. (The closing sweep
+for inactive / past-`effective_until` deliverables is unchanged.)
+
 ### 5.3 Steps per deliverable
 
 1. **Materialize.** Compute every due date `d` from the anchor with `d <= today +
@@ -341,6 +346,17 @@ On `contract.cancelled` (existing contract event) every deliverable with that
 `contract_id` and `effective_until IS NULL` gets `effective_until = cancellation
 date`. `paused` does not touch deliverables (billing pause is not a service pause;
 the MSP edits `effective_until` or `active` if it is). `expired` is ignored (D1).
+
+**Re-base on the real start (#9309).** Deliverables applied to a draft are pinned to
+its provisional start. When a draft's start date is edited, and when the draft is
+activated, every deliverable on that contract with **no occurrence yet** is re-based
+inside the same transaction as the contract write: `effective_from` = the new start
+(on activation, the later of the start and the activation day, so nothing is born
+overdue); a recurring item's anchor = end of its first full period from there (§4.6);
+a one-time item keeps its offset from its old `effective_from`. Deliverables that
+already have an occurrence are never touched. This is synchronous rather than a
+`contract.activated` consumer because resume (`paused` → `active`) emits the same
+event and a late replay would re-base deliverables added after activation.
 
 ## 6. Ticket integration
 

@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Serviceleistungen",
+    "pausedDraft": "Pausiert, bis der Vertrag aktiviert wird. Ein Entwurf eröffnet keine Tickets; bei der Aktivierung werden noch nicht begonnene Leistungen auf den Vertragsbeginn verschoben.",
     "empty": "Noch keine Leistungen. Fügen Sie die wiederkehrenden Berichte und Reviews hinzu, die diesem Kunden zustehen."
   },
   "table": {

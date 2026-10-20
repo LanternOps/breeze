@@ -61,6 +61,15 @@ describe('runDeliverableSweep', () => {
     expect(q.params).toContain(true);
   });
 
+  it('#9309: excludes deliverables whose contract is still a draft (and only draft — expired/paused still sweep)', async () => {
+    resultQueue.push([]);
+    await runDeliverableSweep(AS_OF);
+    const q = new PgDialect().sqlToQuery(capturedWhere[0] as SQL);
+    expect(q.sql).toMatch(/not exists \(select 1 from "contracts" where "contracts"\."id" = "service_deliverables"\."contract_id" and "contracts"\."status" = 'draft'\)/);
+    expect(q.sql).not.toContain("'expired'");
+    expect(q.sql).not.toContain("'paused'");
+  });
+
   it('runs every step for each deliverable and totals the counts', async () => {
     resultQueue.push([D]);
     materializeMock.mockResolvedValueOnce([{ id: 'o1' }, { id: 'o2' }]);

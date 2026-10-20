@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Deliverable del servizio",
+    "pausedDraft": "In pausa finché il contratto non viene attivato. Una bozza non apre ticket; all'attivazione, i deliverable non ancora avviati passano alla data di inizio del contratto.",
     "empty": "Nessun deliverable ancora. Aggiungi i report e le revisioni periodiche dovuti a questo cliente."
   },
   "table": {

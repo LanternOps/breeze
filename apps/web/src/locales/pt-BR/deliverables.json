@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Entregas do serviço",
+    "pausedDraft": "Pausado até o contrato ser ativado. Um rascunho não abre chamados; na ativação, as entregas que ainda não começaram passam para a data de início do contrato.",
     "empty": "Nenhuma entrega ainda. Adicione os relatórios e revisões recorrentes devidos a este cliente."
   },
   "table": {

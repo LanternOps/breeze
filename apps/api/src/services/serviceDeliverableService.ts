@@ -18,7 +18,7 @@ import type {
   RescheduleOccurrenceInput, EvidenceRef,
 } from '@breeze/shared';
 import { transition, InvalidTransitionError, type OccurrenceStatus } from './serviceDeliverableState';
-import { isInLeadWindow, isPastGrace, nextPlannedDueDate, planOccurrences, type Cadence } from './recurrence';
+import { isInLeadWindow, isPastGrace, nextPlannedDueDate, planOccurrences, rebasedSchedule, type Cadence } from './recurrence';
 import { addDaysISO } from './contractMath';
 import type { TicketActor } from './ticketService';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
@@ -1063,4 +1063,56 @@ export async function applyContractCancelledToDeliverables(contractId: string, t
     }
     return updated.length;
   }, 'deliverables.contractCancelled'));
+}
+
+/**
+ * #9309 (D1 amendment). While a contract is a draft the sweep skips its
+ * deliverables, so their schedule is still pinned to whatever start the
+ * contract had when they were applied. When the start becomes real — a
+ * draft's start-date edit, or activation — every deliverable on the contract
+ * with NO occurrence yet is moved onto `newStart` (recurrence.rebasedSchedule).
+ * A deliverable that already has an occurrence is never touched: its history
+ * is real. Runs on the CALLER's executor so it commits or rolls back with the
+ * contract write that triggered it; the actor's context already covers the
+ * contract's org. Idempotent: rebasedSchedule is a pure function of the row.
+ */
+export async function rebaseUnmaterializedDeliverables(
+  contractId: string, orgId: string, newStart: string, executor: DbExecutor = db,
+): Promise<number> {
+  // `o.` keeps the subquery's column unambiguous inside the UPDATE below.
+  const noOccurrence = (deliverableId: typeof serviceDeliverables.id | string) => sql`not exists (select 1 from ${serviceDeliverableOccurrences} o where o.deliverable_id = ${deliverableId})`;
+  const rows = await executor.select({
+      id: serviceDeliverables.id, cadence: serviceDeliverables.cadence, anchorDueDate: serviceDeliverables.anchorDueDate,
+      effectiveFrom: serviceDeliverables.effectiveFrom, effectiveUntil: serviceDeliverables.effectiveUntil,
+    })
+    .from(serviceDeliverables)
+    .where(and(
+      eq(serviceDeliverables.contractId, contractId),
+      eq(serviceDeliverables.orgId, orgId),
+      noOccurrence(serviceDeliverables.id),
+    ));
+
+  let rebased = 0;
+  for (const r of rows) {
+    const next = rebasedSchedule({ cadence: r.cadence as Cadence, anchorDueDate: r.anchorDueDate, effectiveFrom: r.effectiveFrom }, newStart);
+    if (next.effectiveFrom === r.effectiveFrom && next.anchorDueDate === r.anchorDueDate) continue;
+    if (r.effectiveUntil !== null && r.effectiveUntil < next.effectiveFrom) {
+      // The MSP closed this deliverable's window before the new start; moving
+      // effective_from past it would violate the window CHECK. Leave it as is.
+      console.warn('[deliverables] re-base skipped: effective window ends before the new start',
+        `deliverableId=${r.id}`, `contractId=${contractId}`, `effectiveUntil=${r.effectiveUntil}`, `newStart=${newStart}`);
+      continue;
+    }
+    // Re-checked on the write so an occurrence materialized since the read wins.
+    const written = await executor.update(serviceDeliverables)
+      .set({ ...next, updatedAt: new Date() })
+      .where(and(eq(serviceDeliverables.id, r.id), eq(serviceDeliverables.orgId, orgId), noOccurrence(r.id)))
+      .returning({ id: serviceDeliverables.id });
+    rebased += written.length;
+  }
+  if (rebased > 0) {
+    console.log('[deliverables] contract start set — re-based unmaterialized deliverables',
+      `contractId=${contractId}`, `deliverables=${rebased}`, `effectiveFrom=${newStart}`);
+  }
+  return rebased;
 }
