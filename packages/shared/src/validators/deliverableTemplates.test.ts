@@ -6,6 +6,7 @@ import {
   createTemplateItemSchema,
   applyTemplateSetSchema,
   MANAGED_EVIDENCE_REPORT_TYPES,
+  defaultPortalVisibleForCadence,
 } from './deliverableTemplates';
 
 const item = { name: 'Sign-in log review', cadence: 'monthly' as const };
@@ -96,6 +97,22 @@ describe('autoEvidenceReportType (#5784 W01)', () => {
     // Empty in W01; W02+ fill the list and this case becomes load-bearing.
     for (const type of MANAGED_EVIDENCE_REPORT_TYPES) {
       expect(createTemplateItemSchema.parse({ name: 'x', cadence: 'monthly', autoEvidenceReportType: type }).autoEvidenceReportType).toBe(type);
+    }
+  });
+});
+
+describe('portalVisible (#9315)', () => {
+  it('is optional on create (the server resolves the cadence default) and patchable', () => {
+    expect(createTemplateItemSchema.parse({ name: 'x', cadence: 'one_time' }).portalVisible).toBeUndefined();
+    expect(createTemplateItemSchema.parse({ name: 'x', cadence: 'one_time', portalVisible: true }).portalVisible).toBe(true);
+    expect(updateTemplateItemSchema.parse({ portalVisible: false })).toEqual({ portalVisible: false });
+    expect(updateTemplateItemSchema.parse({ graceDays: 21 })).not.toHaveProperty('portalVisible');
+  });
+
+  it('defaultPortalVisibleForCadence: off for one_time, on for every recurring cadence', () => {
+    expect(defaultPortalVisibleForCadence('one_time')).toBe(false);
+    for (const c of ['monthly', 'quarterly', 'semiannual', 'annual'] as const) {
+      expect(defaultPortalVisibleForCadence(c)).toBe(true);
     }
   });
 });

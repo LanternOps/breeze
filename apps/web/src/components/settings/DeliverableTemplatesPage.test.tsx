@@ -417,3 +417,73 @@ describe('DeliverableTemplatesPage item checklist fields (#5808 W03)', () => {
     });
   });
 });
+
+describe('DeliverableTemplatesPage item portal visibility (#9315)', () => {
+  const itemResponse = (overrides: Record<string, unknown>) =>
+    jsonResponse({
+      data: {
+        id: 'item-2', setId: 'set-1', name: 'X', description: null, cadence: 'monthly',
+        leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve',
+        instructions: null, checklistTemplateId: null, sortOrder: 0, autoEvidenceReportType: null,
+        portalVisible: true, ...overrides,
+      },
+    });
+
+  async function openAddItem() {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+  }
+  const portal = () => screen.getByTestId('deliverable-template-item-portal-visible') as HTMLInputElement;
+  const cadence = () => screen.getByTestId('deliverable-template-item-cadence');
+  const postedBody = () => {
+    const call = fetchMock.mock.calls.find(
+      ([url, opts]) => url === '/deliverable-templates/set-1/items' && (opts as RequestInit | undefined)?.method === 'POST',
+    );
+    return call ? JSON.parse(String((call[1] as RequestInit).body)) : undefined;
+  };
+
+  it('defaults the toggle by cadence until the user touches it', async () => {
+    await openAddItem();
+    expect(portal().checked).toBe(true);
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    expect(portal().checked).toBe(false);
+    fireEvent.change(cadence(), { target: { value: 'annual' } });
+    expect(portal().checked).toBe(true);
+    fireEvent.click(portal()); // deliberate: hide a recurring item
+    fireEvent.change(cadence(), { target: { value: 'monthly' } });
+    expect(portal().checked).toBe(false);
+  });
+
+  it('sends portalVisible:false for an untouched one-time item', async () => {
+    await openAddItem();
+    fireEvent.change(screen.getByTestId('deliverable-template-item-name'), { target: { value: 'Billing configured' } });
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    fetchMock.mockImplementationOnce(async () => itemResponse({ name: 'Billing configured', cadence: 'one_time', portalVisible: false }));
+    fireEvent.click(screen.getByTestId('deliverable-template-item-submit'));
+    await waitFor(() => expect(postedBody()).toEqual(expect.objectContaining({ cadence: 'one_time', portalVisible: false })));
+  });
+
+  it('editing an existing item shows its stored value, not the cadence default', async () => {
+    fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? 'GET';
+      if (String(url).startsWith('/deliverable-templates') && method === 'GET') {
+        return jsonResponse({
+          data: [setFrom({
+            items: [{
+              id: 'item-1', setId: 'set-1', name: 'Kickoff call', description: null, cadence: 'one_time',
+              leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve',
+              instructions: null, checklistTemplateId: null, sortOrder: 0, autoEvidenceReportType: null,
+              portalVisible: true,
+            }],
+          })],
+        });
+      }
+      if (String(url).startsWith('/ticket-checklist-templates') && method === 'GET') return jsonResponse({ data: [] });
+      return jsonResponse({ error: 'unexpected' }, 500);
+    });
+    render(<DeliverableTemplatesPage />);
+    fireEvent.click(await screen.findByTestId('deliverable-template-item-edit-item-1'));
+    expect(portal().checked).toBe(true);
+  });
+});

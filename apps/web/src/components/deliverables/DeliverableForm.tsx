@@ -1,7 +1,12 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { MANAGED_EVIDENCE_REPORT_TYPES, type CreateDeliverableInput, type UpdateDeliverableInput } from '@breeze/shared';
+import {
+  MANAGED_EVIDENCE_REPORT_TYPES,
+  defaultPortalVisibleForCadence,
+  type CreateDeliverableInput,
+  type UpdateDeliverableInput,
+} from '@breeze/shared';
 import {
   createDeliverable,
   updateDeliverable,
@@ -110,7 +115,7 @@ function initialState(initial: Deliverable | undefined, fixedContractId: string 
     artifactRequired: true,
     completionMode: 'on_ticket_resolve',
     autoEvidenceReportId: '',
-    portalVisible: true,
+    portalVisible: defaultPortalVisibleForCadence('monthly'),
     sortOrder: '0',
     instructions: '',
     checklistTemplateId: '',
@@ -144,6 +149,10 @@ export default function DeliverableForm({
   const [form, setForm] = useState<FormState>(() => initialState(initial, fixedContractId, contractStartDate));
   // #9308: contract start seeds effectiveFrom (and the due date) only until the user edits them.
   const touched = useRef({ effectiveFrom: false, anchorDueDate: false });
+  // #9315. Until the user touches the portal toggle it follows the cadence
+  // (off for one-time, on for recurring). Edit mode starts "touched": the
+  // stored value is a real choice, and cadence is read-only there anyway.
+  const [portalTouched, setPortalTouched] = useState(isEdit);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [evidenceReports, setEvidenceReports] = useState<EvidenceReportOption[]>([]);
@@ -355,7 +364,14 @@ export default function DeliverableForm({
             id={id('cadence')}
             className={inputClass}
             value={form.cadence}
-            onChange={(e) => set('cadence', e.target.value as DeliverableCadence)}
+            onChange={(e) => {
+              const cadence = e.target.value as DeliverableCadence;
+              setForm((f) => ({
+                ...f,
+                cadence,
+                ...(portalTouched ? {} : { portalVisible: defaultPortalVisibleForCadence(cadence) }),
+              }));
+            }}
             disabled={isEdit}
             data-testid="deliverable-form-cadence"
           >
@@ -489,7 +505,10 @@ export default function DeliverableForm({
           <input
             type="checkbox"
             checked={form.portalVisible}
-            onChange={(e) => set('portalVisible', e.target.checked)}
+            onChange={(e) => {
+              setPortalTouched(true);
+              set('portalVisible', e.target.checked);
+            }}
             data-testid="deliverable-form-portal-visible"
           />
           {t('form.portalVisible')}

@@ -1184,6 +1184,7 @@ export {
   listTemplateSetsQuerySchema,
   applyTemplateSetSchema,
   MANAGED_EVIDENCE_REPORT_TYPES,
+  defaultPortalVisibleForCadence,
   type ManagedEvidenceReportType,
   type CreateTemplateItemInput,
   type UpdateTemplateItemInput,

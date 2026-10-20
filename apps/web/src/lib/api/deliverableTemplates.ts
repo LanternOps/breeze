@@ -43,6 +43,8 @@ export interface TemplateItem {
   checklistTemplateId: string | null;
   sortOrder: number;
   autoEvidenceReportType: ManagedEvidenceReportType | null;
+  /** #9315 — copied onto the deliverable's portalVisible by applyTemplateSet. */
+  portalVisible: boolean;
 }
 
 export interface TemplateSet {

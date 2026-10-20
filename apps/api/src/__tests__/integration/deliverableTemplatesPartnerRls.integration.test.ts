@@ -22,10 +22,11 @@ import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { deliverableTemplateSets, deliverableTemplateItems, serviceDeliverables, contracts } from '../../db/schema';
+import { deliverableTemplateSets, deliverableTemplateItems, serviceDeliverables, contracts, portalBranding } from '../../db/schema';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
 import { applyTemplateSet, listTemplateSets, type TemplateActor } from '../../services/deliverableTemplateService';
+import { serviceOverview } from '../../services/portal/serviceReadModel';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -419,6 +420,46 @@ describe('deliverable template RLS (#5573 W05)', () => {
           .where(eq(serviceDeliverables.orgId, orgA.id)),
       );
       expect(stillTwo).toHaveLength(2);
+    });
+
+    it('an item with portalVisible:false creates a hidden deliverable the portal read model omits (#9315)', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      createdOrgIds.push(org.id);
+
+      const setId = await seedSet({ partnerId: partner.id, name: uniqueName('Onboarding') });
+      await withDbAccessContext(SYSTEM_CTX, async () => {
+        await db.insert(deliverableTemplateItems).values([
+          { setId, partnerId: partner.id, name: 'Billing configured', cadence: 'one_time', sortOrder: 0, portalVisible: false },
+          { setId, partnerId: partner.id, name: 'Monthly patch report', cadence: 'monthly', sortOrder: 1, portalVisible: true },
+        ]);
+        await db.insert(portalBranding).values({ orgId: org.id, enableService: true });
+      });
+
+      const actor: TemplateActor = {
+        userId: null, scope: 'partner', partnerId: partner.id,
+        partnerOrgAccess: 'all', accessibleOrgIds: [org.id],
+      };
+      await withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
+        applyTemplateSet(org.id, setId, { effectiveFrom: '2026-10-01' }, actor),
+      );
+
+      const rows = await withDbAccessContext(SYSTEM_CTX, () =>
+        db.select({ name: serviceDeliverables.name, portalVisible: serviceDeliverables.portalVisible })
+          .from(serviceDeliverables).where(eq(serviceDeliverables.orgId, org.id)),
+      );
+      expect(Object.fromEntries(rows.map((r) => [r.name, r.portalVisible]))).toEqual({
+        'Billing configured': false,
+        'Monthly patch report': true,
+      });
+
+      const overview = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        serviceOverview(org.id, { timezone: 'UTC', now: new Date('2026-10-15T12:00:00Z') }),
+      );
+      const names = overview.groups.flatMap((g) => g.deliverables.map((d) => d.name));
+      // Positive control first: an empty read model would pass the negative.
+      expect(names).toContain('Monthly patch report');
+      expect(names).not.toContain('Billing configured');
     });
 
     it('a contract from another org aborts the apply before ANY deliverable is written', async () => {

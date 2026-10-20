@@ -354,3 +354,47 @@ describe('DeliverableForm checklist fields (#5808 W03)', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
   });
 });
+
+// #9315 — one-time deliverables are usually internal onboarding steps, so the
+// portal default follows the cadence until the user makes a deliberate choice.
+describe('DeliverableForm portal-visible default', () => {
+  const portal = () => screen.getByTestId('deliverable-form-portal-visible') as HTMLInputElement;
+  const cadence = () => screen.getByTestId('deliverable-form-cadence');
+
+  it('starts on for the default recurring cadence and turns off when cadence becomes One-time', () => {
+    render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    expect(portal().checked).toBe(true);
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    expect(portal().checked).toBe(false);
+    fireEvent.change(cadence(), { target: { value: 'quarterly' } });
+    expect(portal().checked).toBe(true);
+  });
+
+  it('leaves the toggle alone once the user has touched it', () => {
+    render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.click(portal()); // user turns it off on a monthly item
+    fireEvent.click(portal()); // ...and back on, deliberately
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    expect(portal().checked).toBe(true);
+  });
+
+  it('POSTs portalVisible:false for an untouched One-time deliverable', async () => {
+    const fetcher = makeFetcher();
+    render(<DeliverableForm fetcher={fetcher} orgId="org-1" contractId="ct-1" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Billing configured' } });
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    fireEvent.click(screen.getByTestId('deliverable-form-save'));
+    await waitFor(() => {
+      expect(fetcher.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(true);
+    });
+    const [, init] = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'POST') as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({ cadence: 'one_time', portalVisible: false });
+  });
+
+  it('edit mode keeps the stored value (cadence is read-only there)', () => {
+    render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" initial={{ ...saved, cadence: 'one_time', portalVisible: true }} onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    expect(portal().checked).toBe(true);
+  });
+});
