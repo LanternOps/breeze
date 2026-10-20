@@ -27,6 +27,7 @@ COPY patches ./patches
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
+COPY packages/document-ui/package.json ./packages/document-ui/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline

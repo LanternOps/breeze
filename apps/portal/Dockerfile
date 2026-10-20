@@ -23,6 +23,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY patches ./patches
 COPY apps/portal/package.json ./apps/portal/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/document-ui/package.json ./packages/document-ui/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline

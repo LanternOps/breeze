@@ -8,6 +8,7 @@ COPY patches ./patches
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
+COPY packages/document-ui/package.json ./packages/document-ui/
 RUN pnpm install --frozen-lockfile
 
 FROM base AS builder
@@ -16,6 +17,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=deps /app/packages/extension-web-sdk/node_modules ./packages/extension-web-sdk/node_modules
+COPY --from=deps /app/packages/document-ui/node_modules ./packages/document-ui/node_modules
 COPY . .
 ARG PUBLIC_API_URL=""
 ARG PUBLIC_APP_VERSION="0.1.0"

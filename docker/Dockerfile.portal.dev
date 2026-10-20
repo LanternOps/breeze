@@ -11,11 +11,13 @@ COPY turbo.json tsconfig.json ./
 
 COPY apps/portal/package.json ./apps/portal/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/document-ui/package.json ./packages/document-ui/
 
 RUN pnpm install
 
 COPY apps/portal ./apps/portal
 COPY packages/shared ./packages/shared
+COPY packages/document-ui ./packages/document-ui
 
 WORKDIR /app/apps/portal
 EXPOSE 4322
