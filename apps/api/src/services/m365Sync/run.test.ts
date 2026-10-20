@@ -408,6 +408,8 @@ describe('outcomeForFailure (spec §6)', () => {
     ['graph_transport_failed', 'error', false, true, false],
     ['executor_unavailable', 'error', false, true, false],
     ['graph_response_invalid', 'error', false, true, false],
+    // #9393: a query Graph refused is a Breeze-side bug — alert on it.
+    ['graph_provider_rejected', 'error', false, true, false],
     ['connection_not_ready', 'error', false, true, false],
   ])('%s -> %s (unschedule=%s, sentry=%s, restartWalk=%s)', (code, outcome, unschedule, sentryWorthy, restartWalk) => {
     expect(outcomeForFailure(code as never)).toEqual({ outcome, unschedule, sentryWorthy, restartWalk });

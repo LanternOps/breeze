@@ -178,7 +178,7 @@ export type M365SyncCallResult =
 
 /**
  * Messages for the codes FAILURE_MESSAGES does not cover: the six refusal codes
- * (which the read path answers inline rather than through a map) plus the two
+ * (which the read path answers inline rather than through a map) plus the three
  * sync-only codes. Typed as a total Record over exactly that complement, so
  * adding a member to M365SyncCallFailureCode is a COMPILE error here rather
  * than an "undefined" shown to an operator and written into last_error.
@@ -189,6 +189,10 @@ const SYNC_ONLY_MESSAGES: Record<
 > = {
   sync_capacity: 'The Microsoft 365 sync executor is at capacity. The sync will retry shortly.',
   continuation_invalid: 'The Microsoft 365 sign-in activity page cursor expired. The next run restarts the walk.',
+  // #9393: Graph refused the request (a 400 on an unsupported $filter, or a
+  // non-retryable 5xx) — distinct from graph_response_invalid, which means Graph
+  // answered with a body Breeze could not parse. Never echoes Graph detail.
+  graph_provider_rejected: 'Microsoft Graph rejected the sync request. The sync will try again on its next run.',
   read_rate_limited: 'Microsoft 365 sync is rate limited for this connection. It will retry shortly.',
   executor_unavailable: 'Microsoft 365 Graph read is temporarily unavailable. Try again shortly.',
   tools_disabled: 'Microsoft 365 tenant sync is not enabled for this organization.',
