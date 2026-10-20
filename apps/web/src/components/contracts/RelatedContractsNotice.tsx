@@ -67,12 +67,14 @@ export default function RelatedContractsNotice({ related }: { related: RelatedCo
               {[
                 t(/* i18n-dynamic */ `contracts.shared.status.${r.status}`),
                 cadenceLabel(t, r.intervalMonths),
+                // null = not computable (a device group that failed to
+                // evaluate or was deleted) — say so instead of omitting it.
                 r.recurringTotal !== null
                   ? t('contracts.relatedNotice.perPeriod', { amount: formatMoney(r.recurringTotal, r.currencyCode) })
-                  : null,
+                  : t('contracts.relatedNotice.estimateUnavailable'),
                 t('contracts.relatedNotice.deliverables', { count: r.deliverableCount }),
                 t('contracts.relatedNotice.signedAgreements', { count: r.signedAgreementCount }),
-              ].filter(Boolean).join(' · ')}
+              ].join(' · ')}
             </span>
           </li>
         ))}

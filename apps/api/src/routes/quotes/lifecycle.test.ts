@@ -822,12 +822,21 @@ describe('POST /:id/accept-on-behalf', () => {
 
   // #9303: the on-behalf UI names the org's existing same-cadence contracts
   // after the accept, so the tech sees the double-billing risk before activating.
-  it('passes the overlapping existing contracts through', async () => {
-    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+  it('passes the overlapping existing contracts through to a contracts reader', async () => {
+    const res = await appWith('partner', ['quotes:accept', 'contracts:read']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
     const body = await res.json();
     expect(body.data.overlappingContracts).toEqual([
       { id: 'c0', name: 'Hand-built draft', status: 'draft', intervalMonths: 1 },
     ]);
+  });
+
+  // quotes:accept alone does not grant reading contracts; the contract names
+  // are withheld rather than leaked through the accept response.
+  it('withholds the overlapping contracts from a caller without contracts:read', async () => {
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.overlappingContracts).toEqual([]);
   });
 
   // The UI's success toast says "Invoice <number> issued". Without the ALLOCATED

@@ -652,6 +652,7 @@
       "overlapWarning": "Başka bir sözleşme aynı sıklıkta ve çakışan tarihlerde faturalandırıyor. İkisini birden etkinleştirirseniz müşteri her ikisi için de ödeme yapar.",
       "sameCadence": "Aynı sıklık, çakışan tarihler",
       "perPeriod": "Dönem başına {{amount}}",
+      "estimateUnavailable": "Dönem başına tahmin kullanılamıyor",
       "deliverables_one": "{{count}} hizmet çıktısı",
       "deliverables_other": "{{count}} hizmet çıktısı",
       "signedAgreements_one": "{{count}} imzalı anlaşma",

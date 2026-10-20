@@ -652,6 +652,7 @@
       "overlapWarning": "Another contract here bills on the same schedule over overlapping dates. Activating both bills the customer for both.",
       "sameCadence": "Same schedule, overlapping dates",
       "perPeriod": "{{amount}} per period",
+      "estimateUnavailable": "Per-period estimate unavailable",
       "deliverables_one": "{{count}} deliverable",
       "deliverables_other": "{{count}} deliverables",
       "signedAgreements_one": "{{count}} signed agreement",

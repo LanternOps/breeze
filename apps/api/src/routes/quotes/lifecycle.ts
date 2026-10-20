@@ -1,11 +1,11 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { acceptQuoteOnBehalfSchema, declineQuoteOnBehalfSchema, ERROR_CODES } from '@breeze/shared';
 import { sendComposerSchema as sendBodySchema, parseComposerBody } from '../../lib/sendComposer';
 import { requireScope, requirePermission, withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { sendQuote, resendQuote, getQuoteShareLink, declineQuoteByActor } from '../../services/quoteLifecycle';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { supersededAuditEvent } from '../../services/quoteSupersedeAudit';
@@ -28,6 +28,13 @@ const readPerm = requirePermission(PERMISSIONS.QUOTES_READ.resource, PERMISSIONS
 const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIONS.QUOTES_WRITE.action);
 const sendPerm = requirePermission(PERMISSIONS.QUOTES_SEND.resource, PERMISSIONS.QUOTES_SEND.action);
 const acceptPerm = requirePermission(PERMISSIONS.QUOTES_ACCEPT.resource, PERMISSIONS.QUOTES_ACCEPT.action);
+
+/** Whether the caller holds contracts:read, from the permission set the
+ *  route's requirePermission gate already resolved onto the context. */
+function canReadContracts(c: Context): boolean {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  return !!perms && hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
+}
 const idParam = z.object({ id: z.string().guid() });
 const imageParam = z.object({ id: z.string().guid(), imageId: z.string().guid() });
 const contractFileParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
@@ -226,7 +233,10 @@ quoteLifecycleRoutes.post('/:id/accept-on-behalf',
         contractIds: res.contractIds,
         // #9303: the org's EXISTING same-cadence contracts, named after the
         // accept so the tech sees the double-billing risk before activating.
-        overlappingContracts: res.overlappingContracts,
+        // quotes:accept does not imply contracts:read, so the names go only to
+        // a caller who could read those contracts anyway. (Partner/system
+        // scope only, so no site-restricted actor reaches this route.)
+        overlappingContracts: canReadContracts(c) ? res.overlappingContracts : [],
         payUrl,
       } });
     } catch (err) { return handleServiceError(c, err); }

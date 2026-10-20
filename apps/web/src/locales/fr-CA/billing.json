@@ -652,6 +652,7 @@
       "overlapWarning": "Un autre contrat facture au même rythme sur des dates qui se chevauchent. Si vous activez les deux, le client paie pour les deux.",
       "sameCadence": "Même rythme, dates qui se chevauchent",
       "perPeriod": "{{amount}} par période",
+      "estimateUnavailable": "Estimation par période indisponible",
       "deliverables_one": "{{count}} livrable",
       "deliverables_other": "{{count}} livrables",
       "signedAgreements_one": "{{count}} entente signée",

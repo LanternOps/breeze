@@ -652,6 +652,7 @@
       "overlapWarning": "Ein anderer Vertrag rechnet im gleichen Rhythmus über überschneidende Zeiträume ab. Wenn beide aktiv sind, zahlt der Kunde doppelt.",
       "sameCadence": "Gleicher Rhythmus, überschneidende Zeiträume",
       "perPeriod": "{{amount}} pro Zeitraum",
+      "estimateUnavailable": "Schätzung pro Zeitraum nicht verfügbar",
       "deliverables_one": "{{count}} Serviceleistung",
       "deliverables_other": "{{count}} Serviceleistungen",
       "signedAgreements_one": "{{count}} unterzeichnete Vereinbarung",

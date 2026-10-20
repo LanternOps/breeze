@@ -57,6 +57,12 @@ describe('ContractDetail — related contracts notice (#9303)', () => {
     expect(within(notice).queryByTestId('contract-related-overlap-warning')).not.toBeInTheDocument();
   });
 
+  it('says the estimate is unavailable rather than dropping it silently', async () => {
+    render(<ContractDetail detail={relatedDetail('draft', [{ ...overlappingSibling, recurringTotal: null }])} onChanged={vi.fn()} />);
+    const notice = await screen.findByTestId('contract-related-notice');
+    expect(notice).toHaveTextContent('Per-period estimate unavailable');
+  });
+
   it('renders no notice when the org has no other contract', async () => {
     render(<ContractDetail detail={relatedDetail('draft', [])} onChanged={vi.fn()} />);
     await screen.findByTestId('contract-detail');
@@ -76,6 +82,14 @@ describe('ContractDetail — activate confirm on overlap (#9303)', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByTestId('contract-activate-overlap-confirm')).not.toBeInTheDocument());
     expect(contractsApi.contractTransition).not.toHaveBeenCalled();
+  });
+
+  it('lists only the overlapping siblings in the confirm', async () => {
+    render(<ContractDetail detail={relatedDetail('draft', [overlappingSibling, unrelatedSibling])} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('contract-activate-btn'));
+    const dialog = await screen.findByTestId('contract-activate-overlap-confirm');
+    expect(dialog).toHaveTextContent('Hand-built MSA');
+    expect(dialog).not.toHaveTextContent('Annual licences');
   });
 
   it('Confirm sends exactly one activate', async () => {

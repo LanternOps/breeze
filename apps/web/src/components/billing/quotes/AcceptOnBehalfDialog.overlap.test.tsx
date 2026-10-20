@@ -76,6 +76,24 @@ describe('AcceptOnBehalfDialog — existing same-cadence contract notice (#9303)
     expect(onAccepted).toHaveBeenCalledTimes(1);
   });
 
+  it('Escape on the notice also reloads (the accept already happened), never the plain close', async () => {
+    fetchWithAuth.mockResolvedValue(okRes(acceptResponse([
+      { id: 'ct-hand', name: 'Hand-built MSA', status: 'draft', intervalMonths: 1 },
+    ])));
+    const onClose = vi.fn();
+    const onAccepted = vi.fn();
+    render(<AcceptOnBehalfDialog open onClose={onClose} quote={quote} lines={lines} recipients={[]} onAccepted={onAccepted} />);
+    fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'Call 10-19' } });
+    fireEvent.change(screen.getByTestId('accept-on-behalf-signer-name'), { target: { value: 'Dana Buyer' } });
+    fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+    const notice = await screen.findByTestId('quote-accept-overlap-notice');
+
+    // Dialog handles Escape on its backdrop; a keydown inside bubbles to it.
+    fireEvent.keyDown(notice, { key: 'Escape' });
+    await waitFor(() => expect(onAccepted).toHaveBeenCalledTimes(1));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('closes straight away when there is no existing same-cadence contract', async () => {
     fetchWithAuth.mockResolvedValue(okRes(acceptResponse([])));
     const onAccepted = renderAndSubmit();

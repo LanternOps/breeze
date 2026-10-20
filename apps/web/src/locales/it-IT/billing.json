@@ -652,6 +652,7 @@
       "overlapWarning": "Un altro contratto fattura con la stessa cadenza in date che si sovrappongono. Attivandoli entrambi, il cliente paga per tutti e due.",
       "sameCadence": "Stessa cadenza, date sovrapposte",
       "perPeriod": "{{amount}} per periodo",
+      "estimateUnavailable": "Stima per periodo non disponibile",
       "deliverables_one": "{{count}} deliverable del servizio",
       "deliverables_other": "{{count}} deliverable del servizio",
       "signedAgreements_one": "{{count}} accordo firmato",

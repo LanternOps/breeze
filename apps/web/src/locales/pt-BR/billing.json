@@ -652,6 +652,7 @@
       "overlapWarning": "Outro contrato fatura na mesma periodicidade em datas que se sobrepõem. Se você ativar os dois, o cliente paga pelos dois.",
       "sameCadence": "Mesma periodicidade, datas sobrepostas",
       "perPeriod": "{{amount}} por período",
+      "estimateUnavailable": "Estimativa por período indisponível",
       "deliverables_one": "{{count}} entrega",
       "deliverables_other": "{{count}} entregas",
       "signedAgreements_one": "{{count}} acordo assinado",
