@@ -779,17 +779,28 @@ describe('serviceDeliverableService', () => {
       expect(view.evidence).toHaveLength(1);
     });
 
-    it('on a missed occurrence whose ticket was resolved completes the delivery (#9310)', async () => {
+    it.each(['resolved', 'closed'])('on a missed occurrence whose ticket is %s completes the delivery (#9310)', async (ticketStatus) => {
       queueResult([occ({ status: 'missed', ticketId: 't1' })]);
       queueResult([{ id: RUN_ID, reportId: 'r1' }]);
       queueResult([]); // insert
-      queueResult([{ status: 'resolved' }]); // ticket status lookup
+      queueResult([{ status: ticketStatus }]); // ticket status lookup
       queueResult([{ id: 'o1' }]); // update returning
       queueResult([occ({ status: 'delivered', deliveredVia: 'ticket' })]);
       queueResult([]);
       await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
       expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'ticket', deliveredByUserId: 'u1' });
       expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'missed']));
+    });
+
+    it('on a missed explicit-mode occurrence never completes from a resolved ticket (#9310)', async () => {
+      queueResult([occ({ status: 'missed', ticketId: 't1', completionMode: 'explicit' })]);
+      queueResult([{ id: RUN_ID, reportId: 'r1' }]);
+      queueResult([]); // insert
+      queueResult([{ status: 'resolved' }]); // would be the ticket lookup if (wrongly) issued
+      queueResult([occ({ status: 'missed', ticketId: 't1', completionMode: 'explicit' })]);
+      queueResult([]);
+      await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
+      expect(chain.update.mock.calls).toHaveLength(0);
     });
 
     it('on a missed occurrence whose ticket is still open changes nothing (#9310)', async () => {
@@ -1056,6 +1067,13 @@ describe('serviceDeliverableService', () => {
         ticketId: 't1', userId: null, authorType: 'system', commentType: 'internal', isPublic: false, originPrincipalKind: 'system',
       });
       expect(String(lastValues().content)).toContain('needs evidence');
+    });
+
+    it('posts no comment when the resolution delivers directly (#9310)', async () => {
+      queueResult([occRow()]); queueResult([{ id: 'e1' }]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(lastSet()).toMatchObject({ status: 'delivered' });
+      expect(chain.values.mock.calls).toHaveLength(0);
     });
 
     it('re-delivering the same resolution adds no second comment (#9310)', async () => {

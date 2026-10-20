@@ -753,9 +753,10 @@ export async function addEvidence(orgId: string, occurrenceId: string, ref: Evid
     await insertEvidenceRef(orgId, occurrenceId, ref, actor, tx);
     // A missed occurrence is rescued only if its ticket was already resolved.
     let deliveryStarted = false;
-    if (current.status === 'missed' && current.ticketId) {
+    // Explicit-mode deliverables are never completed by their ticket (see ticket_resolved).
+    if (current.status === 'missed' && current.ticketId && current.completionMode === 'on_ticket_resolve') {
       const [ticket] = await tx.select({ status: tickets.status }).from(tickets)
-        .where(and(eq(tickets.id, current.ticketId), eq(tickets.orgId, orgId))).limit(1);
+        .where(and(eq(tickets.id, current.ticketId), eq(tickets.orgId, orgId), isNull(tickets.deletedAt))).limit(1);
       deliveryStarted = ticket !== undefined && RESOLVED_LIKE.has(ticket.status);
     }
     const t = transition(current.status, { type: 'evidence_added', deliveryStarted });
@@ -919,7 +920,7 @@ export async function applyTicketStatusChange(args: {
 
   // #9310: tell the technician what is missing. Posted only by the CAS winner, and
   // only on entry to awaiting_evidence (a redelivery is a no-op above), so exactly
-  // once. Internal + system-authored, same shape as the instructions comment, so the
+  // once per entry into that state. Internal + system-authored, same shape as the instructions comment, so the
   // portal (is_public = true) never shows it.
   if (outcome.next === 'awaiting_evidence' && updated.length > 0) {
     await db.insert(ticketComments).values({
