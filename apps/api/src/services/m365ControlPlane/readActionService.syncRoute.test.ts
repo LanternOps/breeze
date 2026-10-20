@@ -222,7 +222,7 @@ describe('callGraphReadExecutor', () => {
     const result = await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-5d' });
     expect(result).toMatchObject({ ok: false, code: 'graph_provider_rejected' });
     const message = (result as { message: string }).message;
-    expect(message).toMatch(/rejected/i);
+    expect(message).toMatch(/refused/i);
     expect(message).not.toBe(syncFailureMessage('graph_response_invalid'));
   });
 

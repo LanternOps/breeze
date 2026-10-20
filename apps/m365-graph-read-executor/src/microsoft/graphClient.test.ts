@@ -827,4 +827,16 @@ describe('readSyncCollection', () => {
     })).rejects.toMatchObject({ code: 'graph_permission_missing' });
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
+
+  it('maps a 400 (e.g. an unsupported $filter) to graph_provider_rejected without retrying (#9393)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: 'BadRequest' } }), {
+        status: 400, headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits(),
+    })).rejects.toMatchObject({ code: 'graph_provider_rejected' });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
 });
