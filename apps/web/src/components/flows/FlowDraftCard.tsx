@@ -33,11 +33,17 @@ export function parseFlowToolResult(toolName: string | undefined, output: unknow
   if (toolName === 'draft_flow' && body.saved !== true) return null;
   const flow = body.flow as Partial<FlowDetailDto> | undefined;
   const validation = body.validation as Partial<FlowValidationResult> | undefined;
+  // Model-visible output: check every element the card dereferences, so a
+  // malformed payload falls back to the default card instead of throwing
+  // inside the transcript.
+  const objects = (xs: unknown[]) => xs.every((x) => !!x && typeof x === 'object');
   if (
     !flow || typeof flow !== 'object' || typeof flow.id !== 'string' ||
-    !flow.definition || !Array.isArray(flow.definition.steps) ||
+    !flow.definition || !Array.isArray(flow.definition.steps) || !objects(flow.definition.steps) ||
+    typeof (flow.definition.trigger as { type?: unknown } | undefined)?.type !== 'string' ||
     !validation || typeof validation !== 'object' ||
-    !Array.isArray(validation.steps) || !Array.isArray(validation.issues)
+    !Array.isArray(validation.steps) || !objects(validation.steps) ||
+    !Array.isArray(validation.issues) || !objects(validation.issues)
   ) {
     return null;
   }

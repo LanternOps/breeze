@@ -80,6 +80,17 @@ describe('parseFlowToolResult', () => {
     expect(parseFlowToolResult('list_flows', payload())).toBeNull();
     expect(parseFlowToolResult(undefined, payload())).toBeNull();
   });
+
+  it('rejects structurally partial payloads instead of letting the card crash the transcript', () => {
+    const p = payload();
+    const noTrigger = { ...p, flow: { ...p.flow, definition: { ...p.flow.definition, trigger: undefined } } };
+    const nullStep = { ...p, flow: { ...p.flow, definition: { ...p.flow.definition, steps: [null] } } };
+    const nullSummary = { ...p, validation: { ...p.validation, steps: [null] } };
+    const nullIssue = { ...p, validation: { ...p.validation, issues: [null] } };
+    for (const bad of [noTrigger, nullStep, nullSummary, nullIssue]) {
+      expect(parseFlowToolResult('get_flow', bad)).toBeNull();
+    }
+  });
 });
 
 describe('FlowDraftCard', () => {
