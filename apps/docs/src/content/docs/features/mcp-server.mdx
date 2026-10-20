@@ -155,7 +155,7 @@ API keys follow the format `brz_<random>`. The server stores only a SHA-256 hash
 
 ### OAuth 2.1
 
-For AI clients that implement OAuth 2.1 with Dynamic Client Registration (DCR) and PKCE — including **Claude.ai** and **ChatGPT** — Breeze can authorize MCP connections through a real OAuth handshake instead of pasted API keys. The user pastes the tenant's `/mcp/sse` URL into the client, signs in to Breeze, grants the AI client a scoped session, and the assistant receives a refreshable access token bound to that user and organization. No API key is created or copied.
+For AI clients that implement OAuth 2.1 with Dynamic Client Registration (DCR) or Client ID Metadata Documents (CIMD) and PKCE — including **Claude.ai** and **ChatGPT** — Breeze can authorize MCP connections through a real OAuth handshake instead of pasted API keys. The user pastes the tenant's `/mcp/sse` URL into the client, signs in to Breeze, grants the AI client a scoped session, and the assistant receives a refreshable access token bound to that user and organization. No API key is created or copied.
 
 OAuth is enabled with the `MCP_OAUTH_ENABLED=true` server setting. Once enabled, Breeze acts as a standards-compliant authorization server and advertises the following endpoints (all discoverable automatically by the client — there is nothing to configure by hand):
 
@@ -181,6 +181,50 @@ When OAuth is enabled, the MCP endpoints accept an `Authorization: Bearer <acces
 </Aside>
 
 API key authentication via the `X-API-Key` header continues to work for every client, and remains the only option for self-hosted MCP clients (Claude Desktop, Cursor) that don't implement OAuth.
+
+### Client ID Metadata Documents (CIMD)
+
+A client has two ways to identify itself. A client that supports **Client ID Metadata Documents** can use an https URL it hosts as its `client_id`, and Breeze fetches the JSON metadata document from that URL. Clients that do not support CIMD keep using Dynamic Client Registration; `registration_endpoint` is still advertised, so both work side by side. Clients should prefer CIMD when the server advertises `client_id_metadata_document_supported: true`.
+
+CIMD is off by default. Set `OAUTH_CIMD_ENABLED=true` to turn it on, and optionally `OAUTH_CIMD_ALLOWED_HOSTS` to restrict which hosts may publish documents (comma-separated hostnames, or `.suffix` entries meaning any subdomain, such as `client.example.com,.example.org`). With the allowlist unset, any public https host is accepted. See [Environment variables](#environment-variables).
+
+| `client_id` rule | Requirement |
+|---|---|
+| Scheme | `https` only |
+| Host | A hostname, never an IP literal |
+| Path | A real path, not `/` |
+| Forbidden | Userinfo, query string, fragment, dot segments |
+
+| Document field | Requirement |
+|---|---|
+| `client_id` | Equal to the URL the document was fetched from |
+| `client_name` | Required, 1–128 characters |
+| `token_endpoint_auth_method` | Absent or `none` (public clients only) |
+| `redirect_uris` | Same policy as DCR: https, or http only for `127.0.0.1`, `[::1]` or `localhost` |
+| `grant_types` | Subset of `authorization_code`, `refresh_token` |
+| `response_types` | Subset of `code` |
+| `scope` | Subset of `openid offline_access mcp:read mcp:write mcp:execute` |
+| Rejected fields | `jwks`, `jwks_uri`, `request_uris`, `sector_identifier_uri`, `software_statement`, `software_id` |
+
+Fetching is hardened: requests are DNS-pinned and SSRF-guarded (private, loopback and metadata address ranges are refused), redirects are not followed, the body is capped at 5 KiB, and each fetch has a hard 5 second deadline. Breeze never fetches any other URL a document names.
+
+| Budget | Limit |
+|---|---|
+| Document fetches per host | 10 per minute |
+| Document fetches, all hosts | 120 per minute |
+| New CIMD clients | 200 per hour |
+
+In production, CIMD fetches are refused when Redis is not available.
+
+Documents are cached in-process for between 5 minutes and 24 hours. A `Cache-Control: max-age` inside that range is honoured; shorter values, including `no-store` and `no-cache`, are raised to 5 minutes on purpose to bound fetch traffic. The cache never overrides policy: every use of a CIMD client re-checks the flag, the host allowlist and the document, even from cache, so turning the flag off or narrowing the allowlist takes effect immediately.
+
+Each admitted CIMD client gets an `oauth_clients` row whose id is the URL, so grants, tokens, organization blocks and approvals work as they do for DCR clients. Disabling a client (global client-family revocation, which revokes its grants and tokens and sets `disabled_at`) refuses it from then on. Disabled, organization-blocked and approval-referenced clients are never removed by the stale-client cleanup. There is no operator UI for disabling a client yet.
+
+On the consent screen a metadata-document client shows `App details published by <host>` and the callback destination. It is still labelled **Unverified integration**: the host proves who publishes the metadata, not who the app is. If the callback is a loopback address, the screen also warns: "This app will receive access on this computer. Continue only if you started this connection yourself."
+
+### Issuer identification (`iss`)
+
+Authorization server metadata always includes `authorization_response_iss_parameter_supported: true` (RFC 9207). Every authorization response redirect carries an `iss` parameter, and clients should check that it equals the issuer. `client_id_metadata_document_supported: true` is included only when `OAUTH_CIMD_ENABLED=true`.
 
 ### Partner service principal keys (partner-wide automation)
 
@@ -773,6 +817,8 @@ These apply only when OAuth is enabled. When `MCP_OAUTH_ENABLED=true` in product
 | `OAUTH_DCR_ENABLED` | `false` | Allow Dynamic Client Registration at `POST /oauth/reg`. Off by default. When `true` in production you must also set **one** of the two posture flags below, or the API refuses to boot. |
 | `OAUTH_DCR_REQUIRE_IAT` | `false` | Gate DCR behind an initial access token issued out-of-band. Closes the public-spam vector, but is **incompatible with public MCP clients** (Claude.ai / ChatGPT) — they register anonymously and cannot supply an IAT. Use `OAUTH_DCR_ALLOW_ANONYMOUS` instead for a public server. |
 | `OAUTH_DCR_ALLOW_ANONYMOUS` | `false` | Deliberately permit anonymous DCR. **This is the required posture for connecting Claude.ai / ChatGPT** (see above). Spam risk is bounded by the controls on `/oauth/reg`: per-IP rate limit, forced public clients, mandatory PKCE S256, `software_id` rejection, and a daily stale-client GC. |
+| `OAUTH_CIMD_ENABLED` | `false` | Accept Client ID Metadata Documents (CIMD): a client may use an https URL as its `client_id`. Off by default. The API refuses to boot on a non-boolean value. See [Client ID Metadata Documents](#client-id-metadata-documents-cimd). |
+| `OAUTH_CIMD_ALLOWED_HOSTS` | (empty) | Optional comma-separated hostnames, or `.suffix` entries meaning any subdomain of the suffix (for example `client.example.com,.example.org`). Unset means any public https host. The API refuses to boot on a malformed entry (scheme, path, port, wildcard or empty item). |
 | `OAUTH_CONSENT_URL_BASE` | (empty) | Optional origin for the consent UI redirect (e.g. `http://localhost:4321` for split API/web dev). Defaults to a relative path, which works when the API and web app share an origin behind a reverse proxy. |
 
 ---
