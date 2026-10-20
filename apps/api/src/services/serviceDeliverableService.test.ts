@@ -54,7 +54,7 @@ import {
   addEvidence, createDeliverable, deactivateDeliverable, deliverOccurrence, getDeliverable, listOccurrences,
   materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange, markDueOccurrencesMissedForDeliverable,
   openDueOccurrencesForDeliverable, periodLabel, applyContractCancelledToDeliverables, moveDeliverables,
-  removeEvidence, reopenOccurrence, rescheduleOccurrence, summarizeStatus, updateDeliverable, waiveOccurrence,
+  removeEvidence, reopenOccurrence, rescheduleOccurrence, rescheduleOccurrences, summarizeStatus, updateDeliverable, waiveOccurrence,
   DeliverableServiceError, getOccurrenceOr404,
 } from './serviceDeliverableService';
 
@@ -741,6 +741,67 @@ describe('serviceDeliverableService', () => {
       queueResult([]);
       await rescheduleOccurrence('org1', 'o1', { dueAt: '2020-01-01' }, actor);
       expect(lastSet()).toMatchObject({ dueAt: '2020-01-01', status: 'missed' });
+    });
+  });
+
+  describe('rescheduleOccurrence → ticket due date (#9314)', () => {
+    it('moves the linked ticket due_date, scoped to the org and excluding resolved/closed', async () => {
+      queueResult([occ({ status: 'open', ticketId: 't1' })]);
+      queueResult([{ id: 'o1' }]); // occurrence update
+      queueResult([]);             // ticket update
+      queueResult([occ({ status: 'open', ticketId: 't1', dueAt: '2026-11-30' })]);
+      queueResult([]);
+      await rescheduleOccurrence('org1', 'o1', { dueAt: '2026-11-30' }, actor);
+      expect(lastSet()).toMatchObject({ dueDate: new Date('2026-11-30T00:00:00.000Z') });
+      const p = updateWhereParams();
+      expect(p).toEqual(expect.arrayContaining(['t1', 'org1', 'resolved', 'closed']));
+    });
+
+    it('does not touch tickets when the occurrence has no ticket', async () => {
+      queueResult([occ({ status: 'open', ticketId: null })]);
+      queueResult([{ id: 'o1' }]);
+      queueResult([occ({ dueAt: '2026-11-30' })]);
+      queueResult([]);
+      await rescheduleOccurrence('org1', 'o1', { dueAt: '2026-11-30' }, actor);
+      expect(chain.update.mock.calls).toHaveLength(1);
+    });
+  });
+
+  describe('rescheduleOccurrences (bulk, #9314)', () => {
+    it('moves every live occurrence; reports delivered/waived/foreign ids as refused while the rest still move', async () => {
+      queueResult([occ({ id: 'a', status: 'open' })]);      // a: load
+      queueResult([{ id: 'a' }]);                           // a: update
+      queueResult([occ({ id: 'a', dueAt: '2026-11-30' })]); // a: view
+      queueResult([]);                                      // a: evidence
+      queueResult([occ({ id: 'b', status: 'delivered' })]); // b: refused
+      queueResult([]);                                      // c: foreign → not found
+      queueResult([occ({ id: 'd', status: 'missed', graceDays: 14 })]);
+      queueResult([{ id: 'd' }]);
+      queueResult([occ({ id: 'd', dueAt: '2026-11-30' })]);
+      queueResult([]);
+      const out = await rescheduleOccurrences('org1', { occurrenceIds: ['a', 'b', 'c', 'd', 'a'], dueAt: '2026-11-30' }, actor);
+      expect(out.map((r) => [r.occurrenceId, r.ok])).toEqual([['a', true], ['b', false], ['c', false], ['d', true]]);
+      expect(out[1]).toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
+      expect(out[2]).toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.transaction.mock.calls.length).toBeGreaterThanOrEqual(1);
+      // only a and d were written, and originalDueAt never is
+      expect(chain.set.mock.calls.every((c) => !('originalDueAt' in (c[0] as object)))).toBe(true);
+      expect(chain.set.mock.calls.filter((c) => 'dueAt' in (c[0] as object))).toHaveLength(2);
+    });
+
+    it('shiftDays offsets each occurrence from its own dueAt', async () => {
+      queueResult([occ({ id: 'a', status: 'open', dueAt: '2026-10-31' })]);
+      queueResult([{ id: 'a' }]);
+      queueResult([occ({ id: 'a' })]);
+      queueResult([]);
+      await rescheduleOccurrences('org1', { occurrenceIds: ['a'], shiftDays: 7 }, actor);
+      expect(chain.set.mock.calls.find((c) => 'dueAt' in (c[0] as object))?.[0]).toMatchObject({ dueAt: '2026-11-07' });
+    });
+
+    it('404s a foreign org without touching the db', async () => {
+      await expect(rescheduleOccurrences('org1', { occurrenceIds: ['a'], dueAt: '2026-11-30' }, { ...actor, accessibleOrgIds: ['org9'] }))
+        .rejects.toMatchObject({ status: 404 });
+      expect(chain.select.mock.calls).toHaveLength(0);
     });
   });
 

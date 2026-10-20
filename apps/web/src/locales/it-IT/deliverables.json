@@ -265,5 +265,19 @@
     "hereHelp": "Scegli i deliverable degli altri contratti di questa organizzazione da spostare su questo.",
     "hereEmpty": "Non ci sono altri deliverable in questa organizzazione.",
     "collision": "Non è stato spostato nulla. Questi nomi esistono già nel contratto di destinazione: {{names}}"
+  },
+  "bulk": {
+    "select": "Seleziona {{name}}",
+    "selectAll": "Seleziona tutti i deliverable",
+    "count_one": "{{count}} selezionato",
+    "count_other": "{{count}} selezionati",
+    "reschedule": "Riprogramma selezione",
+    "clear": "Cancella",
+    "newDate": "Nuova data di scadenza",
+    "done_one": "{{count}} occorrenza riprogrammata",
+    "done_other": "{{count}} occorrenze riprogrammate",
+    "partial": "{{moved}} riprogrammate, {{refused}} non spostabili",
+    "none": "Nessuno dei deliverable selezionati ha un’occorrenza aperta da riprogrammare.",
+    "failed": "Impossibile riprogrammare le occorrenze selezionate."
   }
 }

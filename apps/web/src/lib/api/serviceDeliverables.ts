@@ -14,6 +14,7 @@ import type {
   CreateDeliverableInput,
   DeliverOccurrenceInput,
   RescheduleOccurrenceInput,
+  BulkRescheduleOccurrencesInput,
   UpdateDeliverableInput,
   WaiveOccurrenceInput,
 } from '@breeze/shared';
@@ -268,6 +269,22 @@ export async function rescheduleOccurrence(
   return unwrapData<Occurrence>(
     await f(`${occurrencePath(orgId, occurrenceId)}/reschedule`, jsonInit('POST', body)),
   );
+}
+
+export type BulkRescheduleResult =
+  | { occurrenceId: string; ok: true; occurrence: Occurrence }
+  | { occurrenceId: string; ok: false; status: number; code: string; error: string };
+
+/** #9314 — one request for many occurrences; refused rows come back in `results`. */
+export async function bulkRescheduleOccurrences(
+  f: Fetcher,
+  orgId: string,
+  body: BulkRescheduleOccurrencesInput,
+): Promise<BulkRescheduleResult[]> {
+  const out = await unwrapData<{ results: BulkRescheduleResult[] }>(
+    await f(`${base(orgId)}/occurrences/reschedule`, jsonInit('POST', body)),
+  );
+  return out.results;
 }
 
 export async function addEvidence(

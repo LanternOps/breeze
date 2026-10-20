@@ -265,5 +265,19 @@
     "hereHelp": "Bu kuruluşun diğer sözleşmelerinden, bu sözleşmeye taşınacak teslimatları seçin.",
     "hereEmpty": "Bu kuruluşta başka teslimat yok.",
     "collision": "Hiçbir şey taşınmadı. Bu adlar hedef sözleşmede zaten var: {{names}}"
+  },
+  "bulk": {
+    "select": "{{name}} seç",
+    "selectAll": "Tüm teslimatları seç",
+    "count_one": "{{count}} seçili",
+    "count_other": "{{count}} seçili",
+    "reschedule": "Seçilenleri yeniden planla",
+    "clear": "Temizle",
+    "newDate": "Yeni son tarih",
+    "done_one": "{{count}} oluşum yeniden planlandı",
+    "done_other": "{{count}} oluşum yeniden planlandı",
+    "partial": "{{moved}} yeniden planlandı, {{refused}} taşınamadı",
+    "none": "Seçilen teslimatların hiçbirinde yeniden planlanacak açık bir oluşum yok.",
+    "failed": "Seçilen oluşumlar yeniden planlanamadı."
   }
 }

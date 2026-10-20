@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, lt, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   serviceDeliverables, serviceDeliverableOccurrences, serviceDeliverableEvidence,
@@ -13,7 +13,7 @@ import { contractDocuments } from '../db/schema/contractDocuments';
 import { ticketCategories } from '../db/schema/tickets';
 import { ticketChecklistItems, ticketChecklistTemplateItems } from '../db/schema/ticketChecklists';
 import { checklistCountsForTickets } from './ticketChecklistService';
-import { ticketComments } from '../db/schema/portal';
+import { ticketComments, tickets } from '../db/schema/portal';
 import type {
   CreateDeliverableInput, UpdateDeliverableInput, MoveDeliverablesInput, DeliverOccurrenceInput, WaiveOccurrenceInput,
   RescheduleOccurrenceInput, EvidenceRef,
@@ -722,20 +722,71 @@ export async function reopenOccurrence(orgId: string, occurrenceId: string, acto
   });
 }
 
+/**
+ * Move one occurrence inside an existing transaction (shared by the single and
+ * bulk paths so both apply the same per-row rules). Also moves the linked
+ * ticket's due date unless that ticket is already resolved/closed (#9314); the
+ * status filter is in the UPDATE itself so a resolved ticket is never touched.
+ */
+async function rescheduleWithin(
+  tx: DbExecutor, orgId: string, occurrenceId: string, to: { dueAt: string } | { shiftDays: number },
+): Promise<OccurrenceView> {
+  const current = await loadOccurrence(orgId, occurrenceId, tx);
+  if (!RESCHEDULABLE.has(current.status)) {
+    throw new DeliverableServiceError(`Cannot reschedule an occurrence in status ${current.status}`, 409, 'INVALID_OCCURRENCE_TRANSITION');
+  }
+  const dueAt = 'dueAt' in to ? to.dueAt : addDaysISO(current.dueAt, to.shiftDays);
+  // A missed occurrence pulled back inside its grace window is live again;
+  // originalDueAt is never touched (spec §7: the history of the slip is kept).
+  const next: OccurrenceStatus = current.status === 'missed' && !isPastGrace(dueAt, current.graceDays, todayISO()) ? 'open' : current.status;
+  await updateOccurrenceFrom(tx, orgId, occurrenceId, current.status, { dueAt, status: next, updatedAt: new Date() });
+  if (current.ticketId) {
+    await tx.update(tickets)
+      .set({ dueDate: new Date(`${dueAt}T00:00:00.000Z`), updatedAt: new Date() })
+      .where(and(
+        eq(tickets.id, current.ticketId), eq(tickets.orgId, orgId),
+        notInArray(tickets.status, ['resolved', 'closed']),
+      ));
+  }
+  return loadView(orgId, occurrenceId, tx);
+}
+
 export async function rescheduleOccurrence(
   orgId: string, occurrenceId: string, input: RescheduleOccurrenceInput, actor: DeliverableActor,
 ): Promise<OccurrenceView> {
   requireOrgAccess(actor, orgId);
+  return db.transaction((tx) => rescheduleWithin(tx, orgId, occurrenceId, { dueAt: input.dueAt }));
+}
+
+export type BulkRescheduleResult =
+  | { occurrenceId: string; ok: true; occurrence: OccurrenceView }
+  | { occurrenceId: string; ok: false; status: number; code: string; error: string };
+
+/**
+ * #9314 — reschedule many occurrences in one request. Per-row rules are the
+ * single reschedule's; a row that is not reschedulable (delivered/waived, or a
+ * foreign/missing id → 404) is REPORTED, never silently skipped, and does not
+ * stop the others. Each row runs in its own savepoint inside one outer
+ * transaction, so a refused row leaves no partial write behind.
+ */
+export async function rescheduleOccurrences(
+  orgId: string, input: { occurrenceIds: string[] } & ({ dueAt: string } | { shiftDays: number }), actor: DeliverableActor,
+): Promise<BulkRescheduleResult[]> {
+  requireOrgAccess(actor, orgId);
+  const to = 'dueAt' in input ? { dueAt: input.dueAt } : { shiftDays: input.shiftDays };
+  const ids = [...new Set(input.occurrenceIds)];
   return db.transaction(async (tx) => {
-    const current = await loadOccurrence(orgId, occurrenceId, tx);
-    if (!RESCHEDULABLE.has(current.status)) {
-      throw new DeliverableServiceError(`Cannot reschedule an occurrence in status ${current.status}`, 409, 'INVALID_OCCURRENCE_TRANSITION');
+    const out: BulkRescheduleResult[] = [];
+    for (const occurrenceId of ids) {
+      try {
+        const occurrence = await tx.transaction((sp) => rescheduleWithin(sp, orgId, occurrenceId, to));
+        out.push({ occurrenceId, ok: true, occurrence });
+      } catch (err) {
+        if (!(err instanceof DeliverableServiceError)) throw err;
+        out.push({ occurrenceId, ok: false, status: err.status, code: err.code, error: err.message });
+      }
     }
-    // A missed occurrence pulled back inside its grace window is live again;
-    // originalDueAt is never touched (spec §7: the history of the slip is kept).
-    const next: OccurrenceStatus = current.status === 'missed' && !isPastGrace(input.dueAt, current.graceDays, todayISO()) ? 'open' : current.status;
-    await updateOccurrenceFrom(tx, orgId, occurrenceId, current.status, { dueAt: input.dueAt, status: next, updatedAt: new Date() });
-    return loadView(orgId, occurrenceId, tx);
+    return out;
   });
 }
 

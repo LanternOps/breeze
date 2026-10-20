@@ -265,5 +265,19 @@
     "hereHelp": "Choose deliverables from this organization's other contracts to move onto this one.",
     "hereEmpty": "There are no other deliverables in this organization.",
     "collision": "Nothing was moved. These names already exist on the target contract: {{names}}"
+  },
+  "bulk": {
+    "select": "Select {{name}}",
+    "selectAll": "Select all deliverables",
+    "count_one": "{{count}} selected",
+    "count_other": "{{count}} selected",
+    "reschedule": "Reschedule selected",
+    "clear": "Clear",
+    "newDate": "New due date",
+    "done_one": "{{count}} occurrence rescheduled",
+    "done_other": "{{count}} occurrences rescheduled",
+    "partial": "{{moved}} rescheduled, {{refused}} could not be moved",
+    "none": "None of the selected deliverables has an open occurrence to reschedule.",
+    "failed": "Could not reschedule the selected occurrences."
   }
 }

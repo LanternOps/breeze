@@ -2,16 +2,20 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
+  bulkRescheduleOccurrences,
   deactivateDeliverable,
   listDeliverables,
+  listOccurrences,
   updateDeliverable,
   type Deliverable,
   type DeliverableStatus,
   type Fetcher,
+  type Occurrence,
 } from '../../lib/api/serviceDeliverables';
 import { handleActionError } from '../../lib/runAction';
 import { formatDate } from '../billing/shared/format';
 import { Dialog } from '../shared/Dialog';
+import { showToast } from '../shared/Toast';
 import DeliverableForm from './DeliverableForm';
 import { MoveToContractDialog } from './MoveDeliverablesDialogs';
 import { useContractOptions } from './useContractOptions';
@@ -40,6 +44,16 @@ const STATUS_PILL: Record<DeliverableStatus, string> = {
   missed: 'bg-destructive/10 text-destructive',
   inactive: 'bg-muted text-muted-foreground',
 };
+
+// Statuses a reschedule is allowed from (mirrors the API's RESCHEDULABLE set).
+const LIVE_OCCURRENCE: ReadonlySet<string> = new Set(['scheduled', 'open', 'awaiting_evidence', 'missed']);
+
+/** The deliverable's oldest live occurrence — the slipped one a bulk reschedule targets. */
+function oldestLive(occurrences: Occurrence[]): Occurrence | undefined {
+  return occurrences
+    .filter((o) => LIVE_OCCURRENCE.has(o.status))
+    .sort((a, b) => a.dueAt.localeCompare(b.dueAt))[0];
+}
 
 const LATE_PILL = 'inline-flex items-center rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive';
 
@@ -84,8 +98,12 @@ export default function DeliverableTable({
   const [editing, setEditing] = useState<Deliverable | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // One selection set drives both bulk actions: move to contract (#9302) and
+  // reschedule occurrences (#9314).
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
   const [moving, setMoving] = useState(false);
+  const [bulkDate, setBulkDate] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
   // Contract options are only needed once the edit dialog is open (#9302).
   const contractChoices = useContractOptions(fetcher, orgId, editing !== null);
 
@@ -109,6 +127,48 @@ export default function DeliverableTable({
       cancelled = true;
     };
   }, [fetcher, orgId, contractId, refreshKey, reloadTick, stableT]);
+
+  const toggleSelected = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+  const toggleAll = () => setSelectedIds(allSelected ? new Set() : new Set(rows.map((r) => r.id)));
+
+  // #9314: one request for every selected deliverable's oldest live occurrence.
+  const rescheduleSelected = async () => {
+    if (bulkBusy || !bulkDate || selectedIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const ids = await runClientAction(async () => {
+        const lists = await Promise.all([...selectedIds].map((id) => listOccurrences(fetcher, orgId, id)));
+        return lists.map(oldestLive).filter((o): o is Occurrence => !!o).map((o) => o.id);
+      }, { errorFallback: t('bulk.failed') });
+      if (ids.length === 0) {
+        showToast({ type: 'warning', message: t('bulk.none') });
+        return;
+      }
+      const results = await runClientAction(
+        () => bulkRescheduleOccurrences(fetcher, orgId, { occurrenceIds: ids, dueAt: bulkDate }),
+        { errorFallback: t('bulk.failed') },
+      );
+      const moved = results.filter((r) => r.ok).length;
+      const refused = results.length - moved;
+      showToast(refused === 0
+        ? { type: 'success', message: t('bulk.done', { count: moved }) }
+        : { type: 'warning', message: t('bulk.partial', { moved, refused }) });
+      setSelectedIds(new Set());
+      setBulkDate('');
+      reload();
+    } catch (err) {
+      handleActionError(err, t('bulk.failed'));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const replaceRow = (next: Deliverable) => setRows((prev) => prev.map((r) => (r.id === next.id ? next : r)));
 
@@ -145,14 +205,6 @@ export default function DeliverableTable({
     }
   };
 
-  const toggleSelected = (id: string) =>
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
   const groups = groupRows(rows, groupByContract);
 
   return (
@@ -172,22 +224,59 @@ export default function DeliverableTable({
       ) : (
         <div className="overflow-x-auto">
           {selectable && selectedIds.size > 0 && (
-            <div className="flex items-center gap-3 border-b bg-muted/40 px-3 py-2 text-sm" data-testid="deliverables-bulk-bar">
-              <span>{t('move.selected', { count: selectedIds.size })}</span>
+            <div className="flex flex-wrap items-center gap-2 border-b bg-muted/40 px-3 py-2" data-testid="deliverables-bulk-bar">
+              <span className="text-sm font-medium">{t('bulk.count', { count: selectedIds.size })}</span>
+              <input
+                type="date"
+                value={bulkDate}
+                onChange={(e) => setBulkDate(e.target.value)}
+                aria-label={t('bulk.newDate')}
+                className="rounded-md border bg-background px-2 py-1 text-sm"
+                data-testid="deliverables-bulk-date"
+              />
+              <button
+                type="button"
+                onClick={() => void rescheduleSelected()}
+                disabled={bulkBusy || !bulkDate}
+                className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                data-testid="deliverables-bulk-reschedule"
+              >
+                {t('bulk.reschedule')}
+              </button>
               <button
                 type="button"
                 onClick={() => setMoving(true)}
-                className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                disabled={bulkBusy}
+                className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                 data-testid="deliverables-move-open"
               >
                 {t('move.action')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedIds(new Set())}
+                disabled={bulkBusy}
+                className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                data-testid="deliverables-bulk-clear"
+              >
+                {t('bulk.clear')}
               </button>
             </div>
           )}
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                {selectable && <th className="w-8 px-3 py-2" />}
+                {selectable && (
+                  <th className="w-8 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      aria-label={t('bulk.selectAll')}
+                      data-testid="deliverables-select-all"
+                    />
+                  </th>
+                )}
                 <th className="px-3 py-2 font-medium">{t('table.name')}</th>
                 <th className="px-3 py-2 font-medium">{t('table.cadence')}</th>
                 <th className="px-3 py-2 font-medium">{t('table.nextDue')}</th>
@@ -269,7 +358,7 @@ interface GroupRowsProps {
   group: Group;
   showHeading: boolean;
   selectable: boolean;
-  selectedIds: Set<string>;
+  selectedIds: ReadonlySet<string>;
   onToggleSelected: (id: string) => void;
   busyId: string | null;
   confirmingId: string | null;
@@ -315,7 +404,7 @@ function GroupRows({
                   type="checkbox"
                   checked={selectedIds.has(row.id)}
                   onChange={() => onToggleSelected(row.id)}
-                  aria-label={t('move.selectRow', { name: row.name })}
+                  aria-label={t('bulk.select', { name: row.name })}
                   data-testid={`deliverable-select-${row.id}`}
                 />
               </td>

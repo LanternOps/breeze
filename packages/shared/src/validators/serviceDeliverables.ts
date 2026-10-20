@@ -107,6 +107,15 @@ export const deliverOccurrenceSchema = z.object({
 });
 export const waiveOccurrenceSchema = z.object({ reason: z.string().min(1).max(2000) });
 export const rescheduleOccurrenceSchema = z.object({ dueAt: isoDate });
+/** #9314 — move many occurrences at once: to one date, or by a day offset
+ *  (exactly one of the two). Max 100 ids per request. */
+export const bulkRescheduleOccurrencesSchema = z.object({
+  occurrenceIds: z.array(z.string().guid()).min(1).max(100),
+  dueAt: isoDate.optional(),
+  shiftDays: z.number().int().min(-3650).max(3650).optional(),
+}).refine((v) => (v.dueAt === undefined) !== (v.shiftDays === undefined), {
+  message: 'Provide exactly one of dueAt or shiftDays',
+});
 export const listOccurrencesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(24),
 });
@@ -117,5 +126,6 @@ export type MoveDeliverablesInput = z.infer<typeof moveDeliverablesSchema>;
 export type DeliverOccurrenceInput = z.infer<typeof deliverOccurrenceSchema>;
 export type WaiveOccurrenceInput = z.infer<typeof waiveOccurrenceSchema>;
 export type RescheduleOccurrenceInput = z.infer<typeof rescheduleOccurrenceSchema>;
+export type BulkRescheduleOccurrencesInput = z.infer<typeof bulkRescheduleOccurrencesSchema>;
 export type AddEvidenceInput = z.infer<typeof addEvidenceSchema>;
 export type EvidenceRef = z.infer<typeof evidenceRefSchema>;

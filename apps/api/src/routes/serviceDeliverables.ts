@@ -3,6 +3,7 @@
  *
  *   /orgs/:orgId/deliverables[/:id[/occurrences]]
  *   /orgs/:orgId/deliverables/move
+ *   /orgs/:orgId/deliverables/occurrences/reschedule  (bulk, #9314)
  *   /orgs/:orgId/deliverables/occurrences/:oId/{deliver,waive,reopen,reschedule,evidence[/:eId]}
  *
  * A sibling `/orgs` router in the orgSummary / orgArchive style: it owns its
@@ -24,11 +25,12 @@ import {
   applyTemplateSetSchema,
   createDeliverableSchema, updateDeliverableSchema, listDeliverablesQuerySchema,
   deliverOccurrenceSchema, waiveOccurrenceSchema, rescheduleOccurrenceSchema,
+  bulkRescheduleOccurrencesSchema,
   addEvidenceSchema, listOccurrencesQuerySchema, moveDeliverablesSchema,
 } from '@breeze/shared';
 import {
   listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable, moveDeliverables,
-  listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence,
+  listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence, rescheduleOccurrences,
   addEvidence, removeEvidence, getOccurrenceOr404,
   type DeliverableActor,
 } from '../services/serviceDeliverableService';
@@ -168,6 +170,23 @@ serviceDeliverableRoutes.post(
     const { orgId, oId } = c.req.valid('param');
     try {
       return c.json({ data: await rescheduleOccurrence(orgId, oId, c.req.valid('json'), deliverableActorFrom(c)) });
+    } catch (err) { return handleDeliverableError(c, err); }
+  },
+);
+
+// #9314 — bulk reschedule. 200 with per-id results; a refused/foreign id is
+// reported in its own row (404 for a foreign org's id), never a whole-request
+// failure and never a cross-tenant write.
+serviceDeliverableRoutes.post(
+  '/:orgId/deliverables/occurrences/reschedule',
+  scopes, writePerm,
+  zValidator('param', orgParam), zValidator('json', bulkRescheduleOccurrencesSchema),
+  async (c) => {
+    const { orgId } = c.req.valid('param');
+    const { occurrenceIds, dueAt, shiftDays } = c.req.valid('json');
+    try {
+      const input = dueAt !== undefined ? { occurrenceIds, dueAt } : { occurrenceIds, shiftDays: shiftDays as number };
+      return c.json({ data: { results: await rescheduleOccurrences(orgId, input, deliverableActorFrom(c)) } });
     } catch (err) { return handleDeliverableError(c, err); }
   },
 );

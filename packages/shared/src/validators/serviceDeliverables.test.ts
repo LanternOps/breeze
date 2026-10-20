@@ -5,6 +5,7 @@ import {
   deliverOccurrenceSchema,
   moveDeliverablesSchema,
   rescheduleOccurrenceSchema,
+  bulkRescheduleOccurrencesSchema,
   updateDeliverableSchema,
 } from './serviceDeliverables';
 
@@ -62,6 +63,24 @@ describe('serviceDeliverables validators', () => {
     expect(addEvidenceSchema.safeParse({ kind: 'report_run', reportRunId: 'nope' }).success).toBe(false));
   it('reschedule requires an ISO date', () =>
     expect(rescheduleOccurrenceSchema.safeParse({ dueAt: '31/10/2026' }).success).toBe(false));
+
+  describe('bulkRescheduleOccurrencesSchema (#9314)', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    it('accepts ids + dueAt, or ids + shiftDays', () => {
+      expect(bulkRescheduleOccurrencesSchema.safeParse({ occurrenceIds: [id], dueAt: '2026-11-30' }).success).toBe(true);
+      expect(bulkRescheduleOccurrencesSchema.safeParse({ occurrenceIds: [id], shiftDays: -7 }).success).toBe(true);
+    });
+    it('requires exactly one of dueAt / shiftDays', () => {
+      expect(bulkRescheduleOccurrencesSchema.safeParse({ occurrenceIds: [id] }).success).toBe(false);
+      expect(bulkRescheduleOccurrencesSchema.safeParse({ occurrenceIds: [id], dueAt: '2026-11-30', shiftDays: 1 }).success).toBe(false);
+    });
+    it('bounds the id list to 1..100 uuids and shiftDays to an integer', () => {
+      expect(bulkRescheduleOccurrencesSchema.safeParse({ occurrenceIds: [], dueAt: '2026-11-30' }).success).toBe(false);
+      expect(bulkRescheduleOccurrencesSchema.safeParse({ occurrenceIds: Array(101).fill(id), dueAt: '2026-11-30' }).success).toBe(false);
+      expect(bulkRescheduleOccurrencesSchema.safeParse({ occurrenceIds: ['nope'], dueAt: '2026-11-30' }).success).toBe(false);
+      expect(bulkRescheduleOccurrencesSchema.safeParse({ occurrenceIds: [id], shiftDays: 1.5 }).success).toBe(false);
+    });
+  });
 
   // ── #5808 W03: internal instructions + the checklist-template pointer ─────
   it('create accepts instructions and checklistTemplateId', () => {

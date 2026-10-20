@@ -265,5 +265,19 @@
     "hereHelp": "Choisissez des livrables parmi les autres contrats de cette organisation pour les déplacer vers celui-ci.",
     "hereEmpty": "Il n'y a aucun autre livrable dans cette organisation.",
     "collision": "Rien n'a été déplacé. Ces noms existent déjà dans le contrat cible : {{names}}"
+  },
+  "bulk": {
+    "select": "Sélectionner {{name}}",
+    "selectAll": "Sélectionner tous les livrables",
+    "count_one": "{{count}} sélectionné",
+    "count_other": "{{count}} sélectionnés",
+    "reschedule": "Reporter la sélection",
+    "clear": "Effacer",
+    "newDate": "Nouvelle date d’échéance",
+    "done_one": "{{count}} occurrence reportée",
+    "done_other": "{{count}} occurrences reportées",
+    "partial": "{{moved}} reportées, {{refused}} n’ont pas pu être déplacées",
+    "none": "Aucun des livrables sélectionnés n’a d’occurrence ouverte à reporter.",
+    "failed": "Impossible de reporter les occurrences sélectionnées."
   }
 }

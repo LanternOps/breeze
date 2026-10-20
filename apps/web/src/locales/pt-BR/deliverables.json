@@ -265,5 +265,19 @@
     "hereHelp": "Escolha entregáveis dos outros contratos desta organização para movê-los para este.",
     "hereEmpty": "Não há outros entregáveis nesta organização.",
     "collision": "Nada foi movido. Estes nomes já existem no contrato de destino: {{names}}"
+  },
+  "bulk": {
+    "select": "Selecionar {{name}}",
+    "selectAll": "Selecionar todas as entregas",
+    "count_one": "{{count}} selecionada",
+    "count_other": "{{count}} selecionadas",
+    "reschedule": "Reagendar selecionadas",
+    "clear": "Limpar",
+    "newDate": "Nova data de vencimento",
+    "done_one": "{{count}} ocorrência reagendada",
+    "done_other": "{{count}} ocorrências reagendadas",
+    "partial": "{{moved}} reagendadas, {{refused}} não puderam ser movidas",
+    "none": "Nenhuma das entregas selecionadas tem uma ocorrência aberta para reagendar.",
+    "failed": "Não foi possível reagendar as ocorrências selecionadas."
   }
 }

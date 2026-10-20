@@ -265,5 +265,19 @@
     "hereHelp": "Wählen Sie Leistungen aus den anderen Verträgen dieser Organisation aus, die auf diesen Vertrag verschoben werden sollen.",
     "hereEmpty": "In dieser Organisation gibt es keine weiteren Leistungen.",
     "collision": "Es wurde nichts verschoben. Diese Namen existieren bereits im Zielvertrag: {{names}}"
+  },
+  "bulk": {
+    "select": "{{name}} auswählen",
+    "selectAll": "Alle Leistungen auswählen",
+    "count_one": "{{count}} ausgewählt",
+    "count_other": "{{count}} ausgewählt",
+    "reschedule": "Auswahl verschieben",
+    "clear": "Zurücksetzen",
+    "newDate": "Neues Fälligkeitsdatum",
+    "done_one": "{{count}} Termin verschoben",
+    "done_other": "{{count}} Termine verschoben",
+    "partial": "{{moved}} verschoben, {{refused}} konnten nicht verschoben werden",
+    "none": "Keine der ausgewählten Leistungen hat einen offenen Termin zum Verschieben.",
+    "failed": "Die ausgewählten Termine konnten nicht verschoben werden."
   }
 }

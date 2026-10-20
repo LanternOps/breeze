@@ -37,6 +37,7 @@ const serviceMocks = vi.hoisted(() => ({
   waiveOccurrence: vi.fn(),
   reopenOccurrence: vi.fn(),
   rescheduleOccurrence: vi.fn(),
+  rescheduleOccurrences: vi.fn(),
   addEvidence: vi.fn(),
   removeEvidence: vi.fn(),
   getOccurrenceOr404: vi.fn(),
@@ -61,7 +62,7 @@ import { serviceDeliverableRoutes } from './serviceDeliverables';
 
 const {
   listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable,
-  listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence,
+  listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence, rescheduleOccurrences,
   addEvidence, removeEvidence, moveDeliverables,
 } = serviceMocks;
 
@@ -244,6 +245,29 @@ describe('service deliverable routes (#5573 W01)', () => {
     expect((await post(`/${ORG}/deliverables/occurrences/${OCC}/reschedule`, { dueAt: '2026-10-31' })).status).toBe(200);
     expect(rescheduleOccurrence).toHaveBeenCalledWith(ORG, OCC, { dueAt: '2026-10-31' }, ACTOR);
     expect((await post(`/${ORG}/deliverables/occurrences/${OCC}/reschedule`, { dueAt: '31/10/2026' })).status).toBe(400);
+  });
+
+  it('POST bulk reschedule → 200 { data: { results } }; passes ids + dueAt once; 400 on bad body', async () => {
+    const results = [{ occurrenceId: OCC, ok: true }];
+    rescheduleOccurrences.mockResolvedValue(results);
+    const res = await post(`/${ORG}/deliverables/occurrences/reschedule`, { occurrenceIds: [OCC], dueAt: '2026-11-30' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { results } });
+    expect(rescheduleOccurrences).toHaveBeenCalledTimes(1);
+    expect(rescheduleOccurrences).toHaveBeenCalledWith(ORG, { occurrenceIds: [OCC], dueAt: '2026-11-30' }, ACTOR);
+    expect(rescheduleOccurrence).not.toHaveBeenCalled();
+    expect((await post(`/${ORG}/deliverables/occurrences/reschedule`, { occurrenceIds: [OCC] })).status).toBe(400);
+  });
+
+  it('POST bulk reschedule needs contracts:write; a foreign org 404s as a whole', async () => {
+    const body = JSON.stringify({ occurrenceIds: [OCC], shiftDays: 7 });
+    const readOnly = await app.request(`/${ORG}/deliverables/occurrences/reschedule`, {
+      method: 'POST', body, headers: { authorization: 'Bearer token', 'x-allow': 'contracts:read', 'content-type': 'application/json' },
+    });
+    expect(readOnly.status).toBe(403);
+    expect(rescheduleOccurrences).not.toHaveBeenCalled();
+    rescheduleOccurrences.mockRejectedValue(Object.assign(new Error('Not found'), { status: 404, code: 'NOT_FOUND' }));
+    expect((await post(`/${ORG}/deliverables/occurrences/reschedule`, { occurrenceIds: [OCC], shiftDays: 7 })).status).toBe(404);
   });
 
   it('POST evidence → 200; DELETE evidence → 200', async () => {

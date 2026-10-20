@@ -265,5 +265,19 @@
     "hereHelp": "Elija entregables de los otros contratos de esta organización para moverlos a este.",
     "hereEmpty": "No hay otros entregables en esta organización.",
     "collision": "No se movió nada. Estos nombres ya existen en el contrato de destino: {{names}}"
+  },
+  "bulk": {
+    "select": "Seleccionar {{name}}",
+    "selectAll": "Seleccionar todos los entregables",
+    "count_one": "{{count}} seleccionado",
+    "count_other": "{{count}} seleccionados",
+    "reschedule": "Reprogramar selección",
+    "clear": "Borrar",
+    "newDate": "Nueva fecha de vencimiento",
+    "done_one": "{{count}} ocurrencia reprogramada",
+    "done_other": "{{count}} ocurrencias reprogramadas",
+    "partial": "{{moved}} reprogramadas, {{refused}} no se pudieron mover",
+    "none": "Ninguno de los entregables seleccionados tiene una ocurrencia abierta para reprogramar.",
+    "failed": "No se pudieron reprogramar las ocurrencias seleccionadas."
   }
 }

@@ -1134,6 +1134,7 @@ export {
   deliverOccurrenceSchema,
   waiveOccurrenceSchema,
   rescheduleOccurrenceSchema,
+  bulkRescheduleOccurrencesSchema,
   listOccurrencesQuerySchema,
   moveDeliverablesSchema,
   type MoveDeliverablesInput,
@@ -1142,6 +1143,7 @@ export {
   type DeliverOccurrenceInput,
   type WaiveOccurrenceInput,
   type RescheduleOccurrenceInput,
+  type BulkRescheduleOccurrencesInput,
   type AddEvidenceInput,
   type EvidenceRef,
 } from './serviceDeliverables';
