@@ -59,8 +59,12 @@ const ORG_ID = '11111111-1111-1111-1111-111111111111';
  * `limitedRows` defaults to `baseRows` for every caller that doesn't need to
  * tell the two apart. */
 function queryResult<T>(baseRows: T[], limitedRows: T[] = baseRows) {
-  const promise = Promise.resolve(baseRows) as Promise<T[]> & { limit: (n: number) => Promise<T[]> };
+  const promise = Promise.resolve(baseRows) as Promise<T[]> & {
+    limit: (n: number) => Promise<T[]>;
+    orderBy: (...a: unknown[]) => Promise<T[]> & { limit: (n: number) => Promise<T[]> };
+  };
   promise.limit = () => Promise.resolve(limitedRows);
+  promise.orderBy = () => promise;
   return promise;
 }
 
@@ -69,7 +73,7 @@ function queryResult<T>(baseRows: T[], limitedRows: T[] = baseRows) {
  * BOTH ways with different expected rows (`contacts`: a plain `count(*)` and
  * a separate `.limit(1)` primary-contact lookup) — a `{ base, limited }` pair
  * that lets a test express the two independently. */
-type RowsSpec<T> = T[] | { base: T[]; limited: T[] };
+type RowsSpec<T> = T[] | { base: T[]; limited: T[]; joined?: T[] };
 
 /** Table-keyed row stubs. `db.select` is mocked to look up the table passed
  * to `.from()` rather than pinning exact call order/count — the route issues
@@ -79,16 +83,25 @@ function setupDb(rowsByTable: Map<unknown, RowsSpec<unknown>>) {
   vi.mocked(db.select).mockImplementation(
     () =>
       ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            whereByTable.set(table, condition);
+        from: (table: unknown) => {
+          const run = (condition: unknown, joined: boolean) => {
+            whereByTable.set(joined ? `${String((table as any)?.[Symbol.for('drizzle:Name')] ?? 'tbl')}+join` : table, condition);
             const spec = rowsByTable.get(table);
+            if (joined) {
+              return queryResult(
+                (spec && !Array.isArray(spec) ? spec.joined : undefined) ?? [],
+              );
+            }
             if (spec && !Array.isArray(spec)) {
               return queryResult(spec.base, spec.limited);
             }
             return queryResult((spec as unknown[] | undefined) ?? []);
-          },
-        }),
+          };
+          return {
+            where: (condition: unknown) => run(condition, false),
+            innerJoin: () => ({ where: (condition: unknown) => run(condition, true) }),
+          };
+        },
       }) as any,
   );
 }
@@ -320,6 +333,58 @@ describe('GET /orgs/organizations/:id/summary', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.contacts).toEqual({ count: 3, primary: null });
+  });
+
+  it('site-level primary only: primary is null and sitePrimaries names the contact and site (#9317)', async () => {
+    setupDb(
+      new Map<unknown, RowsSpec<unknown>>([
+        [organizations, [{ id: ORG_ID, currencyCode: 'USD' }]],
+        [sites, [{ count: '2' }]],
+        [
+          contacts,
+          {
+            base: [{ count: '1' }],
+            limited: [],
+            joined: [
+              { id: 'c-site', name: 'Sam Site', email: 'sam@x.example', phone: null, siteId: 'site-1', siteName: 'HQ' },
+            ],
+          },
+        ],
+      ]),
+    );
+    const app = buildApp({ grants: [PERMISSIONS.ORGS_READ] });
+    const res = await app.request(`/orgs/organizations/${ORG_ID}/summary`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.contacts.primary).toBeNull();
+    expect(body.contacts.sitePrimaries).toEqual([
+      { id: 'c-site', name: 'Sam Site', email: 'sam@x.example', phone: null, siteId: 'site-1', siteName: 'HQ' },
+    ]);
+  });
+
+  it('org-level primary present: sitePrimaries is empty and the site query is skipped (#9317)', async () => {
+    whereByTable.clear();
+    setupDb(
+      new Map<unknown, RowsSpec<unknown>>([
+        [organizations, [{ id: ORG_ID, currencyCode: 'USD' }]],
+        [sites, [{ count: '1' }]],
+        [
+          contacts,
+          {
+            base: [{ count: '2' }],
+            limited: [{ id: 'c1', name: 'Jane Doe', email: null, phone: null }],
+            joined: [{ id: 'x', name: 'Should not appear', email: null, phone: null, siteId: 's', siteName: 'S' }],
+          },
+        ],
+      ]),
+    );
+    const app = buildApp({ grants: [PERMISSIONS.ORGS_READ] });
+    const res = await app.request(`/orgs/organizations/${ORG_ID}/summary`);
+
+    const body = await res.json();
+    expect(body.contacts.primary).toEqual({ id: 'c1', name: 'Jane Doe', email: null, phone: null });
+    expect(body.contacts.sitePrimaries ?? []).toEqual([]);
   });
 
   it('includes lastActivityAt only when the caller holds audit:read', async () => {

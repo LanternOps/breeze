@@ -75,6 +75,23 @@ describe('OrgRecordHeader', () => {
     expect(screen.getByTestId('org-record-primary-contact-link').getAttribute('href')).toBe('#contacts');
   });
 
+  it('shows the site-level primary instead of "No primary contact" (#9317)', () => {
+    const sp = (id: string, name: string, siteName: string) => ({
+      id, name, email: `${id}@acme.test`, phone: null, siteId: `s-${id}`, siteName,
+    });
+    renderHeader({
+      summary: { ...SUMMARY, contacts: { count: 2, primary: null, sitePrimaries: [sp('a', 'Sam Site', 'HQ'), sp('b', 'Pat Branch', 'Annex')] } },
+    });
+    const el = screen.getByTestId('org-record-site-primary-contact');
+    expect(el.textContent).toContain('Sam Site');
+    expect(el.textContent).toContain('HQ');
+    expect(el.textContent).toContain('+1 more');
+    expect(el.textContent).toContain('No org-level primary contact');
+    expect(screen.queryByText('No primary contact')).toBeNull();
+    expect(screen.queryByTestId('org-record-no-primary-contact')).toBeNull();
+    expect(screen.getByTestId('org-record-primary-contact-link').getAttribute('href')).toBe('#contacts');
+  });
+
   it('stays quiet about contacts while the summary is still null', () => {
     renderHeader({ summary: null });
     expect(screen.queryByTestId('org-record-primary-contact')).toBeNull();
