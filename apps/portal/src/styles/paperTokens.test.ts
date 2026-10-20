@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 /**
  * V-7 (visual QA 2026-10-05): documents are white paper in every theme, so in dark
@@ -9,20 +9,22 @@ import { fileURLToPath } from 'node:url';
  * with to the LIGHT values; the chrome accent's light primary reaches it through
  * `--paper-primary`, which only the light blocks declare.
  */
-const CSS = readFileSync(fileURLToPath(new URL('./globals.css', import.meta.url)), 'utf8');
+const CSS = readFileSync(new URL('./globals.css', import.meta.url), 'utf8');
+// The paper block now lives in the shared package (document.css).
+const DOC_CSS = readFileSync(createRequire(import.meta.url).resolve('@breeze/document-ui/document.css'), 'utf8');
 
-function block(selector: RegExp): Map<string, string> {
-  const m = new RegExp(`${selector.source}\\s*\\{([^}]*)\\}`).exec(CSS);
+function block(selector: RegExp, source: string = CSS): Map<string, string> {
+  const m = new RegExp(`${selector.source}\\s*\\{([^}]*)\\}`).exec(source);
   if (!m) throw new Error(`block ${selector} not found`);
   return new Map([...m[1].matchAll(/--([a-z0-9-]+):\s*([^;]+);/gi)].map(d => [d[1], d[2].trim()]));
 }
 
 const LIGHT = block(/@layer base \{\s*\/\*[\s\S]*?\*\/\s*:root/);
-const PAPER = block(/\n\[data-doc-theme\]/);
+const PAPER = block(/\n\[data-document-root\]/, DOC_CSS);
 
 describe('document paper tokens stay light in dark mode', () => {
   it('the paper paints its accent from the light primary', () => {
-    for (const token of ['primary', 'primary-on-tint', 'ring']) expect(PAPER.get(token), token).toBe('var(--paper-primary)');
+    for (const token of ['primary', 'primary-on-tint', 'ring']) expect(PAPER.get(token), token).toBe('var(--paper-primary, 225 62% 48%)');
     expect(PAPER.get('primary-foreground')).toBe(LIGHT.get('primary-foreground'));
     expect(LIGHT.get('paper-primary')).toBe(LIGHT.get('primary'));
   });

@@ -32,6 +32,7 @@ export function DocumentPaper({
 }: { primaryColor?: string | null; children: ReactNode; testId?: string; docTheme?: DocumentThemeId | null }) {
   return (
     <div
+      data-document-root
       data-testid={testId}
       data-doc-theme={docTheme ?? 'classic'}
       className="overflow-hidden rounded-xl border bg-card"
