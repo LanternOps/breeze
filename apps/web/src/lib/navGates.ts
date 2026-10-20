@@ -21,6 +21,8 @@ export interface NavGate {
   requiresAiForOffice?: boolean;
   /** #5216 W01: gated on the SERVER's TOOL_SOURCES_ENABLED via /config. */
   requiresToolSources?: boolean;
+  /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
+  requiresFlows?: boolean;
   /** Gated on the SERVER's PRE_ASSIGNMENT_ENROLLMENT_ENABLED via /config. */
   requiresPreAssignment?: boolean;
   /** Hidden unless the user holds this permission (hidden while loading). */
@@ -44,6 +46,8 @@ export interface NavGateContext {
   /** Read lazily: only consulted for `partnerScopeOnly` entries. */
   getScope: () => string | null;
   toolSourcesEnabled: boolean;
+  /** Only consulted for `requiresFlows` entries; unknown ⇒ hidden. */
+  flowsEnabled?: boolean;
   /** Only consulted for `requiresPreAssignment` entries; unknown ⇒ hidden. */
   preAssignmentEnabled?: boolean;
   aiForOfficeEnabled: boolean;
@@ -57,6 +61,7 @@ export function isNavGateVisible(gate: NavGate, ctx: NavGateContext): boolean {
   if (gate.requiresModule === 'service_management' && ctx.serviceManagementMode !== 'native') return false;
   if (gate.requiresAiForOffice && !ctx.aiForOfficeEnabled) return false;
   if (gate.requiresToolSources && !ctx.toolSourcesEnabled) return false;
+  if (gate.requiresFlows && ctx.flowsEnabled !== true) return false;
   if (gate.requiresPreAssignment && ctx.preAssignmentEnabled !== true) return false;
   if (gate.platformAdminOnly && !ctx.isPlatformAdmin) return false;
   if (gate.requiresPartnerWideAdmin && ctx.canManagePartnerWide !== true) return false;

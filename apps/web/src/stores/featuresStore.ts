@@ -11,6 +11,9 @@ export interface Features {
    *  Off ⇒ every /tool-sources route answers 404, so the nav item and pages
    *  must be hidden rather than linking to a dead surface. */
   toolSources: boolean;
+  /** Tool catalog W3 (#5218): the server's FLOWS_ENABLED kill switch. Off ⇒
+   *  every /flows route answers 404, so the nav item and pages are hidden. */
+  flows: boolean;
   /** The server's PRE_ASSIGNMENT_ENROLLMENT_ENABLED platform switch. Off ⇒
    *  the Unassigned Devices nav entry and page are hidden. */
   preAssignmentEnrollment: boolean;
@@ -45,7 +48,7 @@ interface FeaturesState {
 // flags are off by default (decision D2). An unreachable or older /config
 // (missing the field) must hide the "Delegate to Operator" button, never
 // show it.
-const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false };
+const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false };
 const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 // Default closed: until /config confirms registration is open we hide the
 // registration UI rather than flash a link that may be disabled (#1308).
@@ -86,6 +89,8 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => ({
           // /config must hide a surface that authors credentials reaching
           // customer systems, never flash it.
           toolSources: !!data.features?.toolSources,
+          // Default CLOSED: only an exact boolean true mounts the Flows surface.
+          flows: data.features?.flows === true,
           // Default CLOSED: an older or unreachable /config hides the surface.
           preAssignmentEnrollment: data.features?.preAssignmentEnrollment === true,
           // Default CLOSED: only an exact boolean true mounts the feature.
@@ -170,6 +175,19 @@ export function usePackageUploadsGate(active = true): {
 // lets callers distinguish "not yet known" from "known disabled".
 export function useToolSourcesGate(): { enabled: boolean; loaded: boolean } {
   const enabled = useFeaturesStore((s) => s.features.toolSources);
+  const loaded = useFeaturesStore((s) => s.loaded);
+  const load = useFeaturesStore((s) => s.load);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  return { enabled, loaded };
+}
+
+// useFlowsGate ensures the runtime /config is loaded and reports whether the
+// Flows surface exists on this deployment (#5218). `loaded` lets callers
+// distinguish "not yet known" from "known disabled".
+export function useFlowsGate(): { enabled: boolean; loaded: boolean } {
+  const enabled = useFeaturesStore((s) => s.features.flows);
   const loaded = useFeaturesStore((s) => s.loaded);
   const load = useFeaturesStore((s) => s.load);
   useEffect(() => {

@@ -23,6 +23,8 @@
     "adminUsersDetailDevices": "Appareils de l'utilisateur",
     "aiAgentsImpact": "Impact de l'IA",
     "aiAgentsFixMemory": "Mémoire des correctifs",
+    "flows": "Flux",
+    "flowDetail": "Flux",
     "aiAgentsRunsDetail": "Détail de l'exécution",
     "aiAgentsRuns": "Exécutions des agents",
     "aiForOffice": "IA pour Office",

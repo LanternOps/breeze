@@ -1,0 +1,70 @@
+{
+  "title": "Fluxos",
+  "subtitle": "Automações em várias etapas que encadeiam ferramentas.",
+  "previewNotice": "Os fluxos são somente leitura nesta versão. Elabore-os no chat de IA; a ativação e as execuções chegarão em uma versão posterior.",
+  "empty": {
+    "title": "Ainda não há fluxos",
+    "body": "Peça ao assistente de IA para elaborar um fluxo e depois revise-o aqui."
+  },
+  "list": {
+    "name": "Nome",
+    "owner": "Proprietário",
+    "allOrgs": "Todas as organizações",
+    "status": "Status",
+    "tier": "Nível",
+    "trigger": "Gatilho",
+    "updated": "Atualizado"
+  },
+  "status": {
+    "draft": "Rascunho",
+    "enabled": "Ativado",
+    "paused": "Pausado",
+    "disabled": "Desativado"
+  },
+  "trigger": {
+    "schedule": "Agendamento",
+    "event": "Evento",
+    "webhook": "Webhook",
+    "manual": "Manual"
+  },
+  "detail": {
+    "back": "Voltar aos fluxos",
+    "trigger": "Gatilho",
+    "inputs": "Entradas",
+    "steps": "Etapas",
+    "version": "Versão {{version}}",
+    "createdInChat": "Criado no chat de IA"
+  },
+  "step": {
+    "tool": "Ferramenta",
+    "tier": "Nível {{tier}}",
+    "approval": "Aprovação",
+    "approvalDefault": "Aprovação padrão",
+    "approvalPreApproved": "Pré-aprovado",
+    "when": "Executa quando",
+    "forEach": "Para cada item",
+    "onFailure": "Em caso de falha",
+    "timeout": "Tempo limite",
+    "input": "Entrada",
+    "source": {
+      "core": "Ferramenta nativa",
+      "tenant": "Fonte de ferramentas",
+      "builtin": "Integrada"
+    }
+  },
+  "issues": {
+    "title": "Validação",
+    "none": "Nenhum problema de validação.",
+    "error": "Erro",
+    "warning": "Aviso"
+  },
+  "card": {
+    "title": "Rascunho de fluxo",
+    "review": "Revisar",
+    "steps": "Etapas: {{count}}"
+  },
+  "errors": {
+    "loadFailed": "Não foi possível carregar os fluxos.",
+    "notFound": "Fluxo não encontrado."
+  }
+}

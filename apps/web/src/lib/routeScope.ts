@@ -125,6 +125,8 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // #5288 — Jobs is the new nav home for automations (same page component,
   // same org-scope semantics); /automations/* now just redirects here.
   { pattern: /^\/jobs(\/.*)?$/, kind: 'org-or-all' },
+  // Tool Catalog W3 (#5218): Flows list/detail — owner-scoped rows, org filter optional.
+  { pattern: /^\/flows(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/vulnerabilities$/, kind: 'org-or-all' },
   { pattern: /^\/security(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/sensitive-data(\/.*)?$/, kind: 'org-or-all' },

@@ -23,6 +23,8 @@
     "adminUsersDetailDevices": "User devices",
     "aiAgentsImpact": "AI Impact",
     "aiAgentsFixMemory": "Fix memory",
+    "flows": "Flows",
+    "flowDetail": "Flow",
     "aiAgentsRunsDetail": "Run Detail",
     "aiAgentsRuns": "Agent Runs",
     "aiForOffice": "AI for Office",
