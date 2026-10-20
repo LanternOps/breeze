@@ -616,6 +616,23 @@
           "observability": "Gözlemlenebilirlik",
           "security-abuse": "Güvenlik ve kötüye kullanım",
           "integrations": "Entegrasyonlar"
+        },
+        "probe": {
+          "checkNow": "Şimdi denetle",
+          "checking": "Denetleniyor…",
+          "failed": "Yürütücü denetimi çalıştırılamadı.",
+          "notConfigured": "Yürütücü URL'si ayarlanmamış.",
+          "reachable": "Erişilebilir · {{ms}} ms",
+          "unreachable": "Erişilemiyor",
+          "route": "/v1/{{route}} yolu: {{state}}",
+          "version": "Sürüm {{version}} ({{sha}})",
+          "versionMismatch": "{{version}} ({{sha}}) sürümü bu API'den farklı",
+          "versionUnavailable": "Sürüm bildirilmedi (eski derleme)",
+          "state": {
+            "present": "Var",
+            "missing": "Yok",
+            "unknown": "Bilinmiyor"
+          }
         }
       },
       "connectionHealthJobs": {

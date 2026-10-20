@@ -2,14 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, ExternalLink, Lock, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { ActionError, runAction } from '@/lib/runAction';
+import { showToast } from '../../shared/Toast';
 // Initializes the shared i18next singleton before any island renders translated text.
 import '../../../lib/i18n';
 import {
   CONNECTION_STATUSES,
+  PROBEABLE_ENTRY_IDS,
   displayableValue,
   filterGroups,
   isConnectionsReport,
+  parseProbeReport,
   safeDocsUrl,
+  type ExecutorProbeView,
   type ConnectionEntryView,
   type ConnectionStatus,
   type ConnectionsReport,
@@ -35,7 +40,53 @@ const STATUS_CLASSES: Record<ConnectionStatus, string> = {
   required_missing: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',
 };
 
-function ConnectionCard({ entry }: { entry: ConnectionEntryView }) {
+function ProbeResult({ probe }: { probe: ExecutorProbeView }) {
+  const { t } = useTranslation('admin');
+  const rowClass = 'px-3 py-1.5';
+  return (
+    <ul data-testid={`connection-probe-result-${probe.id}`} className="text-sm border rounded divide-y">
+      {!probe.configured ? (
+        <li data-testid="probe-row-reachable" className={rowClass}>{t('admin.systemPage.connections.probe.notConfigured')}</li>
+      ) : (
+        <>
+          <li data-testid="probe-row-reachable" className={rowClass}>
+            {probe.reachable ? t('admin.systemPage.connections.probe.reachable', { ms: probe.latencyMs ?? 0 }) : t('admin.systemPage.connections.probe.unreachable')}
+          </li>
+          {probe.reachable &&
+            Object.entries(probe.routes).map(([route, state]) => (
+              <li key={route} data-testid={`probe-row-route-${route}`} className={rowClass}>
+                {t('admin.systemPage.connections.probe.route', {
+                  route,
+                  state: t(/* i18n-dynamic */ `admin.systemPage.connections.probe.state.${state}`, { defaultValue: state }),
+                })}
+              </li>
+            ))}
+          {probe.reachable && (
+            <li data-testid="probe-row-version" className={rowClass}>
+              {probe.version === null
+                ? t('admin.systemPage.connections.probe.versionUnavailable')
+                : probe.versionMatchesApi === false
+                  ? t('admin.systemPage.connections.probe.versionMismatch', { version: probe.version.version, sha: probe.version.gitSha })
+                  : t('admin.systemPage.connections.probe.version', { version: probe.version.version, sha: probe.version.gitSha })}
+            </li>
+          )}
+        </>
+      )}
+    </ul>
+  );
+}
+
+function ConnectionCard({
+  entry,
+  probe,
+  probing,
+  onProbe,
+}: {
+  entry: ConnectionEntryView;
+  probe?: ExecutorProbeView;
+  probing: boolean;
+  onProbe: () => void;
+}) {
   const { t } = useTranslation('admin');
   const docsUrl = safeDocsUrl(entry.docsUrl);
   return (
@@ -96,6 +147,20 @@ function ConnectionCard({ entry }: { entry: ConnectionEntryView }) {
           })}
         </dl>
       )}
+      {PROBEABLE_ENTRY_IDS.includes(entry.id) && (
+        <div className="space-y-2">
+          <button
+            type="button"
+            data-testid={`connection-probe-${entry.id}`}
+            disabled={probing}
+            onClick={onProbe}
+            className="px-3 py-1.5 text-sm border rounded-md hover:bg-muted disabled:opacity-60"
+          >
+            {probing ? t('admin.systemPage.connections.probe.checking') : t('admin.systemPage.connections.probe.checkNow')}
+          </button>
+          {probe && <ProbeResult probe={probe} />}
+        </div>
+      )}
       {docsUrl && (
         <a
           href={docsUrl}
@@ -120,6 +185,8 @@ export default function ConnectionsTab() {
   const [forbidden, setForbidden] = useState(false);
   const [error, setError] = useState<string>();
   const [problemsOnly, setProblemsOnly] = useState(false);
+  const [probes, setProbes] = useState<Record<string, ExecutorProbeView>>({});
+  const [probing, setProbing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -154,6 +221,30 @@ export default function ConnectionsTab() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // #9324: one probe call covers both M365 executors; each card shows its own rows.
+  const runProbe = useCallback(async () => {
+    setProbing(true);
+    try {
+      const result = await runAction<ExecutorProbeView[]>({
+        request: () => fetchWithAuth('/admin/system/connections/m365-executors/probe', { method: 'POST' }),
+        errorFallback: stableT('admin.systemPage.connections.probe.failed'),
+        parseSuccess: (body) => {
+          const parsed = parseProbeReport((body as { data?: unknown } | null)?.data);
+          if (!parsed) throw new Error('malformed probe report');
+          return parsed;
+        },
+      });
+      setProbes(Object.fromEntries(result.map((p) => [p.id, p])));
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: stableT('admin.systemPage.connections.probe.failed') });
+      }
+    } finally {
+      setProbing(false);
+    }
+  }, [stableT]);
 
   const groups = useMemo(() => (report ? filterGroups(report.groups, problemsOnly) : []), [report, problemsOnly]);
 
@@ -274,7 +365,13 @@ export default function ConnectionsTab() {
                 </h2>
                 <div className="grid gap-3 md:grid-cols-2">
                   {g.entries.map((entry) => (
-                    <ConnectionCard key={entry.id} entry={entry} />
+                    <ConnectionCard
+                      key={entry.id}
+                      entry={entry}
+                      probe={probes[entry.id === 'm365-graph-read' || entry.id === 'm365-graph-actions' ? entry.id : '']}
+                      probing={probing}
+                      onProbe={() => void runProbe()}
+                    />
                   ))}
                 </div>
               </section>

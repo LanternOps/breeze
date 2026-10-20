@@ -616,6 +616,23 @@
           "observability": "Observabilité",
           "security-abuse": "Sécurité et abus",
           "integrations": "Intégrations"
+        },
+        "probe": {
+          "checkNow": "Vérifier maintenant",
+          "checking": "Vérification…",
+          "failed": "Impossible d'exécuter la vérification de l'exécuteur.",
+          "notConfigured": "L'URL de l'exécuteur n'est pas définie.",
+          "reachable": "Joignable · {{ms}} ms",
+          "unreachable": "Injoignable",
+          "route": "Route /v1/{{route}} : {{state}}",
+          "version": "Version {{version}} (commit {{sha}})",
+          "versionMismatch": "La version {{version}} ({{sha}}) diffère de cette API",
+          "versionUnavailable": "Version non communiquée (build plus ancien)",
+          "state": {
+            "present": "Présente",
+            "missing": "Absente",
+            "unknown": "Inconnue"
+          }
         }
       },
       "connectionHealthJobs": {

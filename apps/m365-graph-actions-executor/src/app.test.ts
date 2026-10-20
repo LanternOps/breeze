@@ -66,6 +66,21 @@ describe('executor HTTP app — execute-action', () => {
     expect(executeAction).not.toHaveBeenCalled();
   });
 
+  it('serves unauthenticated GET /version with the build version and sha, and nothing else', async () => {
+    const verify = vi.fn();
+    const app = createExecutorApp({
+      authenticator: { verify },
+      verifyIdentity: vi.fn(),
+      retest: vi.fn(),
+      executeAction: vi.fn(),
+      buildInfo: { version: '1.2.3', gitSha: 'abc1234' },
+    });
+    const response = await app.request('/version');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ version: '1.2.3', gitSha: 'abc1234' });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
   it('passes the exact UTF-8 bytes and fixed operation to auth before executing', async () => {
     const body = executeActionRequestBody();
     const verify = vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID });

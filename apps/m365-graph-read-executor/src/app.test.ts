@@ -102,6 +102,22 @@ describe('executor HTTP app', () => {
     expect(await (await app.request('/healthz')).json()).toEqual({ status: 'ok' });
   });
 
+  it('serves unauthenticated GET /version with the build version and sha, and nothing else', async () => {
+    const verify = vi.fn();
+    const app = createExecutorApp({
+      authenticator: { verify },
+      verifyIdentity: vi.fn(),
+      retest: vi.fn(),
+      readAction: vi.fn(),
+      syncAction: vi.fn(),
+      buildInfo: { version: '1.2.3', gitSha: 'abc1234' },
+    });
+    const response = await app.request('/version');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ version: '1.2.3', gitSha: 'abc1234' });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
   it('sanitizes operation exceptions instead of classifying them as caller errors', async () => {
     const app = createExecutorApp({
       authenticator: { verify: vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' }) },

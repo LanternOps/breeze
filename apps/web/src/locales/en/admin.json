@@ -616,6 +616,23 @@
           "observability": "Observability",
           "security-abuse": "Security and abuse",
           "integrations": "Integrations"
+        },
+        "probe": {
+          "checkNow": "Check now",
+          "checking": "Checking…",
+          "failed": "Could not run the executor check.",
+          "notConfigured": "Executor URL is not set.",
+          "reachable": "Reachable · {{ms}} ms",
+          "unreachable": "Not reachable",
+          "route": "Route /v1/{{route}}: {{state}}",
+          "version": "Version {{version}} ({{sha}})",
+          "versionMismatch": "Version {{version}} ({{sha}}) differs from this API",
+          "versionUnavailable": "Version not reported (older build)",
+          "state": {
+            "present": "Present",
+            "missing": "Missing",
+            "unknown": "Unknown"
+          }
         }
       },
       "connectionHealthJobs": {

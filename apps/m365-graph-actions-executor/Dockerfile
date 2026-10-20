@@ -23,6 +23,11 @@ RUN pnpm --filter=@breeze/m365-graph-actions-executor build && \
 FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+# Build identity served by GET /version (no secrets).
+ARG APP_VERSION=unknown
+ARG GIT_SHA=unknown
+ENV APP_VERSION=${APP_VERSION}
+ENV GIT_SHA=${GIT_SHA}
 ENV M365_GRAPH_ACTIONS_EXECUTOR_AUTOSTART=1
 
 # CVE-2026-14456: the pinned base digest predates fixed libcrypto3/libssl3 3.5.8-r0,

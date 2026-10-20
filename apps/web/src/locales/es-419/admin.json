@@ -616,6 +616,23 @@
           "observability": "Observabilidad",
           "security-abuse": "Seguridad y abuso",
           "integrations": "Integraciones"
+        },
+        "probe": {
+          "checkNow": "Comprobar ahora",
+          "checking": "Comprobando…",
+          "failed": "No se pudo ejecutar la comprobación del ejecutor.",
+          "notConfigured": "La URL del ejecutor no está configurada.",
+          "reachable": "Accesible · {{ms}} ms",
+          "unreachable": "No accesible",
+          "route": "Ruta /v1/{{route}}: {{state}}",
+          "version": "Versión {{version}} ({{sha}})",
+          "versionMismatch": "La versión {{version}} ({{sha}}) difiere de esta API",
+          "versionUnavailable": "Versión no informada (compilación anterior)",
+          "state": {
+            "present": "Presente",
+            "missing": "Falta",
+            "unknown": "Desconocido"
+          }
         }
       },
       "connectionHealthJobs": {

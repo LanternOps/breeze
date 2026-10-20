@@ -27,7 +27,25 @@ const DEFAULT_SYNC_TIMEOUT_MS = 120_000;
 const SYNC_CAPACITY_RETRY_AFTER_SECONDS = 30;
 const INTERACTIVE_CAPACITY_RETRY_AFTER_SECONDS = 5;
 
+/** Build identity served by `GET /version`; never configuration or secrets. */
+export interface ExecutorBuildInfo {
+  version: string;
+  gitSha: string;
+}
+
+/** A bounded label from a build arg; anything else is reported as `unknown`. */
+function buildLabel(value: string | undefined): string {
+  const v = value?.trim() ?? '';
+  return /^[A-Za-z0-9._+-]{1,64}$/.test(v) ? v : 'unknown';
+}
+
+function buildInfoFromEnv(env: NodeJS.ProcessEnv = process.env): ExecutorBuildInfo {
+  return { version: buildLabel(env.APP_VERSION), gitSha: buildLabel(env.GIT_SHA) };
+}
+
 export interface ExecutorAppDependencies {
+  /** Served by `GET /version`. Defaults to the image's baked APP_VERSION / GIT_SHA. */
+  buildInfo?: ExecutorBuildInfo;
   authenticator: InternalRequestAuthenticator;
   verifyIdentity(request: VerifyConsentIdentityRequest): Promise<VerifyConsentIdentityResult>;
   retest(request: RetestRequest): Promise<RetestResult>;
@@ -294,6 +312,8 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
   }
 
   app.get('/healthz', (context) => context.json({ status: 'ok' }));
+  // Unauthenticated, like /healthz.
+  app.get('/version', (context) => context.json(dependencies.buildInfo ?? buildInfoFromEnv()));
   app.get('/metrics', (context) => context.text(renderMetrics(), 200, {
     'content-type': 'text/plain; version=0.0.4; charset=utf-8',
   }));

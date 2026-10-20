@@ -266,6 +266,78 @@ describe('ConnectionsTab', () => {
     expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/admin/system/connections')).toHaveLength(2);
   });
 
+  describe('M365 executor reachability probe (#9324)', () => {
+    const PROBE_URL = '/admin/system/connections/m365-executors/probe';
+    const m365Groups = [
+      {
+        group: 'microsoft-365',
+        entries: [
+          { id: 'm365-graph-read', label: 'Customer Graph read (executor)', status: 'enabled', vars: [] },
+          { id: 'm365-graph-actions', label: 'Customer Graph actions (write executor)', status: 'enabled', vars: [] },
+        ],
+      },
+    ];
+    const probeBody = {
+      data: {
+        executors: [
+          {
+            id: 'm365-graph-read',
+            configured: true,
+            reachable: true,
+            latencyMs: 42,
+            routes: { 'verify-identity': 'missing', retest: 'present' },
+            version: { version: '1.2.3', gitSha: 'abc1234' },
+            versionMatchesApi: true,
+          },
+          {
+            id: 'm365-graph-actions',
+            configured: true,
+            reachable: false,
+            latencyMs: null,
+            routes: { 'verify-identity': 'unknown' },
+            version: null,
+            versionMatchesApi: null,
+          },
+        ],
+      },
+    };
+
+    function mockApi(probe: () => Response | Promise<Response>) {
+      fetchWithAuth.mockImplementation(async (url: string) => {
+        if (url === PROBE_URL) return probe();
+        return ok({ groups: m365Groups });
+      });
+    }
+
+    it('offers Check now only on the two M365 executor cards', async () => {
+      mockApi(() => jsonRes(probeBody));
+      render(<ConnectionsTab />);
+      await screen.findByTestId('connection-card-m365-graph-read');
+      expect(screen.getByTestId('connection-probe-m365-graph-read')).toBeTruthy();
+      expect(screen.getByTestId('connection-probe-m365-graph-actions')).toBeTruthy();
+      expect(fetchWithAuth.mock.calls.some(([url]) => url === PROBE_URL)).toBe(false);
+    });
+
+    it('clicking Check now POSTs the probe and renders per-check rows', async () => {
+      mockApi(() => jsonRes(probeBody));
+      render(<ConnectionsTab />);
+      await screen.findByTestId('connection-card-m365-graph-read');
+      fireEvent.click(screen.getByTestId('connection-probe-m365-graph-read'));
+
+      const read = await screen.findByTestId('connection-probe-result-m365-graph-read');
+      expect(within(read).getByTestId('probe-row-reachable').textContent).toContain('42 ms');
+      expect(within(read).getByTestId('probe-row-route-verify-identity').textContent).toMatch(/missing/i);
+      expect(within(read).getByTestId('probe-row-route-retest').textContent).toMatch(/present/i);
+      expect(within(read).getByTestId('probe-row-version').textContent).toContain('1.2.3');
+
+      const actions = screen.getByTestId('connection-probe-result-m365-graph-actions');
+      expect(within(actions).getByTestId('probe-row-reachable').textContent).toMatch(/not reachable/i);
+
+      const call = fetchWithAuth.mock.calls.find(([url]) => url === PROBE_URL);
+      expect(call?.[1]).toMatchObject({ method: 'POST' });
+    });
+  });
+
   it('is read-only: no text inputs and no save button (D1)', async () => {
     fetchWithAuth.mockResolvedValue(ok());
     render(<ConnectionsTab />);

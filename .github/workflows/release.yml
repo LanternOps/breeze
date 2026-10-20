@@ -3817,12 +3817,21 @@ jobs:
 
       # Push by digest only: no release-facing tag exists until this exact
       # manifest passes the blocking vulnerability scan below.
+      # Baked into the image and served by GET /version so Admin → System →
+      # Connections can show which build an executor is running (#9324).
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push unadvertised executor digest
         id: push-executor-digest
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: apps/m365-graph-read-executor/Dockerfile
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-graph-read-executor,push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=server-m365-graph-read-executor
           cache-to: type=gha,mode=max,scope=server-m365-graph-read-executor
@@ -3894,12 +3903,21 @@ jobs:
 
       # Push by digest only: no release-facing tag exists until this exact
       # manifest passes the blocking vulnerability scan below.
+      # Baked into the image and served by GET /version so Admin → System →
+      # Connections can show which build an executor is running (#9324).
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push unadvertised executor digest
         id: push-executor-digest
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: apps/m365-graph-actions-executor/Dockerfile
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-graph-actions-executor,push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=server-m365-graph-actions-executor
           cache-to: type=gha,mode=max,scope=server-m365-graph-actions-executor

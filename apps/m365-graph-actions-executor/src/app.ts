@@ -17,7 +17,25 @@ import type { ExecutorOperation, InternalRequestAuthenticator } from './internal
 
 const DEFAULT_MAX_BODY_BYTES = 16 * 1024;
 
+/** Build identity served by `GET /version`; never configuration or secrets. */
+export interface ExecutorBuildInfo {
+  version: string;
+  gitSha: string;
+}
+
+/** A bounded label from a build arg; anything else is reported as `unknown`. */
+function buildLabel(value: string | undefined): string {
+  const v = value?.trim() ?? '';
+  return /^[A-Za-z0-9._+-]{1,64}$/.test(v) ? v : 'unknown';
+}
+
+function buildInfoFromEnv(env: NodeJS.ProcessEnv = process.env): ExecutorBuildInfo {
+  return { version: buildLabel(env.APP_VERSION), gitSha: buildLabel(env.GIT_SHA) };
+}
+
 export interface ExecutorAppDependencies {
+  /** Served by `GET /version`. Defaults to the image's baked APP_VERSION / GIT_SHA. */
+  buildInfo?: ExecutorBuildInfo;
   authenticator: InternalRequestAuthenticator;
   verifyIdentity(request: VerifyConsentIdentityRequest): Promise<VerifyConsentIdentityResult>;
   retest(request: RetestRequest): Promise<RetestResult>;
@@ -222,6 +240,8 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
   }
 
   app.get('/healthz', (context) => context.json({ status: 'ok' }));
+  // Unauthenticated, like /healthz.
+  app.get('/version', (context) => context.json(dependencies.buildInfo ?? buildInfoFromEnv()));
   app.post('/v1/verify-identity', (context) => logged(context, 'verify-identity'));
   app.post('/v1/retest', (context) => logged(context, 'retest'));
   app.post('/v1/execute-action', (context) => logged(context, 'execute-action'));
