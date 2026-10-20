@@ -40,6 +40,70 @@ Breeze speaks both remote MCP transports on the **same path**, `/api/v1/mcp/sse`
 
 Successful object results from `tools/call` include `structuredContent` matching the redacted JSON in the `text` block. Pure error objects, non-object results (arrays, scalars, and plain text), and summarized results omit `structuredContent`. The `_chat.outputCompacted` marker identifies a shortened list; natively shaped results retain `structuredContent`.
 
+### Protocol 2026-07-28 (stateless)
+
+When the operator sets `MCP_STATELESS_ENABLED=true` (default off), `POST /api/v1/mcp/sse` also speaks protocol `2026-07-28` statelessly. There is no `initialize` and no session: every request is self-describing. Legacy clients (2024-11-05 through 2025-11-25, via `initialize` and `Mcp-Session-Id`) are unchanged.
+
+A stateless request carries, on every call:
+
+- `params._meta["io.modelcontextprotocol/protocolVersion"] = "2026-07-28"`
+- `params._meta["io.modelcontextprotocol/clientCapabilities"]`, an object
+- Headers `MCP-Protocol-Version: 2026-07-28` and `Mcp-Method: <method>`
+- For `tools/call`, `prompts/get` and `resources/read`, an `Mcp-Name` header equal to the tool name, prompt name or resource URI. A non-ASCII value may be sent as `=?base64?<b64>?=`.
+
+Headers must agree with the body. An `Mcp-Session-Id` is ignored if sent and never returned.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "server/discover",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {}
+    }
+  }
+}
+```
+
+`server/discover` (stateless only) replaces `initialize`. It returns `supportedVersions`, capabilities, `instructions` and `serverInfo`.
+
+| Era | Methods |
+|---|---|
+| Stateless | `server/discover`, `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`, `prompts/list`, `prompts/get` |
+| Legacy only | `initialize`, `notifications/initialized` |
+
+`ping`, `logging/setLevel`, `resources/subscribe` and `subscriptions/listen` are not implemented in either era. In the stateless era they, and the legacy-only methods, return HTTP 404 with JSON-RPC `-32601` (the legacy era answers `-32601` with HTTP 200). `resources/templates/list` exists in both eras and lists `breeze://devices/{id}` when the devices tool area is granted.
+
+Every stateless success result carries `resultType: "complete"` and `_meta["io.modelcontextprotocol/serverInfo"]`. List, discover and read results also carry cache hints, always with `cacheScope: "private"`:
+
+| Method | `ttlMs` |
+|---|---|
+| `server/discover`, `prompts/list` | 300000 |
+| `tools/list`, `resources/list`, `resources/templates/list` | 60000 |
+| `resources/read` | 0 |
+
+The hints are for the client's cache. Breeze keeps no server-side result cache.
+
+| Condition | HTTP | JSON-RPC code |
+|---|---|---|
+| Header and body disagree | 400 | `-32020` |
+| Unknown `_meta` protocol version (`data.supported` and `data.requested` are returned) | 400 | `-32022` |
+| `clientCapabilities` missing | 400 | `-32602` |
+| Stateless envelope while the flag is off, a legacy version inside a stateless envelope, or `initialize` carrying a stateless `_meta` | 400 | `-32600` |
+| Unknown or legacy-only method in the stateless era | 404 | `-32601` |
+
+A client that supports both eras should try a stateless request first and fall back to `initialize` on the `-32600` response.
+
+Authorization is identical to the legacy path: scope tiers, tool areas, approval, MFA, RBAC, rate limits and the IP allowlist all apply, with the same errors.
+
+**Origin.** If a stateless request carries an `Origin` header that the app's CORS policy rejects, the server answers HTTP 403. For legacy-era requests a rejected `Origin` is only logged and counted for now; enforcement is a planned follow-up. CORS allows the request headers `MCP-Protocol-Version`, `Mcp-Session-Id`, `Mcp-Method` and `Mcp-Name`, and exposes `Mcp-Session-Id` and `WWW-Authenticate`.
+
+<Aside type="caution" title="HTTP+SSE is deprecated">
+  The legacy HTTP+SSE transport (`GET /api/v1/mcp/sse` stream and `POST /api/v1/mcp/message`) is deprecated. Its responses carry `Deprecation: @1742947200` and `Sunset: Sun, 31 Jan 2027 23:59:59 GMT`. The sunset date is provisional and may move later, never earlier. Each new stream is recorded in the audit log as `mcp.transport.http_sse.open`. Move clients to Streamable HTTP (`POST /sse`), which is not deprecated.
+</Aside>
+
 Batch requests are not supported for any negotiated protocol version. Send one JSON-RPC request per POST. `DELETE /api/v1/mcp/sse` currently returns 204 as a no-op; it does not end a session.
 
 `tools/list` returns a single page by default. Pagination is experimental and enabled only when the operator sets `MCP_TOOLS_LIST_PAGE_SIZE` to a positive value. Every connected client must follow `nextCursor` until it is absent. Cursors are offsets, so a catalog change mid-enumeration can skip tools; tenant-tool discovery failures can also change the list between pages.
@@ -660,9 +724,12 @@ Every JSON-RPC request is recorded in the Breeze audit log with:
 
 - The API key ID as the actor
 - The JSON-RPC method (e.g., `mcp.tools.call`)
-- Whether a session was active
 - Success or failure result
 - Error message (if any)
+- A server-minted per-request UUID as the resource id. Request and tool-call audit rows use it; the client never supplies it.
+- `details.correlation`: the era (legacy or stateless), protocol version, transport, principal, OAuth token `jti`, the verified legacy session id (if any), and the client's `clientInfo`. `clientInfo` is self-reported and flagged `clientInfoTrust: "self_reported"`, so do not treat it as an identity.
+
+Each new legacy HTTP+SSE stream is also recorded as the audit event `mcp.transport.http_sse.open`.
 
 You can query MCP audit events using the `query_audit_log` tool or the Audit Log page in the dashboard.
 
@@ -687,6 +754,8 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 | `MCP_TOOLS_LIST_PAGE_SIZE` | `0` (unset) | Experimental pagination: 0/unset returns a single page. Set to e.g. `50` only when every connected client follows `nextCursor`. Cursors are offsets; a catalog change mid-enumeration can skip tools. |
 | `MCP_SESSION_TTL_SECONDS` | `660` | Idle lifetime, in seconds, of a minted streamable-HTTP session principal in Redis (11 minutes). |
 | `MCP_INSUFFICIENT_SCOPE_HTTP_403` | `false` | When `true`, an OAuth bearer's `tools/call` refused only for a missing tier scope (`ai:write` or `ai:execute`) returns HTTP 403 with an `insufficient_scope` `WWW-Authenticate` challenge instead of HTTP 200. Never applies to API-key callers, domain, approval, MFA or RBAC denials, or the legacy HTTP+SSE transport. See [Authentication challenges](#authentication-challenges). |
+| `MCP_STATELESS_ENABLED` | `false` | When `true`, `POST /api/v1/mcp/sse` also speaks the stateless `2026-07-28` protocol alongside the legacy `initialize` + `Mcp-Session-Id` era. Off by default; a stateless request is then refused with HTTP 400 (`-32600`) and dual-era clients fall back to `initialize`. The API refuses to boot on a non-boolean value. See [Protocol 2026-07-28 (stateless)](#protocol-2026-07-28-stateless). |
+| `MCP_HEADER_MISMATCH_ALERT_THRESHOLD` | `50` | Stateless requests whose `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header disagrees with the body are refused with `-32020`. When the mismatch count reaches this value, the API sends one Sentry warning per minute. |
 
 ### OAuth 2.1
 
