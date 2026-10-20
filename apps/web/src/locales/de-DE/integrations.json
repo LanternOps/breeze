@@ -104,6 +104,7 @@
       "manifest_stale": "Die erteilten Berechtigungen verwenden ein älteres Manifest. Erteilen Sie die Zustimmung erneut.",
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
+      "executor_unavailablePending": "Die Verbindung konnte nicht abgeschlossen werden. Versuchen Sie es erneut mit „Verbinden“; wenn der Fehler bestehen bleibt, wenden Sie sich an den Support.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
     },
     "stepTitle": "Lesezugriff",
@@ -188,6 +189,7 @@
       "manifest_stale": "Die erteilten Berechtigungen verwenden ein älteres Manifest. Erteilen Sie die Zustimmung erneut.",
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
+      "executor_unavailablePending": "Die Verbindung konnte nicht abgeschlossen werden. Versuchen Sie es erneut mit „Verbinden“; wenn der Fehler bestehen bleibt, wenden Sie sich an den Support.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
     },
     "stepTitle": "Administratoraktionen",

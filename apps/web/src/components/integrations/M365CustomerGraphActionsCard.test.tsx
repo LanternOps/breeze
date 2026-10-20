@@ -853,3 +853,64 @@ describe("M365CustomerGraphActionsCard — identity-first consent (W03)", () => 
     });
   });
 });
+
+describe("M365CustomerGraphActionsCard — executor_unavailable copy (#9323)", () => {
+  const PENDING_COPY = "Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.";
+  const RETEST_COPY = "The verification service is unavailable. Retest later.";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentOrgId = ORG_A;
+    state.jwtScope = "partner";
+    state.jwtOrgId = null;
+    state.canWrite = true;
+    state.successMessages = [];
+    state.errorMessages = [];
+  });
+
+  it("shows the sentence exactly once when the callback and the connection carry the same code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="executor_unavailable" />);
+    await screen.findByRole("button", { name: "Re-consent" });
+    expect(screen.getAllByText(RETEST_COPY)).toHaveLength(1);
+  });
+
+  it("still shows the connection error when the callback result is a different code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="consent_expired" />);
+    expect(await screen.findByText(RETEST_COPY)).toBeInTheDocument();
+    expect(screen.getByText("The consent session expired. Start consent again.")).toBeInTheDocument();
+  });
+
+  it("pending-consent: no Retest wording, one sentence, Re-consent present", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "pending-consent", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="executor_unavailable" />);
+    expect(await screen.findByRole("button", { name: "Re-consent" })).toBeInTheDocument();
+    expect(screen.getAllByText(PENDING_COPY)).toHaveLength(1);
+    expect(document.body).not.toHaveTextContent(/retest/i);
+  });
+
+  it("pending-consent without a callback: connection box uses the no-Retest copy", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "pending-consent", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText(PENDING_COPY)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/retest/i);
+  });
+
+  it("degraded keeps the Retest wording", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText(RETEST_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retest" })).toBeInTheDocument();
+  });
+});

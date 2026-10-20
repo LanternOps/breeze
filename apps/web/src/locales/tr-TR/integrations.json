@@ -104,6 +104,7 @@
       "manifest_stale": "Verilen izinler daha eski bir bildirimi kullanıyor. Tekrar onay verin.",
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
+      "executor_unavailablePending": "Bağlantı tamamlanamadı. Bağlan'ı yeniden deneyin; sorun devam ederse destekle iletişime geçin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."
     },
     "stepTitle": "Okuma erişimi",
@@ -188,6 +189,7 @@
       "manifest_stale": "Verilen izinler daha eski bir bildirimi kullanıyor. Tekrar onay verin.",
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
+      "executor_unavailablePending": "Bağlantı tamamlanamadı. Bağlan'ı yeniden deneyin; sorun devam ederse destekle iletişime geçin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."
     },
     "stepTitle": "Yönetici eylemleri",

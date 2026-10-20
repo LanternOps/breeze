@@ -104,6 +104,7 @@
       "manifest_stale": "Los permisos otorgados usan un manifiesto anterior. Vuelve a otorgar el consentimiento.",
       "organization_probe_failed": "Falló la comprobación de la organización de Microsoft. Vuelve a probar la conexión.",
       "executor_unavailable": "El servicio de verificación no está disponible. Vuelve a intentarlo más tarde.",
+      "executor_unavailablePending": "No se pudo completar la conexión. Vuelve a intentar con Conectar; si sigue fallando, comunícate con soporte.",
       "unknown": "La verificación requiere atención. Vuelve a probar la conexión o inicia el consentimiento nuevamente."
     },
     "stepTitle": "Acceso de lectura",
@@ -188,6 +189,7 @@
       "manifest_stale": "Los permisos otorgados usan un manifiesto anterior. Vuelve a otorgar el consentimiento.",
       "organization_probe_failed": "Falló la comprobación de la organización de Microsoft. Vuelve a probar la conexión.",
       "executor_unavailable": "El servicio de verificación no está disponible. Vuelve a intentarlo más tarde.",
+      "executor_unavailablePending": "No se pudo completar la conexión. Vuelve a intentar con Conectar; si sigue fallando, comunícate con soporte.",
       "unknown": "La verificación requiere atención. Vuelve a probar la conexión o inicia el consentimiento nuevamente."
     },
     "stepTitle": "Acciones de administrador",

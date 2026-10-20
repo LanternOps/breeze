@@ -652,18 +652,25 @@ export default function M365CustomerGraphActionsCard({
   const unexpectedAlert = t("m365CustomerGraphActions.grants.unexpectedAlert");
   const canRetestConnection = connection?.status === "active" || connection?.status === "degraded";
   const StatusIcon = connection ? statusIcon(connection.status) : Unplug;
+  // "Retest" wording only makes sense where the Retest button is shown; a
+  // connection still pending consent has to be connected again instead.
+  const errorKey = (code: string) => (code === "executor_unavailable" && connection && !canRetestConnection
+    ? "executor_unavailablePending"
+    : code);
   const errorCopy = useMemo(() => {
     if (!connection?.lastErrorCode) return null;
+    // The callback banner above already says this; don't repeat it.
+    if (callbackResult === connection.lastErrorCode) return null;
     return isStableErrorCode(connection.lastErrorCode)
-      ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${connection.lastErrorCode}`)
+      ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${errorKey(connection.lastErrorCode)}`)
       : t("m365CustomerGraphActions.errors.unknown");
-  }, [connection, t]);
+  }, [connection, callbackResult, canRetestConnection, t]);
   const callbackCopy = callbackResult === "active"
     ? t("m365CustomerGraphActions.callback.active")
     : callbackResult === "degraded"
       ? t("m365CustomerGraphActions.callback.degraded")
       : callbackResult && callbackResult !== "confirm-tenant"
-        ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${callbackResult}`)
+        ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${errorKey(callbackResult)}`)
         : null;
   const showConfirmTenant = callbackResult === "confirm-tenant" && !!orgId;
   const reloadAfterCancel = useCallback(() => { void load(scope); }, [load, scope]);

@@ -104,6 +104,7 @@
       "manifest_stale": "Les autorisations accordées utilisent un ancien manifeste. Accordez à nouveau le consentement.",
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
+      "executor_unavailablePending": "La connexion n’a pas pu aboutir. Réessayez avec « Connecter » ; si l’échec persiste, contactez le support.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."
     },
     "stepTitle": "Accès en lecture",
@@ -188,6 +189,7 @@
       "manifest_stale": "Les autorisations accordées utilisent un ancien manifeste. Accordez à nouveau le consentement.",
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
+      "executor_unavailablePending": "La connexion n’a pas pu aboutir. Réessayez avec « Connecter » ; si l’échec persiste, contactez le support.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."
     },
     "stepTitle": "Actions d'administration",

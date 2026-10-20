@@ -104,6 +104,7 @@
       "manifest_stale": "The granted permissions use an older manifest. Grant consent again.",
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
+      "executor_unavailablePending": "Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
     },
     "stepTitle": "Read access",
@@ -188,6 +189,7 @@
       "manifest_stale": "The granted permissions use an older manifest. Grant consent again.",
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
+      "executor_unavailablePending": "Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
     },
     "stepTitle": "Admin actions",

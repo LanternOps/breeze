@@ -690,16 +690,23 @@ export default function M365CustomerGraphReadCard({
     : t("m365CustomerGraphRead.grants.unexpectedAlert");
   const canRetestConnection = connection?.status === "active" || connection?.status === "degraded";
   const StatusIcon = connection ? statusIcon(connection.status) : Unplug;
+  // "Retest" wording only makes sense where the Retest button is shown; a
+  // connection still pending consent has to be connected again instead.
+  const errorKey = (code: string) => (code === "executor_unavailable" && connection && !canRetestConnection
+    ? "executor_unavailablePending"
+    : code);
   const errorCopy = useMemo(() => {
     if (!connection?.lastErrorCode) return null;
+    // The callback banner above already says this; don't repeat it.
+    if (callbackResult === connection.lastErrorCode) return null;
     // The banner below already says this, in words an administrator can act on.
     if (connection.grantHealth === "manifest-stale" && connection.lastErrorCode === "manifest_stale") {
       return null;
     }
     return isStableErrorCode(connection.lastErrorCode)
-      ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${connection.lastErrorCode}`)
+      ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${errorKey(connection.lastErrorCode)}`)
       : t("m365CustomerGraphRead.errors.unknown");
-  }, [connection, t]);
+  }, [connection, callbackResult, canRetestConnection, t]);
   const syncChips = useMemo(() => {
     const chips: { key: string; label: string }[] = [];
     for (const entry of data?.sync?.domains ?? []) {
@@ -727,7 +734,7 @@ export default function M365CustomerGraphReadCard({
     : callbackResult === "degraded"
       ? t("m365CustomerGraphRead.callback.degraded")
       : callbackResult && callbackResult !== "confirm-tenant"
-        ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${callbackResult}`)
+        ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${errorKey(callbackResult)}`)
         : null;
   const showConfirmTenant = callbackResult === "confirm-tenant" && !!orgId;
   const reloadAfterCancel = useCallback(() => { void load(scope); }, [load, scope]);

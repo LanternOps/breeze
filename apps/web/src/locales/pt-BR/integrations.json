@@ -104,6 +104,7 @@
       "manifest_stale": "As permissões concedidas usam um manifesto antigo. Conceda o consentimento novamente.",
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
+      "executor_unavailablePending": "Não foi possível concluir a conexão. Tente Conectar novamente; se continuar falhando, entre em contato com o suporte.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
     },
     "stepTitle": "Acesso de leitura",
@@ -188,6 +189,7 @@
       "manifest_stale": "As permissões concedidas usam um manifesto antigo. Conceda o consentimento novamente.",
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
+      "executor_unavailablePending": "Não foi possível concluir a conexão. Tente Conectar novamente; se continuar falhando, entre em contato com o suporte.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
     },
     "stepTitle": "Ações de administrador",

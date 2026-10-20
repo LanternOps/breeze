@@ -104,6 +104,7 @@
       "manifest_stale": "Le autorizzazioni concesse usano un manifest precedente. Concedi di nuovo il consenso.",
       "organization_probe_failed": "Controllo dell'organizzazione Microsoft non riuscito. Ripeti il test della connessione.",
       "executor_unavailable": "Il servizio di verifica non è disponibile. Ripeti il test più tardi.",
+      "executor_unavailablePending": "Impossibile completare la connessione. Riprova con Connetti; se continua a non riuscire, contatta il supporto.",
       "unknown": "La verifica richiede attenzione. Ripeti il test della connessione o avvia di nuovo il consenso."
     },
     "stepTitle": "Accesso in lettura",
@@ -188,6 +189,7 @@
       "manifest_stale": "Le autorizzazioni concesse usano un manifest precedente. Concedi di nuovo il consenso.",
       "organization_probe_failed": "Controllo dell'organizzazione Microsoft non riuscito. Ripeti il test della connessione.",
       "executor_unavailable": "Il servizio di verifica non è disponibile. Ripeti il test più tardi.",
+      "executor_unavailablePending": "Impossibile completare la connessione. Riprova con Connetti; se continua a non riuscire, contatta il supporto.",
       "unknown": "La verifica richiede attenzione. Ripeti il test della connessione o avvia di nuovo il consenso."
     },
     "stepTitle": "Azioni amministrative",
