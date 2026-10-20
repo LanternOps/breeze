@@ -173,6 +173,13 @@ vi.mock('../../services/patchOutstandingDevices', () => ({
   listOutstandingDevices: vi.fn(async () => ({ visible: true, devices: [], total: 0 }))
 }));
 
+// #9387 gap 2 severity provenance — real SQL and scoping are covered by
+// __tests__/integration/patchSeveritySource.integration.test.ts.
+vi.mock('../../services/patchSeveritySource', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/patchSeveritySource')>()),
+  loadCatalogReportedSeverities: vi.fn(async () => new Map())
+}));
+
 // W06 image term — real SQL is covered by
 // services/workloads/imageCompliance.integration.test.ts; no workload rows here.
 vi.mock('../../services/workloads/imageCompliance', async (importOriginal) => ({
@@ -259,6 +266,7 @@ import {
   loadOutstandingDeviceCounts,
   resolveOutstandingDeviceScope
 } from '../../services/patchOutstandingDevices';
+import { loadCatalogReportedSeverities } from '../../services/patchSeveritySource';
 // Real implementations (the mock above spreads the actual module). Fixtures
 // below must therefore carry a fingerprint the real decoder accepts.
 import {
@@ -654,6 +662,65 @@ describe('patch routes', () => {
       const body = await res.json();
       expect(body.data.map((p: { outstandingDeviceCount: number }) => p.outstandingDeviceCount)).toEqual([0, 0]);
       expect(vi.mocked(loadOutstandingDeviceCounts)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /patches severitySource (#9387 gap 2)', () => {
+    const OTHER_PATCH_ID = '99999999-9999-4999-8999-999999999999';
+    const listRow = (id: string, severity: string) => ({
+      id,
+      title: `Patch ${id.slice(0, 4)}`,
+      description: null,
+      source: 'microsoft',
+      severity,
+      category: 'security',
+      version: null,
+      osTypes: ['windows'],
+      inferredOs: null,
+      cveIds: [],
+      releaseDate: null,
+      requiresReboot: false,
+      downloadSizeMb: null,
+      createdAt: new Date('2026-08-01T00:00:00.000Z')
+    });
+
+    it('marks a row derived only when its displayed severity is the derived device report', async () => {
+      vi.mocked(loadCatalogReportedSeverities).mockResolvedValueOnce(new Map([
+        [PATCH_ID, { severity: 'important', source: 'derived' as const }],
+        // Displayed value differs from the device report (e.g. a trusted
+        // shared value) — the device's provenance must not be attached.
+        [OTHER_PATCH_ID, { severity: 'important', source: 'derived' as const }],
+      ]));
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectPatchListResult([listRow(PATCH_ID, 'important'), listRow(OTHER_PATCH_ID, 'unknown')]) as any)
+        .mockReturnValueOnce(selectWhereResult([{ count: 2 }]) as any)
+        .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+      const res = await app.request('/patches', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].severitySource).toBe('derived');
+      expect(body.data[1].severitySource).toBeNull();
+      expect(vi.mocked(loadCatalogReportedSeverities)).toHaveBeenCalledWith(
+        [PATCH_ID, OTHER_PATCH_ID],
+        OUTSTANDING_SCOPE
+      );
+    });
+
+    it('returns null provenance without querying when the caller can see no devices', async () => {
+      vi.mocked(resolveOutstandingDeviceScope).mockReturnValueOnce(null);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectPatchListResult([listRow(PATCH_ID, 'important')]) as any)
+        .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any)
+        .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+      const res = await app.request('/patches', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].severitySource).toBeNull();
+      expect(vi.mocked(loadCatalogReportedSeverities)).not.toHaveBeenCalled();
     });
   });
 

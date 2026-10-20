@@ -9,6 +9,7 @@ import { patches, patchApprovals, devices, devicePatches } from '../../db/schema
 import { listPatchDevicesSchema, listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
 import { getPagination, inferPatchOs, resolvePartnerIdForOrg } from './helpers';
 import { loadPatchInstallFailures } from '../../services/patchInstallFailures';
+import { catalogSeveritySource, loadCatalogReportedSeverities } from '../../services/patchSeveritySource';
 import {
   listOutstandingDevices,
   loadOutstandingDeviceCounts,
@@ -252,12 +253,20 @@ listRoutes.get(
       ? await loadOutstandingDeviceCounts(patchList.map((patch) => patch.id), deviceScope)
       : new Map<string, number>();
 
+    // #9387 gap 2: whether a row's severity is a device-reported value the
+    // agent DERIVED (Windows Update sent no MSRC rating) rather than a vendor
+    // rating, so the web can mark it. Same device scope as the count above.
+    const reportedSeverities = deviceScope
+      ? await loadCatalogReportedSeverities(patchList.map((patch) => patch.id), deviceScope)
+      : new Map();
+
     const data = patchList.map(patch => ({
       ...patch,
       os: inferPatchOs(patch.osTypes, patch.source, patch.inferredOs),
       approvalStatus: approvalStatuses[patch.id] || 'pending',
       installFailure: installFailures.get(patch.id) ?? null,
-      outstandingDeviceCount: outstandingCounts.get(patch.id) ?? 0
+      outstandingDeviceCount: outstandingCounts.get(patch.id) ?? 0,
+      severitySource: catalogSeveritySource(patch.severity, reportedSeverities.get(patch.id))
     }));
 
     return c.json({

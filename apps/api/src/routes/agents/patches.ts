@@ -148,6 +148,25 @@ function narrowReportedSeverity(
     : null;
 }
 
+/** Values of `device_patches.reported_severity_source` (#9387; DB CHECK device_patches_reported_severity_source_chk). */
+const REPORTED_SEVERITY_SOURCES = ['vendor', 'derived'] as const;
+type ReportedSeveritySource = (typeof REPORTED_SEVERITY_SOURCES)[number];
+
+/**
+ * Narrow the agent-reported provenance of `reportedSeverity` (#9387) to a
+ * known value or null. Only a real rating carries a provenance: an absent or
+ * 'unknown' severity never gets one, so a "derived unknown" cannot be stored.
+ */
+function narrowReportedSeveritySource(
+  reportedSeverity: string | null,
+  value: string | null | undefined
+): ReportedSeveritySource | null {
+  if (!reportedSeverity || reportedSeverity === 'unknown' || !value) return null;
+  return (REPORTED_SEVERITY_SOURCES as readonly string[]).includes(value)
+    ? (value as ReportedSeveritySource)
+    : null;
+}
+
 // Derive vendor from package id; ignore agent-supplied vendor for winget-style ids.
 function deriveVendor(packageId: string | null | undefined, fallback: string | null | undefined): string | null {
   if (packageId && /^[^.]+\.[^.]+/.test(packageId)) {
@@ -269,6 +288,10 @@ async function upsertPendingPatches(
     // for any other tenant. See services/patchSeverityOverlay.ts for how this
     // is read back as an effective severity/category fallback.
     const reportedSeverity = narrowReportedSeverity(patchData.severity ?? null);
+    // Whether that severity is the vendor's rating or one the agent derived
+    // from the update's classification (#9387). Travels with the severity:
+    // see the conflict-update below.
+    const reportedSeveritySource = narrowReportedSeveritySource(reportedSeverity, patchData.severitySource);
     const reportedCategory = category ?? null;
 
     const [patch] = await executor
@@ -350,6 +373,7 @@ async function upsertPendingPatches(
         scope: patchData.scope ?? null,
         availableVersion: version,
         reportedSeverity: reportedSeverity,
+        reportedSeveritySource: reportedSeveritySource,
         reportedCategory: reportedCategory,
         lastCheckedAt: new Date()
       })
@@ -368,6 +392,14 @@ async function upsertPendingPatches(
           // this is per-device/per-org so it can be freely refreshed, raised
           // or lowered by this device's own later scans.
           reportedSeverity: updateIfReported(devicePatches.reportedSeverity, reportedSeverity),
+          // The provenance moves with the severity as a pair: when this scan
+          // reported a severity, its provenance (possibly NULL, from an agent
+          // that sends none) replaces the stored one, so a real rating never
+          // sits beside a stale 'derived' flag; when it reported none, both
+          // keep their stored values.
+          reportedSeveritySource: reportedSeverity === null
+            ? sql`${devicePatches.reportedSeveritySource}`
+            : reportedSeveritySource,
           reportedCategory: updateIfReported(devicePatches.reportedCategory, reportedCategory),
           lastCheckedAt: new Date(),
           updatedAt: new Date()
