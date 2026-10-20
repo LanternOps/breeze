@@ -139,7 +139,8 @@
     "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu.",
     "linkFailed": "Impossible de lier le document.",
     "libraryLoadFailed": "Impossible de charger la bibliothèque de documents.",
-    "agreementsLoadFailed": "Impossible de charger les conventions signées."
+    "agreementsLoadFailed": "Impossible de charger les conventions signées.",
+    "agreementsForbidden": "Vous n'avez pas l'autorisation de consulter les conventions signées."
   },
   "confirm": {
     "deactivate": "Désactiver {{name}} ? Les occurrences ouvertes seront clôturées et aucune nouvelle ne sera planifiée.",

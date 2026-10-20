@@ -139,7 +139,8 @@
     "storageUnavailable": "O armazenamento de documentos está indisponível no momento. Tente novamente em instantes.",
     "linkFailed": "Não foi possível vincular o documento.",
     "libraryLoadFailed": "Não foi possível carregar a biblioteca de documentos.",
-    "agreementsLoadFailed": "Não foi possível carregar os acordos assinados."
+    "agreementsLoadFailed": "Não foi possível carregar os acordos assinados.",
+    "agreementsForbidden": "Você não tem permissão para ver os acordos assinados."
   },
   "confirm": {
     "deactivate": "Desativar {{name}}? As ocorrências abertas serão encerradas e nenhuma nova será agendada.",

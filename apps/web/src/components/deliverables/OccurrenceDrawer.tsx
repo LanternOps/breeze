@@ -123,7 +123,9 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   const [linkAgreementId, setLinkAgreementId] = useState('');
   const [agreements, setAgreements] = useState<ContractDocument[] | null>(null);
   const [agreementsLoading, setAgreementsLoading] = useState(false);
-  const [agreementsError, setAgreementsError] = useState(false);
+  // 'forbidden': a 403 (no agreements:read) — retrying cannot help, so it
+  // gets its own message and no Retry button.
+  const [agreementsError, setAgreementsError] = useState<null | 'failed' | 'forbidden'>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -242,13 +244,14 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
 
   const loadAgreements = async () => {
     setAgreementsLoading(true);
-    setAgreementsError(false);
+    setAgreementsError(null);
     try {
       setAgreements(await listOrgSignedAgreements(fetcher, orgId));
     } catch (err) {
       console.error('[OccurrenceDrawer] signed agreements load failed', err);
       // 401: the auth redirect is already taking over; don't flash an error.
-      if (!(err instanceof ActionError && err.status === 401)) setAgreementsError(true);
+      if (err instanceof ActionError && err.status === 401) return;
+      setAgreementsError(err instanceof ActionError && err.status === 403 ? 'forbidden' : 'failed');
     } finally {
       setAgreementsLoading(false);
     }
@@ -501,7 +504,12 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                     >
                       {t('drawer.link')}
                     </button>
-                    {agreementsError && (
+                    {agreementsError === 'forbidden' && (
+                      <span className="text-destructive" role="alert">
+                        {t('errors.agreementsForbidden')}
+                      </span>
+                    )}
+                    {agreementsError === 'failed' && (
                       <span className="inline-flex items-center gap-1.5 text-destructive" role="alert">
                         {t('errors.agreementsLoadFailed')}
                         <button

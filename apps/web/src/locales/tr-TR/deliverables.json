@@ -139,7 +139,8 @@
     "storageUnavailable": "Belge depolama şu anda kullanılamıyor. Kısa süre sonra tekrar deneyin.",
     "linkFailed": "Belge bağlanamadı.",
     "libraryLoadFailed": "Belge kitaplığı yüklenemedi.",
-    "agreementsLoadFailed": "İmzalı anlaşmalar yüklenemedi."
+    "agreementsLoadFailed": "İmzalı anlaşmalar yüklenemedi.",
+    "agreementsForbidden": "İmzalı anlaşmaları görüntüleme izniniz yok."
   },
   "confirm": {
     "deactivate": "{{name}} devre dışı bırakılsın mı? Açık oluşumlar kapatılır ve yenileri planlanmaz.",

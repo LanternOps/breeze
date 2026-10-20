@@ -84,6 +84,11 @@ describe('signed agreement as deliverable evidence (#9312, live DB)', () => {
 
   runDb('another org\'s signed agreement is 404 even when RLS can see both orgs; nothing is inserted', async () => {
     const s = await seed();
+    // Positive control: the partner context really can SEE org B's agreement,
+    // so the 404 below comes from the service's org predicate, not from RLS.
+    const visible = await withDbAccessContext(s.partnerCtx, async () =>
+      rows(await db.execute(sql`SELECT id FROM contract_documents WHERE id = ${s.agreementB}::uuid`)));
+    expect(visible).toHaveLength(1);
     await expect(withDbAccessContext(s.partnerCtx, () =>
       addEvidence(s.orgA.id, s.occA, { kind: 'contract_document', contractDocumentId: s.agreementB }, s.actor)))
       .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });

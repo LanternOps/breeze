@@ -139,7 +139,8 @@
     "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve.",
     "linkFailed": "Impossibile collegare il documento.",
     "libraryLoadFailed": "Impossibile caricare la libreria documenti.",
-    "agreementsLoadFailed": "Impossibile caricare gli accordi firmati."
+    "agreementsLoadFailed": "Impossibile caricare gli accordi firmati.",
+    "agreementsForbidden": "Non hai l’autorizzazione per visualizzare gli accordi firmati."
   },
   "confirm": {
     "deactivate": "Disattivare {{name}}? Le occorrenze aperte verranno chiuse e non ne verranno pianificate di nuove.",

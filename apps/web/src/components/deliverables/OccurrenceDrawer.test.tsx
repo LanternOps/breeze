@@ -518,6 +518,19 @@ describe('OccurrenceDrawer link signed agreement (#9312)', () => {
     errSpy.mockRestore();
   });
 
+  it('says the user lacks permission on a 403 — no Retry that can never succeed', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path === AGREEMENTS_PATH) return jsonResp(403, { error: 'Permission denied' });
+      return jsonResp(200, { data: [occurrence] });
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-agreement-oc-1'));
+    expect((await screen.findByRole('alert')).textContent).toContain('You do not have permission to view signed agreements.');
+    expect(screen.queryByTestId('occurrence-evidence-agreement-retry-oc-1')).toBeNull();
+    errSpy.mockRestore();
+  });
+
   it('shows the empty hint when the org has no signed agreements', async () => {
     const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
       if ((init?.method ?? 'GET') === 'GET' && path === AGREEMENTS_PATH) return jsonResp(200, { data: [] });

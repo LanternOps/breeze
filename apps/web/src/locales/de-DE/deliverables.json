@@ -139,7 +139,8 @@
     "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut.",
     "linkFailed": "Das Dokument konnte nicht verknüpft werden.",
     "libraryLoadFailed": "Die Dokumentenbibliothek konnte nicht geladen werden.",
-    "agreementsLoadFailed": "Unterzeichnete Vereinbarungen konnten nicht geladen werden."
+    "agreementsLoadFailed": "Unterzeichnete Vereinbarungen konnten nicht geladen werden.",
+    "agreementsForbidden": "Sie haben keine Berechtigung, unterzeichnete Vereinbarungen anzuzeigen."
   },
   "confirm": {
     "deactivate": "{{name}} deaktivieren? Offene Vorkommen werden geschlossen und keine neuen mehr geplant.",
