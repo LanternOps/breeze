@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource, callerVerificationAdministrativeStepUpResource } from './schemas';
+import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource, callerVerificationAdministrativeStepUpResource, forceRebootStepUpResource } from './schemas';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 
 // SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
@@ -212,6 +212,17 @@ describe('mfaStepUpSchema operation field', () => {
 
   // #8729: the force-reboot binding is a bare { deviceId }. It is strict and
   // last in the union, so a richer device binding never collapses onto it.
+  // #9380 review: pin `.strict()` on the force-reboot binding directly. The
+  // union-order case below would still pass with the order flipped, because
+  // strictness alone keeps a richer device binding from matching it.
+  it('rejects a force-reboot binding that carries any key besides deviceId', () => {
+    expect(forceRebootStepUpResource.safeParse({ deviceId: '00000000-0000-4000-8000-000000000010' }).success).toBe(true);
+    expect(forceRebootStepUpResource.safeParse({
+      deviceId: '00000000-0000-4000-8000-000000000010',
+      targetOrgId: '00000000-0000-4000-8000-000000000020',
+    }).success).toBe(false);
+  });
+
   it('keeps a move-org resource whole now that a { deviceId }-only binding exists', () => {
     const resource = {
       deviceId: '00000000-0000-4000-8000-000000000010',

@@ -207,6 +207,30 @@ describe('POST /devices/:id/force-reboot (#8729)', () => {
     expect(deliverMock).toHaveBeenCalledTimes(1);
   });
 
+  // #9380 review: the binding is the device's canonical id, not the raw path
+  // segment. An uppercase UUID in the URL finds the same device, and must
+  // match the grant the console minted for it (lowercase) instead of looping
+  // on STEP_UP_REQUIRED.
+  it('binds the step-up to the device\'s canonical id, whatever the case of the path', async () => {
+    // Needs hex LETTERS: an all-digit id is unchanged by toUpperCase().
+    const MIXED = 'abcdef12-3456-4789-8abc-def012345678';
+    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(deviceRow({ id: MIXED }) as never);
+    const binding = { ...expectedBinding, resourceDigest: forceRebootResourceDigest({ deviceId: MIXED }) };
+
+    const res = await app.request(`/devices/${MIXED.toUpperCase()}/force-reboot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ stepUpGrant: GRANT }),
+    });
+    expect(res.status).toBe(201);
+    expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, binding);
+    expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, binding);
+    // Everything downstream uses the canonical id too.
+    expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(MIXED, 'force_reboot', 'user-123');
+    expect(dispatchDeviceCommandMock).toHaveBeenCalledWith(expect.objectContaining({ deviceId: MIXED }));
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ resourceId: MIXED }));
+  });
+
   it('records the unforced argv on macOS and Linux, where force changes nothing', async () => {
     vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(deviceRow({ osType: 'macos' }) as never);
     const res = await post();

@@ -53,6 +53,13 @@ describe('forceRebootResourceDigest (#8729)', () => {
     expect(forceRebootResourceDigest({ deviceId: A })).not.toBe(forceRebootResourceDigest({ deviceId: B }));
     expect(forceRebootResourceDigest({ deviceId: A })).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
+
+  // #9380 review: the mint (/auth/mfa/step-up) and the route must agree on
+  // the digest whatever case each side was given the uuid in.
+  it('is case-insensitive in the device id, so mint and route always agree', () => {
+    const mixed = 'abcdef12-3456-4789-8abc-def012345678';
+    expect(forceRebootResourceDigest({ deviceId: mixed.toUpperCase() })).toBe(forceRebootResourceDigest({ deviceId: mixed }));
+  });
 });
 
 describe('forceRebootOfflinePolicy (#8729, Codex review)', () => {
