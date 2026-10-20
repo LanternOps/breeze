@@ -248,6 +248,7 @@ import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { toolSourcesRoutes } from './routes/toolSources';
+import { flowsRoutes } from './routes/flows';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
@@ -1166,6 +1167,9 @@ api.route('/extensions', extensionsWebRoutes);
 // Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
 // when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
 api.route('/tool-sources', toolSourcesRoutes);
+// Tool Catalog W03 (#5218) — read-only flows. 404s whole-router when
+// FLOWS_ENABLED is off (routes/flows.ts's first `use('*')`).
+api.route('/flows', flowsRoutes);
 api.route('/topology', topologyRoutes);
 api.route('/circuits', circuitRoutes);
 
