@@ -441,6 +441,13 @@
         "message": "Installa Homebrew con l'utente attualmente connesso, usando una copia fissata e verificata tramite checksum del programma di installazione ufficiale. Richiede una sessione console con privilegi di amministratore e una credenziale sudo attiva o senza password; in caso contrario l'installazione non riesce e l'errore viene segnalato.",
         "confirm": "Installa Homebrew"
       },
+      "restartAgent": {
+        "title": "Riavviare l’agente Breeze?",
+        "message": "Chiedi al watchdog su {{hostname}} di riavviare il servizio dell’agente Breeze. Il watchdog lo esegue al prossimo check-in, di solito entro un minuto, e si collega solo mentre l’agente è fermo.",
+        "watchdogLastSeen": "Ultima segnalazione del watchdog: {{date}}.",
+        "watchdogNeverSeen": "Il watchdog non ha ancora inviato segnalazioni, quindi la richiesta verrà rifiutata finché non si collega.",
+        "confirm": "Riavvia agente"
+      },
       "bulkDeleteManual": {
         "title": "Eliminare {{count}} risorse manuali?",
         "message": "Questa operazione elimina definitivamente le risorse manuali selezionate. Non può essere annullata.",
@@ -492,7 +499,8 @@
       "liveSessionOnly": "{{reason}} — il Terminale remoto richiede un agente connesso. I comandi in coda verranno comunque eseguiti alla riconnessione.",
       "allCommands": "{{reason}} — non ha un agente per eseguire comandi."
     },
-    "installHomebrew": "Installa Homebrew"
+    "installHomebrew": "Installa Homebrew",
+    "restartAgent": "Riavvia agente"
   },
   "deviceActivityFeed": {
     "activity": "Attività",
@@ -868,7 +876,12 @@
     "devices": "Dispositivi",
     "devicesCrumbOtherOrg": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro resta {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro non cambia",
-    "switchOrgFailed": "Impossibile cambiare organizzazione. Riprova."
+    "switchOrgFailed": "Impossibile cambiare organizzazione. Riprova.",
+    "restartAgent": {
+      "queued": "Riavvio dell’agente richiesto per {{hostname}}. Il watchdog lo eseguirà al prossimo check-in.",
+      "alreadyPending": "Un riavvio dell’agente per {{hostname}} è già in attesa del watchdog.",
+      "failed": "Impossibile richiedere il riavvio dell’agente per {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Panoramica",

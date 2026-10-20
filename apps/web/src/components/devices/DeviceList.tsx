@@ -334,6 +334,12 @@ export type Device = {
    * case `status === 'offline'` is the load-bearing signal).
    */
   watchdogStatus?: "connected" | "failover" | "offline" | null;
+  /**
+   * When the watchdog last heartbeated (ISO). The watchdog only heartbeats
+   * while it is in failover, so a recent value means it can take a "Restart
+   * agent" request (#9234); null means it has never reported.
+   */
+  watchdogLastSeen?: string | null;
   hardware?: {
     cpuModel?: string;
     cpuCores?: number;

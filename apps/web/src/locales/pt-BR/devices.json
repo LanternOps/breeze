@@ -445,6 +445,13 @@
         "message": "Instala o Homebrew como o usuário conectado no momento, usando uma cópia fixada e verificada por checksum do instalador oficial. Requer uma sessão de console com privilégios de administrador e uma credencial sudo ativa ou sem senha; caso contrário, a instalação falha e o erro é informado de volta.",
         "confirm": "Instalar o Homebrew"
       },
+      "restartAgent": {
+        "title": "Reiniciar o agente do Breeze?",
+        "message": "Pedir ao watchdog em {{hostname}} que reinicie o serviço do agente do Breeze. O watchdog executa isso no próximo check-in, geralmente em menos de um minuto, e só faz check-in enquanto o agente está parado.",
+        "watchdogLastSeen": "Último relato do watchdog: {{date}}.",
+        "watchdogNeverSeen": "O watchdog ainda não relatou, então a solicitação será recusada até que ele faça check-in.",
+        "confirm": "Reiniciar agente"
+      },
       "bulkDeleteManual": {
         "title": "Excluir {{count}} ativos manuais?",
         "message": "Isso exclui permanentemente os ativos manuais selecionados. Isso não pode ser desfeito.",
@@ -492,7 +499,8 @@
     "power": "Energia",
     "shutdown": "Desligar",
     "deviceSettings": "Configurações do dispositivo",
-    "installHomebrew": "Instalar o Homebrew"
+    "installHomebrew": "Instalar o Homebrew",
+    "restartAgent": "Reiniciar agente"
   },
   "deviceActivityFeed": {
     "activity": "Atividade",
@@ -868,7 +876,12 @@
     "devices": "Dispositivos",
     "devicesCrumbOtherOrg": "Abre a aba Dispositivos de {{deviceOrg}}; sua organização de trabalho continua sendo {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Abre a aba Dispositivos de {{deviceOrg}}; sua organização de trabalho não muda",
-    "switchOrgFailed": "Não foi possível mudar de organização. Tente novamente."
+    "switchOrgFailed": "Não foi possível mudar de organização. Tente novamente.",
+    "restartAgent": {
+      "queued": "Reinício do agente solicitado para {{hostname}}. O watchdog o executa no próximo check-in.",
+      "alreadyPending": "Já há um reinício do agente de {{hostname}} aguardando o watchdog.",
+      "failed": "Não foi possível solicitar o reinício do agente para {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Visão geral",

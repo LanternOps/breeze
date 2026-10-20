@@ -445,6 +445,13 @@
         "message": "Installiert Homebrew als der aktuell angemeldete Benutzer mit einer fest gepinnten, per Prüfsumme verifizierten Kopie des offiziellen Installationsprogramms. Erfordert eine Konsolensitzung mit Administratorrechten und eine aktive oder kennwortlose sudo-Berechtigung; andernfalls schlägt die Installation fehl und der Fehler wird zurückgemeldet.",
         "confirm": "Homebrew installieren"
       },
+      "restartAgent": {
+        "title": "Breeze-Agent neu starten?",
+        "message": "Den Watchdog auf {{hostname}} anweisen, den Breeze-Agent-Dienst neu zu starten. Der Watchdog übernimmt das beim nächsten Check-in, meist innerhalb einer Minute, und meldet sich nur, solange der Agent nicht läuft.",
+        "watchdogLastSeen": "Letzte Meldung des Watchdogs: {{date}}.",
+        "watchdogNeverSeen": "Der Watchdog hat sich noch nicht gemeldet; die Anfrage wird abgelehnt, bis er sich meldet.",
+        "confirm": "Agent neu starten"
+      },
       "bulkDeleteManual": {
         "title": "{{count}} manuelle Assets löschen?",
         "message": "Dadurch werden die ausgewählten manuellen Assets dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
@@ -492,7 +499,8 @@
     "power": "Energie",
     "shutdown": "Herunterfahren",
     "deviceSettings": "Geräteeinstellungen",
-    "installHomebrew": "Homebrew installieren"
+    "installHomebrew": "Homebrew installieren",
+    "restartAgent": "Agent neu starten"
   },
   "deviceActivityFeed": {
     "activity": "Aktivität",
@@ -868,7 +876,12 @@
     "devices": "Geräte",
     "devicesCrumbOtherOrg": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation bleibt {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation ändert sich nicht",
-    "switchOrgFailed": "Organisation konnte nicht gewechselt werden. Bitte erneut versuchen."
+    "switchOrgFailed": "Organisation konnte nicht gewechselt werden. Bitte erneut versuchen.",
+    "restartAgent": {
+      "queued": "Neustart des Agents für {{hostname}} angefordert. Der Watchdog führt ihn beim nächsten Check-in aus.",
+      "alreadyPending": "Für {{hostname}} wartet bereits ein Agent-Neustart auf den Watchdog.",
+      "failed": "Neustart des Agents für {{hostname}} konnte nicht angefordert werden"
+    }
   },
   "deviceDetails": {
     "overview": "Übersicht",

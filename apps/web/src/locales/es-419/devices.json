@@ -445,6 +445,13 @@
         "message": "Instala Homebrew como el usuario que tiene la sesión iniciada, usando una copia fija y verificada por suma de comprobación del instalador oficial. Requiere una sesión de consola con permisos de administrador y una credencial de sudo activa o sin contraseña; de lo contrario, la instalación falla y el error se informa de vuelta.",
         "confirm": "Instalar Homebrew"
       },
+      "restartAgent": {
+        "title": "¿Reiniciar el agente de Breeze?",
+        "message": "Pedir al watchdog de {{hostname}} que reinicie el servicio del agente de Breeze. El watchdog lo toma en su próxima conexión, normalmente en menos de un minuto, y solo se conecta mientras el agente está detenido.",
+        "watchdogLastSeen": "Último reporte del watchdog: {{date}}.",
+        "watchdogNeverSeen": "El watchdog no ha reportado, así que la solicitud se rechazará hasta que se conecte.",
+        "confirm": "Reiniciar agente"
+      },
       "bulkDeleteManual": {
         "title": "¿Eliminar {{count}} activos manuales?",
         "message": "Esto elimina permanentemente los activos manuales seleccionados. No se puede deshacer.",
@@ -492,7 +499,8 @@
     "power": "Energía",
     "shutdown": "Apagar",
     "deviceSettings": "Configuración del dispositivo",
-    "installHomebrew": "Instalar Homebrew"
+    "installHomebrew": "Instalar Homebrew",
+    "restartAgent": "Reiniciar agente"
   },
   "deviceActivityFeed": {
     "activity": "Actividad",
@@ -868,7 +876,12 @@
     "devices": "Dispositivos",
     "devicesCrumbOtherOrg": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo sigue siendo {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo no cambia",
-    "switchOrgFailed": "No se pudo cambiar de organización. Inténtalo de nuevo."
+    "switchOrgFailed": "No se pudo cambiar de organización. Inténtalo de nuevo.",
+    "restartAgent": {
+      "queued": "Se solicitó el reinicio del agente en {{hostname}}. El watchdog lo ejecutará en su próxima conexión.",
+      "alreadyPending": "Ya hay un reinicio del agente de {{hostname}} esperando al watchdog.",
+      "failed": "No se pudo solicitar el reinicio del agente en {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Descripción general",

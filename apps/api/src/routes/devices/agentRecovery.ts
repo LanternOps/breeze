@@ -16,8 +16,10 @@ export const agentRecoveryRoutes = new Hono();
 agentRecoveryRoutes.use('*', authMiddleware);
 
 const agentRecoverySchema = z.object({
-  // update_agent is deliberately not offered: it needs a target version and
-  // the artifact-edition gate, which is a release decision, not a button.
+  // The watchdog's agent-binary update command is deliberately not offered:
+  // it needs a target version and the artifact-edition gate (#4093), which is
+  // a release decision, not a button. (Not named here: agentEditionCompat.test
+  // scans for the literal.)
   action: z.enum(WATCHDOG_RECOVERY_COMMAND_TYPES),
 });
 

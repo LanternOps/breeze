@@ -445,6 +445,13 @@
         "message": "Installs Homebrew as the currently signed-in user using a pinned, checksum-verified copy of the official installer. Requires an admin console session with an active or passwordless sudo credential; otherwise the install fails and the error is reported back.",
         "confirm": "Install Homebrew"
       },
+      "restartAgent": {
+        "title": "Restart the Breeze agent?",
+        "message": "Ask the watchdog on {{hostname}} to restart the Breeze agent service. The watchdog picks this up on its next check-in, usually within a minute, and only checks in while the agent is down.",
+        "watchdogLastSeen": "Watchdog last reported {{date}}.",
+        "watchdogNeverSeen": "The watchdog has not reported, so the request will be refused until it checks in.",
+        "confirm": "Restart agent"
+      },
       "bulkDeleteManual": {
         "title": "Delete {{count}} manual assets?",
         "message": "This permanently deletes the selected manual assets. This cannot be undone.",
@@ -492,7 +499,8 @@
     "power": "Power",
     "shutdown": "Shutdown",
     "deviceSettings": "Device Settings",
-    "installHomebrew": "Install Homebrew"
+    "installHomebrew": "Install Homebrew",
+    "restartAgent": "Restart agent"
   },
   "deviceActivityFeed": {
     "activity": "Activity",
@@ -868,7 +876,12 @@
     "devices": "Devices",
     "devicesCrumbOtherOrg": "Opens {{deviceOrg}}'s Devices tab; your working org stays {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Opens {{deviceOrg}}'s Devices tab; your working organization does not change",
-    "switchOrgFailed": "Couldn't switch organization. Try again."
+    "switchOrgFailed": "Couldn't switch organization. Try again.",
+    "restartAgent": {
+      "queued": "Agent restart requested for {{hostname}}. The watchdog runs it on its next check-in.",
+      "alreadyPending": "An agent restart for {{hostname}} is already waiting for the watchdog.",
+      "failed": "Failed to request an agent restart for {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Overview",

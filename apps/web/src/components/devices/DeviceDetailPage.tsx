@@ -167,6 +167,11 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         siteId: data.siteId ?? "",
         siteName: data.siteName ?? "Unknown Site",
         agentVersion: data.agentVersion ?? "",
+        // Watchdog state for the "Restart agent" confirm (#9234). Same
+        // whitelist hazard as the fields below: omit them and the confirm
+        // silently says the watchdog has never reported.
+        watchdogStatus: data.watchdogStatus ?? null,
+        watchdogLastSeen: typeof data.watchdogLastSeen === "string" ? data.watchdogLastSeen : null,
         tags: data.tags ?? [],
         lastUser: data.lastUser ?? undefined,
         uptimeSeconds:
@@ -588,6 +593,35 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
                 }),
               errorFallback: `Failed to queue Homebrew install for ${device.hostname}`,
               successMessage: `Homebrew install queued for ${device.hostname}. It runs as the signed-in console user.`,
+            });
+          } catch (err) {
+            // 401 → the auth redirect is the feedback; any other ActionError was
+            // already toasted by runAction.
+            if (!(err instanceof ActionError)) throw err;
+          }
+          break;
+        }
+
+        case "restart-agent": {
+          // #9234 step 1: the watchdog restarts the agent. 202 means queued —
+          // the watchdog claims it on its next failover poll — so the copy
+          // says "requested", never "restarted". Refusals (one already
+          // waiting, watchdog not reporting, partner trust) come back as the
+          // API's own message via runAction.
+          try {
+            await runAction({
+              request: () =>
+                fetchWithAuth(`/devices/${device.id}/agent-recovery`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "restart_agent" }),
+                }),
+              errorFallback: t("deviceDetailPage.restartAgent.failed", { hostname: device.hostname }),
+              friendly: (code) =>
+                code === "ALREADY_PENDING"
+                  ? t("deviceDetailPage.restartAgent.alreadyPending", { hostname: device.hostname })
+                  : undefined,
+              successMessage: t("deviceDetailPage.restartAgent.queued", { hostname: device.hostname }),
             });
           } catch (err) {
             // 401 → the auth redirect is the feedback; any other ActionError was

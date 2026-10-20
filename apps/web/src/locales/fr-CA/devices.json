@@ -441,6 +441,13 @@
         "message": "Installe Homebrew sous le compte de l’utilisateur actuellement connecté, à partir d’une copie figée et vérifiée par somme de contrôle de l’installateur officiel. Nécessite une session console avec des droits d’administrateur et une autorisation sudo active ou sans mot de passe; sinon, l’installation échoue et l’erreur est rapportée.",
         "confirm": "Installer Homebrew"
       },
+      "restartAgent": {
+        "title": "Redémarrer l’agent Breeze?",
+        "message": "Demander au watchdog de {{hostname}} de redémarrer le service de l’agent Breeze. Le watchdog s’en charge à sa prochaine connexion, généralement en moins d’une minute, et ne se connecte que pendant que l’agent est arrêté.",
+        "watchdogLastSeen": "Dernier signal du watchdog : {{date}}.",
+        "watchdogNeverSeen": "Le watchdog ne s’est pas encore manifesté; la demande sera refusée tant qu’il ne se connecte pas.",
+        "confirm": "Redémarrer l’agent"
+      },
       "bulkDeleteManual": {
         "title": "Supprimer {{count}} actifs manuels?",
         "message": "Cette action supprime définitivement les actifs manuels sélectionnés. Cette opération est irréversible.",
@@ -492,7 +499,8 @@
       "liveSessionOnly": "{{reason}} — le terminal distant nécessite un agent connecté. Les commandes en file d'attente s'exécutent tout de même à la reconnexion.",
       "allCommands": "{{reason}} — aucun agent n'est disponible pour exécuter des commandes."
     },
-    "installHomebrew": "Installer Homebrew"
+    "installHomebrew": "Installer Homebrew",
+    "restartAgent": "Redémarrer l’agent"
   },
   "deviceActivityFeed": {
     "activity": "Activité",
@@ -868,7 +876,12 @@
     "devices": "Dispositifs",
     "devicesCrumbOtherOrg": "Ouvre l’onglet Appareils de {{deviceOrg}}; votre organisation de travail reste {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Ouvre l’onglet Appareils de {{deviceOrg}}; votre organisation de travail ne change pas",
-    "switchOrgFailed": "Impossible de changer d’organisation. Réessayez."
+    "switchOrgFailed": "Impossible de changer d’organisation. Réessayez.",
+    "restartAgent": {
+      "queued": "Redémarrage de l’agent demandé pour {{hostname}}. Le watchdog l’exécutera à sa prochaine connexion.",
+      "alreadyPending": "Un redémarrage de l’agent de {{hostname}} attend déjà le watchdog.",
+      "failed": "Impossible de demander le redémarrage de l’agent pour {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Aperçu",
