@@ -729,11 +729,40 @@ describe('serviceDeliverableService', () => {
       expect(s.name).toBe(base.name);
     });
 
-    it('a deliverable with no occurrences has null nextDue/lastDelivered and skips the occurrence query', async () => {
+    it('a deliverable with no occurrences reports its planned nextDue (#9308), null lastDelivered', async () => {
       queueResult([{ deliverable: { id: 'd1', orgId: 'org1', ...base, active: true, effectiveUntil: null, contractId: null }, contractName: null }]);
       queueResult([]);
       const s = await getDeliverable('org1', 'd1', actor);
-      expect(s).toMatchObject({ contractName: null, nextDue: null, lastDelivered: null, openCount: 0 });
+      expect(s).toMatchObject({ contractName: null, nextDue: '2026-10-31', lastDelivered: null, openCount: 0 });
+    });
+  });
+
+  describe('getDeliverable planned nextDue (#9308)', () => {
+    const row = (over: Record<string, unknown>) => ({
+      deliverable: { id: 'd1', orgId: 'org1', ...base, anchorDueDate: '2999-01-31', effectiveFrom: '2999-01-31', active: true, effectiveUntil: null, contractId: null, ...over },
+      contractName: null,
+    });
+    it('one-time with no occurrences reports its anchor as nextDue and is not inactive', async () => {
+      queueResult([row({ cadence: 'one_time' })]);
+      queueResult([]);
+      const s = await getDeliverable('org1', 'd1', actor);
+      expect(s.nextDue).toBe('2999-01-31');
+      expect(s.status).not.toBe('inactive');
+    });
+    it('a deactivated one-time stays inactive', async () => {
+      queueResult([row({ cadence: 'one_time', active: false })]);
+      queueResult([]);
+      expect((await getDeliverable('org1', 'd1', actor)).status).toBe('inactive');
+    });
+    it('a waived one-time does not re-plan its anchor', async () => {
+      queueResult([row({ cadence: 'one_time' })]);
+      queueResult([{ id: 'o1', deliverableId: 'd1', status: 'waived', dueAt: '2999-01-31', originalDueAt: '2999-01-31', deliveredAt: null, deliveryNote: null }]);
+      expect((await getDeliverable('org1', 'd1', actor)).nextDue).toBeNull();
+    });
+    it('recurring with no occurrences reports the first planned due date', async () => {
+      queueResult([row({ cadence: 'monthly', effectiveFrom: '2999-01-01' })]);
+      queueResult([]);
+      expect((await getDeliverable('org1', 'd1', actor)).nextDue).toBe('2999-01-31');
     });
   });
 
@@ -743,9 +772,12 @@ describe('serviceDeliverableService', () => {
 
     it('inactive when !active or today outside the effective range', () => {
       expect(summarizeStatus({ ...d, active: false }, [{ status: 'missed', dueAt: '2026-10-01' }], today)).toBe('inactive');
-      expect(summarizeStatus({ ...d, effectiveFrom: '2026-11-01' }, [], today)).toBe('inactive');
       expect(summarizeStatus({ ...d, effectiveUntil: '2026-10-14' }, [], today)).toBe('inactive');
       expect(summarizeStatus({ ...d, effectiveUntil: '2026-10-15' }, [], today)).toBe('on_track');
+    });
+    it('a not-yet-started active deliverable is not inactive (#9308)', () => {
+      expect(summarizeStatus({ ...d, effectiveFrom: '2026-11-01' }, [], today)).toBe('on_track');
+      expect(summarizeStatus({ ...d, active: false, effectiveFrom: '2026-11-01' }, [], today)).toBe('inactive');
     });
     it('missed beats late', () => {
       expect(summarizeStatus(d, [{ status: 'missed', dueAt: '2026-09-01' }, { status: 'open', dueAt: '2026-10-01' }], today)).toBe('missed');

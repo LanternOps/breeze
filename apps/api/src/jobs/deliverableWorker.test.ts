@@ -53,6 +53,9 @@ describe('runDeliverableSweep', () => {
     const q = new PgDialect().sqlToQuery(capturedWhere[0] as SQL);
     expect(q.sql).toContain('automation_eligible_org');
     expect(q.sql).toContain('"effective_from" <=');
+    // #9308: eligibility is effective_from <= today + lead_days, so a one-time item
+    // whose effective_from equals its due date is visited inside its lead window.
+    expect(q.sql).toContain('"lead_days"');
     expect(q.sql).toContain('"effective_until" is null');
     expect(q.params).toContain('2026-10-25');
     expect(q.params).toContain(true);

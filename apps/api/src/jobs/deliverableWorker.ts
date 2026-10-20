@@ -15,7 +15,7 @@
  * unit alone and the sweep carries on.
  */
 import { Queue, Worker } from 'bullmq';
-import { and, eq, gte, isNull, lt, lte, or } from 'drizzle-orm';
+import { and, eq, gte, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -75,7 +75,11 @@ export async function runDeliverableSweep(asOf: Date = new Date()): Promise<Deli
       .from(serviceDeliverables)
       .where(and(
         eq(serviceDeliverables.active, true),
-        lte(serviceDeliverables.effectiveFrom, today),
+        // #9308: effective_from - lead_days <= today. A one-time item applied from a
+        // template has effective_from == its due date; gating on effective_from alone
+        // visited it first on the due date, so its lead window never applied.
+        // planOccurrences still drops any due date before effective_from.
+        sql`${serviceDeliverables.effectiveFrom} <= ${today}::date + ${serviceDeliverables.leadDays}`,
         or(isNull(serviceDeliverables.effectiveUntil), gte(serviceDeliverables.effectiveUntil, today)),
         // An archived tenant inside its purge countdown gets no tickets.
         buildAutomationEligibleOrgPredicate(serviceDeliverables.orgId),

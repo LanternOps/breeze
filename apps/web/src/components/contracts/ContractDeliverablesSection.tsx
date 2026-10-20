@@ -12,6 +12,8 @@ import { Dialog } from '../shared/Dialog';
 interface Props {
   contractId: string;
   orgId: string;
+  /** The contract's start date; the default effectiveFrom for new deliverables (#9308). */
+  contractStartDate?: string | null;
 }
 
 /**
@@ -20,7 +22,7 @@ interface Props {
  * occurrence history in a drawer. The org record's Service tab shows the same
  * table across every contract of the org; this section pins it to one.
  */
-export default function ContractDeliverablesSection({ contractId, orgId }: Props) {
+export default function ContractDeliverablesSection({ contractId, orgId, contractStartDate }: Props) {
   const { t } = useTranslation('deliverables');
   const [adding, setAdding] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
@@ -67,6 +69,7 @@ export default function ContractDeliverablesSection({ contractId, orgId }: Props
             fetcher={fetchWithAuth}
             orgId={orgId}
             contractId={contractId}
+            contractStartDate={contractStartDate}
             onSaved={() => {
               setAdding(false);
               refresh();

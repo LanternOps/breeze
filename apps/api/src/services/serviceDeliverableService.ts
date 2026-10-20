@@ -18,7 +18,7 @@ import type {
   RescheduleOccurrenceInput, EvidenceRef,
 } from '@breeze/shared';
 import { transition, InvalidTransitionError, type OccurrenceStatus } from './serviceDeliverableState';
-import { isInLeadWindow, isPastGrace, planOccurrences, type Cadence } from './recurrence';
+import { isInLeadWindow, isPastGrace, nextPlannedDueDate, planOccurrences, type Cadence } from './recurrence';
 import { addDaysISO } from './contractMath';
 import type { TicketActor } from './ticketService';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
@@ -88,7 +88,6 @@ function withSavepoint<T>(executor: DbExecutor, fn: (tx: DbExecutor) => Promise<
 const NON_TERMINAL: readonly OccurrenceStatus[] = ['scheduled', 'open', 'awaiting_evidence', 'missed'];
 const ACTIONABLE: readonly OccurrenceStatus[] = ['open', 'awaiting_evidence', 'missed'];
 const RESCHEDULABLE: ReadonlySet<OccurrenceStatus> = new Set(NON_TERMINAL);
-const DELIVERED_OR_NON_TERMINAL: readonly OccurrenceStatus[] = [...NON_TERMINAL, 'delivered'];
 
 const notFound = () => new DeliverableServiceError('Not found', 404, 'NOT_FOUND');
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -107,7 +106,7 @@ export function summarizeStatus(
   occ: Array<{ status: OccurrenceStatus; dueAt: string }>,
   today = todayISO(),
 ): DeliverableSummary['status'] {
-  if (!d.active || today < d.effectiveFrom || (d.effectiveUntil !== null && today > d.effectiveUntil)) return 'inactive';
+  if (!d.active || (d.effectiveUntil !== null && today > d.effectiveUntil)) return 'inactive';
   if (occ.some((o) => o.status === 'missed')) return 'missed';
   const open = occ.filter((o) => o.status === 'open' || o.status === 'awaiting_evidence');
   if (open.some((o) => o.dueAt < today)) return 'late';
@@ -115,11 +114,21 @@ export function summarizeStatus(
   return 'on_track';
 }
 
-type SummaryOccurrence = Pick<ServiceDeliverableOccurrenceRow, 'id' | 'deliverableId' | 'status' | 'dueAt' | 'deliveredAt' | 'deliveryNote'>;
+type SummaryOccurrence = Pick<ServiceDeliverableOccurrenceRow, 'id' | 'deliverableId' | 'status' | 'dueAt' | 'deliveredAt' | 'deliveryNote'> & { originalDueAt?: string | null };
 
 function buildSummary(row: ServiceDeliverableRow, contractName: string | null, occ: SummaryOccurrence[], today: string): DeliverableSummary {
   const live = occ.filter((o) => NON_TERMINAL.includes(o.status));
-  const nextDue = live.reduce<string | null>((min, o) => (min === null || o.dueAt < min ? o.dueAt : min), null);
+  const liveNext = live.reduce<string | null>((min, o) => (min === null || o.dueAt < min ? o.dueAt : min), null);
+  // #9308: with no live occurrence, report the planned due date (the sweep has not
+  // materialized it yet). `occ` carries every status so a waived/delivered slot is
+  // never re-planned.
+  const nextDue = liveNext ?? (row.active
+    ? nextPlannedDueDate({
+      anchorDueDate: row.anchorDueDate, cadence: row.cadence as Cadence,
+      effectiveFrom: row.effectiveFrom, effectiveUntil: row.effectiveUntil,
+      afterDue: occ.reduce<string | null>((max, o) => { const x = o.originalDueAt ?? o.dueAt; return max === null || x > max ? x : max; }, null),
+    })
+    : null);
   const delivered = occ.filter((o): o is SummaryOccurrence & { deliveredAt: Date } => o.status === 'delivered' && o.deliveredAt !== null);
   const last = delivered.reduce<(SummaryOccurrence & { deliveredAt: Date }) | null>(
     (best, o) => (best === null || o.deliveredAt.getTime() > best.deliveredAt.getTime() ? o : best), null);
@@ -151,12 +160,12 @@ async function loadSummaries(orgId: string, filters: { id?: string; contractId?:
       id: serviceDeliverableOccurrences.id, deliverableId: serviceDeliverableOccurrences.deliverableId,
       status: serviceDeliverableOccurrences.status, dueAt: serviceDeliverableOccurrences.dueAt,
       deliveredAt: serviceDeliverableOccurrences.deliveredAt, deliveryNote: serviceDeliverableOccurrences.deliveryNote,
+      originalDueAt: serviceDeliverableOccurrences.originalDueAt,
     })
     .from(serviceDeliverableOccurrences)
     .where(and(
       eq(serviceDeliverableOccurrences.orgId, orgId),
       inArray(serviceDeliverableOccurrences.deliverableId, ids),
-      inArray(serviceDeliverableOccurrences.status, DELIVERED_OR_NON_TERMINAL),
     ));
   const byDeliverable = new Map<string, SummaryOccurrence[]>();
   for (const o of occ) {

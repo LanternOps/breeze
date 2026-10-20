@@ -90,3 +90,25 @@ export function firstAnchorAfter(effectiveFrom: string, cadence: Cadence): strin
   if (months === null) return effectiveFrom;
   return addDaysISO(addMonthsClamped(effectiveFrom, months), -1);
 }
+
+/**
+ * The next due date a deliverable will be planned for, without any occurrence row
+ * (#9308): the first nthDueDate(n) that is >= effectiveFrom, strictly after the
+ * latest materialized nominal due date (`afterDue`), and inside effectiveUntil.
+ * Null when the schedule is exhausted (a one-time already materialized, or past
+ * the window).
+ */
+export function nextPlannedDueDate(input: {
+  anchorDueDate: string; cadence: Cadence; effectiveFrom: string; effectiveUntil: string | null; afterDue: string | null;
+}): string | null {
+  // 600 monthly steps = 50 years; bounds the walk for an ancient anchor.
+  for (let n = 0; n < 600; n++) {
+    const due = nthDueDate(input.anchorDueDate, input.cadence, n);
+    if (due === null) return null;
+    if (input.effectiveUntil !== null && due > input.effectiveUntil) return null;
+    if (due < input.effectiveFrom) continue;
+    if (input.afterDue !== null && due <= input.afterDue) continue;
+    return due;
+  }
+  return null;
+}

@@ -516,7 +516,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
               <SignedAgreementsPage lockedContractId={contract.id} />
             </div>
           </section>
-          <ContractDeliverablesSection contractId={contract.id} orgId={contract.orgId} />
+          <ContractDeliverablesSection contractId={contract.id} orgId={contract.orgId} contractStartDate={contract.startDate} />
         </div>
 
         {/* ── status + lifecycle + generate ─────────────────────────────── */}

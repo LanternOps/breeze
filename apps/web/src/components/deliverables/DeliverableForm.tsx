@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { MANAGED_EVIDENCE_REPORT_TYPES, type CreateDeliverableInput, type UpdateDeliverableInput } from '@breeze/shared';
@@ -31,7 +31,9 @@ export interface DeliverableFormProps {
    *  picker is hidden. */
   contractId?: string | null;
   /** Contracts to choose from when `contractId` is not fixed. */
-  contractOptions?: Array<{ id: string; name: string }>;
+  contractOptions?: Array<{ id: string; name: string; startDate?: string | null }>;
+  /** Start date of the pinned `contractId`; the default for `effectiveFrom` (spec §4.1). */
+  contractStartDate?: string | null;
   /** Lifecycle of the `contractOptions` load when `contractId` is not fixed:
    *  `'loading'` disables the picker, `'failed'` shows an inline error and
    *  blocks Save — a deliverable that belongs under a contract must never be
@@ -65,11 +67,15 @@ interface FormState {
   checklistTemplateId: string;
 }
 
+function laterOf(a: string, b: string): string {
+  return a > b ? a : b;
+}
+
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function initialState(initial: Deliverable | undefined, fixedContractId: string | null | undefined): FormState {
+function initialState(initial: Deliverable | undefined, fixedContractId: string | null | undefined, contractStartDate?: string | null): FormState {
   if (initial) {
     return {
       name: initial.name,
@@ -96,8 +102,8 @@ function initialState(initial: Deliverable | undefined, fixedContractId: string 
     description: '',
     contractId: fixedContractId ?? '',
     cadence: 'monthly',
-    anchorDueDate: today,
-    effectiveFrom: today,
+    anchorDueDate: laterOf(today, (fixedContractId && contractStartDate) || today),
+    effectiveFrom: (fixedContractId && contractStartDate) || today,
     effectiveUntil: '',
     leadDays: '7',
     graceDays: '14',
@@ -125,6 +131,7 @@ export default function DeliverableForm({
   orgId,
   contractId: fixedContractId,
   contractOptions,
+  contractStartDate,
   contractsState,
   initial,
   onSaved,
@@ -134,7 +141,9 @@ export default function DeliverableForm({
   const uid = useId();
   const id = (field: string) => `${uid}-${field}`;
   const isEdit = Boolean(initial);
-  const [form, setForm] = useState<FormState>(() => initialState(initial, fixedContractId));
+  const [form, setForm] = useState<FormState>(() => initialState(initial, fixedContractId, contractStartDate));
+  // #9308: contract start seeds effectiveFrom (and the due date) only until the user edits them.
+  const touched = useRef({ effectiveFrom: false, anchorDueDate: false });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [evidenceReports, setEvidenceReports] = useState<EvidenceReportOption[]>([]);
@@ -170,6 +179,15 @@ export default function DeliverableForm({
   const contractsFailed = showContractPicker && contractsState === 'failed';
   const contractsLoading = showContractPicker && contractsState === 'loading';
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
+  const pickContract = (contractId: string) => {
+    const start = contractOptions?.find((c) => c.id === contractId)?.startDate || todayISO();
+    setForm((f) => ({
+      ...f,
+      contractId,
+      ...(isEdit || touched.current.effectiveFrom ? {} : { effectiveFrom: start }),
+      ...(isEdit || touched.current.anchorDueDate ? {} : { anchorDueDate: laterOf(todayISO(), start) }),
+    }));
+  };
 
   // Managed evidence definitions this org could link a deliverable to. The
   // tuple was empty in W01 and each later wave (W02 threat_detection_review,
@@ -305,7 +323,7 @@ export default function DeliverableForm({
             id={id('contract')}
             className={inputClass}
             value={form.contractId}
-            onChange={(e) => set('contractId', e.target.value)}
+            onChange={(e) => pickContract(e.target.value)}
             disabled={contractsLoading || contractsFailed}
             aria-invalid={contractsFailed || undefined}
             data-testid="deliverable-form-contract"
@@ -345,7 +363,7 @@ export default function DeliverableForm({
             type="date"
             className={inputClass}
             value={form.anchorDueDate}
-            onChange={(e) => set('anchorDueDate', e.target.value)}
+            onChange={(e) => { touched.current.anchorDueDate = true; set('anchorDueDate', e.target.value); }}
             disabled={isEdit}
             required
             data-testid="deliverable-form-anchor"
@@ -358,7 +376,7 @@ export default function DeliverableForm({
             type="date"
             className={inputClass}
             value={form.effectiveFrom}
-            onChange={(e) => set('effectiveFrom', e.target.value)}
+            onChange={(e) => { touched.current.effectiveFrom = true; set('effectiveFrom', e.target.value); }}
             required
           />
         </div>

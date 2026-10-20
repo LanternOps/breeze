@@ -122,6 +122,28 @@ describe('DeliverableForm contract picker', () => {
   });
 });
 
+describe('DeliverableForm effectiveFrom default (#9308)', () => {
+  const effectiveFromInput = (container: HTMLElement) => container.querySelector('input[id$="-from"]') as HTMLInputElement;
+
+  it('defaults effectiveFrom to the pinned contract start date', () => {
+    const { container } = render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" contractStartDate="2026-03-01" onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    expect(effectiveFromInput(container).value).toBe('2026-03-01');
+  });
+
+  it('follows the picked contract start until the user edits the field', () => {
+    const { container } = render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[{ id: 'ct-1', name: 'Acme MSA', startDate: '2026-03-01' }]} onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByTestId('deliverable-form-contract'), { target: { value: 'ct-1' } });
+    expect(effectiveFromInput(container).value).toBe('2026-03-01');
+    fireEvent.change(effectiveFromInput(container), { target: { value: '2026-04-01' } });
+    fireEvent.change(screen.getByTestId('deliverable-form-contract'), { target: { value: '' } });
+    expect(effectiveFromInput(container).value).toBe('2026-04-01');
+  });
+});
+
 describe('DeliverableForm auto-evidence report picker', () => {
   it('renders the evidence report picker bound to empty when None', () => {
     render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[]} onSaved={vi.fn()} onCancel={vi.fn()} />);

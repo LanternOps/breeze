@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cadenceMonths, coveredPeriod, firstAnchorAfter, nthDueDate, planOccurrences, isInLeadWindow, isPastGrace } from './recurrence';
+import { cadenceMonths, coveredPeriod, firstAnchorAfter, nextPlannedDueDate, nthDueDate, planOccurrences, isInLeadWindow, isPastGrace } from './recurrence';
 
 describe('recurrence', () => {
   it('maps cadence to months', () => {
@@ -104,5 +104,24 @@ describe('firstAnchorAfter (template apply, spec §4.6)', () => {
       leadDays: 7, graceDays: 14, today: '2026-10-25', existingDueDates: [],
     });
     expect(plan.map((p) => p.dueAt)).toEqual(['2026-10-31']);
+  });
+});
+
+describe('nextPlannedDueDate (#9308)', () => {
+  const base = { anchorDueDate: '2026-10-31', cadence: 'one_time' as const, effectiveFrom: '2026-10-31', effectiveUntil: null, afterDue: null };
+  it('one-time with no occurrence plans its anchor', () => {
+    expect(nextPlannedDueDate(base)).toBe('2026-10-31');
+  });
+  it('one-time already materialized has no next due', () => {
+    expect(nextPlannedDueDate({ ...base, afterDue: '2026-10-31' })).toBeNull();
+  });
+  it('recurring with no occurrences yet = first due >= effectiveFrom', () => {
+    expect(nextPlannedDueDate({ ...base, cadence: 'monthly', effectiveFrom: '2026-11-15' })).toBe('2026-11-30');
+  });
+  it('recurring steps past the latest materialized due', () => {
+    expect(nextPlannedDueDate({ ...base, cadence: 'monthly', effectiveFrom: '2026-01-01', afterDue: '2026-10-31' })).toBe('2026-11-30');
+  });
+  it('null once past effectiveUntil', () => {
+    expect(nextPlannedDueDate({ ...base, effectiveUntil: '2026-10-30' })).toBeNull();
   });
 });
