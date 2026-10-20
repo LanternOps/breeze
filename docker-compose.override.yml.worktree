@@ -1,6 +1,8 @@
 # docker-compose.override.yml.worktree
 # Always applied for both per-worktree and --shared stacks. Stacks AFTER docker-compose.override.yml.dev.
 # All stacks use ephemeral host ports (0:N) + tmpfs Postgres; only the Compose project namespace differs.
+# Host ports bind to 127.0.0.1 (the stack has a seeded admin and baseUrl is localhost);
+# set BREEZE_WT_BIND_ADDR (e.g. 0.0.0.0) to publish on another interface.
 # Adds a code-mounted Portal dev service so the worktree's portal code runs.
 services:
   binaries-init:
@@ -30,14 +32,14 @@ services:
   api:
     container_name: !reset null
     ports: !override
-      - "0:3001"
+      - "${BREEZE_WT_BIND_ADDR:-127.0.0.1}:0:3001"
 
   web:
     container_name: !reset null
     environment:
       PUBLIC_API_URL: ""
     ports: !override
-      - "0:4321"
+      - "${BREEZE_WT_BIND_ADDR:-127.0.0.1}:0:4321"
 
   caddy:
     container_name: !reset null
@@ -46,7 +48,7 @@ services:
     ports: !override
       # #8718 — random host port by default; BREEZE_WT_CADDY_PORT pins it so a
       # `docker restart` of caddy (storm socket-drop) keeps the same address.
-      - "${BREEZE_WT_CADDY_PORT:-0}:80"
+      - "${BREEZE_WT_BIND_ADDR:-127.0.0.1}:${BREEZE_WT_CADDY_PORT:-0}:80"
 
   portal:
     image: breeze-portal:dev

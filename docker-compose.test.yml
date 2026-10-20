@@ -11,6 +11,10 @@
 # other's database. Every variable defaults to the historical fixed value, so
 # plain `docker compose -f docker-compose.test.yml up -d` (CI, single-session
 # local) behaves exactly as before.
+#
+# Host ports bind to 127.0.0.1 only: the test Postgres has a fixed password and
+# Redis has no auth, and every client (CI, vitest, test-stack) uses localhost.
+# Set BREEZE_TEST_BIND_ADDR (e.g. 0.0.0.0) to publish on another interface.
 
 services:
   # PostgreSQL Database for Tests
@@ -37,7 +41,7 @@ services:
     ports:
       # Different port to avoid conflicts with dev. `pnpm test-stack` passes 0
       # to get an ephemeral host port for per-worktree isolation.
-      - "${BREEZE_TEST_PG_PORT:-5433}:5432"
+      - "${BREEZE_TEST_BIND_ADDR:-127.0.0.1}:${BREEZE_TEST_PG_PORT:-5433}:5432"
     tmpfs:
       - /var/lib/postgresql/data  # Use tmpfs for speed, data is ephemeral
     networks:
@@ -57,7 +61,7 @@ services:
     ports:
       # Different port to avoid conflicts with dev. `pnpm test-stack` passes 0
       # to get an ephemeral host port for per-worktree isolation.
-      - "${BREEZE_TEST_REDIS_PORT:-6380}:6379"
+      - "${BREEZE_TEST_BIND_ADDR:-127.0.0.1}:${BREEZE_TEST_REDIS_PORT:-6380}:6379"
     networks:
       - breeze-test-network
     healthcheck:
