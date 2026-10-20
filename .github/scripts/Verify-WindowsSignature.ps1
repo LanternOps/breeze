@@ -3,10 +3,11 @@
 Verifies Authenticode signatures on released Windows artifacts.
 
 .DESCRIPTION
-Shared by every Windows signing provider job in release.yml so the providers
-cannot drift apart. Previously each provider carried its own inline copy of the
-verification, which is how the Azure path ended up with no publisher binding at
-all while the SSL.com path pinned a certificate.
+The single verifier the Windows signing job in release.yml runs before it
+uploads a signed artifact. It was introduced when two providers existed, each
+with its own inline copy of the verification, which is how the (since retired)
+Azure path ended up with no publisher binding at all while the SSL.com path
+pinned a certificate. Keep every check here so a future provider cannot drift.
 
 Every check throws on failure; the caller runs under `shell: pwsh`, where a
 terminating error fails the step.

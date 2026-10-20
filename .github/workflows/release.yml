@@ -16,16 +16,17 @@ env:
   GO_VERSION: '1.26.9'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  # Publisher every Windows signing provider must produce. Asserted by both
-  # signing jobs via .github/scripts/Verify-WindowsSignature.ps1 so a
-  # misconfigured endpoint or certificate profile cannot ship under another
-  # identity. Change here, not per job.
+  # Publisher the Windows signing job must produce. Asserted by
+  # sign-windows-tauri-sslcom via .github/scripts/Verify-WindowsSignature.ps1
+  # so a misconfigured eSigner credential or certificate cannot ship under
+  # another identity. Change here, not per job.
   WINDOWS_SIGNING_EXPECTED_SUBJECT: LanternOps LLC
 
 # SR-007: least-privilege default for every job. Build jobs only need to read
 # the repo + exchange artifacts. Jobs that publish override this with their
 # own per-job `permissions:` (create-release → contents: write; GHCR pushes →
-# packages: write; Tauri/MSI signing → id-token: write).
+# packages: write). No release job holds id-token: write; the Windows signing
+# job authenticates with environment-scoped SSL.com credentials, not OIDC.
 permissions:
   contents: read
 
