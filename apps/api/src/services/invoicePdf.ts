@@ -363,8 +363,8 @@ export interface InvoicePdfColumns {
 
 // Money columns are sized for prefix-code currencies (Intl renders e.g.
 // "CHF 888'888.88" — ~73pt at Helvetica 10, wider than any "$" figure), so
-// the taxed layout gives unit price | tax | amount 0.155 each, qty 0.07, and the
-// description 0.42 (money 0.16 / qty 0.065 / description 0.57 untaxed) — the
+// the taxed layout gives unit price | tax | amount 0.155 each, qty 0.08, and the
+// description 0.42 (money 0.16 / qty 0.085 / description 0.57 untaxed) — the
 // same description fractions as quotePdf.ts columnsFor, so a multi-line
 // description wraps the same way on both documents (#9401).
 // The totals block gets its own wider box (0.24) for the bold-14 emphasis row:
@@ -386,8 +386,8 @@ export function invoiceColumnsFor(doc: PDFKit.PDFDocument, showTax: boolean): In
       left, right, contentWidth, showTax,
       colDescW: contentWidth * 0.42,
       colNumW: contentWidth * 0.155,
-      colQtyW: contentWidth * 0.07,
-      colQtyX: left + contentWidth * 0.44,
+      colQtyW: contentWidth * 0.08,
+      colQtyX: left + contentWidth * 0.43,
       colUnitX: left + contentWidth * 0.53,
       colTaxX: left + contentWidth * 0.69,
       colAmtX: left + contentWidth * 0.845,
@@ -398,8 +398,8 @@ export function invoiceColumnsFor(doc: PDFKit.PDFDocument, showTax: boolean): In
     left, right, contentWidth, showTax,
     colDescW: contentWidth * 0.57,
     colNumW: contentWidth * 0.16,
-    colQtyW: contentWidth * 0.065,
-    colQtyX: left + contentWidth * 0.58,
+    colQtyW: contentWidth * 0.085,
+    colQtyX: left + contentWidth * 0.575,
     colUnitX: left + contentWidth * 0.665,
     colTaxX: left + contentWidth * 0.665,
     // The AMOUNT box must end at the right edge so it lines up with the
@@ -550,7 +550,7 @@ export function renderInvoicePdfBuffer(
             doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(note, left, y + titleHeight + dateHeight + blurbHeight + 2, { width: colDescW });
             doc.fillColor('#1f2937').fontSize(10);
           }
-          doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colQtyW, align: 'right' });
+          doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colQtyW, align: 'right', lineBreak: false });
           const unitText = formatMoneyForPdf(l.unitPrice, currency, locale);
           fitFontSize(doc, unitText, colNumW, 10);
           doc.fillColor('#6b7280').text(unitText, colUnitX, y, { width: colNumW, align: 'right', lineBreak: false });

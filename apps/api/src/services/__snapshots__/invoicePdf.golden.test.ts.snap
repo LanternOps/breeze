@@ -663,7 +663,7 @@ exports[`invoice renderers — golden (default line-detail settings) > PDF text,
     {
       "page": 0,
       "text": "QTY",
-      "x": 351.9796,
+      "x": 359.4088,
       "y": 241.103,
     },
     {
@@ -699,7 +699,7 @@ exports[`invoice renderers — golden (default line-detail settings) > PDF text,
     {
       "page": 0,
       "text": "1",
-      "x": 363.8956,
+      "x": 371.3248,
       "y": 291.485,
     },
     {
@@ -729,7 +729,7 @@ exports[`invoice renderers — golden (default line-detail settings) > PDF text,
     {
       "page": 0,
       "text": "1.5",
-      "x": 355.5556,
+      "x": 362.9848,
       "y": 309.485,
     },
     {
@@ -753,7 +753,7 @@ exports[`invoice renderers — golden (default line-detail settings) > PDF text,
     {
       "page": 0,
       "text": "0.5",
-      "x": 355.5556,
+      "x": 362.9848,
       "y": 340.605,
     },
     {
@@ -777,7 +777,7 @@ exports[`invoice renderers — golden (default line-detail settings) > PDF text,
     {
       "page": 0,
       "text": "1",
-      "x": 363.8956,
+      "x": 371.3248,
       "y": 358.605,
     },
     {
@@ -807,7 +807,7 @@ exports[`invoice renderers — golden (default line-detail settings) > PDF text,
     {
       "page": 0,
       "text": "1",
-      "x": 363.8956,
+      "x": 371.3248,
       "y": 376.605,
     },
     {
@@ -831,7 +831,7 @@ exports[`invoice renderers — golden (default line-detail settings) > PDF text,
     {
       "page": 0,
       "text": "1.2",
-      "x": 355.5556,
+      "x": 362.9848,
       "y": 407.725,
     },
     {
