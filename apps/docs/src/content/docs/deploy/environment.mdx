@@ -1065,6 +1065,8 @@ Off by default and safe to leave unset. This feature works per **user** rather t
 | `M365_COMMS_EXECUTOR_SIGNING_KID` | Yes | Non-empty string | Key ID of the API's signing JWK; must match the `kid` in the JWK file. |
 | `M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` | Yes | Absolute path, e.g. `/run/secrets/m365_comms_executor_signing_private_jwk` | The API's Ed25519 **private** signing JWK. Same file rules as Graph-read: a regular file, mode `0600` or stricter, mounted read-only; never inline the key in an env var. |
 
+With the stock Compose file, `M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` is the in-container mount path and is set for you; set `M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE` in `.env` to the **host path** of the source JWK that feeds that secret (same ownership and mode rules as Graph-read). Leaving it unset mounts an empty placeholder and boot fails once the feature is enabled.
+
 The consent callback origin comes from `PUBLIC_URL`, then `PUBLIC_APP_URL`, then `PUBLIC_API_URL`, with `/api/v1/m365/comms-consent/callback` appended. In production one of them must be set.
 
 ## Docker Deployment
