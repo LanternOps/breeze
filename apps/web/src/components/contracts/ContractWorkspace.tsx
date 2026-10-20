@@ -50,8 +50,13 @@ export default function ContractWorkspace({ contractId }: Props) {
   // Mirrors `detail` for `load()` without making it a dependency: a background
   // refresh (editor autosave -> onChanged) must not change `load`'s identity and
   // retrigger the mount effect.
-  const hasDetailRef = useRef(false);
-  hasDetailRef.current = detail !== null;
+  // Holds the id of the contract currently on screen, so a `contractId` prop
+  // change is treated as a fresh first load rather than a background refresh.
+  const shownIdRef = useRef<string | null>(null);
+  shownIdRef.current = detail?.contract.id ?? null;
+  // Sequence guard: overlapping refreshes (two quick autosaves) must not let a
+  // slower, older response overwrite a newer one.
+  const loadSeqRef = useRef(0);
 
   // First load shows the full-page spinner / error state. Once a detail is on
   // screen, a refetch is a background refresh (#9305): keep the tree mounted
@@ -60,7 +65,8 @@ export default function ContractWorkspace({ contractId }: Props) {
   const load = useCallback(async () => {
     if (isNew) { setLoading(false); return; }
     if (!contractId) { setError(stableT('contracts.contractWorkspace.errors.missingContractId')); setLoading(false); return; }
-    const background = hasDetailRef.current;
+    const background = shownIdRef.current === contractId;
+    const seq = ++loadSeqRef.current;
     const fail = (message: string) => {
       if (background) showToast({ type: 'error', message });
       else setError(message);
@@ -68,17 +74,20 @@ export default function ContractWorkspace({ contractId }: Props) {
     try {
       if (!background) { setLoading(true); setError(undefined); }
       const res = await getContract(contractId);
+      if (seq !== loadSeqRef.current) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 404) { fail(stableT('contracts.contractWorkspace.errors.notFound')); return; }
       if (!res.ok) throw new Error(stableT('contracts.contractWorkspace.errors.loadContract'));
       const body = (await res.json().catch(() => null)) as { data: ContractDetailData } | null;
       if (!body) throw new Error(stableT('contracts.contractWorkspace.errors.loadContract'));
+      if (seq !== loadSeqRef.current) return;
       setDetail(body.data);
       setError(undefined);
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       fail(err instanceof Error ? err.message : stableT('contracts.contractWorkspace.errors.loadContract'));
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [isNew, contractId, stableT]);
 

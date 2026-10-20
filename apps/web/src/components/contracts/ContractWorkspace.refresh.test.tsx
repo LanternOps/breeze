@@ -40,6 +40,7 @@ vi.mock('../../lib/api/contracts', async (importOriginal) => {
 });
 
 import { getContract } from '../../lib/api/contracts';
+import { navigateTo } from '@/lib/navigation';
 
 const okRes = (name: string) => ({
   ok: true,
@@ -89,7 +90,7 @@ describe('ContractWorkspace background refresh (#9305)', () => {
 
     vi.mocked(getContract).mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) } as Response);
     await act(async () => { state.onChanged!(); });
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/\S/) })));
     expect(screen.getByTestId('mock-contract-editor')).toHaveTextContent('A');
     expect(screen.queryByTestId('contract-workspace-error')).toBeNull();
   });
@@ -99,5 +100,43 @@ describe('ContractWorkspace background refresh (#9305)', () => {
     render(<ContractWorkspace contractId="c1" />);
     expect(await screen.findByTestId('contract-workspace-error')).toBeInTheDocument();
     expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('redirects to login on a 401 background refresh without toasting', async () => {
+    vi.mocked(getContract).mockResolvedValueOnce(okRes('A'));
+    render(<ContractWorkspace contractId="c1" />);
+    await screen.findByTestId('mock-contract-editor');
+    vi.mocked(getContract).mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) } as Response);
+    await act(async () => { state.onChanged!(); });
+    expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true });
+    expect(showToast).not.toHaveBeenCalled();
+    expect(screen.getByTestId('mock-contract-editor')).toHaveTextContent('A');
+  });
+
+  it('keeps the detail and toasts when a background refresh rejects', async () => {
+    vi.mocked(getContract).mockResolvedValueOnce(okRes('A'));
+    render(<ContractWorkspace contractId="c1" />);
+    await screen.findByTestId('mock-contract-editor');
+    vi.mocked(getContract).mockRejectedValueOnce(new Error('offline'));
+    await act(async () => { state.onChanged!(); });
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'offline' }));
+    expect(screen.getByTestId('mock-contract-editor')).toHaveTextContent('A');
+  });
+
+  it('lets the newest refresh win when responses arrive out of order', async () => {
+    vi.mocked(getContract).mockResolvedValueOnce(okRes('A'));
+    render(<ContractWorkspace contractId="c1" />);
+    await screen.findByTestId('mock-contract-editor');
+    let releaseOld!: (r: Response) => void;
+    let releaseNew!: (r: Response) => void;
+    vi.mocked(getContract)
+      .mockReturnValueOnce(new Promise<Response>((r) => { releaseOld = r; }))
+      .mockReturnValueOnce(new Promise<Response>((r) => { releaseNew = r; }));
+    act(() => { state.onChanged!(); });
+    act(() => { state.onChanged!(); });
+    await act(async () => { releaseNew(okRes('NEW')); });
+    await waitFor(() => expect(screen.getByTestId('mock-contract-editor')).toHaveTextContent('NEW'));
+    await act(async () => { releaseOld(okRes('OLD')); });
+    expect(screen.getByTestId('mock-contract-editor')).toHaveTextContent('NEW');
   });
 });
