@@ -92,6 +92,28 @@ describe('OrgRecordHeader', () => {
     expect(screen.getByTestId('org-record-primary-contact-link').getAttribute('href')).toBe('#contacts');
   });
 
+  it('single site primary: phone link, no "+N more", and the org primary wins when both exist (#9317)', () => {
+    const one = { id: 'a', name: 'Sam Site', email: 'sam@acme.test', phone: '555-0100', siteId: 's-a', siteName: 'HQ' };
+    renderHeader({ summary: { ...SUMMARY, contacts: { count: 1, primary: null, sitePrimaries: [one] } } });
+    const el = screen.getByTestId('org-record-site-primary-contact');
+    expect(el.textContent).not.toContain('more');
+    expect(screen.getByRole('link', { name: /555-0100/ }).getAttribute('href')).toBe('tel:555-0100');
+    expect(screen.getByRole('link', { name: /sam@acme.test/ }).getAttribute('href')).toBe('mailto:sam@acme.test');
+  });
+
+  it('org primary takes precedence over site primaries; empty sitePrimaries falls back to the empty state (#9317)', () => {
+    const one = { id: 'a', name: 'Sam Site', email: null, phone: null, siteId: 's-a', siteName: 'HQ' };
+    const { unmount } = renderHeader({
+      summary: { ...SUMMARY, contacts: { count: 2, primary: SUMMARY.contacts!.primary, sitePrimaries: [one] } },
+    });
+    expect(screen.getByTestId('org-record-primary-contact')).toBeTruthy();
+    expect(screen.queryByTestId('org-record-site-primary-contact')).toBeNull();
+    unmount();
+    renderHeader({ summary: { ...SUMMARY, contacts: { count: 0, primary: null, sitePrimaries: [] } } });
+    expect(screen.getByTestId('org-record-no-primary-contact')).toBeTruthy();
+    expect(screen.queryByTestId('org-record-site-primary-contact')).toBeNull();
+  });
+
   it('stays quiet about contacts while the summary is still null', () => {
     renderHeader({ summary: null });
     expect(screen.queryByTestId('org-record-primary-contact')).toBeNull();

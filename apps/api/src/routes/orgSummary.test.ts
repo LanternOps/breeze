@@ -63,7 +63,10 @@ function queryResult<T>(baseRows: T[], limitedRows: T[] = baseRows) {
     limit: (n: number) => Promise<T[]>;
     orderBy: (...a: unknown[]) => Promise<T[]> & { limit: (n: number) => Promise<T[]> };
   };
-  promise.limit = () => Promise.resolve(limitedRows);
+  promise.limit = (n: number) => {
+    joinLimits.push(n);
+    return Promise.resolve(limitedRows);
+  };
   promise.orderBy = () => promise;
   return promise;
 }
@@ -85,12 +88,11 @@ function setupDb(rowsByTable: Map<unknown, RowsSpec<unknown>>) {
       ({
         from: (table: unknown) => {
           const run = (condition: unknown, joined: boolean) => {
-            whereByTable.set(joined ? `${String((table as any)?.[Symbol.for('drizzle:Name')] ?? 'tbl')}+join` : table, condition);
+            whereByTable.set(joined ? JOINED_KEY : table, condition);
             const spec = rowsByTable.get(table);
             if (joined) {
-              return queryResult(
-                (spec && !Array.isArray(spec) ? spec.joined : undefined) ?? [],
-              );
+              const rows = (spec && !Array.isArray(spec) ? spec.joined : undefined) ?? [];
+              return queryResult(rows);
             }
             if (spec && !Array.isArray(spec)) {
               return queryResult(spec.base, spec.limited);
@@ -109,6 +111,8 @@ function setupDb(rowsByTable: Map<unknown, RowsSpec<unknown>>) {
 /** WHERE condition captured per table by `setupDb`, so a test can assert on the
  * predicate the route actually built and not just the rows the mock returned. */
 const whereByTable = new Map<unknown, unknown>();
+const JOINED_KEY = 'contacts+sites join query';
+const joinLimits: number[] = [];
 
 /** Compile a captured WHERE into its REAL SQL text.
  *
@@ -336,6 +340,8 @@ describe('GET /orgs/organizations/:id/summary', () => {
   });
 
   it('site-level primary only: primary is null and sitePrimaries names the contact and site (#9317)', async () => {
+    whereByTable.clear();
+    joinLimits.length = 0;
     setupDb(
       new Map<unknown, RowsSpec<unknown>>([
         [organizations, [{ id: ORG_ID, currencyCode: 'USD' }]],
@@ -358,6 +364,12 @@ describe('GET /orgs/organizations/:id/summary', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.contacts.primary).toBeNull();
+    // Scoped to this org's site-level primaries, capped at 3.
+    const q = new PgDialect().sqlToQuery(whereByTable.get(JOINED_KEY) as SQL);
+    expect(q.sql).toContain('"is_primary" = $');
+    expect(q.sql).toContain('"site_id" is not null');
+    expect(q.params).toContain(ORG_ID);
+    expect(joinLimits).toContain(3);
     expect(body.contacts.sitePrimaries).toEqual([
       { id: 'c-site', name: 'Sam Site', email: 'sam@x.example', phone: null, siteId: 'site-1', siteName: 'HQ' },
     ]);
@@ -384,7 +396,8 @@ describe('GET /orgs/organizations/:id/summary', () => {
 
     const body = await res.json();
     expect(body.contacts.primary).toEqual({ id: 'c1', name: 'Jane Doe', email: null, phone: null });
-    expect(body.contacts.sitePrimaries ?? []).toEqual([]);
+    expect(body.contacts.sitePrimaries).toBeUndefined();
+    expect(whereByTable.has(JOINED_KEY)).toBe(false);
   });
 
   it('includes lastActivityAt only when the caller holds audit:read', async () => {
