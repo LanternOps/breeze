@@ -1237,14 +1237,14 @@ describe("M365CustomerGraphReadCard", () => {
           ],
         },
       })));
-      render(<M365CustomerGraphReadCard />);
+      const { container } = render(<M365CustomerGraphReadCard />);
 
       expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
       expect(screen.queryByText("Connection details are unavailable.")).not.toBeInTheDocument();
       const chips = await screen.findAllByTestId("m365-sync-chip");
       expect(chips.map((chip) => chip.textContent)).toEqual(["Unrecognized data type: error"]);
-      // The raw wire name is never shown to the operator.
-      expect(screen.queryByText(/mailboxes/)).not.toBeInTheDocument();
+      // The raw wire name is never shown to the operator, in text or attributes.
+      expect(container.innerHTML).not.toMatch(/mailboxes|teams_calls/);
     });
 
     it("shows one chip when several domains produce the same label (#9392)", async () => {
@@ -1283,6 +1283,66 @@ describe("M365CustomerGraphReadCard", () => {
       expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
       expect(await screen.findByTestId("m365-sync-summary")).toHaveTextContent("10 users");
     });
+
+    it("does not claim Entra ID P1 for an unknown domain flagged unlicensed (#9392)", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5,
+          domains: [
+            { domain: "future_a", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "future_b", status: "throttled", asOf: null, truncated: false, unlicensed: true },
+          ],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      // The card cannot know which license an unknown domain needs, so it
+      // falls through to the status chip instead of the P1 sentence.
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual(["Unrecognized data type: throttled"]);
+    });
+
+    function syncDomains(names: string[]) {
+      return names.map((domain) => ({ domain, status: "success", asOf: null, truncated: false, unlicensed: false }));
+    }
+
+    it("accepts a 64-character domain name and exactly 64 domains", async () => {
+      const names = ["a" + "b".repeat(63), ...Array.from({ length: 63 }, (_, i) => `d_${i}`)];
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: { lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5, domains: syncDomains(names) },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(screen.queryByText("Connection details are unavailable.")).not.toBeInTheDocument();
+    });
+
+    it("rejects an envelope with more than 64 sync domains", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        sync: {
+          lastSuccessAt: null, users: null, devices: null,
+          domains: syncDomains(Array.from({ length: 65 }, (_, i) => `d_${i}`)),
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+    });
+
+    it.each(["Users", "1users", "users-x", "us ers", "", "<script>", "a".repeat(65)])(
+      "rejects an envelope whose sync domain name is malformed: %j",
+      async (bad) => {
+        fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+          sync: { lastSuccessAt: null, users: null, devices: null, domains: syncDomains([bad]) },
+        })));
+        render(<M365CustomerGraphReadCard />);
+
+        expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+      },
+    );
 
     it("rejects an envelope whose sync block has a non-string domain", async () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({

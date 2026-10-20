@@ -733,9 +733,11 @@ export default function M365CustomerGraphReadCard({
       const domain = entry.domain
         ? t(/* i18n-dynamic */ `m365CustomerGraphRead.sync.domains.${entry.domain}`)
         : t("m365CustomerGraphRead.sync.domains.unknown");
-      if (entry.unlicensed) {
+      if (entry.unlicensed && entry.domain) {
         // Its own sentence, not "{{domain}}: unlicensed": the actionable fact is
-        // that the TENANT needs Entra ID P1, not that a sync went wrong.
+        // that the TENANT needs Entra ID P1, not that a sync went wrong. Only for
+        // a known domain: the card cannot say which license an unknown one needs,
+        // so that falls through to its status chip.
         chips.push({ key: `${entry.wireDomain}:unlicensed`, label: t("m365CustomerGraphRead.sync.chips.unlicensed") });
       } else if (entry.status === "throttled") {
         chips.push({ key: `${entry.wireDomain}:throttled`, label: t("m365CustomerGraphRead.sync.chips.throttled", { domain }) });
