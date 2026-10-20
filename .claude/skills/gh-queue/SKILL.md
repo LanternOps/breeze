@@ -12,7 +12,7 @@ Long-running manager for the **incoming** GitHub backlog on the Breeze repo (`La
 - **`queue.md`** — live snapshot, split into `## PRs`, `## Discussions`, `## Issues` sections (each with waiting-on-me / in-flight / recently-closed), plus one rolling session log at the bottom.
 - **`contributors.md`** — per-contributor profiles and review heuristics (apply across all object types — Billy's patterns show up in PRs *and* discussions).
 
-Both files are gitignored (the entire `.claude/skills/` tree is in `.gitignore`), so they're a private scratchpad that travels with the repo on this machine but doesn't leak into commits.
+`queue.md` and `contributors.md` are gitignored (`.gitignore` lists them by path; `SKILL.md` and `scripts/` ARE tracked), so the state files are a private scratchpad that travels with the repo on this machine but doesn't leak into commits. Never put advisory content or contributor verdicts in `SKILL.md`.
 
 **Outgoing items (mine) are out of scope** except to track own-PRs for merge. This skill manages what needs *my review/action*.
 
@@ -161,11 +161,30 @@ Bucket every in-scope item into:
 
 **Verify against code before responding (load-bearing rule).** When a thread *claims* a gap, bug, regression, or "X is broken" — read the actual code and confirm before you answer. Plausible-sounding claims are wrong often enough that posting on them unverified produces public mistakes. Two real misses came from repeating a claim instead of checking: a "security/patches ignore orgId" gap that was already fixed by #973, and a "filters are a scale regression" claim that was actually the existing page architecture. Grep/read first, then respond. A false-negative grep is also a trap — confirm with the real symbol, not a guessed string (searched `query('orgId')` and got zero hits when the code used `query.orgId`).
 
+#### PR step 0 — hostile-intent screen (EVERY external PR, before any tier decision)
+
+Correctness review does not ask "what could this diff do that the body doesn't say". Until 2026-10-20 nothing in this process did; Todd asked and the honest answer was "no". Now, for every PR whose author is not ToddHebebrand or dependabot, run the mechanical screen first and read its hits before bucketing:
+
+```bash
+.claude/skills/gh-queue/scripts/pr-threat-screen.sh <N>   # from the repo root
+```
+
+It prints only sections with hits: sensitive paths (workflows, Dockerfiles, scripts/, manifests, lockfiles, migrations, agent/helper/viewer, auth/signing/secrets), dependency manifest changes, **lockfile entries with the integrity hash checked against the npm registry** and any non-registry source, install hooks / shell-outs in `package.json` scripts, outbound hosts not on the known list, dynamic execution / decoding / raw DOM, long opaque strings, non-ASCII in code lines (bidi/homoglyph), env/secret/privilege/RLS-bypass touches, listeners/file writes/timers, and tests removed or lint suppressed. An empty report means no *mechanical* signal, not safe. Paste the hits that matter (or "screen: clean") into the review comment so the check is visible, and treat these as hard stops regardless of tier:
+
+- Any `.github/workflows/*`, Dockerfile, compose, `scripts/`, `.npmrc`, `turbo.json`, or `package.json` `scripts` change from an external author → read the whole change yourself, not a subagent, and ask what it runs and with which secrets (merge_group runs with full secrets; fork `pull_request` does not).
+- Any new dependency, override, `npm:` alias, git/tarball source, or integrity mismatch → verify the package on the registry (publisher, age, downloads, repo) before anything else. A typosquat looks like a routine bump.
+- Any new outbound host, decoded blob, `eval`/`Function`/`exec`, or non-ASCII in a code line → explain it or bounce it.
+- Anything under `agent/`, `apps/helper`, `apps/viewer`, the installer/updater, signing, SSO/auth, or `SECURITY DEFINER` / system-scope DB context → Tier 2 with the hostile-reading section, no exceptions for trusted contributors; this code runs on customer machines or bypasses tenant isolation by design.
+
+**Dependency bumps and "trivial" config from external authors are never green-on-sight.** They are exactly the diffs an adversary would choose. The old Tier 1 list below is for own/dependabot PRs and for external diffs that the screen has already shown to be clean.
+
+**Contributor trust tiers** live in `contributors.md` (§ Trust tiers). Reputation is built in weeks and is not provenance; a tier changes how much you read yourself, never whether the screen runs.
+
 #### PR-specific tiering — don't waste subagent budget on green-on-sight
 
-**Tier 1 — fast manual scan (~30s, no subagents).** `gh pr diff <N> | head -150` or `gh pr view <N> --json files,additions,deletions`. Green-on-sight: test-only diffs, dependency bumps, explicit verifiable cleanups, trivial config mirroring an existing pattern, dated-TODO removal (verify date + grep for live consumers).
+**Tier 1 — fast manual scan (~30s, no subagents).** `gh pr diff <N> | head -150` or `gh pr view <N> --json files,additions,deletions`. Green-on-sight (own/dependabot PRs, or external PRs with a clean screen): test-only diffs, dependency bumps, explicit verifiable cleanups, trivial config mirroring an existing pattern, dated-TODO removal (verify date + grep for live consumers).
 
-**Tier 2 — parallel pr-review-toolkit subagents (only the 🟡 pile).** Heuristics: touches auth/RBAC/RLS/tenant isolation; new schema/migration; diff >~200 lines or >5 files; novel subsystem; frontend PR from an AI-assisted contributor (check `Dialog.tsx`/`runAction`/helper reinvention); title makes a hard-to-skim claim. Send one message with multiple `Agent` tool uses, `subagent_type: pr-review-toolkit:code-reviewer`:
+**Tier 2 — parallel pr-review-toolkit subagents (only the 🟡 pile).** Heuristics: touches auth/RBAC/RLS/tenant isolation; new schema/migration; diff >~200 lines or >5 files; novel subsystem; frontend PR from an AI-assisted contributor (check `Dialog.tsx`/`runAction`/helper reinvention); title makes a hard-to-skim claim; any step-0 hard stop. Send one message with multiple `Agent` tool uses, `subagent_type: pr-review-toolkit:code-reviewer`:
 
 ```
 Review PR #<NUM> on LanternOps/breeze. Fetch the diff with:
@@ -176,11 +195,21 @@ Focus on: correctness bugs at file:line; tenant isolation / RLS (every new tenan
 policies — see CLAUDE.md); whole-system coherence (does the diff match the body? does it reinvent
 something?); for Billy's PRs check globally-disconnected patterns (re-implemented modals, body-sniff
 vs helper — see contributors.md); comment style (bold leads, file:line, no tables).
-Report under 250 words: must-fix vs nice-to-have, file:line + one-line rationale each. Do NOT post
-comments — return findings as text for me to consolidate.
+HOSTILE READING (separate section, required): assume the author is adversarial and the body is
+cover. Name every thing this diff could do that the body does not say: data it can read or send
+outside the tenant or the host, code it can execute (install hooks, dynamic imports, exec,
+templates reaching the shell or SQL), privilege it gains (system DB scope, SECURITY DEFINER,
+platform-admin paths, RLS predicates removed or widened, auth/signing/verification weakened,
+TLS checks relaxed), persistence it adds (timers, workers, cron, startup paths, agent/helper/
+updater/installer changes), and anything obfuscated (encoded strings, homoglyphs, dead-looking
+code that is reachable). Check that tests still cover what they covered before (deleted/skipped
+tests, loosened assertions). Say "hostile reading: nothing found" explicitly if so. The screen
+output is: <paste step-0 hits or "clean">.
+Report under 300 words: must-fix vs nice-to-have, file:line + one-line rationale each, hostile
+reading last. Do NOT post comments — return findings as text for me to consolidate.
 ```
 
-Consolidate findings before posting. Group must-fix vs nice. When in doubt, lean Tier 1.
+Consolidate findings before posting. Group must-fix vs nice. When in doubt, lean Tier 1 for own/dependabot PRs; for external PRs that hit a step-0 stop, when in doubt lean Tier 2.
 
 #### Discussions & Issues — mostly manual
 
