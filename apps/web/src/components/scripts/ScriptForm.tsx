@@ -30,6 +30,7 @@ import {
   type ScriptFormDefaults, type ScriptFormValues, type ScriptSubmitValues,
 } from './ScriptFormSchema';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { useRegisterDirtyForm } from '@/lib/keyboard/useRegisterDirtyForm';
 
 export type { ScriptFormValues, ScriptParameter, ScriptSubmitValues } from './ScriptFormSchema';
 
@@ -365,6 +366,7 @@ export default function ScriptForm({
   const isDirtyRef = useRef(false);
   const skipGuardRef = useRef(false);
   isDirtyRef.current = isDirty;
+  useRegisterDirtyForm(isDirty);
 
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
