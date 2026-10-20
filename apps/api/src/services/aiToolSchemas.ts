@@ -774,6 +774,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     contractId: uuid.optional(),
     includeInactive: z.boolean().optional(),
     occurrencesFor: uuid.optional(),
+    includeDetails: z.boolean().optional(),
+    ...pageZodShape(15, 100),
   }),
 
   // Deliverable template sets W05 (#5573 spec 4.6/10).
@@ -794,6 +796,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     reason: z.string().max(2000).optional(),
     dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     reportRunId: uuid.optional(),
+    documentId: uuid.optional(),
   }),
 
   manage_key_dates: z.object({

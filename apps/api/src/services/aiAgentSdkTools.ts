@@ -3961,6 +3961,8 @@ export function buildBreezeSdkTools(
         contractId: uuid.optional(),
         includeInactive: z.boolean().optional(),
         occurrencesFor: uuid.optional(),
+        includeDetails: z.boolean().optional(),
+        ...pageZodShape(15, 100),
       },
       makeHandler('list_deliverables', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -3990,6 +3992,7 @@ export function buildBreezeSdkTools(
         reason: z.string().max(2000).optional(),
         dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         reportRunId: uuid.optional(),
+        documentId: uuid.optional(),
       },
       makeHandler('manage_deliverables', getAuth, onPreToolUse, onPostToolUse)
     ),
