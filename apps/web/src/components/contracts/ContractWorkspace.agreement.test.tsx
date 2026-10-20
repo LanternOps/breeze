@@ -70,7 +70,7 @@ describe('ContractWorkspace agreement pill', () => {
   });
 });
 
-// #9304: provenance moved off contract Notes (which print on every invoice) to
+// #9304: provenance moved off contract Notes (which printed on every invoice until #9347) to
 // a header pill derived from the quote-sourced executed agreement.
 describe('ContractWorkspace created-from-quote pill', () => {
   beforeEach(() => {

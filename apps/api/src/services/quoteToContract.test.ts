@@ -82,8 +82,8 @@ describe('buildContractSpecsFromQuote', () => {
     expect(specs).toHaveLength(1);
     const c = specs[0]!;
     expect(c.intervalMonths).toBe(1);
-    // #9304: contract notes print on every generated invoice, so the
-    // auto-create path must not write internal provenance there.
+    // #9304: the auto-create path never writes provenance into notes; they
+    // are the MSP's own internal notes (#9347).
     expect(c.notes).toBeNull();
     expect(c.billingTiming).toBe('advance');
     expect(c.orgId).toBe('org-1');

@@ -17,7 +17,14 @@
 -- contracts.notes. When the comment already matches, the copy is skipped, so a
 -- re-run updates 0 rows. A text-prefix guard cannot be exact here: a contract
 -- whose terms already started with its notes would be skipped on the first run
--- and its invoice would lose text.
+-- and its invoice would lose text. Never COMMENT ON contracts.notes elsewhere:
+-- changing that comment makes a replay of this file copy notes a second time.
+-- The marker is the only guard: a restore that drops column comments would
+-- let a replay copy the notes again.
+--
+-- Rollout: an old API/worker still running the pre-#9347 generator after this
+-- runs would print the notes twice (notes, then terms that now start with
+-- notes) until it restarts.
 -- contracts carries no partner-export triggers, so no pre-locks are needed.
 
 SELECT set_config('breeze.scope', 'system', true);

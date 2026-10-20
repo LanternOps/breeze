@@ -29,7 +29,7 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, contracts, invoices } from '../../db/schema';
 import {
-  createContract, addContractLineToContract, activateContract, generateDueInvoice,
+  createContract, addContractLineToContract, activateContract, generateDueInvoice, updateContract,
   type ContractActorT,
 } from '../../services/contractService';
 import { replayMigration } from './replayMigration';
@@ -113,6 +113,8 @@ describe.runIf(RUN)('contract notes are internal-only (#9347)', () => {
       { notes: null, terms: 'Terms only' },
       { notes: '', terms: 'Empty notes' },
       { notes: null, terms: null },
+      // Whitespace is truthy in the old join, so it printed; it still must.
+      { notes: ' ', terms: 'After a blank note' },
     ];
     const ids: string[] = [];
     for (const shape of shapes) ids.push(await seedContract(actor, orgId, shape));
@@ -120,10 +122,22 @@ describe.runIf(RUN)('contract notes are internal-only (#9347)', () => {
     await resetMigrationMarker();
     await replayMigration(MIGRATION);
 
+    const printed: (string | null)[] = [];
     for (const [i, shape] of shapes.entries()) {
-      expect(await generatedInvoiceNotes(ids[i]!), JSON.stringify(shape))
-        .toBe(legacyInvoiceNotes(shape.notes, shape.terms));
+      const notes = await generatedInvoiceNotes(ids[i]!);
+      printed.push(notes);
+      expect(notes, JSON.stringify(shape)).toBe(legacyInvoiceNotes(shape.notes, shape.terms));
     }
+    // Literal pins, so a drift in the legacy oracle above cannot pass silently.
+    expect(printed).toEqual([
+      'Billed per MSA section 4.\nCall before 9am.\n\nNet 30',
+      'Notes only',
+      'Notes with empty terms',
+      'Terms only',
+      'Empty notes',
+      null,
+      ' \n\nAfter a blank note',
+    ]);
 
     // Notes stay as the internal copy; nothing is cleared.
     const after = new Map((await readHeaders(ids)).map((r) => [r.id, r]));
@@ -140,10 +154,9 @@ describe.runIf(RUN)('contract notes are internal-only (#9347)', () => {
     await resetMigrationMarker();
     await replayMigration(MIGRATION);
 
-    await withSystemDbAccessContext(() =>
-      db.update(contracts).set({ notes: 'Chase on day 3 - internal' }).where(eq(contracts.id, notesEdited)));
-    await withSystemDbAccessContext(() =>
-      db.update(contracts).set({ terms: 'Net 15' }).where(eq(contracts.id, termsEdited)));
+    // Through the service the PATCH route uses, on ACTIVE contracts.
+    await withSystemDbAccessContext(() => updateContract(notesEdited, { notes: 'Chase on day 3 - internal' }, actor));
+    await withSystemDbAccessContext(() => updateContract(termsEdited, { terms: 'Net 15' }, actor));
 
     expect(await generatedInvoiceNotes(notesEdited)).toBe('Original note\n\nNet 30');
     expect(await generatedInvoiceNotes(termsEdited)).toBe('Net 15');
@@ -160,6 +173,12 @@ describe.runIf(RUN)('contract notes are internal-only (#9347)', () => {
 
     await resetMigrationMarker();
     await replayMigration(MIGRATION);
+    // The first run sets the done-marker the second run keys on.
+    const [marker] = await getTestDb().execute<{ c: string | null }>(
+      sql`SELECT col_description('public.contracts'::regclass, a.attnum) AS c
+            FROM pg_attribute a
+           WHERE a.attrelid = 'public.contracts'::regclass AND a.attname = 'notes'`);
+    expect(marker!.c).toMatch(/^Internal-only contract notes \(#9347\)/);
     const first = await readHeaders(ids);
     expect(new Map(first.map((r) => [r.id, r.terms]))).toEqual(new Map([
       [ids[0], 'N\n\nT'],

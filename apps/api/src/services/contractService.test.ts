@@ -589,6 +589,17 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     expect(input.notes).toBeUndefined();
   });
 
+  it('an empty-string invoice note generates an invoice with no notes (#9347)', async () => {
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    queueFlatRun({ notes: 'Internal only', terms: '' });
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    const [input] = vi.mocked(createManualInvoice).mock.calls[0]!;
+    expect(input.notes).toBeUndefined();
+  });
+
   it('returns an empty priceBookGaps array when every catalog line resolved from the price book', async () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'price_book' } as never);
