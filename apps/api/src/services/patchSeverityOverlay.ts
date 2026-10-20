@@ -16,8 +16,8 @@
  * whatever row is in scope, so the tenant boundary is entirely the caller's
  * join/where, exactly like every other per-device column on that table.
  */
-import { sql, type SQL } from 'drizzle-orm';
-import { devicePatches, patches } from '../db/schema';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { devicePatches, devices, patches } from '../db/schema';
 
 /** SQL fragment: effective severity for the device_patches row in scope. */
 export const EFFECTIVE_PATCH_SEVERITY_SQL: SQL<string | null> = sql<string | null>`
@@ -78,6 +78,49 @@ export const AGGREGATED_EFFECTIVE_PATCH_SEVERITY_SQL: SQL<string> = sql<string>`
     ELSE 'unknown'
   END)::patch_severity
 `;
+
+/**
+ * Catalog-row form, for a query that lists `patches` rows directly (one row
+ * per catalog entry, no `device_patches` join in scope) — GET /patches
+ * (#9387). The trusted shared classification when known, otherwise the most
+ * severe value reported by any device that `deviceScope` admits, otherwise
+ * `'unknown'`.
+ *
+ * Unlike the fragments above, this one carries its own scoping: the fallback
+ * is a correlated subquery over `device_patches` joined to `devices`, pinned
+ * to `deviceScope` — the caller's device-row predicates (in practice
+ * `resolveOutstandingDeviceScope`, i.e. `auth.orgCondition(devices.orgId)`
+ * plus `?orgId=` and site narrowing). `patches` is global, so without that
+ * predicate the fallback would fold every tenant's device reports into the
+ * value one tenant sees. `null` scope (the caller can see no devices) means
+ * no device report is admitted and only the trusted value is shown.
+ *
+ * Reuses `AGGREGATED_EFFECTIVE_PATCH_SEVERITY_SQL` for the worst-case pick so
+ * there is one severity rank, not two; inside the subquery `patches.severity`
+ * resolves to the outer catalog row.
+ */
+export function catalogEffectivePatchSeveritySql(deviceScope: SQL[] | null): SQL<string> {
+  if (!deviceScope) {
+    return sql<string>`COALESCE(${patches.severity}, 'unknown')::patch_severity`;
+  }
+  const resolved = sql<string>`COALESCE(NULLIF(${patches.severity}::text, 'unknown'), (
+    SELECT ${AGGREGATED_EFFECTIVE_PATCH_SEVERITY_SQL}::text
+    FROM ${devicePatches}
+    INNER JOIN ${devices} ON ${devices.id} = ${devicePatches.deviceId}
+    WHERE ${and(
+      eq(devicePatches.patchId, patches.id),
+      sql`${devicePatches.reportedSeverity} IS NOT NULL`,
+      ...deviceScope,
+    )}
+  ), 'unknown')::patch_severity`;
+  // Nest once more on purpose. In a single-table select (`db.select().from(patches)`)
+  // Drizzle's buildSelection strips the table qualifier from the columns that
+  // sit directly in a selected SQL fragment's top-level chunks, which would
+  // render `"id" = "device_id"` inside the subquery and fail as ambiguous
+  // (device_patches and devices both have `id`). Columns in nested fragments
+  // keep their `"table"."column"` form.
+  return sql<string>`${resolved}`;
+}
 
 /** Aggregate form of `EFFECTIVE_PATCH_CATEGORY_SQL` — see the severity variant above. */
 export const AGGREGATED_EFFECTIVE_PATCH_CATEGORY_SQL: SQL<string | null> = sql<string | null>`

@@ -14,23 +14,25 @@ import {
   loadOutstandingDeviceCounts,
   resolveOutstandingDeviceScope
 } from '../../services/patchOutstandingDevices';
+import { catalogEffectivePatchSeveritySql } from '../../services/patchSeverityOverlay';
 
 // Whitelist mapping sort keys (validated by listPatchesSchema) to real columns.
 // Never pass raw user input into orderBy — only keys present here are honored.
+// `severity` is not a column here: it sorts on the request's resolved severity
+// expression (see `resolvedSeverity` in the handler), so it is mapped there.
 //
-// NOTE (sort divergence — read before wiring the web to these params):
-//   - `severity` here sorts ALPHABETICALLY (asc(patches.severity)). The web
-//     (PatchList.tsx severityRank/approvalRank) sorts by SEMANTIC priority
-//     (critical=0, important=1, moderate=2, low=3). Whoever later sends
-//     sortBy/sortDir from fetchPatches must reconcile these — either map the
-//     web's priority order onto a CASE expression here, or drop the client-side
-//     rank — or severity sort will silently change meaning.
+// NOTE (sort semantics — read before wiring the web to these params):
+//   - `severity` sorts on a `patch_severity` enum value, and Postgres orders
+//     enums by declaration order (critical, important, moderate, low, unknown),
+//     not alphabetically — so ascending is most-severe-first, the same order
+//     as the web's semantic rank (PatchList.tsx severityRank: critical=0,
+//     important=1, moderate=2, low=3). Keep the `::patch_severity` cast on the
+//     resolved expression or this silently becomes an alphabetical text sort.
 //   - The web also exposes `os` and `approvalStatus` as SortKeys with NO column
 //     in this map; they'd need server-side support (osTypes / patch_approvals
 //     join) before they can be pushed down.
 const PATCH_SORT_COLUMNS: Record<string, Column> = {
   title: patches.title,
-  severity: patches.severity,
   source: patches.source,
   releaseDate: patches.releaseDate,
   createdAt: patches.createdAt
@@ -60,6 +62,25 @@ listRoutes.get(
 
     const { page, limit, offset } = getPagination(query);
 
+    // The caller's device set: accessible orgs (auth.orgCondition), narrowed by
+    // ?orgId= and the user's site restriction. Feeds both the resolved
+    // severity below and the outstanding-device count (#8728), so the two
+    // read the same devices. `null` = the caller can see no devices.
+    const deviceScope = resolveOutstandingDeviceScope(auth, {
+      orgId: query.orgId,
+      allowedSiteIds: (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds
+    });
+
+    // #9387: `patches.severity` is trusted-source-only and stays 'unknown'
+    // forever for microsoft/apple/linux rows, so the catalog showed almost the
+    // whole Windows volume as Unrated. Resolve it the way the ring list and
+    // patchEligibility.ts do — trusted value when known, otherwise the most
+    // severe value the caller's own devices reported (never another tenant's:
+    // the fallback is pinned to `deviceScope`). The column, the ?severity=
+    // filter, and the severity sort all use this one expression, so they
+    // cannot disagree.
+    const resolvedSeverity = catalogEffectivePatchSeveritySql(deviceScope);
+
     // Build conditions
     const conditions: SQL[] = [];
     let sourcePredicate: SQL | undefined;
@@ -68,7 +89,7 @@ listRoutes.get(
       conditions.push(sourcePredicate);
     }
     if (query.severity) {
-      conditions.push(eq(patches.severity, query.severity));
+      conditions.push(sql`${resolvedSeverity} = ${query.severity}`);
     }
     if (query.os) {
       conditions.push(sql`${sql.param(query.os)} = ANY(${patches.osTypes})`);
@@ -102,9 +123,11 @@ listRoutes.get(
     // (up to its own cap) and then sorts/paginates entirely client-side, so
     // this server-side ordering is currently exercised only by direct API
     // callers. Wiring the web to send these (and thereby drop the page walk) is
-    // a follow-up — see the severity-divergence NOTE on PATCH_SORT_COLUMNS
+    // a follow-up — see the severity NOTE on PATCH_SORT_COLUMNS
     // above before doing so.
-    const sortColumn = (query.sortBy && PATCH_SORT_COLUMNS[query.sortBy]) || patches.createdAt;
+    const sortColumn: Column | SQL = query.sortBy === 'severity'
+      ? resolvedSeverity
+      : (query.sortBy && PATCH_SORT_COLUMNS[query.sortBy]) || patches.createdAt;
     const sortDirection = query.sortDir ?? (query.sortBy ? 'asc' : 'desc');
     // `id` is a mandatory tiebreaker, NOT a cosmetic nicety: every sortable
     // column here has mass ties. `created_at` is `defaultNow()` and patch
@@ -130,7 +153,7 @@ listRoutes.get(
         packageId: patches.packageId,
         version: patches.version,
         cveIds: patches.cveIds,
-        severity: patches.severity,
+        severity: resolvedSeverity,
         category: patches.category,
         osTypes: patches.osTypes,
         inferredOs: sql<string | null>`(
@@ -243,11 +266,8 @@ listRoutes.get(
     // Device axis (#8728): how many devices in the caller's scope still need
     // each patch on this page. One grouped query, one integer per row; the
     // hostnames are on demand from GET /patches/:id/devices, which scopes
-    // through the same helper so the two cannot disagree.
-    const deviceScope = resolveOutstandingDeviceScope(auth, {
-      orgId: query.orgId,
-      allowedSiteIds: (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds
-    });
+    // through the same helper so the two cannot disagree. `deviceScope` is
+    // resolved at the top of the handler (it also scopes the severity).
     const outstandingCounts = deviceScope
       ? await loadOutstandingDeviceCounts(patchList.map((patch) => patch.id), deviceScope)
       : new Map<string, number>();

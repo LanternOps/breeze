@@ -102,6 +102,8 @@ vi.mock('../../db/schema', () => ({
     orgId: 'devicePatches.orgId',
     patchId: 'devicePatches.patchId',
     status: 'devicePatches.status',
+    reportedSeverity: 'devicePatches.reportedSeverity',
+    reportedCategory: 'devicePatches.reportedCategory',
     lastCheckedAt: 'devicePatches.lastCheckedAt'
   },
   patchApprovals: {
@@ -326,6 +328,7 @@ function selectPatchListResult(rows: unknown[]) {
 // Like selectPatchListResult but records the orderBy/limit/offset args so a test
 // can assert how sort + pagination params were translated into the query.
 function selectPatchListCapture(rows: unknown[], capture: {
+  where?: unknown;
   orderBy?: unknown;
   orderByAll?: unknown[];
   limit?: unknown;
@@ -333,7 +336,9 @@ function selectPatchListCapture(rows: unknown[], capture: {
 }) {
   return {
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
+      where: vi.fn().mockImplementation((where: unknown) => {
+        capture.where = where;
+        return {
         orderBy: vi.fn().mockImplementation((...args: unknown[]) => {
           const [arg] = args;
           capture.orderBy = arg;
@@ -350,9 +355,19 @@ function selectPatchListCapture(rows: unknown[], capture: {
             })
           };
         })
+        };
       })
     })
   };
+}
+
+// True when `target` appears anywhere inside a mocked drizzle expression tree
+// (`sql` is mocked to `{ strings, values }`, `and`/`eq` to `{ op, ... }`).
+function exprContains(expr: unknown, target: unknown, seen = new Set<unknown>()): boolean {
+  if (expr === target) return true;
+  if (expr === null || typeof expr !== 'object' || seen.has(expr)) return false;
+  seen.add(expr);
+  return Object.values(expr as Record<string, unknown>).some((v) => exprContains(v, target, seen));
 }
 
 function selectSourceCountsResult(rows: Array<{ source: string; count: number }> = []) {
@@ -799,8 +814,9 @@ describe('patch routes', () => {
     });
 
     expect(res.status).toBe(200);
+    const projectedSeverity = (vi.mocked(db.select).mock.calls[0]?.[0] as { severity: unknown }).severity;
     expect(capture.orderByAll).toEqual([
-      { op: 'asc', value: 'patches.severity' },
+      { op: 'asc', value: projectedSeverity },
       { op: 'asc', value: 'patches.id' },
     ]);
   });
@@ -834,7 +850,81 @@ describe('patch routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(capture.orderBy).toEqual({ op: 'asc', value: 'patches.severity' });
+    const projectedSeverity = (vi.mocked(db.select).mock.calls[0]?.[0] as { severity: unknown }).severity;
+    expect(capture.orderBy).toEqual({ op: 'asc', value: projectedSeverity });
+  });
+
+  // #9387 gap 1: `patches.severity` stays 'unknown' for microsoft/apple/linux
+  // rows, so the list resolves it from the caller's own device reports. The
+  // real SQL (highest report wins, tenant isolation, filter/sort agreement) is
+  // covered against Postgres in
+  // __tests__/integration/patchCatalogSeverity.integration.test.ts; these pin
+  // the wiring — one expression, scoped by the caller's device scope, used for
+  // the column, the filter and the sort.
+  describe('resolved severity (#9387)', () => {
+    function mockCapturedList(capture: { where?: unknown; orderBy?: unknown }) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectPatchListCapture([], capture) as any)
+        .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+        .mockReturnValueOnce(selectSourceCountsResult() as any);
+    }
+    const projectedSeverity = () =>
+      (vi.mocked(db.select).mock.calls[0]?.[0] as { severity: unknown }).severity;
+
+    it('projects a severity scoped by the caller\'s device scope, not the raw column', async () => {
+      mockCapturedList({});
+
+      const res = await app.request('/patches', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const severity = projectedSeverity();
+      expect(severity).not.toBe('patches.severity');
+      expect(exprContains(severity, 'patches.severity')).toBe(true);
+      expect(exprContains(severity, 'devicePatches.reportedSeverity')).toBe(true);
+      expect(exprContains(severity, OUTSTANDING_SCOPE[0])).toBe(true);
+    });
+
+    it('filters ?severity= on the same resolved expression the column shows', async () => {
+      const capture: { where?: unknown } = {};
+      mockCapturedList(capture);
+
+      const res = await app.request('/patches?severity=critical', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const severity = projectedSeverity();
+      expect(exprContains(capture.where, severity)).toBe(true);
+      expect(exprContains(capture.where, 'critical')).toBe(true);
+      expect(exprContains(capture.where, 'devicePatches.reportedSeverity')).toBe(true);
+      expect(exprContains(capture.where, OUTSTANDING_SCOPE[0])).toBe(true);
+    });
+
+    it('sorts sortBy=severity on the same scoped resolved expression', async () => {
+      const capture: { orderBy?: unknown } = {};
+      mockCapturedList(capture);
+
+      const res = await app.request('/patches?sortBy=severity&sortDir=desc', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(capture.orderBy).toEqual({ op: 'desc', value: projectedSeverity() });
+      expect(exprContains(capture.orderBy, 'devicePatches.reportedSeverity')).toBe(true);
+      expect(exprContains(capture.orderBy, OUTSTANDING_SCOPE[0])).toBe(true);
+    });
+
+    it('falls back to the trusted column only when the caller can see no devices', async () => {
+      vi.mocked(resolveOutstandingDeviceScope).mockReturnValueOnce(null);
+      mockCapturedList({});
+
+      const res = await app.request('/patches', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const severity = projectedSeverity();
+      expect(exprContains(severity, 'patches.severity')).toBe(true);
+      expect(exprContains(severity, 'devicePatches.reportedSeverity')).toBe(false);
+    });
   });
 
   it('rejects an unknown sortBy column with 400', async () => {
