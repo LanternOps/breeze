@@ -435,6 +435,7 @@ export default function M365Integration({
               <p
                 id={`${fieldId}-tenant-hint`}
                 data-testid="m365-tenant-id-hint"
+                role="alert"
                 className="mt-1 text-xs text-red-600"
               >
                 {t("m365Integration.tenantIdGuidHint")}

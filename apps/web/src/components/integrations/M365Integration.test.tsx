@@ -230,6 +230,20 @@ describe("M365Integration", () => {
       expect(fetchWithAuthMock).toHaveBeenCalledTimes(1); // only the initial GET
     });
 
+    it("enables Save for a valid tenant GUID with no hint", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+      render(<M365Integration />);
+      fireEvent.change(await screen.findByLabelText(/Tenant ID/i), {
+        target: { value: "44444444-4444-4444-8444-444444444444" },
+      });
+      fireEvent.change(screen.getByLabelText(/App \(client\) ID/i), {
+        target: { value: "55555555-5555-4555-8555-555555555555" },
+      });
+      fireEvent.change(screen.getByLabelText(/^Client secret/i), { target: { value: "s3cret" } });
+      expect(screen.getByRole("button", { name: /Save & verify/i })).toBeEnabled();
+      expect(screen.queryByTestId("m365-tenant-id-hint")).not.toBeInTheDocument();
+    });
+
     it("tells the admin to search All applications for an existing Breeze app", async () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
       render(<M365Integration />);
