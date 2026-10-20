@@ -25,7 +25,14 @@ export type BrandingField = BrandingTextField | BrandingColorField;
 export type BrandingValues = Partial<Record<BrandingField, string>>;
 
 const BRANDING_FIELDS: ReadonlySet<string> = new Set<string>([...Object.keys(TEXT_LIMITS), ...COLOR_FIELDS]);
-const CONTROL_CHARS = /\p{Cc}/u;
+/**
+ * Every Unicode "Other" code point: control (Cc), format (Cf: bidi overrides such
+ * as U+202E, zero-width characters, U+FEFF), surrogate (Cs), private use (Co) and
+ * unassigned (Cn). These can reorder or hide sender text in the Helper and the
+ * toast, so no branding text field may carry one (#9396). Line and paragraph
+ * separators (U+2028/U+2029) are Zl/Zp, not C, and are rejected explicitly.
+ */
+const CONTROL_CHARS = /[\p{C}\p{Zl}\p{Zp}]/u;
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 export type BrandingValidation = { ok: true; value: BrandingValues } | { ok: false; errors: string[] };

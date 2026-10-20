@@ -34,6 +34,29 @@ describe('validateBrandingValues', () => {
     expect(validateBrandingValues({ welcomeMessage: 'line1\nline2' }).ok).toBe(false);
   });
 
+  // #9396: invisible and reordering characters can hide or reverse sender text in the toast.
+  it.each([
+    ['U+202E right-to-left override', 'Acme\u202Eytiruces tfosorciM'],
+    ['U+200B zero-width space', 'Mic\u200Brosoft'],
+    ['U+200D zero-width joiner', 'Acme\u200DIT'],
+    ['U+FEFF zero-width no-break space', '\uFEFFAcme'],
+    ['U+2066 left-to-right isolate', 'Acme\u2066IT'],
+    ['U+E000 private use', 'Acme\uE000'],
+    ['lone surrogate U+D800', 'Acme\uD800'],
+    ['U+2028 line separator', 'Acme\u2028IT'],
+    ['U+2029 paragraph separator', 'Acme\u2029IT'],
+  ])('rejects %s in every text field', (_label, payload) => {
+    for (const field of Object.keys(TEXT_LIMITS)) {
+      expect(validateBrandingValues({ [field]: payload })).toEqual({ ok: false, errors: [`control:${field}`] });
+    }
+  });
+
+  it('still accepts ordinary non-ASCII names', () => {
+    for (const name of ['Société Générale IT', 'Müller & Söhne', '株式会社テスト', 'Acme IT 😀']) {
+      expect(validateBrandingValues({ companyName: name }).ok).toBe(true);
+    }
+  });
+
   it('rejects empty text fields', () => {
     expect(validateBrandingValues({ displayName: '' }).ok).toBe(false);
   });

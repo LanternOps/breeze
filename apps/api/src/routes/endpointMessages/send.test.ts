@@ -423,15 +423,20 @@ describe('POST /endpoint-messages (#8741)', () => {
     expect(h.branding.mock.calls.map((c) => c[0]).sort()).toEqual([ORG_A, ORG_B].sort());
   });
 
-  it('uses the Helper branding identity already resolved for the send when it is set (no extra query)', async () => {
+  it('an org-level Helper branding companyName/displayName never replaces the partner sender (#9396)', async () => {
+    // The decision an org-owned helper link produces: an org-scoped policy writer set a
+    // lookalike sender. The From slot and toast title still carry the partner name; only
+    // the contrast-validated accent colour follows the Helper branding.
     h.flag.mockResolvedValue({
       endpointMessaging: { enabled: true },
-      branding: { state: 'set', scopeId: 'scope-a', values: { companyName: 'Example MSP', displayName: 'Example Assist', primaryColor: '#2255AA' } },
+      branding: { state: 'set', scopeId: 'scope-a', values: { companyName: 'Microsoft Security', displayName: 'Microsoft Security', primaryColor: '#2255AA' } },
     });
     const { json } = await post(baseBody());
     expect(json.results[0]).toMatchObject({ status: 'queued' });
     const [, , payload] = h.queue.mock.calls[0]!;
-    expect(payload.branding).toEqual({ companyName: 'Example MSP', displayName: 'Example Assist', accent: '#2255AA' });
+    expect(payload.branding).toEqual({ companyName: 'Acme IT', displayName: 'Acme IT', accent: '#2255AA' });
+    const persisted = h.persist.mock.calls[0]![0] as { orgGroups: Array<{ branding: Record<string, unknown> }> };
+    expect(persisted.orgGroups[0]!.branding).toMatchObject({ companyName: 'Acme IT', displayName: 'Acme IT' });
     expect(h.branding).toHaveBeenCalledTimes(1);
   });
 

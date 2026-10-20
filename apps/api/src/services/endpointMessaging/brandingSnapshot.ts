@@ -10,10 +10,13 @@ import { partnerDocumentBrand } from '../partnerDocumentBrand';
  * Mirrors services/callerVerification/helperBranding.ts: the org is read under
  * the request's own RLS context, and only the partner id that org resolves to
  * enters the partner-axis read - no client-supplied partner id is accepted.
- * Phase 2 runtime-branding fields have not landed, so this is the partner name
- * (company and display name alike) plus the partner's document primary colour
- * as accent. The helper renders the name in a fixed sender slot that message
- * text can never replace.
+ * The sender name is the partner name (company and display name alike), with
+ * the partner's document primary colour as the default accent. Helper runtime
+ * branding (#9271) may replace only the accent at send time
+ * (helperBrandingEndpointIdentity.ts); its company/display names never reach
+ * the sender, so an organization-level policy writer cannot choose who a
+ * message appears to come from (#9396). The helper renders the name in a fixed
+ * sender slot that message text can never replace.
  *
  * Returns null when no partner or no usable name resolves: the caller fails
  * closed rather than showing a card with an unattributed or spoofable sender.
