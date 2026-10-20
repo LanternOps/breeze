@@ -21,12 +21,13 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { getTestDb } from './setup';
 import { authMiddleware } from '../../middleware/auth';
 import { patchRoutes } from '../../routes/patches';
-import { devices, patches, devicePatches } from '../../db/schema';
+import { devices, patches, devicePatches, organizationUsers } from '../../db/schema';
 import {
   createIntegrationTestClient,
   createOrganization,
@@ -68,6 +69,13 @@ async function seedDevice(orgId: string, siteId: string, hostname: string): Prom
 }
 
 /** Defaults to an unclassified `microsoft` row — the shape gap 1 is about. */
+async function restrictToSites(client: IntegrationTestClient, orgId: string, siteIds: string[]): Promise<void> {
+  await getTestDb()
+    .update(organizationUsers)
+    .set({ siteIds })
+    .where(and(eq(organizationUsers.userId, client.env.user.id), eq(organizationUsers.orgId, orgId)));
+}
+
 async function seedPatch(opts: { source?: 'microsoft' | 'third_party'; severity?: Severity } = {}): Promise<string> {
   const [row] = await getTestDb()
     .insert(patches)
@@ -213,6 +221,52 @@ describe('#9387 — GET /patches resolves severity from device reports (org scop
 
     expect(await listIds(client, `orgId=${orgId}&sortBy=severity&sortDir=asc`))
       .toEqual([critical, moderate, low, unrated]);
+  });
+
+  it('narrows the per-source counts by the resolved severity, ignoring the source filter', async () => {
+    const msImportant = await seedPatch();
+    const tpImportant = await seedPatch({ source: 'third_party', severity: 'important' });
+    const msLow = await seedPatch();
+    const deviceId = await seedDevice(orgId, siteId, 'ws-1');
+    await seedDevicePatch({ orgId, deviceId, patchId: msImportant, reportedSeverity: 'important' });
+    await seedDevicePatch({ orgId, deviceId, patchId: tpImportant, reportedSeverity: null });
+    await seedDevicePatch({ orgId, deviceId, patchId: msLow, reportedSeverity: 'low' });
+
+    for (const qs of [`orgId=${orgId}&severity=important`, `orgId=${orgId}&severity=important&source=microsoft`]) {
+      const res = await client.get(`/patches?${qs}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.counts.microsoft).toBe(1);
+      expect(body.counts.third_party).toBe(1);
+    }
+  });
+
+  it('ignores reports from devices at sites a site-restricted user cannot see', async () => {
+    const patchId = await seedPatch();
+    const hiddenSite = await createSite({ orgId });
+    const visible = await seedDevice(orgId, siteId, 'visible-site');
+    const hidden = await seedDevice(orgId, hiddenSite.id, 'hidden-site');
+    await seedDevicePatch({ orgId, deviceId: visible, patchId, reportedSeverity: 'low' });
+    await seedDevicePatch({ orgId, deviceId: hidden, patchId, reportedSeverity: 'critical' });
+    await restrictToSites(client, orgId, [siteId]);
+
+    expect(await severityOf(client, patchId)).toBe('low');
+    expect(await listIds(client, `orgId=${orgId}&severity=critical`)).toEqual([]);
+  });
+
+  it('shows only the trusted value when the user can see no sites at all', async () => {
+    const reported = await seedPatch();
+    const trusted = await seedPatch({ source: 'third_party', severity: 'moderate' });
+    const deviceId = await seedDevice(orgId, siteId, 'ws-1');
+    await seedDevicePatch({ orgId, deviceId, patchId: reported, reportedSeverity: 'critical' });
+    await seedDevicePatch({ orgId, deviceId, patchId: trusted, reportedSeverity: 'critical' });
+    await restrictToSites(client, orgId, []);
+
+    expect(await severityOf(client, reported)).toBe('unknown');
+    expect(await severityOf(client, trusted)).toBe('moderate');
+    expect(await listIds(client, `orgId=${orgId}&severity=critical`)).toEqual([]);
+    const sorted = await client.get(`/patches?orgId=${orgId}&sortBy=severity&sortDir=asc`);
+    expect(sorted.status).toBe(200);
   });
 });
 
