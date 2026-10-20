@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { DeliverOccurrenceInput } from '@breeze/shared';
 import {
+  addEvidence,
   deliverOccurrence,
   listOccurrences,
   removeEvidence,
@@ -16,6 +17,7 @@ import {
   type OccurrenceEvidence,
   type OccurrenceStatus,
 } from '../../lib/api/serviceDeliverables';
+import { listOrgDocuments, type OrgDocument } from '../../lib/api/orgDocuments';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { formatDate } from '../billing/shared/format';
 import { Drawer } from '../shared/Drawer';
@@ -92,6 +94,13 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   // #5808 W03 — lazy checklist expansion: at most one occurrence's
   // TicketChecklistCard is ever mounted at a time, so opening a fleet-sized
   // deliverable never fires two dozen checklist fetches on drawer open.
+  // #9311 — "link existing document": one picker open at a time, library
+  // fetched lazily on first open and reused for the drawer's lifetime.
+  const [linkingId, setLinkingId] = useState<string | null>(null);
+  const [linkDocId, setLinkDocId] = useState('');
+  const [library, setLibrary] = useState<OrgDocument[] | null>(null);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -194,6 +203,48 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
     }
   };
 
+  const loadLibrary = async () => {
+    setLibraryLoading(true);
+    setLibraryError(false);
+    try {
+      setLibrary(await listOrgDocuments(fetcher, orgId));
+    } catch {
+      setLibraryError(true);
+    } finally {
+      setLibraryLoading(false);
+    }
+  };
+
+  const toggleLink = (id: string) => {
+    if (linkingId === id) {
+      setLinkingId(null);
+      return;
+    }
+    setLinkingId(id);
+    setLinkDocId('');
+    if (library === null && !libraryLoading) void loadLibrary();
+  };
+
+  /** #9311: attach a document already in the org library (no re-upload). */
+  const linkDocument = async (id: string) => {
+    if (!linkDocId || busy) return;
+    setBusy(true);
+    setInlineError(null);
+    try {
+      const next = await runClientAction(
+        () => addEvidence(fetcher, orgId, id, { kind: 'document', documentId: linkDocId }),
+        { errorFallback: t('errors.linkFailed'), successMessage: t('toast.evidenceLinked') },
+      );
+      applyResult(next);
+      setLinkingId(null);
+      setLinkDocId('');
+    } catch (err) {
+      handleActionError(err, t('errors.linkFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const reopen = (id: string) => void run(t('toast.reopened'), () => reopenOccurrence(fetcher, orgId, id));
   const remove = (id: string, evidenceId: string) =>
     void run(t('toast.evidenceRemoved'), () => removeEvidence(fetcher, orgId, id, evidenceId));
@@ -259,7 +310,7 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    {occ.late && <span className={LATE_PILL}>{t('drawer.late')}</span>}
+                    {occ.late && occ.status !== 'missed' && <span className={LATE_PILL}>{t('drawer.late')}</span>}
                     {occ.checklist !== null && (
                       <span
                         className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -329,6 +380,58 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                       {t('drawer.upload')}
                     </button>
                     <span className="text-muted-foreground">{t('drawer.uploadEvidenceHint')}</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleLink(occ.id)}
+                      disabled={busy}
+                      aria-expanded={linkingId === occ.id}
+                      className={ACTION_BTN}
+                      data-testid={`occurrence-evidence-link-${occ.id}`}
+                    >
+                      {t('drawer.linkDocument')}
+                    </button>
+                  </div>
+                )}
+
+                {occ.status !== 'waived' && linkingId === occ.id && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs" data-testid={`occurrence-evidence-link-panel-${occ.id}`}>
+                    <label className="sr-only" htmlFor={`${uid}-doc-${occ.id}`}>
+                      {t('drawer.linkDocumentSelect')}
+                    </label>
+                    <select
+                      id={`${uid}-doc-${occ.id}`}
+                      className="max-w-[16rem] rounded-md border bg-background px-2 py-1 text-xs"
+                      value={linkDocId}
+                      onChange={(e) => setLinkDocId(e.target.value)}
+                      disabled={libraryLoading || busy}
+                      data-testid={`occurrence-evidence-doc-select-${occ.id}`}
+                    >
+                      <option value="">
+                        {libraryLoading ? t('drawer.linkDocumentLoading') : t('drawer.linkDocumentPlaceholder')}
+                      </option>
+                      {(library ?? []).map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.title} ({d.originalFilename})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void linkDocument(occ.id)}
+                      disabled={busy || !linkDocId}
+                      className={ACTION_BTN}
+                      data-testid={`occurrence-evidence-link-save-${occ.id}`}
+                    >
+                      {t('drawer.link')}
+                    </button>
+                    {libraryError && (
+                      <span className="text-destructive" role="alert">
+                        {t('errors.libraryLoadFailed')}
+                      </span>
+                    )}
+                    {library !== null && library.length === 0 && (
+                      <span className="text-muted-foreground">{t('drawer.linkDocumentEmpty')}</span>
+                    )}
                   </div>
                 )}
 

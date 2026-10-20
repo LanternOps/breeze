@@ -100,7 +100,13 @@
     "upload": "Enviar",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Mostrar checklist",
-    "hideChecklist": "Ocultar checklist"
+    "hideChecklist": "Ocultar checklist",
+    "linkDocument": "Vincular documento existente",
+    "linkDocumentSelect": "Escolha um documento para vincular como evidência",
+    "linkDocumentLoading": "Carregando documentos…",
+    "linkDocumentPlaceholder": "Escolha um documento…",
+    "linkDocumentEmpty": "Ainda não há documentos na biblioteca desta organização.",
+    "link": "Vincular"
   },
   "evidence": {
     "reportRun": "Execução de relatório",
@@ -123,7 +129,9 @@
     "uploadFailed": "Não foi possível enviar o arquivo de evidência.",
     "tooLarge": "Esse arquivo é maior que 10 MB.",
     "unsupportedType": "Só é possível anexar arquivos PDF, JPEG, PNG e WebP.",
-    "storageUnavailable": "O armazenamento de documentos está indisponível no momento. Tente novamente em instantes."
+    "storageUnavailable": "O armazenamento de documentos está indisponível no momento. Tente novamente em instantes.",
+    "linkFailed": "Não foi possível vincular o documento.",
+    "libraryLoadFailed": "Não foi possível carregar a biblioteca de documentos."
   },
   "confirm": {
     "deactivate": "Desativar {{name}}? As ocorrências abertas serão encerradas e nenhuma nova será agendada.",
@@ -169,7 +177,8 @@
     "evidenceAdded": "Evidência adicionada",
     "evidenceRemoved": "Evidência removida",
     "deactivated": "Entrega desativada",
-    "evidenceUploaded": "Evidência enviada"
+    "evidenceUploaded": "Evidência enviada",
+    "evidenceLinked": "Documento vinculado como evidência"
   },
   "templates": {
     "pageTitle": "Modelos de entregas",

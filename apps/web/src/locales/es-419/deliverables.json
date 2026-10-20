@@ -100,7 +100,13 @@
     "upload": "Subir",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Mostrar lista de verificación",
-    "hideChecklist": "Ocultar lista de verificación"
+    "hideChecklist": "Ocultar lista de verificación",
+    "linkDocument": "Vincular documento existente",
+    "linkDocumentSelect": "Elige un documento para vincular como evidencia",
+    "linkDocumentLoading": "Cargando documentos…",
+    "linkDocumentPlaceholder": "Elige un documento…",
+    "linkDocumentEmpty": "Aún no hay documentos en la biblioteca de esta organización.",
+    "link": "Vincular"
   },
   "evidence": {
     "reportRun": "Ejecución de informe",
@@ -123,7 +129,9 @@
     "uploadFailed": "No se pudo subir el archivo de evidencia.",
     "tooLarge": "Ese archivo pesa más de 10 MB.",
     "unsupportedType": "Solo se pueden adjuntar archivos PDF, JPEG, PNG y WebP.",
-    "storageUnavailable": "El almacenamiento de documentos no está disponible en este momento. Vuelva a intentarlo en unos minutos."
+    "storageUnavailable": "El almacenamiento de documentos no está disponible en este momento. Vuelva a intentarlo en unos minutos.",
+    "linkFailed": "No se pudo vincular el documento.",
+    "libraryLoadFailed": "No se pudo cargar la biblioteca de documentos."
   },
   "confirm": {
     "deactivate": "¿Desactivar {{name}}? Las ocurrencias abiertas se cerrarán y no se programarán nuevas.",
@@ -169,7 +177,8 @@
     "evidenceAdded": "Evidencia agregada",
     "evidenceRemoved": "Evidencia quitada",
     "deactivated": "Entregable desactivado",
-    "evidenceUploaded": "Evidencia subida"
+    "evidenceUploaded": "Evidencia subida",
+    "evidenceLinked": "Documento vinculado como evidencia"
   },
   "templates": {
     "pageTitle": "Plantillas de entregables",

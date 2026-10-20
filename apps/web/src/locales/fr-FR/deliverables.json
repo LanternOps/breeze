@@ -100,7 +100,13 @@
     "upload": "Téléverser",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Afficher la liste de contrôle",
-    "hideChecklist": "Masquer la liste de contrôle"
+    "hideChecklist": "Masquer la liste de contrôle",
+    "linkDocument": "Lier un document existant",
+    "linkDocumentSelect": "Choisir un document à lier comme preuve",
+    "linkDocumentLoading": "Chargement des documents…",
+    "linkDocumentPlaceholder": "Choisir un document…",
+    "linkDocumentEmpty": "Aucun document dans la bibliothèque de cette organisation pour le moment.",
+    "link": "Lier"
   },
   "evidence": {
     "reportRun": "Exécution de rapport",
@@ -123,7 +129,9 @@
     "uploadFailed": "Impossible de téléverser le fichier justificatif.",
     "tooLarge": "Ce fichier dépasse 10 Mo.",
     "unsupportedType": "Seuls les fichiers PDF, JPEG, PNG et WebP peuvent être joints.",
-    "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu."
+    "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu.",
+    "linkFailed": "Impossible de lier le document.",
+    "libraryLoadFailed": "Impossible de charger la bibliothèque de documents."
   },
   "confirm": {
     "deactivate": "Désactiver {{name}} ? Les occurrences ouvertes seront clôturées et aucune nouvelle ne sera planifiée.",
@@ -169,7 +177,8 @@
     "evidenceAdded": "Justificatif ajouté",
     "evidenceRemoved": "Justificatif retiré",
     "deactivated": "Livrable désactivé",
-    "evidenceUploaded": "Justificatif téléversé"
+    "evidenceUploaded": "Justificatif téléversé",
+    "evidenceLinked": "Document lié comme preuve"
   },
   "templates": {
     "pageTitle": "Modèles de livrables",

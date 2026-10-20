@@ -100,7 +100,13 @@
     "upload": "Hochladen",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Checkliste anzeigen",
-    "hideChecklist": "Checkliste ausblenden"
+    "hideChecklist": "Checkliste ausblenden",
+    "linkDocument": "Vorhandenes Dokument verknüpfen",
+    "linkDocumentSelect": "Dokument als Nachweis auswählen",
+    "linkDocumentLoading": "Dokumente werden geladen…",
+    "linkDocumentPlaceholder": "Dokument auswählen…",
+    "linkDocumentEmpty": "Die Dokumentenbibliothek dieser Organisation enthält noch keine Dokumente.",
+    "link": "Verknüpfen"
   },
   "evidence": {
     "reportRun": "Berichtslauf",
@@ -123,7 +129,9 @@
     "uploadFailed": "Die Nachweisdatei konnte nicht hochgeladen werden.",
     "tooLarge": "Diese Datei ist größer als 10 MB.",
     "unsupportedType": "Es können nur PDF-, JPEG-, PNG- und WebP-Dateien angehängt werden.",
-    "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut."
+    "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut.",
+    "linkFailed": "Das Dokument konnte nicht verknüpft werden.",
+    "libraryLoadFailed": "Die Dokumentenbibliothek konnte nicht geladen werden."
   },
   "confirm": {
     "deactivate": "{{name}} deaktivieren? Offene Vorkommen werden geschlossen und keine neuen mehr geplant.",
@@ -169,7 +177,8 @@
     "evidenceAdded": "Nachweis hinzugefügt",
     "evidenceRemoved": "Nachweis entfernt",
     "deactivated": "Leistung deaktiviert",
-    "evidenceUploaded": "Nachweis hochgeladen"
+    "evidenceUploaded": "Nachweis hochgeladen",
+    "evidenceLinked": "Dokument als Nachweis verknüpft"
   },
   "templates": {
     "pageTitle": "Leistungsvorlagen",

@@ -100,7 +100,13 @@
     "upload": "Upload",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Show checklist",
-    "hideChecklist": "Hide checklist"
+    "hideChecklist": "Hide checklist",
+    "linkDocument": "Link existing document",
+    "linkDocumentSelect": "Choose a document to link as evidence",
+    "linkDocumentLoading": "Loading documents…",
+    "linkDocumentPlaceholder": "Choose a document…",
+    "linkDocumentEmpty": "No documents in this organization’s library yet.",
+    "link": "Link"
   },
   "evidence": {
     "reportRun": "Report run",
@@ -123,7 +129,9 @@
     "uploadFailed": "Could not upload the evidence file.",
     "tooLarge": "That file is larger than 10 MB.",
     "unsupportedType": "Only PDF, JPEG, PNG and WebP files can be attached.",
-    "storageUnavailable": "Document storage is unavailable right now. Try again shortly."
+    "storageUnavailable": "Document storage is unavailable right now. Try again shortly.",
+    "linkFailed": "Could not link the document.",
+    "libraryLoadFailed": "Could not load the document library."
   },
   "confirm": {
     "deactivate": "Deactivate {{name}}? Open occurrences will be closed and no new ones will be scheduled.",
@@ -169,7 +177,8 @@
     "evidenceAdded": "Evidence added",
     "evidenceRemoved": "Evidence removed",
     "deactivated": "Deliverable deactivated",
-    "evidenceUploaded": "Evidence uploaded"
+    "evidenceUploaded": "Evidence uploaded",
+    "evidenceLinked": "Document linked as evidence"
   },
   "templates": {
     "pageTitle": "Deliverable templates",

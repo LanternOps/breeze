@@ -100,7 +100,13 @@
     "upload": "Carica",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Mostra checklist",
-    "hideChecklist": "Nascondi checklist"
+    "hideChecklist": "Nascondi checklist",
+    "linkDocument": "Collega un documento esistente",
+    "linkDocumentSelect": "Scegli un documento da collegare come prova",
+    "linkDocumentLoading": "Caricamento dei documenti…",
+    "linkDocumentPlaceholder": "Scegli un documento…",
+    "linkDocumentEmpty": "Nessun documento nella libreria di questa organizzazione.",
+    "link": "Collega"
   },
   "evidence": {
     "reportRun": "Esecuzione del report",
@@ -123,7 +129,9 @@
     "uploadFailed": "Impossibile caricare il file di evidenza.",
     "tooLarge": "Questo file supera i 10 MB.",
     "unsupportedType": "È possibile allegare solo file PDF, JPEG, PNG e WebP.",
-    "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve."
+    "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve.",
+    "linkFailed": "Impossibile collegare il documento.",
+    "libraryLoadFailed": "Impossibile caricare la libreria documenti."
   },
   "confirm": {
     "deactivate": "Disattivare {{name}}? Le occorrenze aperte verranno chiuse e non ne verranno pianificate di nuove.",
@@ -169,7 +177,8 @@
     "evidenceAdded": "Evidenza aggiunta",
     "evidenceRemoved": "Evidenza rimossa",
     "deactivated": "Deliverable disattivato",
-    "evidenceUploaded": "Evidenza caricata"
+    "evidenceUploaded": "Evidenza caricata",
+    "evidenceLinked": "Documento collegato come prova"
   },
   "templates": {
     "pageTitle": "Modelli di deliverable",
