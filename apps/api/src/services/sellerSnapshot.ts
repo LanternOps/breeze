@@ -102,12 +102,9 @@ export function buildSellerSnapshot(partner: PartnerContactFields | null | undef
   };
 }
 
-export function sellerAddressLines(snapshot: SellerSnapshot | null | undefined): string[] {
-  const a = snapshot?.address;
-  if (!a) return [];
-  const cityLine = [a.city, a.region, a.postalCode].filter(Boolean).join(', ');
-  return [a.line1, a.line2, cityLine, a.country].filter((s): s is string => !!s && s.trim().length > 0);
-}
+// Moved to @breeze/shared/documents (#9402) so the screen and the PDF print the
+// same seller lines; re-exported under its old name so callers are unchanged.
+export { documentSellerLines as sellerAddressLines } from '@breeze/shared/documents';
 
 // The frozen customer "Bill to" address snapshot. Same key shape as
 // SellerSnapshot['address'] and what the PDF addressLines() helper reads. The
