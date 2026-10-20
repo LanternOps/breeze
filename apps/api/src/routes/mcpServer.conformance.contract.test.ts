@@ -171,7 +171,7 @@ function appWithMcpRoutes() {
   return new Hono().route('/mcp', mcpServerRoutes);
 }
 
-import { LEGACY_MCP_PROTOCOL_VERSIONS, LATEST_LEGACY_MCP_PROTOCOL_VERSION } from '../services/mcpProtocol';
+import { LEGACY_MCP_PROTOCOL_VERSIONS, LATEST_LEGACY_MCP_PROTOCOL_VERSION, SUPPORTED_MCP_PROTOCOL_VERSIONS } from '../services/mcpProtocol';
 
 import { API_VERSION } from '../version';
 
@@ -307,6 +307,65 @@ describe.each([...LEGACY_MCP_PROTOCOL_VERSIONS])('MCP conformance for protocol %
     expect(body.result.isError).toBe(true);
     expect(body.result.structuredContent).toBeUndefined();
     expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+});
+
+// B-W03 (#6157): the stateless era — no initialize, no Mcp-Session-Id; the
+// version rides in every request's `_meta` and the SEP-2243 headers mirror it.
+describe('MCP conformance for protocol 2026-07-28 (stateless)', () => {
+  beforeEach(() => {
+    vi.stubEnv('MCP_STATELESS_ENABLED', 'true');
+    vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '0');
+    mocks.getToolDefinitions.mockReturnValue(TOOLS);
+    mocks.getToolTier.mockImplementation((n: string) => (n === 'manage_services' ? 2 : 1));
+    mocks.executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
+  });
+
+  async function rpc(method: string, params: Record<string, unknown> = {}, id = 1) {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json', 'X-API-Key': 'k',
+      'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': method,
+    };
+    if (method === 'tools/call') headers['Mcp-Name'] = String(params.name);
+    const res = await appWithMcpRoutes().request('/mcp/sse', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0', id, method,
+        params: { ...params, _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {} } },
+      }),
+    });
+    return { status: res.status, sessionHeader: res.headers.get('Mcp-Session-Id'), body: await res.json() };
+  }
+
+  it('server/discover → tools/list → tools/call, statelessly', async () => {
+    const discover = await rpc('server/discover');
+    expect(discover.status).toBe(200);
+    expect(discover.sessionHeader).toBeNull();
+    expect(discover.body.result.resultType).toBe('complete');
+    for (const v of SUPPORTED_MCP_PROTOCOL_VERSIONS) expect(discover.body.result.supportedVersions).toContain(v);
+    expect(discover.body.result._meta['io.modelcontextprotocol/serverInfo']).toMatchObject({ name: 'breeze-rmm', title: 'Breeze RMM', version: API_VERSION });
+
+    const list = await rpc('tools/list', {}, 2);
+    expect(list.status).toBe(200);
+    expect(list.sessionHeader).toBeNull();
+    expect(list.body.result.resultType).toBe('complete');
+    expect(list.body.result.tools.map((t: { name: string }) => t.name)).toEqual(['manage_services', 'query_devices', 'whoami']);
+
+    const call = await rpc('tools/call', { name: 'query_devices', arguments: {} }, 3);
+    expect(call.status).toBe(200);
+    expect(call.sessionHeader).toBeNull();
+    expect(call.body.result.resultType).toBe('complete');
+    expect(call.body.result.structuredContent).toEqual(JSON.parse(call.body.result.content[0].text));
+  });
+
+  it('the legacy tools/list for the same principal is the stateless list minus decoration', async () => {
+    const init = await appWithMcpRoutes().request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } }) });
+    const legacyRes = await appWithMcpRoutes().request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': init.headers.get('Mcp-Session-Id')!, 'MCP-Protocol-Version': '2025-11-25' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) });
+    const legacyBody = await legacyRes.json();
+    const modern = await rpc('tools/list', {}, 2);
+    const { resultType: _r, ttlMs: _t, cacheScope: _c, _meta: _m, ...stripped } = modern.body.result;
+    expect(stripped).toEqual(legacyBody.result);
   });
 });
 

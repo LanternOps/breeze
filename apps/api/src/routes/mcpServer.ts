@@ -731,7 +731,11 @@ async function dispatchAndAudit(
       hasSession: Boolean(sessionId),
       // Kept for legacy triage queries; the modern era never has one.
       ...(sessionId ? { sessionId } : {}),
-      hasParams: Boolean(body.params),
+      // The stateless era always sends `params._meta`; count only real params
+      // there so the field means the same thing in both eras (D-B16 parity).
+      hasParams: ctx.era === 'modern'
+        ? Object.keys(body.params ?? {}).some((key) => key !== '_meta')
+        : Boolean(body.params),
       ...(apiKey.partnerServicePrincipalId
         ? { principalType: 'partner_service_principal', partnerServicePrincipalId: apiKey.partnerServicePrincipalId }
         : {}),
