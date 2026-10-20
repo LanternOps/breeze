@@ -26,9 +26,9 @@ import { checkSsrfSafe } from '../services/ssrfGuard';
 import { safeFetch, type SafeFetchInit } from '../services/urlSafety';
 import { validateRedirectUris } from './redirectUriPolicy';
 import { ERROR_IDS, logOauthWarn } from './log';
-import { cimdHostAllowed, parseCimdAllowedHosts } from './cimdHosts';
+import { cimdHostAllowed, isCimdClientId, parseCimdAllowedHosts } from './cimdHosts';
 
-export { cimdHostAllowed, parseCimdAllowedHosts };
+export { cimdHostAllowed, isCimdClientId, parseCimdAllowedHosts };
 
 export const CIMD_FETCH_BUDGET = { perHostPerMinute: 10, globalPerMinute: 120, createsPerHour: 200 } as const;
 export const CIMD_FETCH_TIMEOUT_MS = 5000;
@@ -62,6 +62,11 @@ export function cimdEnabledNow(env: NodeJS.ProcessEnv = process.env): boolean {
   return TRUE_VALUES.has((env.OAUTH_CIMD_ENABLED ?? '').trim().toLowerCase());
 }
 
+/** Live host policy: `OAUTH_CIMD_ALLOWED_HOSTS` as of now. */
+export function cimdHostAllowedNow(host: string): boolean {
+  return cimdHostAllowed(host, liveAllowlist());
+}
+
 function liveAllowlist(): string[] {
   const parsed = parseCimdAllowedHosts(process.env.OAUTH_CIMD_ALLOWED_HOSTS);
   // Boot validation rejects a malformed value; if one appears at runtime
@@ -69,47 +74,7 @@ function liveAllowlist(): string[] {
   return parsed.ok ? parsed.hosts : ['.invalid.cimd-allowlist'];
 }
 
-function hasForbiddenCodePoint(input: string): boolean {
-  for (let i = 0; i < input.length; i++) {
-    const code = input.charCodeAt(i);
-    if (code <= 0x20 || code === 0x5c || code === 0x7f) return true;
-  }
-  return false;
-}
-
-const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/;
-
-/**
- * A CIMD client id: https, a hostname (never an IP literal), a real path
- * (not `/`), no userinfo, query, fragment or dot segments. oidc-provider
- * 9.12.2 dropped its own path check. A DCR-issued id is never an https URL,
- * so this shape alone tells the two kinds apart.
- */
-export function isCimdClientId(id: unknown): id is string {
-  if (typeof id !== 'string' || !/^https:\/\//i.test(id)) return false;
-  if (hasForbiddenCodePoint(id) || id.includes('#') || id.includes('?')) return false;
-  const afterScheme = id.slice('https://'.length);
-  const authorityEnd = afterScheme.search(/[/?#]/);
-  const authority = authorityEnd === -1 ? afterScheme : afterScheme.slice(0, authorityEnd);
-  if (authority === '' || authority.includes('@')) return false;
-  const rawPath = authorityEnd === -1 ? '' : afterScheme.slice(authorityEnd);
-  if (rawPath.split('/').some((seg) => {
-    const normalized = seg.replace(/%2e/gi, '.');
-    return normalized === '.' || normalized === '..';
-  })) return false;
-  let url: URL;
-  try {
-    url = new URL(id);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') return false;
-  if (url.hostname.startsWith('[') || IPV4_LITERAL.test(url.hostname)) return false;
-  if (url.pathname === '' || url.pathname === '/') return false;
-  return true;
-}
-
-function refuse(reason: string, clientId: string): false {
+export function refuseCimd(reason: string, clientId: string): false {
   let host: string | null = null;
   try {
     host = new URL(clientId).hostname;
@@ -151,17 +116,17 @@ async function withinFetchBudget(host: string): Promise<boolean | 'no_redis'> {
 }
 
 export async function cimdAllowFetch(_ctx: unknown, clientId: string): Promise<boolean> {
-  if (!cimdEnabledNow()) return refuse('disabled', clientId);
-  if (!isCimdClientId(clientId)) return refuse('invalid_client_id', clientId);
+  if (!cimdEnabledNow()) return refuseCimd('disabled', clientId);
+  if (!isCimdClientId(clientId)) return refuseCimd('invalid_client_id', clientId);
   const ssrf = checkSsrfSafe(clientId, { mode: 'strict-https' });
-  if (!ssrf.ok) return refuse('ssrf_guard', clientId);
+  if (!ssrf.ok) return refuseCimd('ssrf_guard', clientId);
   const host = new URL(clientId).hostname.toLowerCase();
-  if (!cimdHostAllowed(host, liveAllowlist())) return refuse('host_not_allowed', clientId);
+  if (!cimdHostAllowed(host, liveAllowlist())) return refuseCimd('host_not_allowed', clientId);
   const budget = await withinFetchBudget(host);
   if (budget === 'no_redis') {
-    if (process.env.NODE_ENV === 'production') return refuse('redis_unavailable', clientId);
+    if (process.env.NODE_ENV === 'production') return refuseCimd('redis_unavailable', clientId);
   } else if (!budget) {
-    return refuse('fetch_budget_exceeded', clientId);
+    return refuseCimd('fetch_budget_exceeded', clientId);
   }
   registerApproval(clientId, Date.now());
   return true;

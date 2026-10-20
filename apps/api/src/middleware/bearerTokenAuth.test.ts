@@ -1000,6 +1000,39 @@ describe('bearerTokenAuthMiddleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  // B-W03 (#6157, D-B20): a CIMD client's id is its metadata-document URL;
+  // org blocks key on that same id, so they apply unchanged.
+  it('a CIMD client honours an org block', async () => {
+    const cimdClientId = 'https://client.example.com/oauth/metadata.json';
+    const blockedOrg = '44444444-4444-4444-8444-444444444444';
+    const allowedOrg = '55555555-5555-5555-8555-555555555555';
+    dbState.rows = [
+      [{ orgAccess: 'all', orgIds: null }],
+      [{ id: blockedOrg }, { id: allowedOrg }],
+      [{ orgId: blockedOrg }],
+    ];
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: null,
+      scope: 'mcp:read',
+      jti: 'cimd-client-jti',
+      client_id: cimdClientId,
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(c.get('apiKey')).toMatchObject({ oauthClientId: cimdClientId });
+    expect(collectPredicateFacts(dbState.wherePredicates[2]).params).toContain(cimdClientId);
+    expect(withDbAccessContext).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'partner', accessibleOrgIds: [allowedOrg] }),
+      expect.any(Function),
+    );
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it('passes [] (not null) for partner-scope tokens whose partner has no orgs (M-B1)', async () => {
     // Edge case: a brand-new partner with no orgs. Resolver returns []. We
     // MUST pass [] to withDbAccessContext — passing null would be the

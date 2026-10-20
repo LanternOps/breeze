@@ -57,6 +57,16 @@ function collectColumnNames(value: unknown, acc: string[] = [], seen = new WeakS
   return acc;
 }
 
+function collectTableNames(value: unknown, acc: string[] = [], seen = new WeakSet<object>()): string[] {
+  if (!value || typeof value !== 'object') return acc;
+  if (seen.has(value)) return acc;
+  seen.add(value);
+  const sym = Object.getOwnPropertySymbols(value).find((s) => s.description === 'drizzle:Name');
+  if (sym) acc.push(String((value as Record<symbol, unknown>)[sym]));
+  for (const v of Object.values(value as Record<string, unknown>)) collectTableNames(v, acc, seen);
+  return acc;
+}
+
 function collectBoundDates(value: unknown, acc: string[] = [], seen = new WeakSet<object>()): string[] {
   if (value instanceof Date) {
     acc.push(value.toISOString());
@@ -84,9 +94,27 @@ describe('OAuth cleanup helpers', () => {
 
     expect(deleteMock).toHaveBeenCalledWith(oauthClients);
     const predicateSql = collectSqlStrings(staleDelete.where.mock.calls[0]![0]);
-    expect((predicateSql.match(/NOT EXISTS/g) ?? [])).toHaveLength(4);
-    expect((predicateSql.match(/SELECT 1/g) ?? [])).toHaveLength(4);
+    expect((predicateSql.match(/NOT EXISTS/g) ?? [])).toHaveLength(6);
+    expect((predicateSql.match(/SELECT 1/g) ?? [])).toHaveLength(6);
     expect((predicateSql.match(/>=/g) ?? [])).toHaveLength(3);
+    expect(predicateSql).toContain('IS NULL');
+  });
+
+  // B-W03 (#6157, D-B20): a stable CIMD URL must not erase its own disable or
+  // org blocks by ageing out and re-materialising, and an approval_requests
+  // reference (FK without ON DELETE) would fail the whole delete.
+  it('cleanup never deletes a disabled client, one with org blocks, or one referenced by an approval request', async () => {
+    const staleDelete = queueDeleteReturning([]);
+    await cleanupStaleOauthClients(new Date('2026-05-02T12:00:00.000Z'));
+    const predicate = staleDelete.where.mock.calls[0]![0];
+    const predicateSql = collectSqlStrings(predicate);
+    const columns = collectColumnNames(predicate);
+    expect(columns).toContain('disabled_at');
+    expect(columns).toContain('requesting_client_id');
+    expect(columns.filter((c) => c === 'client_id').length).toBeGreaterThanOrEqual(5);
+    const tables = JSON.stringify(collectTableNames(predicate));
+    expect(tables).toContain('oauth_client_blocks');
+    expect(tables).toContain('approval_requests');
     expect(predicateSql).toContain('IS NULL');
   });
 
