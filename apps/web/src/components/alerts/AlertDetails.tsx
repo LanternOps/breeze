@@ -436,11 +436,11 @@ export default function AlertDetails({
         </div>
 
         {/* Footer Actions — pinned to bottom */}
-        <div className="flex items-center justify-end gap-2 border-t px-6 py-4">
+        <div data-testid="alert-details-footer" className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
           <button
             type="button"
             onClick={onClose}
-            className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+            className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium hover:bg-muted"
           >
             {t('alertDetails.close')}
           </button>
@@ -458,7 +458,7 @@ export default function AlertDetails({
                 .catch((err) => { if (!(err instanceof ActionError)) throw err; }); // runAction already surfaced ActionError via toast
             }}
             title={t('alertDetails.createALinkedTicketPreFilledFrom')}
-            className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+            className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium hover:bg-muted"
             data-testid="alert-create-ticket-button"
           >
             <Ticket className="mr-1.5 inline-block h-4 w-4" />
@@ -471,7 +471,7 @@ export default function AlertDetails({
               onClick={() => onSuppress?.(alert)}
               disabled={submitting}
               title={t('alertDetails.silenceThisAlertStopsNotificationsWithoutResolving')}
-              className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
               {t('alertDetails.suppress')}
             </button>
@@ -482,7 +482,7 @@ export default function AlertDetails({
               onClick={() => onDismiss?.(alert)}
               disabled={submitting}
               title={t('alertDetails.dismissPermanentlyHidesThisAlertForGood')}
-              className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
               {t('alertDetails.dismiss')}
             </button>
@@ -494,7 +494,7 @@ export default function AlertDetails({
               disabled={submitting}
               title={t('alertDetails.markAsSeenStopsEscalationButKeeps')}
               className={cn(
-                'h-9 rounded-md border px-4 text-sm font-medium disabled:opacity-50',
+                'h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium disabled:opacity-50',
                 'border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
               )}
             >
@@ -514,7 +514,7 @@ export default function AlertDetails({
               onClick={() => setShowResolveForm(true)}
               disabled={submitting}
               title={t('alertDetails.closeThisAlertMarksTheIssueAs')}
-              className="h-9 rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
             >
               <CheckCircle className="mr-1.5 inline-block h-4 w-4" />
               {t('alertDetails.resolve')}

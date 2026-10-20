@@ -153,7 +153,7 @@ export default function SuggestionRow(props: SuggestionRowProps) {
             </div>
           </div>
         ) : (
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex flex-col gap-3">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-semibold">{suggestion.title}</span>
@@ -238,7 +238,7 @@ export default function SuggestionRow(props: SuggestionRowProps) {
                 </div>
               )}
             </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <div data-testid={`suggestion-actions-${suggestion.id}`} className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               disabled={busy.updatingId === suggestion.id || busy.executingId === suggestion.id || suggestion.status === 'accepted'}
