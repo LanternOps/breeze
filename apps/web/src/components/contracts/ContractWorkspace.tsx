@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
@@ -16,6 +16,7 @@ import { listContractDocuments, type ContractDocument } from '../../lib/api/cont
 import { StatusPill } from '../billing/shared/StatusPill';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import { showToast } from '../shared/Toast';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -46,21 +47,36 @@ export default function ContractWorkspace({ contractId }: Props) {
   // Active contracts are read-mostly; an explicit toggle reveals the editor.
   const [editing, setEditing] = useState(false);
 
+  // Mirrors `detail` for `load()` without making it a dependency: a background
+  // refresh (editor autosave -> onChanged) must not change `load`'s identity and
+  // retrigger the mount effect.
+  const hasDetailRef = useRef(false);
+  hasDetailRef.current = detail !== null;
+
+  // First load shows the full-page spinner / error state. Once a detail is on
+  // screen, a refetch is a background refresh (#9305): keep the tree mounted
+  // (focus, the editor's per-field "Saved" cue), swap in the new detail on
+  // arrival, and report a failure as a toast rather than replacing the page.
   const load = useCallback(async () => {
     if (isNew) { setLoading(false); return; }
     if (!contractId) { setError(stableT('contracts.contractWorkspace.errors.missingContractId')); setLoading(false); return; }
+    const background = hasDetailRef.current;
+    const fail = (message: string) => {
+      if (background) showToast({ type: 'error', message });
+      else setError(message);
+    };
     try {
-      setLoading(true);
-      setError(undefined);
+      if (!background) { setLoading(true); setError(undefined); }
       const res = await getContract(contractId);
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { setError(stableT('contracts.contractWorkspace.errors.notFound')); return; }
+      if (res.status === 404) { fail(stableT('contracts.contractWorkspace.errors.notFound')); return; }
       if (!res.ok) throw new Error(stableT('contracts.contractWorkspace.errors.loadContract'));
       const body = (await res.json().catch(() => null)) as { data: ContractDetailData } | null;
       if (!body) throw new Error(stableT('contracts.contractWorkspace.errors.loadContract'));
       setDetail(body.data);
+      setError(undefined);
     } catch (err) {
-      setError(err instanceof Error ? err.message : stableT('contracts.contractWorkspace.errors.loadContract'));
+      fail(err instanceof Error ? err.message : stableT('contracts.contractWorkspace.errors.loadContract'));
     } finally {
       setLoading(false);
     }
@@ -129,7 +145,7 @@ export default function ContractWorkspace({ contractId }: Props) {
     );
   }
 
-  if (error || !detail) {
+  if (!detail) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center text-sm text-destructive" data-testid="contract-workspace-error">
         {error ?? t('contracts.contractWorkspace.errors.unavailable')}
