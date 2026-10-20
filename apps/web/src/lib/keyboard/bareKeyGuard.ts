@@ -14,8 +14,8 @@ const CONTENT_EDITABLE = '[contenteditable=""],[contenteditable="true"],[content
 const INPUT_ROLES = '[role="textbox"],[role="combobox"],[role="searchbox"],[role="spinbutton"]';
 
 function isInputLike(el: Element | null): boolean {
-  if (!(el instanceof HTMLElement)) return false;
-  if (EDITABLE_TAGS.has(el.tagName) || el.isContentEditable) return true;
+  if (!el) return false;
+  if (EDITABLE_TAGS.has(el.tagName) || (el instanceof HTMLElement && el.isContentEditable)) return true;
   // jsdom never sets isContentEditable; real editors (CodeMirror, Monaco's
   // fallback) nest the caret element inside the editable root, so walk up.
   if (el.closest(CONTENT_EDITABLE) !== null) return true;
@@ -24,8 +24,8 @@ function isInputLike(el: Element | null): boolean {
 }
 
 function isInsideBlockingDialog(el: Element | null): boolean {
-  if (!(el instanceof HTMLElement)) return false;
-  const dialog = el.closest('[aria-modal="true"],[role="dialog"]');
+  if (!el) return false;
+  const dialog = el.closest('[aria-modal="true"],[role="dialog"],[role="alertdialog"]');
   if (!dialog) return false;
   return dialog.getAttribute('aria-labelledby') !== CHEAT_SHEET_LABEL_ID;
 }
@@ -47,7 +47,7 @@ export function isPrintableKey(event: KeyboardEvent): boolean {
 }
 
 let lastPrintableAt = Number.NEGATIVE_INFINITY;
-const verdicts = new WeakMap<KeyboardEvent, boolean>();
+const verdicts = new WeakMap<KeyboardEvent, { typing: boolean; withinCadence: boolean }>();
 
 /** Forget the typing history (the second key of a completed chord, tests). */
 export function resetTypingCadence(): void {
@@ -72,21 +72,26 @@ export interface BareKeyOptions {
  *  - focus is in an input-like element or an open dialog (see above), or
  *  - a printable key arrived in the previous `TYPING_CADENCE_MS`.
  * The verdict is memoised per event so two hooks can share one keystroke.
- * Dirty-form suppression is separate (`isFormDirtyBlocking`) because `?` and
- * queue `j`/`k` are exempt from it.
+ * Dirty-form suppression is separate (`isFormDirtyBlocking`) because `?` is
+ * exempt from it; the g/c chords and every queue key except Escape honour it.
  */
 export function shouldHandleBareKey(event: KeyboardEvent, opts: BareKeyOptions = {}): boolean {
-  const cached = verdicts.get(event);
-  if (cached !== undefined) return cached;
-
-  const printable = isPrintableKey(event);
-  const previous = lastPrintableAt;
-  if (printable) lastPrintableAt = Date.now();
-
-  let ok = !isTypingContext(event);
-  if (ok && printable && !opts.ignoreCadence && Date.now() - previous < TYPING_CADENCE_MS) ok = false;
-  verdicts.set(event, ok);
-  return ok;
+  // Compute once per event (so two hooks share one keystroke and the clock is
+  // read before it is advanced), but keep the options out of the cache: the
+  // verdict a caller gets must not depend on which hook ran first.
+  let v = verdicts.get(event);
+  if (!v) {
+    const previous = lastPrintableAt;
+    const printable = isPrintableKey(event);
+    if (printable) lastPrintableAt = Date.now();
+    v = {
+      typing: isTypingContext(event),
+      withinCadence: printable && Date.now() - previous < TYPING_CADENCE_MS,
+    };
+    verdicts.set(event, v);
+  }
+  if (v.typing) return false;
+  return opts.ignoreCadence ? true : !v.withinCadence;
 }
 
 /** True while a mounted editor has registered unsaved input. */

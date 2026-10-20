@@ -6,7 +6,6 @@ import { requestCreate } from './createIntent';
 import {
   isFormDirtyBlocking,
   isTypingContext,
-  noteKeydown,
   resetTypingCadence,
   shouldHandleBareKey,
 } from './bareKeyGuard';
@@ -70,7 +69,6 @@ export function useGlobalShortcuts(): ChordPrefix | null {
       }
       const prefix = chordPending.current;
       clearChord();
-      noteKeydown(event);
       const create = prefix === 'c' ? CREATE_BY_KEY.get(event.key) : undefined;
       const target = prefix === 'g' ? GO_TO_BY_KEY.get(event.key) : create;
       if (!target) return;
