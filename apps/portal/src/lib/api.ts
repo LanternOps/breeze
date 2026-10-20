@@ -854,6 +854,8 @@ export interface BrandingConfig {
   enablePatchDetail?: boolean;
   /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
   enableVulnerabilityDetail?: boolean;
+  /** Environment visibility W1 (#8775): MSP turned sensitive physical placement (rack and room) on for this org. */
+  enablePhysicalPlacement?: boolean;
   /** Trust Center W3d: per-USER capability, not an org flag — true only when the org
    *  turned trust-page editing on AND this portal user is an org-scoped admin
    *  contact. The API re-checks it on every trust-page request. */

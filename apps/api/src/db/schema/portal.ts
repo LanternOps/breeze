@@ -94,6 +94,10 @@ export const portalBranding = pgTable('portal_branding', {
   // Sensitive (points at vulnerabilities): NOT in PORTAL_VISIBILITY_FLAG_KEYS or
   // "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
   enableVulnerabilityDetail: boolean('enable_vulnerability_detail').notNull().default(false),
+  // Customer Portal Environment Visibility W1 (#8775): physical placement
+  // (rack and room). Sensitive (reveals physical layout): NOT in
+  // PORTAL_VISIBILITY_FLAG_KEYS or "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
+  enablePhysicalPlacement: boolean('enable_physical_placement').notNull().default(false),
   // EDR provider framework W02 (#8166): strict fail-closed flag for the
   // vendor-neutral "Managed endpoint protection" leg of the security view.
   // Inside "Enable all" (not sensitive: no vendor/product names are exposed).

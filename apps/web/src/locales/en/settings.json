@@ -2064,6 +2064,10 @@
           "label": "Vulnerability detail",
           "description": "Show every portal login of this organization each device's CVE findings and their severity (CVE ID, description, severity, CVSS score, patch availability, status). This reveals which machines are vulnerable. Not turned on by Enable all visibility."
         },
+        "enablePhysicalPlacement": {
+          "label": "Physical placement",
+          "description": "Show every portal login of this organization where each device is physically placed (rack and room). This reveals the physical layout of the environment. Not turned on by Enable all visibility."
+        },
         "enableHourBlock": {
           "label": "Support hours",
           "description": "Show prepaid block hours used and remaining inside the customer's Support usage section. Requires Support usage. Not turned on by Enable all visibility."

@@ -2064,6 +2064,10 @@
           "label": "Detalle de vulnerabilidades",
           "description": "Muestra a cada inicio de sesión del portal de esta organización los hallazgos CVE de cada dispositivo y su gravedad (ID de CVE, descripción, gravedad, puntaje CVSS, disponibilidad de parche, estado). Esto revela qué equipos son vulnerables. No se activa con Activar toda la visibilidad."
         },
+        "enablePhysicalPlacement": {
+          "label": "Ubicación física",
+          "description": "Muestra a cada inicio de sesión del portal de esta organización dónde está instalado físicamente cada dispositivo (rack y sala). Esto revela la disposición física del entorno. No se activa con Activar toda la visibilidad."
+        },
         "enableHourBlock": {
           "label": "Horas de soporte",
           "description": "Muestra las horas prepagadas del bloque usadas y restantes dentro de la sección de uso de soporte del cliente. Requiere Uso de soporte. No se activa al habilitar toda la visibilidad."

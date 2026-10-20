@@ -89,6 +89,7 @@ describe('GET /branding (authenticated)', () => {
       enableHourBlock: true,
       enablePatchDetail: true,
       enableVulnerabilityDetail: true,
+      enablePhysicalPlacement: true,
       enableEdrVisibility: true,
     }];
 
@@ -112,6 +113,7 @@ describe('GET /branding (authenticated)', () => {
         enableHourBlock: true,
         enablePatchDetail: true,
         enableVulnerabilityDetail: true,
+        enablePhysicalPlacement: true,
         enableEdrVisibility: true,
       },
     });
@@ -143,6 +145,7 @@ describe('GET /branding (authenticated)', () => {
         'enableHourBlock',
         'enablePatchDetail',
         'enableVulnerabilityDetail',
+        'enablePhysicalPlacement',
         'enableEdrVisibility',
       ]),
     );
@@ -182,6 +185,7 @@ describe('GET /branding (authenticated)', () => {
     expect(body).not.toHaveProperty('enableHourBlock');
     expect(body).not.toHaveProperty('enablePatchDetail');
     expect(body).not.toHaveProperty('enableVulnerabilityDetail');
+    expect(body).not.toHaveProperty('enablePhysicalPlacement');
     expect(body).not.toHaveProperty('enableEdrVisibility');
     expect(body).not.toHaveProperty('canEditTrustPage');
   });
@@ -287,6 +291,7 @@ describe('GET /branding/:domain (public)', () => {
     expect(body.branding).not.toHaveProperty('enableHourBlock');
     expect(body.branding).not.toHaveProperty('enablePatchDetail');
     expect(body.branding).not.toHaveProperty('enableVulnerabilityDetail');
+    expect(body.branding).not.toHaveProperty('enablePhysicalPlacement');
     expect(body.branding).not.toHaveProperty('enableEdrVisibility');
     expect(body.branding).not.toHaveProperty('canEditTrustPage');
     expect(response.headers.get('Cache-Control')).toContain('public');
@@ -313,6 +318,7 @@ describe('GET /branding/:domain (public)', () => {
       'enableHourBlock',
       'enablePatchDetail',
       'enableVulnerabilityDetail',
+      'enablePhysicalPlacement',
       'enableEdrVisibility',
     ]) {
       expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);

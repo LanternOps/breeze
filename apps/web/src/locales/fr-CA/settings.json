@@ -2064,6 +2064,10 @@
           "label": "Détail des vulnérabilités",
           "description": "Affiche à chaque connexion au portail de cette organisation les constats CVE de chaque appareil et leur gravité (ID CVE, description, gravité, score CVSS, disponibilité d’un correctif, statut). Cela révèle quelles machines sont vulnérables. N’est pas activé par Activer toute la visibilité."
         },
+        "enablePhysicalPlacement": {
+          "label": "Emplacement physique",
+          "description": "Montre à chaque connexion au portail de cette organisation où chaque appareil est physiquement installé (baie et salle). Cela révèle l'agencement physique de l'environnement. N’est pas activé par Activer toute la visibilité."
+        },
         "enableHourBlock": {
           "label": "Heures de soutien",
           "description": "Affiche les heures prépayées du forfait utilisées et restantes dans la section Utilisation du soutien du client. Nécessite Utilisation du soutien. Non activé lorsque vous activez toute la visibilité."
