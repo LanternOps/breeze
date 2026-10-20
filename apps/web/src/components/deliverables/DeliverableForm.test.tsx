@@ -391,10 +391,14 @@ describe('DeliverableForm portal-visible default', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({ cadence: 'one_time', portalVisible: false });
   });
 
-  it('edit mode keeps the stored value (cadence is read-only there)', () => {
+  it('edit mode keeps the stored value even if a cadence change event fires', () => {
     render(
-      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" initial={{ ...saved, cadence: 'one_time', portalVisible: true }} onSaved={vi.fn()} onCancel={vi.fn()} />,
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" initial={{ ...saved, cadence: 'monthly', portalVisible: true }} onSaved={vi.fn()} onCancel={vi.fn()} />,
     );
+    expect(portal().checked).toBe(true);
+    // The select is disabled in edit mode, but the stored value must not hinge
+    // on that alone: edit mode starts "touched".
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
     expect(portal().checked).toBe(true);
   });
 });

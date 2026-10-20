@@ -464,7 +464,7 @@ describe('DeliverableTemplatesPage item portal visibility (#9315)', () => {
     await waitFor(() => expect(postedBody()).toEqual(expect.objectContaining({ cadence: 'one_time', portalVisible: false })));
   });
 
-  it('editing an existing item shows its stored value, not the cadence default', async () => {
+  it('editing an existing item keeps its stored value through a cadence change and PATCHes it', async () => {
     fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       const method = opts?.method ?? 'GET';
       if (String(url).startsWith('/deliverable-templates') && method === 'GET') {
@@ -480,10 +480,27 @@ describe('DeliverableTemplatesPage item portal visibility (#9315)', () => {
         });
       }
       if (String(url).startsWith('/ticket-checklist-templates') && method === 'GET') return jsonResponse({ data: [] });
+      if (String(url) === '/deliverable-templates/set-1/items/item-1' && method === 'PATCH') {
+        return itemResponse({ id: 'item-1', name: 'Kickoff call', cadence: 'quarterly', portalVisible: true });
+      }
       return jsonResponse({ error: 'unexpected' }, 500);
     });
     render(<DeliverableTemplatesPage />);
     fireEvent.click(await screen.findByTestId('deliverable-template-item-edit-item-1'));
     expect(portal().checked).toBe(true);
+    // The stored value is a deliberate choice: switching cadence must not
+    // re-derive it (a one_time -> recurring -> one_time round trip would
+    // otherwise silently hide a visible item on save).
+    fireEvent.change(cadence(), { target: { value: 'quarterly' } });
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    expect(portal().checked).toBe(true);
+    fireEvent.click(screen.getByTestId('deliverable-template-item-submit'));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, opts]) => url === '/deliverable-templates/set-1/items/item-1' && (opts as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual(expect.objectContaining({ portalVisible: true }));
+    });
   });
 });

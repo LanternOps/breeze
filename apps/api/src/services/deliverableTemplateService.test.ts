@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
@@ -535,6 +535,15 @@ describe('portalVisible on template items (#9315)', () => {
     createdCalls.length = 0;
     refMocks.assertChecklistTemplateUsableByTemplateItemOwner.mockReset().mockResolvedValue(undefined);
   });
+  // `vi.spyOn` on the chain's existing vi.fn returns that same mock, so call
+  // history is what leaks between tests. Clear it up front (exception-safe,
+  // unlike a trailing mockRestore) and restore any wrapper afterwards.
+  beforeEach(async () => {
+    const { db } = await import('../db');
+    (db as any).values.mockClear();
+    (db as any).set.mockClear();
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
   const orgSet = { id: 's1', orgId: 'org1', partnerId: null, name: 'Onboarding' };
   const base = { leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const, sortOrder: 0 };
 
@@ -561,7 +570,6 @@ describe('portalVisible on template items (#9315)', () => {
     dbMocks.rows.push([orgSet], [{ id: 'i2' }]);
     await addTemplateItem('s1', { name: 'Patch report', cadence: 'monthly', ...base }, partnerAdmin);
     expect(values.mock.calls.at(-1)![0]).toMatchObject({ portalVisible: true });
-    values.mockRestore();
   });
 
   it('an explicit portalVisible wins over the cadence default on create', async () => {
@@ -570,7 +578,6 @@ describe('portalVisible on template items (#9315)', () => {
     dbMocks.rows.push([orgSet], [{ id: 'i1' }]);
     await addTemplateItem('s1', { name: 'Kickoff call', cadence: 'one_time', ...base, portalVisible: true }, partnerAdmin);
     expect(values.mock.calls.at(-1)![0]).toMatchObject({ portalVisible: true });
-    values.mockRestore();
   });
 
   it('createTemplateSet resolves portalVisible for every nested item', async () => {
@@ -586,7 +593,6 @@ describe('portalVisible on template items (#9315)', () => {
       ['Billing configured', false],
       ['Patch report', true],
     ]);
-    values.mockRestore();
   });
 
   it('updateTemplateItem patches portalVisible only when supplied', async () => {
@@ -600,7 +606,6 @@ describe('portalVisible on template items (#9315)', () => {
     dbMocks.rows.push([orgSet], [{ id: 'i1' }]);
     await updateTemplateItem('s1', 'i1', { cadence: 'one_time' }, partnerAdmin);
     expect(setSpy.mock.calls.at(-1)![0]).not.toHaveProperty('portalVisible');
-    setSpy.mockRestore();
   });
 });
 

@@ -462,6 +462,36 @@ describe('deliverable template RLS (#5573 W05)', () => {
       expect(names).not.toContain('Billing configured');
     });
 
+    it('addTemplateItem / updateTemplateItem persist portalVisible through the real service (#9315)', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const setId = await seedSet({ partnerId: partner.id, name: uniqueName('Round trip') });
+      const actor: TemplateActor = {
+        userId: null, scope: 'partner', partnerId: partner.id,
+        partnerOrgAccess: 'all', accessibleOrgIds: [org.id],
+      };
+      const { addTemplateItem, updateTemplateItem } = await import('../../services/deliverableTemplateService');
+      const base = { leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const, sortOrder: 0 };
+      const ctx = partnerContext(partner.id, [org.id]);
+
+      const oneTime = await withDbAccessContext(ctx, () =>
+        addTemplateItem(setId, { name: 'Agreement signed', cadence: 'one_time', ...base }, actor));
+      const monthly = await withDbAccessContext(ctx, () =>
+        addTemplateItem(setId, { name: 'Patch report', cadence: 'monthly', ...base, sortOrder: 1 }, actor));
+      expect(oneTime.portalVisible).toBe(false);
+      expect(monthly.portalVisible).toBe(true);
+
+      await withDbAccessContext(ctx, () => updateTemplateItem(setId, oneTime.id, { portalVisible: true }, actor));
+      const stored = await withDbAccessContext(SYSTEM_CTX, () =>
+        db.select({ name: deliverableTemplateItems.name, portalVisible: deliverableTemplateItems.portalVisible })
+          .from(deliverableTemplateItems).where(eq(deliverableTemplateItems.setId, setId)),
+      );
+      expect(Object.fromEntries(stored.map((r) => [r.name, r.portalVisible]))).toEqual({
+        'Agreement signed': true,
+        'Patch report': true,
+      });
+    });
+
     it('a contract from another org aborts the apply before ANY deliverable is written', async () => {
       const partner = await createPartner();
       const orgA = await createOrganization({ partnerId: partner.id });
