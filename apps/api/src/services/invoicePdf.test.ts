@@ -4,6 +4,8 @@ import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { formatMoney } from '@breeze/shared';
 import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, resolveDraftBillTo, type InvoiceBranding } from './invoicePdf';
+import { columnsFor as quoteColumnsFor } from './quotePdf';
+import { formatMoneyForPdf } from './pdfMoney';
 import { resolveDocumentFooter } from './documentFooter';
 import { invoices, invoiceLines } from '../db/schema';
 
@@ -249,6 +251,26 @@ function escapeForHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+describe('invoice PDF description column parity with the quote PDF (#9401)', () => {
+  it.each([
+    ['A4', true], ['A4', false], ['LETTER', true], ['LETTER', false],
+  ] as const)('%s showTax=%s: description column matches the quote PDF and money still fits', (size, showTax) => {
+    const doc = new PDFDocument({ size, margin: 50 });
+    const inv = invoiceColumnsFor(doc, showTax);
+    const quote = quoteColumnsFor(doc, showTax);
+    expect(inv.colDescW).toBeCloseTo(quote.colDescW, 5);
+    doc.font('Helvetica').fontSize(10);
+    const w = doc.widthOfString(formatMoneyForPdf('888888.88', 'CHF', 'de-CH'));
+    expect(inv.colNumW).toBeGreaterThanOrEqual(w + 2);
+    // Every column stays clear of its left neighbour, and AMOUNT ends at the right edge.
+    expect(inv.colQtyX).toBeGreaterThanOrEqual(inv.left + inv.colDescW);
+    expect(inv.colUnitX).toBeGreaterThanOrEqual(inv.colQtyX + inv.colQtyW);
+    if (showTax) expect(inv.colTaxX).toBeGreaterThanOrEqual(inv.colUnitX + inv.colNumW);
+    expect(inv.colAmtX).toBeGreaterThanOrEqual((showTax ? inv.colTaxX : inv.colUnitX) + inv.colNumW);
+    expect(inv.colAmtX + inv.colNumW).toBeCloseTo(inv.right, 5);
+  });
+});
+
 describe('renderInvoicePdfBuffer', () => {
   it('produces a valid %PDF- buffer', async () => {
     const pdf = await renderInvoicePdfBuffer(makeInvoice(), [makeLine()], branding);
@@ -273,10 +295,10 @@ describe('renderInvoicePdfBuffer', () => {
     expect(untaxed.colAmtX + untaxed.colNumW).toBeCloseTo(untaxed.right, 5);
     // Columns never overlap.
     expect(taxed.colQtyX).toBeGreaterThanOrEqual(taxed.left + taxed.colDescW);
-    expect(taxed.colUnitX).toBeGreaterThanOrEqual(taxed.colQtyX + taxed.colNumW);
+    expect(taxed.colUnitX).toBeGreaterThanOrEqual(taxed.colQtyX + taxed.colQtyW);
     expect(taxed.colTaxX).toBeGreaterThanOrEqual(taxed.colUnitX + taxed.colNumW);
     expect(taxed.colAmtX).toBeGreaterThanOrEqual(taxed.colTaxX + taxed.colNumW);
-    expect(untaxed.colUnitX).toBeGreaterThanOrEqual(untaxed.colQtyX + untaxed.colNumW);
+    expect(untaxed.colUnitX).toBeGreaterThanOrEqual(untaxed.colQtyX + untaxed.colQtyW);
     expect(untaxed.colAmtX).toBeGreaterThanOrEqual(untaxed.colUnitX + untaxed.colNumW);
   });
 

@@ -40,7 +40,7 @@ function LineRow({ line, currency, taxRate, showTax, lineDetail }: { line: Invoi
             {formatWorkDate(workDate, i18n.language)}
           </p>
         )}
-        {text.blurb && <p className="mt-0.5 text-xs text-muted-foreground">{text.blurb}</p>}
+        {text.blurb && <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{text.blurb}</p>}
         {/* #6467: worked-vs-billed disclosure, sourced from workedMinutes — never
             from `description`, so editing the description can't erase it. */}
         {workedVsBilledNote && (

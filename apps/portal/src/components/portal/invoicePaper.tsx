@@ -99,7 +99,7 @@ export function InvoiceLineTable({ lines, currency, taxRate, showTax, showLineTi
                         )}
                         {/* P-7: on phones Qty and Price fold under the description instead of clipping the table. */}
                         <div className="mt-0.5 text-xs tabular-nums text-muted-foreground sm:hidden" data-testid={`invoice-line-qty-${index}`}>{l.quantity} × {money(l.unitPrice, currency)}</div>
-                        {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                        {blurb && <div className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{blurb}</div>}
                         {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
                         {showLineTicket && l.ticketNumber && (
                           <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-ticket-${index}`}>Ticket #{l.ticketNumber}</div>

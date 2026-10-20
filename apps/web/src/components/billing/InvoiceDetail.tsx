@@ -533,7 +533,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                     {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(l)}
                   </span>
                   {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
-                  {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+                  {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
                   {workedVsBilledNote && (
                     <div className="text-xs text-muted-foreground" data-testid={`invoice-detail-line-worked-vs-billed-${l.id}`}>
                       {workedVsBilledNote}
