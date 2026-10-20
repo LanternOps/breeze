@@ -1,9 +1,12 @@
 ---
 spec: docs/superpowers/specs/billing/2026-10-20-document-renderer-spec.md
 feature_plan: docs/superpowers/plans/billing/2026-10-20-document-renderer.md
-tracking_issue: LanternOps/breeze#9402
+tracking_issue: LanternOps/breeze#9414
+anchor_issue: LanternOps/breeze#9402
 ---
 # One Document Renderer — W1 Implementation Plan (invoice on screen)
+
+> **Sub-issues (registered 2026-10-20):** W1a = #9415, W1b = #9416, W1c = #9417 (feature parent #9414). Each PR carries `Closes #<its sub-issue>` and `Part of #9414`; branch `feature/9414-document-renderer/wave-<sub-issue#>` with no unit suffix. This supersedes the `<W1 sub-issue>` placeholders below.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -48,7 +51,7 @@ Each line names the input, the expected behaviour and the task that pins it:
 
 # W1a — Package scaffold, CSS, CI (PR 1)
 
-Branch `feature/9402-document-renderer/wave-<W1 sub-issue#>-w1a` from `origin/main`. PR title `feat(document-ui): package scaffold, document.css and CI job (#9402 W1a)`. Body `Part of #<W1 sub-issue>`, states "no behaviour change" and the `release-build-check.yml` run id.
+Branch `feature/9414-document-renderer/wave-<W1 sub-issue#>-w1a` from `origin/main`. PR title `feat(document-ui): package scaffold, document.css and CI job (#9402 W1a)`. Body `Part of #<W1 sub-issue>`, states "no behaviour change" and the `release-build-check.yml` run id.
 
 ### Task 1: Package scaffold, `DocumentPaper`, no-style-attribute test
 
@@ -268,7 +271,7 @@ Run: `node --test .github/scripts/ci-area-gating.test.mjs` → FAIL (job not fou
 
 # W1b — Invoice assembler and customer-view route (PR 2)
 
-Branch `feature/9402-document-renderer/wave-<W1 sub-issue#>-w1b` from `origin/main` (independent of W1a). PR title `feat(billing): one customer-document assembler for invoices + staff customer-view route (#9402 W1b)`. Body `Part of #<W1 sub-issue>`; states "no `mcpCoverage.ts` entry changes (coverage is keyed by route file and `invoices/invoices.ts` is covered at `:510`)", "customer-view is a GET: no `runActionAllowlist.ts` change", and lists the additive response keys.
+Branch `feature/9414-document-renderer/wave-<W1 sub-issue#>-w1b` from `origin/main` (independent of W1a). PR title `feat(billing): one customer-document assembler for invoices + staff customer-view route (#9402 W1b)`. Body `Part of #<W1 sub-issue>`; states "no `mcpCoverage.ts` entry changes (coverage is keyed by route file and `invoices/invoices.ts` is covered at `:510`)", "customer-view is a GET: no `runActionAllowlist.ts` change", and lists the additive response keys.
 
 ### Task 7: Shared document types, money, dates, English labels
 
@@ -556,7 +559,7 @@ it('lives in a route file mcpCoverage already covers (keyed by file; no entry ch
 
 # W1c — Invoice on screen (PR 3)
 
-Branch `feature/9402-document-renderer/wave-<W1 sub-issue#>-w1c` from `origin/main` **after W1a, W1b and #9401 (PR #9406) have merged** (see the feature plan's "#9401 interaction" for what to do if #9406 is still open). PR title `feat(billing): one invoice document on the web Preview and both portal pages (#9402 W1c)`. Body `Closes #<W1 sub-issue>`, `Part of #9402`, the behaviour-change list from the feature plan, and the Playwright variants that ran.
+Branch `feature/9414-document-renderer/wave-<W1 sub-issue#>-w1c` from `origin/main` **after W1a, W1b and #9401 (PR #9406) have merged** (see the feature plan's "#9401 interaction" for what to do if #9406 is still open). PR title `feat(billing): one invoice document on the web Preview and both portal pages (#9402 W1c)`. Body `Closes #<W1 sub-issue>`, `Part of #9402`, the behaviour-change list from the feature plan, and the Playwright variants that ran.
 
 ### Task 13: Invoice composition in `@breeze/document-ui`
 

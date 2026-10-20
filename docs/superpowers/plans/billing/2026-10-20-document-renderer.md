@@ -1,5 +1,6 @@
 ---
-tracking_issue: LanternOps/breeze#9402
+tracking_issue: LanternOps/breeze#9414
+anchor_issue: LanternOps/breeze#9402
 spec: docs/superpowers/specs/billing/2026-10-20-document-renderer-spec.md
 ---
 # One Document Renderer for Quotes and Invoices — Feature Plan
@@ -89,7 +90,7 @@ Each wave ships on its own. **#9401 (PR #9406) lands first**; W1c deletes files 
 
 Why opus for W1b and W2a: they decide which rows and fields leave the server for a customer and add a staff read route that must reject exactly as the detail route does. A wrong join or a missed mode branch leaks a hidden line or a withheld note into a page that claims to be the customer view. Everything else renders a model whose content those two waves fixed, and the parity tests catch drift.
 
-Branch naming (`CLAUDE.md`): `feature/9402-document-renderer/wave-<sub-issue#>`, with a suffix per PR unit when a wave has several (`…/wave-<n>-w1a`). Only the **last** PR of a wave carries `Closes #<sub-issue>`; earlier ones say `Part of #<sub-issue>`. W2b's body also carries `Closes #6649`.
+Branch naming (`CLAUDE.md`): `feature/9414-document-renderer/wave-<sub-issue#>`. Feature #9414 was registered with one sub-issue per PR unit (W01 #9415 W1a · W02 #9416 W1b · W03 #9417 W1c · W04 #9418 W2a · W05 #9419 W2b · W06 #9420 W3a · W07 #9421 W3b · W08 #9422 W4 · W09 #9423 W5), so every PR carries `Closes #<its sub-issue>` and `Part of #9414`. W2b's body also carries `Closes #6649`.
 
 Parallel lanes: **W1a ∥ W1b** → W1c → (**W2a → W2b**) ∥ **W3a** → W3b; then **W4 ∥ W5** (file-disjoint, see below).
 
