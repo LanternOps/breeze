@@ -68,6 +68,7 @@ import {
   type McpDomainGrant,
 } from '../services/mcpDomains';
 import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
+import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
@@ -1377,6 +1378,8 @@ async function handleToolsList(
 
   // Filter tools based on API key scopes.
   const scopedTools = allTools.filter((tool) => {
+    // Deployment kill switch (e.g. FLOWS_ENABLED): never listed when off.
+    if (isToolEnvGatedOff(tool.name)) return false;
     // A wholly-gated tool (every possible invocation resolves to a gated
     // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
     // it would be denied by the tools/call gate below, so listing it is
@@ -1608,6 +1611,10 @@ async function handleToolsCall(
       `[MCP] Deprecated tool name "${requestedToolName}" called; dispatching as "${toolName}". Re-run tools/list — the old name is removed next release.`,
     );
   }
+
+  // Deployment kill switch (e.g. FLOWS_ENABLED): answered exactly like an
+  // unknown tool, before the domain gate, so it is not an existence oracle.
+  if (isToolEnvGatedOff(toolName)) return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
 
   // B-W02 (#6156, #2550): `whoami` is core (always domain-granted) and tier 1
   // (any principal that got past the ai:read preflight may call it). Pure:

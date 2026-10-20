@@ -23,7 +23,7 @@ import {
   type FlowSummaryDto,
   type FlowValidationResult,
 } from '@breeze/shared';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { flows, organizations, type FlowRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
@@ -263,13 +263,25 @@ function stripDocument(v: FlowValidationResult & { document?: unknown }): FlowVa
 
 /**
  * Chat provenance (spec §6.4): set by the chat post-tool hook from the
- * authenticated session, never from tool input, and only while unset.
+ * authenticated session, never from tool input, and only while unset. System
+ * context with an explicit owner predicate — the session's org, or its
+ * partner's partner-wide flows — because the chat hook's org-scoped context
+ * cannot target a partner-wide row.
  */
-export async function attachFlowToChatSession(flowId: string, aiSessionId: string): Promise<void> {
-  await db
-    .update(flows)
-    .set({ aiSessionId })
-    .where(and(eq(flows.id, flowId), isNull(flows.aiSessionId)));
+export async function attachFlowToChatSession(flowId: string, aiSessionId: string, sessionOrgId: string): Promise<void> {
+  await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const orgsPartner = sql`(select ${organizations.partnerId} from ${organizations} where ${organizations.id} = ${sessionOrgId})`;
+      await db
+        .update(flows)
+        .set({ aiSessionId })
+        .where(and(
+          eq(flows.id, flowId),
+          isNull(flows.aiSessionId),
+          or(eq(flows.orgId, sessionOrgId), and(isNull(flows.orgId), sql`${flows.partnerId} = ${orgsPartner}`)),
+        ));
+    }, 'flows.attachFlowToChatSession'),
+  );
 }
 
 // ── read ───────────────────────────────────────────────────────────────────

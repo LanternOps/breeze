@@ -467,3 +467,14 @@ Re-measure with this harness.
 - TTFT, because agent surfaces do not stream partial messages;
 - Haiku, and BYO/catalog hosts;
 - the verdict, sweep, design, patch, narrative and triage profiles (0–6 registered tools each).
+
+## 11. Tool Catalog W3 delta (#5218)
+
+Prompt-size review for the four flow authoring tools (`draft_flow`, `validate_flow`, `get_flow`, `list_flows`, domain "Scripts & automation"), which are declared to chat only when `FLOWS_ENABLED=true`.
+
+| Index (`renderToolIndexByDomain(listChatSurfaceToolNames())`) | Bytes |
+|---|---|
+| Default (`FLOWS_ENABLED` unset) | 6576 — unchanged, byte-identical |
+| `FLOWS_ENABLED=true` | 6625 (+49) |
+
+Both fit under the existing 6.5 KB (6656 B) ceiling in `aiToolIndex.test.ts`, so the 6.75 KB raise approved for this wave (plan Decision 5, 2026-10-20) was not needed and was not taken. The test now also measures the flag-on index, so a later flag-gated addition cannot grow the prompt unmeasured.

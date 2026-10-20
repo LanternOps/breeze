@@ -1667,6 +1667,30 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid,
   }),
 
+  // Tool Catalog W03 (#5218). `document` is an OPEN record on purpose: a
+  // structurally broken or oversized document must reach the flow validator
+  // (byte bound first, then the v1 schema) and come back as FlowIssues, not as
+  // a chat-level schema rejection.
+  draft_flow: z.object({
+    document: z.record(z.string(), z.unknown()),
+    flowId: uuid.optional(),
+    expectedVersion: z.number().int().min(1).optional(),
+    ownerScope: z.enum(['organization', 'partner']).optional(),
+    orgId: uuid.optional(),
+    slug: z.string().min(2).max(48).optional(),
+  }),
+  validate_flow: z.object({
+    document: z.record(z.string(), z.unknown()),
+    ownerScope: z.enum(['organization', 'partner']).optional(),
+    orgId: uuid.optional(),
+  }),
+  get_flow: z.object({ flowId: uuid }),
+  list_flows: z.object({
+    orgId: uuid.optional(),
+    status: z.enum(['draft', 'enabled', 'paused', 'disabled']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
   export_dataset: z.object({
     dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
     format: z.enum(['jsonl', 'csv']).optional(),
