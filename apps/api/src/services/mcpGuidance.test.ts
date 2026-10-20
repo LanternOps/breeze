@@ -9,8 +9,9 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toMatch(/read before write/i);
   });
 
-  // #9306 — MCP has no approval surface: routes/mcpServer.ts refuses every
-  // effective-Tier-3 call with MCP_APPROVAL_REQUIRED. The instructions must not
+  // #9306 — MCP has no approval surface: routes/mcpServer.ts refuses
+  // effective-Tier-3 calls with MCP_APPROVAL_REQUIRED (bar operator-designated
+  // unattended principals). The instructions must not
   // promise the in-app chat's Approve/Deny prompt.
   it('does not promise an Approve/Deny prompt and names MCP_APPROVAL_REQUIRED (#9306)', () => {
     expect(MCP_SERVER_INSTRUCTIONS).not.toMatch(/Approve\/Deny prompt/i);
