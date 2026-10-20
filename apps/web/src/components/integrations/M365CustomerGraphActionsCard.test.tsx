@@ -208,6 +208,19 @@ describe("M365CustomerGraphActionsCard", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("says the org is not enabled, not the instance, for org_not_enabled (#9319)", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ onboardingEnabled: false, onboardingAvailability: "org_not_enabled", connection: null })),
+    );
+
+    render(<M365CustomerGraphActionsCard />);
+
+    expect(await screen.findByText(
+      "Not enabled for this organization yet. Ask your Breeze administrator to enable it.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText("Not available on this Breeze instance yet.")).not.toBeInTheDocument();
+  });
+
   it("keeps connection management when onboarding is off but a connection exists", async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeResponse(envelope({ onboardingEnabled: false, connection: connection() })),

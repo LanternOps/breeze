@@ -26,10 +26,11 @@ import {
 import { recordM365ReadActionEvent } from './readActionMetrics';
 import type { M365ReadActionAuditInput } from './readActionMetrics';
 import {
-  isM365GraphReadToolsEnabledForOrg,
+  m365GraphReadToolsAvailability,
   loadM365CustomerGraphReadRuntimeConfig,
   type M365CustomerGraphReadRuntimeConfig,
 } from './runtimeConfig';
+import { m365ToolsDisabledMessage, type M365DisabledReason } from './availability';
 import { consumeM365ReadActionBudget, consumeM365SyncBudget } from './readActionBudget';
 import { recordM365SyncExecutorSeconds } from '../m365Sync/metrics'; // added in Task 5
 
@@ -43,7 +44,8 @@ export type M365ReadActionRefusalCode =
 export type M365ReadActionServiceResult =
   | { ok: true; kind: 'collection'; items: Record<string, unknown>[]; truncated: boolean }
   | { ok: true; kind: 'resource'; resource: Record<string, unknown> }
-  | { ok: false; code: M365ReadActionRefusalCode | ReadActionFailureCode; message: string; retryAfterSeconds?: number };
+  // `reason` is set only on `tools_disabled` gate refusals: which switch is off (#9319).
+  | { ok: false; code: M365ReadActionRefusalCode | ReadActionFailureCode; message: string; retryAfterSeconds?: number; reason?: M365DisabledReason };
 
 /** One plain sentence per executor failure code. Never echoes Graph error detail. */
 const FAILURE_MESSAGES: Record<ReadActionFailureCode, string> = {
@@ -81,6 +83,23 @@ function connectionNotReadyState(
   }
   if (connection.tenantId === null) return 'no-tenant';
   return null;
+}
+
+/**
+ * The tools gate, with the switch that is off named (#9319). Same gate as the
+ * boolean helper — `null` means enabled; anything else is a refusal.
+ */
+function toolsGateRefusal(
+  orgId: string,
+): { ok: false; code: 'tools_disabled'; reason: M365DisabledReason; message: string } | null {
+  const availability = m365GraphReadToolsAvailability(orgId);
+  if (availability === 'enabled') return null;
+  return {
+    ok: false,
+    code: 'tools_disabled',
+    reason: availability,
+    message: m365ToolsDisabledMessage(availability),
+  };
 }
 
 const CONNECT_NEXT_STEP = 'Connect Microsoft 365 in Integrations settings.';
@@ -364,13 +383,8 @@ export async function executeM365ReadAction(
   }
   const orgId = resolved.orgId;
 
-  if (!isM365GraphReadToolsEnabledForOrg(orgId)) {
-    return {
-      ok: false,
-      code: 'tools_disabled',
-      message: 'Microsoft 365 Graph read tools are not enabled for this organization.',
-    };
-  }
+  const gateRefusal = toolsGateRefusal(orgId);
+  if (gateRefusal) return gateRefusal;
 
   if (isM365SyncActionId(action.type)) {
     return {
@@ -434,13 +448,8 @@ export async function executeM365ReadActionByOrg(
   action: M365InteractiveReadAction,
   opts?: { actorId?: string },
 ): Promise<M365ReadActionServiceResult> {
-  if (!isM365GraphReadToolsEnabledForOrg(orgId)) {
-    return {
-      ok: false,
-      code: 'tools_disabled',
-      message: 'Microsoft 365 Graph read tools are not enabled for this organization.',
-    };
-  }
+  const gateRefusal = toolsGateRefusal(orgId);
+  if (gateRefusal) return gateRefusal;
   // Belt over the type: a sync action is a whole-tenant crawl, never a probe.
   if (isM365SyncActionId(action.type)) {
     return {
@@ -500,9 +509,8 @@ export async function executeM365MailboxReadByOrg(
   if (!action.success) {
     return { ok: false, code: 'invalid_subject', message: 'A Microsoft 365 user object id is required.' };
   }
-  if (!isM365GraphReadToolsEnabledForOrg(orgId)) {
-    return { ok: false, code: 'tools_disabled', message: 'Microsoft 365 Graph read tools are not enabled for this organization.' };
-  }
+  const gateRefusal = toolsGateRefusal(orgId);
+  if (gateRefusal) return gateRefusal;
   const [connection] = await withSystemDbAccessContext(() => db.select().from(m365Connections).where(and(
     eq(m365Connections.orgId, orgId),
     eq(m365Connections.profile, PROFILE),
@@ -544,9 +552,8 @@ export async function executeM365UserLookupForCallerTarget(
   if (!action.success) {
     return { ok: false, code: 'invalid_subject', message: 'A Microsoft 365 user principal name or object id is required.' };
   }
-  if (!isM365GraphReadToolsEnabledForOrg(orgId)) {
-    return { ok: false, code: 'tools_disabled', message: 'Microsoft 365 Graph read tools are not enabled for this organization.' };
-  }
+  const gateRefusal = toolsGateRefusal(orgId);
+  if (gateRefusal) return gateRefusal;
   const [connection] = await db.select().from(m365Connections).where(and(
     eq(m365Connections.orgId, orgId),
     eq(m365Connections.profile, PROFILE),

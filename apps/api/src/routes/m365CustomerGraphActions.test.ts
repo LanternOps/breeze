@@ -36,6 +36,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
     retest: vi.fn(),
     disconnect: vi.fn(),
     onboardingEnabled: vi.fn(() => true),
+    onboardingAvailability: vi.fn((): string => 'enabled'),
     buildBindingCookie: vi.fn(() => 'binding-cookie=opaque; HttpOnly; SameSite=Lax'),
     buildActionsBindingCookie: vi.fn(() => 'breeze_m365_graph_actions_consent=opaque; Path=/api/v1/m365/actions-consent/callback; HttpOnly; SameSite=Lax'),
     audit: vi.fn(),
@@ -103,6 +104,7 @@ vi.mock('../services/m365ControlPlane/writeActionConnectionService', async (impo
 
 vi.mock('../services/m365ControlPlane/writeActionRuntimeConfig', () => ({
   isM365CustomerGraphActionsOnboardingEnabledForOrg: mocks.onboardingEnabled,
+  m365CustomerGraphActionsOnboardingAvailability: mocks.onboardingAvailability,
 }));
 
 // Real read module, mocked only in its consent-lifecycle exports — needed so
@@ -118,6 +120,7 @@ vi.mock('../services/m365ControlPlane/connectionService', async (importActual) =
 
 vi.mock('../services/m365ControlPlane/runtimeConfig', () => ({
   isM365CustomerGraphReadOnboardingEnabledForOrg: mocks.readOnboardingEnabled,
+  m365CustomerGraphReadOnboardingAvailability: () => 'enabled',
 }));
 
 vi.mock('../services/m365ControlPlane/browserBinding', () => ({
@@ -313,6 +316,15 @@ describe('GET /m365/customer-graph-actions/connections', () => {
     for (const forbidden of ['clientSecret', 'vaultRef', 'credentialVersion', 'consentAttemptId', 'rawState', 'codeVerifier', 'administratorObjectId']) {
       expect(serialized).not.toContain(forbidden);
     }
+  });
+
+  it('reports which switch is off via onboardingAvailability (#9319)', async () => {
+    mocks.onboardingEnabled.mockReturnValue(false);
+    mocks.onboardingAvailability.mockReturnValue('org_not_enabled');
+    const body = await (await app().request(`/m365/customer-graph-actions/connections?orgId=${ORG_ID}`)).json();
+    expect(body.onboardingEnabled).toBe(false);
+    expect(body.onboardingAvailability).toBe('org_not_enabled');
+    mocks.onboardingAvailability.mockReturnValue('enabled');
   });
 
   it('reports onboarding disabled without hiding an existing connection', async () => {

@@ -7,6 +7,7 @@
     "unavailable": "Los detalles de la conexión no están disponibles.",
     "onboardingUnavailable": "La incorporación de lectura de Microsoft Graph del cliente no está habilitada para esta organización.",
     "notAvailableOnInstance": "Aún no está disponible en esta instancia de Breeze.",
+    "notEnabledForOrg": "Aún no está habilitado para esta organización. Pide a tu administrador de Breeze que lo habilite.",
     "callback": {
       "active": "Se completó el consentimiento de Microsoft. El estado actualizado de la conexión se muestra a continuación.",
       "degraded": "Se completó el consentimiento de Microsoft, pero la conexión requiere atención. Los detalles actualizados se muestran a continuación."
@@ -126,6 +127,7 @@
     "unavailable": "Los detalles de la conexión no están disponibles.",
     "onboardingUnavailable": "La incorporación de acciones de Microsoft Graph del cliente no está habilitada para esta organización.",
     "notAvailableOnInstance": "Aún no está disponible en esta instancia de Breeze.",
+    "notEnabledForOrg": "Aún no está habilitado para esta organización. Pide a tu administrador de Breeze que lo habilite.",
     "callback": {
       "active": "Se completó el consentimiento de Microsoft. El estado actualizado de la conexión se muestra a continuación.",
       "degraded": "Se completó el consentimiento de Microsoft, pero la conexión requiere atención. Los detalles actualizados se muestran a continuación."
@@ -262,6 +264,7 @@
   "m365TenantPanel": {
     "loading": "Cargando las conexiones de Microsoft 365.",
     "consentUnavailable": "La conexión basada en consentimiento aún no está disponible en esta instancia de Breeze.",
+    "consentNotEnabledForOrg": "La conexión basada en consentimiento aún no está habilitada para esta organización. Pide a tu administrador de Breeze que la habilite.",
     "selectOrganization": "Selecciona una organización para conectar su inquilino de Microsoft 365.",
     "noTenantForOrg": "No hay ningún inquilino de Microsoft 365 conectado a {{orgName}}",
     "tenantConnectedToOrg": "{{tenantName}} · conectado a {{orgName}}",

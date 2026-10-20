@@ -29,7 +29,7 @@ import {
   type GrantHealth,
 } from '../services/m365ControlPlane/connectionService';
 import { buildM365ConsentBindingCookie } from '../services/m365ControlPlane/browserBinding';
-import { isM365CustomerGraphReadOnboardingEnabledForOrg } from '../services/m365ControlPlane/runtimeConfig';
+import { isM365CustomerGraphReadOnboardingEnabledForOrg, m365CustomerGraphReadOnboardingAvailability } from '../services/m365ControlPlane/runtimeConfig';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -159,6 +159,8 @@ async function envelope(
       requiredGrants: [...(profileManifest.applicationPermissionAssignments ?? [])],
     },
     onboardingEnabled: isM365CustomerGraphReadOnboardingEnabledForOrg(orgId),
+    // Which switch is off (#9319); onboardingEnabled stays for compatibility.
+    onboardingAvailability: m365CustomerGraphReadOnboardingAvailability(orgId),
     connection: connection ? toConnectionDto(connection) : null,
     syncEnabled,
     // Envelope-level, not on the connection DTO (W01 owns that shape). Read on

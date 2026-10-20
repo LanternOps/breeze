@@ -7,6 +7,7 @@
     "unavailable": "I dettagli della connessione non sono disponibili.",
     "onboardingUnavailable": "L'onboarding Customer Graph Read non è abilitato per questa organizzazione.",
     "notAvailableOnInstance": "Non ancora disponibile su questa istanza di Breeze.",
+    "notEnabledForOrg": "Non ancora abilitato per questa organizzazione. Chiedi al tuo amministratore Breeze di abilitarlo.",
     "callback": {
       "active": "Consenso Microsoft completato. Lo stato aggiornato della connessione è mostrato di seguito.",
       "degraded": "Consenso Microsoft completato, ma la connessione richiede attenzione. I dettagli aggiornati sono mostrati di seguito."
@@ -126,6 +127,7 @@
     "unavailable": "I dettagli della connessione non sono disponibili.",
     "onboardingUnavailable": "L'onboarding Customer Graph Actions non è abilitato per questa organizzazione.",
     "notAvailableOnInstance": "Non ancora disponibile su questa istanza di Breeze.",
+    "notEnabledForOrg": "Non ancora abilitato per questa organizzazione. Chiedi al tuo amministratore Breeze di abilitarlo.",
     "callback": {
       "active": "Consenso Microsoft completato. Lo stato aggiornato della connessione è mostrato di seguito.",
       "degraded": "Consenso Microsoft completato, ma la connessione richiede attenzione. I dettagli aggiornati sono mostrati di seguito."
@@ -262,6 +264,7 @@
   "m365TenantPanel": {
     "loading": "Caricamento delle connessioni Microsoft 365.",
     "consentUnavailable": "La connessione basata sul consenso non è ancora disponibile su questa istanza di Breeze.",
+    "consentNotEnabledForOrg": "La connessione basata sul consenso non è ancora abilitata per questa organizzazione. Chiedi al tuo amministratore Breeze di abilitarla.",
     "selectOrganization": "Seleziona un'organizzazione per collegarne il tenant Microsoft 365.",
     "noTenantForOrg": "Nessun tenant Microsoft 365 collegato a {{orgName}}",
     "tenantConnectedToOrg": "{{tenantName}} · collegato a {{orgName}}",

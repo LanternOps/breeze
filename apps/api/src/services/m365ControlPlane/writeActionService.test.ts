@@ -31,6 +31,11 @@ const {
 
 vi.mock('./writeActionRuntimeConfig', () => ({
   isM365GraphActionsEnabledForOrg: (o: string) => enabled(o),
+  // `enabled` may return true, false (instance off) or the literal reason (#9319).
+  m365GraphActionsAvailability: (o: string) => {
+    const v = enabled(o);
+    return v === true ? 'enabled' : (v === false ? 'instance_disabled' : v);
+  },
   loadM365CustomerGraphActionsRuntimeConfig: () => ({
     executorUrl: 'https://x/',
     executorAudience: 'm365-graph-actions-executor',
@@ -290,11 +295,29 @@ describe('executeM365WriteActionByOrg', () => {
   it('refuses when the flag is off (no DB, no executor)', async () => {
     enabled.mockReturnValue(false);
     const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
-    expect(r).toMatchObject({ ok: false, code: 'tools_disabled' });
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'tools_disabled',
+      reason: 'instance_disabled',
+      message: expect.stringContaining('turned off on this Breeze instance'),
+    });
     expect(connRows).not.toHaveBeenCalled();
     expect(budget).not.toHaveBeenCalled();
     expect(executeWriteAction).not.toHaveBeenCalled();
     expect(recordEvent).not.toHaveBeenCalled();
+  });
+
+  it('names the per-org allowlist when the org is not enabled (#9319), still refusing before DB/executor', async () => {
+    enabled.mockReturnValue('org_not_enabled');
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'tools_disabled',
+      reason: 'org_not_enabled',
+      message: expect.stringContaining('not enabled for this organization yet'),
+    });
+    expect(connRows).not.toHaveBeenCalled();
+    expect(executeWriteAction).not.toHaveBeenCalled();
   });
 
   it('fails closed when there is no connection row at all', async () => {

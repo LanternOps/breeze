@@ -7,6 +7,7 @@
     "unavailable": "Verbindungsdetails sind nicht verfügbar.",
     "onboardingUnavailable": "Der Kunden-Graph-Lesezugriff ist für diese Organisation nicht aktiviert.",
     "notAvailableOnInstance": "Auf dieser Breeze-Instanz noch nicht verfügbar.",
+    "notEnabledForOrg": "Für diese Organisation noch nicht aktiviert. Bitten Sie Ihren Breeze-Administrator, dies zu aktivieren.",
     "callback": {
       "active": "Die Microsoft-Zustimmung wurde abgeschlossen. Der aktualisierte Verbindungsstatus wird unten angezeigt.",
       "degraded": "Die Microsoft-Zustimmung wurde abgeschlossen, aber die Verbindung erfordert Aufmerksamkeit. Die aktualisierten Details werden unten angezeigt."
@@ -126,6 +127,7 @@
     "unavailable": "Verbindungsdetails sind nicht verfügbar.",
     "onboardingUnavailable": "Die Kunden-Graph-Aktionen sind für diese Organisation nicht aktiviert.",
     "notAvailableOnInstance": "Auf dieser Breeze-Instanz noch nicht verfügbar.",
+    "notEnabledForOrg": "Für diese Organisation noch nicht aktiviert. Bitten Sie Ihren Breeze-Administrator, dies zu aktivieren.",
     "callback": {
       "active": "Die Microsoft-Zustimmung wurde abgeschlossen. Der aktualisierte Verbindungsstatus wird unten angezeigt.",
       "degraded": "Die Microsoft-Zustimmung wurde abgeschlossen, aber die Verbindung erfordert Aufmerksamkeit. Die aktualisierten Details werden unten angezeigt."
@@ -262,6 +264,7 @@
   "m365TenantPanel": {
     "loading": "Microsoft 365-Verbindungen werden geladen.",
     "consentUnavailable": "Eine zustimmungsbasierte Verbindung ist auf dieser Breeze-Instanz noch nicht verfügbar.",
+    "consentNotEnabledForOrg": "Die zustimmungsbasierte Verbindung ist für diese Organisation noch nicht aktiviert. Bitten Sie Ihren Breeze-Administrator, sie zu aktivieren.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihren Microsoft 365-Mandanten zu verbinden.",
     "noTenantForOrg": "Kein Microsoft 365-Mandant mit {{orgName}} verbunden",
     "tenantConnectedToOrg": "{{tenantName}} · verbunden mit {{orgName}}",

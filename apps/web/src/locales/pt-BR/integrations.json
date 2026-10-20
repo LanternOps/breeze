@@ -7,6 +7,7 @@
     "unavailable": "Os detalhes da conexão não estão disponíveis.",
     "onboardingUnavailable": "A integração de leitura do Microsoft Graph do cliente não está habilitada para esta organização.",
     "notAvailableOnInstance": "Ainda não disponível nesta instância do Breeze.",
+    "notEnabledForOrg": "Ainda não habilitado para esta organização. Peça ao administrador do Breeze para habilitar.",
     "callback": {
       "active": "O consentimento da Microsoft foi concluído. O status atualizado da conexão é exibido abaixo.",
       "degraded": "O consentimento da Microsoft foi concluído, mas a conexão precisa de atenção. Os detalhes atualizados são exibidos abaixo."
@@ -126,6 +127,7 @@
     "unavailable": "Os detalhes da conexão não estão disponíveis.",
     "onboardingUnavailable": "A integração de ações do Microsoft Graph do cliente não está habilitada para esta organização.",
     "notAvailableOnInstance": "Ainda não disponível nesta instância do Breeze.",
+    "notEnabledForOrg": "Ainda não habilitado para esta organização. Peça ao administrador do Breeze para habilitar.",
     "callback": {
       "active": "O consentimento da Microsoft foi concluído. O status atualizado da conexão é exibido abaixo.",
       "degraded": "O consentimento da Microsoft foi concluído, mas a conexão precisa de atenção. Os detalhes atualizados são exibidos abaixo."
@@ -262,6 +264,7 @@
   "m365TenantPanel": {
     "loading": "Carregando conexões do Microsoft 365.",
     "consentUnavailable": "A conexão baseada em consentimento ainda não está disponível nesta instância do Breeze.",
+    "consentNotEnabledForOrg": "A conexão baseada em consentimento ainda não está habilitada para esta organização. Peça ao administrador do Breeze para habilitá-la.",
     "selectOrganization": "Selecione uma organização para conectar o locatário do Microsoft 365 dela.",
     "noTenantForOrg": "Nenhum locatário do Microsoft 365 conectado a {{orgName}}",
     "tenantConnectedToOrg": "{{tenantName}} · conectado a {{orgName}}",

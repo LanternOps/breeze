@@ -22,7 +22,8 @@ import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime, formatRelativeTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
 import { M365ConfirmTenantPanel, M365ConsentSteps } from "./M365ConfirmTenantPanel";
-import type { M365ConsentStepSummary } from "./m365ConsentSummary";
+import { parseOnboardingAvailability } from "./m365ConsentSummary";
+import type { M365ConsentStepSummary, M365OnboardingAvailability } from "./m365ConsentSummary";
 
 const STATUSES = [
   "pending-consent",
@@ -143,6 +144,7 @@ type Envelope = {
     requiredGrants: Grant[];
   };
   onboardingEnabled: boolean;
+  onboardingAvailability: M365OnboardingAvailability;
   connection: Connection | null;
   syncEnabled: boolean;
   sync: SyncSummary | null;
@@ -314,9 +316,17 @@ function parseSync(value: unknown): SyncSummary | null | undefined {
 }
 
 function parseEnvelope(value: unknown): Envelope | null {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  if (!isRecord(value)) return null;
+  // `onboardingAvailability` is optional on the wire (an API that predates it
+  // omits it); every other key stays strictly required.
+  const { onboardingAvailability: rawAvailability, ...rest } = value;
+  if (!hasExactKeys(rest, [
     "profile", "onboardingEnabled", "connection", "syncEnabled", "sync",
   ])) return null;
+  const onboardingAvailability = typeof value.onboardingEnabled === "boolean"
+    ? parseOnboardingAvailability(rawAvailability, value.onboardingEnabled)
+    : null;
+  if (onboardingAvailability === null) return null;
   if (!isRecord(value.profile) || !hasExactKeys(value.profile, ["id", "displayName", "manifestVersion", "requiredGrants"])) return null;
   const grants = parseGrants(value.profile.requiredGrants);
   const connection = parseConnection(value.connection);
@@ -339,6 +349,7 @@ function parseEnvelope(value: unknown): Envelope | null {
       requiredGrants: grants,
     },
     onboardingEnabled: value.onboardingEnabled,
+    onboardingAvailability,
     connection,
     syncEnabled: value.syncEnabled,
     sync,
@@ -661,6 +672,7 @@ export default function M365CustomerGraphReadCard({
   const summary = useMemo<M365ConsentStepSummary>(() => ({
     loadState,
     onboardingEnabled: data?.onboardingEnabled ?? false,
+    onboardingAvailability: data?.onboardingAvailability ?? "instance_disabled",
     connection: connection
       ? {
           tenantId: connection.tenantId,
@@ -739,8 +751,9 @@ export default function M365CustomerGraphReadCard({
   const showConfirmTenant = callbackResult === "confirm-tenant" && !!orgId;
   const reloadAfterCancel = useCallback(() => { void load(scope); }, [load, scope]);
 
-  // Onboarding is gated by an instance-level server flag, not by anything the
-  // org can change. With nothing connected there is nothing to manage, so the
+  // Onboarding is gated by server-side switches the org cannot change: an
+  // instance-wide flag AND a per-org allowlist (`onboardingAvailability` says
+  // which one is off, #9319). With nothing connected there is nothing to manage, so the
   // card collapses to its header and one neutral status line instead of a
   // permission list and a Connect button that can never be pressed.
   const instanceUnavailable = loadState === "ready" && !!data && !data.onboardingEnabled && !connection;
@@ -822,7 +835,9 @@ export default function M365CustomerGraphReadCard({
 
       {instanceUnavailable && (
         <p id={instanceUnavailableId} className="mt-4 text-sm text-muted-foreground">
-          {t("m365CustomerGraphRead.notAvailableOnInstance")}
+          {data?.onboardingAvailability === "org_not_enabled"
+            ? t("m365CustomerGraphRead.notEnabledForOrg")
+            : t("m365CustomerGraphRead.notAvailableOnInstance")}
         </p>
       )}
 

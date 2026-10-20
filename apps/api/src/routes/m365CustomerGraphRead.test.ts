@@ -31,6 +31,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
     retest: vi.fn(),
     disconnect: vi.fn(),
     onboardingEnabled: vi.fn(() => true),
+    onboardingAvailability: vi.fn((): string => 'enabled'),
     buildBindingCookie: vi.fn(() => 'binding-cookie=opaque; HttpOnly; SameSite=Lax'),
     audit: vi.fn(),
     canAccessOrg: vi.fn(),
@@ -107,6 +108,7 @@ vi.mock('../services/m365ControlPlane/connectionService', async (importActual) =
 
 vi.mock('../services/m365ControlPlane/runtimeConfig', () => ({
   isM365CustomerGraphReadOnboardingEnabledForOrg: mocks.onboardingEnabled,
+  m365CustomerGraphReadOnboardingAvailability: mocks.onboardingAvailability,
 }));
 
 vi.mock('../services/m365ControlPlane/browserBinding', () => ({
@@ -257,6 +259,16 @@ describe('GET /m365/connections', () => {
     for (const forbidden of ['clientSecret', 'vaultRef', 'credentialVersion', 'consentAttemptId', 'rawState', 'codeVerifier', 'administratorObjectId']) {
       expect(serialized).not.toContain(forbidden);
     }
+  });
+
+  it('reports which switch is off via onboardingAvailability (#9319)', async () => {
+    mocks.onboardingEnabled.mockReturnValue(false);
+    mocks.onboardingAvailability.mockReturnValue('org_not_enabled');
+    const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
+    expect(body.onboardingEnabled).toBe(false);
+    expect(body.onboardingAvailability).toBe('org_not_enabled');
+    expect(mocks.onboardingAvailability).toHaveBeenCalledWith(ORG_ID);
+    mocks.onboardingAvailability.mockReturnValue('enabled');
   });
 
   it('reports onboarding disabled without hiding an existing connection', async () => {
@@ -714,7 +726,7 @@ describe('GET /m365/connections exposes the sync block on the ENVELOPE (W05)', (
   it('keeps the envelope key set exact and never puts sync fields on the connection DTO', async () => {
     mocks.list.mockResolvedValue([connection()]);
     const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
-    expect(Object.keys(body).sort()).toEqual(['connection', 'onboardingEnabled', 'profile', 'sync', 'syncEnabled']);
+    expect(Object.keys(body).sort()).toEqual(['connection', 'onboardingAvailability', 'onboardingEnabled', 'profile', 'sync', 'syncEnabled']);
     expect(body.connection).not.toHaveProperty('sync');
     expect(body.connection).not.toHaveProperty('syncEnabled');
     expect(body.connection).toMatchObject({

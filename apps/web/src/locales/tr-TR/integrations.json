@@ -7,6 +7,7 @@
     "unavailable": "Bağlantı ayrıntıları mevcut değil.",
     "onboardingUnavailable": "Müşteri Grafiği Okumaya katılım bu kuruluş için etkinleştirilmedi.",
     "notAvailableOnInstance": "Bu Breeze örneğinde henüz kullanılamıyor.",
+    "notEnabledForOrg": "Bu kuruluş için henüz etkinleştirilmedi. Breeze yöneticinizden etkinleştirmesini isteyin.",
     "callback": {
       "active": "Microsoft izni tamamlandı. Yenilenen bağlantı durumu aşağıda gösterilmiştir.",
       "degraded": "Microsoft onayı tamamlandı, ancak bağlantıyla ilgilenilmesi gerekiyor. Yenilenen ayrıntılar aşağıda gösterilmektedir."
@@ -126,6 +127,7 @@
     "unavailable": "Bağlantı ayrıntıları mevcut değil.",
     "onboardingUnavailable": "Müşteri Grafiği Eylemleri katılımı bu kuruluş için etkinleştirilmedi.",
     "notAvailableOnInstance": "Bu Breeze örneğinde henüz kullanılamıyor.",
+    "notEnabledForOrg": "Bu kuruluş için henüz etkinleştirilmedi. Breeze yöneticinizden etkinleştirmesini isteyin.",
     "callback": {
       "active": "Microsoft izni tamamlandı. Yenilenen bağlantı durumu aşağıda gösterilmiştir.",
       "degraded": "Microsoft onayı tamamlandı, ancak bağlantıyla ilgilenilmesi gerekiyor. Yenilenen ayrıntılar aşağıda gösterilmektedir."
@@ -262,6 +264,7 @@
   "m365TenantPanel": {
     "loading": "Microsoft 365 bağlantıları yükleniyor.",
     "consentUnavailable": "Onaya dayalı bağlantı bu Breeze örneğinde henüz kullanılamıyor.",
+    "consentNotEnabledForOrg": "Onaya dayalı bağlantı bu kuruluş için henüz etkinleştirilmedi. Breeze yöneticinizden etkinleştirmesini isteyin.",
     "selectOrganization": "Microsoft 365 kiracısını bağlamak için bir kuruluş seçin.",
     "noTenantForOrg": "{{orgName}} ile bağlı Microsoft 365 kiracısı yok",
     "tenantConnectedToOrg": "{{tenantName}} · {{orgName}} ile bağlı",

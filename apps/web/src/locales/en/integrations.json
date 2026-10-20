@@ -7,6 +7,7 @@
     "unavailable": "Connection details are unavailable.",
     "onboardingUnavailable": "Customer Graph Read onboarding is not enabled for this organization.",
     "notAvailableOnInstance": "Not available on this Breeze instance yet.",
+    "notEnabledForOrg": "Not enabled for this organization yet. Ask your Breeze administrator to enable it.",
     "callback": {
       "active": "Microsoft consent completed. The refreshed connection status is shown below.",
       "degraded": "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."
@@ -126,6 +127,7 @@
     "unavailable": "Connection details are unavailable.",
     "onboardingUnavailable": "Customer Graph Actions onboarding is not enabled for this organization.",
     "notAvailableOnInstance": "Not available on this Breeze instance yet.",
+    "notEnabledForOrg": "Not enabled for this organization yet. Ask your Breeze administrator to enable it.",
     "callback": {
       "active": "Microsoft consent completed. The refreshed connection status is shown below.",
       "degraded": "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."
@@ -262,6 +264,7 @@
   "m365TenantPanel": {
     "loading": "Loading Microsoft 365 connections.",
     "consentUnavailable": "Consent-based connection isn't available on this Breeze instance yet.",
+    "consentNotEnabledForOrg": "Consent-based connection isn't enabled for this organization yet. Ask your Breeze administrator to enable it.",
     "selectOrganization": "Select an organization to connect its Microsoft 365 tenant.",
     "noTenantForOrg": "No Microsoft 365 tenant connected to {{orgName}}",
     "tenantConnectedToOrg": "{{tenantName}} · connected to {{orgName}}",
