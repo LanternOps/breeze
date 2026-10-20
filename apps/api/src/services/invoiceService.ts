@@ -76,6 +76,7 @@ import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, isSupportedLocale, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 import { tApi } from '../i18n';
+import type { CustomerInvoiceHeaderDto, CustomerInvoiceLineDto, DocumentSellerSnapshot } from '@breeze/shared/documents';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -963,8 +964,10 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
 }
 
 /** #8604: resolved line itemization for the staff invoice view. Only a draft
- *  consults the partner row (resolveInvoiceLineDetail ignores it otherwise). */
-async function resolveDocumentLineDetail(inv: InvoiceRow): Promise<InvoiceLineDetail> {
+ *  consults the partner row (resolveInvoiceLineDetail ignores it otherwise).
+ *  Exported for the staff customer-view assembler (customerDocument.ts, #9402),
+ *  which resolves a draft's partner defaults BEFORE projecting its lines. */
+export async function resolveDocumentLineDetail(inv: InvoiceRow): Promise<InvoiceLineDetail> {
   if (inv.status !== 'draft') return resolveInvoiceLineDetail(inv, null);
   const [partner] = await db.select({
     invoiceLineGrouping: partners.invoiceLineGrouping, invoiceLineShowDate: partners.invoiceLineShowDate,
@@ -973,58 +976,24 @@ async function resolveDocumentLineDetail(inv: InvoiceRow): Promise<InvoiceLineDe
   return resolveInvoiceLineDetail(inv, partner ?? null);
 }
 
-export type CustomerInvoiceLine = {
-  ticketNumber: string | null;
-  ticketCategory?: string | null;
-  /**
-   * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
-   * created before the name/description split, where `description` holds the
-   * title — the portal renders `name ?? description` as the title and shows
-   * `description` as a sub-line only when `name` is set, exactly like
-   * invoicePdf's lineTitle/lineBlurb.
-   */
-  name: string | null;
-  description: string;
-  quantity: string;
-  unitPrice: string;
-  taxable: boolean;
-  lineTotal: string;
-  /** #6467: worked minutes for a time_entry line — the portal renders the
-   *  worked-vs-billed note from this, never from `description`. Null for
-   *  non-time-entry lines and legacy rows predating the column, and withheld
-   *  (null) when the invoice's #8604 worked-time toggle is off. */
-  workedMinutes: number | null;
-  /** #8604: the day the line was worked (YYYY-MM-DD, partner-local). Null
-   *  unless the invoice prints dates and the line has one. */
-  workDate: string | null;
-};
+/** The customer line projection (#9402: the DTO minus the OD-9 keys, which only
+ *  customerDocument.ts's loader may add). Field notes:
+ *  - `name` mirrors invoice_lines.name (#3319). NULL for legacy lines, where
+ *    `description` holds the title — renderers show `name ?? description` as the
+ *    title and `description` as a sub-line only when `name` is set.
+ *  - `workedMinutes` (#6467) is withheld (null) when the #8604 worked-time
+ *    toggle is off; `workDate` (#8604) is null unless the invoice prints dates. */
+export type CustomerInvoiceLine = Omit<CustomerInvoiceLineDto, 'ticketSubject' | 'isChild'>;
 
 type InvoiceRow = typeof invoices.$inferSelect;
 
-export type CustomerInvoiceHeader = Pick<InvoiceRow,
-  | 'id'
-  | 'invoiceNumber'
-  | 'status'
-  | 'currencyCode'
-  | 'issueDate'
-  | 'dueDate'
-  | 'subtotal'
-  | 'taxRate'
-  | 'taxTotal'
-  | 'total'
-  | 'amountPaid'
-  | 'balance'
-  | 'depositDue'
-  | 'billToName'
-  | 'notes'
-  | 'sellerSnapshot'
-  | 'termsAndConditions'
-> & {
-  /** #8604: resolved per-day/per-entry presentation (frozen at issue). */
-  lineGrouping: InvoiceLineGrouping;
-};
+/** The customer invoice header minus `displayStatus`, which the assembler adds. */
+export type CustomerInvoiceHeader = Omit<CustomerInvoiceHeaderDto, 'displayStatus'>;
 
 type CustomerInvoiceLineSource = {
+  /** invoice_lines.id — the line's opaque row key in the customer DTO (#9402). */
+  id: string;
+  parentLineId?: string | null;
   ticketId?: string | null;
   ticketNumber?: string | null;
   ticketSubject?: string | null;
@@ -1061,7 +1030,10 @@ export function toCustomerInvoiceLine(
 ): CustomerInvoiceLine {
   const text = invoiceLineText(line, detail);
   const noteWithheld = !detail.showNote && line.sourceType === 'time_entry';
+  // Never emits ticketSubject / isChild even though the source selects
+  // ticketSubject: only customerDocument.ts's loader adds the OD-9 keys.
   return {
+    id: line.id,
     ticketNumber: line.ticketNumber ?? null,
     ticketCategory: line.ticketCategory ?? null,
     // Carry BOTH fields (#3319). This previously collapsed to
@@ -1076,25 +1048,6 @@ export function toCustomerInvoiceLine(
     lineTotal: line.lineTotal,
     workedMinutes: detail.showWorkedTime ? line.workedMinutes ?? null : null,
     workDate: detail.showDate ? line.workDate ?? null : null,
-  };
-}
-
-/** Second serialization boundary for a line ALREADY built by
- *  toCustomerInvoiceLine (the portal route re-projects the service result):
- *  picks the exact safe keyset and passes values through untouched, so the
- *  #8604 toggles applied upstream are never re-run with defaults. */
-export function projectCustomerInvoiceLine(line: CustomerInvoiceLine): CustomerInvoiceLine {
-  return {
-    ticketNumber: line.ticketNumber ?? null,
-    ticketCategory: line.ticketCategory ?? null,
-    name: line.name ?? null,
-    description: line.description ?? '',
-    quantity: line.quantity,
-    unitPrice: line.unitPrice,
-    taxable: line.taxable,
-    lineTotal: line.lineTotal,
-    workedMinutes: line.workedMinutes ?? null,
-    workDate: line.workDate ?? null,
   };
 }
 
@@ -1116,51 +1069,44 @@ export function toCustomerInvoiceHeader(invoice: InvoiceRow): CustomerInvoiceHea
     depositDue: invoice.depositDue,
     billToName: invoice.billToName,
     notes: invoice.notes,
-    sellerSnapshot: invoice.sellerSnapshot,
+    sellerSnapshot: asDocumentSellerSnapshot(invoice.sellerSnapshot),
     termsAndConditions: invoice.termsAndConditions,
     lineGrouping: customerLineDetail(invoice).grouping,
   };
 }
 
-export async function getCustomerInvoice(
-  invoiceId: string,
-  orgId?: string
-): Promise<{ invoice: CustomerInvoiceHeader; lines: CustomerInvoiceLine[]; partnerId: string }> {
-  const inv = await getOwnedInvoiceOr404(invoiceId); // RLS scopes; portal context supplies org access
-  // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
-  if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
-  const rows = await db.select({
-    ticketId: invoiceLines.ticketId,
-    ticketNumber: invoiceLineTicketNumberSql(inv.status),
-    ticketSubject: invoiceLineTicketSubjectSql(inv.status),
-    ticketCategory: invoiceLineTicketCategorySql(inv.status),
-    name: invoiceLines.name,
-    description: invoiceLines.description,
-    quantity: invoiceLines.quantity,
-    unitPrice: invoiceLines.unitPrice,
-    taxable: invoiceLines.taxable,
-    lineTotal: invoiceLines.lineTotal,
-    workedMinutes: invoiceLines.workedMinutes,
-    sourceType: invoiceLines.sourceType,
-    workDate: invoiceLines.workDate,
-  }).from(invoiceLines).leftJoin(tickets, and(
-    eq(tickets.id, invoiceLines.ticketId),
-    eq(tickets.orgId, inv.orgId),
-    isNull(tickets.deletedAt),
-  ))
-  .where(and(
-    eq(invoiceLines.invoiceId, invoiceId),
-    eq(invoiceLines.orgId, inv.orgId),
-    eq(invoiceLines.customerVisible, true),
-  )).orderBy(invoiceLines.sortOrder);
-  const detail = customerLineDetail(inv);
-  const lines = rows.map((r) => toCustomerInvoiceLine(r, detail, inv.documentLocale ?? 'en'));
-  // partnerId rides OUTSIDE the serialized header: the portal route needs it
-  // for the partner-name branding lookup, but CustomerInvoiceHeader is the
-  // customer payload and internal ids stay out of it. Reading it off the
-  // header (`result.invoice.partnerId`) compiled as `undefined` and made
-  // every portal invoice-detail request 500 in the partners query.
-  return { invoice: toCustomerInvoiceHeader(inv), lines, partnerId: inv.partnerId };
+const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+
+/** Narrow the untyped `seller_snapshot` jsonb to the customer DTO shape. Rebuilds
+ *  the object from the known keys, so an unexpected key frozen into a legacy
+ *  snapshot can never ride into a customer payload; a non-object reads as null. */
+export function asDocumentSellerSnapshot(value: unknown): DocumentSellerSnapshot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const a = v.address && typeof v.address === 'object' && !Array.isArray(v.address) ? v.address as Record<string, unknown> : null;
+  return {
+    name: str(v.name),
+    address: a ? {
+      line1: str(a.line1), line2: str(a.line2), city: str(a.city),
+      region: str(a.region), postalCode: str(a.postalCode), country: str(a.country),
+    } : null,
+    phone: str(v.phone),
+    email: str(v.email),
+    website: str(v.website),
+  };
+}
+
+/**
+ * The portal's invoice row read: RLS-scoped load plus an app-layer org guard
+ * (defense-in-depth over RLS). A mismatch is the same 404 as a missing row —
+ * never 403 — so the portal cannot probe for another tenant's invoice ids.
+ * Returns the raw row; the caller keeps its own draft refusal and hands the row
+ * to customerDocument.ts for the customer projection (#9402).
+ */
+export async function getPortalInvoiceRowOr404(invoiceId: string, orgId: string): Promise<InvoiceRow> {
+  const inv = await getOwnedInvoiceOr404(invoiceId);
+  if (inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  return inv;
 }
 
 export async function listInvoices(query: { orgId?: string; status?: string; limit: number; cursor?: string }, actor: InvoiceActor) {

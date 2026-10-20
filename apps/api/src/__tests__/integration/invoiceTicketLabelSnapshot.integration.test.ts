@@ -19,6 +19,7 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { partners, organizations, users, invoices, invoiceLines, tickets } from '../../db/schema';
 import * as invoiceSvc from '../../services/invoiceService';
+import { assembleCustomerInvoiceDocument } from '../../services/customerDocument';
 import { getOrMintInvoiceLink } from '../../services/invoiceLinkToken';
 import { invoicesPublicRoutes } from '../../routes/invoicesPublic';
 import type { InvoiceActor } from '../../services/invoiceTypes';
@@ -84,7 +85,7 @@ async function webLabel(f: Fixture, id: string) {
   return (inv.lines as Array<{ ticketNumber?: string | null }>)[0]?.ticketNumber ?? null;
 }
 async function portalLabel(f: Fixture, id: string) {
-  const res = await sys(() => invoiceSvc.getCustomerInvoice(id, f.orgId));
+  const res = await sys(async () => assembleCustomerInvoiceDocument(await invoiceSvc.getPortalInvoiceRowOr404(id, f.orgId), 'portal'));
   return res.lines[0]?.ticketNumber ?? null;
 }
 /** The customer's tokenised pay page (GET /invoices/public/:token). */

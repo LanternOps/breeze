@@ -19,6 +19,7 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { partners, organizations, users, invoices, invoiceLines, tickets, ticketCategories } from '../../db/schema';
 import * as invoiceSvc from '../../services/invoiceService';
+import { assembleCustomerInvoiceDocument } from '../../services/customerDocument';
 import { loadInvoiceForRender } from '../../services/invoicePdf';
 import { getOrMintInvoiceLink } from '../../services/invoiceLinkToken';
 import { invoicesPublicRoutes } from '../../routes/invoicesPublic';
@@ -99,7 +100,8 @@ async function webHeader(f: Fixture, id: string) {
 /** The authenticated portal reads under ORG scope — the #6674 case. The
  *  customer payload carries the category (group badge) but not the subject. */
 async function portalCategory(f: Fixture, id: string) {
-  const res = await withDbAccessContext(portalCtx(f), () => invoiceSvc.getCustomerInvoice(id, f.orgId));
+  const res = await withDbAccessContext(portalCtx(f), async () =>
+    assembleCustomerInvoiceDocument(await invoiceSvc.getPortalInvoiceRowOr404(id, f.orgId), 'portal'));
   return res.lines[0]?.ticketCategory ?? null;
 }
 async function pdfHeader(id: string) {

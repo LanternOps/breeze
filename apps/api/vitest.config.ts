@@ -228,6 +228,7 @@ export default defineConfig({
       // Real-DB suites owned by vitest.integration.config.ts (#3778).
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',
+      'src/services/customerDocument.integration.test.ts',
       // #5861 Customer Portal Network Visibility: real-Postgres proof of org
       // isolation and partner-wide monitor result scoping. Imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
