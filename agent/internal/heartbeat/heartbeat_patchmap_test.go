@@ -193,3 +193,24 @@ func TestInstalledPatchesToMaps_WingetVendorFromId(t *testing.T) {
 		t.Errorf("items[1].vendor = %v, want empty", got)
 	}
 }
+
+// #9387: the severity provenance travels with the patch so the API can show a
+// derived rating as derived. Omitted (not defaulted) when the provider has no
+// provenance to report, so the API can tell "no signal" from a real value.
+func TestAvailablePatchesToMaps_SeveritySource(t *testing.T) {
+	h := &Heartbeat{}
+	items := h.availablePatchesToMaps([]patching.AvailablePatch{
+		{ID: "a", Provider: "windows-update", Title: "Cumulative Update", KBNumber: "KB1", Severity: "important", SeveritySource: patching.SeveritySourceDerived},
+		{ID: "b", Provider: "windows-update", Title: "Security Update", KBNumber: "KB2", Severity: "critical", SeveritySource: patching.SeveritySourceVendor},
+		{ID: "c", Provider: "windows-update", Title: "Driver", KBNumber: "KB3", Severity: "unknown"},
+	})
+	if got := items[0]["severitySource"]; got != "derived" {
+		t.Errorf("derived item severitySource = %v, want derived", got)
+	}
+	if got := items[1]["severitySource"]; got != "vendor" {
+		t.Errorf("vendor item severitySource = %v, want vendor", got)
+	}
+	if _, ok := items[2]["severitySource"]; ok {
+		t.Errorf("unrated item carries severitySource = %v, want key omitted", items[2]["severitySource"])
+	}
+}
