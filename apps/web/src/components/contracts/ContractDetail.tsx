@@ -33,6 +33,7 @@ import { LINE_TYPE_LABELS } from './lineTypes';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
 import PeriodOutcomeRow from './PeriodOutcomeRow';
 import HourBlockPanel from './HourBlockPanel';
+import RelatedContractsNotice, { ActivateOverlapConfirm, overlappingSiblings } from './RelatedContractsNotice';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -108,6 +109,10 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   // confirm step — matching the bulk-list Cancel. Pause/resume/activate are
   // reversible and fire immediately.
   const [cancelOpen, setCancelOpen] = useState(false);
+  // #9303: Activate confirms first when another live contract in the org bills
+  // on the same cadence over an overlapping term (double-billing guard).
+  const overlapping = useMemo(() => overlappingSiblings(detail.relatedContracts), [detail.relatedContracts]);
+  const [activateOverlapOpen, setActivateOverlapOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
   const [estimateFailed, setEstimateFailed] = useState(false);
   const estByLine = useMemo(() => {
@@ -303,6 +308,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header (read-only) + lines + period history ───────────────── */}
         <div className="space-y-6">
+          <RelatedContractsNotice related={detail.relatedContracts} />
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header">
             <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div>
@@ -546,7 +552,11 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                   <button
                     key={verb}
                     type="button"
-                    onClick={destructive ? () => setCancelOpen(true) : () => void transition(verb)}
+                    onClick={destructive
+                      ? () => setCancelOpen(true)
+                      : verb === 'activate' && overlapping.length > 0
+                        ? () => setActivateOverlapOpen(true)
+                        : () => void transition(verb)}
                     disabled={busy}
                     data-testid={`contract-${verb}-btn`}
                     className={`inline-flex w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 ${
@@ -723,6 +733,14 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           </div>
         </div>
       </Dialog>
+
+      <ActivateOverlapConfirm
+        open={activateOverlapOpen}
+        siblings={overlapping}
+        busy={busy}
+        onClose={() => setActivateOverlapOpen(false)}
+        onConfirm={() => { setActivateOverlapOpen(false); void transition('activate'); }}
+      />
 
       <ConfirmDialog
         open={cancelOpen}

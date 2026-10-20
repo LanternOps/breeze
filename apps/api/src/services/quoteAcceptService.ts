@@ -5,6 +5,7 @@ import { quotes, quoteBlocks, quoteLines, quoteAcceptances, quoteRecipients } fr
 import { invoices, invoiceLines } from '../db/schema/invoices';
 import { organizations, partners, sites } from '../db/schema/orgs';
 import { deviceGroups } from '../db/schema/devices';
+import { contracts } from '../db/schema/contracts';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
@@ -22,7 +23,10 @@ import { buildContractSpecsFromQuote, type QuoteLineForContract } from './quoteT
 import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
 import { captureException } from './sentry';
-import { isQuoteLineSiteDeleted, stampInvoiceLineDetail } from '@breeze/shared';
+import {
+  isQuoteLineSiteDeleted, stampInvoiceLineDetail,
+  RELATED_CONTRACT_STATUSES, contractsOverlapCadence, type RelatedContractStatus,
+} from '@breeze/shared';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { stampedPresentation, quotePresentationAsInvoiceSource } from './invoicePresentation';
@@ -75,6 +79,13 @@ export interface AcceptQuoteParams {
 
 type QuoteRow = typeof quotes.$inferSelect;
 
+export interface OverlappingExistingContract {
+  id: string;
+  name: string;
+  status: RelatedContractStatus;
+  intervalMonths: number;
+}
+
 export interface AcceptQuoteResult {
   quote: QuoteRow;
   acceptanceId: string;
@@ -89,6 +100,11 @@ export interface AcceptQuoteResult {
   // Executed contract_documents snapshot ids created for this accept (one per
   // contract block); empty when the quote embeds no contract blocks.
   contractDocumentIds: string[];
+  /** #9303: the org's contracts that ALREADY existed (draft/active/paused) on
+   *  the same cadence with an overlapping term as a contract this accept
+   *  created. Activating both would bill the customer twice, so the on-behalf
+   *  UI names them after the accept. Empty when there are none. */
+  overlappingContracts: OverlappingExistingContract[];
   /** Set when an on-behalf accept claimed a DRAFT revision and so retired its
    *  parent, so the route can audit it exactly as `/send` does. */
   superseded?: QuoteSupersedeResult;
@@ -685,6 +701,13 @@ export async function acceptQuote(
     params.actorUserId ?? null,
   );
 
+  // #9303: read the org's existing live contracts BEFORE creating the new ones,
+  // so the on-behalf UI can say "this org already has a contract on the same
+  // cadence" — the double-billing trap when a hand-built draft already exists.
+  // A read only: the accept still creates its own draft(s) exactly as before.
+  // Explicit org filter: this transaction runs in SYSTEM scope.
+  const overlappingContracts = await findOverlappingExistingContracts(quote.orgId, contractSpecs);
+
   const contractIds: string[] = [];
   const contractLineLinks: Array<{ quoteLineId: string; contractLineId: string }> = [];
   for (const spec of contractSpecs) {
@@ -750,8 +773,30 @@ export async function acceptQuote(
     contractIds,
     pax8OrderId: pax8Staged.orderId,
     contractDocumentIds,
+    overlappingContracts,
     superseded: supersededByClaim,
   };
+}
+
+/** The org's draft/active/paused contracts that bill on the same cadence over
+ *  an overlapping term as any contract this accept is about to create (#9303).
+ *  Empty when the quote has no recurring lines. */
+async function findOverlappingExistingContracts(
+  orgId: string,
+  specs: ReadonlyArray<{ intervalMonths: number; startDate: string; endDate?: string | null }>,
+): Promise<OverlappingExistingContract[]> {
+  if (specs.length === 0) return [];
+  const existing = await db.select({
+    id: contracts.id, name: contracts.name, status: contracts.status,
+    intervalMonths: contracts.intervalMonths, startDate: contracts.startDate, endDate: contracts.endDate,
+  }).from(contracts)
+    .where(and(eq(contracts.orgId, orgId), inArray(contracts.status, [...RELATED_CONTRACT_STATUSES])))
+    .orderBy(contracts.createdAt, contracts.id);
+  return existing
+    .filter((c) => specs.some((spec) => contractsOverlapCadence(c, { ...spec, endDate: spec.endDate ?? null })))
+    .map((c) => ({
+      id: c.id, name: c.name, status: c.status as RelatedContractStatus, intervalMonths: c.intervalMonths,
+    }));
 }
 
 /**

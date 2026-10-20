@@ -1,0 +1,95 @@
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import ContractDetail from './ContractDetail';
+import * as contractsApi from '../../lib/api/contracts';
+import { overlappingSibling, relatedDetail, unrelatedSibling } from './relatedContractsFixtures';
+
+// #9303: a quote accept can create a second draft contract next to a hand-built
+// one. The page must name the org's other contracts, and Activate must confirm
+// when another draft/active/paused contract bills on the same cadence over an
+// overlapping term — activating both bills the customer twice.
+
+type Perm = { resource: string; action: string };
+const state = vi.hoisted(() => ({ permissions: [] as Perm[] }));
+
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: Perm[] } }) => unknown) =>
+      selector({ user: { permissions: state.permissions } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+vi.mock('../../lib/api/contracts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/api/contracts')>();
+  return { ...actual, contractTransition: vi.fn(), getContractEstimate: vi.fn() };
+});
+
+const resp = (payload: unknown, ok = true): Response =>
+  ({ ok, status: ok ? 200 : 500, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  state.permissions = [{ resource: 'contracts', action: 'manage' }];
+  vi.mocked(contractsApi.getContractEstimate).mockResolvedValue(
+    resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [], uncoveredDevices: null, overages: [] } }),
+  );
+  vi.mocked(contractsApi.contractTransition).mockResolvedValue(resp({ data: null }));
+});
+
+describe('ContractDetail — related contracts notice (#9303)', () => {
+  it('names each other contract with a link, and warns when one overlaps', async () => {
+    render(<ContractDetail detail={relatedDetail('draft', [overlappingSibling, unrelatedSibling])} onChanged={vi.fn()} />);
+    const notice = await screen.findByTestId('contract-related-notice');
+    expect(within(notice).getByTestId('contract-related-link-ct-hand')).toHaveAttribute('href', '/contracts/ct-hand');
+    expect(within(notice).getByTestId('contract-related-link-ct-annual')).toHaveAttribute('href', '/contracts/ct-annual');
+    expect(notice).toHaveTextContent('Hand-built MSA');
+    expect(notice).toHaveTextContent('24 deliverables');
+    expect(within(notice).getByTestId('contract-related-overlap-warning')).toBeInTheDocument();
+  });
+
+  it('renders no overlap warning when no sibling overlaps', async () => {
+    render(<ContractDetail detail={relatedDetail('active', [unrelatedSibling])} onChanged={vi.fn()} />);
+    const notice = await screen.findByTestId('contract-related-notice');
+    expect(within(notice).queryByTestId('contract-related-overlap-warning')).not.toBeInTheDocument();
+  });
+
+  it('renders no notice when the org has no other contract', async () => {
+    render(<ContractDetail detail={relatedDetail('draft', [])} onChanged={vi.fn()} />);
+    await screen.findByTestId('contract-detail');
+    expect(screen.queryByTestId('contract-related-notice')).not.toBeInTheDocument();
+  });
+});
+
+describe('ContractDetail — activate confirm on overlap (#9303)', () => {
+  it('opens the overlap confirm instead of activating; Cancel sends nothing', async () => {
+    render(<ContractDetail detail={relatedDetail('draft', [overlappingSibling])} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('contract-activate-btn'));
+
+    const dialog = await screen.findByTestId('contract-activate-overlap-confirm');
+    expect(dialog).toHaveTextContent('Hand-built MSA');
+    expect(contractsApi.contractTransition).not.toHaveBeenCalled();
+
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByTestId('contract-activate-overlap-confirm')).not.toBeInTheDocument());
+    expect(contractsApi.contractTransition).not.toHaveBeenCalled();
+  });
+
+  it('Confirm sends exactly one activate', async () => {
+    render(<ContractDetail detail={relatedDetail('draft', [overlappingSibling])} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('contract-activate-btn'));
+    fireEvent.click(await screen.findByTestId('contract-activate-overlap-confirm-btn'));
+    await waitFor(() => expect(contractsApi.contractTransition).toHaveBeenCalledTimes(1));
+    expect(contractsApi.contractTransition).toHaveBeenCalledWith('ct-1', 'activate');
+  });
+
+  it('activates immediately when no sibling overlaps', async () => {
+    render(<ContractDetail detail={relatedDetail('draft', [unrelatedSibling])} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('contract-activate-btn'));
+    await waitFor(() => expect(contractsApi.contractTransition).toHaveBeenCalledWith('ct-1', 'activate'));
+    expect(screen.queryByTestId('contract-activate-overlap-confirm')).not.toBeInTheDocument();
+  });
+});

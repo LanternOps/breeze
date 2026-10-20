@@ -645,6 +645,22 @@
         "loadMore": "Daha fazla yükle",
         "invoiceRemoved": "Aşım faturası kaldırıldı — saatler faturalanmadı"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Bu kuruluşun {{count}} başka sözleşmesi var",
+      "title_other": "Bu kuruluşun {{count}} başka sözleşmesi var",
+      "overlapWarning": "Başka bir sözleşme aynı sıklıkta ve çakışan tarihlerde faturalandırıyor. İkisini birden etkinleştirirseniz müşteri her ikisi için de ödeme yapar.",
+      "sameCadence": "Aynı sıklık, çakışan tarihler",
+      "perPeriod": "Dönem başına {{amount}}",
+      "deliverables_one": "{{count}} hizmet çıktısı",
+      "deliverables_other": "{{count}} hizmet çıktısı",
+      "signedAgreements_one": "{{count}} imzalı anlaşma",
+      "signedAgreements_other": "{{count}} imzalı anlaşma",
+      "activateConfirm": {
+        "title": "Başka bir sözleşmeyle birlikte etkinleştirilsin mi?",
+        "message": "Bu kuruluşun aynı sıklıkta ve çakışan tarihlerde faturalandıran bir sözleşmesi zaten var. Bunu etkinleştirirseniz müşteri her ikisi için de ödeme yapar.",
+        "confirm": "Yine de etkinleştir"
+      }
     }
   },
   "agreements": {
@@ -1326,7 +1342,14 @@
         "evidenceAttached": "Kanıt eklendi.",
         "evidenceError": "Kabul kaydedildi, ancak kanıt dosyası eklenemedi. Teklif sayfasından ekleyin.",
         "consequenceEmailNoRecipient": "Bu teklifte kayıtlı alıcı yok; bu nedenle fatura e-postayla gönderilmeyebilir. Gerekirse müşteriye kendiniz gönderin.",
-        "successNoRecipient": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmemiş olabilir: bu teklifte kayıtlı alıcı yok."
+        "successNoRecipient": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmemiş olabilir: bu teklifte kayıtlı alıcı yok.",
+        "overlap": {
+          "title": "Bu kuruluşun aynı sıklıkta bir sözleşmesi zaten var",
+          "body": "Kabul işlemi yeni bir taslak sözleşme oluşturdu. Mevcut sözleşmeyle birlikte bunu da etkinleştirirseniz müşteri her ikisi için de ödeme yapar. Herhangi birini etkinleştirmeden önce ikisini de gözden geçirin.",
+          "newContract": "Bu tekliften oluşturulan yeni taslak",
+          "existingContract": "Mevcut sözleşme",
+          "done": "Tamam"
+        }
       },
       "declineOnBehalf": {
         "button": "Müşteri adına reddet",

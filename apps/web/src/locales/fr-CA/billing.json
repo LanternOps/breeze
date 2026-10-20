@@ -645,6 +645,22 @@
         "loadMore": "Charger plus",
         "invoiceRemoved": "Facture du dépassement supprimée — heures non facturées"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Cette organisation a {{count}} autre contrat",
+      "title_other": "Cette organisation a {{count}} autres contrats",
+      "overlapWarning": "Un autre contrat facture au même rythme sur des dates qui se chevauchent. Si vous activez les deux, le client paie pour les deux.",
+      "sameCadence": "Même rythme, dates qui se chevauchent",
+      "perPeriod": "{{amount}} par période",
+      "deliverables_one": "{{count}} livrable",
+      "deliverables_other": "{{count}} livrables",
+      "signedAgreements_one": "{{count}} entente signée",
+      "signedAgreements_other": "{{count}} ententes signées",
+      "activateConfirm": {
+        "title": "Activer en plus d’un autre contrat?",
+        "message": "Cette organisation a déjà un contrat qui facture au même rythme sur des dates qui se chevauchent. Si vous activez celui-ci, le client paie pour les deux.",
+        "confirm": "Activer quand même"
+      }
     }
   },
   "agreements": {
@@ -1326,7 +1342,14 @@
         "evidenceAttached": "Justificatif joint.",
         "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition.",
         "consequenceEmailNoRecipient": "Aucun destinataire n'est enregistré sur cette soumission; la facture pourrait donc ne pas être envoyée par courriel. Envoyez-la vous-même au client au besoin.",
-        "successNoRecipient": "Soumission acceptée. Facture {{number}} émise. Elle pourrait ne pas avoir été envoyée par courriel : aucun destinataire n'est enregistré sur cette soumission."
+        "successNoRecipient": "Soumission acceptée. Facture {{number}} émise. Elle pourrait ne pas avoir été envoyée par courriel : aucun destinataire n'est enregistré sur cette soumission.",
+        "overlap": {
+          "title": "Cette organisation a déjà un contrat au même rythme",
+          "body": "L’acceptation a créé un nouveau brouillon de contrat. Si vous l’activez en plus du contrat existant, le client paie pour les deux. Vérifiez les deux avant d’en activer un.",
+          "newContract": "Nouveau brouillon issu de cette soumission",
+          "existingContract": "Contrat existant",
+          "done": "Terminé"
+        }
       },
       "declineOnBehalf": {
         "button": "Refuser au nom du client",

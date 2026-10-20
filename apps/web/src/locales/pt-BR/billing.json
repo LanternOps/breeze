@@ -645,6 +645,22 @@
         "loadMore": "Carregar mais",
         "invoiceRemoved": "Fatura do excedente removida — horas não cobradas"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Esta organização tem mais {{count}} contrato",
+      "title_other": "Esta organização tem mais {{count}} contratos",
+      "overlapWarning": "Outro contrato fatura na mesma periodicidade em datas que se sobrepõem. Se você ativar os dois, o cliente paga pelos dois.",
+      "sameCadence": "Mesma periodicidade, datas sobrepostas",
+      "perPeriod": "{{amount}} por período",
+      "deliverables_one": "{{count}} entrega",
+      "deliverables_other": "{{count}} entregas",
+      "signedAgreements_one": "{{count}} acordo assinado",
+      "signedAgreements_other": "{{count}} acordos assinados",
+      "activateConfirm": {
+        "title": "Ativar junto com outro contrato?",
+        "message": "Esta organização já tem um contrato que fatura na mesma periodicidade em datas que se sobrepõem. Se você ativar este, o cliente paga pelos dois.",
+        "confirm": "Ativar mesmo assim"
+      }
     }
   },
   "agreements": {
@@ -1326,7 +1342,14 @@
         "evidenceAttached": "Evidência anexada.",
         "evidenceError": "A aceitação foi registrada, mas não foi possível anexar o arquivo de evidência. Anexe-o a partir da página da proposta.",
         "consequenceEmailNoRecipient": "Nenhum destinatário está registrado nesta proposta, então a fatura pode não ser enviada por e-mail. Envie-a ao cliente você mesmo, se necessário.",
-        "successNoRecipient": "Proposta aceita. Fatura {{number}} emitida. Ela pode não ter sido enviada por e-mail: nenhum destinatário está registrado nesta proposta."
+        "successNoRecipient": "Proposta aceita. Fatura {{number}} emitida. Ela pode não ter sido enviada por e-mail: nenhum destinatário está registrado nesta proposta.",
+        "overlap": {
+          "title": "Esta organização já tem um contrato na mesma periodicidade",
+          "body": "O aceite criou um novo rascunho de contrato. Se você ativá-lo além do existente, o cliente paga pelos dois. Revise os dois antes de ativar qualquer um.",
+          "newContract": "Novo rascunho desta proposta",
+          "existingContract": "Contrato existente",
+          "done": "Concluído"
+        }
       },
       "declineOnBehalf": {
         "button": "Recusar em nome do cliente",

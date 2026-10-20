@@ -224,6 +224,9 @@ quoteLifecycleRoutes.post('/:id/accept-on-behalf',
         // which the caller must word differently rather than print as blank.
         invoiceNumber: res.invoiceNumber,
         contractIds: res.contractIds,
+        // #9303: the org's EXISTING same-cadence contracts, named after the
+        // accept so the tech sees the double-billing risk before activating.
+        overlappingContracts: res.overlappingContracts,
         payUrl,
       } });
     } catch (err) { return handleServiceError(c, err); }

@@ -645,6 +645,22 @@
         "loadMore": "Charger plus",
         "invoiceRemoved": "Facture du dépassement supprimée — heures non facturées"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Cette organisation a {{count}} autre contrat",
+      "title_other": "Cette organisation a {{count}} autres contrats",
+      "overlapWarning": "Un autre contrat facture au même rythme sur des dates qui se chevauchent. Si vous activez les deux, le client paie pour les deux.",
+      "sameCadence": "Même rythme, dates qui se chevauchent",
+      "perPeriod": "{{amount}} par période",
+      "deliverables_one": "{{count}} livrable",
+      "deliverables_other": "{{count}} livrables",
+      "signedAgreements_one": "{{count}} convention signée",
+      "signedAgreements_other": "{{count}} conventions signées",
+      "activateConfirm": {
+        "title": "Activer en plus d’un autre contrat ?",
+        "message": "Cette organisation a déjà un contrat qui facture au même rythme sur des dates qui se chevauchent. Si vous activez celui-ci, le client paie pour les deux.",
+        "confirm": "Activer quand même"
+      }
     }
   },
   "agreements": {
@@ -1326,7 +1342,14 @@
         "evidenceAttached": "Justificatif joint.",
         "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition.",
         "consequenceEmailNoRecipient": "Aucun destinataire n'est enregistré sur ce devis ; la facture pourrait donc ne pas être envoyée par e-mail. Envoyez-la vous-même au client si nécessaire.",
-        "successNoRecipient": "Devis accepté. Facture {{number}} émise. Elle n'a peut-être pas été envoyée par e-mail : aucun destinataire n'est enregistré sur ce devis."
+        "successNoRecipient": "Devis accepté. Facture {{number}} émise. Elle n'a peut-être pas été envoyée par e-mail : aucun destinataire n'est enregistré sur ce devis.",
+        "overlap": {
+          "title": "Cette organisation a déjà un contrat au même rythme",
+          "body": "L’acceptation a créé un nouveau brouillon de contrat. Si vous l’activez en plus du contrat existant, le client paie pour les deux. Vérifiez les deux avant d’en activer un.",
+          "newContract": "Nouveau brouillon issu de ce devis",
+          "existingContract": "Contrat existant",
+          "done": "Terminé"
+        }
       },
       "declineOnBehalf": {
         "button": "Refuser pour le client",

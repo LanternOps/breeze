@@ -645,6 +645,22 @@
         "loadMore": "Mehr laden",
         "invoiceRemoved": "Mehrstunden-Rechnung entfernt – Stunden nicht abgerechnet"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Diese Organisation hat {{count}} weiteren Vertrag",
+      "title_other": "Diese Organisation hat {{count}} weitere Verträge",
+      "overlapWarning": "Ein anderer Vertrag rechnet im gleichen Rhythmus über überschneidende Zeiträume ab. Wenn beide aktiv sind, zahlt der Kunde doppelt.",
+      "sameCadence": "Gleicher Rhythmus, überschneidende Zeiträume",
+      "perPeriod": "{{amount}} pro Zeitraum",
+      "deliverables_one": "{{count}} Serviceleistung",
+      "deliverables_other": "{{count}} Serviceleistungen",
+      "signedAgreements_one": "{{count}} unterzeichnete Vereinbarung",
+      "signedAgreements_other": "{{count}} unterzeichnete Vereinbarungen",
+      "activateConfirm": {
+        "title": "Neben einem anderen Vertrag aktivieren?",
+        "message": "Diese Organisation hat bereits einen Vertrag, der im gleichen Rhythmus über überschneidende Zeiträume abrechnet. Wenn Sie diesen aktivieren, zahlt der Kunde für beide.",
+        "confirm": "Trotzdem aktivieren"
+      }
     }
   },
   "agreements": {
@@ -1326,7 +1342,14 @@
         "evidenceAttached": "Nachweis angehängt.",
         "evidenceError": "Die Annahme wurde erfasst, aber die Nachweisdatei konnte nicht angehängt werden. Hängen Sie sie von der Angebotsseite aus an.",
         "consequenceEmailNoRecipient": "Für dieses Angebot ist kein Empfänger hinterlegt, daher wird die Rechnung möglicherweise nicht per E-Mail versendet. Senden Sie sie bei Bedarf selbst an den Kunden.",
-        "successNoRecipient": "Angebot angenommen. Rechnung {{number}} ausgestellt. Sie wurde möglicherweise nicht per E-Mail versendet — für dieses Angebot ist kein Empfänger hinterlegt."
+        "successNoRecipient": "Angebot angenommen. Rechnung {{number}} ausgestellt. Sie wurde möglicherweise nicht per E-Mail versendet — für dieses Angebot ist kein Empfänger hinterlegt.",
+        "overlap": {
+          "title": "Diese Organisation hat bereits einen Vertrag im gleichen Rhythmus",
+          "body": "Die Annahme hat einen neuen Vertragsentwurf erstellt. Wenn er zusätzlich zum bestehenden aktiviert wird, zahlt der Kunde für beide. Prüfen Sie beide, bevor Sie einen davon aktivieren.",
+          "newContract": "Neuer Entwurf aus diesem Angebot",
+          "existingContract": "Bestehender Vertrag",
+          "done": "Fertig"
+        }
       },
       "declineOnBehalf": {
         "button": "Im Auftrag ablehnen",

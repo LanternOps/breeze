@@ -645,6 +645,22 @@
         "loadMore": "Cargar más",
         "invoiceRemoved": "Factura del exceso eliminada: horas no facturadas"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Esta organización tiene {{count}} contrato más",
+      "title_other": "Esta organización tiene {{count}} contratos más",
+      "overlapWarning": "Otro contrato factura con la misma periodicidad en fechas que se superponen. Si activa ambos, se le cobra al cliente por los dos.",
+      "sameCadence": "Misma periodicidad, fechas superpuestas",
+      "perPeriod": "{{amount}} por período",
+      "deliverables_one": "{{count}} entregable",
+      "deliverables_other": "{{count}} entregables",
+      "signedAgreements_one": "{{count}} acuerdo firmado",
+      "signedAgreements_other": "{{count}} acuerdos firmados",
+      "activateConfirm": {
+        "title": "¿Activar junto con otro contrato?",
+        "message": "Esta organización ya tiene un contrato que factura con la misma periodicidad en fechas que se superponen. Si activa este, se le cobra al cliente por los dos.",
+        "confirm": "Activar de todos modos"
+      }
     }
   },
   "agreements": {
@@ -1326,7 +1342,14 @@
         "evidenceAttached": "Evidencia adjuntada.",
         "evidenceError": "La aceptación quedó registrada, pero no se pudo adjuntar el archivo de evidencia. Adjúntalo desde la página de la propuesta.",
         "consequenceEmailNoRecipient": "Esta cotización no tiene destinatarios registrados, por lo que es posible que la factura no se envíe por correo. Envíasela al cliente tú mismo si es necesario.",
-        "successNoRecipient": "Cotización aceptada. Factura {{number}} emitida. Es posible que no se haya enviado por correo: esta cotización no tiene destinatarios registrados."
+        "successNoRecipient": "Cotización aceptada. Factura {{number}} emitida. Es posible que no se haya enviado por correo: esta cotización no tiene destinatarios registrados.",
+        "overlap": {
+          "title": "Esta organización ya tiene un contrato con la misma periodicidad",
+          "body": "La aceptación creó un nuevo borrador de contrato. Si lo activa además del existente, se le cobra al cliente por los dos. Revise ambos antes de activar cualquiera.",
+          "newContract": "Nuevo borrador de esta cotización",
+          "existingContract": "Contrato existente",
+          "done": "Listo"
+        }
       },
       "declineOnBehalf": {
         "button": "Rechazar en nombre del cliente",

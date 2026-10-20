@@ -645,6 +645,22 @@
         "loadMore": "Carica altro",
         "invoiceRemoved": "Fattura dell'eccedenza rimossa — ore non fatturate"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Questa organizzazione ha {{count}} altro contratto",
+      "title_other": "Questa organizzazione ha altri {{count}} contratti",
+      "overlapWarning": "Un altro contratto fattura con la stessa cadenza in date che si sovrappongono. Attivandoli entrambi, il cliente paga per tutti e due.",
+      "sameCadence": "Stessa cadenza, date sovrapposte",
+      "perPeriod": "{{amount}} per periodo",
+      "deliverables_one": "{{count}} deliverable del servizio",
+      "deliverables_other": "{{count}} deliverable del servizio",
+      "signedAgreements_one": "{{count}} accordo firmato",
+      "signedAgreements_other": "{{count}} accordi firmati",
+      "activateConfirm": {
+        "title": "Attivare insieme a un altro contratto?",
+        "message": "Questa organizzazione ha già un contratto che fattura con la stessa cadenza in date che si sovrappongono. Attivando questo, il cliente paga per entrambi.",
+        "confirm": "Attiva comunque"
+      }
     }
   },
   "agreements": {
@@ -1326,7 +1342,14 @@
         "evidenceAttached": "Prova allegata.",
         "evidenceError": "L'accettazione è stata registrata, ma non è stato possibile allegare il file di prova. Allegalo dalla pagina del preventivo.",
         "consequenceEmailNoRecipient": "Nessun destinatario è registrato su questo preventivo, quindi la fattura potrebbe non essere inviata via e-mail. Se necessario, inviala tu stesso al cliente.",
-        "successNoRecipient": "Preventivo accettato. Fattura {{number}} emessa. Potrebbe non essere stata inviata via e-mail: nessun destinatario è registrato su questo preventivo."
+        "successNoRecipient": "Preventivo accettato. Fattura {{number}} emessa. Potrebbe non essere stata inviata via e-mail: nessun destinatario è registrato su questo preventivo.",
+        "overlap": {
+          "title": "Questa organizzazione ha già un contratto con la stessa cadenza",
+          "body": "L’accettazione ha creato una nuova bozza di contratto. Attivandola insieme a quello esistente, il cliente paga per entrambi. Controlla entrambi prima di attivarne uno.",
+          "newContract": "Nuova bozza da questo preventivo",
+          "existingContract": "Contratto esistente",
+          "done": "Fatto"
+        }
       },
       "declineOnBehalf": {
         "button": "Rifiuta per conto del cliente",

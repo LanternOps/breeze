@@ -645,6 +645,22 @@
         "loadMore": "Load more",
         "invoiceRemoved": "Overage invoice removed — hours not billed"
       }
+    },
+    "relatedNotice": {
+      "title_one": "This organization has {{count}} other contract",
+      "title_other": "This organization has {{count}} other contracts",
+      "overlapWarning": "Another contract here bills on the same schedule over overlapping dates. Activating both bills the customer for both.",
+      "sameCadence": "Same schedule, overlapping dates",
+      "perPeriod": "{{amount}} per period",
+      "deliverables_one": "{{count}} deliverable",
+      "deliverables_other": "{{count}} deliverables",
+      "signedAgreements_one": "{{count}} signed agreement",
+      "signedAgreements_other": "{{count}} signed agreements",
+      "activateConfirm": {
+        "title": "Activate alongside another contract?",
+        "message": "This organization already has a contract that bills on the same schedule over overlapping dates. Activating this one bills the customer for both.",
+        "confirm": "Activate anyway"
+      }
     }
   },
   "agreements": {
@@ -1326,7 +1342,14 @@
         "evidenceAttached": "Evidence attached.",
         "evidenceError": "The acceptance was recorded, but the evidence file could not be attached. Attach it from the quote page.",
         "consequenceEmailNoRecipient": "No recipient is recorded on this quote, so the invoice may not be emailed. Send it to the customer yourself if needed.",
-        "successNoRecipient": "Quote accepted. Invoice {{number}} issued. It may not have been emailed — no recipient is recorded on this quote."
+        "successNoRecipient": "Quote accepted. Invoice {{number}} issued. It may not have been emailed — no recipient is recorded on this quote.",
+        "overlap": {
+          "title": "This organization already has a contract on the same schedule",
+          "body": "The acceptance created a new draft contract. Activating it as well as the existing one bills the customer for both. Review both before activating either.",
+          "newContract": "New draft from this quote",
+          "existingContract": "Existing contract",
+          "done": "Done"
+        }
       },
       "declineOnBehalf": {
         "button": "Decline on behalf",

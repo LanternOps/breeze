@@ -139,7 +139,9 @@ describe('contract crud routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(CONTRACT_ID);
-    expect(svc.getContract).toHaveBeenCalledWith(CONTRACT_ID, expect.anything());
+    // #9303: the contract page reads the org's other contracts for its
+    // double-billing notice; only this route opts in.
+    expect(svc.getContract).toHaveBeenCalledWith(CONTRACT_ID, expect.anything(), { includeRelated: true });
   });
 
   it('PATCH /:id updates a contract', async () => {

@@ -1,10 +1,10 @@
 import { isAutopayEnabledForPartner } from './autopay/autopayGate';
-import { and, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
   contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
   organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing,
-  invoices, invoiceLineDevices, contractHourPeriods,
+  invoices, invoiceLineDevices, contractHourPeriods, contractDocuments, serviceDeliverables,
 } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, HourBlockEstimate, InvoiceLineDeviceCountedAs, UpdateContractInput } from '@breeze/shared';
@@ -13,6 +13,7 @@ import {
   multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
   contractLineInvariantIssues, isSiteDeletedLine, mergeContractLinePatch, patchHasKey, SITE_SCOPABLE_LINE_TYPES,
   type ContractLineType, type DeviceRole, type RolloverPolicy, type UpdateContractLineInput,
+  RELATED_CONTRACT_STATUSES, contractsOverlapCadence, type RelatedContract,
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { computeOpenHourBlockPeriod } from './contractHourBlockEstimate';
@@ -450,7 +451,64 @@ export async function createContract(input: {
   return row!;
 }
 
-export async function getContract(contractId: string, actor: ContractActor) {
+/**
+ * #9303: the org's OTHER contracts that bill now or can be turned on to bill
+ * (draft/active/paused), for the warn-and-confirm notice on a contract's page.
+ * Reads through the ambient `db`, i.e. the caller's own access context — RLS
+ * applies — and filters to the viewed contract's org explicitly, so a partner
+ * reader who can see several orgs never gets a sister org's contract here.
+ * Ordered oldest first: the hand-built contract a quote accept landed next to
+ * is usually the one to keep.
+ */
+export async function listRelatedContracts(
+  contract: Pick<ContractRow, 'id' | 'orgId' | 'intervalMonths' | 'startDate' | 'endDate'>,
+  actor: ContractActor,
+): Promise<RelatedContract[]> {
+  requireOrgAccess(actor, contract.orgId);
+  const siblings = await db.select().from(contracts)
+    .where(and(
+      eq(contracts.orgId, contract.orgId),
+      ne(contracts.id, contract.id),
+      inArray(contracts.status, [...RELATED_CONTRACT_STATUSES]),
+    ))
+    .orderBy(contracts.createdAt, contracts.id);
+  if (siblings.length === 0) return [];
+  const priced = await withEstimatedPeriodValues(siblings, actor);
+  if (priced.length === 0) return [];
+  const ids = priced.map((r) => r.id);
+  // Sequential, not Promise.all: inside a request both share one transaction's
+  // connection, which serializes them anyway.
+  const deliverableRows = await db.select({ contractId: serviceDeliverables.contractId, n: count() })
+    .from(serviceDeliverables)
+    .where(and(inArray(serviceDeliverables.contractId, ids), eq(serviceDeliverables.active, true)))
+    .groupBy(serviceDeliverables.contractId);
+  const agreementRows = await db.select({ contractId: contractDocuments.contractId, n: count() })
+    .from(contractDocuments)
+    .where(inArray(contractDocuments.contractId, ids))
+    .groupBy(contractDocuments.contractId);
+  const deliverables = new Map(deliverableRows.map((r) => [r.contractId, Number(r.n)]));
+  const agreements = new Map(agreementRows.map((r) => [r.contractId, Number(r.n)]));
+  return priced.map((r) => ({
+    id: r.id,
+    name: r.name,
+    status: r.status as RelatedContract['status'],
+    intervalMonths: r.intervalMonths,
+    currencyCode: r.currencyCode,
+    recurringTotal: r.estimatedPeriodValue,
+    deliverableCount: deliverables.get(r.id) ?? 0,
+    signedAgreementCount: agreements.get(r.id) ?? 0,
+    overlapsCadence: contractsOverlapCadence(contract, r),
+  }));
+}
+
+export async function getContract(
+  contractId: string,
+  actor: ContractActor,
+  /** #9303: `includeRelated` adds `relatedContracts`. Opt-in so the AI tools,
+   *  the partner API and the generate route's authorization read keep their
+   *  existing shape and cost; only the web contract page asks for it. */
+  options: { includeRelated?: boolean } = {},
+) {
   const contract = await getOwnedContractOr404(contractId, actor);
   const autopayEnabled = await isAutopayEnabledForPartner(db, contract.partnerId);
   // #3205 W03: (sortOrder, createdAt, id). sortOrder alone is not a total order
@@ -462,6 +520,11 @@ export async function getContract(contractId: string, actor: ContractActor) {
   // Site axis: a restricted actor sees only its reachable lines, and a contract
   // with none is denied (see contractLineSiteDenied). No-op when unrestricted.
   const lines = visibleLinesOrDeny(actor, allLines);
+  // After the site-axis deny above, so a reader denied this contract never
+  // pays for (or learns anything from) its siblings.
+  const related = options.includeRelated
+    ? { relatedContracts: await listRelatedContracts(contract, actor) }
+    : {};
   // #6110 finding 3: a PARTIAL read must not look like a complete one. When any
   // line was hidden, say so, and withhold the billing-period history — every
   // number in it (invoice totals, snapshot/uncovered/overage counts) is a
@@ -471,7 +534,7 @@ export async function getContract(contractId: string, actor: ContractActor) {
     ? lines.length !== allLines.length
     : undefined;
   if (linesFilteredBySiteScope === true) {
-    return { autopayEnabled, contract, lines: await withBlockHistory(await withLineRefs(lines)), periods: null, linesFilteredBySiteScope };
+    return { autopayEnabled, contract, lines: await withBlockHistory(await withLineRefs(lines)), periods: null, linesFilteredBySiteScope, ...related };
   }
   // #3205 W07: one LEFT JOIN supplies the per-period outcome summary for the
   // detail table. JSON digests remain exclusive to the expanded outcome read.
@@ -502,6 +565,7 @@ export async function getContract(contractId: string, actor: ContractActor) {
     lines: await withBlockHistory(await withLineRefs(lines)),
     periods: periods as typeof periods | null,
     ...(linesFilteredBySiteScope === undefined ? {} : { linesFilteredBySiteScope }),
+    ...related,
   };
 }
 
@@ -546,6 +610,17 @@ export async function listContracts(query: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
     .limit(Math.min(query.limit ?? 50, 100));
+  return withEstimatedPeriodValues(rows, actor);
+}
+
+/**
+ * The list row enrichment, shared by listContracts and the detail read's
+ * relatedContracts (#9303) so both show the same per-period number. Applies the
+ * site axis exactly as the list always has: a contract with no line this actor
+ * can reach is OMITTED, and one with an unreachable line has its estimate
+ * withheld (null) and is flagged.
+ */
+async function withEstimatedPeriodValues(rows: ContractRow[], actor: ContractActor): Promise<ContractListRow[]> {
   if (rows.length === 0) return [];
 
   // Enrich each row with estimatedPeriodValue (live counts for per_device/per_seat
