@@ -149,7 +149,7 @@ func (h *Heartbeat) sendPamElevationUnable(ctx context.Context, requestID string
 	if err != nil {
 		return fmt.Errorf("post elevation-unable report: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
