@@ -36,6 +36,8 @@ func ensureUsableStderr() (replaced bool, reason, err error) {
 	if openErr != nil {
 		return false, reason, fmt.Errorf("stderr is unusable (%w) and %s could not be opened: %w", reason, os.DevNull, openErr)
 	}
+	// Never closed: it is the process's stderr from here on, read by every
+	// later guest instantiation.
 	os.Stderr = devNull
 	return true, reason, nil
 }

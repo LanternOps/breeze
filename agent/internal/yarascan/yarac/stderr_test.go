@@ -1,12 +1,14 @@
 package yarac
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	yx "github.com/niallnsec/yaraxwasm"
 )
@@ -81,7 +83,11 @@ func TestEngineStartsWithUnusableStderr(t *testing.T) {
 		}
 		os.Exit(0)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestEngineStartsWithUnusableStderr$")
+	// Own deadline, so a hung child fails this test by name instead of
+	// eating the package's whole -timeout budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestEngineStartsWithUnusableStderr$", "-test.timeout=5m")
 	cmd.Env = append(os.Environ(), stderrChildEnv+"=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("engine did not start with an unusable stderr (%v): %s", err, out)
