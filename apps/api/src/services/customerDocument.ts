@@ -135,7 +135,7 @@ export function projectCustomerInvoiceLines(
   });
 }
 
-type DocumentPartner = {
+export type DocumentPartner = {
   name: string | null;
   billingEmail: string | null;
   documentTheme: string | null;
@@ -196,16 +196,25 @@ async function loadBrandingAndPartner(
     reportSoftFailure('branding', invoice, err);
   }
 
+  return { partner, branding: composeBranding(invoice, partner, brand) };
+}
+
+/** Branding the caller has ALREADY read (strictly, on its own connection). */
+export interface PreloadedBranding {
+  partner: DocumentPartner | null;
+  brand: { logoUrl: string | null; primaryColor: string | null } | null;
+}
+
+function composeBranding(
+  invoice: InvoiceRow, partner: DocumentPartner | null, brand: PreloadedBranding['brand'],
+): CustomerDocumentBrandingDto {
   return {
-    partner,
-    branding: {
-      partnerName: partner?.name ?? null,
-      contactEmail: partner?.billingEmail ?? null,
-      logoUrl: brand?.logoUrl ?? null,
-      primaryColor: brand?.primaryColor ?? null,
-      // #6227: the invoice's issue-time snapshot; partner live values only for a draft.
-      ...resolveInvoicePresentation(invoice, partner),
-    },
+    partnerName: partner?.name ?? null,
+    contactEmail: partner?.billingEmail ?? null,
+    logoUrl: brand?.logoUrl ?? null,
+    primaryColor: brand?.primaryColor ?? null,
+    // #6227: the invoice's issue-time snapshot; partner live values only for a draft.
+    ...resolveInvoicePresentation(invoice, partner),
   };
 }
 
@@ -221,7 +230,11 @@ export async function loadCustomerDocumentBranding(invoice: InvoiceRow): Promise
 export async function assembleCustomerInvoiceDocument(
   invoice: InvoiceRow,
   mode: CustomerDocumentMode,
-  opts: { surface?: DocumentSurface } = {},
+  /** `preloaded`: a caller that already holds an open transaction (the PDF render) passes the
+   *  branding it read on that connection. The default reads open their OWN system context,
+   *  i.e. a second connection — inside an open transaction that queues behind any pending
+   *  ACCESS EXCLUSIVE lock request and the outer transaction then waits on it forever. */
+  opts: { surface?: DocumentSurface; preloaded?: PreloadedBranding } = {},
 ): Promise<CustomerInvoiceDocument> {
   const isDraft = invoice.status === 'draft';
   if (isDraft && mode !== 'staff') {
@@ -231,11 +244,14 @@ export async function assembleCustomerInvoiceDocument(
   // projection. Every issued document reads its own frozen columns.
   const detail = isDraft ? await resolveDocumentLineDetail(invoice) : customerLineDetail(invoice);
   const rows = await queryCustomerInvoiceLineRows(invoice);
-  const { branding, partner } = await loadBrandingAndPartner(invoice);
+  const partner = opts.preloaded ? opts.preloaded.partner : null;
+  const { branding, partner: resolvedPartner } = opts.preloaded
+    ? { branding: composeBranding(invoice, partner, opts.preloaded.brand), partner }
+    : await loadBrandingAndPartner(invoice);
   // The stamped locale, else the partner's language (spec §3.7) — also the
   // language of the generic labor line, so an unstamped draft reads like the
   // document it will become.
-  const documentLocale = invoice.documentLocale ?? resolvePartnerDocumentLocale(partner);
+  const documentLocale = invoice.documentLocale ?? resolvePartnerDocumentLocale(resolvedPartner);
   const lines = projectCustomerInvoiceLines(rows, { detail, surface: opts.surface ?? 'screen', locale: documentLocale });
   return {
     invoice: {

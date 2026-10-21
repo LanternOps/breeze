@@ -149,6 +149,16 @@ describe('assembleCustomerInvoiceDocument', () => {
     expect(doc.lines.find((l) => l.id === PIN_LINE_IDS.timeEntry)!.name).toBe('Mão de obra');
   });
 
+  it('preloaded branding: no partner / branding read opens a second (system) context — the PDF render holds an open transaction', async () => {
+    const doc = await assembleCustomerInvoiceDocument(row(), 'staff', {
+      surface: 'pdf',
+      preloaded: { partner: { ...PIN_PARTNER_ROW, billingEmail: 'b@example.test' } as never, brand: { logoUrl: 'https://cdn.example.test/l.png', primaryColor: '#123456' } },
+    });
+    expect(state.db!.selects.filter((s) => s.table === 'partners' || s.table === 'portal_branding')).toHaveLength(0);
+    expect(state.db!.selects.every((s) => s.ctx !== 'system')).toBe(true);
+    expect(doc.branding).toMatchObject({ partnerName: 'Example MSP', contactEmail: 'b@example.test', logoUrl: 'https://cdn.example.test/l.png', primaryColor: '#123456' });
+  });
+
   it('a stamped document locale wins over the partner language for the labor label', async () => {
     setRows({ partners: [{ ...PIN_PARTNER_ROW, settings: { language: 'pt-BR' } }] });
     const doc = await assembleCustomerInvoiceDocument(row({ documentLocale: 'en', lineShowNote: false }), 'staff');

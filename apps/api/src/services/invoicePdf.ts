@@ -41,7 +41,7 @@ import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter } from './documentFooter';
 import { pdfPageSize, registerThemeFonts, resolvePageSize, resolveThemeId, type DocumentPageSize } from './documentThemes';
 import { toCustomerInvoiceHeader } from './invoiceService';
-import { assembleCustomerInvoiceDocument, projectCustomerInvoiceLines, invoiceDisplayStatus } from './customerDocument';
+import { assembleCustomerInvoiceDocument, projectCustomerInvoiceLines, invoiceDisplayStatus, type PreloadedBranding } from './customerDocument';
 import { documentColumnsFor, drawDocumentLineTable, drawDocumentTotals, type DocumentPdfStyle } from './documentPdfTable';
 import {
   resolveBillingEmail, resolveDraftBillTo, invoiceTicketNumberSql, invoiceLineTicketNumberSql,
@@ -380,6 +380,8 @@ async function loadDeviceAppendix(invoiceId: string): Promise<InvoiceDeviceAppen
 export async function loadInvoiceForRender(invoiceId: string): Promise<{
   invoice: InvoiceRow;
   branding: InvoiceBranding;
+  /** The partner/branding rows this loader read on the CALLER's connection, for the assembler. */
+  preloaded: PreloadedBranding;
   appendix: InvoiceDeviceAppendix | null;
   /** #8604 line itemization: a draft previews override ?? partner default;
    *  anything issued reads ONLY its frozen invoices.line_* columns. */
@@ -428,6 +430,12 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
     invoice,
     appendix,
     lineDetail,
+    preloaded: {
+      partner: partner
+        ? { name: partner.name, billingEmail: partner.billingEmail, documentTheme: partner.documentTheme, documentPageSize: partner.documentPageSize, settings: partner.settings }
+        : null,
+      brand: branding ? { logoUrl: branding.logoUrl ?? null, primaryColor: branding.primaryColor ?? null } : null,
+    },
     branding: {
       // Seller-snapshot fallback before the document-type literal (#2151), so
       // the invoice PDF degrades the same way the quote side does
@@ -499,7 +507,7 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
   }
   // The same customer document the screens render. A draft is assembled in staff
   // mode (the only mode that accepts one); issued documents read their frozen columns.
-  const assembled = await assembleCustomerInvoiceDocument(loaded.invoice, 'staff', { surface: 'pdf' });
+  const assembled = await assembleCustomerInvoiceDocument(loaded.invoice, 'staff', { surface: 'pdf', preloaded: loaded.preloaded });
   const pdf = await drawInvoicePdf(
     // The loader's wordmark chain (partner -> seller snapshot -> 'Invoice') is more forgiving than the assembler's.
     // Locale and page size too: the loader's partner read THROWS on failure, the assembler's is fail-soft
