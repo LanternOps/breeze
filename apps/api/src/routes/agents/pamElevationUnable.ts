@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 
 import { withDbAccessContext } from '../../db';
@@ -41,16 +42,12 @@ export const pamElevationUnableRoutes = new Hono();
 pamElevationUnableRoutes.use('*', requireAgentRole);
 pamElevationUnableRoutes.post(
   '/:id/pam/elevation-unable',
-  async (c, next) => {
-    const header = c.req.header('content-length');
-    if (header) {
-      const length = Number.parseInt(header, 10);
-      if (Number.isFinite(length) && length > PAM_ELEVATION_UNABLE_MAX_BODY_BYTES) {
-        return c.json({ error: 'Body too large' }, 413);
-      }
-    }
-    return next();
-  },
+  // Enforced on the bytes actually read, so a chunked body without a
+  // Content-Length cannot get past it.
+  bodyLimit({
+    maxSize: PAM_ELEVATION_UNABLE_MAX_BODY_BYTES,
+    onError: (c) => c.json({ error: 'Body too large' }, 413),
+  }),
   zValidator('json', pamElevationUnableSchema),
   async (c) => {
     const agent = c.get('agent') as AgentAuthContext | undefined;

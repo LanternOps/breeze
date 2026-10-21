@@ -346,12 +346,17 @@ func TestRunPamFlowNoLifecycleKeepsOldBehavior(t *testing.T) {
 // reconciler will never spawn stalls every queued elevation (#6812 shape).
 func TestRunPamFlowOnDemandSpawnFailsFastWhenSessionCannotHostHelper(t *testing.T) {
 	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
-	cases := map[string]*fakeLifecycle{
-		"session cannot host":      {mode: "on-demand", unavailable: map[sessionbroker.HelperKey]bool{key: true}},
-		"availability check fails": {mode: "on-demand", availableErr: sessionbroker.ErrLeaseSessionNotFound},
+	cases := map[string]struct {
+		lc *fakeLifecycle
+		// reported: a definite "cannot host" closes the request; a failed
+		// check is not known to be permanent, so the request stays pending.
+		reported bool
+	}{
+		"session cannot host":      {&fakeLifecycle{mode: "on-demand", unavailable: map[sessionbroker.HelperKey]bool{key: true}}, true},
+		"availability check fails": {&fakeLifecycle{mode: "on-demand", availableErr: sessionbroker.ErrLeaseSessionNotFound}, false},
 	}
-	// Both are the requester's session being unable to host a helper.
-	for name, lc := range cases {
+	for name, tc := range cases {
+		lc := tc.lc
 		t.Run(name, func(t *testing.T) {
 			f := &pamSpawnFixture{readyAfter: 1}
 			h := f.heartbeat(lc)
@@ -366,7 +371,11 @@ func TestRunPamFlowOnDemandSpawnFailsFastWhenSessionCannotHostHelper(t *testing.
 			if f.dialogs != 0 || len(f.dismissed) != 0 {
 				t.Fatalf("flow continued without a helper: dialogs=%d dismissed=%d", f.dialogs, len(f.dismissed))
 			}
-			f.expectUnableReport(t, "req-6", pamUnableSessionUnavailable)
+			if tc.reported {
+				f.expectUnableReport(t, "req-6", pamUnableSessionUnavailable)
+			} else {
+				f.expectNoUnableReport(t)
+			}
 		})
 	}
 }

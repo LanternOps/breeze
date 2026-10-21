@@ -88,8 +88,12 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	key := sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleSystem}
 	available, err := lc.HelperRoleAvailable(key)
 	if err != nil {
-		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableSessionUnavailable,
-			fmt.Sprintf("session %d availability check failed: %v", winID, err))
+		// The check itself failed (e.g. a transient WTS enumeration error), so
+		// whether the session can host a helper is unknown: stop this flow but
+		// do not report the request unable, which would close it for good.
+		log.Error("pam: could not check whether the requester session can host a SYSTEM helper; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID, "error", err.Error())
+		return nil, release, nil
 	}
 	if !available {
 		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableSessionUnavailable,

@@ -95,7 +95,16 @@ func (h *Heartbeat) reportPamUnable(requestID string, unable *pamUnable) {
 func (h *Heartbeat) deliverPamUnable(requestID string, u pamUnable, window time.Duration, delays []time.Duration, sleep func(time.Duration), now func() time.Time) error {
 	deadline := now().Add(window)
 	for attempt := 0; ; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), pamUnableReportAttemptTimeout)
+		// An attempt never runs past the window: its timeout is the shorter
+		// of the per-attempt bound and the time left.
+		attemptTimeout := pamUnableReportAttemptTimeout
+		if left := deadline.Sub(now()); left < attemptTimeout {
+			attemptTimeout = left
+		}
+		if attemptTimeout <= 0 {
+			return fmt.Errorf("giving up after %d attempts: report window spent", attempt)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
 		err := h.sendPamElevationUnable(ctx, requestID, u)
 		cancel()
 		if err == nil {

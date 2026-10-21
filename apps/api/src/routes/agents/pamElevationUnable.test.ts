@@ -239,6 +239,26 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
     expect(mocks.record).not.toHaveBeenCalled();
   });
 
+  it('413s an oversized body sent without a Content-Length (chunked)', async () => {
+    const app = buildApp();
+    const big = JSON.stringify({ ...validBody, padding: 'x'.repeat(16 * 1024) });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(big));
+        controller.close();
+      },
+    });
+    const res = await app.request('/agents/agent-primary/pam/elevation-unable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: stream,
+      // @ts-expect-error undici needs duplex for a streamed request body
+      duplex: 'half',
+    });
+    expect(res.status).toBe(413);
+    expect(mocks.record).not.toHaveBeenCalled();
+  });
+
   it('413s a body over 8 KiB by its declared length', async () => {
     const res = await post(buildApp(), validBody, 'agent-primary', { 'content-length': String(9 * 1024) });
     expect(res.status).toBe(413);

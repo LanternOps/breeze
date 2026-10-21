@@ -244,3 +244,29 @@ func TestDeliverPamUnableGivesUpAfterWindow(t *testing.T) {
 		t.Fatalf("attempts=%d slept=%v, want 4 attempts and 3 sleeps", attempts(), slept)
 	}
 }
+
+// A hung attempt cannot carry the report past its window: each attempt's
+// timeout is capped by the time left.
+func TestDeliverPamUnableAttemptNeverOutlivesWindow(t *testing.T) {
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(ts.Close)
+	t.Cleanup(func() { close(release) })
+	h := unableReportHeartbeat(ts.URL)
+
+	start := time.Now()
+	err := h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, 300*time.Millisecond,
+		[]time.Duration{time.Millisecond}, func(d time.Duration) { time.Sleep(d) }, time.Now)
+
+	if err == nil {
+		t.Fatal("want an error from a server that never answers")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("delivery ran %s past a 300ms window", elapsed)
+	}
+}
