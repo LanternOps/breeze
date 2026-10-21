@@ -192,6 +192,29 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['credits_exhausted', { error: 'out of credits', code: 'credits_exhausted' }],
+      ['plan_not_eligible', { error: 'out of credits', code: 'plan_not_eligible' }],
+      [undefined, { error: 'out of credits' }],
+    ] as const)('returns a gate denial (%s) as 402 with its code (#9450)', async (billingCode, expected) => {
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: false,
+        error: 'out of credits',
+        status: 402,
+        ...(billingCode ? { billingCode } : {}),
+      });
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(402);
+      expect(await res.json()).toEqual(expected);
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
     it('returns ai_not_configured as 503 before touching the SDK manager', async () => {
       vi.mocked(runPreFlightChecks).mockResolvedValue({ ok: false, error: 'ai_not_configured', status: 503 });
 

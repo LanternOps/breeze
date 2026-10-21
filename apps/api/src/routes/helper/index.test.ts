@@ -644,12 +644,16 @@ describe('helper routes permission derivation', () => {
     );
   });
 
-  it('exhausted platform credits are a 402 carrying credits_exhausted and take no reservation (#9450)', async () => {
+  it.each([
+    ['credits_exhausted', { error: 'gate message', code: 'credits_exhausted' }],
+    ['plan_gate', { error: 'gate message', code: 'plan_not_eligible' }],
+    ['daily_budget', { error: 'gate message' }],
+  ] as const)('a %s denial is a 402 with its code (if any) and takes no reservation (#9450)', async (reason, expected) => {
     mockHelperAuthDevice();
     vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
     resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('platform', { surface: 'helper' }));
     checkBudgetDetailedMock.mockResolvedValueOnce({
-      message: 'You are out of AI credits. Purchase more credits to continue.', reason: 'credits_exhausted', permanent: false,
+      message: 'gate message', reason, permanent: reason === 'plan_gate',
     });
     mockHelperMessageSession();
 
@@ -660,9 +664,7 @@ describe('helper routes permission derivation', () => {
     });
 
     expect(res.status).toBe(402);
-    expect(await res.json()).toEqual({
-      error: 'You are out of AI credits. Purchase more credits to continue.', code: 'credits_exhausted',
-    });
+    expect(await res.json()).toEqual(expected);
     expect(reserveAiBudgetMock).not.toHaveBeenCalled();
   });
 
