@@ -75,7 +75,13 @@ export async function loadCustomerInvoiceLines(
    *  stamped locale, then 'en' — the assembler passes the partner-resolved locale for an unstamped draft. */
   opts: { detail: InvoiceLineDetail; surface: DocumentSurface; projection?: Od9Projection; locale?: string },
 ): Promise<CustomerInvoiceLineDto[]> {
-  const rows = await db.select({
+  const rows = await queryCustomerInvoiceLineRows(invoice);
+  return projectCustomerInvoiceLines(rows, { ...opts, locale: opts.locale ?? invoice.documentLocale ?? 'en' });
+}
+
+/** The line query alone (visibility filter in SQL, tickets joined in the invoice's org). */
+async function queryCustomerInvoiceLineRows(invoice: InvoiceRow) {
+  return db.select({
     id: invoiceLines.id,
     parentLineId: invoiceLines.parentLineId,
     ticketId: invoiceLines.ticketId,
@@ -103,8 +109,6 @@ export async function loadCustomerInvoiceLines(
       eq(invoiceLines.customerVisible, true),
     ))
     .orderBy(invoiceLines.sortOrder);
-
-  return projectCustomerInvoiceLines(rows, { ...opts, locale: opts.locale ?? invoice.documentLocale ?? 'en' });
 }
 
 /** A line row as the customer line query selects it. */
@@ -226,12 +230,13 @@ export async function assembleCustomerInvoiceDocument(
   // A draft previews what issuing will freeze: partner defaults resolved BEFORE
   // projection. Every issued document reads its own frozen columns.
   const detail = isDraft ? await resolveDocumentLineDetail(invoice) : customerLineDetail(invoice);
+  const rows = await queryCustomerInvoiceLineRows(invoice);
   const { branding, partner } = await loadBrandingAndPartner(invoice);
   // The stamped locale, else the partner's language (spec §3.7) — also the
   // language of the generic labor line, so an unstamped draft reads like the
   // document it will become.
   const documentLocale = invoice.documentLocale ?? resolvePartnerDocumentLocale(partner);
-  const lines = await loadCustomerInvoiceLines(invoice, { detail, surface: opts.surface ?? 'screen', locale: documentLocale });
+  const lines = projectCustomerInvoiceLines(rows, { detail, surface: opts.surface ?? 'screen', locale: documentLocale });
   return {
     invoice: {
       ...toCustomerInvoiceHeader(invoice),
