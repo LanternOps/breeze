@@ -14,7 +14,10 @@
  *
  * Documented, not guarded: `retryAfterSeconds: 300` in the body of
  * services/topology/interfaceSamples.ts and collectionIngest.ts is a body field
- * that clamps on the agent, not the HTTP header.
+ * that clamps on the agent, not the HTTP header. Also not table-pinned: runtime-
+ * derived storage-session throttle waits (routes/agents/storageSessions.ts, bounded
+ * by the refill/settle horizons), the globalRateLimit default 60 s window, and the
+ * inline literals in download.ts (30), helperAuth.ts (30) and inventory.ts (5).
  */
 import { describe, expect, it } from 'vitest';
 import {
