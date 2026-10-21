@@ -27,7 +27,8 @@ if (MCP_OAUTH_ENABLED) {
       // oauth/provider.test.ts).
       authorization_response_iss_parameter_supported: true,
       // Client ID Metadata Documents, next to DCR (registration_endpoint
-      // stays; the spec deprecates DCR no earlier than 2027-07-28).
+      // stays: the MCP authorization spec now prefers CIMD, and removing DCR
+      // is a separate, later decision).
       ...(OAUTH_CIMD_ENABLED ? { client_id_metadata_document_supported: true } : {}),
     });
   });

@@ -478,7 +478,7 @@ export function buildOidcProviderConfiguration(
   // algorithm preference.
   clientDefaults: {
     id_token_signed_response_alg: 'EdDSA',
-    // Force every DCR client to be PUBLIC. The pre-handler in routes/oauth.ts
+    // Force every DCR and CIMD client to be PUBLIC. The pre-handler in routes/oauth.ts
     // rejects an explicit non-`none` token_endpoint_auth_method, but a client
     // that OMITS the field would otherwise inherit oidc-provider's built-in
     // default of `client_secret_basic` and become CONFIDENTIAL — which is

@@ -441,6 +441,26 @@ describe('oauthInteractionRoutes', () => {
     expect(body.client.redirect_origin).toBe('');
   });
 
+  it.each([
+    'https://127.0.0.1.evil.example.net/cb',
+    'https://localhost.evil.example.net/cb',
+    'http://[::ffff:127.0.0.1]:3000/cb',
+    'not a url',
+  ])('consent payload does not flag a loopback look-alike (%s)', async (redirectUri) => {
+    mocks.interactionDetails.mockResolvedValue(details({
+      params: {
+        client_id: 'https://client.example.com/oauth/metadata.json',
+        resource: 'https://api.example/mcp/server',
+        scope: 'openid mcp:read',
+        redirect_uri: redirectUri,
+      },
+    }));
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
+    queueSelect([{ metadata: { client_name: 'Example Agent' } }], 'limit');
+    const body = await (await request(loadApp(), '/api/v1/oauth/interaction/uid-1')).json() as { client: Record<string, unknown> };
+    expect(body.client.localhost_redirect).toBe(false);
+  });
+
   it('returns access_denied redirect when consent is denied', async () => {
     // Route writes the result directly onto the interaction and calls
     // details.save() (rather than provider.interactionResult, which would

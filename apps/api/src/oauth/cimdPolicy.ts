@@ -17,8 +17,10 @@
  * deadline). A `jwks_uri` / `sector_identifier_uri` a document names can
  * therefore never be fetched.
  *
- * Flags are read per call from the environment so a policy change applies
- * to cached clients too (the provider's own feature switch is boot-time).
+ * The flag and host allowlist are checked on every use (cache hits included),
+ * so oidc-provider's in-process document cache never bypasses them. Their
+ * values change only on restart; a disabled client (DB) is refused on its
+ * next use.
  */
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
@@ -27,10 +29,18 @@ import { safeFetch, type SafeFetchInit } from '../services/urlSafety';
 import { validateRedirectUris } from './redirectUriPolicy';
 import { ERROR_IDS, logOauthWarn } from './log';
 import { cimdHostAllowed, isCimdClientId, parseCimdAllowedHosts } from './cimdHosts';
+import { isActiveMaterializedCimdClient } from './cimdKnownClient';
 
 export { cimdHostAllowed, isCimdClientId, parseCimdAllowedHosts };
 
 export const CIMD_FETCH_BUDGET = { perHostPerMinute: 10, globalPerMinute: 120, createsPerHour: 200 } as const;
+/**
+ * Refetches for an already-admitted client (its cached document expired or was
+ * evicted) draw on this separate, larger global budget, so a flood of new
+ * client ids exhausting `globalPerMinute` cannot stop connected clients from
+ * refreshing their tokens.
+ */
+export const CIMD_KNOWN_CLIENT_REFETCH_PER_MINUTE = 1200;
 export const CIMD_FETCH_TIMEOUT_MS = 5000;
 export const CIMD_MAX_BYTES = 5 * 1024;
 export const CIMD_APPROVAL_TTL_MS = 30_000;
@@ -74,27 +84,56 @@ function liveAllowlist(): string[] {
   return parsed.ok ? parsed.hosts : ['.invalid.cimd-allowlist'];
 }
 
-export function refuseCimd(reason: string, clientId: string): false {
-  let host: string | null = null;
+function hostOf(url: string): string | null {
   try {
-    host = new URL(clientId).hostname;
+    return new URL(url).hostname;
   } catch {
-    host = null;
+    return null;
+  }
+}
+
+// One log line per (host, reason) per window: allowClient runs on every use,
+// so a client hammering a refused id must not produce unbounded log volume.
+const REFUSAL_LOG_WINDOW_MS = 60_000;
+const REFUSAL_LOG_MAX_KEYS = 1000;
+const refusalLoggedAt = new Map<string, number>();
+
+function logCimdRefusal(reason: string, host: string | null, err?: unknown): void {
+  const key = `${host ?? ''}|${reason}`;
+  const now = Date.now();
+  const last = refusalLoggedAt.get(key);
+  if (last !== undefined && now - last < REFUSAL_LOG_WINDOW_MS) return;
+  refusalLoggedAt.delete(key);
+  refusalLoggedAt.set(key, now);
+  while (refusalLoggedAt.size > REFUSAL_LOG_MAX_KEYS) {
+    const oldest = refusalLoggedAt.keys().next().value;
+    if (oldest === undefined) break;
+    refusalLoggedAt.delete(oldest);
   }
   logOauthWarn({
     errorId: ERROR_IDS.OAUTH_CIMD_REFUSED,
     message: 'CIMD client refused',
+    ...(err === undefined ? {} : { err }),
     context: { reason, host },
   });
+}
+
+/** Log (rate-limited per host+reason) and refuse. `err` carries the cause of an infrastructure failure. */
+export function refuseCimd(reason: string, clientId: string, err?: unknown): false {
+  logCimdRefusal(reason, hostOf(clientId), err);
   return false;
 }
 
-// Approved-fetch registry: URL → expiry. Single use; bounded (oldest evicted).
-const approvals = new Map<string, number>();
+// Approved-fetch registry: URL → { outstanding approvals, expiry }. Each
+// approval admits one fetch; concurrent first uses of one id each get their
+// own. Bounded (oldest URL evicted).
+const approvals = new Map<string, { count: number; expiresAt: number }>();
 
 function registerApproval(url: string, now: number): void {
+  const existing = approvals.get(url);
+  const live = existing && now <= existing.expiresAt ? existing.count : 0;
   approvals.delete(url);
-  approvals.set(url, now + CIMD_APPROVAL_TTL_MS);
+  approvals.set(url, { count: live + 1, expiresAt: now + CIMD_APPROVAL_TTL_MS });
   while (approvals.size > CIMD_APPROVAL_MAX_ENTRIES) {
     const oldest = approvals.keys().next().value;
     if (oldest === undefined) break;
@@ -102,15 +141,41 @@ function registerApproval(url: string, now: number): void {
   }
 }
 
-async function withinFetchBudget(host: string): Promise<boolean | 'no_redis'> {
+function consumeApproval(url: string, now: number): boolean {
+  const entry = approvals.get(url);
+  if (!entry) return false;
+  if (now > entry.expiresAt) {
+    approvals.delete(url);
+    return false;
+  }
+  if (entry.count <= 1) approvals.delete(url);
+  else entry.count -= 1;
+  return true;
+}
+
+type BudgetResult = { kind: 'ok' } | { kind: 'exceeded' } | { kind: 'no_redis' } | { kind: 'error'; err: unknown };
+
+async function withinFetchBudget(host: string, knownClient: boolean): Promise<BudgetResult> {
   const redis = getRedis();
-  if (!redis) return 'no_redis';
+  if (!redis) return { kind: 'no_redis' };
   try {
     const perHost = await rateLimiter(redis, `oauth:cimd:fetch:host:${host}`, CIMD_FETCH_BUDGET.perHostPerMinute, 60);
-    if (!perHost.allowed) return false;
-    const global = await rateLimiter(redis, 'oauth:cimd:fetch:global', CIMD_FETCH_BUDGET.globalPerMinute, 60);
-    return global.allowed;
+    if (!perHost.allowed) return { kind: 'exceeded' };
+    const global = knownClient
+      ? await rateLimiter(redis, 'oauth:cimd:fetch:known', CIMD_KNOWN_CLIENT_REFETCH_PER_MINUTE, 60)
+      : await rateLimiter(redis, 'oauth:cimd:fetch:global', CIMD_FETCH_BUDGET.globalPerMinute, 60);
+    return global.allowed ? { kind: 'ok' } : { kind: 'exceeded' };
+  } catch (err) {
+    return { kind: 'error', err };
+  }
+}
+
+async function isKnownClient(clientId: string): Promise<boolean> {
+  try {
+    return await isActiveMaterializedCimdClient(clientId);
   } catch {
+    // Unknown → the stricter new-client budget applies; nothing is admitted
+    // that the policy would otherwise refuse.
     return false;
   }
 }
@@ -122,10 +187,12 @@ export async function cimdAllowFetch(_ctx: unknown, clientId: string): Promise<b
   if (!ssrf.ok) return refuseCimd('ssrf_guard', clientId);
   const host = new URL(clientId).hostname.toLowerCase();
   if (!cimdHostAllowed(host, liveAllowlist())) return refuseCimd('host_not_allowed', clientId);
-  const budget = await withinFetchBudget(host);
-  if (budget === 'no_redis') {
+  const budget = await withinFetchBudget(host, await isKnownClient(clientId));
+  if (budget.kind === 'no_redis') {
     if (process.env.NODE_ENV === 'production') return refuseCimd('redis_unavailable', clientId);
-  } else if (!budget) {
+  } else if (budget.kind === 'error') {
+    return refuseCimd('budget_check_failed', clientId, budget.err);
+  } else if (budget.kind === 'exceeded') {
     return refuseCimd('fetch_budget_exceeded', clientId);
   }
   registerApproval(clientId, Date.now());
@@ -181,9 +248,8 @@ export function createOidcProviderFetch(deps: {
   const now = deps.now ?? Date.now;
   return async (url, init = {}) => {
     const target = String(url);
-    const expiresAt = approvals.get(target);
-    approvals.delete(target);
-    if (expiresAt === undefined || now() > expiresAt) {
+    if (!consumeApproval(target, now())) {
+      logCimdRefusal('fetch_not_approved', hostOf(target));
       throw new Error('outbound OAuth provider fetch refused: URL was not approved by the CIMD policy');
     }
     // safeFetch's timeoutMs is an inactivity timeout; this is the hard cap.
@@ -203,6 +269,11 @@ export function createOidcProviderFetch(deps: {
         timeoutMs: CIMD_FETCH_TIMEOUT_MS,
         maxBytes: CIMD_MAX_BYTES,
       });
+    } catch (err) {
+      // SSRF block on the resolved address, timeout, body cap, TLS failure:
+      // oidc-provider reports all of these as a bare invalid_client.
+      logCimdRefusal('fetch_failed', hostOf(target), err);
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -210,8 +281,13 @@ export function createOidcProviderFetch(deps: {
 }
 
 /** Test-only. */
-export function __cimdApprovalsForTests(): ReadonlyMap<string, number> {
+export function __cimdApprovalsForTests(): ReadonlyMap<string, { count: number; expiresAt: number }> {
   return approvals;
+}
+
+/** Test-only. */
+export function __resetCimdRefusalLogForTests(): void {
+  refusalLoggedAt.clear();
 }
 
 /** Test-only. */

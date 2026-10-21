@@ -6,6 +6,21 @@ const state = vi.hoisted(() => ({
   globalBudgetLeft: Infinity,
   rateLimiterThrows: false,
   rateKeys: [] as string[],
+  knownBudgetLeft: Infinity,
+  knownClient: false,
+  knownClientThrows: false,
+  warns: [] as Array<{ errorId: string; context?: Record<string, unknown>; err?: unknown }>,
+}));
+
+vi.mock('./log', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./log')>(),
+  logOauthWarn: (args: { errorId: string; context?: Record<string, unknown>; err?: unknown }) => { state.warns.push(args); },
+}));
+vi.mock('./cimdKnownClient', () => ({
+  isActiveMaterializedCimdClient: async () => {
+    if (state.knownClientThrows) throw new Error('db down');
+    return state.knownClient;
+  },
 }));
 
 vi.mock('../services/redis', () => ({ getRedis: () => state.redis }));
@@ -13,14 +28,15 @@ vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async (_redis: unknown, key: string) => {
     if (state.rateLimiterThrows) throw new Error('ECONNRESET');
     state.rateKeys.push(key);
-    const left = key.includes(':host:') ? state.hostBudgetLeft : state.globalBudgetLeft;
+    const left = key.includes(':host:') ? state.hostBudgetLeft
+      : key.endsWith(':known') ? state.knownBudgetLeft : state.globalBudgetLeft;
     return { allowed: left > 0, remaining: Math.max(0, left - 1), resetAt: new Date(Date.now() + 60_000) };
   }),
 }));
 
 import {
   CIMD_APPROVAL_TTL_MS, CIMD_FETCH_BUDGET, CIMD_FETCH_TIMEOUT_MS, CIMD_MAX_BYTES,
-  __cimdApprovalsForTests, __resetCimdApprovalsForTests, cimdAllowFetch, cimdHostAllowed,
+  __cimdApprovalsForTests, __resetCimdApprovalsForTests, __resetCimdRefusalLogForTests, cimdAllowFetch, cimdHostAllowed,
   createOidcProviderFetch, isCimdClientId, parseCimdAllowedHosts, validateCimdMetadata,
 } from './cimdPolicy';
 
@@ -53,6 +69,11 @@ async function withCimdEnv<T>(env: CimdEnv, fn: () => Promise<T>): Promise<T> {
 
 beforeEach(() => {
   __resetCimdApprovalsForTests();
+  __resetCimdRefusalLogForTests();
+  state.warns = [];
+  state.knownClient = false;
+  state.knownClientThrows = false;
+  state.knownBudgetLeft = Infinity;
   state.rateKeys = [];
   state.rateLimiterThrows = false;
   state.redis = {};
@@ -245,3 +266,74 @@ describe('createOidcProviderFetch', () => {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+describe('review fixes (B-W03 PR B)', () => {
+  it('a materialised client still refetches when the new-client budget is spent', async () => {
+    state.knownClient = true;
+    expect(await withCimdEnv({ globalBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(true);
+    expect(state.rateKeys).toEqual(['oauth:cimd:fetch:host:client.example.com', 'oauth:cimd:fetch:known']);
+  });
+
+  it('an unknown client is still held to the new-client budget', async () => {
+    state.knownClient = false;
+    expect(await withCimdEnv({ globalBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(false);
+  });
+
+  it('a failed known-client lookup falls back to the new-client budget', async () => {
+    state.knownClientThrows = true;
+    expect(await withCimdEnv({ globalBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(false);
+  });
+
+  it('the SSRF guard refuses a loopback hostname that is not an IP literal', async () => {
+    expect(isCimdClientId('https://localhost/oauth/m.json')).toBe(true);
+    expect(await withCimdEnv({}, () => cimdAllowFetch({}, 'https://localhost/oauth/m.json'))).toBe(false);
+    expect(state.warns.map((w) => w.context?.reason)).toContain('ssrf_guard');
+    expect(state.rateKeys).toEqual([]);
+  });
+
+  it('a rate-limiter error is logged as budget_check_failed with the error, not as an exhausted budget', async () => {
+    expect(await withCimdEnv({}, async () => {
+      state.rateLimiterThrows = true;
+      return cimdAllowFetch({}, ID);
+    })).toBe(false);
+    const warn = state.warns.find((w) => w.context?.reason === 'budget_check_failed');
+    expect(warn).toBeDefined();
+    expect(warn!.err).toBeInstanceOf(Error);
+  });
+
+  it('two concurrent first uses of one client id each get an approval', async () => {
+    await withCimdEnv({}, () => cimdAllowFetch({}, ID));
+    await withCimdEnv({}, () => cimdAllowFetch({}, ID));
+    const spy = vi.fn(async () => new Response('{}'));
+    const f = createOidcProviderFetch({ fetchImpl: spy as any });
+    await f(ID, { method: 'GET' });
+    await f(ID, { method: 'GET' });
+    expect(spy).toHaveBeenCalledTimes(2);
+    await expect(f(ID, { method: 'GET' })).rejects.toThrow();
+  });
+
+  it('a failed document fetch is logged with its host and error, then rethrown', async () => {
+    await withCimdEnv({}, () => cimdAllowFetch({}, ID));
+    const f = createOidcProviderFetch({ fetchImpl: (async () => { throw new Error('ResponseTooLargeError'); }) as any });
+    await expect(f(ID, { method: 'GET' })).rejects.toThrow('ResponseTooLargeError');
+    const warn = state.warns.find((w) => w.context?.reason === 'fetch_failed');
+    expect(warn).toMatchObject({ context: { host: 'client.example.com' } });
+    expect(warn!.err).toBeInstanceOf(Error);
+  });
+
+  it('an unapproved provider fetch is logged', async () => {
+    const f = createOidcProviderFetch({ fetchImpl: vi.fn() as any });
+    await expect(f('https://evil.example.net/jwks')).rejects.toThrow();
+    expect(state.warns.find((w) => w.context?.reason === 'fetch_not_approved')).toMatchObject({ context: { host: 'evil.example.net' } });
+  });
+
+  it('repeated refusals for one host and reason log once per window', async () => {
+    await withCimdEnv({ enabled: false }, async () => {
+      await cimdAllowFetch({}, ID);
+      await cimdAllowFetch({}, ID);
+      await cimdAllowFetch({}, ID);
+    });
+    expect(state.warns.filter((w) => w.context?.reason === 'disabled')).toHaveLength(1);
+  });
+});
+

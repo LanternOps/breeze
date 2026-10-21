@@ -62,12 +62,10 @@ function noteWrite(clientId: string, now: number): void {
 async function withinCreateBudget(): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return process.env.NODE_ENV !== 'production';
-  try {
-    const rate = await rateLimiter(redis, 'oauth:cimd:create:global', CIMD_FETCH_BUDGET.createsPerHour, 3600);
-    return rate.allowed;
-  } catch {
-    return false;
-  }
+  // A Redis error propagates: cimdAllowClient refuses the client and logs the
+  // cause (materialize_failed + err) rather than reporting a spent budget.
+  const rate = await rateLimiter(redis, 'oauth:cimd:create:global', CIMD_FETCH_BUDGET.createsPerHour, 3600);
+  return rate.allowed;
 }
 
 export async function materializeCimdClient(
@@ -127,8 +125,8 @@ export async function cimdAllowClient(
   let result: CimdMaterializeResult;
   try {
     result = await materializeCimdClient(clientId, metadata);
-  } catch {
-    return refuseCimd('materialize_failed', clientId);
+  } catch (err) {
+    return refuseCimd('materialize_failed', clientId, err);
   }
   if (result === 'created' || result === 'updated' || result === 'unchanged') return true;
   return refuseCimd(result, clientId);

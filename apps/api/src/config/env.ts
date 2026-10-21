@@ -693,8 +693,9 @@ export const OAUTH_DCR_ALLOW_ANONYMOUS = envFlag('OAUTH_DCR_ALLOW_ANONYMOUS', fa
 
 // B-W03 (#6157): OAuth Client ID Metadata Documents — an https URL as
 // client_id, alongside DCR. Default off. Boot-time switch for the provider
-// feature + AS metadata; oauth/cimdPolicy.ts re-reads it per use so a cached
-// client is refused once the flag is turned off. OAUTH_CIMD_ALLOWED_HOSTS
+// feature + AS metadata; oauth/cimdPolicy.ts also checks it (and the host
+// allowlist) on every use, so the in-process document cache can never bypass
+// them. A change takes effect on restart. OAUTH_CIMD_ALLOWED_HOSTS
 // (CSV of hostnames / `.suffix`) restricts which hosts may serve documents;
 // unset = any public https host.
 export const OAUTH_CIMD_ENABLED = envFlag('OAUTH_CIMD_ENABLED', false);

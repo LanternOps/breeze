@@ -211,12 +211,13 @@ Fetching is hardened: requests are DNS-pinned and SSRF-guarded (private, loopbac
 | Budget | Limit |
 |---|---|
 | Document fetches per host | 10 per minute |
-| Document fetches, all hosts | 120 per minute |
+| Document fetches for client ids Breeze has not admitted yet, all hosts | 120 per minute |
+| Refetches for already-admitted clients, all hosts | 1200 per minute (separate, so a flood of new ids cannot starve connected clients) |
 | New CIMD clients | 200 per hour |
 
-In production, CIMD fetches are refused when Redis is not available.
+Fetch budgets are charged only when a document is not in the cache. They fail closed: in production a missing Redis, and anywhere a Redis error, refuses the fetch.
 
-Documents are cached in-process for between 5 minutes and 24 hours. A `Cache-Control: max-age` inside that range is honoured; shorter values, including `no-store` and `no-cache`, are raised to 5 minutes on purpose to bound fetch traffic. The cache never overrides policy: every use of a CIMD client re-checks the flag, the host allowlist and the document, even from cache, so turning the flag off or narrowing the allowlist takes effect immediately.
+Documents are cached in-process for between 5 minutes and 24 hours. The lifetime comes from `Cache-Control: max-age`, or failing that `Expires`, clamped to that range; shorter values, including `no-store` and `no-cache`, are raised to 5 minutes on purpose to bound fetch traffic. The cache never bypasses policy: every use of a CIMD client, cache hits included, re-checks the flag, the host allowlist, the document and whether the client is disabled. Disabling a client takes effect on its next use; a change to `OAUTH_CIMD_ENABLED` or `OAUTH_CIMD_ALLOWED_HOSTS` takes effect when the API restarts. Access tokens already issued stay valid until they expire (at most 30 minutes) unless the client is disabled, which revokes them.
 
 Each admitted CIMD client gets an `oauth_clients` row whose id is the URL, so grants, tokens, organization blocks and approvals work as they do for DCR clients. Disabling a client (global client-family revocation, which revokes its grants and tokens and sets `disabled_at`) refuses it from then on. Disabled, organization-blocked and approval-referenced clients are never removed by the stale-client cleanup. There is no operator UI for disabling a client yet.
 
@@ -224,7 +225,7 @@ On the consent screen a metadata-document client shows `App details published by
 
 ### Issuer identification (`iss`)
 
-Authorization server metadata always includes `authorization_response_iss_parameter_supported: true` (RFC 9207). Every authorization response redirect carries an `iss` parameter, and clients should check that it equals the issuer. `client_id_metadata_document_supported: true` is included only when `OAUTH_CIMD_ENABLED=true`.
+Authorization server metadata always includes `authorization_response_iss_parameter_supported: true` (RFC 9207). Every redirect back to the client, success or error, carries an `iss` parameter, and clients should check that it equals the issuer. (An error that cannot be redirected, such as an unregistered `redirect_uri`, is shown by the server instead.) `client_id_metadata_document_supported: true` is included only when `OAUTH_CIMD_ENABLED=true`.
 
 ### Partner service principal keys (partner-wide automation)
 

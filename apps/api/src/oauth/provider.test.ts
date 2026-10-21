@@ -546,8 +546,12 @@ describe('buildOidcProviderConfiguration (B-W03 #6157)', () => {
 
   it('iss is always emitted: no jwtResponseModes, response types are code only (D-B21 pin)', () => {
     const config = buildOidcProviderConfiguration(jwks, { cimdEnabled: false }) as any;
-    expect(config.features.jwtResponseModes?.enabled ?? false).toBe(false);
-    expect(config.responseTypes ?? ['code']).toEqual(['code']);
+    // Absent on purpose: oidc-provider 9.12.2's defaults are JARM off and
+    // responseTypes ['code id_token', 'code', 'id_token', 'none']; the DCR
+    // pre-handler and validateCimdMetadata only ever admit `code`.
+    expect(config.features).not.toHaveProperty('jwtResponseModes');
+    expect(Object.keys(config)).not.toContain('responseModes');
+    expect(Object.keys(config)).not.toContain('responseTypes');
   });
 
   it('keeps the existing posture (PKCE required, public DCR defaults, EdDSA only)', () => {

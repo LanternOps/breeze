@@ -8,6 +8,12 @@ const state = vi.hoisted(() => ({
   createBudgetLeft: Infinity,
   rateKeys: [] as string[],
   selectThrows: false,
+  warns: [] as Array<{ context?: Record<string, unknown>; err?: unknown }>,
+}));
+
+vi.mock('./log', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./log')>(),
+  logOauthWarn: (args: { context?: Record<string, unknown>; err?: unknown }) => { state.warns.push(args); },
 }));
 
 vi.mock('../db', () => {
@@ -63,6 +69,7 @@ vi.mock('../services/rate-limit', () => ({
 }));
 
 import { __resetCimdMaterializeThrottleForTests, cimdAllowClient, materializeCimdClient } from './cimdClients';
+import { __resetCimdRefusalLogForTests } from './cimdPolicy';
 
 const ID = 'https://client.example.com/oauth/metadata.json';
 const META = { client_id: ID, client_name: 'Example', redirect_uris: ['http://127.0.0.1:3000/cb'], token_endpoint_auth_method: 'none' };
@@ -85,6 +92,8 @@ beforeEach(() => {
   state.rateKeys = [];
   state.selectThrows = false;
   __resetCimdMaterializeThrottleForTests();
+  __resetCimdRefusalLogForTests();
+  state.warns = [];
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-20T00:00:00Z'));
 });
@@ -179,9 +188,11 @@ describe('cimdAllowClient', () => {
     expect(await cimdAllowClient({}, client({ ...META, client_id: 'dcr_abc' }, 'dcr_abc'))).toBe(false);
   });
 
-  it('fails closed when the database read throws', async () => {
+  it('fails closed when the database read throws, and logs the cause', async () => {
     state.selectThrows = true;
     expect(await cimdAllowClient({}, client())).toBe(false);
+    const warn = state.warns.find((w) => w.context?.reason === 'materialize_failed');
+    expect(warn?.err).toBeInstanceOf(Error);
   });
 
   it('refuses when the create budget is spent', async () => {

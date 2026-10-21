@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   oauthAuthorizationCodes,
@@ -57,16 +59,6 @@ function collectColumnNames(value: unknown, acc: string[] = [], seen = new WeakS
   return acc;
 }
 
-function collectTableNames(value: unknown, acc: string[] = [], seen = new WeakSet<object>()): string[] {
-  if (!value || typeof value !== 'object') return acc;
-  if (seen.has(value)) return acc;
-  seen.add(value);
-  const sym = Object.getOwnPropertySymbols(value).find((s) => s.description === 'drizzle:Name');
-  if (sym) acc.push(String((value as Record<symbol, unknown>)[sym]));
-  for (const v of Object.values(value as Record<string, unknown>)) collectTableNames(v, acc, seen);
-  return acc;
-}
-
 function collectBoundDates(value: unknown, acc: string[] = [], seen = new WeakSet<object>()): string[] {
   if (value instanceof Date) {
     acc.push(value.toISOString());
@@ -107,15 +99,18 @@ describe('OAuth cleanup helpers', () => {
     const staleDelete = queueDeleteReturning([]);
     await cleanupStaleOauthClients(new Date('2026-05-02T12:00:00.000Z'));
     const predicate = staleDelete.where.mock.calls[0]![0];
-    const predicateSql = collectSqlStrings(predicate);
-    const columns = collectColumnNames(predicate);
-    expect(columns).toContain('disabled_at');
-    expect(columns).toContain('requesting_client_id');
-    expect(columns.filter((c) => c === 'client_id').length).toBeGreaterThanOrEqual(5);
-    const tables = JSON.stringify(collectTableNames(predicate));
-    expect(tables).toContain('oauth_client_blocks');
-    expect(tables).toContain('approval_requests');
-    expect(predicateSql).toContain('IS NULL');
+    // Render the real SQL so a flipped NOT EXISTS / AND→OR fails here.
+    const rendered = new PgDialect().sqlToQuery(predicate as SQL).sql.replace(/\s+/g, ' ');
+    expect(rendered).toMatch(/^\(.* and .*\)$/);
+    expect(rendered).not.toMatch(/ or "oauth_clients"\."disabled_at"/);
+    expect(rendered).toContain('"oauth_clients"."disabled_at" is null');
+    expect(rendered).toContain(
+      'NOT EXISTS ( SELECT 1 FROM "oauth_client_blocks" WHERE "oauth_client_blocks"."client_id" = "oauth_clients"."id" )',
+    );
+    expect(rendered).toContain(
+      'NOT EXISTS ( SELECT 1 FROM "approval_requests" WHERE "approval_requests"."requesting_client_id" = "oauth_clients"."id" )',
+    );
+    expect(rendered).not.toMatch(/(?<!NOT )EXISTS \( SELECT 1 FROM "(oauth_client_blocks|approval_requests)"/);
   });
 
   // #5610: the age test must accept a client that WAS used once but not since
