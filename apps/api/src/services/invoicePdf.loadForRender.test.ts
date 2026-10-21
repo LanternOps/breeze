@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// loadInvoiceForRender reads, in order: the invoice (.limit), its lines
-// (.orderBy), the partner (.limit), then the org's portal_branding (.limit).
+// loadInvoiceForRender reads, in order: the invoice (.limit), the partner
+// (.limit), then the org's portal_branding (.limit). The lines come from the
+// customer-document assembler (#9414 W3a), not from this loader.
 // Each terminal call resolves to the next queued row-array.
 const rows = vi.hoisted(() => ({ next: [] as unknown[][], i: 0 }));
 vi.mock('../db', () => {
@@ -27,7 +28,7 @@ const invoice = {
 const partner = { id: 'p-1', name: 'Lantern IT', invoiceFooter: 'Partner footer', currencyCode: 'USD' };
 
 function queue(inv: typeof invoice, orgFooter: string | null) {
-  rows.next = [[inv], [], [partner], orgFooter === null ? [] : [{ logoUrl: null, primaryColor: null, footerText: orgFooter }]];
+  rows.next = [[inv], [partner], orgFooter === null ? [] : [{ logoUrl: null, primaryColor: null, footerText: orgFooter }]];
   rows.i = 0;
 }
 

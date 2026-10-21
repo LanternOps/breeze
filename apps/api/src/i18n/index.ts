@@ -113,7 +113,7 @@ i18next.init({
  * Translate `key` into `locale`, with optional interpolation variables.
  *
  * Namespace prefix is required in the key: `'emails:invoice.subject'`,
- * `'pdf:invoice.title'`, `'notifications:severity.critical'`.
+ * `'pdf:quote.title'`, `'notifications:severity.critical'`.
  *
  * Falls back to English when the requested locale lacks the key.
  */

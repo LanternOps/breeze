@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { formatMoney } from '@breeze/shared';
-import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, resolveDraftBillTo, type InvoiceBranding } from './invoicePdf';
+import { renderInvoicePdfBuffer, buildInvoiceEmailAmounts, resolveDraftBillTo, type InvoiceBranding } from './invoicePdf';
+import { documentColumnsFor } from './documentPdfTable';
 import { columnsFor as quoteColumnsFor } from './quotePdf';
 import { formatMoneyForPdf } from './pdfMoney';
 import { resolveDocumentFooter } from './documentFooter';
@@ -107,156 +108,129 @@ function extractPositionedPdfText(pdf: Buffer): { text: string; x: number; y: nu
 const MAX_AMOUNT = '9999999999.99';
 const MAX_AMOUNT_RE = /9.999.999.999.99/;
 
-describe('renderInvoiceHtml', () => {
-  it('excludes hidden (non-customer-visible) lines', () => {
+// pdfkit encodes WinAnsi bytes; the shared decoder reads them as latin1, so the
+// euro sign arrives as \u0080 and the em dash as \u0097.
+const win = (text: string) => text.replace(/\u20ac/g, '\u0080').replace(/\u2014/g, '\u0097');
+async function pdfText(invoice: InvoiceRow, lines: InvoiceLineRow[], br: InvoiceBranding = branding): Promise<string> {
+  return extractPositionedPdfText(await renderInvoicePdfBuffer(invoice, lines, br)).map((f) => f.text).join('\n');
+}
+
+// The customer-view HTML renderer is gone (#9414 W3a): the PDF draws the same
+// customer document the screens render, so these assertions read the PDF text.
+describe('invoice PDF content', () => {
+  it('excludes hidden (non-customer-visible) lines', async () => {
     const lines = [
       makeLine({ description: 'Visible service', lineTotal: '100.00', customerVisible: true }),
       makeLine({ description: 'SECRET bundle component', lineTotal: '999.00', customerVisible: false }),
     ];
-    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
-    expect(html).toContain('Visible service');
-    expect(html).not.toContain('SECRET bundle component');
+    const text = await pdfText(makeInvoice(), lines);
+    expect(text).toContain('Visible service');
+    expect(text).not.toContain('SECRET bundle component');
   });
 
-  it('renders the bill-to block and the invoice number', () => {
-    const html = renderInvoiceHtml(makeInvoice(), [makeLine()], branding);
-    expect(html).toContain('Acme Corp');
-    expect(html).toContain('123 Main St');
-    expect(html).toContain('Springfield, IL, 62704');
-    expect(html).toContain('INV-2026-0001');
-    expect(html).toContain('Tax ID: TAX-99');
+  it('renders the bill-to block and the invoice number', async () => {
+    const text = await pdfText(makeInvoice(), [makeLine()]);
+    expect(text).toContain('Acme Corp');
+    expect(text).toContain('123 Main St');
+    expect(text).toContain('Springfield, IL, 62704');
+    expect(text).toContain('INV-2026-0001');
+    expect(text).toContain('Tax ID: TAX-99');
   });
 
-  it('renders subtotal, tax and total', () => {
-    const html = renderInvoiceHtml(makeInvoice(), [makeLine()], branding);
-    expect(html).toContain('$150.00'); // subtotal
-    expect(html).toContain('$8.50');   // tax
-    expect(html).toContain('$158.50'); // total
-    expect(html).toContain('8.50%');   // tax rate label
+  it('renders subtotal, tax and total', async () => {
+    const text = await pdfText(makeInvoice(), [makeLine()]);
+    expect(text).toContain('$150.00'); // subtotal
+    expect(text).toContain('$8.50');   // tax
+    expect(text).toContain('$158.50'); // total
+    expect(text).toContain('Tax (8.5%)'); // tax rate label
   });
 
-  it('shows the paid/balance rows only when a payment has been made', () => {
-    const unpaid = renderInvoiceHtml(makeInvoice(), [makeLine()], branding);
-    expect(unpaid).not.toContain('Balance due');
-    const partial = renderInvoiceHtml(
-      makeInvoice({ amountPaid: '50.00', balance: '108.50' }),
-      [makeLine()],
-      branding,
-    );
-    expect(partial).toContain('Balance due');
+  it('shows the paid row only when a payment has been made; Balance due is always the closing row', async () => {
+    const unpaid = await pdfText(makeInvoice(), [makeLine()]);
+    expect(unpaid).toContain('Balance due');
+    expect(unpaid).not.toMatch(/^Paid$/m);
+    const partial = await pdfText(makeInvoice({ amountPaid: '50.00', balance: '108.50' }), [makeLine()]);
+    expect(partial).toMatch(/^Paid$/m);
+    expect(partial).toContain('-$50.00');
     expect(partial).toContain('$108.50');
   });
 
-  it('formats money with the stamped document locale (de-DE EUR)', () => {
-    const html = renderInvoiceHtml(
+  it('formats money with the stamped document locale (de-DE EUR)', async () => {
+    const text = await pdfText(
       makeInvoice({ currencyCode: 'EUR', documentLocale: 'de-DE', subtotal: '1000.00', taxTotal: '0.00', total: '1000.00', balance: '1000.00' }),
       [makeLine({ lineTotal: '1000.00' })],
-      branding,
     );
-    expect(html).toContain('1.000,00\u00a0€');
-    expect(html).not.toContain('$');
+    expect(text).toContain(win('1.000,00\u00a0\u20ac'));
+    expect(text).not.toContain('$');
   });
 
-  it('falls back to the branding locale when the document is unstamped (fr-FR EUR)', () => {
-    const html = renderInvoiceHtml(
+  it('falls back to the branding locale when the document is unstamped (fr-FR EUR)', async () => {
+    const text = await pdfText(
       makeInvoice({ currencyCode: 'EUR', documentLocale: null, subtotal: '1000.00', taxTotal: '0.00', total: '1000.00', balance: '1000.00' }),
       [makeLine({ lineTotal: '1000.00' })],
       { ...branding, locale: 'fr-FR' },
     );
-    // Intl fr-FR: narrow no-break space as the grouping separator, NBSP before the symbol.
-    expect(html).toContain('1\u202f000,00\u00a0€');
-    expect(html).toContain(formatMoney(1000, 'EUR', 'fr-FR'));
-  });
-
-  it('escapes HTML in customer-controlled fields', () => {
-    const html = renderInvoiceHtml(
-      makeInvoice({ billToName: '<script>alert(1)</script>' }),
-      [makeLine({ description: '<b>bold</b>' })],
-      branding,
-    );
-    expect(html).not.toContain('<script>alert(1)</script>');
-    expect(html).toContain('&lt;script&gt;');
+    // Intl fr-FR: narrow no-break space as the grouping separator (folded to NBSP for pdfkit), NBSP before the symbol.
+    expect(text).toContain(win(formatMoneyForPdf(1000, 'EUR', 'fr-FR')));
+    expect(text).toContain(win('1\u00a0000,00\u00a0\u20ac'));
   });
 
   // #6467: the worked-vs-billed disclosure is rendered from workedMinutes
   // (structured data), never baked into `description` — so it survives
   // regardless of what the description says, and localizes off the same
   // document_locale the rest of the invoice's money glyphs already honour.
-  it('shows the worked-vs-billed note in English for a time_entry line, from workedMinutes not description', () => {
-    const html = renderInvoiceHtml(
-      makeInvoice(),
-      [makeLine({ sourceType: 'time_entry', description: 'On-site', quantity: '1.00', workedMinutes: 30 })],
-      branding,
-    );
-    expect(html).toContain('0.50 h worked · 1.00 h billed');
+  it('shows the worked-vs-billed note in English for a time_entry line, from workedMinutes not description', async () => {
+    const text = await pdfText(makeInvoice(), [makeLine({ sourceType: 'time_entry', description: 'On-site', quantity: '1.00', workedMinutes: 30 })]);
+    expect(text).toContain('0.50 h worked · 1.00 h billed'.replace('·', '\u00b7'));
   });
 
-  it('shows no note when workedMinutes equals the billed quantity', () => {
-    const html = renderInvoiceHtml(
-      makeInvoice(),
-      [makeLine({ sourceType: 'time_entry', description: 'Remote', quantity: '1.00', workedMinutes: 60 })],
-      branding,
-    );
-    expect(html).not.toContain('h worked');
+  it('shows no note when workedMinutes equals the billed quantity', async () => {
+    const text = await pdfText(makeInvoice(), [makeLine({ sourceType: 'time_entry', description: 'Remote', quantity: '1.00', workedMinutes: 60 })]);
+    expect(text).not.toContain('h worked');
   });
 
-  it('shows no note for a non-time-entry line (workedMinutes null)', () => {
-    const html = renderInvoiceHtml(
-      makeInvoice(),
-      [makeLine({ sourceType: 'manual', description: 'Widget', workedMinutes: null })],
-      branding,
-    );
-    expect(html).not.toContain('h worked');
+  it('shows no note for a non-time-entry line (workedMinutes null)', async () => {
+    const text = await pdfText(makeInvoice(), [makeLine({ sourceType: 'manual', description: 'Widget', workedMinutes: null })]);
+    expect(text).not.toContain('h worked');
   });
 
-  it('localizes the note off the stamped document locale (pt-BR)', () => {
-    const html = renderInvoiceHtml(
+  it('localizes the note off the stamped document locale (pt-BR)', async () => {
+    const text = await pdfText(
       makeInvoice({ documentLocale: 'pt-BR' }),
       [makeLine({ sourceType: 'time_entry', description: 'On-site', quantity: '1.00', workedMinutes: 30 })],
-      branding,
     );
-    expect(html).toContain('0.50 h trabalhadas · 1.00 h faturadas');
+    expect(text).toContain('0.50 h trabalhadas \u00b7 1.00 h faturadas');
   });
 });
 
 describe('unit price column (#7508)', () => {
   const lines = [makeLine({ quantity: '3', unitPrice: '1234.50', lineTotal: '3703.50' })];
 
-  it('HTML shows a Unit price header and the formatted unit price between Qty and Amount', () => {
-    const html = renderInvoiceHtml(makeInvoice({ currencyCode: 'EUR', documentLocale: 'de-DE' } as Partial<InvoiceRow>), lines, branding);
-    expect(html).toMatch(/>Unit price<\/th>/);
-    const unit = escapeForHtml(formatMoney('1234.50', 'EUR', 'de-DE'));
-    expect(html).toContain(unit);
-    const row = html.slice(html.indexOf('Consulting'));
-    expect(row.indexOf(unit)).toBeLessThan(row.indexOf(escapeForHtml(formatMoney('3703.50', 'EUR', 'de-DE'))));
-  });
-
-  it.each([[true], [false]])('PDF draws a UNIT PRICE header and the unit price in its own column (showTax=%s)', async (showTax) => {
+  it.each([[true], [false]])('PDF draws a PRICE header and the unit price in its own column (showTax=%s)', async (showTax) => {
     const invoice = makeInvoice({
       currencyCode: 'EUR', documentLocale: 'de-DE',
       taxRate: showTax ? '0.085' : null, taxTotal: showTax ? '8.50' : '0',
     } as Partial<InvoiceRow>);
     const pdf = await renderInvoicePdfBuffer(invoice, lines, branding);
     const frags = extractPositionedPdfText(pdf);
-    const c = invoiceColumnsFor(new PDFDocument({ size: 'A4', margin: 50 }), showTax);
-    expect(frags.some((f) => f.text === 'UNIT PRICE' && f.x >= c.colUnitX - 0.5 && f.x < c.colUnitX + c.colNumW)).toBe(true);
+    const c = documentColumnsFor(new PDFDocument({ size: 'A4', margin: 50 }), { showTax });
+    expect(frags.some((f) => f.text === 'PRICE' && f.x >= c.colUnitX - 0.5 && f.x < c.colUnitX + c.colNumW)).toBe(true);
     const unit = frags.find((f) => /1.234,50/.test(f.text));
     expect(unit).toBeDefined();
     expect(unit!.x).toBeGreaterThanOrEqual(c.colUnitX - 0.5);
     expect(unit!.x).toBeLessThan(c.colUnitX + c.colNumW);
+    // Unit price sits between Qty and Amount on the row.
+    const amount = frags.find((f) => /3.703,50/.test(f.text) && Math.abs(f.y - unit!.y) < 1)!;
+    expect(unit!.x).toBeLessThan(amount.x);
   });
 });
-
-function escapeForHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
 
 describe('invoice PDF description column parity with the quote PDF (#9401)', () => {
   it.each([
     ['A4', true], ['A4', false], ['LETTER', true], ['LETTER', false],
   ] as const)('%s showTax=%s: description column matches the quote PDF and money still fits', (size, showTax) => {
     const doc = new PDFDocument({ size, margin: 50 });
-    const inv = invoiceColumnsFor(doc, showTax);
+    const inv = documentColumnsFor(doc, { showTax });
     const quote = quoteColumnsFor(doc, showTax);
     expect(inv.colDescW).toBeCloseTo(quote.colDescW, 5);
     doc.font('Helvetica').fontSize(10);
@@ -301,8 +275,8 @@ describe('renderInvoicePdfBuffer', () => {
 
   it('sizes the money columns for prefix-code currencies at the row font', () => {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const taxed = invoiceColumnsFor(doc, true);
-    const untaxed = invoiceColumnsFor(doc, false);
+    const taxed = documentColumnsFor(doc, { showTax: true });
+    const untaxed = documentColumnsFor(doc, { showTax: false });
     // Line rows draw money at Helvetica regular 10 — measure at the REAL font.
     doc.font('Helvetica').fontSize(10);
     const rowAmountWidth = doc.widthOfString(formatMoney(888888.88, 'CHF', 'de-CH'));
@@ -324,7 +298,7 @@ describe('renderInvoicePdfBuffer', () => {
     doc.font('Helvetica-Bold').fontSize(14);
     const emphasisWidth = doc.widthOfString(formatMoney(1000000, 'CHF', 'de-CH'));
     const labelWidth = doc.widthOfString('Balance due');
-    for (const c of [invoiceColumnsFor(doc, true), invoiceColumnsFor(doc, false)]) {
+    for (const c of [documentColumnsFor(doc, { showTax: true }), documentColumnsFor(doc, { showTax: false })]) {
       expect(c.colSummaryNumW).toBeGreaterThanOrEqual(emphasisWidth + 2);
       expect(c.colSummaryAmtX + c.colSummaryNumW).toBeCloseTo(c.right, 5);
       // The widest static label at the same bold 14 must fit its own box —
@@ -347,7 +321,7 @@ describe('renderInvoicePdfBuffer', () => {
     const lines = [makeLine({ quantity: '1', unitPrice: MAX_AMOUNT, lineTotal: MAX_AMOUNT, taxable: true })];
     const pdf = await renderInvoicePdfBuffer(invoice, lines, branding);
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const c = invoiceColumnsFor(doc, showTax);
+    const c = documentColumnsFor(doc, { showTax });
     const money = extractPositionedPdfText(pdf).filter((f) => MAX_AMOUNT_RE.test(f.text));
     // line UNIT PRICE + line AMOUNT + Subtotal + (Tax) + Total + Paid + Balance due.
     // The per-line TAX cell is lineTotal × rate, so it never equals the maximum itself.
@@ -389,15 +363,15 @@ const sellerSnapshot = {
   address: { line1: '1 Main St', line2: null, city: 'Austin', region: 'TX', postalCode: '78701', country: 'US' },
 };
 
-it('renderInvoiceHtml shows the From block and T&C', () => {
-  const html = renderInvoiceHtml(
+it('renders the From block and T&C', async () => {
+  const text = extractPositionedPdfText(await renderInvoicePdfBuffer(
     { invoiceNumber: 'INV-1', currencyCode: 'USD', subtotal: '10', taxTotal: '0', total: '10', amountPaid: '0', balance: '10', billToName: 'Cust', sellerSnapshot, termsAndConditions: 'Net 30 terms' } as never,
     [],
     { partnerName: 'Acme MSP LLC' },
-  );
-  expect(html).toContain('From');
-  expect(html).toContain('billing@acme.test');
-  expect(html).toContain('Net 30 terms');
+  )).map((f) => f.text).join('\n');
+  expect(text).toContain('FROM');
+  expect(text).toContain('billing@acme.test');
+  expect(text).toContain('Net 30 terms');
 });
 
 it('renderInvoicePdfBuffer emits a %PDF with a seller snapshot present', async () => {
@@ -454,108 +428,77 @@ describe('buildInvoiceEmailAmounts (deposit-vs-balance split for the email)', ()
 });
 
 describe('Invoice ticket grouping and line labeling (#3319)', () => {
-  it('renders lines without ticketId directly without ticket headers', () => {
-    const lines = [
-      makeLine({ name: 'Monthly Managed Services', description: 'Includes 24/7 monitoring', ticketId: null }),
-    ];
-    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
-    expect(html).toContain('Monthly Managed Services');
-    expect(html).toContain('Includes 24/7 monitoring');
-    expect(html).not.toContain('Ticket #');
-    expect(html).not.toContain('Ticket work');
+  it('renders lines without ticketId directly without ticket headers', async () => {
+    const lines = [makeLine({ name: 'Monthly Managed Services', description: 'Includes 24/7 monitoring', ticketId: null })];
+    const text = await pdfText(makeInvoice(), lines);
+    expect(text).toContain('Monthly Managed Services');
+    expect(text).toContain('Includes 24/7 monitoring');
+    expect(text).not.toContain('Ticket #');
+    expect(text).not.toContain('Ticket work');
   });
 
-  it('renders ticket header and follows #3319 title/blurb rules for ticket lines', () => {
+  it('renders ticket header and follows #3319 title/blurb rules for ticket lines', async () => {
     const lines = [
       makeLine({
-        ticketId: 't-1',
-        ticketNumber: '1042',
-        ticketSubject: 'Printer down',
-        ticketCategory: 'Hardware',
-        name: 'Diagnostic & Repair',
-        description: 'Replaced feed rollers',
+        ticketId: 't-1', ticketNumber: '1042', ticketSubject: 'Printer down', ticketCategory: 'Hardware',
+        name: 'Diagnostic & Repair', description: 'Replaced feed rollers',
       } as never),
     ];
-    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
-    expect(html).toContain('Ticket #1042: Printer down');
-    expect(html).toContain('Hardware');
+    const text = await pdfText(makeInvoice(), lines);
+    expect(text).toContain('Ticket #1042: Printer down');
+    expect(text).toContain('Category: Hardware');
     // #3319: name is the title, description is the blurb
-    expect(html).toContain('Diagnostic &amp; Repair');
-    expect(html).toContain('Replaced feed rollers');
+    expect(text).toContain('Diagnostic & Repair');
+    expect(text).toContain('Replaced feed rollers');
   });
 
-  it('uses description as title with no blurb for ticket lines with name=null', () => {
+  it('uses description as title with no blurb for ticket lines with name=null', async () => {
+    const lines = [makeLine({ ticketId: 't-1', ticketNumber: '1042', name: null, description: 'Labor on workstation' } as never)];
+    expect(await pdfText(makeInvoice(), lines)).toContain('Labor on workstation');
+  });
+
+  // The model groups by ticket NUMBER (the portal's rule; portal semantics win,
+  // #9414): a ticket with no number gets no header, and two of them share the
+  // unheaded group. The old PDF printed one "Ticket work" header per ticket id.
+  it('prints no header for number-less tickets, and keeps their lines', async () => {
     const lines = [
-      makeLine({
-        ticketId: 't-1',
-        ticketNumber: '1042',
-        name: null,
-        description: 'Labor on workstation',
-      } as never),
+      makeLine({ ticketId: 't-1', ticketNumber: null, ticketSubject: 'Network glitch', ticketCategory: 'Network', name: 'Router reboot' } as never),
+      makeLine({ ticketId: 't-2', ticketNumber: null, ticketSubject: 'Email issue', ticketCategory: 'Software', name: 'Password reset' } as never),
     ];
-    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
-    expect(html).toContain('Labor on workstation');
+    const text = await pdfText(makeInvoice(), lines);
+    expect(text).toContain('Router reboot');
+    expect(text).toContain('Password reset');
+    expect(text).not.toContain('Ticket work');
+    expect(text).not.toContain('Ticket #');
   });
 
-  it('does not merge two number-less tickets into one group', () => {
-    const lines = [
-      makeLine({
-        ticketId: 't-1',
-        ticketNumber: null,
-        ticketSubject: 'Network glitch',
-        ticketCategory: 'Network',
-        name: 'Router reboot',
-      } as never),
-      makeLine({
-        ticketId: 't-2',
-        ticketNumber: null,
-        ticketSubject: 'Email issue',
-        ticketCategory: 'Software',
-        name: 'Password reset',
-      } as never),
-    ];
-    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
-    expect(html).toContain('Network glitch');
-    expect(html).toContain('Email issue');
-    // Two distinct headers with 'Ticket work'
-    const matches = html.match(/Ticket work/g);
-    expect(matches).toHaveLength(2);
-  });
-
-  it('spans the tax column in the ticket header when tax is shown', () => {
-    const lines = [makeLine({ ticketId: 't-1', ticketNumber: '1042', name: 'Repair' } as never)];
-    const taxed = renderInvoiceHtml(makeInvoice({ taxRate: '0.0825', taxTotal: '8.25' }), lines, branding);
-    expect(taxed).toMatch(/<td colspan="5"[^>]*>Ticket #1042/);
-    const untaxed = renderInvoiceHtml(makeInvoice({ taxRate: '0', taxTotal: '0' }), lines, branding);
-    expect(untaxed).toMatch(/<td colspan="4"[^>]*>Ticket #1042/);
-  });
-
-  it('keeps first-seen group order when ticket lines interleave', () => {
+  it('keeps first-seen group order when ticket lines interleave', async () => {
     const lines = [
       makeLine({ ticketId: 't-1', ticketNumber: 'A-1', name: 'first-a' } as never),
       makeLine({ ticketId: null, name: 'loose' }),
       makeLine({ ticketId: 't-1', ticketNumber: 'A-1', name: 'second-a' } as never),
       makeLine({ ticketId: 't-2', ticketNumber: 'B-2', name: 'only-b' } as never),
     ];
-    const html = renderInvoiceHtml(makeInvoice(), lines, branding);
-    const order = ['Ticket #A-1', 'first-a', 'second-a', 'loose', 'Ticket #B-2', 'only-b'].map((s) => html.indexOf(s));
+    const text = await pdfText(makeInvoice(), lines);
+    // Ticket A-1's lines group together, the loose line is its own group, B-2 last.
+    const order = ['Ticket #A-1', 'first-a', 'second-a', 'loose', 'Ticket #B-2', 'only-b'].map((x) => text.indexOf(x));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
   it('renders English "Category:" label in PDFKit buffer', async () => {
-    const lines = [
-      makeLine({
-        ticketId: 't-1',
-        ticketNumber: '1042',
-        ticketCategory: 'Networking',
-        name: 'Configure Switch',
-      } as never),
-    ];
+    const lines = [makeLine({ ticketId: 't-1', ticketNumber: '1042', ticketCategory: 'Networking', name: 'Configure Switch' } as never)];
     const pdf = await renderInvoicePdfBuffer(makeInvoice(), lines, branding);
     const textFragments = extractPositionedPdfText(pdf).map((f) => f.text);
     expect(textFragments.some((t) => t.includes('Category: Networking'))).toBe(true);
     expect(textFragments.some((t) => t.includes('Categorie:'))).toBe(false);
+  });
+
+  it('localises the category label in pt-BR', async () => {
+    const lines = [makeLine({ ticketId: 't-1', ticketNumber: '1042', ticketCategory: 'Rede', name: 'Configurar' } as never)];
+    const text = await pdfText(makeInvoice({ documentLocale: 'pt-BR' }), lines);
+    expect(text).toContain('Categoria: Rede');
+    expect(text).toContain('Ticket n\u00ba 1042');
   });
 });
 
@@ -604,15 +547,6 @@ describe('resolveDraftBillTo', () => {
 // when a caller (loadInvoiceForRender) supplies it via branding — never
 // printed when absent (every issued-invoice fixture in this file omits it).
 describe('BILL TO email fallback rendering (sweep paper cut #16)', () => {
-  it('renderInvoiceHtml prints the fallback email under Bill To when billToName is blank', () => {
-    const html = renderInvoiceHtml(
-      makeInvoice({ billToName: null, billToAddress: null, billToTaxId: null }),
-      [makeLine()],
-      { ...branding, billToEmailFallback: 'ap@sweeporgb.example' },
-    );
-    expect(html).toContain('ap@sweeporgb.example');
-  });
-
   it('renderInvoicePdfBuffer draws the fallback email under BILL TO when billToName is blank', async () => {
     const pdf = await renderInvoicePdfBuffer(
       makeInvoice({ billToName: null, billToAddress: null, billToTaxId: null }),
@@ -662,13 +596,6 @@ describe('frozen "no footer" invoice render (#7216)', () => {
     return { invoice, branding: { ...branding, footerText } };
   }
   const pdfText = (pdf: Buffer) => extractPositionedPdfText(pdf).map((f) => f.text).join(' ');
-
-  it("HTML: terms '' prints no footer; terms NULL prints the live one", () => {
-    const frozen = renderInputs('');
-    expect(renderInvoiceHtml(frozen.invoice, [makeLine()], frozen.branding)).not.toContain(LATER);
-    const live = renderInputs(null);
-    expect(renderInvoiceHtml(live.invoice, [makeLine()], live.branding)).toContain(LATER);
-  });
 
   it("PDF: terms '' prints no footer; terms NULL prints the live one", async () => {
     const frozen = renderInputs('');
