@@ -106,6 +106,8 @@ export interface InvoiceDocumentModel {
   branding: DocumentBranding;
   header: DocumentHeaderModel;
   notes: string | null;
+  /** Headings for the notes block and the short terms line (document locale). */
+  sectionLabels: { notes: string; terms: string };
   lines: DocumentLineTableModel;
   totals: DocumentTotalsModel;
   terms: { short: string | null; full: { label: string; text: string; meta: string } | null };
