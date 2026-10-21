@@ -9,8 +9,14 @@
  *
  * Refusals are TRUTHFUL: 503 + Retry-After. A refused agent WS upgrade is an
  * HTTP 503 BEFORE the upgrade — never an accepted socket closed with 1013:
- * shipped agents (agent/internal/websocket `client.go` `reconnectLoop`) back off after a
+ * agents (agent/internal/websocket `client.go` `reconnectLoop`) back off after a
  * failed connect but reconnect immediately after an accepted socket closes.
+ *
+ * W09 agent contract: the first reconnect waits a 30 s window; a loop-level
+ * Retry-After is honoured, jittered x1.3 and capped at 300 s, so every
+ * Retry-After sent here must stay <= AGENT_RETRY_AFTER_MAX_SECONDS (230 s,
+ * agentRouteClasses.ts; pinned by retryAfterCeiling.contract.test.ts). The
+ * mTLS cert-renew routes are exempt: the raw renewal client ignores the header.
  */
 import type { MiddlewareHandler } from 'hono';
 import { getAdmissionRuntime, type AdmissionGate } from '../services/admission/admissionRuntime';

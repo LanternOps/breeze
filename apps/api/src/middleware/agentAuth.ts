@@ -127,12 +127,12 @@ declare module 'hono' {
 
 // 120 requests per 60-second window per agent
 const AGENT_RATE_LIMIT = 120;
-const AGENT_RATE_WINDOW_SECONDS = 60;
+export const AGENT_RATE_WINDOW_SECONDS = 60;
 // Task 19: per-(agent, source-IP) bucket. A stolen token used from a second
 // IP can no longer eat the legit agent's 120/min budget — it has its own
 // smaller 30/min ceiling, and the legit agent keeps its own.
 const AGENT_PER_IP_RATE_LIMIT = 30;
-const AGENT_PER_IP_RATE_WINDOW_SECONDS = 60;
+export const AGENT_PER_IP_RATE_WINDOW_SECONDS = 60;
 // Dedup TTL for `agent.source.ip.changed` audits: log a given (device, IP)
 // pair at most once per day so noisy mobile/roaming agents don't drown ops
 // in events.
