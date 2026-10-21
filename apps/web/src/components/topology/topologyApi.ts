@@ -19,9 +19,19 @@ export type TopologySettings = z.infer<typeof topologySettingsSchema>;
 export class TopologyReadError extends Error {
   constructor(message: string, public status: number, public code?: string) { super(message); }
 }
+/**
+ * The organization every topology read is pinned to. A device opened from outside the working org
+ * (#9258) lives in its own org; the ambient `?orgId=` would be the working org and the API rejects an
+ * org that is not the site's own. Unset = the ambient working org, as before.
+ */
+let topologyOrgPin: string | null = null;
+export function setTopologyOrgPin(orgId: string | null | undefined) { topologyOrgPin = orgId || null; }
 /** `body` turns the read into a POST with a JSON body, for reads whose ids would overflow a URL (#8307). Still a read: nothing is mutated. */
 export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal, body?: unknown): Promise<T> {
-  const response = await fetchWithAuth(path, body === undefined ? { signal } : { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await fetchWithAuth(path, {
+    ...(body === undefined ? { signal } : { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    ...(topologyOrgPin ? { orgIdOverride: topologyOrgPin } : {}),
+  });
   if (!response.ok) {
     const errorBody = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
     const message = response.status === 403 ? 'Access to this topology is denied'
