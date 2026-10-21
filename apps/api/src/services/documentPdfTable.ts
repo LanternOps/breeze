@@ -451,7 +451,8 @@ export function drawDocumentTotals(
   // Plan the rows first (stacking decided at the row's own font) so the block can be placed whole.
   // A label that wraps (a long translation) makes its row taller: rows advance
   // by constants, so an unmeasured wrapped label would overprint the next row.
-  const plan = (rows: DocumentTotalsRow[]) => rows.map((row) => {
+  // A row with no figure (a zero-valued category has an empty value list) is skipped: a label with an empty amount is noise.
+  const plan = (rows: DocumentTotalsRow[]) => rows.filter((row) => !Array.isArray(row.value) || row.value.length > 0).map((row) => {
     const w = WEIGHTS[row.weight];
     doc.font(fontOf(w)).fontSize(w.size);
     const parts = valueParts(row, locale);

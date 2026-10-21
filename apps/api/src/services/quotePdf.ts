@@ -430,7 +430,7 @@ export function quotePdfDocument(quote: QuoteHeader, blocks: QuoteBlock[], lines
   // A header with no stored subtotal (a hand-built row) prints the sum of the visible lines, never a false $0.00.
   const visibleLines = lines.filter((l) => l.customerVisible !== false);
   const lineSubtotal = (visibleLines.reduce(
-    (sum, l) => sum + Math.round(Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice)) * 100) || 0, 0,
+    (sum, l) => sum + (Math.round(Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice)) * 100) || 0), 0,
   ) / 100).toFixed(2);
   const header = {
     id: quote.id,

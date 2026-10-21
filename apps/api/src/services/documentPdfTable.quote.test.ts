@@ -89,8 +89,8 @@ describe('documentPdfTable — quote needs (W3b)', () => {
   it('draws the table label above the header and keeps label + header + first row together', async () => {
     const t = table([qrow(1), qrow(2)], { label: 'Recurring services' });
     const pdf = await render((doc) => {
-      // Close enough to the bottom that label + header fit but the first row would not.
-      drawDocumentLineTable(doc, t, doc.page.height - 50 - 40, { cols: documentColumnsFor(doc, { showTax: false }), style: STYLE });
+      // Label (~19pt) + header (24pt) fit in 52pt; the first row (~18pt more) does not.
+      drawDocumentLineTable(doc, t, doc.page.height - 50 - 52, { cols: documentColumnsFor(doc, { showTax: false }), style: STYLE });
     });
     const f = extractPositionedPdfText(pdf);
     const label = f.find((x) => x.text === 'Recurring services')!;
@@ -99,6 +99,20 @@ describe('documentPdfTable — quote needs (W3b)', () => {
     expect(label.page).toBe(first.page);
     expect(header.page).toBe(first.page);
     expect(label.y).toBeLessThan(header.y);
+  });
+
+  it('skips a totals row with no figure instead of printing a bare label', async () => {
+    const totals = {
+      rows: [
+        { key: 'category:free', label: 'Free tier', value: [] as DocumentMoney[], weight: 'muted' as const, ruleAbove: 'none' as const },
+        { key: 'total', label: 'Total', value: mny('5.00'), weight: 'hero' as const, ruleAbove: 'accent' as const },
+      ],
+      aside: null, depositStrip: null,
+    };
+    const pdf = await render((doc) => { drawDocumentTotals(doc, totals, 300, { cols: documentColumnsFor(doc, { showTax: false }), style: STYLE }); });
+    const txt = extractPositionedPdfText(pdf).map((f) => f.text);
+    expect(txt).not.toContain('Free tier');
+    expect(txt).toContain('Total');
   });
 
   it('prints the per-table subtotal parts joined, with the suffix', async () => {
