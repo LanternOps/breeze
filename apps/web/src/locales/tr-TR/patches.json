@@ -372,7 +372,8 @@
       "createRing": "Güncelleme halkası oluşturulamadı",
       "deleteRing": "Zil silinemedi",
       "approveUnknown": "Onay durumu bilinmiyor — sunucu yanıtı okunamadı. Hangi yamaların onaylandığını onaylamak için yenileyin.",
-      "approveAbortedWithFailures": "{{message}} ({{count}} yamaları da bundan önce sunucu tarafından reddedilmişti.)"
+      "approveAbortedWithFailures": "{{message}} ({{count}} yamaları da bundan önce sunucu tarafından reddedilmişti.)",
+      "checkRingLinks": "Bu halkayı hangi ilkelerin kullandığı denetlenemedi; hiçbir şey silinmedi"
     },
     "toast": {
       "ringSaved": "Güncelleme halkası kaydedildi",
@@ -402,7 +403,13 @@
       "createTitle": "Güncelleme halkası oluştur"
     },
     "truncatedNotice": "{{total}} yamalardan {{shown}} gösteriliyor. Buradaki filtreler yalnızca önceden yüklenmiş olanları daraltır, dolayısıyla geri kalanlara bu görünümden erişilemez; kataloğun tamamı üzerinde çalışmak için API yamalarını kullanın.",
-    "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin."
+    "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin.",
+    "ringDelete": {
+      "title": "{{name}} silinsin mi?",
+      "messageOne": "1 ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
+      "messageMany": "{{count}} ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
+      "confirm": "Halkayı sil"
+    }
   },
   "patchJobsList": {
     "empty": "Henüz yama işi yok. Politikalar, güncelleme halkaları veya yapay zeka asistanı tarafından oluşturulan işler burada görünecek.",

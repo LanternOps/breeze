@@ -11,6 +11,7 @@ import {
   devicePatches,
 } from '../db/schema';
 import { resolveRingDeviceCountsWithWarnings, resolveRingDeviceIdsWithWarnings } from './updateRingsHelpers';
+import { getRingLinkedPolicies, linkedPolicyPayload } from './updateRingLinkedPolicies';
 import { getPagination, inferPatchOs } from './patches/helpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -406,15 +407,24 @@ updateRingRoutes.patch(
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .returning();
 
+    // Disabling a ring fails closed for every policy linked to it (#8909):
+    // report who is affected. The caller is a full-partner admin (gate above),
+    // so RLS does not narrow the count.
+    const linked = data.enabled === false ? await getRingLinkedPolicies(id) : null;
+
     writeRouteAudit(c, {
       orgId: null,
       action: 'update_ring.update',
       resourceType: 'update_ring',
       resourceId: id,
-      details: { partnerId: existing.partnerId, changes: Object.keys(data) },
+      details: {
+        partnerId: existing.partnerId,
+        changes: Object.keys(data),
+        ...(linked ? { linkedPolicyCount: linked.length, linkedPolicyIds: linked.map((p) => p.id) } : {}),
+      },
     });
 
-    return c.json(updated);
+    return c.json(linked ? { ...updated, ...linkedPolicyPayload(linked) } : updated);
   }
 );
 
@@ -448,16 +458,51 @@ updateRingRoutes.delete(
       .set({ enabled: false, updatedAt: new Date() })
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')));
 
+    const linked = await getRingLinkedPolicies(id);
+
     writeRouteAudit(c, {
       orgId: null,
       action: 'update_ring.delete',
       resourceType: 'update_ring',
       resourceId: id,
       resourceName: existing.name,
-      details: { partnerId: existing.partnerId },
+      details: {
+        partnerId: existing.partnerId,
+        linkedPolicyCount: linked.length,
+        linkedPolicyIds: linked.map((p) => p.id),
+      },
     });
 
-    return c.json({ success: true });
+    return c.json({ success: true, ...linkedPolicyPayload(linked) });
+  }
+);
+
+// GET /update-rings/:id/linked-policies — policies a delete/disable would strand.
+// Full-partner admins only: RLS narrows org-policy visibility for restricted
+// partner users, which would silently undercount (#8909).
+updateRingRoutes.get(
+  '/:id/linked-policies',
+  requireScope('partner', 'system'),
+  requireUpdateRingRead,
+  zValidator('param', ringIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+
+    const [ring] = await db
+      .select({ id: patchPolicies.id, partnerId: patchPolicies.partnerId })
+      .from(patchPolicies)
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
+      .limit(1);
+
+    if (!ring) return c.json({ error: 'Update ring not found' }, 404);
+    if (auth.scope !== 'system' && auth.partnerId !== ring.partnerId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+    const denial = partnerWideRingWriteDenial(c, auth);
+    if (denial) return denial.response;
+
+    return c.json(linkedPolicyPayload(await getRingLinkedPolicies(id)));
   }
 );
 
