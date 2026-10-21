@@ -146,7 +146,10 @@ export async function runContractRenewalSweep(asOf: Date = new Date()): Promise<
       eq(contracts.endDate, c.endDate),
       eq(contracts.renewalTermMonths, c.renewalTermMonths),
     )).returning({ id: contracts.id });
-    if (updated.length === 0) continue;
+    if (updated.length === 0) {
+      console.info('[ContractRenewal] renewal skipped: contract changed since the sweep read it (paused/cancelled/opted out/end date edited)', `contractId=${c.id}`);
+      continue;
+    }
     await emitContractEvent({ type: 'contract.auto_renewed', contractId: c.id, orgId: c.orgId, partnerId: c.partnerId });
     if (await claimNotice(c, newEndDate, 'renewed')) {
       await dispatchNotice({ ...c, endDate: newEndDate }, 'renewed', newEndDate);

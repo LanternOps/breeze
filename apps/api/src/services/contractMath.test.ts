@@ -170,8 +170,9 @@ describe('renewal sweep ⟹ billing never sees an expired due period (#9243 inva
         for (const termMonths of [1, 12])
           shapes.push({ startDate, intervalMonths, billingTiming, termMonths });
 
-  it.each(shapes)('%j', ({ startDate, intervalMonths, billingTiming, termMonths }) => {
-    const endDate = addMonthsClamped(startDate, 12);
+  // end_date on a period boundary, and inside a period (±10 days off it).
+  it.each(shapes.flatMap((s) => [-10, 0, 10].map((offsetDays) => ({ ...s, offsetDays }))))('%j', ({ startDate, intervalMonths, billingTiming, termMonths, offsetDays }) => {
+    const endDate = addDaysISO(addMonthsClamped(startDate, 12), offsetDays);
     for (let k = 0; k < 30; k++) {
       // Every pointer billing can produce (a period boundary), on its due day and up to 40 days late.
       const nextBillingAt = nextBillingDate({ startDate, intervalMonths, billingTiming, periodIndex: k });

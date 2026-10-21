@@ -46,7 +46,7 @@ export function getContractQueue(): Queue {
  * Bill every active contract whose next_billing_at <= asOf.
  * Each contract is independent — one failure does not abort the rest.
  */
-export async function runContractBillingSweep(asOf: Date = new Date()): Promise<{ billed: number; failed: number }> {
+export async function runContractBillingSweep(asOf: Date = new Date()): Promise<{ billed: number; failed: number; deferred: number }> {
   const today = asOf.toISOString().slice(0, 10);
 
   const due = await runOutsideDbContext(() =>
@@ -68,6 +68,7 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
 
   let billed = 0;
   let failed = 0;
+  let deferred = 0;
 
   for (const row of due) {
     let res;
@@ -76,6 +77,15 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         withSystemDbAccessContext(() => generateDueInvoice(row.id, asOf))
       );
       if (res.generated) billed++;
+      // #9243: the renewal sweep ran just before this and did not renew an
+      // auto-renew contract whose term has ended. Billing defers it, so it is
+      // neither billed nor expired, but it stays deferred until a sweep renews it.
+      // That is a real anomaly: count it and report it.
+      if (res.skipped === 'renewal_pending') {
+        deferred++;
+        console.error('[contract-billing] renewal pending after the renewal sweep: contractId=%s orgId=%s — not billed, not expired', row.id, row.orgId);
+        captureException(new Error(`contract ${row.id} billing deferred: auto-renew term ended but the renewal sweep did not extend it`));
+      }
       // Wave 3 (#3775): a catalog line billed at the contract snapshot because
       // the price book has no row in the contract's currency is never silent —
       // one structured warning per gap so ops can fill the book.
@@ -144,7 +154,7 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
     }
   }
 
-  return { billed, failed };
+  return { billed, failed, deferred };
 }
 
 /**
@@ -156,9 +166,17 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
  * AFTER billing so a contract the billing run just expired or cancelled has its
  * block line retired before the sweep looks for the periods it left behind.
  */
-export async function runBillingSweepJob(asOf: Date = new Date()): Promise<{ billed: number; failed: number }> {
+export async function runBillingSweepJob(asOf: Date = new Date()): Promise<{ billed: number; failed: number; deferred: number }> {
   // Same asOf as billing: renewal and billing must agree on what "today" is (#9243).
-  await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep(asOf)));
+  // A renewal failure must not stop billing. Billing defers an un-renewed
+  // auto-renew contract and never expires it, so continuing is safe. Every
+  // deferral is then counted and reported by the billing sweep.
+  try {
+    await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep(asOf)));
+  } catch (err) {
+    console.error('[ContractWorker] renewal sweep failed; billing continues and defers un-renewed auto-renew contracts', err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
   const billing = await runContractBillingSweep(asOf);
   // Self-wrapping: one system transaction per contract, failures captured per contract.
   const hb = await runHourBlockCloseOutSweep(asOf);

@@ -27,6 +27,7 @@ import {
 import { generateDueInvoice, summarizeActiveContractMrrByOrg } from '../../services/contractService';
 import { addDaysISO } from '../../services/contractMath';
 import { runBillingSweepJob } from '../../jobs/contractWorker';
+import { seedBlockFixture } from './hourBlockFixtures';
 
 const at = (d: string) => new Date(`${d}T05:00:00Z`);
 
@@ -82,6 +83,12 @@ const notices = (id: string, kind: 'advance' | 'renewed') => withSystemDbAccessC
   endDate: contractRenewalNotices.endDate,
 }).from(contractRenewalNotices).where(and(eq(contractRenewalNotices.contractId, id), eq(contractRenewalNotices.kind, kind))));
 
+/** Per-day check: still active and the term not yet extended. */
+const notRenewedYet = (contractId: string, endDate: string) => async (day: string) => {
+  const c = await contractRow(contractId);
+  expect({ day, status: c.status, endDate: c.endDate }).toEqual({ day, status: 'active', endDate });
+};
+
 /** Exactly one invoice per billed period, every period claimed once, no stray drafts. */
 async function expectOneInvoicePerPeriod(f: { orgId: string; contractId: string }, starts: string[]) {
   const periods = await billedPeriods(f.contractId);
@@ -122,7 +129,7 @@ describe('auto-renew across the final period — real renewal → billing sequen
   it('monthly ARREARS: renews on end_date, bills the final period and the first renewed one', async () => {
     const f = await seedContract({ billingTiming: 'arrears', endDate: '2027-01-01', nextBillingAt: '2026-12-01', autoRenew: true, renewalTermMonths: 12 });
 
-    await runDaily('2026-12-01', '2026-12-31');
+    await runDaily('2026-12-01', '2026-12-31', notRenewedYet(f.contractId, '2027-01-01'));
     expect(await contractRow(f.contractId)).toEqual({ status: 'active', endDate: '2027-01-01', nextBillingAt: '2027-01-01' });
 
     await runDaily('2027-01-01', '2027-02-01');
@@ -145,6 +152,50 @@ describe('auto-renew across the final period — real renewal → billing sequen
     expect(await contractRow(f.contractId)).toEqual({ status: 'active', endDate: '2028-01-01', nextBillingAt: '2028-01-01' });
     await expectOneInvoicePerPeriod(f, ['2026-01-01', '2027-01-01']);
   }, 60_000);
+
+  it('QUARTERLY arrears: renews on end_date, bills each quarter once across the boundary', async () => {
+    const f = await seedContract({
+      billingTiming: 'arrears', intervalMonths: 3, endDate: '2027-01-01', nextBillingAt: '2026-10-01',
+      autoRenew: true, renewalTermMonths: 12,
+    });
+    await runDaily('2026-10-01', '2026-12-31', notRenewedYet(f.contractId, '2027-01-01'));
+    await runDaily('2027-01-01', '2027-04-01');
+    expect(await contractRow(f.contractId)).toEqual({ status: 'active', endDate: '2028-01-01', nextBillingAt: '2027-07-01' });
+    await expectOneInvoicePerPeriod(f, ['2026-07-01', '2026-10-01', '2027-01-01']);
+  }, 180_000);
+
+  it('end_date INSIDE a period (monthly advance, ends 2027-01-15): renews on 01-15, the straddling period bills once', async () => {
+    const f = await seedContract({ billingTiming: 'advance', endDate: '2027-01-15', nextBillingAt: '2026-12-01', autoRenew: true, renewalTermMonths: 12 });
+    await runDaily('2026-12-01', '2027-01-14', notRenewedYet(f.contractId, '2027-01-15'));
+    expect(await contractRow(f.contractId)).toEqual({ status: 'active', endDate: '2027-01-15', nextBillingAt: '2027-02-01' });
+    await runDaily('2027-01-15', '2027-02-01');
+    expect(await contractRow(f.contractId)).toEqual({ status: 'active', endDate: '2028-01-15', nextBillingAt: '2027-03-01' });
+    await expectOneInvoicePerPeriod(f, ['2026-12-01', '2027-01-01', '2027-02-01']);
+  }, 120_000);
+
+  it('a block-of-hours line on an auto-renewing contract stays live across the renewal; the non-renewing control retires it', async () => {
+    const seedBlock = async (autoRenew: boolean) => {
+      const f = await seedBlockFixture({ timing: 'advance', startDate: '2026-01-01', firstPeriodStart: '2026-01-01', nextBillingAt: '2026-12-01', endDate: '2027-01-01' });
+      await withSystemDbAccessContext(() => db.update(contracts).set({ autoRenew, renewalTermMonths: 12 }).where(eq(contracts.id, f.contractId)));
+      return f;
+    };
+    const renewing = await seedBlock(true);
+    const control = await seedBlock(false);
+    const retiredAt = async (lineId: string) => {
+      const [l] = await withSystemDbAccessContext(() => db.select({ r: contractLines.hourBlockRetiredAt }).from(contractLines).where(eq(contractLines.id, lineId)));
+      return l!.r;
+    };
+
+    await runDaily('2026-12-01', '2027-02-01');
+
+    expect(await contractRow(renewing.contractId)).toEqual({ status: 'active', endDate: '2028-01-01', nextBillingAt: '2027-03-01' });
+    expect(await retiredAt(renewing.blockLineId)).toBeNull();
+    expect((await billedPeriods(renewing.contractId)).map((p) => p.periodStart)).toEqual(['2026-12-01', '2027-01-01', '2027-02-01']);
+
+    expect((await contractRow(control.contractId)).status).toBe('expired');
+    expect(await retiredAt(control.blockLineId)).not.toBeNull();
+    expect((await billedPeriods(control.contractId)).map((p) => p.periodStart)).toEqual(['2026-12-01']);
+  }, 180_000);
 
   it('auto_renew = false (control): expires after billing its final period, exactly as before', async () => {
     const f = await seedContract({ billingTiming: 'advance', endDate: '2027-01-01', nextBillingAt: '2026-11-01', autoRenew: false, renewalTermMonths: 12 });
