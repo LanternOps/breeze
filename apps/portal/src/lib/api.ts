@@ -754,8 +754,10 @@ export interface QuoteDetail {
   lines: QuoteLine[];
   /** Optional for API responses that predate the branding field. */
   branding?: QuoteBranding;
+  /** The document's resolved language (spec §3.7); absent on API responses that predate it. */
+  documentLocale?: string;
   /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
-   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+   *  payloads omit it, which must read as 'classic'. */
   presentation?: QuotePresentation;
 }
 
@@ -764,8 +766,10 @@ export interface PublicQuoteDetail {
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding: QuoteBranding;
+  /** The document's resolved language (spec §3.7); absent on API responses that predate it. */
+  documentLocale?: string;
   /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
-   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+   *  payloads omit it, which must read as 'classic'. */
   presentation?: QuotePresentation;
   /** #8231: signing goes straight on to card checkout (the partner takes online
    *  payment; automatic-payment clients included). The page still

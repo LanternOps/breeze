@@ -55,7 +55,7 @@ function AgreementRow({
       open={open}
       onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
       className="group scroll-mt-4"
-      data-testid={`document-agreement-${agreement.id}`}
+      data-testid={agreement.body.kind === 'terms' ? 'document-agreement-terms' : 'contract-block'}
     >
       <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
         <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />

@@ -7,7 +7,7 @@ import { Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
 import { InvoiceDocumentView } from '@breeze/document-ui';
-import { DocumentPaper, DocumentHeader } from './documentShell';
+import { DocumentPaper, DocumentHeader } from '@breeze/document-ui';
 import { portalHostComponents } from './documentHostComponents';
 import { invoiceModelFor } from '@/lib/invoiceDocument';
 import { useDocumentAccent } from '@/lib/useDocumentAccent';
@@ -116,16 +116,25 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
   if (invoice.status === 'void') {
     return (
       <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
-        <DocumentPaper primaryColor={branding.primaryColor} testId="public-invoice-void" docTheme={branding.theme}>
+        <DocumentPaper theme={branding.theme} testId="public-invoice-void">
           <DocumentHeader
-            logoUrl={branding.logoUrl}
-            partnerName={branding.partnerName}
-            seller={null}
-            eyebrow="Invoice"
-            title={invoice.invoiceNumber ?? 'Invoice'}
-            statusLabel="No longer due"
-            statusTone="neutral"
-            dates={[]}
+            header={{
+              eyebrow: 'Invoice',
+              number: invoice.invoiceNumber ?? 'Invoice',
+              subtitle: null,
+              status: { label: 'No longer due', tone: 'neutral' },
+              dates: [],
+              billTo: null,
+            }}
+            branding={{
+              logo: branding.logoUrl ? { kind: 'url', url: branding.logoUrl } : null,
+              logoAlt: branding.partnerName ?? '',
+              wordmark: branding.partnerName ?? null,
+              theme: branding.theme,
+              pageSize: branding.pageSize,
+              seller: null,
+            }}
+            components={portalHostComponents}
           />
           <div className="space-y-2 text-sm text-muted-foreground">
             <p>This invoice is no longer due.</p>
