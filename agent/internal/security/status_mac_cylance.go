@@ -1,6 +1,7 @@
 package security
 
 import (
+	"errors"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,12 +15,14 @@ import (
 // runs there; third-party AV must be probed directly, as Elastic Defend is on
 // Linux (status_elastic.go, #2018).
 //
-// Install layout keyed on, from the vendor's macOS install/uninstall guidance:
+// Install layout keyed on, from the vendor's macOS install/uninstall guidance
+// (detection requires the bundle or the daemon plist; the service only
+// decides real-time protection):
 //   - /Applications/Cylance/CylanceUI.app — the agent UI bundle. Arctic Wolf's
 //     Aurora-branded macOS agent (Aurora Protect Desktop) still ships CylanceUI.
 //   - /Library/LaunchDaemons/com.cylance.agent_service.plist — the protection
 //     service's launch daemon; its job label is com.cylance.agent_service.
-//   - CylanceSvc — the protection service process.
+//   - CylanceSvc — the protection service process (root-owned).
 //
 // Branding is read from the bundle's own Info.plist rather than guessed from a
 // path: the #9178 reporter's Macs still say CylancePROTECT after the Windows
@@ -40,8 +43,9 @@ const (
 type macCylanceProbes struct {
 	fileExists func(path string) bool
 	// bundleString reads one key from <appPath>/Contents/Info.plist.
-	bundleString   func(appPath, key string) (string, error)
-	daemonRunning  func(label string) bool
+	bundleString  func(appPath, key string) (string, error)
+	daemonRunning func(label string) bool
+	// processRunning must only match root-owned processes.
 	processRunning func(name string) bool
 }
 
@@ -50,7 +54,7 @@ func defaultMacCylanceProbes() macCylanceProbes {
 		fileExists:     fileExists,
 		bundleString:   macBundleInfoString,
 		daemonRunning:  macLaunchDaemonRunning,
-		processRunning: macProcessRunning,
+		processRunning: macRootProcessRunning,
 	}
 }
 
@@ -69,13 +73,21 @@ func getMacCylanceProduct() (*AVProduct, string, error) {
 func detectMacCylance(probes macCylanceProbes) (*AVProduct, string, error) {
 	appInstalled := probes.fileExists(macCylanceAppPath)
 	daemonInstalled := probes.fileExists(macCylanceDaemonPlist)
-	// A running service is as authoritative as the install artifacts — it
-	// covers a relocated UI bundle or a relabelled launch daemon.
-	running := probes.daemonRunning(macCylanceDaemonLabel) || probes.processRunning(macCylanceServiceProcess)
 
-	if !appInstalled && !daemonInstalled && !running {
+	// An install artifact is required. A running process or job alone is not
+	// evidence: any local user can start a binary named CylanceSvc, and
+	// attributing on that would let them spoof the device's AV posture.
+	// /Library/LaunchDaemons is root-writable only; /Applications needs admin.
+	if !appInstalled && !daemonInstalled {
 		return nil, "", ErrNotSupported
 	}
+
+	// Real-time protection: the launchd job is running, or a root-owned
+	// CylanceSvc process is (covers a relabelled job). A probe failure
+	// (launchctl/pgrep timeout) is indistinguishable from "not running" here
+	// and reads as off for that cycle, as in linuxUnitStateRunning; before
+	// #9390 a Cylance-only Mac always reported false, so this is no regression.
+	running := probes.daemonRunning(macCylanceDaemonLabel) || probes.processRunning(macCylanceServiceProcess)
 
 	displayName := macCylanceDisplayName
 	version := ""
@@ -129,6 +141,99 @@ func macDefenderClaimsProvider(providerIdentified, currentRealTime bool, defende
 	return defender.Enabled && defenderOwnsProvider(providerIdentified, currentRealTime, defender.RealTimeProtection)
 }
 
+// macAVSources holds the raw results of the macOS AV probes, so the merge in
+// applyMacAVSources is testable without a Mac.
+type macAVSources struct {
+	cylance         *AVProduct
+	cylanceVersion  string
+	cylanceErr      error
+	defender        DefenderStatus
+	defenderProduct *AVProduct
+	defenderErr     error
+}
+
+func collectMacAVSources() macAVSources {
+	var src macAVSources
+	src.cylance, src.cylanceVersion, src.cylanceErr = getMacCylanceProduct()
+	src.defender, src.defenderProduct, src.defenderErr = getMacDefenderStatus()
+	return src
+}
+
+// avTally carries CollectStatus's cross-source AV accumulators.
+type avTally struct {
+	providerIdentified bool
+	realTime           bool
+	collected          bool
+	failed             bool
+	errs               []error
+}
+
+// applyMacAVSources merges the macOS AV probes into status, in attribution
+// order: Cylance first, then Microsoft Defender for Endpoint, which takes the
+// label only per macDefenderClaimsProvider. Both products are always listed
+// in AVProducts.
+func applyMacAVSources(status *SecurityStatus, tally *avTally, src macAVSources) {
+	if src.cylanceErr != nil {
+		if !errors.Is(src.cylanceErr, ErrNotSupported) {
+			tally.errs = append(tally.errs, src.cylanceErr)
+			tally.failed = true
+		}
+	} else if src.cylance != nil {
+		tally.collected = true
+		status.AVProducts = append(status.AVProducts, *src.cylance)
+		if !tally.providerIdentified {
+			status.Provider = src.cylance.Provider
+			status.ProviderVersion = src.cylanceVersion
+			tally.providerIdentified = true
+		}
+		if src.cylance.RealTimeProtection {
+			tally.realTime = true
+		}
+	}
+
+	if src.defenderErr != nil {
+		if !errors.Is(src.defenderErr, ErrNotSupported) {
+			tally.errs = append(tally.errs, src.defenderErr)
+			tally.failed = true
+		}
+		return
+	}
+	defender := src.defender
+	tally.collected = true
+	if macDefenderClaimsProvider(tally.providerIdentified, tally.realTime, defender) {
+		status.Provider = "windows_defender"
+		// The version must describe the product that owns the label,
+		// not a Cylance version recorded above.
+		status.ProviderVersion = defender.ProviderVersion
+		tally.providerIdentified = true
+	}
+	if src.defenderProduct != nil {
+		status.AVProducts = append(status.AVProducts, *src.defenderProduct)
+	}
+	// No product owns the label (Defender present but not enabled): keep the
+	// pre-#9390 behaviour of reporting Defender's version. Never fill the gap
+	// under another product's label — a Cylance with no readable version must
+	// not show Defender's.
+	if !tally.providerIdentified && status.ProviderVersion == "" {
+		status.ProviderVersion = defender.ProviderVersion
+	}
+	if defender.RealTimeProtection {
+		tally.realTime = true
+	}
+	if status.DefinitionsVersion == "" {
+		status.DefinitionsVersion = defender.DefinitionsVersion
+	}
+	if status.DefinitionsUpdatedAt == "" {
+		status.DefinitionsUpdatedAt = defender.DefinitionsUpdatedAt
+	}
+	status.LastScanAt = latestScanTime(defender)
+	if defender.LastFullScan != "" {
+		status.LastScanType = "full"
+	} else if defender.LastQuickScan != "" {
+		status.LastScanType = "quick"
+	}
+}
+
 // macBundleInfoString reads one Info.plist key from an app bundle.
 func macBundleInfoString(appPath, key string) (string, error) {
 	infoPath := filepath.Join(appPath, "Contents", "Info")
@@ -161,9 +266,11 @@ func launchctlPrintRunning(output string) bool {
 	return false
 }
 
-// macProcessRunning reports whether a process with exactly this name runs.
-// pgrep exits non-zero when nothing matches.
-func macProcessRunning(name string) bool {
-	_, err := runCommand(5*time.Second, "pgrep", "-x", name)
+// macRootProcessRunning reports whether a root-owned process with exactly
+// this name runs. Restricting to root keeps an unprivileged user's look-alike
+// process from reading as the protection service. pgrep exits non-zero when
+// nothing matches.
+func macRootProcessRunning(name string) bool {
+	_, err := runCommand(5*time.Second, "pgrep", "-x", "-u", "root", name)
 	return err == nil
 }

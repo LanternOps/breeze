@@ -3,6 +3,7 @@ package security
 import (
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -117,11 +118,25 @@ func TestDetectMacCylance(t *testing.T) {
 			wantPath: macCylanceAppPath,
 		},
 		{
-			// The service process alone is authoritative when launchctl
-			// can't see the job (e.g. a relabelled daemon).
+			// The process check covers a relabelled launchd job, but only
+			// alongside an install artifact.
+			name:         "service process running, daemon job not visible",
+			host:         fakeMacCylanceHost{files: map[string]bool{macCylanceDaemonPlist: true}, procRunning: true},
+			wantDetected: true, wantDisplay: "CylancePROTECT", wantRTP: true,
+		},
+		{
+			// A process name alone is spoofable by any local user (running a
+			// binary named CylanceSvc), so it must never attribute Cylance or
+			// report real-time protection without an install artifact.
 			name:         "service process running with no bundle or plist",
 			host:         fakeMacCylanceHost{files: map[string]bool{}, procRunning: true},
-			wantDetected: true, wantDisplay: "CylancePROTECT", wantRTP: true,
+			wantDetected: false,
+		},
+		{
+			// Same for a launchd job reading as running with nothing installed.
+			name:         "daemon job running with no bundle or plist",
+			host:         fakeMacCylanceHost{files: map[string]bool{}, daemonRunning: true},
+			wantDetected: false,
 		},
 	}
 
@@ -222,6 +237,112 @@ func TestMacDefenderClaimsProvider(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := macDefenderClaimsProvider(tc.providerIdentified, tc.currentRealTime, tc.defender); got != tc.want {
 				t.Fatalf("macDefenderClaimsProvider = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyMacAVSources pins the CollectStatus macOS merge end to end:
+// provider, providerVersion, real-time protection, AVProducts and the
+// collected/failed tallies for each Cylance × Defender combination.
+func TestApplyMacAVSources(t *testing.T) {
+	cylance := func(running bool) *AVProduct {
+		return &AVProduct{DisplayName: macCylanceDisplayName, Provider: "cylance", Registered: true, RealTimeProtection: running}
+	}
+	defenderProduct := &AVProduct{DisplayName: "Microsoft Defender for Endpoint", Provider: "windows_defender"}
+	defenderPassive := DefenderStatus{Enabled: true, ProviderVersion: "101.24012"}
+	defenderActive := DefenderStatus{Enabled: true, RealTimeProtection: true, ProviderVersion: "101.24012"}
+
+	cases := []struct {
+		name          string
+		src           macAVSources
+		wantProvider  string
+		wantVersion   string
+		wantRealTime  bool
+		wantProducts  []string
+		wantCollected bool
+		wantFailed    bool
+		wantErrs      int
+	}{
+		{
+			name:         "cylance running, defender passive",
+			src:          macAVSources{cylance: cylance(true), cylanceVersion: "3.1.1001", defender: defenderPassive, defenderProduct: defenderProduct},
+			wantProvider: "cylance", wantVersion: "3.1.1001", wantRealTime: true,
+			wantProducts: []string{"cylance", "windows_defender"}, wantCollected: true,
+		},
+		{
+			name:         "cylance running, defender active",
+			src:          macAVSources{cylance: cylance(true), cylanceVersion: "3.1.1001", defender: defenderActive, defenderProduct: defenderProduct},
+			wantProvider: "cylance", wantVersion: "3.1.1001", wantRealTime: true,
+			wantProducts: []string{"cylance", "windows_defender"}, wantCollected: true,
+		},
+		{
+			name:         "cylance stopped, defender active",
+			src:          macAVSources{cylance: cylance(false), cylanceVersion: "3.1.1001", defender: defenderActive, defenderProduct: defenderProduct},
+			wantProvider: "windows_defender", wantVersion: "101.24012", wantRealTime: true,
+			wantProducts: []string{"cylance", "windows_defender"}, wantCollected: true,
+		},
+		{
+			// Daemon-only / unreadable Info.plist: Cylance owns the label with
+			// no version, and Defender's version must not fill it.
+			name:         "cylance without version, defender passive",
+			src:          macAVSources{cylance: cylance(true), defender: defenderPassive, defenderProduct: defenderProduct},
+			wantProvider: "cylance", wantVersion: "", wantRealTime: true,
+			wantProducts: []string{"cylance", "windows_defender"}, wantCollected: true,
+		},
+		{
+			name:         "defender only, passive",
+			src:          macAVSources{cylanceErr: ErrNotSupported, defender: defenderPassive, defenderProduct: defenderProduct},
+			wantProvider: "windows_defender", wantVersion: "101.24012", wantRealTime: false,
+			wantProducts: []string{"windows_defender"}, wantCollected: true,
+		},
+		{
+			// Pre-#9390 behaviour kept: an installed-but-disabled Defender
+			// leaves the provider "other" yet still fills the version.
+			name:         "defender only, not enabled",
+			src:          macAVSources{cylanceErr: ErrNotSupported, defender: DefenderStatus{ProviderVersion: "101.24012"}},
+			wantProvider: "other", wantVersion: "101.24012", wantCollected: true,
+		},
+		{
+			name:         "neither installed",
+			src:          macAVSources{cylanceErr: ErrNotSupported, defenderErr: ErrNotSupported},
+			wantProvider: "other",
+		},
+		{
+			name:         "cylance running, defender probe errors",
+			src:          macAVSources{cylance: cylance(true), cylanceVersion: "3.1.1001", defenderErr: errors.New("mdatp health failed")},
+			wantProvider: "cylance", wantVersion: "3.1.1001", wantRealTime: true,
+			wantProducts: []string{"cylance"}, wantCollected: true, wantFailed: true, wantErrs: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status := SecurityStatus{Provider: "other"}
+			var tally avTally
+			applyMacAVSources(&status, &tally, tc.src)
+
+			if status.Provider != tc.wantProvider {
+				t.Errorf("provider = %q, want %q", status.Provider, tc.wantProvider)
+			}
+			if status.ProviderVersion != tc.wantVersion {
+				t.Errorf("providerVersion = %q, want %q", status.ProviderVersion, tc.wantVersion)
+			}
+			if tally.realTime != tc.wantRealTime {
+				t.Errorf("realTime = %v, want %v", tally.realTime, tc.wantRealTime)
+			}
+			if tally.collected != tc.wantCollected || tally.failed != tc.wantFailed {
+				t.Errorf("collected/failed = %v/%v, want %v/%v", tally.collected, tally.failed, tc.wantCollected, tc.wantFailed)
+			}
+			if len(tally.errs) != tc.wantErrs {
+				t.Errorf("errs = %v, want %d", tally.errs, tc.wantErrs)
+			}
+			var gotProducts []string
+			for _, p := range status.AVProducts {
+				gotProducts = append(gotProducts, p.Provider)
+			}
+			if strings.Join(gotProducts, ",") != strings.Join(tc.wantProducts, ",") {
+				t.Errorf("avProducts = %v, want %v", gotProducts, tc.wantProducts)
 			}
 		})
 	}

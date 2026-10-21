@@ -1084,62 +1084,10 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	//     when nothing was identified, or when it is the only source with active
 	//     real-time protection. Both products are always listed in AVProducts.
 	if runtime.GOOS == "darwin" {
-		cylanceProduct, cylanceVersion, cylanceErr := getMacCylanceProduct()
-		if cylanceErr != nil {
-			if !errors.Is(cylanceErr, ErrNotSupported) {
-				errs = append(errs, cylanceErr)
-				avFailed = true
-			}
-		} else if cylanceProduct != nil {
-			avCollected = true
-			status.AVProducts = append(status.AVProducts, *cylanceProduct)
-			if !providerIdentified {
-				status.Provider = cylanceProduct.Provider
-				status.ProviderVersion = cylanceVersion
-				providerIdentified = true
-			}
-			if cylanceProduct.RealTimeProtection {
-				realTime = true
-			}
-		}
-
-		macDefenderStatus, macDefenderProduct, macDefenderErr := getMacDefenderStatus()
-		if macDefenderErr != nil {
-			if !errors.Is(macDefenderErr, ErrNotSupported) {
-				errs = append(errs, macDefenderErr)
-				avFailed = true
-			}
-		} else {
-			avCollected = true
-			if macDefenderClaimsProvider(providerIdentified, realTime, macDefenderStatus) {
-				status.Provider = "windows_defender"
-				// The version must describe the product that owns the label,
-				// not a Cylance version recorded above.
-				status.ProviderVersion = macDefenderStatus.ProviderVersion
-				providerIdentified = true
-			}
-			if macDefenderProduct != nil {
-				status.AVProducts = append(status.AVProducts, *macDefenderProduct)
-			}
-			if status.ProviderVersion == "" {
-				status.ProviderVersion = macDefenderStatus.ProviderVersion
-			}
-			if macDefenderStatus.RealTimeProtection {
-				realTime = true
-			}
-			if status.DefinitionsVersion == "" {
-				status.DefinitionsVersion = macDefenderStatus.DefinitionsVersion
-			}
-			if status.DefinitionsUpdatedAt == "" {
-				status.DefinitionsUpdatedAt = macDefenderStatus.DefinitionsUpdatedAt
-			}
-			status.LastScanAt = latestScanTime(macDefenderStatus)
-			if macDefenderStatus.LastFullScan != "" {
-				status.LastScanType = "full"
-			} else if macDefenderStatus.LastQuickScan != "" {
-				status.LastScanType = "quick"
-			}
-		}
+		tally := avTally{providerIdentified: providerIdentified, realTime: realTime, collected: avCollected, failed: avFailed}
+		applyMacAVSources(&status, &tally, collectMacAVSources())
+		providerIdentified, realTime, avCollected, avFailed = tally.providerIdentified, tally.realTime, tally.collected, tally.failed
+		errs = append(errs, tally.errs...)
 	}
 
 	// Elastic Defend on Linux (#2018): Linux has no security-center registry,
