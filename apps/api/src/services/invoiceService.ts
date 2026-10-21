@@ -20,7 +20,7 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
-import { resolveDraftBillTo, invoiceTicketNumberSql, invoiceTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from './invoicePdf';
+import { resolveDraftBillTo, invoiceTicketNumberSql, invoiceTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from './invoiceRenderHelpers';
 import { freezeDocumentFooter } from './documentFooter';
 import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { stampedPresentation } from './invoicePresentation';
@@ -74,9 +74,9 @@ import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, isSupportedLocale, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
-import { tApi } from '../i18n';
-import type { CustomerInvoiceHeaderDto, CustomerInvoiceLineCore, DocumentBillToAddress, DocumentSellerSnapshot } from '@breeze/shared/documents';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+
+import { documentLabelsFor, type CustomerInvoiceHeaderDto, type CustomerInvoiceLineCore, type DocumentBillToAddress, type DocumentSellerSnapshot } from '@breeze/shared/documents';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -1040,7 +1040,7 @@ export function toCustomerInvoiceLine(
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
     // blurb and never the title.
-    name: noteWithheld ? (text.title ?? tApi(isSupportedLocale(locale) ? locale : 'en', 'pdf:invoice.laborLine')) : line.name ?? null,
+    name: noteWithheld ? (text.title ?? documentLabelsFor(locale).laborLine) : line.name ?? null,
     description: noteWithheld ? '' : line.description ?? '',
     quantity: line.quantity,
     unitPrice: line.unitPrice,
