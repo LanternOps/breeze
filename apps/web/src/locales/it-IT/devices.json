@@ -2052,6 +2052,7 @@
       "excludedCategoryTitle": "L'anello di aggiornamento {{ring}} esclude la categoria di questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedAppRuleTitle": "Una regola di blocco o di fissaggio app dell'anello di aggiornamento collegato trattiene questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedRingReferenceTitle": "Trattenuta: il criterio patch di questo dispositivo collega un anello di aggiornamento che non esiste più o non è disponibile per questo partner. Correggi l'anello di aggiornamento del criterio per riprendere l'applicazione delle patch.",
+      "excludedDeclinedTitle": "Rifiutata: questa patch è stata rifiutata esplicitamente, quindi l'approvazione automatica dell'anello non la installerà. Approvala di nuovo per consentirla.",
       "pending": "Approvazione in sospeso",
       "needsApprovalRingTitle": "L'anello di aggiornamento {{ring}} non approva automaticamente questa patch. Approvala manualmente per installarla.",
       "needsApprovalNoRingTitle": "Nessun anello di aggiornamento è collegato al criterio patch di questo dispositivo, quindi questa patch si installa solo dopo un'approvazione manuale.",

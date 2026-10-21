@@ -677,3 +677,16 @@ describe('evaluatePatchInstallEligibility — explicit decline is terminal (#936
     expect(approved).toEqual([]);
   });
 });
+
+describe('explicit decline — tie-break (#9369)', () => {
+  const T = new Date('2026-10-01T00:00:00Z');
+  it.each([
+    ['approved first', ['approved', 'rejected']],
+    ['rejected first', ['rejected', 'approved']],
+  ])('same updatedAt resolves to the decline (%s)', async (_n, order) => {
+    mockEvaluatorReads([row({ patchId: P1 })], order.map((status, i) => ({ patchId: P1, status, ringId: i === 0 ? RING : null, updatedAt: T })));
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig() });
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toContainEqual({ patchId: P1, reason: 'explicitly_declined' });
+  });
+});

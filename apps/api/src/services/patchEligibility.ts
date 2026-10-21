@@ -302,7 +302,8 @@ export async function evaluatePatchInstallEligibility(args: {
   const latest = new Map<string, { status: string; at: number }>();
   for (const approval of manualApprovals) {
     if (approval.ringId !== ringConfig.ringId && approval.ringId !== null) continue;
-    const at = approval.updatedAt ? new Date(approval.updatedAt).getTime() : 0;
+    const t = approval.updatedAt ? new Date(approval.updatedAt).getTime() : 0;
+    const at = Number.isFinite(t) ? t : 0;
     const prev = latest.get(approval.patchId);
     if (
       !prev ||

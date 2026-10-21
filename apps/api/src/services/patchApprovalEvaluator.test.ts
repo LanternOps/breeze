@@ -2318,3 +2318,12 @@ describe('decidePatchApproval — explicit decline is terminal (#9369)', () => {
     expect(d).toEqual({ denied: 'explicitly_declined' });
   });
 });
+
+describe('decidePatchApproval — decline beats manual approval when both sets hold the patch (#9369)', () => {
+  it('denies explicitly_declined', () => {
+    const cand = { patchId: 'p-1', category: null, severity: null, releaseDate: null, source: 'linux', packageId: null, version: null, firstSeenAt: null };
+    const ring = { ringId: 'ring-1', categoryRules: [], autoApprove: {}, deferralDays: 0 };
+    const d = decidePatchApproval(cand, ring as never, new Set(['p-1']), new Map(), parseRingAutoApprove({}), new Date(), new Set(['p-1']));
+    expect(d).toEqual({ denied: 'explicitly_declined' });
+  });
+});
