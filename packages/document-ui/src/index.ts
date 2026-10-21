@@ -12,4 +12,5 @@ export { QuoteDocumentView, quoteAgreementLinks } from './QuoteDocumentView';
 export { QuoteBlocks } from './QuoteBlocks';
 export { DocumentAgreements } from './DocumentAgreements';
 export { DocumentCover } from './DocumentCover';
+export { DocumentCoverCrop } from './DocumentCoverCrop';
 export type { DocumentHostComponents, DocumentSlots } from './hostComponents';

@@ -33,7 +33,7 @@ export function QuoteDocumentView({
     <>
       <Slot name="before-paper">{slots?.beforePaper}</Slot>
       <DocumentPaper theme={model.branding.theme}>
-        {model.cover && <DocumentCover cover={model.cover} components={components} />}
+        {model.cover && <DocumentCover cover={model.cover} pageSize={model.branding.pageSize} components={components} />}
         <DocumentHeader header={model.header} branding={model.branding} components={components} titleAs={model.cover ? 'h2' : 'h1'} />
         {model.introNotes && (
           <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">{model.introNotes}</p>

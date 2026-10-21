@@ -205,4 +205,15 @@ describe('QuoteEditor — cover page panel', () => {
       coverPage: { enabled: true, showPreparedBy: true, coverImageId: 'img-cov' },
     }));
   });
+  it('previews the cover image in the same page-aspect crop as the PDF and the document (OD-5)', async () => {
+    const withImage = { ...detail.quote, coverPage: { enabled: true, showPreparedBy: true, coverImageId: 'img-1' } };
+    const { unmount } = await renderEditor({ ...detail, quote: withImage, presentation: { theme: 'classic', pageSize: 'letter' } });
+    const letter = screen.getByTestId('quote-cover-page-image-crop');
+    expect(letter.className).toContain('doc-cover-frame');
+    expect(letter.className).toContain('doc-cover-letter');
+    unmount();
+    // No presentation on the payload reads as the default page: A4.
+    await renderEditor({ ...detail, quote: withImage });
+    expect(screen.getByTestId('quote-cover-page-image-crop').className).toContain('doc-cover-a4');
+  });
 });

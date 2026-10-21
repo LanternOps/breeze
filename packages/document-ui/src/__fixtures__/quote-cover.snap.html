@@ -3,35 +3,37 @@
   </div>
   <div class="space-y-10 px-4 py-7 sm:py-9">
     <section class="-mx-4 -mt-7 border-b sm:-mx-[4.25rem] sm:-mt-9" data-testid="document-cover">
-      <img alt="" class="h-48 w-full object-cover sm:h-64" data-asset="cover:00000000-0000-4000-8000-000000000050">
-      </img>
-      <div class="space-y-6 px-4 py-8 sm:px-[4.25rem] sm:py-12">
-        <div class="space-y-3">
-          <p class="doc-accent-text text-xs font-semibold uppercase tracking-[0.18em]">
-            "Proposal"
-          </p>
-          <h1 class="doc-font-display max-w-[24ch] text-3xl font-semibold leading-tight tracking-tight text-foreground sm:text-4xl">
-            "Network refresh proposal"
-          </h1>
+      <div class="doc-cover-frame doc-cover-letter" data-testid="document-cover-frame">
+        <img alt="" class="doc-cover-image" data-asset="cover:00000000-0000-4000-8000-000000000050">
+        </img>
+        <div class="doc-cover-band space-y-4 px-4 py-4 sm:space-y-6 sm:px-[4.25rem] sm:py-8" data-testid="document-cover-band">
+          <div class="space-y-2 sm:space-y-3">
+            <p class="doc-accent-text text-xs font-semibold uppercase tracking-[0.18em]">
+              "Proposal"
+            </p>
+            <h1 class="doc-font-display max-w-[24ch] text-2xl font-semibold leading-tight tracking-tight text-foreground sm:text-4xl">
+              "Network refresh proposal"
+            </h1>
+          </div>
+          <dl class="grid grid-cols-2 gap-4 text-xs sm:text-sm">
+            <div>
+              <dt class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                "Prepared for"
+              </dt>
+              <dd class="mt-1 font-medium text-foreground">
+                "Acme Dental"
+              </dd>
+            </div>
+            <div>
+              <dt class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                "Prepared by"
+              </dt>
+              <dd class="mt-1 font-medium text-foreground">
+                "Example MSP"
+              </dd>
+            </div>
+          </dl>
         </div>
-        <dl class="grid gap-4 text-sm sm:grid-cols-2">
-          <div>
-            <dt class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              "Prepared for"
-            </dt>
-            <dd class="mt-1 font-medium text-foreground">
-              "Acme Dental"
-            </dd>
-          </div>
-          <div>
-            <dt class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              "Prepared by"
-            </dt>
-            <dd class="mt-1 font-medium text-foreground">
-              "Example MSP"
-            </dd>
-          </div>
-        </dl>
       </div>
     </section>
     <div class="space-y-8">
