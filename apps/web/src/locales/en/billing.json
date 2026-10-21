@@ -2192,36 +2192,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Bill to",
-    "documentType": "Invoice",
-    "due": "Due",
-    "empty": "This invoice doesn’t have any line items yet.",
-    "fallbackTitle": "Invoice",
-    "issued": "Issued",
-    "laborLine": "Labor",
     "preview": {
       "description": "This is what your customer sees on their invoice.",
       "downloadError": "Could not download the invoice PDF.",
       "downloadPdf": "Download PDF",
-      "preparing": "Preparing…"
+      "loadError": "Could not load the customer view of this invoice.",
+      "loading": "Loading the customer view…",
+      "preparing": "Preparing…",
+      "retry": "Try again"
     },
-    "table": {
-      "amount": "Amount",
-      "description": "Description",
-      "qty": "Qty",
-      "tax": "Tax",
-      "unitPrice": "Unit price"
-    },
-    "terms": "Terms & Conditions",
-    "ticketHeader": "Ticket #{{number}}",
-    "ticketWork": "Ticket work",
-    "totals": {
-      "amountDue": "Amount due",
-      "paid": "Paid",
-      "subtotal": "Subtotal",
-      "tax": "Tax",
-      "total": "Total"
-    }
+    "ticketHeader": "Ticket #{{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Invoices",

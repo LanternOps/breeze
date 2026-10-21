@@ -2192,36 +2192,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Fattura a",
-    "documentType": "Fattura",
-    "due": "Scadenza",
-    "empty": "Questa fattura non contiene ancora righe.",
-    "fallbackTitle": "Fattura",
-    "issued": "Emessa",
-    "laborLine": "Manodopera",
     "preview": {
       "description": "Questo è ciò che il cliente vede sulla fattura.",
       "downloadError": "Impossibile scaricare il PDF della fattura.",
       "downloadPdf": "Scarica PDF",
-      "preparing": "Preparazione…"
+      "loadError": "Impossibile caricare la vista cliente di questa fattura.",
+      "loading": "Caricamento della vista cliente…",
+      "preparing": "Preparazione…",
+      "retry": "Riprova"
     },
-    "table": {
-      "amount": "Importo",
-      "description": "Descrizione",
-      "qty": "Qtà",
-      "tax": "Imposta",
-      "unitPrice": "Prezzo unitario"
-    },
-    "terms": "Termini e condizioni",
-    "ticketHeader": "Ticket n. {{number}}",
-    "ticketWork": "Lavoro relativo al ticket",
-    "totals": {
-      "amountDue": "Importo dovuto",
-      "paid": "Pagato",
-      "subtotal": "Subtotale",
-      "tax": "Imposta",
-      "total": "Totale"
-    }
+    "ticketHeader": "Ticket n. {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Fatture",

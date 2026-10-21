@@ -2192,36 +2192,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Facturer à",
-    "documentType": "Facture",
-    "due": "Échéance",
-    "empty": "Cette facture ne contient encore aucune ligne.",
-    "fallbackTitle": "Facture",
-    "issued": "Émise",
-    "laborLine": "Main-d’œuvre",
     "preview": {
       "description": "Voici ce que votre client voit sur sa facture.",
       "downloadError": "Impossible de télécharger le PDF de la facture.",
       "downloadPdf": "Télécharger le PDF",
-      "preparing": "Préparation…"
+      "loadError": "Impossible de charger la vue client de cette facture.",
+      "loading": "Chargement de la vue client…",
+      "preparing": "Préparation…",
+      "retry": "Réessayer"
     },
-    "table": {
-      "amount": "Montant",
-      "description": "Description",
-      "qty": "Qté",
-      "tax": "Taxe",
-      "unitPrice": "Prix unitaire"
-    },
-    "terms": "Conditions générales",
-    "ticketHeader": "Billet n° {{number}}",
-    "ticketWork": "Travail lié au billet",
-    "totals": {
-      "amountDue": "Montant dû",
-      "paid": "Payé",
-      "subtotal": "Sous-total",
-      "tax": "Taxe",
-      "total": "Total"
-    }
+    "ticketHeader": "Billet n° {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Factures",

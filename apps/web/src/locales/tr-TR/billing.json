@@ -2192,36 +2192,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Fatura Alıcısı",
-    "documentType": "Fatura",
-    "due": "Vadesi geldi",
-    "empty": "Bu faturada henüz herhangi bir satır öğesi yok.",
-    "fallbackTitle": "Fatura",
-    "issued": "Verildi",
-    "laborLine": "İşçilik",
     "preview": {
       "description": "Müşterinizin faturasında gördüğü şey budur.",
       "downloadError": "Fatura PDF'si indirilemedi.",
       "downloadPdf": "PDF'yi indir",
-      "preparing": "Hazırlanıyor…"
+      "loadError": "Bu faturanın müşteri görünümü yüklenemedi.",
+      "loading": "Müşteri görünümü yükleniyor…",
+      "preparing": "Hazırlanıyor…",
+      "retry": "Yeniden dene"
     },
-    "table": {
-      "amount": "Tutar",
-      "description": "Açıklama",
-      "qty": "Adet",
-      "tax": "Vergi",
-      "unitPrice": "Birim fiyatı"
-    },
-    "terms": "Şartlar ve Koşullar",
-    "ticketHeader": "Talep No. {{number}}",
-    "ticketWork": "Talep çalışması",
-    "totals": {
-      "amountDue": "Ödenecek tutar",
-      "paid": "Ücretli",
-      "subtotal": "Ara Toplam",
-      "tax": "Vergi",
-      "total": "Toplam"
-    }
+    "ticketHeader": "Talep No. {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Faturalar",

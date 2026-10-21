@@ -1,282 +1,127 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { INVOICE_DTO_FIXTURES, type CustomerInvoiceDocument } from '@breeze/shared/documents';
 
-import { InvoiceDocument } from './InvoiceDocument';
 import InvoiceDocumentPreview from './InvoiceDocument';
 import type { InvoiceDetail as InvoiceDetailData } from './invoiceTypes';
+import { i18n } from '../../lib/i18n';
 
-// InvoiceDocument is presentational, but its module imports the auth/org stores
-// and navigation (used by the PDF-download affordance). Mock them so the unit
-// renders without real store initialization or network.
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
-vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: (selector: (s: { organizations: { id: string; name: string }[] }) => unknown) =>
-    selector({ organizations: [{ id: 'org-1', name: 'Acme Industries' }] }),
-}));
+const fetchWithAuth = vi.fn();
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
-// A billed line carrying a cost, plus a hidden bundle child that also carries a
-// cost — neither the cost nor the hidden component may surface on the customer
-// document.
+// The staff payload: a hidden line carrying a secret and an internal note on the invoice.
+// The customer-view fixture lacks both — the Preview must render only the latter.
 const detail: InvoiceDetailData = {
   autopay: null,
   invoice: {
-    id: 'inv-1', invoiceNumber: 'INV-0007', orgId: 'org-1', siteId: null, status: 'sent',
-    currencyCode: 'USD', issueDate: '2026-06-01', dueDate: '2026-06-30', sentAt: null, subtotal: '120.00',
-    taxRate: '0.000', taxTotal: '0.00', total: '120.00', amountPaid: '0.00', balance: '120.00',
-    billToName: 'Acme', notes: null, termsAndConditions: null, sellerSnapshot: null, createdAt: '2026-06-01T00:00:00Z',
+    id: 'inv-1', invoiceNumber: 'INV-0042', orgId: 'org-1', siteId: null, status: 'sent',
+    currencyCode: 'USD', issueDate: '2026-03-01', dueDate: '2026-03-31', sentAt: null, subtotal: '300.00',
+    taxRate: '0.000', taxTotal: '0.00', total: '300.00', amountPaid: '0.00', balance: '300.00',
+    billToName: 'Acme Dental', notes: 'INTERNAL-NOTE-DO-NOT-SHOW', termsAndConditions: null, sellerSnapshot: null, createdAt: '2026-03-01T00:00:00Z',
   },
   lines: [
     {
-      id: 'l1', invoiceId: 'inv-1', sourceType: 'catalog', parentLineId: null, catalogItemId: 'c1',
-      name: null, description: 'Widget', quantity: '1.00', unitPrice: '120.00', costBasis: '80.00', revenueAllocation: '120.00',
-      taxable: true, customerVisible: true, lineTotal: '120.00', isUnapprovedTime: false, sortOrder: 0, deviceCount: 0,
-    },
-    {
-      id: 'l2', invoiceId: 'inv-1', sourceType: 'bundle', parentLineId: 'l1', catalogItemId: 'c2',
+      id: 'hidden', invoiceId: 'inv-1', sourceType: 'bundle', parentLineId: null, catalogItemId: 'c2',
       name: null, description: 'Secret component', quantity: '1.00', unitPrice: '0.00', costBasis: '10.00', revenueAllocation: null,
       taxable: false, customerVisible: false, lineTotal: '0.00', isUnapprovedTime: false, sortOrder: 1, deviceCount: 0,
     },
   ],
 };
 
-describe('InvoiceDocument — customer-facing, no internal cost', () => {
-  it('renders billed lines but never the cost, margin, or hidden components', () => {
-    render(<InvoiceDocument detail={detail} customerName="Acme Industries" />);
-    expect(screen.getByTestId('invoice-document')).toBeInTheDocument();
+function respondWith(dto: CustomerInvoiceDocument) {
+  return { ok: true, status: 200, json: async () => ({ data: dto }), blob: async () => new Blob() };
+}
 
-    // The customer DOES see the line and its price/total.
-    expect(screen.getByText('Widget')).toBeInTheDocument();
-    expect(screen.getAllByText('$120.00').length).toBeGreaterThan(0);
+const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
-    // Internal cost figures must NOT leak: neither the per-unit cost ($80.00 /
-    // $10.00) nor a margin/cost label, nor the hidden bundle child.
-    expect(screen.queryByText('$80.00')).not.toBeInTheDocument();
-    expect(screen.queryByText('$10.00')).not.toBeInTheDocument();
-    expect(screen.queryByText(/margin/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Cost$/)).not.toBeInTheDocument();
+describe('InvoiceDocumentPreview — renders the customer view', () => {
+  beforeEach(() => {
+    fetchWithAuth.mockReset();
+    fetchWithAuth.mockResolvedValue(respondWith(INVOICE_DTO_FIXTURES.issued));
+  });
+
+  it('renders the customer view, not the staff payload', async () => {
+    render(<InvoiceDocumentPreview detail={detail} />);
+    await waitFor(() => expect(screen.getByTestId('document-root')).toBeInTheDocument());
+    expect(fetchWithAuth).toHaveBeenCalledWith('/invoices/inv-1/customer-view');
+    expect(screen.getByText('Remote support')).toBeInTheDocument();
+    expect(screen.getByTestId('document-totals-hero')).toHaveTextContent('Balance due');
     expect(screen.queryByText('Secret component')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('invoice-margin')).not.toBeInTheDocument();
-  });
-});
-
-// #6467: the disclosure is structured data (workedMinutes), not baked into
-// `description`, so it survives regardless of what the description says.
-describe('InvoiceDocument — worked-vs-billed note (#6467)', () => {
-  it('shows the note for a time_entry line whose worked minutes differ from billed', () => {
-    const withNote: InvoiceDetailData = {
-      ...detail,
-      lines: [{
-        id: 'l3', invoiceId: 'inv-1', sourceType: 'time_entry', parentLineId: null, catalogItemId: null,
-        name: null, description: 'On-site', quantity: '1.00', unitPrice: '225.00', costBasis: null, revenueAllocation: null,
-        taxable: false, customerVisible: true, lineTotal: '225.00', isUnapprovedTime: false, sortOrder: 0, deviceCount: 0,
-        workedMinutes: 30,
-      }],
-    };
-    render(<InvoiceDocument detail={withNote} customerName="Acme Industries" />);
-    expect(screen.getByTestId('invoice-document-line-worked-vs-billed-l3')).toHaveTextContent(
-      '0.50 h worked · 1.00 h billed',
-    );
-  });
-});
-
-describe('InvoiceDocument — partner branding letterhead', () => {
-  const branded: InvoiceDetailData = {
-    ...detail,
-    branding: {
-      partnerName: 'Lantern IT', logoUrl: null, primaryColor: '#1c8a9e',
-      footer: 'Thank you for your business.', currencyCode: 'USD', seller: null,
-    },
-  };
-
-  it('renders the partner wordmark from branding when no logo is present', () => {
-    render(<InvoiceDocument detail={branded} customerName="Acme Industries" />);
-    expect(screen.getByTestId('invoice-document-wordmark')).toHaveTextContent('Lantern IT');
+    expect(screen.queryByText('INTERNAL-NOTE-DO-NOT-SHOW')).not.toBeInTheDocument();
+    expect(screen.queryByText(/margin/i)).not.toBeInTheDocument();
   });
 
-  it('renders the partner logo (alt = partner name) when a logoUrl is present', () => {
-    const withLogo: InvoiceDetailData = {
-      ...branded,
-      branding: { ...branded.branding!, logoUrl: 'https://cdn.example.com/logo.png' },
-    };
-    render(<InvoiceDocument detail={withLogo} customerName="Acme Industries" />);
-    const logo = screen.getByAltText('Lantern IT');
-    expect(logo).toHaveAttribute('src', 'https://cdn.example.com/logo.png');
-    // The wordmark fallback must not also render when a logo is shown.
-    expect(screen.queryByTestId('invoice-document-wordmark')).not.toBeInTheDocument();
-  });
-});
-
-describe('InvoiceDocumentPreview — customer-name fallback', () => {
-  it('falls back to an em-dash (never a raw org UUID fragment) when neither billToName nor the org store resolves', () => {
-    const d: InvoiceDetailData = {
-      ...detail,
-      invoice: {
-        ...detail.invoice,
-        billToName: null, // no explicit bill-to
-        orgId: '9f8e7d6c-1234-4abc-9def-0123456789ab', // not in the mocked org store
-      },
-    };
-    render(<InvoiceDocumentPreview detail={d} />);
-    const customer = screen.getByTestId('invoice-document-customer');
-    expect(customer).toHaveTextContent('—');
-    // The UUID (or its first 8 chars) must never leak onto the customer document.
-    expect(customer).not.toHaveTextContent('9f8e7d6c');
-  });
-});
-
-describe('InvoiceDocument — contract overage sibling (#3205 W04)', () => {
-  it('characterizes a contract overage sibling as an ordinary line, not a bundle child', () => {
-    const line = detail.lines[0]!;
-    render(<InvoiceDocument detail={{
-      ...detail,
-      lines: [
-        { ...line, id: 'base', description: 'Endpoints', quantity: '25.00', unitPrice: '10.00', lineTotal: '250.00', parentLineId: null, sortOrder: 1 },
-        { ...line, id: 'over', description: 'Overage: 1 above 25 included — Endpoints', quantity: '1.00', unitPrice: '12.00', lineTotal: '12.00', parentLineId: null, sortOrder: 2 },
-        { ...line, id: 'child', description: 'Bundle component', parentLineId: 'base', customerVisible: true, sortOrder: 3 },
-      ],
-    }} customerName="Acme Industries" />);
-    const overCell = screen.getByText(/Overage: 1 above 25 included/).closest('td')!;
-    expect(overCell.className).not.toContain('pl-8');
-    expect(overCell.textContent).not.toContain('↳');
-    const childCell = screen.getByText('Bundle component').closest('td')!;
-    expect(childCell.className).toContain('pl-8');
-  });
-});
-
-describe('InvoiceDocument — ticket grouping and labeling (#3319)', () => {
-  it('groups lines under ticket headers with translated label and obeys #3319 title/blurb rules', () => {
-    const line = detail.lines[0]!;
-    render(<InvoiceDocument detail={{
-      ...detail,
-      lines: [
-        {
-          ...line,
-          id: 't-line-1',
-          ticketId: 'tick-1',
-          ticketNumber: '1042',
-          ticketSubject: 'Printer issue',
-          ticketCategory: 'Hardware',
-          name: 'Diagnostic Labor',
-          description: 'Replaced toner sensor',
-        },
-      ],
-    }} customerName="Acme Industries" />);
-
-    expect(screen.getByText(/Ticket #1042/)).toBeInTheDocument();
-    expect(screen.getByText(/: Printer issue/)).toBeInTheDocument();
-    expect(screen.getByText('Hardware')).toBeInTheDocument();
-    // #3319: name is the title, description is the blurb
-    expect(screen.getByText('Diagnostic Labor')).toBeInTheDocument();
-    expect(screen.getByText('Replaced toner sensor')).toBeInTheDocument();
+  it('refetches when the workspace reloads', async () => {
+    const { rerender } = render(<InvoiceDocumentPreview detail={detail} />);
+    await settle();
+    rerender(<InvoiceDocumentPreview detail={{ ...detail }} />);
+    await settle();
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
   });
 
-  it('does not merge two number-less tickets into one group', () => {
-    const line = detail.lines[0]!;
-    render(<InvoiceDocument detail={{
-      ...detail,
-      lines: [
-        {
-          ...line,
-          id: 't-line-1',
-          ticketId: 'tick-1',
-          ticketNumber: null,
-          ticketSubject: 'Email config',
-          ticketCategory: 'Software',
-          name: 'Work 1',
-        },
-        {
-          ...line,
-          id: 't-line-2',
-          ticketId: 'tick-2',
-          ticketNumber: null,
-          ticketSubject: 'Router reboot',
-          ticketCategory: 'Network',
-          name: 'Work 2',
-        },
-      ],
-    }} customerName="Acme Industries" />);
-
-    expect(screen.getByText(/: Email config/)).toBeInTheDocument();
-    expect(screen.getByText(/: Router reboot/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Ticket work/)).toHaveLength(2);
+  it('fetches on every mount of the Preview tab', async () => {
+    const first = render(<InvoiceDocumentPreview detail={detail} />);
+    await settle();
+    first.unmount();
+    render(<InvoiceDocumentPreview detail={detail} />);
+    await settle();
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
   });
 
-  it('renders lines without ticketId directly without ticket headers', () => {
-    const line = detail.lines[0]!;
-    render(<InvoiceDocument detail={{
-      ...detail,
-      lines: [
-        { ...line, id: 'plain', ticketId: null, name: 'Cloud Backup', description: 'Daily backup' },
-      ],
-    }} customerName="Acme Industries" />);
-
-    expect(screen.queryByText(/Ticket #/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Ticket work/)).not.toBeInTheDocument();
-    expect(screen.getByText('Cloud Backup')).toBeInTheDocument();
-  });
-});
-
-// #8604: labor line detail — date / note / worked-time / per-day grouping.
-describe('InvoiceDocument — time-entry line detail (#8604)', () => {
-  const base = detail.lines[0]!;
-  const te = (id: string, workDate: string | null, qty: string, total: string, extra: Record<string, unknown> = {}) => ({
-    ...base, id, sourceType: 'time_entry' as const, catalogItemId: null, name: null, description: `Note ${id}`,
-    quantity: qty, unitPrice: '100.00', lineTotal: total, workDate, ...extra,
-  });
-  const part = { ...base, id: 'part', sourceType: 'catalog' as const, name: 'Cable', description: 'Cat6 patch', workDate: null, sortOrder: 9 };
-  const mk = (lines: unknown[], lineDetail?: unknown) =>
-    ({ ...detail, lines, ...(lineDetail ? { lineDetail } : {}) }) as unknown as InvoiceDetailData;
-  const on = { grouping: 'entry', showDate: true, showNote: true, showWorkedTime: true };
-
-  it('without lineDetail renders exactly as before (no date, note, worked note)', () => {
-    render(<InvoiceDocument detail={mk([te('a', '2026-09-16', '1.50', '150.00', { workedMinutes: 110, sortOrder: 0 })])} customerName="Acme" />);
-    expect(screen.getByText('Note a')).toBeInTheDocument();
-    expect(screen.queryByTestId('invoice-document-line-date-a')).not.toBeInTheDocument();
-    expect(screen.getByTestId('invoice-document-line-worked-vs-billed-a')).toBeInTheDocument();
+  it('discards a stale response', async () => {
+    let resolveOld!: (v: unknown) => void;
+    fetchWithAuth.mockReset();
+    fetchWithAuth
+      .mockImplementationOnce(() => new Promise((r) => { resolveOld = r; }))
+      .mockResolvedValueOnce(respondWith({ ...INVOICE_DTO_FIXTURES.issued, invoice: { ...INVOICE_DTO_FIXTURES.issued.invoice, invoiceNumber: 'INV-NEW' } }));
+    const { rerender } = render(<InvoiceDocumentPreview detail={detail} />);
+    rerender(<InvoiceDocumentPreview detail={{ ...detail }} />);
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('INV-NEW'));
+    await act(async () => { resolveOld(respondWith({ ...INVOICE_DTO_FIXTURES.issued, invoice: { ...INVOICE_DTO_FIXTURES.issued.invoice, invoiceNumber: 'INV-OLD' } })); });
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('INV-NEW');
   });
 
-  it('showDate prints the date only on dated lines', () => {
-    render(<InvoiceDocument detail={mk([
-      te('a', '2026-09-16', '1.00', '100.00', { sortOrder: 0 }),
-      { ...part, sortOrder: 1 },
-    ], on)} customerName="Acme" />);
-    expect(screen.getByTestId('invoice-document-line-date-a')).toHaveTextContent('Sep 16, 2026');
-    expect(screen.queryByTestId('invoice-document-line-date-part')).not.toBeInTheDocument();
+  it('labels come from the document locale, not the staff UI language', async () => {
+    await i18n.changeLanguage('pt-BR');
+    try {
+      render(<InvoiceDocumentPreview detail={detail} />);
+      await waitFor(() => expect(screen.getByTestId('document-totals-hero')).toHaveTextContent('Balance due'));
+    } finally {
+      await i18n.changeLanguage('en');
+    }
   });
 
-  it('day grouping: ascending headers with day hours and amount, undated last, no per-line dates', () => {
-    render(<InvoiceDocument detail={mk([
-      te('a', '2026-09-17', '1.00', '100.00', { sortOrder: 0 }),
-      te('b', '2026-09-16', '1.50', '150.00', { sortOrder: 1 }),
-      te('c', '2026-09-16', '0.50', '50.00', { sortOrder: 2 }),
-      { ...part, sortOrder: 3 },
-    ], { ...on, grouping: 'day' })} customerName="Acme" />);
-    const d16 = screen.getByTestId('invoice-document-day-2026-09-16');
-    const d17 = screen.getByTestId('invoice-document-day-2026-09-17');
-    expect(d16).toHaveTextContent('Sep 16, 2026');
-    expect(d16).toHaveTextContent('$200.00');
-    expect(d16.querySelector('td:nth-child(2)')?.textContent).toBe('2');
-    expect(d16.compareDocumentPosition(d17) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.queryByTestId('invoice-document-line-date-a')).not.toBeInTheDocument();
-    expect(screen.getByText('Cable')).toBeInTheDocument();
-    expect(screen.queryByTestId('invoice-document-day-null')).not.toBeInTheDocument();
+  it('sets the partner accent on the wrapper outside the document', async () => {
+    render(<InvoiceDocumentPreview detail={detail} />);
+    await waitFor(() => expect(screen.getByTestId('document-root')).toBeInTheDocument());
+    const wrapper = screen.getByTestId('invoice-preview-paper');
+    expect(wrapper.style.getPropertyValue('--doc-accent')).toBe('#1d4ed8');
+    expect(wrapper.contains(screen.getByTestId('document-root'))).toBe(true);
   });
 
-  it('note OFF prints Labor for time-entry lines but leaves other lines alone', () => {
-    render(<InvoiceDocument detail={mk([
-      te('a', '2026-09-16', '1.00', '100.00', { sortOrder: 0 }),
-      { ...part, sortOrder: 1 },
-    ], { ...on, showNote: false })} customerName="Acme" />);
-    expect(screen.queryByText('Note a')).not.toBeInTheDocument();
-    expect(screen.getByText('Labor')).toBeInTheDocument();
-    expect(screen.getByText('Cable')).toBeInTheDocument();
-    expect(screen.getByText('Cat6 patch')).toBeInTheDocument();
+  it('shows an error line with retry when the fetch fails, and recovers', async () => {
+    fetchWithAuth.mockReset();
+    fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+    render(<InvoiceDocumentPreview detail={detail} />);
+    const retry = await screen.findByTestId('invoice-preview-retry');
+    fetchWithAuth.mockResolvedValueOnce(respondWith(INVOICE_DTO_FIXTURES.issued));
+    retry.click();
+    await waitFor(() => expect(screen.getByTestId('document-root')).toBeInTheDocument());
   });
 
-  it('worked time OFF hides the worked-vs-billed note', () => {
-    render(<InvoiceDocument detail={mk([te('a', '2026-09-16', '1.50', '150.00', { workedMinutes: 110, sortOrder: 0 })],
-      { ...on, showWorkedTime: false })} customerName="Acme" />);
-    expect(screen.queryByTestId('invoice-document-line-worked-vs-billed-a')).not.toBeInTheDocument();
+  it('a blank bill-to does not fall back to the org name', async () => {
+    fetchWithAuth.mockResolvedValue(respondWith({
+      ...INVOICE_DTO_FIXTURES.issued,
+      invoice: { ...INVOICE_DTO_FIXTURES.issued.invoice, billToName: null },
+    }));
+    render(<InvoiceDocumentPreview detail={detail} />);
+    await waitFor(() => expect(screen.getByTestId('document-root')).toBeInTheDocument());
+    expect(screen.queryByText('Bill to')).not.toBeInTheDocument();
+  });
+
+  it('keeps the PDF download affordance', async () => {
+    render(<InvoiceDocumentPreview detail={detail} />);
+    expect(screen.getByTestId('invoice-preview-download-pdf')).toBeInTheDocument();
   });
 });

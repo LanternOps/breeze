@@ -2192,36 +2192,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Bill zu",
-    "documentType": "Rechnung",
-    "due": "Fällig",
-    "empty": "Diese Rechnung enthält noch keine Einzelposten.",
-    "fallbackTitle": "Rechnung",
-    "issued": "Ausgestellt",
-    "laborLine": "Arbeitszeit",
     "preview": {
       "description": "Das sieht Ihr Kunde auf seiner Rechnung.",
       "downloadError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
       "downloadPdf": "Laden Sie PDF herunter",
-      "preparing": "Vorbereiten…"
+      "loadError": "Die Kundenansicht dieser Rechnung konnte nicht geladen werden.",
+      "loading": "Kundenansicht wird geladen …",
+      "preparing": "Vorbereiten…",
+      "retry": "Erneut versuchen"
     },
-    "table": {
-      "amount": "Betrag",
-      "description": "Beschreibung",
-      "qty": "Menge",
-      "tax": "Steuer",
-      "unitPrice": "Stückpreis"
-    },
-    "terms": "Allgemeine Geschäftsbedingungen",
-    "ticketHeader": "Ticket-Nr. {{number}}",
-    "ticketWork": "Ticket-Arbeit",
-    "totals": {
-      "amountDue": "Fälliger Betrag",
-      "paid": "Bezahlt",
-      "subtotal": "Zwischensumme",
-      "tax": "Steuer",
-      "total": "Insgesamt"
-    }
+    "ticketHeader": "Ticket-Nr. {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Rechnungen",
