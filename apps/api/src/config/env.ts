@@ -221,6 +221,13 @@ export function toolSourcesEnabled(): boolean {
   return envFlag('TOOL_SOURCES_ENABLED', false);
 }
 
+// Tool Catalog W3 (#5218). Platform kill switch for Flows (flow documents,
+// flow AI tools, /api/v1/flows). Default OFF. Read at CALL time so a test can
+// flip it per-case without vi.resetModules().
+export function flowsEnabled(): boolean {
+  return envFlag('FLOWS_ENABLED', false);
+}
+
 // Topology rollout deployment kill switch. Partner and organization flags are
 // still resolved for ordinary rollouts; setting this optional switch forces
 // every effective topology feature off. Read at call time so rollback does not
@@ -683,6 +690,15 @@ export const BILLING_URL = process.env.BILLING_URL ?? '';
 export const OAUTH_DCR_ENABLED = envFlag('OAUTH_DCR_ENABLED', false);
 export const OAUTH_DCR_REQUIRE_IAT = envFlag('OAUTH_DCR_REQUIRE_IAT', false);
 export const OAUTH_DCR_ALLOW_ANONYMOUS = envFlag('OAUTH_DCR_ALLOW_ANONYMOUS', false);
+
+// B-W03 (#6157): OAuth Client ID Metadata Documents — an https URL as
+// client_id, alongside DCR. Default off. Boot-time switch for the provider
+// feature + AS metadata; oauth/cimdPolicy.ts also checks it (and the host
+// allowlist) on every use, so the in-process document cache can never bypass
+// them. A change takes effect on restart. OAUTH_CIMD_ALLOWED_HOSTS
+// (CSV of hostnames / `.suffix`) restricts which hosts may serve documents;
+// unset = any public https host.
+export const OAUTH_CIMD_ENABLED = envFlag('OAUTH_CIMD_ENABLED', false);
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
 

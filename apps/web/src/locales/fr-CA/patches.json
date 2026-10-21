@@ -333,16 +333,7 @@
       "error": "Impossible de charger la liste des appareils.",
       "showing": "{{shown}} sur {{total}} affichés",
       "loadMore": "En charger plus",
-      "lastChecked": "Dernière vérification : {{when}}",
-      "status": {
-        "online": "En ligne",
-        "offline": "Hors ligne",
-        "maintenance": "Maintenance",
-        "decommissioned": "Mis hors service",
-        "quarantined": "En quarantaine",
-        "updating": "Mise à jour en cours",
-        "pending": "En attente"
-      }
+      "lastChecked": "Dernière vérification : {{when}}"
     }
   },
   "patchesPage": {

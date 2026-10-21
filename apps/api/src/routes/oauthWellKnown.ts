@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { MCP_OAUTH_ENABLED, OAUTH_CIMD_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { loadPublicJwks } from '../oauth/keys';
 
 export const wellKnownRoutes = new Hono();
@@ -22,6 +22,14 @@ if (MCP_OAUTH_ENABLED) {
       id_token_signing_alg_values_supported: ['EdDSA'],
       scopes_supported: ['openid', 'offline_access', 'mcp:read', 'mcp:write', 'mcp:execute'],
       resource_indicators_supported: true,
+      // RFC 9207 (B-W03 #6157): oidc-provider adds `iss` to every code-flow
+      // success and error redirect (no JARM, `code` only — pinned in
+      // oauth/provider.test.ts).
+      authorization_response_iss_parameter_supported: true,
+      // Client ID Metadata Documents, next to DCR (registration_endpoint
+      // stays: the MCP authorization spec now prefers CIMD, and removing DCR
+      // is a separate, later decision).
+      ...(OAUTH_CIMD_ENABLED ? { client_id_metadata_document_supported: true } : {}),
     });
   });
 

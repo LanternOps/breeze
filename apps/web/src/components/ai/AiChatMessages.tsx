@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, User } from "lucide-react";
 import AiToolCallCard from "./AiToolCallCard";
+import FlowDraftCard, { parseFlowToolResult } from "../flows/FlowDraftCard";
 import { CallerVerificationRefusal } from "../callerVerification/CallerVerificationRefusal";
 import AiApprovalDialog from "./AiApprovalDialog";
 import AiPlanReviewCard from "./AiPlanReviewCard";
@@ -391,6 +392,17 @@ export default function AiChatMessages({
           const proposalHref = scriptProposalHref(
             msg.toolName, matchingToolUse?.toolInput, msg.toolOutput ?? msg.content,
           );
+          // Tool Catalog W3 (#5218): a saved draft_flow / get_flow result gets a
+          // Flow card; failures and anything unparsable fall through to the
+          // default card below so errors stay visible.
+          const flowResult = parseFlowToolResult(msg.toolName, msg.toolOutput ?? msg.content);
+          if (flowResult) {
+            return (
+              <Fragment key={msg.id}>
+                <FlowDraftCard flow={flowResult.flow} validation={flowResult.validation} />
+              </Fragment>
+            );
+          }
           return (
             <Fragment key={msg.id}>
               <AiToolCallCard

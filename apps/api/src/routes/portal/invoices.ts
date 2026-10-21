@@ -12,7 +12,6 @@ import { zValidator } from '../../lib/validation';
 import { and, desc, eq, getTableColumns, ne, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceStripePayments, partners, stripeConnectAccounts } from '../../db/schema';
-import { portalBranding } from '../../db/schema/portal';
 import { listSchema, ticketParamSchema } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -21,7 +20,8 @@ import {
   isEtagFresh,
   portalFinancialMutationGuard,
 } from './helpers';
-import { getCustomerInvoice, markViewed, projectCustomerInvoiceLine } from '../../services/invoiceService';
+import { getPortalInvoiceRowOr404, markViewed } from '../../services/invoiceService';
+import { assembleCustomerInvoiceDocument } from '../../services/customerDocument';
 import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
 import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
@@ -114,16 +114,17 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
   return c.json(payload);
 });
 
-// GET /portal/invoices/:id — the customer view (visible lines only). Passing the
-// portal user's org id to the service guard enforces tenant isolation (404, not
-// 403, so we don't leak existence cross-tenant). markViewed stamps the open.
+// GET /portal/invoices/:id — the customer view (visible lines only). The org
+// guard lives in getPortalInvoiceRowOr404 (404, not 403, so we don't leak
+// existence cross-tenant); the customer projection is the one assembler
+// (customerDocument.ts, #9402). markViewed stamps the open.
 invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async (c) => {
   const auth = c.get('portalAuth');
   const { id } = c.req.valid('param');
 
-  let result: Awaited<ReturnType<typeof getCustomerInvoice>>;
+  let row: Awaited<ReturnType<typeof getPortalInvoiceRowOr404>>;
   try {
-    result = await getCustomerInvoice(id, auth.user.orgId);
+    row = await getPortalInvoiceRowOr404(id, auth.user.orgId);
   } catch (err) {
     if (err instanceof InvoiceServiceError) {
       return err.status === 404 ? c.json(INVOICE_NOT_FOUND_BODY, 404) : c.json({ error: err.message }, err.status);
@@ -131,8 +132,14 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     throw err;
   }
 
-  // Drafts are never customer-visible even though getCustomerInvoice is org-scoped.
-  if (result.invoice.status === 'draft') return c.json(INVOICE_NOT_FOUND_BODY, 404);
+  // Drafts are never customer-visible even though the row read is org-scoped.
+  // Refused HERE, before the assembler (which would throw on a portal draft).
+  if (row.status === 'draft') return c.json(INVOICE_NOT_FOUND_BODY, 404);
+
+  // Header, customer-visible lines, branding (partner-axis reads in the system
+  // context, fail-soft) and the document locale — the same document the public
+  // link and the staff Preview render.
+  const doc = await assembleCustomerInvoiceDocument(row, 'portal');
 
   // Best-effort view stamp — never fail the read if the stamp write hiccups.
   try {
@@ -141,38 +148,14 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     console.error('[portal] markViewed failed', { invoiceId: id, orgId: auth.user.orgId, err });
   }
 
-  // Branding parity with GET /portal/quotes/:id. Without it the customer got a
-  // brand-accented proposal and a generic unbranded invoice from the same
-  // company in the same session, because InvoiceDetailView had nothing to pass
-  // to DocumentPaper/DocumentHeader.
-  //
-  // `partners` is a partner-axis RLS table invisible to this org scope (#1375
-  // class — 0 rows, no error), so the name reads under SYSTEM scope exactly as
-  // portal/quotes.ts does; portal_branding is org-scoped and reads fine here.
-  // Branding is decoration on top of a document the customer came to read or
-  // pay; a failure here is logged, never allowed to 500 the invoice.
-  let partner: { name: string | null } | undefined;
-  let brand: { logoUrl: string | null; primaryColor: string | null } | undefined;
-  try {
-    [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      db.select({ name: partners.name }).from(partners).where(eq(partners.id, result.partnerId)).limit(1)));
-    [brand] = await db
-      .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
-      .from(portalBranding)
-      .where(eq(portalBranding.orgId, auth.user.orgId))
-      .limit(1);
-  } catch (err) {
-    console.error('[portal/invoices] branding lookup failed', { invoiceId: id, partnerId: result.partnerId, err });
-  }
-
   // #7509: partner-axis read (invisible to this org scope) via the shared
   // resolver. On a lookup failure report "unavailable" — hiding a Pay button is
   // safer than showing one that 409s — and log it.
   let onlinePaymentAvailable = false;
   try {
-    onlinePaymentAvailable = await isPartnerOnlinePaymentAvailable(result.partnerId);
+    onlinePaymentAvailable = await isPartnerOnlinePaymentAvailable(row.partnerId);
   } catch (err) {
-    console.error('[portal/invoices] online-payment availability lookup failed', { invoiceId: id, partnerId: result.partnerId, err });
+    console.error('[portal/invoices] online-payment availability lookup failed', { invoiceId: id, partnerId: row.partnerId, err });
   }
 
   // #7824: surface an in-flight autopay collection so the Pay button can be
@@ -201,22 +184,17 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   }
 
   return c.json({
-    invoice: result.invoice,
-    // Re-project the exact safe keyset (defense in depth over the service).
-    // Not toCustomerInvoiceLine: getCustomerInvoice already applied the #8604
-    // toggles from the frozen columns, and re-running it would apply defaults.
-    lines: result.lines.map(projectCustomerInvoiceLine),
+    invoice: doc.invoice,
+    lines: doc.lines,
     onlinePaymentAvailable,
     collectionInProgress,
     autopayStatus: customerAutopay.status,
     autopayEnrolled: customerAutopay.enrolled,
     autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(auth.user.orgId, id),
     bankAutopay: autopayKnown ? await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)) : null,
-    branding: {
-      partnerName: partner?.name ?? null,
-      logoUrl: brand?.logoUrl ?? null,
-      primaryColor: brand?.primaryColor ?? null,
-    },
+    // D14: theme + page size are the invoice's frozen presentation.
+    branding: doc.branding,
+    documentLocale: doc.documentLocale,
   });
 });
 
@@ -246,10 +224,10 @@ invoiceRoutes.get('/invoices/:id/pdf', zValidator('param', ticketParamSchema), a
   const auth = c.get('portalAuth');
   const { id } = c.req.valid('param');
 
-  // Org-guard via the service (404 cross-tenant); also blocks draft PDFs.
-  let invoice: Awaited<ReturnType<typeof getCustomerInvoice>>['invoice'];
+  // Org-guard via the service (404 cross-tenant); the draft refusal follows.
+  let invoice: Awaited<ReturnType<typeof getPortalInvoiceRowOr404>>;
   try {
-    invoice = (await getCustomerInvoice(id, auth.user.orgId)).invoice;
+    invoice = await getPortalInvoiceRowOr404(id, auth.user.orgId);
   } catch (err) {
     if (err instanceof InvoiceServiceError) {
       return err.status === 404 ? c.json(INVOICE_NOT_FOUND_BODY, 404) : c.json({ error: err.message }, err.status);

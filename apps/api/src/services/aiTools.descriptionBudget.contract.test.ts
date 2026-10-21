@@ -34,9 +34,9 @@ interface Descriptor { name: string; description?: string; input_schema: unknown
 
 // Inspect the actual declarations, including factories outside the main literal list.
 const configurations = [
-  { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', DELEGANT_BASE_URL: '' },
-  { M365_ENABLED: 'true', GOOGLE_WORKSPACE_ENABLED: 'true', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'true', DELEGANT_BASE_URL: '' },
-  { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', DELEGANT_BASE_URL: 'https://delegant.example.com' },
+  { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', FLOWS_ENABLED: 'false', DELEGANT_BASE_URL: '' },
+  { M365_ENABLED: 'true', GOOGLE_WORKSPACE_ENABLED: 'true', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'true', FLOWS_ENABLED: 'true', DELEGANT_BASE_URL: '' },
+  { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', FLOWS_ENABLED: 'false', DELEGANT_BASE_URL: 'https://delegant.example.com' },
 ];
 const registry: Descriptor[] = [...aiTools.values()].map(t => t.definition);
 const emitted = configurations.map(config => {
@@ -113,7 +113,7 @@ describe('AI tool description budget (A-W03)', () => {
 
   it('covers disabled and enabled factories, including the Delegant fallback', () => {
     const [disabled, enabled, fallback] = emitted.map(tools => tools.map(t => t.name));
-    const gated = [...Object.keys(m365ToolTiers), ...Object.keys(googleToolTiers), 'propose_script', 'get_script_proposal'];
+    const gated = [...Object.keys(m365ToolTiers), ...Object.keys(googleToolTiers), 'propose_script', 'get_script_proposal', 'draft_flow', 'validate_flow', 'get_flow', 'list_flows'];
     for (const name of gated) {
       expect(disabled).not.toContain(name);
       expect(enabled).toContain(name);

@@ -333,16 +333,7 @@
       "error": "Cihaz listesi yüklenemedi.",
       "showing": "{{total}} cihazdan {{shown}} tanesi gösteriliyor",
       "loadMore": "Daha fazla yükle",
-      "lastChecked": "Son denetim: {{when}}",
-      "status": {
-        "online": "Çevrimiçi",
-        "offline": "Çevrimdışı",
-        "maintenance": "Bakımda",
-        "decommissioned": "Kullanımdan kaldırıldı",
-        "quarantined": "Karantinada",
-        "updating": "Güncelleniyor",
-        "pending": "Beklemede"
-      }
+      "lastChecked": "Son denetim: {{when}}"
     }
   },
   "patchesPage": {

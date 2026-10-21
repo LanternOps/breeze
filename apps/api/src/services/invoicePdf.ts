@@ -1,46 +1,57 @@
 // Invoice artifact rendering + email delivery (Phase 5).
 //
-// Three concerns, kept separate so the heavy/IO parts are mockable and the pure
-// HTML renderer is unit-testable:
-//   - renderInvoiceHtml(...)  PURE — the customer-view HTML used by email + portal.
-//   - renderInvoicePdf(id)    produces a REAL PDF via pdfkit and upserts invoice_documents.
-//   - getInvoicePdf(id)       returns the stored bytea (or null).
-//   - sendInvoiceEmail(id, …) issues if draft, ensures the PDF, emails it, stamps sent_at.
+// Concerns, kept separate so the heavy/IO parts are mockable:
+//   - renderInvoicePdfBuffer(...) PURE (no DB): rows -> customer document -> PDF.
+//   - drawInvoicePdf(dto, ...)    PURE: the customer document -> PDF bytes.
+//   - renderInvoicePdf(id)        assembles the customer document
+//                                 (assembleCustomerInvoiceDocument, surface 'pdf'),
+//                                 draws it and upserts invoice_documents.
+//   - getInvoicePdf(id)           returns the stored bytea (or null).
+//   - sendInvoiceEmail(id, ...)   issues if draft, ensures the PDF, emails it, stamps sent_at.
+//
+// The PDF is drawn from the SAME customer document model the screens render
+// (#9414): buildInvoiceDocumentModel -> documentPdfTable.ts, in the document's
+// locale and the partner's theme fonts. There is no separate HTML renderer.
 //
 // PDF library choice: pdfkit (pure-JS). We deliberately do NOT pull a headless
 // browser (Playwright/puppeteer) into the API production path — that's a heavy,
 // fragile dependency for a container whose only job here is to draw a structured
-// invoice. pdfkit draws the PDF programmatically from the same invoice+lines data
-// the HTML renderer uses, so both views stay in sync. Generate-once: issued
-// invoices are immutable, so the artifact never needs re-rendering.
+// invoice. Generate-once: issued invoices are immutable, so the artifact never
+// needs re-rendering.
 
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
 import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { invoiceAutopaySchedules, billingNoticeOutbox, invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets, ticketCategories } from '../db/schema';
+import { invoiceAutopaySchedules, billingNoticeOutbox, invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets } from '../db/schema';
 import { isPartnerOnlinePaymentAvailable } from './partnerStripe';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
-import { escapeHtml } from './emailLayout';
 import { getEmailService, buildInvoiceTemplate } from './email';
 import { partnerEmailCustomFromSettings } from './emailTemplates/renderPartnerEmail';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { portalBase } from './portalUrl';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
-import type { BillToAddress } from './sellerSnapshot';
-import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
+import { buildSellerSnapshot, type SellerSnapshot } from './sellerSnapshot';
+import { computeChargeNow, formatMoney, resolveInvoiceLineDetail, type InvoiceLineDetail } from '@breeze/shared';
 import {
-  computeChargeNow, formatMoney, isSupportedLocale,
-  formatWorkDate, groupLinesByDay, invoiceLineText, lineWorkDateToShow, lineWorkedVsBilled, resolveInvoiceLineDetail,
-  type InvoiceLineDetail,
-} from '@breeze/shared';
-import { formatMoneyForPdf } from './pdfMoney';
-import { fitFontSize } from './pdfFitText';
+  buildInvoiceDocumentModel, documentLabelsFor, type CustomerInvoiceDocument,
+} from '@breeze/shared/documents';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter } from './documentFooter';
-import { tApi } from '../i18n';
-import { pdfPageSize, resolvePageSize, type DocumentPageSize } from './documentThemes';
+import { pdfPageSize, registerThemeFonts, resolvePageSize, resolveThemeId, type DocumentPageSize } from './documentThemes';
+import { toCustomerInvoiceHeader } from './invoiceService';
+import { assembleCustomerInvoiceDocument, projectCustomerInvoiceLines, invoiceDisplayStatus, type PreloadedBranding } from './customerDocument';
+import { documentColumnsFor, drawDocumentLineTable, drawDocumentTotals, type DocumentPdfStyle } from './documentPdfTable';
+import {
+  resolveBillingEmail, resolveDraftBillTo, invoiceTicketNumberSql, invoiceLineTicketNumberSql,
+  invoiceTicketCategorySql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql,
+} from './invoiceRenderHelpers';
+
+export {
+  resolveBillingEmail, resolveDraftBillTo, invoiceTicketNumberSql, invoiceLineTicketNumberSql,
+  invoiceTicketCategorySql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql,
+};
 
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect & {
@@ -91,7 +102,7 @@ export interface InvoiceDeviceAppendix {
 }
 
 // ---------------------------------------------------------------------------
-// Formatting helpers (shared by HTML + PDF)
+// PDF generation (pdfkit) — draws the customer document model programmatically.
 // ---------------------------------------------------------------------------
 
 // Money glyphs come from the shared Intl-backed `formatMoney` (@breeze/shared).
@@ -102,6 +113,7 @@ function resolveRenderLocale(invoice: { documentLocale?: string | null }, brandi
   return invoice.documentLocale ?? branding.locale ?? 'en';
 }
 
+/** The due date in the invoice email body (the PDF prints dates in the document locale). */
 function formatDate(value: string | Date | null | undefined): string {
   if (!value) return '';
   const d = typeof value === 'string' ? new Date(value + (value.length === 10 ? 'T00:00:00Z' : '')) : value;
@@ -109,304 +121,30 @@ function formatDate(value: string | Date | null | undefined): string {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit', timeZone: 'UTC' });
 }
 
-/** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
- *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
- *  as '—'). The header Tax stays invoice.tax_total (authoritative), so the summed
- *  column can differ by a rounding cent on many-line invoices. */
-function lineTax(lineTotal: string | number | null | undefined, taxable: boolean, rate: number): number | null {
-  if (!taxable || !(rate > 0)) return null;
-  const cents = Math.round(Number(lineTotal ?? 0) * 100);
-  if (!Number.isFinite(cents)) return null;
-  return Math.round(cents * rate) / 100;
-}
-
-const apiLocale = (locale: string) => (isSupportedLocale(locale) ? locale : 'en');
-
-/** Title + blurb under the #8604 note toggle (shared `invoiceLineText`). The
- *  title falls back to description for lines with no name (every assembled
- *  time-entry line); the blurb only renders when a distinct name exists. With
- *  the note OFF a time-entry line prints the localised generic labor label. */
-function lineText(
-  l: { sourceType: string; name: string | null; description: string | null },
-  detail: InvoiceLineDetail, locale: string,
-): { title: string; blurb: string } {
-  const t = invoiceLineText(l, detail);
-  return { title: t.title ?? tApi(apiLocale(locale), 'pdf:invoice.laborLine'), blurb: t.blurb };
-}
-
-/** #6467: worked-vs-billed disclosure (§3.5), rendered from structured data
- *  (never from `description`, which a customer-visible line's editor can
- *  freely change) in the document's render locale. Empty when the line isn't
- *  a time_entry line, when the worked and billed quantities agree, or when
- *  the #8604 worked-time toggle is off. */
-function lineNote(l: { quantity: string; workedMinutes: number | null }, detail: InvoiceLineDetail, locale: string): string {
-  if (!detail.showWorkedTime) return '';
-  const wb = lineWorkedVsBilled(l);
-  return wb ? tApi(apiLocale(locale), 'pdf:invoice.billedVsWorked', wb) : '';
-}
-
-/** #8604: the work date printed under a line ('' = none). */
-function lineDate(l: { workDate?: string | null }, detail: InvoiceLineDetail, locale: string): string {
-  const d = lineWorkDateToShow(l, detail);
-  return d ? formatWorkDate(d, locale) : '';
-}
-
-function addressLines(addr: BillToAddress | null | undefined): string[] {
-  if (!addr) return [];
-  const cityLine = [addr.city, addr.region, addr.postalCode].filter(Boolean).join(', ');
-  return [addr.line1, addr.line2, cityLine, addr.country].filter((s): s is string => !!s && s.trim().length > 0);
-}
-
-// Group customer-visible lines by ticket so the customer view reads as
-// "work for ticket X" blocks; null-ticket lines fall into a default group.
-// Group customer-visible lines by ticket so the customer view reads as
-// "work for ticket X" blocks; null-ticket lines fall into a default group.
-interface RenderGroup {
-  key: string;
-  ticketId: string | null;
-  ticketNumber?: string | null;
-  ticketSubject?: string | null;
-  ticketCategory?: string | null;
-  lines: InvoiceLineRow[];
-}
-
-function groupVisibleLinesByTicket(lines: InvoiceLineRow[]): RenderGroup[] {
-  const visible = lines.filter((l) => l.customerVisible);
-  const groups: RenderGroup[] = [];
-  const byKey = new Map<string, RenderGroup>();
-  for (const l of visible) {
-    const key = l.ticketId ?? '__none__';
-    let g = byKey.get(key);
-    if (!g) {
-      g = {
-        key,
-        ticketId: l.ticketId,
-        ticketNumber: l.ticketNumber ?? null,
-        ticketSubject: l.ticketSubject ?? null,
-        ticketCategory: l.ticketCategory ?? null,
-        lines: []
-      };
-      byKey.set(key, g);
-      groups.push(g);
-    }
-    g.lines.push(l);
-  }
-  return groups;
-}
-
-// ---------------------------------------------------------------------------
-// PURE: customer-view HTML (email + portal)
-// ---------------------------------------------------------------------------
-
-export function renderInvoiceHtml(
-  invoice: InvoiceRow,
-  lines: InvoiceLineRow[],
-  branding: InvoiceBranding,
-  // #8604: omitted → the invoice's own columns (frozen once issued).
-  lineDetail: InvoiceLineDetail = resolveInvoiceLineDetail(invoice, null),
-): string {
-  const currency = invoice.currencyCode ?? branding.currencyCode ?? 'USD';
-  const locale = resolveRenderLocale(invoice, branding);
-  const primary = branding.primaryColor && /^#?[0-9a-fA-F]{3,8}$/.test(branding.primaryColor)
-    ? (branding.primaryColor.startsWith('#') ? branding.primaryColor : `#${branding.primaryColor}`)
-    : '#2563eb';
-  const groups = groupVisibleLinesByTicket(lines);
-  // Per-line Tax column appears only when this invoice carries tax (mirrors the
-  // header Tax row); otherwise it'd be a column of dashes.
-  const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
-  const showTax = Number(invoice.taxTotal ?? 0) > 0;
-  const billTo = addressLines(invoice.billToAddress as BillToAddress | null);
-  const seller = (invoice.sellerSnapshot as SellerSnapshot | null) ?? null;
-  const sellerLines = sellerAddressLines(seller);
-
-  const logoHtml = branding.logoUrl
-    ? `<img src="${escapeHtml(branding.logoUrl)}" alt="${escapeHtml(branding.partnerName)}" style="max-height:56px;max-width:220px;" />`
-    : `<div style="font-size:22px;font-weight:700;color:${primary};">${escapeHtml(branding.partnerName)}</div>`;
-
-  const rowsHtml = groups.map((g) => {
-    let header = '';
-    if (g.ticketId) {
-      const ticketNum = g.ticketNumber ? `Ticket #${escapeHtml(g.ticketNumber)}` : 'Ticket work';
-      const subject = g.ticketSubject ? `: ${escapeHtml(g.ticketSubject)}` : '';
-      const catBadge = g.ticketCategory ? ` <span style="font-size:11px;font-weight:normal;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px;margin-left:6px;">${escapeHtml(g.ticketCategory)}</span>` : '';
-      header = `<tr><td colspan="${showTax ? 5 : 4}" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#374151;border-top:1px solid #e5e7eb;background-color:#f9fafb;">${ticketNum}${subject}${catBadge}</td></tr>`;
-    }
-    const lineRow = (l: InvoiceLineRow) => {
-      const t = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
-      const taxCell = showTax
-        ? `<td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">${t === null ? '&mdash;' : escapeHtml(formatMoney(t, currency, locale))}</td>`
-        : '';
-      const { title, blurb } = lineText(l, lineDetail, locale);
-      const date = lineDate(l, lineDetail, locale);
-      const note = lineNote(l, lineDetail, locale);
-      return `
-      <tr>
-        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(title)}${date ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(date)}</div>` : ''}${blurb ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(blurb)}</div>` : ''}${note ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(note)}</div>` : ''}</td>
-        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(l.quantity)))}</td>
-        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.unitPrice, currency, locale))}</td>
-        ${taxCell}
-        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.lineTotal, currency, locale))}</td>
-      </tr>`;
-    };
-    if (lineDetail.grouping !== 'day') return header + g.lines.map(lineRow).join('');
-    // #8604 per-day: a sub-header per work date (ascending) carrying the day's
-    // billed hours and amount; undated lines (parts, manual, overage) follow
-    // with no header. Presentation only — every line keeps its own row.
-    const dayRows = groupLinesByDay(g.lines).map((day) => {
-      const dayHeader = day.workDate
-        ? `<tr data-day="${escapeHtml(day.workDate)}"><td style="padding:8px 8px 2px;font-size:12px;font-weight:600;color:#4b5563;">${escapeHtml(formatWorkDate(day.workDate, locale))}</td><td style="padding:8px 8px 2px;font-size:12px;color:#4b5563;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(day.hours)))}</td><td></td>${showTax ? '<td></td>' : ''}<td style="padding:8px 8px 2px;font-size:12px;font-weight:600;color:#4b5563;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(day.total, currency, locale))}</td></tr>`
-        : '';
-      return dayHeader + day.lines.map(lineRow).join('');
-    }).join('');
-    return header + dayRows;
-  }).join('');
-
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8" /><title>Invoice ${escapeHtml(invoice.invoiceNumber ?? '')}</title></head>
-<body style="margin:0;background:#f9fafb;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
-  <div style="max-width:680px;margin:0 auto;padding:24px;">
-    <div style="background:#ffffff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden;">
-      <div style="padding:24px;border-bottom:4px solid ${primary};display:flex;justify-content:space-between;align-items:center;">
-        <div>${logoHtml}</div>
-        <div style="text-align:right;">
-          <div style="font-size:20px;font-weight:700;color:#111827;">INVOICE</div>
-          <div style="font-size:13px;color:#6b7280;">${escapeHtml(invoice.invoiceNumber ?? 'DRAFT')}</div>
-        </div>
-      </div>
-      <div style="padding:24px;display:flex;justify-content:space-between;gap:24px;">
-        <div>
-          <div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;">From</div>
-          <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">${escapeHtml(seller?.name ?? branding.partnerName)}</div>
-          ${sellerLines.map((l) => `<div style="font-size:13px;color:#4b5563;">${escapeHtml(l)}</div>`).join('')}
-          ${seller?.phone ? `<div style="font-size:12px;color:#6b7280;">${escapeHtml(seller.phone)}</div>` : ''}
-          ${seller?.email ? `<div style="font-size:12px;color:#6b7280;">${escapeHtml(seller.email)}</div>` : ''}
-          ${seller?.website ? `<div style="font-size:12px;color:#6b7280;">${escapeHtml(seller.website)}</div>` : ''}
-        </div>
-        <div>
-          <div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;">Bill to</div>
-          <div style="font-size:14px;font-weight:600;color:#111827;margin-top:4px;">${escapeHtml(invoice.billToName ?? '')}</div>
-          ${billTo.map((l) => `<div style="font-size:13px;color:#4b5563;">${escapeHtml(l)}</div>`).join('')}
-          ${invoice.billToTaxId ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">Tax ID: ${escapeHtml(invoice.billToTaxId)}</div>` : ''}
-          ${branding.billToEmailFallback ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">${escapeHtml(branding.billToEmailFallback)}</div>` : ''}
-        </div>
-        <div style="text-align:right;font-size:13px;color:#4b5563;">
-          ${invoice.issueDate ? `<div>Issued: ${escapeHtml(formatDate(invoice.issueDate))}</div>` : ''}
-          ${invoice.dueDate ? `<div>Due: ${escapeHtml(formatDate(invoice.dueDate))}</div>` : ''}
-        </div>
-      </div>
-      <table style="width:100%;border-collapse:collapse;padding:0 24px;">
-        <thead>
-          <tr>
-            <th style="padding:8px;text-align:left;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Description</th>
-            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Qty</th>
-            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Unit price</th>
-            ${showTax ? '<th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Tax</th>' : ''}
-            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Amount</th>
-          </tr>
-        </thead>
-        <tbody>${rowsHtml}</tbody>
-      </table>
-      <div style="padding:16px 24px;display:flex;justify-content:flex-end;">
-        <table style="width:280px;border-collapse:collapse;">
-          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Subtotal</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.subtotal, currency, locale))}</td></tr>
-          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Tax${invoice.taxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.taxTotal, currency, locale))}</td></tr>
-          <tr><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;border-top:2px solid #e5e7eb;">Total</td><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;text-align:right;border-top:2px solid #e5e7eb;">${escapeHtml(formatMoney(invoice.total, currency, locale))}</td></tr>
-          ${Number(invoice.amountPaid) > 0 ? `<tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Paid</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.amountPaid, currency, locale))}</td></tr>
-          <tr><td style="padding:4px 8px;font-size:14px;font-weight:600;color:#111827;">Balance due</td><td style="padding:4px 8px;font-size:14px;font-weight:600;color:#111827;text-align:right;">${escapeHtml(formatMoney(invoice.balance, currency, locale))}</td></tr>` : ''}
-        </table>
-      </div>
-      ${invoice.notes ? `<div style="padding:0 24px 16px;font-size:13px;color:#4b5563;">${escapeHtml(invoice.notes)}</div>` : ''}
-      ${invoice.termsAndConditions ? `<div style="padding:0 24px 16px;font-size:12px;color:#6b7280;"><div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">Terms &amp; Conditions</div>${escapeHtml(invoice.termsAndConditions)}</div>` : ''}
-      ${branding.payOnlineUrl ? `<div style="padding:0 24px 16px;font-size:12px;color:#4b5563;"><strong>Pay online:</strong> <a href="${escapeHtml(branding.payOnlineUrl)}" style="color:#2563eb;">${escapeHtml(branding.payOnlineUrl)}</a></div>` : ''}
-      ${(invoice.terms || branding.footerText) ? `<div style="padding:16px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;">${escapeHtml(invoice.terms ?? branding.footerText ?? '')}</div>` : ''}
-    </div>
-  </div>
-</body></html>`;
-}
-
-// ---------------------------------------------------------------------------
-// PDF generation (pdfkit) — draws the same structured view programmatically.
-// ---------------------------------------------------------------------------
-
 function hexToColor(value: string | null | undefined, fallback: string): string {
   if (!value) return fallback;
   const v = value.startsWith('#') ? value : `#${value}`;
   return /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : fallback;
 }
 
-export interface InvoicePdfColumns {
-  left: number;
-  right: number;
-  contentWidth: number;
-  showTax: boolean;
-  /** Description column width (starts at `left`). */
-  colDescW: number;
-  /** QTY / UNIT PRICE / TAX / AMOUNT share one right-aligned box width. */
-  colNumW: number;
-  colQtyX: number;
-  /** Unit price column (#7508), between QTY and TAX/AMOUNT. */
-  colUnitX: number;
-  /** Only drawn when `showTax`; equals colUnitX otherwise so callers need no branch. */
-  colTaxX: number;
-  colAmtX: number;
-  /** Totals block amount box — wider than the line rows because the
-   *  emphasised Total/Balance row draws at Helvetica-Bold 14. */
-  colSummaryNumW: number;
-  colSummaryAmtX: number;
-  /** Totals block label box; independent of colQtyX so "Balance due" at
-   *  bold 14 never wraps into the next row in the untaxed layout. */
-  colSummaryLabelX: number;
-  colSummaryLabelW: number;
-}
-
-// Money columns are sized for prefix-code currencies (Intl renders e.g.
-// "CHF 888'888.88" — ~73pt at Helvetica 10, wider than any "$" figure), so
-// the taxed layout gives qty | unit price | tax | amount 0.17 each and the
-// description 0.28 (0.175 each / 0.40 untaxed).
-// The totals block gets its own wider box (0.24) for the bold-14 emphasis row:
-// "CHF 1'000'000.00" at that size is ~113pt and would wrap inside the row box.
-// Both the AMOUNT column and the summary box end at the table's right edge so
-// the figures stay visually aligned. Exported so the test measures the real
-// numbers rather than literals.
-export function invoiceColumnsFor(doc: PDFKit.PDFDocument, showTax: boolean): InvoicePdfColumns {
-  const left = doc.page.margins.left;
-  const right = doc.page.width - doc.page.margins.right;
-  const contentWidth = right - left;
-  const colSummaryNumW = contentWidth * 0.24;
-  const colSummaryAmtX = right - colSummaryNumW;
-  const colSummaryLabelX = colSummaryAmtX - contentWidth * 0.30;
-  const colSummaryLabelW = colSummaryAmtX - colSummaryLabelX - 4;
-  const summary = { colSummaryNumW, colSummaryAmtX, colSummaryLabelX, colSummaryLabelW };
-  if (showTax) {
-    return {
-      left, right, contentWidth, showTax,
-      colDescW: contentWidth * 0.28,
-      colNumW: contentWidth * 0.17,
-      colQtyX: left + contentWidth * 0.30,
-      colUnitX: left + contentWidth * 0.48,
-      colTaxX: left + contentWidth * 0.655,
-      colAmtX: left + contentWidth * 0.83,
-      ...summary,
-    };
-  }
-  return {
-    left, right, contentWidth, showTax,
-    colDescW: contentWidth * 0.40,
-    colNumW: contentWidth * 0.175,
-    colQtyX: left + contentWidth * 0.42,
-    colUnitX: left + contentWidth * 0.61,
-    colTaxX: left + contentWidth * 0.61,
-    // The AMOUNT box must end at the right edge so it lines up with the
-    // totals box below it.
-    colAmtX: left + contentWidth * 0.825,
-    ...summary,
-  };
+/** What the customer document does not carry: render-only context. */
+export interface InvoicePdfExtras {
+  appendix?: InvoiceDeviceAppendix | null;
+  /** Resolved footer (document terms -> org -> partner), used when the invoice carries no `terms`. */
+  footerText?: string | null;
+  /** Public view-and-pay link. */
+  payOnlineUrl?: string | null;
+  /** DRAFT-only display fallback under the bill-to name. */
+  billToEmailFallback?: string | null;
 }
 
 /**
  * PURE: draw the invoice PDF from structured data (no DB). Exported so the pure
- * %PDF- buffer assertion can run without a database. renderInvoicePdf() loads
- * the data and calls this.
+ * %PDF- buffer assertion can run without a database. The rows are projected
+ * through the same function the customer-document assembler uses
+ * (`projectCustomerInvoiceLines`, surface 'pdf'), so the PDF and the screens
+ * cannot project differently. renderInvoicePdf() assembles from the database and
+ * calls `drawInvoicePdf` directly.
  */
 export function renderInvoicePdfBuffer(
   invoice: InvoiceRow,
@@ -416,232 +154,124 @@ export function renderInvoicePdfBuffer(
   // #8604: omitted → the invoice's own columns (frozen once issued).
   lineDetail: InvoiceLineDetail = resolveInvoiceLineDetail(invoice, null),
 ): Promise<Buffer> {
+  const locale = resolveRenderLocale(invoice, branding);
+  const dto: CustomerInvoiceDocument = {
+    invoice: {
+      ...toCustomerInvoiceHeader(invoice),
+      lineGrouping: lineDetail.grouping,
+      displayStatus: invoiceDisplayStatus(invoice.status),
+    },
+    lines: projectCustomerInvoiceLines(lines.filter((l) => l.customerVisible), { detail: lineDetail, surface: 'pdf', locale }),
+    branding: {
+      partnerName: branding.partnerName,
+      contactEmail: null,
+      logoUrl: branding.logoUrl ?? null,
+      primaryColor: branding.primaryColor ?? null,
+      // #8969 / #6227: the presentation frozen at Issue wins; drafts/legacy follow the partner default.
+      theme: resolveThemeId(invoice.documentTheme),
+      pageSize: resolvePageSize(invoice.documentPageSize ?? branding.pageSize),
+    },
+    documentLocale: locale,
+  };
+  return drawInvoicePdf(dto, {
+    appendix, footerText: branding.footerText, payOnlineUrl: branding.payOnlineUrl, billToEmailFallback: branding.billToEmailFallback,
+  });
+}
+
+/** PURE: the customer invoice document → PDF bytes. */
+export function drawInvoicePdf(dto: CustomerInvoiceDocument, extras: InvoicePdfExtras = {}): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
-      const currency = invoice.currencyCode ?? branding.currencyCode ?? 'USD';
-      const locale = resolveRenderLocale(invoice, branding);
-      const primary = hexToColor(branding.primaryColor, '#2563eb');
-      // Per-line Tax column only when this invoice carries tax (mirrors the header).
-      const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
-      const showTax = Number(invoice.taxTotal ?? 0) > 0;
-      const doc = new PDFDocument({
-        // #8969: the page size frozen at Issue wins; drafts/legacy follow the
-        // partner default; last resort A4 (resolvePageSize).
-        size: pdfPageSize(resolvePageSize(invoice.documentPageSize ?? branding.pageSize)),
-        margin: 50,
-      });
+      const labels = documentLabelsFor(dto.documentLocale);
+      const model = buildInvoiceDocumentModel(dto, labels);
+      const locale = model.locale;
+      const primary = hexToColor(dto.branding.primaryColor, '#2563eb');
+      const doc = new PDFDocument({ size: pdfPageSize(dto.branding.pageSize), margin: 50 });
       const chunks: Buffer[] = [];
       doc.on('data', (d: Buffer) => chunks.push(d));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
+      // Theme fonts: registerThemeFonts THROWS if a condensed face is missing (no silent Helvetica fallback).
+      const fonts = registerThemeFonts(doc, dto.branding.theme);
+      const style: DocumentPdfStyle = { fonts, locale, accent: primary, categoryLabel: labels.pdf.category };
 
       const left = doc.page.margins.left;
       const right = doc.page.width - doc.page.margins.right;
       const contentWidth = right - left;
+      const pageBottom = () => doc.page.height - doc.page.margins.bottom;
+      /** Start a new page when `height` does not fit below `y`. */
+      const room = (y: number, height: number) => {
+        if (y > doc.page.margins.top && y + height > pageBottom()) { doc.addPage(); return doc.page.margins.top; }
+        return y;
+      };
 
-      // Header: partner wordmark (left) + accent INVOICE eyebrow + number (right).
-      doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(branding.partnerName, left, 50, { width: contentWidth * 0.55 });
-      doc.fillColor(primary).fontSize(10).font('Helvetica-Bold').text('INVOICE', left, 52, { width: contentWidth, align: 'right', characterSpacing: 1.5 });
-      doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(invoice.invoiceNumber ?? 'Draft', left, 66, { width: contentWidth, align: 'right' });
+      // Header: partner wordmark (left) + accent eyebrow + number (right).
+      doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(model.branding.wordmark ?? '', left, 50, { width: contentWidth * 0.55 });
+      doc.fillColor(primary).fontSize(10).font(fonts.heading.bold).text(model.header.eyebrow.toUpperCase(), left, 52, { width: contentWidth, align: 'right', characterSpacing: 1.5 });
+      doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(dto.invoice.invoiceNumber ?? labels.status.draft, left, 66, { width: contentWidth, align: 'right' });
       doc.moveTo(left, 100).lineTo(right, 100).lineWidth(2).strokeColor(primary).stroke();
 
       // From (seller) — left column; Bill To — right column; dates under Bill To.
-      const seller = (invoice.sellerSnapshot as SellerSnapshot | null) ?? null;
+      const seller = model.branding.seller;
       const rightX = left + contentWidth * 0.55;
       const rightW = contentWidth * 0.45;
       let y = 120;
 
-      doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('FROM', left, y);
-      doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(seller?.name ?? branding.partnerName, left, y + 12, { width: contentWidth * 0.5 });
+      doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.bold).text(labels.pdf.from.toUpperCase(), left, y);
+      doc.fillColor('#111827').fontSize(12).font(fonts.body.bold).text(seller?.name ?? model.branding.wordmark ?? '', left, y + 12, { width: contentWidth * 0.5 });
       let fromY = y + 28;
-      doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
-      for (const aline of sellerAddressLines(seller)) { doc.text(aline, left, fromY, { width: contentWidth * 0.5 }); fromY += 13; }
+      doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular);
+      for (const aline of seller?.lines ?? []) { doc.text(aline, left, fromY, { width: contentWidth * 0.5 }); fromY += 13; }
       doc.fillColor('#6b7280').fontSize(9);
       if (seller?.phone) { doc.text(seller.phone, left, fromY, { width: contentWidth * 0.5 }); fromY += 12; }
       if (seller?.email) { doc.text(seller.email, left, fromY, { width: contentWidth * 0.5 }); fromY += 12; }
       if (seller?.website) { doc.text(seller.website, left, fromY, { width: contentWidth * 0.5 }); fromY += 12; }
 
-      doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('BILL TO', rightX, y, { width: rightW });
-      doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(invoice.billToName ?? '', rightX, y + 12, { width: rightW });
+      const billTo = model.header.billTo;
+      doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.bold).text(labels.billTo.toUpperCase(), rightX, y, { width: rightW });
+      doc.fillColor('#111827').fontSize(12).font(fonts.body.bold).text(billTo?.name ?? '', rightX, y + 12, { width: rightW });
       let billY = y + 28;
-      doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
-      for (const aline of addressLines(invoice.billToAddress as BillToAddress | null)) { doc.text(aline, rightX, billY, { width: rightW }); billY += 13; }
-      if (invoice.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(`Tax ID: ${invoice.billToTaxId}`, rightX, billY, { width: rightW }); billY += 13; }
-      if (branding.billToEmailFallback) { doc.fillColor('#6b7280').fontSize(9).text(branding.billToEmailFallback, rightX, billY, { width: rightW }); billY += 13; }
-      doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
-      if (invoice.issueDate) { doc.text(`Issued: ${formatDate(invoice.issueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
-      if (invoice.dueDate) { doc.text(`Due: ${formatDate(invoice.dueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
+      doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular);
+      for (const aline of billTo?.addressLines ?? []) { doc.text(aline, rightX, billY, { width: rightW }); billY += 13; }
+      if (billTo?.taxId) { doc.fillColor('#6b7280').fontSize(9).text(labels.pdf.taxId(billTo.taxId), rightX, billY, { width: rightW }); billY += 13; }
+      if (extras.billToEmailFallback) { doc.fillColor('#6b7280').fontSize(9).text(extras.billToEmailFallback, rightX, billY, { width: rightW }); billY += 13; }
+      doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular);
+      for (const d of model.header.dates) { doc.text(`${d.label}: ${d.value.text}`, rightX, billY, { width: rightW }); billY += 14; }
 
-      // Line table starts below the taller of the two columns. Column fractions
-      // live in invoiceColumnsFor (measured by invoicePdf.test.ts).
+      // Line table starts below the taller of the two columns; geometry lives in
+      // documentPdfTable.ts (shared with the quote PDF).
       y = Math.max(fromY, billY) + 20;
-      const { colNumW, colQtyX, colUnitX, colTaxX, colAmtX, colDescW, colSummaryNumW, colSummaryAmtX, colSummaryLabelX, colSummaryLabelW } = invoiceColumnsFor(doc, showTax);
+      const cols = documentColumnsFor(doc, { showTax: model.lines.columns.tax !== null });
+      y = drawDocumentLineTable(doc, model.lines, y, { cols, style });
 
-      doc.save();
-      doc.rect(left - 6, y - 5, contentWidth + 12, 22).fill('#f8fafc');
-      doc.restore();
-      doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
-      doc.text('DESCRIPTION', left, y);
-      doc.text('QTY', colQtyX, y, { width: colNumW, align: 'right' });
-      doc.text('UNIT PRICE', colUnitX, y, { width: colNumW, align: 'right' });
-      if (showTax) doc.text('TAX', colTaxX, y, { width: colNumW, align: 'right' });
-      doc.text('AMOUNT', colAmtX, y, { width: colNumW, align: 'right' });
-      y += 18;
-      y += 6;
+      // Totals — drawn from the model's rows; the module owns the box.
+      y = drawDocumentTotals(doc, model.totals, y, { cols, style });
 
-      for (const group of groupVisibleLinesByTicket(lines)) {
-        if (group.ticketId) {
-          if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
-          const ticketNum = group.ticketNumber ? `Ticket #${group.ticketNumber}` : 'Ticket work';
-          const subject = group.ticketSubject ? `: ${group.ticketSubject}` : '';
-          const fullHeader = `${ticketNum}${subject}`;
-          doc.fillColor('#1f2937').fontSize(9.5).font('Helvetica-Bold').text(fullHeader, left, y, { width: colDescW });
-          const hHead = doc.heightOfString(fullHeader, { width: colDescW });
-          if (group.ticketCategory) {
-            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(`Category: ${group.ticketCategory}`, left, y + hHead + 1, { width: colDescW });
-            y += hHead + 14;
-          } else {
-            y += hHead + 4;
-          }
-        }
-        const drawLine = (l: InvoiceLineRow) => {
-          if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
-          doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
-          const { title, blurb } = lineText(l, lineDetail, locale);
-          const date = lineDate(l, lineDetail, locale);
-          const note = lineNote(l, lineDetail, locale);
-          // The title is drawn in bold but was always measured regular. A bold
-          // title wraps sooner, so when the bold measure needs MORE LINES (not
-          // just the fraction-of-a-point line-gap difference every title has)
-          // use it — measured regular, a long one overprinted the next row.
-          // Single-line titles keep the regular measure, so existing documents
-          // lay out to the same coordinates. Sub-lines are measured at 10pt
-          // though drawn at 8.5pt — a deliberate overestimate.
-          const regularTitleHeight = doc.heightOfString(title, { width: colDescW });
-          doc.font('Helvetica-Bold');
-          const boldTitleHeight = doc.heightOfString(title, { width: colDescW });
-          doc.font('Helvetica');
-          const titleHeight = boldTitleHeight > regularTitleHeight + 1 ? boldTitleHeight : regularTitleHeight;
-          const dateHeight = date ? doc.heightOfString(date, { width: colDescW }) + 2 : 0;
-          const blurbHeight = blurb ? doc.heightOfString(blurb, { width: colDescW }) + 2 : 0;
-          const noteHeight = note ? doc.heightOfString(note, { width: colDescW }) + 2 : 0;
-          const descHeight = titleHeight + dateHeight + blurbHeight + noteHeight;
-          // #8604: break BEFORE drawing any cell when the whole row will not
-          // fit, so a tall row's numbers never stay behind on the previous
-          // page. A row taller than a page is the one allowed overflow.
-          const pageBottom = doc.page.height - doc.page.margins.bottom;
-          if (y > 50 && y + Math.max(descHeight, 12) > pageBottom) { doc.addPage(); y = 50; }
-          doc.font('Helvetica-Bold').text(title, left, y, { width: colDescW });
-          if (date) {
-            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(date, left, y + titleHeight + 2, { width: colDescW });
-            doc.fillColor('#1f2937').fontSize(10);
-          }
-          if (blurb) {
-            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, left, y + titleHeight + dateHeight + 2, { width: colDescW });
-            doc.fillColor('#1f2937').fontSize(10);
-          }
-          if (note) {
-            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(note, left, y + titleHeight + dateHeight + blurbHeight + 2, { width: colDescW });
-            doc.fillColor('#1f2937').fontSize(10);
-          }
-          doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
-          const unitText = formatMoneyForPdf(l.unitPrice, currency, locale);
-          fitFontSize(doc, unitText, colNumW, 10);
-          doc.fillColor('#6b7280').text(unitText, colUnitX, y, { width: colNumW, align: 'right', lineBreak: false });
-          doc.fillColor('#1f2937').fontSize(10);
-          // Money cells: single line, shrink-to-fit. The boxes fit ~1M at 10pt
-          // but numeric(12,2) permits 9'999'999'999.99, and pdfkit TRUNCATES an
-          // over-wide lineBreak:false string (a different number on the invoice).
-          if (showTax) {
-            const t = lineTax(l.lineTotal, l.taxable, taxRate);
-            const taxText = t === null ? '—' : formatMoneyForPdf(t, currency, locale);
-            fitFontSize(doc, taxText, colNumW, 10);
-            doc.fillColor('#6b7280').text(taxText, colTaxX, y, { width: colNumW, align: 'right', lineBreak: false });
-            doc.fillColor('#1f2937');
-          }
-          const amountText = formatMoneyForPdf(l.lineTotal, currency, locale);
-          fitFontSize(doc, amountText, colNumW, 10);
-          doc.text(amountText, colAmtX, y, { width: colNumW, align: 'right', lineBreak: false });
-          doc.fontSize(10);
-          y += Math.max(descHeight, 12) + 6;
-        };
-        if (lineDetail.grouping !== 'day') {
-          for (const l of group.lines) drawLine(l);
-          continue;
-        }
-        // #8604 per-day sub-headers: date | day hours (QTY) | day amount
-        // (AMOUNT). Same page-break guard as the ticket header. Undated lines
-        // (parts, manual, the aggregated overage line) follow with no header.
-        for (const day of groupLinesByDay(group.lines)) {
-          if (day.workDate) {
-            if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
-            doc.fillColor('#4b5563').fontSize(9).font('Helvetica-Bold')
-              .text(formatWorkDate(day.workDate, locale), left, y, { width: colDescW, lineBreak: false });
-            doc.font('Helvetica').text(String(Number(day.hours)), colQtyX, y, { width: colNumW, align: 'right', lineBreak: false });
-            const dayTotal = formatMoneyForPdf(day.total, currency, locale);
-            fitFontSize(doc, dayTotal, colNumW, 9);
-            doc.font('Helvetica-Bold').text(dayTotal, colAmtX, y, { width: colNumW, align: 'right', lineBreak: false });
-            doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
-            y += 15;
-          }
-          for (const l of day.lines) drawLine(l);
-        }
-      }
-
-      // Totals.
-      y += 6;
-      doc.moveTo(colSummaryLabelX, y).lineTo(right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
-      y += 8;
-      const labelX = colSummaryLabelX;
-      const labelW = colSummaryLabelW;
-      const drawTotal = (label: string, amount: string | number, opts: { bold?: boolean; emphasis?: boolean } = {}) => {
-        const { bold = false, emphasis = false } = opts;
-        const strong = bold || emphasis;
-        const size = emphasis ? 14 : strong ? 12 : 10;
-        doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(size).fillColor(strong ? '#111827' : '#6b7280');
-        doc.text(label, labelX, y, { width: labelW, align: 'left' });
-        // Shrink-to-fit + lineBreak:false: the rows advance by fixed constants,
-        // so a wrapped (or pdfkit-truncated) schema-maximum figure would either
-        // overprint the next row or print the wrong number.
-        const amountText = formatMoneyForPdf(amount, currency, locale);
-        fitFontSize(doc, amountText, colSummaryNumW, size);
-        doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(amountText, colSummaryAmtX, y, { width: colSummaryNumW, align: 'right', lineBreak: false });
-        y += emphasis ? 20 : strong ? 18 : 14;
-      };
-      drawTotal('Subtotal', invoice.subtotal);
-      drawTotal(`Tax${invoice.taxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}`, invoice.taxTotal);
-      if (Number(invoice.amountPaid) > 0) {
-        drawTotal('Total', invoice.total, { bold: true });
-        drawTotal('Paid', invoice.amountPaid);
-        drawTotal('Balance due', invoice.balance, { emphasis: true });
-      } else {
-        drawTotal('Total', invoice.total, { emphasis: true });
-      }
-
-      // Notes (memo) + Terms & Conditions + footer/terms.
-      if (invoice.notes) {
-        y += 14;
-        doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('NOTES', left, y); y += 12;
-        doc.fillColor('#4b5563').fontSize(10).font('Helvetica').text(invoice.notes, left, y, { width: contentWidth });
+      // Notes (memo) + Terms & Conditions + pay-online + footer.
+      if (model.notes) {
+        y = room(y + 14, 40);
+        doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.bold).text(labels.notes.toUpperCase(), left, y); y += 12;
+        doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular).text(model.notes, left, y, { width: contentWidth });
         y = doc.y + 8;
       }
-      if (invoice.termsAndConditions) {
-        y += 6;
-        doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('TERMS & CONDITIONS', left, y); y += 12;
-        doc.fillColor('#6b7280').fontSize(9).font('Helvetica').text(invoice.termsAndConditions, left, y, { width: contentWidth });
+      if (model.terms.full) {
+        y = room(y + 6, 40);
+        doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.bold).text(model.terms.full.label.toUpperCase(), left, y); y += 12;
+        doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(model.terms.full.text, left, y, { width: contentWidth });
         y = doc.y + 8;
       }
       // Public view-and-pay link — the paper copy's route back to the online
       // invoice (the emailed CTA is the same url).
-      if (branding.payOnlineUrl) {
-        y += 10;
-        doc.fillColor('#4b5563').fontSize(9).font('Helvetica-Bold').text('Pay online: ', left, y, { continued: true })
-          .font('Helvetica').fillColor('#2563eb').text(branding.payOnlineUrl, { link: branding.payOnlineUrl });
+      if (extras.payOnlineUrl) {
+        y = room(y + 10, 24);
+        doc.fillColor('#4b5563').fontSize(9).font(fonts.body.bold).text(`${labels.pdf.payOnline} `, left, y, { continued: true })
+          .font(fonts.body.regular).fillColor('#2563eb').text(extras.payOnlineUrl, { link: extras.payOnlineUrl });
         y = doc.y + 4;
       }
-      const footer = invoice.terms ?? branding.footerText ?? null;
+      // The frozen document terms win (an empty string is the frozen "no footer"), else the resolved footer.
+      const footer = dto.invoice.terms ?? extras.footerText ?? null;
       if (footer) {
-        doc.fillColor('#9ca3af').fontSize(9).font('Helvetica').text(footer, left, Math.max(y, doc.page.height - 110), { width: contentWidth });
+        doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.regular).text(footer, left, Math.max(y, doc.page.height - 110), { width: contentWidth });
       }
 
       // ---- #3205 W07: "Billed devices" appendix -------------------------------
@@ -649,22 +279,23 @@ export function renderInvoicePdfBuffer(
       // `flagged` in SQL): a device that was NOT charged must never appear on the
       // customer's document, where its presence would read as a charge. Flagged
       // devices are operator evidence and live on the internal invoice detail.
+      const appendix = extras.appendix;
       if (appendix && appendix.lines.length > 0) {
         doc.addPage();
         let ay = 50;
-        doc.fillColor('#111827').fontSize(14).font('Helvetica-Bold').text('Billed devices', left, ay);
+        doc.fillColor('#111827').fontSize(14).font(fonts.heading.bold).text('Billed devices', left, ay);
         ay += 22;
-        doc.fillColor('#6b7280').fontSize(9).font('Helvetica')
+        doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular)
           .text('The devices counted on each line of this invoice at the time it was generated.', left, ay, { width: contentWidth });
         ay += 20;
         const colRoleX = left + contentWidth * 0.55;
         const colCountedX = left + contentWidth * 0.78;
         for (const group of appendix.lines) {
           if (ay > doc.page.height - 140) { doc.addPage(); ay = 50; }
-          doc.fillColor('#1f2937').fontSize(10).font('Helvetica-Bold')
+          doc.fillColor('#1f2937').fontSize(10).font(fonts.body.bold)
             .text(`${group.description} — ${group.devices.length}`, left, ay, { width: contentWidth });
           ay += 15;
-          doc.fillColor('#9ca3af').fontSize(8).font('Helvetica-Bold');
+          doc.fillColor('#9ca3af').fontSize(8).font(fonts.body.bold);
           doc.text('Hostname', left, ay);
           doc.text('Role', colRoleX, ay);
           doc.text('Counted as', colCountedX, ay, { width: contentWidth * 0.22, align: 'right' });
@@ -672,7 +303,7 @@ export function renderInvoicePdfBuffer(
           for (const d of group.devices) {
             // Same page-break idiom as the line table above.
             if (ay > doc.page.height - 140) { doc.addPage(); ay = 50; }
-            doc.fillColor('#1f2937').fontSize(9).font('Helvetica');
+            doc.fillColor('#1f2937').fontSize(9).font(fonts.body.regular);
             doc.text(d.hostname, left, ay, { width: contentWidth * 0.52, ellipsis: true });
             doc.text(d.deviceRole, colRoleX, ay, { width: contentWidth * 0.2, ellipsis: true });
             doc.fillColor('#6b7280')
@@ -683,7 +314,7 @@ export function renderInvoicePdfBuffer(
         }
         if (appendix.omitted > 0) {
           if (ay > doc.page.height - 120) { doc.addPage(); ay = 50; }
-          doc.fillColor('#6b7280').fontSize(9).font('Helvetica-Oblique')
+          doc.fillColor('#6b7280').fontSize(9).font(fonts.body.italic)
             .text(`… and ${appendix.omitted} more devices — see the invoice in Breeze.`, left, ay, { width: contentWidth });
         }
       }
@@ -744,82 +375,13 @@ async function loadDeviceAppendix(invoiceId: string): Promise<InvoiceDeviceAppen
   return { lines: [...byLine.values()], omitted };
 }
 
-/**
- * DRAFT-ONLY bill-to display fallback (sweep paper cut #16). A draft invoice
- * has no bill-to snapshot yet — billToName/billToAddress/billToTaxId are
- * stamped only at issue (invoiceService.issueInvoice) — so before issue the
- * BILL TO block would otherwise render completely blank, not even the
- * organization name (which the quote PDF's equivalent draft fallback prints —
- * see quoteService's draft billTo resolution). This resolves a DISPLAY-only
- * name + email for that case; it never writes anything back to the invoices
- * row, and an already-issued invoice's own frozen billToName (even when null)
- * is always returned untouched — the "one snapshot moment" rule.
- *
- * Pure — no DB access — so loadInvoiceForRender (which does the org read) can
- * be exercised without a database, mirroring resolveDocumentFooter (documentFooter.ts).
- */
-export function resolveDraftBillTo(input: {
-  status: string;
-  billToName: string | null;
-  orgName: string | null;
-  orgBillingContact: unknown;
-}): { billToName: string | null; billToEmail: string | null } {
-  if (input.status !== 'draft' || input.billToName?.trim()) {
-    return { billToName: input.billToName, billToEmail: null };
-  }
-  return { billToName: input.orgName ?? null, billToEmail: resolveBillingEmail(input.orgBillingContact) };
-}
-
-/** The LIVE ticket label ("Ticket #…"): the human number the ticket UI and
- *  customer emails use (`tickets.internal_number`, T-2026-0001), falling back
- *  to the legacy random `ticket_number` for tickets created before internal
- *  numbering (sweep C4: the order was reversed, and ticket_number is NOT NULL,
- *  so the legacy id always won). Used for drafts and by issueInvoice to stamp
- *  `invoice_lines.ticket_label`. Requires `tickets` in the FROM/JOIN. */
-export function invoiceTicketNumberSql() {
-  return sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`;
-}
-
-/** What an invoice line prints as its ticket label, for every invoice reader
- *  (PDF, web, portal). Settings audit rule 6: a draft previews the live number;
- *  once issued the document shows only the label frozen at issue. */
-export function invoiceLineTicketNumberSql(invoiceStatus: string) {
-  return invoiceStatus === 'draft'
-    ? invoiceTicketNumberSql()
-    : sql<string | null>`${invoiceLines.ticketLabel}`;
-}
-
-/** The LIVE category name a ticket's invoice group prints: the partner's
- *  category row, falling back to the legacy free-text `tickets.category`.
- *  A correlated subquery (not a join) so issueInvoice can use it inside its
- *  UPDATE … FROM tickets. ticket_categories is partner-axis RLS — under an
- *  org-scoped context (the portal) the subquery is blind, which is why issued
- *  documents render the stamp instead (#6674). Requires `tickets` in the
- *  FROM/JOIN. */
-export function invoiceTicketCategorySql() {
-  return sql<string | null>`COALESCE((SELECT ${ticketCategories.name} FROM ${ticketCategories} WHERE ${ticketCategories.id} = ${tickets.categoryId}), ${tickets.category})`;
-}
-
-/** What an invoice line's group header prints as the ticket subject / category,
- *  for every invoice reader (PDF, web, portal, public). Same rule 6 contract as
- *  invoiceLineTicketNumberSql (#6955): a draft previews the live ticket; once
- *  issued the document shows only what issueInvoice froze onto the line. */
-export function invoiceLineTicketSubjectSql(invoiceStatus: string) {
-  return invoiceStatus === 'draft'
-    ? sql<string | null>`${tickets.subject}`
-    : sql<string | null>`${invoiceLines.ticketSubject}`;
-}
-export function invoiceLineTicketCategorySql(invoiceStatus: string) {
-  return invoiceStatus === 'draft'
-    ? invoiceTicketCategorySql()
-    : sql<string | null>`${invoiceLines.ticketCategory}`;
-}
-
-/** Load the invoice, its lines, and branding (partner name + portal logo/colors). */
+/** Load the invoice and its render context (branding, footer, appendix). The lines come from the
+ *  customer-document assembler (`renderInvoicePdf`), the one place they are projected. */
 export async function loadInvoiceForRender(invoiceId: string): Promise<{
   invoice: InvoiceRow;
-  lines: InvoiceLineRow[];
   branding: InvoiceBranding;
+  /** The partner/branding rows this loader read on the CALLER's connection, for the assembler. */
+  preloaded: PreloadedBranding | undefined;
   appendix: InvoiceDeviceAppendix | null;
   /** #8604 line itemization: a draft previews override ?? partner default;
    *  anything issued reads ONLY its frozen invoices.line_* columns. */
@@ -827,19 +389,6 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
 } | null> {
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) return null;
-  const lines = await db.select({
-    ...getTableColumns(invoiceLines),
-    ticketNumber: invoiceLineTicketNumberSql(invoice.status),
-    ticketSubject: invoiceLineTicketSubjectSql(invoice.status),
-    ticketCategory: invoiceLineTicketCategorySql(invoice.status),
-  }).from(invoiceLines)
-    .leftJoin(tickets, and(
-      eq(invoiceLines.ticketId, tickets.id),
-      eq(tickets.orgId, invoice.orgId),
-      isNull(tickets.deletedAt),
-    ))
-    .where(eq(invoiceLines.invoiceId, invoiceId))
-    .orderBy(invoiceLines.sortOrder);
   const [partner] = await db.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   // #3205 W07 decision 14a: the renderer reads the STAMP, never the partner row —
   // a change to the partner default cannot alter what an issued invoice renders.
@@ -879,9 +428,16 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
   }
   return {
     invoice,
-    lines,
     appendix,
     lineDetail,
+    // Only when the partner row was visible: an org-scoped caller (the portal) reads 0 partner rows
+    // under partner-axis RLS (#1375 class), and then the assembler's own system-context read must run.
+    preloaded: partner
+      ? {
+          partner: { name: partner.name, billingEmail: partner.billingEmail, documentTheme: partner.documentTheme, documentPageSize: partner.documentPageSize, settings: partner.settings },
+          brand: branding ? { logoUrl: branding.logoUrl ?? null, primaryColor: branding.primaryColor ?? null } : null,
+        }
+      : undefined,
     branding: {
       // Seller-snapshot fallback before the document-type literal (#2151), so
       // the invoice PDF degrades the same way the quote side does
@@ -951,7 +507,30 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
       console.error(`[invoicePdf] could not mint public link for PDF of invoice ${invoiceId} — rendering without the pay-online line`, err);
     }
   }
-  const pdf = await renderInvoicePdfBuffer(loaded.invoice, loaded.lines, loaded.branding, loaded.appendix, loaded.lineDetail);
+  // The same customer document the screens render. A draft is assembled in staff
+  // mode (the only mode that accepts one); issued documents read their frozen columns.
+  const assembled = await assembleCustomerInvoiceDocument(loaded.invoice, 'staff', { surface: 'pdf', preloaded: loaded.preloaded });
+  const pdf = await drawInvoicePdf(
+    // The loader's wordmark chain (partner -> seller snapshot -> 'Invoice') is more forgiving than the assembler's.
+    // Locale and page size too: the loader's partner read THROWS on failure, the assembler's is fail-soft
+    // (a blip there must not freeze an English/A4 PDF for a legacy unstamped pt-BR/Letter partner).
+    {
+      ...assembled,
+      documentLocale: loaded.branding.locale ?? assembled.documentLocale,
+      branding: {
+        ...assembled.branding,
+        partnerName: loaded.branding.partnerName,
+        // The persisted PDF is frozen: take the strictly loaded (throwing) values, not the fail-soft ones.
+        logoUrl: loaded.branding.logoUrl ?? null,
+        primaryColor: loaded.branding.primaryColor ?? null,
+        pageSize: resolvePageSize(loaded.invoice.documentPageSize ?? loaded.branding.pageSize),
+      },
+    },
+    {
+      appendix: loaded.appendix, footerText: loaded.branding.footerText, payOnlineUrl: loaded.branding.payOnlineUrl,
+      billToEmailFallback: loaded.branding.billToEmailFallback,
+    },
+  );
   const sha256 = createHash('sha256').update(pdf).digest('hex');
 
   // Preview-only for a draft: render bytes but never persist a stale artifact or
@@ -1320,13 +899,4 @@ export async function resendInvoiceEmail(
 
   const { emailed, reason, recipients } = await deliverInvoiceEmail(invoice, opts, { swallowThrow: true });
   return { invoice, emailed, reason, recipients };
-}
-
-/** Pull an email address out of the organizations.billing_contact JSONB blob. */
-export function resolveBillingEmail(billingContact: unknown): string | null {
-  if (billingContact && typeof billingContact === 'object') {
-    const email = (billingContact as { email?: unknown }).email;
-    if (typeof email === 'string' && email.includes('@')) return email;
-  }
-  return null;
 }

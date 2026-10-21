@@ -10,8 +10,9 @@ import {
 import {
   createManualInvoice, getInvoice, listInvoices, addManualLine, addCatalogLine, addBundleLine,
   updateLine, removeLine, deleteDraftInvoice, updateInvoice, updateIssuedDueDate,
-  changeInvoiceCurrency, refreshDraftTimeLines
+  changeInvoiceCurrency, refreshDraftTimeLines, getOwnedInvoiceOr404, requireInvoiceAccess
 } from '../../services/invoiceService';
+import { assembleCustomerInvoiceDocument } from '../../services/customerDocument';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { auditBillingDocument } from '../../services/billingDocumentAudit';
 import { InvoiceServiceError, type InvoiceActor } from '../../services/invoiceTypes';
@@ -73,6 +74,19 @@ invoiceCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), as
     // for a draft — the same answer the public customer view gives.
     const branding = await resolveInvoiceBranding(detail.invoice);
     return c.json({ data: { ...detail, branding } });
+  } catch (err) { return handleServiceError(c, err); }
+});
+// GET /:id/customer-view — the staff Preview's read of the CUSTOMER document
+// (#9402): exactly what the portal and the public link render, from the one
+// assembler. Same middleware and the same org + site ownership check as GET /:id,
+// so access is exactly "can read this invoice". Side-effect free: no markViewed,
+// no token minted or returned, no audit row (it reads what GET /:id already can).
+// Drafts are served (staff mode), previewing what issuing will freeze.
+invoiceCrudRoutes.get('/:id/customer-view', scopes, readPerm, zValidator('param', idParam), async (c) => {
+  try {
+    const inv = await getOwnedInvoiceOr404(c.req.valid('param').id);
+    requireInvoiceAccess(invoiceActorFrom(c), inv);
+    return c.json({ data: await assembleCustomerInvoiceDocument(inv, 'staff') });
   } catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateInvoiceSchema), async (c) => {

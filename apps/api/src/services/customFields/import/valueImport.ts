@@ -93,6 +93,7 @@ import {
   type WarrantyImportWrite,
 } from './warrantyTarget';
 import { captureException } from '../../sentry';
+import { isAgentOwnedWarrantySource } from '../../warrantyDataSources';
 import {
   DEFAULT_IMPORT_SYSTEM,
   type AnnotatedImportValue,
@@ -158,6 +159,10 @@ const RESERVED_IDENTITY_WARNING =
 const PROVIDER_WARRANTY_WARNING =
   'A manufacturer warranty lookup already owns this device\'s warranty data — '
   + 'enable "override provider warranty" to replace it';
+
+const AGENT_WARRANTY_WARNING =
+  'This device reports its own warranty data through the Breeze agent — '
+  + 'an import cannot replace it, and the next agent report would overwrite it';
 
 interface StoredValue extends CustomFieldValueColumns {
   definitionId: string;
@@ -338,6 +343,13 @@ function decideValue(
       return { annotation: { target: mapping, outcome: 'type-error', reason: coerced.reason } };
     }
     const existing = state.warrantyByDevice.get(target.deviceId);
+    // Mirrors `applyWarrantyImport`'s unconditional agent-owned refusal, so the
+    // preview does not report `applied` for a row the commit refuses.
+    if (isAgentOwnedWarrantySource(existing?.dataSource)) {
+      return {
+        annotation: { target: mapping, outcome: 'skipped-provider-owned', warning: AGENT_WARRANTY_WARNING },
+      };
+    }
     if (existing?.dataSource === 'provider' && !state.overrideProviderWarranty) {
       return {
         annotation: { target: mapping, outcome: 'skipped-provider-owned', warning: PROVIDER_WARRANTY_WARNING },
