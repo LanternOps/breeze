@@ -250,7 +250,7 @@ describe('site inventory discovery during agent sync', () => {
 
   it('discovers empty and populated sites even when no agents changed since the last sync', async () => {
     const lastSyncAt = new Date('2026-01-01T00:00:00Z');
-    primeIntegration({ lastSyncAt });
+    primeIntegration({ lastSyncAt, lastFullAgentSyncAt: new Date() });
     listSitesMock.mockResolvedValueOnce([
       { siteId: 'site-empty', siteName: 'New Customer', registrationToken: 'enroll-token', agentsCount: 0 },
       { siteId: 'site-existing', siteName: 'Existing Customer', registrationToken: null, agentsCount: 7 },
@@ -271,7 +271,7 @@ describe('site inventory discovery during agent sync', () => {
   });
 
   it('uses the inventory total and emits only one row when an agent also belongs to the site', async () => {
-    primeIntegration({ lastSyncAt: new Date('2026-01-01T00:00:00Z') });
+    primeIntegration({ lastSyncAt: new Date('2026-01-01T00:00:00Z'), lastFullAgentSyncAt: new Date() });
     listAgentsMock.mockResolvedValueOnce({
       results: [{ id: 'agent-1', siteId: 'site-1', siteName: 'Old Name' }], truncated: false,
     });
@@ -309,7 +309,7 @@ describe('site inventory discovery during agent sync', () => {
     { lastSyncAt: new Date('2026-01-01T00:00:00Z'), truncated: false },
     { lastSyncAt: null, truncated: true },
   ])('does not replace totals with partial agent counts (%j)', async ({ lastSyncAt, truncated }) => {
-    primeIntegration({ lastSyncAt });
+    primeIntegration({ lastSyncAt, lastFullAgentSyncAt: new Date() });
     listAgentsMock.mockResolvedValueOnce({
       results: [{ id: 'agent-1', siteId: 'site-1', siteName: 'Customer' }], truncated,
     });
@@ -318,6 +318,35 @@ describe('site inventory discovery during agent sync', () => {
 
     expect(insertedValues).toEqual([expect.objectContaining({ s1SiteId: 'site-1' })]);
     expect(conflictUpdates[0]!.set).not.toHaveProperty('agentsCount');
+  });
+
+  it('refreshes fallback totals after a complete periodic full listing', async () => {
+    primeIntegration({
+      lastSyncAt: new Date(Date.now() - 15 * 60_000),
+      lastFullAgentSyncAt: new Date(Date.now() - 7 * 60 * 60_000),
+    });
+    listAgentsMock.mockResolvedValueOnce({
+      results: [
+        { id: 'agent-1', siteId: 'site-fallback', siteName: 'Customer' },
+        { id: 'agent-2', siteId: 'site-fallback', siteName: 'Customer' },
+      ],
+      truncated: false,
+    });
+    listSitesMock.mockRejectedValueOnce(new Error('sites unavailable'));
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await sync();
+
+      expect(listAgentsMock).toHaveBeenCalledWith(undefined);
+      expect(insertedValues).toEqual([
+        expect.objectContaining({ s1SiteId: 'site-fallback', agentsCount: 2 }),
+      ]);
+      expect(conflictUpdates[0]!.set).toHaveProperty('agentsCount');
+      expect(updatedPayloads).toContainEqual(expect.objectContaining({ lastFullAgentSyncAt: expect.any(Date) }));
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('reconciles a provisional mapping for an empty inventory site before upserting it', async () => {

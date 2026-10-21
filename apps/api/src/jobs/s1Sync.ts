@@ -560,7 +560,7 @@ async function syncAgentsForIntegration(
   const discoveredById = new Map(Array.from(siteCountMap.entries()).map(([siteId, info]) => [siteId, {
     siteId,
     siteName: info.siteName,
-    count: integration.lastSyncAt || agentResult.truncated ? null : info.count,
+    count: fullListing && !agentResult.truncated ? info.count : null,
     registrationToken: null as string | null,
   }]));
   for (const site of inventorySites) {
