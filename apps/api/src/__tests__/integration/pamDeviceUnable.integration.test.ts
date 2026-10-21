@@ -332,7 +332,9 @@ describe('recordElevationDeviceUnable (#9517)', () => {
     await violatesCheck(tdb.execute(sql`UPDATE elevation_requests SET device_unable_reason = 'helper_unavailable' WHERE id = ${id}`));
     await violatesCheck(tdb.execute(sql`UPDATE elevation_requests SET device_unable_at = now(), device_unable_reason = 'Helper-Unavailable' WHERE id = ${id}`));
     await violatesCheck(tdb.execute(sql`UPDATE elevation_requests SET device_unable_at = now(), device_unable_reason = 'helper_unavailable', device_unable_detail = ${'x'.repeat(1001)} WHERE id = ${id}`));
-    // A newer agent's category needs no migration.
+    // The column itself accepts any code matching the pattern, so adding a
+    // category later is a route change, not a schema change. (The route still
+    // rejects categories it does not list: pamElevationUnable.test.ts.)
     await tdb.execute(sql`UPDATE elevation_requests SET device_unable_at = now(), device_unable_reason = 'future_category' WHERE id = ${id}`);
   });
 

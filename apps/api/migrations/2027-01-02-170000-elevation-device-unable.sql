@@ -12,8 +12,9 @@
 --   device_unable_reason - a short category code, e.g. 'helper_unavailable',
 --                          'session_unavailable', 'helper_start_failed'. Kept
 --                          to a code pattern rather than a fixed list so a
---                          newer agent's category needs no migration; the
---                          route validates the categories it knows.
+--                          new category is a route change (the route accepts
+--                          only the categories it lists; an agent sending any
+--                          other gets a 400), never a schema change.
 --   device_unable_detail - the agent's own diagnostic message, bounded
 --
 -- elevation_requests is already RLS-covered by org_id. Nullable columns with

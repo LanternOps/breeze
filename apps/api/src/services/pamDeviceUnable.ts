@@ -32,9 +32,10 @@ import { db } from '../db';
 import { elevationAudit, elevationRequests } from '../db/schema';
 
 /**
- * Categories the agent reports. The column accepts any code matching
- * ^[a-z][a-z_]{0,63}$ so a newer agent does not need a migration, but the
- * route only accepts these, which the web console knows how to label.
+ * Categories the agent reports. The route accepts only these (400 otherwise,
+ * which the agent treats as final), and the web console labels them. The
+ * column accepts any code matching ^[a-z][a-z_]{0,63}$, so adding a category
+ * is a change here and in the agent, not a migration.
  */
 export const PAM_DEVICE_UNABLE_REASONS = [
   // The SYSTEM helper that started for the session does not hold the PAM
