@@ -1,0 +1,70 @@
+{
+  "title": "Abläufe",
+  "subtitle": "Mehrstufige Automatisierungen, die Werkzeuge miteinander verketten.",
+  "previewNotice": "Abläufe sind in dieser Version schreibgeschützt. Entwerfen Sie sie im KI-Chat; Aktivierung und Ausführungen folgen in einer späteren Version.",
+  "empty": {
+    "title": "Noch keine Abläufe",
+    "body": "Bitten Sie den KI-Assistenten, einen Ablauf zu entwerfen, und prüfen Sie ihn dann hier."
+  },
+  "list": {
+    "name": "Name",
+    "owner": "Eigentümer",
+    "allOrgs": "Alle Organisationen",
+    "status": "Status",
+    "tier": "Stufe",
+    "trigger": "Auslöser",
+    "updated": "Aktualisiert"
+  },
+  "status": {
+    "draft": "Entwurf",
+    "enabled": "Aktiviert",
+    "paused": "Pausiert",
+    "disabled": "Deaktiviert"
+  },
+  "trigger": {
+    "schedule": "Zeitplan",
+    "event": "Ereignis",
+    "webhook": "Webhook",
+    "manual": "Manuell"
+  },
+  "detail": {
+    "back": "Zurück zu den Abläufen",
+    "trigger": "Auslöser",
+    "inputs": "Eingaben",
+    "steps": "Schritte",
+    "version": "Version {{version}}",
+    "createdInChat": "Im KI-Chat erstellt"
+  },
+  "step": {
+    "tool": "Werkzeug",
+    "tier": "Stufe {{tier}}",
+    "approval": "Freigabe",
+    "approvalDefault": "Standardfreigabe",
+    "approvalPreApproved": "Vorab freigegeben",
+    "when": "Läuft, wenn",
+    "forEach": "Für jedes Element",
+    "onFailure": "Bei Fehler",
+    "timeout": "Zeitlimit",
+    "input": "Eingabe",
+    "source": {
+      "core": "Kernwerkzeug",
+      "tenant": "Werkzeugquelle",
+      "builtin": "Integriert"
+    }
+  },
+  "issues": {
+    "title": "Validierung",
+    "none": "Keine Validierungsprobleme.",
+    "error": "Fehler",
+    "warning": "Warnung"
+  },
+  "card": {
+    "title": "Ablaufentwurf",
+    "review": "Prüfen",
+    "steps": "Schritte: {{count}}"
+  },
+  "errors": {
+    "loadFailed": "Abläufe konnten nicht geladen werden.",
+    "notFound": "Ablauf nicht gefunden."
+  }
+}

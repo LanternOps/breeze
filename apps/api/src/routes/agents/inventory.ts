@@ -305,6 +305,9 @@ inventoryRoutes.put(
       coverageStartDate: data.coverageStartDate ?? null,
       coverageType: data.coverageType ?? null,
       coverageKind: data.coverageKind ?? null,
+      // #5511 W01 (D10). This literal is an independent drop point from the zod
+      // schema: a field can validate and still never reach the service.
+      entitlements: data.entitlements ?? null,
     });
 
     return c.json({ success: true });

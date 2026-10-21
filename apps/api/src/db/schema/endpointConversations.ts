@@ -31,7 +31,9 @@ import { users } from './users';
 
 export const ENDPOINT_CONVERSATION_STATUSES = ['opening', 'open', 'closed', 'expired', 'failed'] as const;
 export type EndpointConversationStatusValue = (typeof ENDPOINT_CONVERSATION_STATUSES)[number];
-export const ENDPOINT_CONVERSATION_CLOSE_REASONS = ['technician', 'idle', 'device_moved', 'agent'] as const;
+// 'device_reinstalled' (#8318 §5.5): the install incarnation boundary closes a
+// live chat with the old install's helper.
+export const ENDPOINT_CONVERSATION_CLOSE_REASONS = ['technician', 'idle', 'device_moved', 'agent', 'device_reinstalled'] as const;
 export type EndpointConversationCloseReason = (typeof ENDPOINT_CONVERSATION_CLOSE_REASONS)[number];
 export type EndpointConversationDirection = 'to_user' | 'from_user';
 
@@ -79,7 +81,7 @@ export const endpointConversations = pgTable('endpoint_conversations', {
   check('endpoint_conversations_channel_chk', sql`${table.channel} IN ('endpoint_helper')`),
   check(
     'endpoint_conversations_close_reason_chk',
-    sql`${table.closeReason} IS NULL OR ${table.closeReason} IN ('technician', 'idle', 'device_moved', 'agent')`,
+    sql`${table.closeReason} IS NULL OR ${table.closeReason} IN ('technician', 'idle', 'device_moved', 'agent', 'device_reinstalled')`,
   ),
 ]);
 

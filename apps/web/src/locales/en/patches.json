@@ -331,16 +331,7 @@
       "error": "Couldn't load the device list.",
       "showing": "Showing {{shown}} of {{total}}",
       "loadMore": "Load more",
-      "lastChecked": "Last checked: {{when}}",
-      "status": {
-        "online": "Online",
-        "offline": "Offline",
-        "maintenance": "Maintenance",
-        "decommissioned": "Decommissioned",
-        "quarantined": "Quarantined",
-        "updating": "Updating",
-        "pending": "Pending"
-      }
+      "lastChecked": "Last checked: {{when}}"
     }
   },
   "patchesPage": {

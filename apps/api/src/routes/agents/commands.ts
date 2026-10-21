@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, getTableColumns } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../../services/commandCasDiagnostics';
@@ -48,6 +48,7 @@ import {
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
 } from '../../services/commandResultAcceptance';
+import { commandIncarnationIsCurrentCondition } from '../../services/commandIncarnation';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandTypes';
 import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import {
@@ -289,9 +290,16 @@ commandsRoutes.post(
     // device_commands ever gains an RLS policy, this read becomes a silent
     // 0-row no-op and MUST move into withSystemDbAccessContext — same caveat as
     // services/commandDispatch.ts.
+    //
+    // #8318: `incarnationCurrent` is read in the same statement — is the row
+    // stamped for the device's CURRENT install incarnation? (A SECURITY
+    // DEFINER resolver, so it answers on this contextless read.)
     const [command] = await runOutsideDbContext(() =>
       db
-        .select()
+        .select({
+          ...getTableColumns(deviceCommands),
+          incarnationCurrent: commandIncarnationIsCurrentCondition(),
+        })
         .from(deviceCommands)
         .where(
           and(
@@ -320,6 +328,21 @@ commandsRoutes.post(
     const commandTargetRole = command.targetRole === 'watchdog' ? 'watchdog' : 'agent';
     if (commandTargetRole !== agent.role) {
       return c.json({ error: 'Command role mismatch' }, 403);
+    }
+
+    // #8318 §5.2: work queued for an EARLIER install incarnation of this
+    // device. Nothing about it is recorded — not the result, not a late
+    // caller-verification receipt, not cleanup evidence, not PAM evidence —
+    // and it is acknowledged like any other result the server no longer
+    // wants, so a replaying outbox stops. The terminal CAS below carries the
+    // same check in SQL (commandAcceptsAgentResultCondition); this answers
+    // before any of the branches that bypass it. Compared with `=== false`
+    // because the column is always a boolean from the database.
+    if (command.incarnationCurrent === false) {
+      if (PAM_COMMAND_TYPES.has(command.type)) {
+        return c.json<PamResultAcknowledgement>({ protocolVersion: 1, classification: 'stale' });
+      }
+      return c.json({ success: true });
     }
 
     // Supplemental PAM evidence for every terminal command state, including a

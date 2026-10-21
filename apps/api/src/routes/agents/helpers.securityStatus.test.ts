@@ -41,7 +41,7 @@ const AV_PRODUCTS = [
     productState: 393472
   },
   {
-    displayName: 'CylancePROTECT',
+    displayName: 'Acme Endpoint Shield',
     provider: 'other',
     realTimeProtection: true,
     definitionsUpToDate: true,

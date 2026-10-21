@@ -331,16 +331,7 @@
       "error": "Die Geräteliste konnte nicht geladen werden.",
       "showing": "{{shown}} von {{total}} angezeigt",
       "loadMore": "Mehr laden",
-      "lastChecked": "Zuletzt geprüft: {{when}}",
-      "status": {
-        "online": "Online",
-        "offline": "Offline",
-        "maintenance": "Wartung",
-        "decommissioned": "Außer Betrieb",
-        "quarantined": "Unter Quarantäne",
-        "updating": "Wird aktualisiert",
-        "pending": "Ausstehend"
-      }
+      "lastChecked": "Zuletzt geprüft: {{when}}"
     }
   },
   "patchesPage": {

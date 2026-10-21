@@ -167,6 +167,22 @@ describe('BreezeOidcAdapter', () => {
     await expect(new BreezeOidcAdapter('Client').find('client_abc')).resolves.toBeUndefined();
   });
 
+  // B-W03 (#6157, D-B20): a CIMD client is resolved through oidc-provider's
+  // metadata-document path (its cache + allowClient) on every use, never from
+  // stored metadata; the oauth_clients row exists only so FKs and blocks work.
+  it('adapter.find(Client) returns undefined for a CIMD id even when a row exists', async () => {
+    const { where } = mockSelectRows([{ metadata: { client_id: 'https://client.example.com/m.json' }, disabledAt: null }]);
+    await expect(new BreezeOidcAdapter('Client').find('https://client.example.com/m.json')).resolves.toBeUndefined();
+    expect(where).not.toHaveBeenCalled();
+  });
+
+  it('adapter.upsert(Client) refuses a CIMD id', async () => {
+    const chain = mockInsertChain();
+    await expect(new BreezeOidcAdapter('Client').upsert('https://client.example.com/m.json', { client_id: 'https://client.example.com/m.json' }, undefined))
+      .rejects.toThrow(/metadata document/i);
+    expect(chain.values).not.toHaveBeenCalled();
+  });
+
   it('upserts AuthorizationCode rows using tenant ids from payload.extra', async () => {
     const chain = mockInsertChain();
     mockUpdateChain();

@@ -2443,6 +2443,30 @@ export async function attachChatProposalToSession(
   }
 }
 
+const FLOW_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Tool Catalog W03 (#5218): chat provenance for a saved flow draft. Same shape
+ * as attachChatProposalToSession — the draft_flow handler never sees the
+ * Breeze session id, so it is back-filled here from the authenticated session,
+ * never from tool input. Best-effort.
+ */
+export async function attachChatFlowToSession(
+  session: Pick<ActiveSession, 'orgId' | 'breezeSessionId'>,
+  parsedOutput: Record<string, unknown>,
+): Promise<void> {
+  if (parsedOutput.saved !== true) return;
+  const flowId = (parsedOutput.flow as { id?: unknown } | undefined)?.id;
+  if (typeof flowId !== 'string' || !FLOW_ID_RE.test(flowId)) return;
+  try {
+    const { attachFlowToChatSession } = await import('./flows/service');
+    await attachFlowToChatSession(flowId, session.breezeSessionId, session.orgId);
+  } catch (err) {
+    console.error('[AI-SDK] Failed to attach flow draft to session:', err instanceof Error ? err.message : err);
+    captureException(err, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+  }
+}
+
 /**
  * Topology M4 Task 3: a tool result inside an investigation turn is model
  * input only. It never reaches SSE or ai_messages (only a fixed progress
@@ -2623,6 +2647,9 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // once the output carries the proposal id (roadmap reconciliation).
     if (toolName === 'propose_script' && !isError) {
       await attachChatProposalToSession(session, parsedOutput);
+    }
+    if (toolName === 'draft_flow' && !isError) {
+      await attachChatFlowToSession(session, parsedOutput);
     }
 
     // 2a. Save tool_result to aiMessages

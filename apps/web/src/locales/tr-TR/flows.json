@@ -1,0 +1,70 @@
+{
+  "title": "Akışlar",
+  "subtitle": "Araçları birbirine zincirleyen çok adımlı otomasyonlar.",
+  "previewNotice": "Akışlar bu sürümde salt okunurdur. Bunları yapay zekâ sohbetinde taslak olarak hazırlayın; etkinleştirme ve çalıştırmalar sonraki bir sürümde gelecek.",
+  "empty": {
+    "title": "Henüz akış yok",
+    "body": "Yapay zekâ asistanından bir akış taslağı hazırlamasını isteyin, ardından burada inceleyin."
+  },
+  "list": {
+    "name": "Ad",
+    "owner": "Sahip",
+    "allOrgs": "Tüm kuruluşlar",
+    "status": "Durum",
+    "tier": "Düzey",
+    "trigger": "Tetikleyici",
+    "updated": "Güncellenme"
+  },
+  "status": {
+    "draft": "Taslak",
+    "enabled": "Etkin",
+    "paused": "Duraklatıldı",
+    "disabled": "Devre dışı"
+  },
+  "trigger": {
+    "schedule": "Zamanlama",
+    "event": "Olay",
+    "webhook": "Webhook",
+    "manual": "Manuel"
+  },
+  "detail": {
+    "back": "Akışlara dön",
+    "trigger": "Tetikleyici",
+    "inputs": "Girdiler",
+    "steps": "Adımlar",
+    "version": "Sürüm {{version}}",
+    "createdInChat": "Yapay zekâ sohbetinde oluşturuldu"
+  },
+  "step": {
+    "tool": "Araç",
+    "tier": "Düzey {{tier}}",
+    "approval": "Onay",
+    "approvalDefault": "Standart onay",
+    "approvalPreApproved": "Önceden onaylı",
+    "when": "Şu durumda çalışır",
+    "forEach": "Her öğe için",
+    "onFailure": "Hata durumunda",
+    "timeout": "Zaman aşımı",
+    "input": "Girdi",
+    "source": {
+      "core": "Çekirdek araç",
+      "tenant": "Araç kaynağı",
+      "builtin": "Yerleşik"
+    }
+  },
+  "issues": {
+    "title": "Doğrulama",
+    "none": "Doğrulama sorunu yok.",
+    "error": "Hata",
+    "warning": "Uyarı"
+  },
+  "card": {
+    "title": "Akış taslağı",
+    "review": "İncele",
+    "steps": "Adımlar: {{count}}"
+  },
+  "errors": {
+    "loadFailed": "Akışlar yüklenemedi.",
+    "notFound": "Akış bulunamadı."
+  }
+}

@@ -259,6 +259,18 @@ export const devices = pgTable('devices', {
   // above ownershipEpoch. PAM dispatch requires it to equal ownershipEpoch;
   // NULL counts as acknowledged only at ownershipEpoch = 1.
   agentIdentityEpochAck: integer('agent_identity_epoch_ack'),
+  // Reinstall reattach W1a (#8318, spec 2026-10-12-reinstall-reattach-design
+  // §4.1): which agent install owns this row. 1 = the original install (every
+  // device that was never reattached); advanced by exactly one when a reattach
+  // confirm hands the row to a new install, never otherwise
+  // (devices_install_incarnation_guard). device_commands rows are stamped with
+  // it at insert, and claim/result acceptance refuse an earlier incarnation's
+  // rows. incarnation_started_at is NULL exactly while the incarnation is 1
+  // (devices_install_incarnation_chk); last_reattached_at backs the
+  // "Reinstalled on" badge. Written only by services/deviceInstallBoundary.
+  installIncarnation: integer('install_incarnation').notNull().default(1),
+  incarnationStartedAt: timestamp('incarnation_started_at', { withTimezone: true }),
+  lastReattachedAt: timestamp('last_reattached_at', { withTimezone: true }),
   // Revocation-lease capability. 1 = this agent build renews a per-session
   // revocation lease over the command WebSocket and stops the desktop stream
   // when the lease is revoked or expires past its grace window. 0 (default,
@@ -771,7 +783,13 @@ export const deviceCommands = pgTable('device_commands', {
   // table as system-scoped (both key on the literal column name).
   aiInitiatorKind: aiInitiatorKindEnum('ai_initiator_kind'),
   aiSessionId: uuid('ai_session_id'),
-  aiAgentRunId: uuid('ai_agent_run_id')
+  aiAgentRunId: uuid('ai_agent_run_id'),
+  // Reinstall reattach W1a (#8318 §4.2): the devices.install_incarnation this
+  // row was enqueued for. Stamped by the device_commands_stamp_incarnation
+  // trigger on EVERY insert (a value written here is overwritten) and
+  // immutable after. NULL only on rows from before the trigger, and a NULL
+  // counts as incarnation 1. See services/commandIncarnation.ts.
+  deviceIncarnation: integer('device_incarnation')
 });
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);

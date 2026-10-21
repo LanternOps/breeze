@@ -17,7 +17,8 @@ import { db, withSystemDbAccessContext } from '../db';
 import { partners, organizations, invoices, invoiceLines, invoiceDocuments } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { renderInvoicePdf, getInvoicePdf, sendInvoiceEmail } from './invoicePdf';
-import { getCustomerInvoice, markViewed } from './invoiceService';
+import { getPortalInvoiceRowOr404, markViewed } from './invoiceService';
+import { assembleCustomerInvoiceDocument } from './customerDocument';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 
@@ -169,10 +170,11 @@ describe.runIf(RUN)('sendInvoiceEmail honest outcome + org guard', () => {
   });
 });
 
-describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
+describe.runIf(RUN)('portal org guard: getPortalInvoiceRowOr404 + assembler / markViewed', () => {
   it('returns the invoice for its own org and hides non-visible lines', async () => {
     const f = await seedIssuedInvoice();
-    const { invoice, lines } = await withSystemDbAccessContext(() => getCustomerInvoice(f.invoiceId, f.orgId));
+    const { invoice, lines } = await withSystemDbAccessContext(async () =>
+      assembleCustomerInvoiceDocument(await getPortalInvoiceRowOr404(f.invoiceId, f.orgId), 'portal'));
     expect(invoice.id).toBe(f.invoiceId);
     // The seed has 3 lines, one of which is customerVisible:false (hidden bundle child).
     expect(lines).toHaveLength(2);
@@ -185,7 +187,8 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     // #6467: workedMinutes joined the DTO (structured worked-vs-billed disclosure,
     // ordinary numeric fact like quantity) — still an exact, pinned key set.
     // #8604: workDate joined too (non-null only when the frozen setting prints dates).
-    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,name,quantity,taxable,ticketCategory,ticketNumber,unitPrice,workDate,workedMinutes')).toBe(true);
+    // #9402: the line `id` (invoice_lines.id) is the opaque row key the shared renderer keys rows by.
+    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,id,lineTotal,name,quantity,taxable,ticketCategory,ticketNumber,unitPrice,workDate,workedMinutes')).toBe(true);
     // W08 (#4562): ticketNumber joins the DTO; source_type/source_id must still never appear.
     expect(lines.every((line) => !('sourceType' in line) && !('sourceId' in line))).toBe(true);
     expect(lines.every((line) => 'name' in line)).toBe(true);
@@ -195,7 +198,7 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     const f = await seedIssuedInvoice();
     const otherOrg = '00000000-0000-0000-0000-0000000000aa';
     await expect(
-      withSystemDbAccessContext(() => getCustomerInvoice(f.invoiceId, otherOrg))
+      withSystemDbAccessContext(() => getPortalInvoiceRowOr404(f.invoiceId, otherOrg))
     ).rejects.toMatchObject({ status: 404 } satisfies Partial<InvoiceServiceError>);
   });
 

@@ -16,6 +16,7 @@ COPY turbo.json tsconfig.json ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
+COPY packages/document-ui/package.json ./packages/document-ui/
 
 # Install all dependencies (including devDependencies for development)
 RUN pnpm install
@@ -24,6 +25,7 @@ RUN pnpm install
 COPY apps/web ./apps/web
 COPY packages/shared ./packages/shared
 COPY packages/extension-web-sdk ./packages/extension-web-sdk
+COPY packages/document-ui ./packages/document-ui
 
 # Set working directory to web
 WORKDIR /app/apps/web

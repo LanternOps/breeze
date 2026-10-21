@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// loadInvoiceForRender reads, in order: the invoice (.limit), its lines
-// (.orderBy), the partner (.limit), then the org's portal_branding (.limit).
+// loadInvoiceForRender reads, in order: the invoice (.limit), the partner
+// (.limit), then the org's portal_branding (.limit). The lines come from the
+// customer-document assembler (#9414 W3a), not from this loader.
 // Each terminal call resolves to the next queued row-array.
 const rows = vi.hoisted(() => ({ next: [] as unknown[][], i: 0 }));
 vi.mock('../db', () => {
@@ -27,7 +28,7 @@ const invoice = {
 const partner = { id: 'p-1', name: 'Lantern IT', invoiceFooter: 'Partner footer', currencyCode: 'USD' };
 
 function queue(inv: typeof invoice, orgFooter: string | null) {
-  rows.next = [[inv], [], [partner], orgFooter === null ? [] : [{ logoUrl: null, primaryColor: null, footerText: orgFooter }]];
+  rows.next = [[inv], [partner], orgFooter === null ? [] : [{ logoUrl: null, primaryColor: null, footerText: orgFooter }]];
   rows.i = 0;
 }
 
@@ -49,5 +50,22 @@ describe('loadInvoiceForRender footer (#7510)', () => {
   it("prints the invoice's frozen footer over both levels", async () => {
     queue({ ...invoice, terms: 'Frozen at issue' }, 'Org footer');
     expect((await loadInvoiceForRender('inv-1'))!.branding.footerText).toBe('Frozen at issue');
+  });
+});
+
+// #9414 W3a: the PDF render holds an open transaction, so the assembler must not open a second
+// connection for the partner/branding reads: the loader hands over what it read on its own.
+describe('loadInvoiceForRender preloaded branding (W3a)', () => {
+  it('hands the assembler the partner and branding rows it read', async () => {
+    queue(invoice, 'Org footer');
+    const loaded = (await loadInvoiceForRender('inv-1'))!;
+    expect(loaded.preloaded?.partner).toMatchObject({ name: 'Lantern IT' });
+    expect(loaded.preloaded?.brand).toEqual({ logoUrl: null, primaryColor: null });
+  });
+
+  it('hands over nothing when the partner row was not visible (org-scoped caller), so the assembler falls back to its own read', async () => {
+    rows.next = [[invoice], [], []];
+    rows.i = 0;
+    expect((await loadInvoiceForRender('inv-1'))!.preloaded).toBeUndefined();
   });
 });
