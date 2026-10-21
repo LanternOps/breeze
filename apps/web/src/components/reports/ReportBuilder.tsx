@@ -753,6 +753,19 @@ const monthDays = Array.from({ length: 28 }, (_, index) => String(index + 1));
 const chartColors = ['#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#14b8a6'];
 const chartColorClasses = ['bg-sky-500', 'bg-emerald-500', 'bg-amber-500', 'bg-red-500', 'bg-teal-500'];
 
+// Freeform-builder state keys a curated template report must never carry (#9265).
+const TEMPLATE_BUILDER_STATE_KEYS = [
+  'builderType',
+  'dataSource',
+  'columns',
+  'filterConditions',
+  'groupBy',
+  'aggregation',
+  'chartType',
+  'saveTemplate',
+  'templateName'
+] as const;
+
 const normalizeBuilderType = (value?: ReportBuilderType): BuilderReportType => {
   if (!value) return 'devices';
   if (builderTypeValues.includes(value as BuilderReportType)) {
@@ -1642,6 +1655,18 @@ export default function ReportBuilder({
         ? {
             ...omitConfigKeys(baseConfig, BUSINESS_REFUSED_CONFIG_KEYS),
             schedule: scheduleDetail,
+            emailRecipients
+          }
+        : hasTemplateOptionsForm(defaultValues?.type)
+        ? {
+            // Curated template types (#9265) own their options via `baseConfig`;
+            // the builder adds only the delivery keys it owns, never its
+            // device-builder state (builderType/dataSource/columns/aggregation…).
+            // Stale builder keys already persisted in baseConfig are dropped so
+            // previously polluted configs heal on the next save.
+            ...omitConfigKeys(baseConfig, TEMPLATE_BUILDER_STATE_KEYS),
+            schedule: scheduleDetail,
+            exportFormats,
             emailRecipients
           }
         : {
