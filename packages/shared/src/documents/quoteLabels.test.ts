@@ -26,6 +26,9 @@ describe('quote document labels (English = what the portal prints today)', () =>
     expect(Q.deviceSet.estimated('seats')).toBe('Estimated quantity — billed at the actual number of seats each billing period.');
     expect(Q.deviceSet.devices).toBe('devices');
     expect(Q.deviceSet.seats).toBe('seats');
+    expect(Q.deviceSet.role('server')).toBe('servers');
+    expect(Q.deviceSet.role('access_point')).toBe('access points');
+    expect(Q.deviceSet.role('mystery')).toBe('mystery');
     expect(Q.deviceSet.inGroup('Servers')).toBe('devices in “Servers”');
     expect(Q.deviceSet.atSite('devices', 'HQ')).toBe('devices at HQ');
     expect(Q.deviceSet.includesBilled('5', '$10.00')).toBe('Includes 5; additional units billed at $10.00 each.');

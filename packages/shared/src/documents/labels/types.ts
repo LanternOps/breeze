@@ -78,6 +78,8 @@ export interface DocumentQuoteLabels {
   deviceSet: {
     devices: string;
     seats: string;
+    /** The plural noun for a billable device role ('server' → 'servers'). */
+    role(role: string): string;
     inGroup(name: string): string;
     atSite(set: string, site: string): string;
     estimated(set: string): string;

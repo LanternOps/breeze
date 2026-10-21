@@ -14,4 +14,7 @@ export { INVOICE_DTO_FIXTURES, type InvoiceFixtureName } from './fixtures/invoic
 
 // ---- W2a (#9418): quote document ----
 export * from './quoteDto';
+export * from './quoteModel';
 export type { DocumentQuoteLabels } from './labels/types';
+export { buildQuoteDocumentModel } from './quoteBuilder';
+export { QUOTE_DTO_FIXTURES, QUOTE_FIXTURE_IDS, type QuoteFixtureName } from './fixtures/quoteDtos';

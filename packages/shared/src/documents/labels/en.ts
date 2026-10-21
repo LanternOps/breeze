@@ -1,4 +1,5 @@
 import type { DocumentLabels } from './types';
+import { DEVICE_ROLE_NOUNS, type BillableDeviceRole } from '../../validators/deviceRoles'; // W2a (#9418)
 
 /**
  * English document strings — the single source of the English defaults. Copied
@@ -71,6 +72,7 @@ export const DOCUMENT_LABELS_EN: DocumentLabels = Object.freeze({
     deviceSet: Object.freeze({
       devices: 'devices',
       seats: 'seats',
+      role: (role: string) => DEVICE_ROLE_NOUNS[role as BillableDeviceRole] ?? role,
       inGroup: (name: string) => `devices in “${name}”`,
       atSite: (set: string, site: string) => `${set} at ${site}`,
       estimated: (set: string) => `Estimated quantity — billed at the actual number of ${set} each billing period.`,
