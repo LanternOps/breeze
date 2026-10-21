@@ -61,9 +61,13 @@ export default function DeviceDetailPage(props: DeviceDetailPageProps) {
   );
 }
 
-// True when this document was loaded from a same-origin page (an in-app list,
-// filtered view, etc.), i.e. history.back() stays inside Breeze.
+// True when history.back() is known to stay inside Breeze: either Astro's
+// ClientRouter pushed an entry in this tab (history.state.index > 0 — the
+// referrer is frozen at the last hard load, so it can't see soft navigations),
+// or this document was hard-loaded from a same-origin page.
 function cameFromSameOrigin(): boolean {
+  const index = (window.history.state as { index?: unknown } | null)?.index;
+  if (typeof index === "number" && index > 0) return true;
   try {
     return !!document.referrer && new URL(document.referrer).origin === window.location.origin;
   } catch {

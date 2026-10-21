@@ -44,7 +44,7 @@ describe('DeviceDetailPage Back (#9259)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Guarantee history.length > 1 so the old length-only check would pop.
-    window.history.pushState({}, '', '/devices/x');
+    window.history.pushState(null, '', '/devices/x');
     useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
       id: DEVICE_ID, hostname: 'alpha-01', osType: 'windows', status: 'online',
@@ -54,6 +54,7 @@ describe('DeviceDetailPage Back (#9259)', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    delete (document as { referrer?: string }).referrer;
   });
 
   it('pops history when the referrer is same-origin', async () => {
@@ -65,7 +66,17 @@ describe('DeviceDetailPage Back (#9259)', () => {
     expect(navigateTo).not.toHaveBeenCalled();
   });
 
-  it.each(['', 'https://example.com/somewhere'])(
+  it('pops history after an in-app soft navigation even with an empty referrer', async () => {
+    setReferrer('');
+    window.history.replaceState({ index: 1 }, '', '/devices/x');
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    fireEvent.click(await screen.findByText('back'));
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it.each(['','https://example.com/somewhere', 'not a url'])(
     'goes to the Devices route instead of leaving the app (referrer %j)',
     async (ref) => {
       setReferrer(ref);
