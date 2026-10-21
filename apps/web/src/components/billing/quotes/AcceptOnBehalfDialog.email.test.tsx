@@ -43,6 +43,12 @@ describe('AcceptOnBehalfDialog — email consequence (#9256)', () => {
     expect(li).not.toHaveTextContent('will be emailed to');
   });
 
+  it('keeps the default promise while the capability is unknown (not loaded / lookup failed)', () => {
+    emailFlag.value = undefined;
+    mount();
+    expect(screen.getByTestId('accept-on-behalf-consequence-email')).toHaveTextContent('The invoice will be emailed to');
+  });
+
   it('also says so when there is no recorded recipient', () => {
     emailFlag.value = false;
     mount({ recipients: [] });

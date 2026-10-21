@@ -329,7 +329,7 @@
         },
         "approve": "Approve",
         "approved": "Request approved. The requester was emailed a download link.",
-        "approvedNoEmail": "Access approved. No email service is configured, so the requester was not emailed — share the link from the request.",
+        "approvedNoEmail": "Access approved. No email service is configured, so the requester was not emailed.",
         "approveFailed": "Could not approve the request.",
         "deny": "Deny",
         "denyTitle": "Deny this request?",
@@ -346,7 +346,7 @@
         "revokeFailed": "Could not revoke access.",
         "resend": "Resend link",
         "resent": "A new download link was emailed. The previous link no longer works.",
-        "resentNoEmail": "New download link created. No email service is configured, so it was not emailed — share the link from the request. The previous link no longer works.",
+        "resentNoEmail": "New download link created. No email service is configured, so it was not emailed. The previous link no longer works.",
         "resendFailed": "Could not resend the link.",
         "errors": {
           "mfaRequired": "Approving or resending requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",

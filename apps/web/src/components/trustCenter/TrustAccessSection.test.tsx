@@ -144,6 +144,13 @@ describe('TrustAccessSection', () => {
       expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/was emailed/) }));
     });
 
+    it('Approve keeps the default copy while the capability is unknown', async () => {
+      emailFlag.value = undefined;
+      mount();
+      fireEvent.click(await screen.findByTestId('trust-access-approve-r1'));
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/requester was emailed/) })));
+    });
+
     it('Resend says a new link was emailed when configured', async () => {
       mount();
       fireEvent.click(await screen.findByTestId('trust-access-resend-r2'));

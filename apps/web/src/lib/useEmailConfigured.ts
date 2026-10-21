@@ -12,20 +12,27 @@ let inflight: Promise<boolean | undefined> | null = null;
 
 function load(): Promise<boolean | undefined> {
   if (cached !== undefined) return Promise.resolve(cached);
-  inflight ??= (async () => {
+  if (inflight) return inflight;
+  const run = async (): Promise<boolean | undefined> => {
     try {
       const res = await fetchWithAuth('/partner/me');
-      if (!res?.ok) return undefined;
+      if (!res?.ok) {
+        console.warn('[useEmailConfigured] /partner/me failed', res?.status);
+        return undefined;
+      }
       const body = await res.json();
       if (typeof body?.emailConfigured === 'boolean') cached = body.emailConfigured;
       return cached;
-    } catch {
+    } catch (err) {
+      console.warn('[useEmailConfigured] could not read email capability', err);
       return undefined;
-    } finally {
-      inflight = null;
     }
-  })();
-  return inflight;
+  };
+  const p = run();
+  inflight = p;
+  // Clear AFTER assignment so a synchronously-settling run can't leave a stale promise behind.
+  void p.finally(() => { if (inflight === p) inflight = null; });
+  return p;
 }
 
 export function useEmailConfigured(): boolean | undefined {

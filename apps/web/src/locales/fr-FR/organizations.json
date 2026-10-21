@@ -329,7 +329,7 @@
         },
         "approve": "Approuver",
         "approved": "Demande approuvée. Le demandeur a reçu un lien de téléchargement par e-mail.",
-        "approvedNoEmail": "Accès approuvé. Aucun service e-mail n'est configuré ; le demandeur n'a donc pas été prévenu par e-mail — partagez le lien depuis la demande.",
+        "approvedNoEmail": "Accès approuvé. Aucun service e-mail n'est configuré ; le demandeur n'a donc pas été prévenu par e-mail.",
         "approveFailed": "Impossible d'approuver la demande.",
         "deny": "Refuser",
         "denyTitle": "Refuser cette demande ?",
@@ -346,7 +346,7 @@
         "revokeFailed": "Impossible de révoquer l'accès.",
         "resend": "Renvoyer le lien",
         "resent": "Un nouveau lien de téléchargement a été envoyé par e-mail. Le lien précédent ne fonctionne plus.",
-        "resentNoEmail": "Nouveau lien de téléchargement créé. Aucun service e-mail n'est configuré ; il n'a donc pas été envoyé par e-mail — partagez le lien depuis la demande. Le lien précédent ne fonctionne plus.",
+        "resentNoEmail": "Nouveau lien de téléchargement créé. Aucun service e-mail n'est configuré ; il n'a donc pas été envoyé par e-mail. Le lien précédent ne fonctionne plus.",
         "resendFailed": "Impossible de renvoyer le lien.",
         "errors": {
           "mfaRequired": "L'approbation ou le renvoi nécessite une authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
