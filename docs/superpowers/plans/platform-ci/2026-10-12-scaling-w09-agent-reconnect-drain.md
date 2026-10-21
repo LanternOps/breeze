@@ -3,7 +3,8 @@ title: "Scaling W09 (W1d): agent jittered reconnect, drain handling, loop-level 
 date: 2026-10-12
 tracking_issue: LanternOps/breeze#8139
 wave_issue: LanternOps/breeze#8148
-depends_on: W08 (#8147, merged as #8456) for the server contract; W06 (#8145, PR #8587 open) for the simulator storm suite and the mirror task (Task 12 only)
+depends_on: W08 (#8147, merged as #8456) for the server contract; W06 (#8145, merged as #8587) for the simulator storm suite (Task 12)
+amended: 2026-10-20 — rebased on #9145 (reconnect_backoff.go), #9146 (httputil withServerAnswer + watchdog liveness), #9245 (stop-after-dial); see "Amendment 2026-10-20"
 rigor: HIGH (program plan row W09) — ships in the Go agent to customer machines and follows the agent release rollout
 ---
 
@@ -22,6 +23,298 @@ rigor: HIGH (program plan row W09) — ships in the Go agent to customer machine
 **Tech Stack:** Go (`agent/go.mod`: `go 1.26.9`), gorilla/websocket, `math/rand/v2`, the agent's `internal/httputil`, `internal/heartbeat`, `internal/websocket`, `internal/logging`, `internal/unifi`, `internal/monitoring`; the agent simulator (`agent/tools/agentsim`) and W06's `load-tests/agentsim/storm.sh` for the lab run.
 
 **Spec:** `docs/superpowers/specs/platform-ci/2026-10-07-horizontal-api-scaling-design.md`, row **W1d** (§6), the §1 failure spiral, §7 "Rollout and rollback" and §8 risk (2). Program index: `docs/superpowers/plans/platform-ci/2026-10-07-scaling-program-w0-w1.md`, row **W09**. Server contract: `docs/superpowers/plans/platform-ci/2026-10-08-scaling-w08-api-admission-control.md` (merged as #8456). Wave issue #8148, feature #8139.
+
+> **Amendment 2026-10-20: read this section first.** Three agent PRs merged after this plan was written: #9145 (`7073c29716`, `agent/internal/websocket/reconnect_backoff.go`), #9146 (`5a0c717f05`, `httputil.withServerAnswer` and the watchdog's overload liveness), and #9245 (`3ea9716fba`, the `stopped()` check after `connect()`). Together they deliver part of Tasks 2 and 3 and make findings F1, F2, F5, F6 and F8 stale. The amendment below takes precedence over the original text wherever the two disagree. The original sections stay below it as the design record. A task the amendment marks **keep** runs as originally written, with the edits listed for it. A task marked **rewrite** runs from the amendment's text only. A task marked **drop** does not run. The implementation is still **one PR** with `Closes #8148`.
+
+## Amendment 2026-10-20
+
+### A0. Owner decisions (Todd, 2026-10-16 on #8148; binding, not reopened here)
+
+| # | Decision | Effect on this plan |
+|---|---|---|
+| D1 | The first-reconnect window is **30 s**, set by a config key that accepts 0–300 | Rewritten Task 2 and Task 10. Value semantics are in A2 |
+| D2 | Watchdog overload liveness is **out of scope**. It is #8934 and shipped as #9146 | Watchdog files are on the must-not-ship list. The heartbeat must keep the #9146 liveness path working (Task 5, Task 7) |
+| D3 | Canary: an internal org pinned for **24 h** in the sleeping region, if a pin can point ahead of `is_latest`. Otherwise per-device upgrades on a few internal devices. R-1 checks this on a lab stack first | Rollout R-1, unchanged |
+| D4 | The `drain` **sender** stays with W5c, unless G1 shows that `rolling-deploy` needs it | Must-not-ship list. Follow-up 1 is unchanged |
+
+These close "Owner decisions surfaced by this plan" items 1–4 below.
+
+### A1. As built on `origin/main` `bc0ff29519` (2026-10-20)
+
+Every symbol below was checked with file:line at `bc0ff29519` by a read-only sweep, and the websocket and httputil rows were read again by hand. **[V]** means read in code.
+
+**WebSocket client** (`agent/internal/websocket/client.go` is now 1,431 lines; `reconnect_backoff.go` is 202)
+
+| Plan claim | Now | Verdict |
+|---|---|---|
+| F1: an accepted socket is redialled at once, and backoff grows only on a dial error | `reconnectLoop` (`client.go:473-526`) waits before **every** redial. `reconnectBackoff.afterDisconnect` (`reconnect_backoff.go:166-189`) waits as follows. Server normal close (1000/1001/4040): U(1 s, 5 s). Abnormal close, including 1006 and 4008: max(U(1 s, 5 s), step ±30 %). A socket that lived ≤ 30 s escalates the step ×2 up to 60 s. The step resets after a socket that lived more than 30 s. Every wait has a floor of `minReconnectDelay` = 250 ms (`:28`). Constants are at `:20-48`; `classifyDisconnect` is at `:84-100` [V] | **STALE.** The tight loop is fixed. Spec item (1) is only **partly** met: after a stable socket the wait is U(1 s, 5 s), not D1's 30 s window. For 10k agents that is about 2,500 redials/s for 4 s, against about 345/s over 29 s with D1 |
+| F2: `connect()` discards the handshake response | `connect` keeps `resp` from `dialer.DialContext` (`client.go:430`). A non-101 answer becomes `*upgradeRefusedError` (`:432-436`; type at `reconnect_backoff.go:106-130`). `RetryAfter` is parsed only for 429 and 503 (`:126-128`) [V] | **STALE.** Delivered by #9145 |
+| F3: Hono forwards a digits-only `Retry-After` | `patches/@hono__node-ws@1.3.1.patch:16-20, 37-41` [V] | Still true |
+| F4: `readPump` skips id-less unknown types | The skip is now at `client.go:624`. `desktop_ice_candidate` (#9182) is handled just before it, at `:617-620`. Nothing parses `drain` [V] | Still true; lines moved. Task 4 adds `drain` after `:620` |
+| F5: `ForceReconnect` must stay immediate (D3) | `ForceReconnect` (`client.go:388-395`) sets `localClose` (`atomic.Bool`, `:171`) only while a socket is held. The loop then waits U(250 ms, 1 s) (`reconnect_backoff.go:172-173`). The callers are `heartbeat.go:6247, 6518, 6798` [V] | **CHANGED.** "Immediate" was superseded on purpose by #9145. The 0.25–1 s jitter stands (A3) |
+| F6: Dial takes no context | `connect` uses `DialContext`, cancelled when `done` closes (`client.go:418-430`). #9245 added `if c.stopped() { c.closeCurrentConn(true); return }` after a successful dial (`:490-493`) [V] | **STALE.** Delivered by #9145 and #9245 |
+| F7: `SendResult` buffers while disconnected; `OnResultHandedOff` fires anyway | `processCommand` `client.go:893-924`; `SendResult` `:933-1000` (enqueue `:989`). Non-command callers are `heartbeat/handlers_tunnel.go:139`, `heartbeat/desktop_clipboard_summary.go:159` and `heartbeat.go:2043`. The hooks are wired at `heartbeat.go:1438, 1441`. Outbox flush on connect is at `heartbeat.go:1433, 1614-1619` [V] | Still true; lines moved. Task 6 keeps its design |
+| F8: no time or randomness seam | `newReconnectBackoff(rnd)` takes an injectable rand (`reconnect_backoff.go:139`; the tests use `fixedRand`). The loop passes `nil` (`client.go:474`) and uses `time.Now` (`:496`), `time.Since` (`:504`) and `time.NewTimer` (`:516`). Loop tests run on real time (`reconnect_backoff_test.go:326-480`) [V] | **PARTLY STALE.** Task 1 shrinks |
+| F9: startup bundle and first-beat jitter | First-beat jitter is at `heartbeat.go:2192-2198`, the update marker at `:2180` (`checkUpdateMarker` `:2058-2073`), and the bundle at `:2223-2226`. The gates are stamped at `:2247, 2248, 2253` and the reliability post at `:2256`. The WS client dials at once on `Start` (`agentapp/main.go:1043` → `client.go:294` → `:473`) [V] | Still true; lines moved |
+
+**HTTP retry** (`agent/internal/httputil`)
+
+| Plan claim | Now | Verdict |
+|---|---|---|
+| F10: `Do` honours `Retry-After` with 0–30 % jitter, clamped to 300 s after jitter | Unchanged: `retry.go:66-144`, and `applyPositiveJitter` clamps to `retryAfterMaxCap` (`retry.go:189-198`; `retryafter.go:12` = 300 s) [V] | Still true |
+| F11: the `Retry-After` value is lost when it outlives the context, and nobody inspects `RetryableStatusError` | `Do` still sleeps into the deadline (`retry.go:98-102`). It now returns `withServerAnswer(ctx.Err(), lastAnswer)` (`:100, :145`; func `:162-171`), so the chain holds both `context.DeadlineExceeded` and `*RetryableStatusError{StatusCode, URL}`. There is still **no delay or absolute time**. `heartbeat/server_unavailable_liveness.go:40-46` (`serverOverloadAnswer`, `errors.As`) is the first caller outside the package; it feeds the watchdog marker at `heartbeat.go:5319-5320` [V] | **CHANGED.** Task 5 is rewritten to extend this chain and keep the #9146 liveness contract |
+| F12: `retry_jitter_test.go` asserts the 300 s clamp | `TestApplyPositiveJitterClampsToRetryAfterMaxCap` (`retry_jitter_test.go:67-74`) [V] | Still true. It now **stays unchanged**, because 300 s stands (A2) |
+| Second 300 s cap | `websocket/reconnect_backoff.go:47` `retryAfterCeiling = 300 s` ("matching httputil") [V] | New. It stays at 300 s |
+| `httputil.Do` callers (Task 5 and Task 7 audit) | Monitoring results `heartbeat.go:2557`; `sendInventoryData` `:2642`; process sample `:2836`; **peripherals `:2866`**; boot performance `:4457`; reliability `:4506`; heartbeat `:5313`; command result `:7096`. Also **`message_events.go:101`**, **`chat_events.go:214`**, `pam_reconciliation.go:163`, `handlers_elevation.go:44`, `discovery/adjacency_transport.go:265`, `tools/agentsim/sim/agent.go:136` [V] | The three **bold** callers are new to the audit |
+
+**Periodic senders, UniFi, log shipper, monitoring, config**
+
+| Plan claim | Now | Verdict |
+|---|---|---|
+| F13 `sendInventoryData` and its callers | Func `heartbeat.go:2612` (ctx `:2639`, Do `:2642`). Callers are `:2902, 2987, 3000, 3010, 3041, 3076, 3787, 3926, 3937, 4323, 4337, 4346, 4398, 4407, 4433`, `hardware_health.go:157`, `time_sync.go:100` and `workloads.go:300` [V] | Still true; lines moved |
+| F14 event logs collect, then ignore the send error | `heartbeat.go:4326-4338` [V] | Still true |
+| F15 recovery keys pop and re-park | Pop at `:4354-4357`, re-park at `:4359-4366` [V] | Still true |
+| F16, F17 | Monitoring `:2557` (15 s ctx). Heartbeat `doHeartbeatPost` `:5296`: ctx `:5310`, Do `:5313`. `LastHeartbeat` is written only on 200 (`:5358, :5364`). `HeartbeatStaleThreshold` is 3 min (`config.go:416`) [V] | Still true. **New:** #9146 records `ServerUnavailableAt` on a heartbeat 429/502/503/504 (`heartbeat.go:5319-5320`), and the watchdog treats it as liveness (`watchdog/checks.go:455, 476`) |
+| Precedent for a carried `notBefore` | `heartbeat/network_context.go:56, 140, 216-217` (`retryNotBefore` from a body `RetryAfterSeconds`) [V] | New. Task 7 follows its shape |
+| F18 UniFi | Telemetry `unifi/collector.go:224-235` (raw `deps.HTTP.Do` `:229`); loop `:362-419`; `fetchConfigs` `:422-446` (Do `:431`); `fetchSchedule` `collector_schedule.go:49-61` [V] | Still true |
+| F19 log shipper | `shipRetryCount` `shipper.go:458`; loop `:579`; uncancellable `time.Sleep` `:582, :586`; parse `:621`; cap `logging/retryafter.go:12` [V] | Still true |
+| F20 monitoring | Ticker `monitor.go:105`; immediate check `:134`; tick `:141` [V] | Still true |
+| D10 keys | Neither key exists. Defaults are in `Default()` (`config.go:379`) and validation in `config/validate.go:63`. `websocket.Config` (`client.go:56-61`) has only `ServerURL`, `AgentID`, `AuthToken` and `TLSConfig`; it is built at `agentapp/main.go:1035-1043` [V] | Still to do |
+
+**Server contract and simulator**
+
+| Plan claim | Now | Verdict |
+|---|---|---|
+| S4: nothing sends `drain` | No `type: 'drain'` and no `reconnectWithinMs` in `apps/api/src` [V] | Still true |
+| `Retry-After` values on agent routes | `services/admission/agentRouteClasses.ts:101-114`: bulk 120–180, standard 60–90, `/logs` 2–4, `unifi-collectors` 30–45, WS 5–120. The WS answer is `lo = ceil(backlog/rate)` clamped, with `hi = min(120, ceil(1.3·lo))` (`admissionRuntime.ts:204-214`). DB saturation is 30–45 (`middleware/dbSaturationResponse.ts:36-39`), the org rate limit 60 (`agentAuth.ts:944`), the global rate limit 60 by default (`globalRateLimit.ts:171, 227`), inventory 5 (`routes/agents/inventory.ts:152`). The one larger value is mTLS renewal's success window, up to 3,600 s (`routes/agents/mtls.ts:64, 759-762`). It goes to a raw-HTTP client that never reads the header (`agent/pkg/api/client.go:676`) [V] | Input to A2. **The largest that any `httputil.Do` or WS caller reads is 180 s** |
+| W06 (#8587) | Merged. `agent/tools/agentsim` imports `agent/internal/websocket` (`sim/ws.go:15`; same module). `sim/ws.go:18-32` mirrors the **pre-#9145** backoff constants, and `:85` says "an established socket that drops is redialled at once". `--legacy-retry-fraction` exists (`main.go:59`, `sim/config.go:291`). `load-tests/agentsim/storms/` holds `storm-suite.json` and six scenarios. There is no `drain-sockets` and no `--pre-w09-fraction` [V] | Task 12's gate is met. The simulator is **stale against #9145**, which Task 12 fixes |
+| Docs targets | `upgrades.mdx:77` still says "reconnect automatically". `next-release-draft.md` exists [V] | Task 11 unchanged |
+
+**"Today fails" claims in the original Task 2 and Task 3.** `TestShortLivedSocketsBackOff`, `TestNoHintServerKeepsBackoffShape`, `TestRefusedDialHonoursRetryAfter`, `TestRefusedDialNon503`, `TestDialAfterStopIsDiscarded` and `TestStopDuringFirstReconnectWait` (as a Stop guarantee) would all **pass today**. The #9145/#9245 tests that already pin each behaviour are named in A4. `TestStableRemoteDropWaitsFirstWindow` still fails today, because main waits 3 s at rand 0.5 rather than the 15.5 s it expects. `TestForceReconnectIsImmediate` fails **by design**: main waits 0.25–1 s, and A3 keeps that.
+
+### A2. The two numbers: the first window (D1), and why 300 s stands
+
+**First window.** The default is W = `ws_first_reconnect_window_seconds` = 30 s. D1 allows 0–300; values above 300 are clamped with a Warn. After a **stable** socket (lived > 30 s) closed by the server, normally or abnormally, the wait is U(1 s, max(W, 5 s)). Normal and abnormal closes share the window because an unannounced API kill shows up as 1006, an abnormal close; spec item (1) is about exactly that. The upper bound never drops below 5 s, so **W ≤ 5 reproduces #9145 exactly**: U(1 s, 5 s). That is what the escape hatch means now. "Immediate" no longer exists on main to be restored, and #9145 made it a bug. The step bookkeeping does not change: a stable close resets the step, and an abnormal one then advances it once, as `TestReconnectBackoff_HealthyConnectionResetsStep` pins. Short-lived sockets keep #9145's escalation, untouched by W.
+
+**300 s vs 390 s.** The plan's D1/D5 chose a 390 s post-jitter ceiling because clamping after jitter collapses agents onto the clamp. The collapse is real but conditional:
+
+- `applyPositiveJitter` returns RA × (1 + 0.3·U) clamped to 300 s. The clamp engages only when RA × 1.3 > 300, that is **RA > 230.8 s**. For a parsed RA of exactly 300 s, every agent lands at exactly 300 s, a full re-synchronisation. For RA between 230.8 s and 300 s, the fraction that lands on the clamp is 1 − (300/RA − 1)/0.3.
+- The largest `Retry-After` that any `httputil.Do` or WS caller can read today is **180 s** (bulk; see A1, Server contract). mTLS renewal can send up to 3,600 s, but its raw-HTTP client discards the header, so it never reaches this jitter. The jittered maximum is 180 × 1.3 = **234 s < 300 s**, so the clamp never engages. 300 and 390 give **identical waits for every answer the server can give today**.
+- Spread of a 10k shed burst on a bulk route: the server draws RA uniformly from 120–180 (61 integer values), and the agent multiplies by 1 + 0.3·U. Arrivals land in [120 s, 234 s]. The densest stretch is 156–180 s at about 10,000 / 82 s ≈ 120/s, with no spike.
+- WS: W08 admits 10 upgrades/s per instance with a burst of 20, so a single instance needs (10,000 − 20)/10 ≈ **998 instance-seconds** to admit 10k agents, whatever window the agent uses. The server already paces the herd with RA = ceil(backlog/rate), bounded 5–120 s, plus a ×1.3 range. The agent's +0–30 % only smooths each refusal cohort. The ceiling never enters this calculation, because the WS maximum after jitter is 156 s.
+- Moving to 390 s would change three constants (`httputil/retryafter.go:12`, `websocket/reconnect_backoff.go:47`, `logging/retryafter.go:12`) and one shipped test. It would lengthen the worst-case silence of a route by 30 %, and it would help only a server that sends a flat RA of 231 s or more. No server code does that.
+
+**Decision: 300 s stands.** The guard belongs where the risk is. Follow-up 6 (new) is an API unit test asserting that every admission, overload and rate-limit `Retry-After` range that an agent's `httputil.Do` or WS dial reads has an upper bound × 1.3 ≤ 300, so a future range cannot drift into the collapse zone unnoticed. It is not part of this PR (no API change in W09).
+
+### A3. Reconciled reconnect policy (replaces "Reconnect policy table")
+
+"Step" is `reconnectBackoff.step`. "jitter(step)" is step ±30 %. U(a, b) is uniform. W is the first window and N is a live drain hint (A4, Task 4). Every wait has a floor of `minReconnectDelay` (250 ms).
+
+| Last event | On main (#9145) | W09 | Step after |
+|---|---|---|---|
+| Process start (first dial) | 0 | U(0, 10 s), also after a self-update | 1 s (unchanged) |
+| Dial failed, no `Retry-After` | jitter(step) | unchanged | ×2, max 60 s |
+| Upgrade refused 429/503 with RA | max(jitter(step), min(RA × (1 + 0.3·U), 300 s)) | unchanged | ×2 |
+| Local close (`ForceReconnect`; no close frame received) | U(250 ms, 1 s) | unchanged | reset to 1 s if the socket lived > 30 s, else unchanged (as #9145) |
+| Remote close, lived > 30 s, no live drain hint | normal: U(1 s, 5 s); abnormal: max(U(1 s, 5 s), jitter(1 s)) | normal: U(1 s, max(W, 5 s)); abnormal: max(U(1 s, max(W, 5 s)), jitter(1 s)) | reset to 1 s; an abnormal close then advances once (unchanged) |
+| Remote close, lived > 30 s, live drain hint N | n/a | U(0, max(N, 5 s)). Windows below 5 s are widened to 5 s; this joins the wire contract (A3 note) | as the row above |
+| Remote close, lived ≤ 30 s | max(U(1 s, 5 s), jitter(step)) | max(#9145 wait, U(0, max(N, 5 s)) if a live hint) | ×2 (unchanged) |
+| `Stop()` | the loop exits; the dial is cancelled; a socket installed after `Stop` is closed (#9245) | unchanged | — |
+
+Two choices in this table differ from the original plan.
+
+**`localClose` stays; connection generations are dropped** (the original D3 mechanism). The original plan wanted generations to stop a stale local mark from exempting a later remote drop. On main that cannot happen, for three reasons. `ForceReconnect` marks the drop only while a socket is held (`client.go:388-395`). The loop `Swap(false)`s the mark exactly once per connection end (`:510`). A received close frame outranks the mark (`classifyDisconnect`, `reconnect_backoff.go:84-100`, pinned by `TestClassifyDisconnect` "server close frame outranks a racing local mark"). One race remains: `ForceReconnect` landing between `readPump` returning on a 1006 and `closeCurrentConn`. The plan's `readFailedGen` would narrow that race, since it rejects a mark after a read failure, but it would not close it: the mark and the read failure can still cross inside `readPump`. We accept the residual on purpose. Its cost is one agent, already disconnected by the server, redialling within 1 s instead of within the first window, and the trigger is a local credential rotation, which is not fleet-synchronised with a server drop. The drain hint needs no generation either: `readPump` runs synchronously on the reconnect-loop goroutine (`client.go:500`), so the hint can be a loop-owned field that is cleared at every connection end.
+
+**Drain windows below 5 s are widened to 5 s.** A server that sends N < 5 s (or 0) to a whole fleet would otherwise get it back within N. Widening keeps #9145's 1–5 s spread as the floor of any server-initiated reconnect. Add this sentence to D4's wire shape for W5c: "the agent spreads over max(reconnectWithinMs, 5000) ms". Codex flagged that the original promise was U(0, N); see A13.
+
+**`ForceReconnect` waits 0.25–1 s, not 0** (Review Focus 3). #9145 chose this on purpose: an mTLS renewal or token rotation pushed to many agents should not redial them in the same millisecond. It costs at most 1 s per rotation.
+
+### A4. Task disposition
+
+| Task | Disposition | Why |
+|---|---|---|
+| 1 Clock and rand seams | **Keep, smaller** | The rand seam exists (`newReconnectBackoff(rnd)`). Only the clock seam and the loop's use of `wsRand` are left (A5) |
+| 2 Reconnect policy | **Rewrite** | Extend `reconnectBackoff` with the D1 window and the start jitter. No new `ReconnectPolicy` type. Keep the original's install-after-`Stop` guarantee, which #9245 only half delivers (A6) |
+| 3 Refused WS upgrade `Retry-After` | **Drop** | Delivered by #9145. `TestConnect_UpgradeRefusalCarriesStatusAndRetryAfter` (`reconnect_backoff_test.go:233`), `TestReconnectBackoff_DialFailureHonoursRetryAfter` (`:177`), `TestReconnectLoop_HonoursRetryAfterOnRefusedUpgrade` (`:354`) and `TestReconnectLoop_StopInterruptsRetryAfterWait` (`:415`) pin it. 401/403 are not honoured (`reconnect_backoff.go:126`), and HTTP-dates parse through `httputil.ParseRetryAfter`. The 390 s bound is not adopted (A2). The one interaction test left, `TestRefusalAfterDrainUsesRetryAfter`, moves to Task 4 |
+| 4 `drain` message | **Rewrite (plumbing only)** | Parsing and the 10k spread test are unchanged. The hint is a loop-owned field, not a generation-tagged one. Expected waits are recomputed for A3 (A7) |
+| 5 `httputil.Do` keeps the server's delay | **Rewrite** | Build on `withServerAnswer`, keep 300 s, and keep #9146's liveness contract (A8) |
+| 6 Results while disconnected go to the outbox | **Keep** | F7 still holds. Use the new lines: `processCommand` `client.go:893-924`, the `SendResult` callers in A1 |
+| 7 Per-route loop deferral | **Keep, with edits** (A9) | New `Do` callers to classify. Follow `network_context.go`'s `retryNotBefore`. The heartbeat guard also asserts the #9146 marker |
+| 8 UniFi | **Keep, with edits** | Lines as in A1. "390 s" becomes 300 s; the bound is `httputil.applyPositiveJitter`'s |
+| 9 Log shipper | **Keep, with edits** | Lines as in A1. "390 s ceiling" becomes 300 s. The test that the two parsers agree also asserts the two caps are equal |
+| 10 Startup spread and config | **Keep, with edits** (A10) | The WS start jitter moves to Task 2. Key value `0` means #9145's 1–5 s, not "immediate" |
+| 11 Docs | **Keep, with edits** | Wording: "spread over up to 30 s (was 1–5 s)", and key `0` restores the 1–5 s spread |
+| 12 Simulator | **Rewrite** | W06 is merged, so the gate is met. The sim's mirror is stale against #9145. It needs an exported pacer, because `reconnectBackoff` is unexported (A11) |
+| 13 Full verification | **Keep** | `./tools/agentsim/...` is now always in scope |
+
+### A5. Task 1 (keep, smaller): clock seam for the loop
+
+Run the original Task 1 as written, with these edits:
+
+- `wsRand` is passed into the existing seam: `backoff := newReconnectBackoff(wsRand)` at `client.go:474`. `reconnectBackoff` itself stays as it is.
+- `reconnectLoop` reads `wsClock.Now()` where it now calls `time.Now()` (`:496`) and `time.Since` (`:504`). It waits on `wsClock.After(sleep)` instead of `time.NewTimer` (`:516-523`), selecting on `c.done` as it does today.
+- Step 3 must also keep the existing real-clock loop tests in `reconnect_backoff_test.go:326-480` green. They do not install the fake, so they run on `realClock`.
+
+### A6. Task 2 (rewrite): the D1 first window and the start jitter in `reconnectBackoff`
+
+**Files:** modify `agent/internal/websocket/reconnect_backoff.go`, `client.go` (`Config`, `New`, `reconnectLoop`) and `reconnect_backoff_test.go`. Create `agent/internal/websocket/client_reconnect_window_test.go` (fake clock) and modify `helpers_test.go`.
+
+**Interfaces (produced):**
+- `const defaultFirstReconnectWindow = 30 * time.Second`, `maxFirstReconnectWindow = 300 * time.Second`, `defaultStartDialWindow = 10 * time.Second` in `reconnect_backoff.go`.
+- `reconnectBackoff.firstWindow time.Duration`. `newReconnectBackoff(rnd)` sets it to `defaultFirstReconnectWindow`, so every existing test call keeps compiling.
+- `func (b *reconnectBackoff) atStart(window time.Duration) time.Duration` returns U(0, window), and 0 when window ≤ 0. It does not change the step.
+- `websocket.Config.FirstReconnectWindow *time.Duration`: nil means the default; a value is clamped to [0, 300 s]. Task 10 sets it from the config key.
+- `Client.firstWindow`, `Client.startWindow time.Duration` (unexported). `New` sets them from `Config` and `defaultStartDialWindow`. `newTestClient` (`helpers_test.go`) sets `startWindow = 0` after `New`, so no existing real-clock test gains a start wait.
+
+- [ ] **Step 1: Red, pure** (`reconnect_backoff_test.go`):
+  - `TestReconnectBackoff_StableRemoteCloseSpreadsOverFirstWindow`. For codes 1000, 1001, 4040, 1006, 4008 and 4001, `lasted` 31 s and 1 h, and every `randSamples` value, the delay is in [1 s, 30 s]. At r = 0.5 the normal-close delay is exactly 15.5 s. **Fails today** with 3 s.
+  - `TestReconnectBackoff_FirstWindowAtOrBelow5sIsPreW09`. With `firstWindow` 0 and 5 s, a stable normal close at r = 0.5 waits 3 s, and the delay is in [1 s, 5 s] for every sample. A regression guard, green today.
+  - `TestReconnectBackoff_ShortLivedCloseIgnoresFirstWindow`. With `firstWindow` 30 s, ten closes with `lasted` 1 s and r = 0.5 give the same sequence as `firstWindow` 0: 3, 3, 4, 8, 16, 32, 60, 60, 60, 60 s (normal close; the max of U(1, 5) = 3 s and the step). A guard.
+  - `TestReconnectBackoff_AtStart`. `atStart(10 s)` at r = 0.5 is 5 s; `atStart(0)` is 0; the step is unchanged. Fails to build today.
+  - On-purpose change: `TestReconnectBackoff_NormalCloseAfterHealthyConnection` (`:108`) upper bound `serverCloseSpreadMax` becomes `defaultFirstReconnectWindow`. Say so in the commit.
+
+  Run `cd agent && go test -race -run 'TestReconnectBackoff_' ./internal/websocket/`. Expect a build failure, then the first test failing.
+
+- [ ] **Step 2: Red, real client on the fake clock** (`client_reconnect_window_test.go`; uses Task 1's `installFakeWSClock`, `installWSRand(t, 0.5)` and the `startClient` helper). Each test waits on a test hook `c.testHooks.connected`, a channel fed after `connect` installs the socket, before it advances the clock.
+  - `TestStableRemoteDropWaitsFirstWindow`. The server accepts. The test advances 31 s, then the server closes with 1001. Assert one registered waiter of 15.5 s and no second dial until the clock passes it, then exactly one dial. **Fails today**: the waiter is 3 s.
+  - `TestStableAbnormalDropWaitsFirstWindow`. As above, but the server drops the TCP connection with no close frame (1006). Same 15.5 s.
+  - `TestFirstReconnectWindowZeroIsPreW09`. `Config.FirstReconnectWindow = ptr(0)`; the stable drop waits 3 s.
+  - `TestWSStartDialJittered`. The client is built with `startWindow` 10 s. `Start()` registers a 5 s waiter before the first dial, and the server sees no dial until the clock passes it.
+  - `TestStopDuringStartWait` and `TestStopDuringFirstReconnectWait`. `Stop()` during either wait makes `Start` return within the hang guard, with no further dial.
+  - `TestDialAfterStopIsDiscarded` (kept from the original). A test hook `c.testHooks.beforeInstall`, called between a successful dial and the install, blocks. The test calls `Stop()` and then releases the hook. Assert that `c.IsConnected()` never reports true afterwards and that the server sees the socket closed. **Fails today:** `connect` installs unconditionally (`client.go:440-442`), and #9245's check at `:490-493` closes the socket only after it was installed, so `IsConnected()` can read true after `Stop` returned.
+
+  Run `go test -race -run 'TestStable|TestFirstReconnectWindow|TestWSStartDial|TestStopDuring' ./internal/websocket/`. Expect FAIL on the waiter values.
+
+- [ ] **Step 3: Implement.** In `afterDisconnect`, for a non-local kind with `lasted > stableConnectionThreshold`, the spread is `b.uniform(serverCloseSpreadMin, max(b.firstWindow, serverCloseSpreadMax))` instead of the fixed 1–5 s; the abnormal branch keeps `max(spread, b.jitteredStep())` and `advance()`. The short-lived branches are unchanged. In `reconnectLoop`, set `backoff.firstWindow = c.firstWindow`, and before the first `connect()` wait `backoff.atStart(c.startWindow)` on `wsClock.After`, selecting on `c.done`. Log `log.Info("initial connect delayed", "delay", d)` when d > 0. In `connect`, install the socket under `connMu` only after re-checking `c.stopped()` in the same critical section. If the client has stopped, close the new socket and return `context.Canceled`. Keep #9245's loop check as the second line of defence. The existing `connection failed … retryIn` and `disconnected kind … retryIn` lines (`client.go:484, 512`) are the observable G2 reads; keep their keys.
+- [ ] **Step 4:** Steps 1 and 2 green. `go test -race ./internal/websocket/...` green, including every #9145/#9245 test, unchanged except the bound edit in Step 1.
+- [ ] **Step 5: Commit:** `feat(agent): spread the first reconnect after a stable socket over 30 s and jitter the first dial (W09, #8148)`
+
+**Dropped from the original Task 2, with the tests that already pin each on main:**
+
+| Original test | Covered by |
+|---|---|
+| `TestShortLivedSocketsBackOff` | `TestReconnectBackoff_NormalCloseFlappingEscalates` (`:122`), `_AbnormalCloseAtLeastAsHardAsDialFailure` (`:82`) |
+| `TestForceReconnectIsImmediate` | Superseded: `TestReconnectBackoff_LocalCloseIsShortAndJittered` (`:164`) pins 0.25–1 s (A3) |
+| `TestStaleForceReconnectDoesNotExemptNextDrop` | `TestForceReconnect_MarksDropAsLocal` (`:382`), whose first half covers no mark without a socket; the per-connection `Swap` at `client.go:510` |
+| `TestForceReconnectAfterRemoteDeathIsRemote` | The close-frame case is in `TestClassifyDisconnect` "server close frame outranks a racing local mark"; the 1006 race is accepted (A3) |
+| `TestLivedExactly30sIsShortLived` | `TestReconnectBackoff_HealthyConnectionResetsStep` "exactly the threshold is not healthy" |
+| `TestNoHintServerKeepsBackoffShape` | `TestReconnectBackoff_DialFailureWithoutRetryAfterUsesJitteredStep` (`:206`) |
+| `TestReconnectPolicyTable`, `…BackoffCapsAt60s`, `…NeverNegative` | Step 1 above, plus `TestReconnectBackoff_NeverBelowFloor` (`:216`) and `_AbnormalCloseAtLeastAsHardAsDialFailure` (the cap) |
+
+### A7. Task 4 (rewrite, plumbing only): the `drain` message
+
+The original Task 4 stands for `TestDrainHintValidation` (Step 1, unchanged), `TestDrainSpread10kAgents` (Step 2; only the call changes, see below), the wire shape (D4) and the two regression guards. The edits:
+
+**Interfaces (produced):** `drain.go` has `parseDrainHint(raw []byte) (time.Duration, bool)` and `type drainHint struct{ within time.Duration; expires time.Time; set bool }`. `Client.drain drainHint` is owned by the reconnect-loop goroutine; `readPump` runs on it (`client.go:500`), so no lock is needed. `func (b *reconnectBackoff) afterDrainedDisconnect(kind disconnectKind, lasted, within time.Duration) time.Duration` implements the A3 drain rows; a local kind ignores `within`. The existing `afterDisconnect(kind, lasted)` keeps its signature, so the #9145 tests stay untouched.
+
+- `TestDrainSpread10kAgents` calls `b.afterDrainedDisconnect(disconnectServerNormal, time.Hour, 120*time.Second)` on one `newReconnectBackoff(r.Float64)` with the PCG seed `(8148, 9)`. The buckets and the ±10 % band are unchanged. The 250 ms floor only affects draws below 0.25 s, which stay in bucket 0.
+- Expected waits with r = 0.5. `TestDrainDelayStartsAtClose` stays 60 s; the socket has lived 60 s, so it is stable. `TestDrainThenImmediateClose` stays 30 s at r = 0.25, and the socket must have lived > 30 s first, so the test advances 31 s before the hint. `TestDrainExpires` changes to **15.5 s** (the first window). `TestDuplicateDrainFirstWins` stays 60 s, after advancing 31 s. `TestDrainHintClearedOnNewSocket` changes to **15.5 s**. `TestDrainZeroDoesNotDefeatBackoff` becomes **3, 3, 4, 8, 16 s**: each wait is max(#9145 short-lived, U(0, 5 s) = 2.5 s). `TestRefusalAfterDrainUsesRetryAfter`, carried over from Task 3, is **69 s**: max(jitter(1 s), 60 × 1.15).
+- Added: `TestDrainShortWindowKeepsSpread`. On a stable socket, drain 0 waits U(0, 5 s), so 2.5 s at r = 0.5, and the 250 ms floor at r = 0. This guards against a server's N = 0 synchronising the fleet.
+- Implementation: `readPump` handles `msg.Type == "drain"` right after the `desktop_ice_candidate` branch (`client.go:617-620`), **before** the id-less skip (`:624`). If `!c.drain.set`, it stores `within` with `expires = wsClock.Now() + within + 30 s`, and logs Info `drain hint received` with `withinMs` and `reason` (truncated to 64 bytes). In `reconnectLoop`, after the pumps exit, it reads and clears `c.drain`. A set, unexpired hint goes through `afterDrainedDisconnect`; otherwise `afterDisconnect`. It also clears `c.drain` before each `connect()`.
+- Drop the original Step 4's `gen` tagging. `TestDrainAfterCloseDetectedIsIgnored` stays: a hint parsed after the loop consumed the close, which only a test can force via the hook, must not affect the next wait.
+
+### A8. Task 5 (rewrite): `RetryAt` on the existing `withServerAnswer` chain
+
+**Files:** create `agent/internal/httputil/clock.go` and `retry_loop_test.go`. Modify `retry.go` and `retry_server_answer_test.go`. Add a test to `agent/internal/heartbeat/server_unavailable_liveness_test.go` (test only).
+
+**Interfaces (produced):** `RetryableStatusError.RetryAt time.Time` (zero when the answer had no hint); `func RetryAtFrom(err error) (time.Time, bool)` (`errors.As`); `func SetLoopRetryAfter(enabled bool)` (an `atomic.Bool`, default true); seams `nowFn`, `afterFn`, `randFloat` in `clock.go`. `applyPositiveJitter` and `applyJitter` draw from `randFloat` instead of the `math/rand/v2` global (`retry.go:193, 205`). **The caps do not change:** `retryAfterMaxCap` stays 300 s and `retry_jitter_test.go` is not edited.
+
+- [ ] **Step 1: Red.** The original Task 5 Step 1 tests stand, except `TestRetryAtBounds`, which now expects RA 300 s at rnd 0.999 to give `RetryAt ≤ now + 300 s`, and an HTTP-date 1 h ahead to give `now + 300 s`. Add:
+  - `TestDoEarlyReturnKeepsOverloadAnswer`. In the early-return case, `errors.As(err, &rse)` holds with `StatusCode` 503 and a non-zero `RetryAt`, and `Do` returned before the context's deadline. It does **not** assert `context.DeadlineExceeded`: the context has not expired, and no non-test caller branches on it (audit below).
+  - On-purpose change: `TestDoKeepsServerAnswerWhenContextExpiresDuringRetryAfter` (`retry_server_answer_test.go:18`) gains `SetLoopRetryAfter(false)` with a `t.Cleanup` restore. It now pins the D10 off-switch path, which still sleeps into the deadline and still returns `DeadlineExceeded` plus the answer. The other two #9146 tests there stay unchanged.
+  - `TestHeartbeatOverloadAnswerWithRetryAtStillRecordsLiveness` (heartbeat package). An `httputil.Do` error carrying `RetryAt`, with no context error in the chain, still makes `serverOverloadAnswer` return `(503, true)`. This is a guard: it passes as soon as the field exists, and it protects D2/#9146.
+- [ ] **Step 2: Implement.** At the retryable answer (`retry.go:137-143`), when `ra > 0`, compute `wait := applyPositiveJitter(ra, cfg.JitterFrac)` once, set `lastAnswer = &RetryableStatusError{StatusCode, URL, RetryAt: nowFn().Add(wait)}`, and use that `wait` as the next sleep instead of jittering again at `:82`. If `loopRetryAfter` is set, and either this was the last attempt or the context has a deadline with `time.Until(deadline) < wait`, return `nil, lastAnswer` at once and log Debug `retry-after exceeds caller deadline; returning RetryAt`. Otherwise sleep on `afterFn(wait)` as today. `withServerAnswer` is unchanged; it now carries `RetryAt` because it wraps the same `lastAnswer`.
+- [ ] **Step 3: Caller audit.** Use the 12 non-test `Do` callers in A1. For each, confirm that it does not branch on `context.DeadlineExceeded` from `Do`. Checked while planning: the only `DeadlineExceeded` checks near these callers test `ctx.Err()` (e.g. `heartbeat/watchdog_register.go:60`), never `Do`'s error. List them in the PR. `go test -race ./internal/httputil/... ./internal/discovery/...`, and `-run 'ServerUnavailable|Overload' ./internal/heartbeat/`, are green.
+- [ ] **Step 4: Commit:** `feat(agent): carry the server's Retry-After as RetryAt and stop sleeping into the caller's deadline (W09, #8148)`
+
+### A9. Task 7 edits (keep)
+
+- Line references: use A1 (F13–F17).
+- The audit table gains `peripherals` (`heartbeat.go:2866`), `message_events.go:101` and `chat_events.go:214`. Classify each against `agentRouteClasses.ts`. A route W08 classes `bulk` or `standard` is gated. An interactive or end-user route that W08 never sheds is exempt, with the reason recorded. The PR states which.
+- `loopDeferral` follows the shape of `network_context.go`'s `retryNotBefore` (`:56, 140, 216-217`): an absolute not-before time, compared with an injected `now`. Do not invent a second idiom.
+- `TestHeartbeatIgnoresLoopDeferral` also asserts that the heartbeat's 503 + `Retry-After: 300` still reaches `noteServerUnavailableLiveness` (#9146). A deferred heartbeat would stop refreshing `ServerUnavailableAt`, and the watchdog would fall back to its stale-restart path after 3 minutes.
+- `TestHeartbeatIgnoresLoopDeferral` pre-seeds 300 s ahead (not 390 s).
+- `TestEveryAgentRouteCallIsGatedOrExempt` exempt list: heartbeat (`:5313`), command result (`:7096`), elevation, PAM reconciliation, plus whichever of message and chat events the audit marks exempt.
+
+### A10. Task 10 edits (keep)
+
+- WS start jitter and `Config.FirstReconnectWindow` are Task 2's. Task 10 only maps the config key to `websocket.Config.FirstReconnectWindow` at `agentapp/main.go:1035-1043`. `TestFirstReconnectWindowZeroVsUnset` moves to Task 2 as `TestFirstReconnectWindowZeroIsPreW09`.
+- `TestConfigReconnectKeys`: defaults 30 and true. `0` is accepted and means #9145's 1–5 s spread. 301 is clamped to 300 with a Warn; a negative value takes the default with a Warn. Put the defaults in `Default()` (`config.go:379`) and the bounds in `Validate()` (`config/validate.go:63`).
+- Heartbeat lines: bundle `heartbeat.go:2223-2226`, gate stamps `:2247, 2248, 2253`, reliability post `:2256` (left unstaggered). Monitoring: `monitor.go:105, 134`.
+- Global Constraints, Design D10 and Task 11 wording: "`0` restores today's immediate redial" becomes "**`0`–`5` restores the 1–5 s spread shipped in #9145**".
+
+### A11. Task 12 (rewrite): the simulator uses the shipped pacing
+
+**Gate:** met (#8587 merged). **Files:** create `agent/internal/websocket/reconnect_pacer.go` and its test. Modify `agent/tools/agentsim/sim/ws.go`, `sim/agent.go`, `sim/storm.go`, `sim/config.go` and `agent/tools/agentsim/main.go`, with their tests. Create `load-tests/agentsim/storms/drain-120.json`. Append `## Reconnect and drain (W09)` to `load-tests/agentsim/README.md`. **`storm-suite.json` is not edited.**
+
+**Interfaces (produced, exported for `agentsim` only; the `internal/` path keeps them inside the module):**
+
+```go
+type ReconnectPacer struct{ b *reconnectBackoff }
+func NewReconnectPacer(rnd func() float64, firstWindow time.Duration) *ReconnectPacer
+func (p *ReconnectPacer) AtStart(window time.Duration) time.Duration
+func (p *ReconnectPacer) AfterDialFailure(status int, retryAfter time.Duration) time.Duration
+func (p *ReconnectPacer) AfterDisconnect(closeCode int, local bool, lasted, drainWithin time.Duration) time.Duration // drainWithin < 0: no hint
+```
+
+`AfterDisconnect` maps `closeCode` through `classifyDisconnect`. `AfterDialFailure` builds an `upgradeRefusedError` when `status` is 429 or 503.
+
+- [ ] **Step 1: Red.**
+  - `TestReconnectPacerMatchesClientPolicy` (websocket). For a table of events, the pacer's waits equal `reconnectBackoff`'s for the same rand.
+  - `TestSimRunUsesAgentReconnectPolicy` (`ws_test.go`). A sim session whose socket drops after 31 s of sim time waits the pacer's first-window delay. Delete the mirror constants `wsInitialBackoff`, `wsMaxBackoff`, `wsBackoffFactor`, `wsJitterFrac` and `wsStableAfter` (`sim/ws.go:26-30`) and the `:85` comment; keep `wsWriteWait`, `wsPongWait`, `wsHandshake` and `wsMaxMessage`.
+  - `TestDrainSocketsActionSpreadsReconnects` and `TestScenarioFilesLoad` are as in the original.
+  - `TestPreW09CohortUsesShippedPacing`. With `--pre-w09-fraction 0.5`, half the sessions use `NewReconnectPacer(rnd, 0)` and ignore drain. That is the #9145 agent the release replaces: a 1–5 s spread, not "immediate". Their reconnects after `api-kill` land in [1 s, 5 s].
+- [ ] **Steps 2–4:** as in the original Task 12, with the cohort definition above. The report field `AgentReport.PreW09` (`omitempty`) is unchanged. In the README, state that agents older than #9145 (immediate redial) are not modelled. Their share of the fleet shrinks with every promote, and W08's admission covers them (spec: "Old agents still rely on W1c").
+
+### A12. Review Focus and Global Constraints edits
+
+- RF2 (tight loop): delivered by #9145. It remains a regression guard through the tests named in A6.
+- RF3 (local reconnects): replace "must redial with no added delay" with "must redial within 1 s". `TestReconnectBackoff_LocalCloseIsShortAndJittered` pins it.
+- RF4 (Stop): delivered by #9145 and #9245. The Task 2 Stop tests cover only the two new waits (start, first window).
+- RF6 (hostile hints): "jittered result to 390 s" becomes "**300 s**".
+- Merge Danger, "a route silenced for up to 390 s per server answer": change to **300 s**.
+- Acceptance, "Unannounced API kill: no reconnect spike above the W1c admission rate": this is about **accepts**, not attempts (Codex, A13). W08's bucket bounds accepted upgrades, and only in `enforce` mode. A `Retry-After` cannot pace an attempt made before the agent received one. With D1, first-window attempts after a kill run at about agents/29 s: about 14/s at G1's 400 agents, well inside G1's (rate + burst) × 1.5 = 45/s bound; about 345/s at 10k, all refused before upgrade beyond the bucket. Later attempts are paced by the server's `Retry-After`. G1 is unchanged. The 10k attempt rate is **recorded** under G3, not claimed.
+- Follow-up 2 (watchdog overload liveness) is **done**: #9146 (`heartbeat.go:5319-5320`, `watchdog/checks.go:455, 476`). Do not file it.
+- Global Constraints, line "Two agent config keys…": the semantics of `0` are as in A10.
+
+### A13. Advisor quorum (2026-10-20)
+
+Codex (`gpt-6-astra`, reasoning `xhigh`, read-only sandbox) reviewed the A3 table, `localClose` vs generations, 300 vs 390, the A8 early return, and what else had gone stale. Its verdict was **"DISAGREE on item 1"** (the policy table). Every point is resolved on the merits below. None needs Todd.
+
+| Item | Codex | Resolution |
+|---|---|---|
+| 1a. W ≤ 5 reproduces #9145 | Only if the abnormal close keeps max(…, jitter(1 s)) and the advance to 2 s, and only if a stable local close resets the step to 1 s; the draft said "unchanged" | **Adopted.** A3's abnormal row keeps both, and the local row now says "reset if lived > 30 s". `TestReconnectBackoff_HealthyConnectionResetsStep` already pins both |
+| 1b. Drain max(N, 5 s) | It permits waits longer than a valid hint below 5 s, while the plan promised U(0, N). The 250 ms floor leaves the 10 s buckets unchanged | **Kept the 5 s minimum and documented it** in the wire contract (A3 note). Reason: a fleet-wide N < 5 s would otherwise undo #9145's spread, and W5c will send minutes, not seconds |
+| 1c. Shared window for normal and abnormal closes | Agree. But the acceptance claim about attempt rate does not follow: admission limits accepts, and only in `enforce` mode | **Adopted.** The acceptance wording is corrected in A12. G1 is unchanged |
+| 2. `localClose` | Agree, but "identical under generations" overstated it; `readFailedGen` narrows the race | **Adopted.** A3 now says "narrows, not closes" and accepts the residual on purpose |
+| 3. 300 s stands | Agree, with narrower reasoning: mTLS renewal advertises up to 3,600 s, on a raw-HTTP path that discards the header | **Adopted.** A1, A2 and follow-up 6 are scoped to admission, overload and rate-limit answers that `Do` or the WS dial reads |
+| 4. Early return without `DeadlineExceeded` | Agree; no non-test caller depends on it. Keep `withServerAnswer` for real expiry and later transport failures | **Already the design** (A8 Step 2) |
+| 5a. Simulator cohort | The immediate-redial "pre-W09" cohort now represents pre-#9145 agents | **Adopted.** The cohort is the #9145 pacer. Pre-#9145 agents are documented as not modelled (A11) |
+| 5b. #9245 | Its post-connect check does not give the original's atomic install-vs-`Stop` guarantee (`client.go:440`) | **Adopted.** `TestDialAfterStopIsDiscarded` and the locked re-check go back into Task 2 (A6) |
+| 5c. Watchdog follow-up | Done by #9146 | **Adopted** (A12) |
+
+### A14. Gates and must-not-ship (unchanged)
+
+- **G1–G4 are unchanged** in substance. G1 can now run, because Task 12 is unblocked. G2's log reads are the existing lines `disconnected kind=… retryIn=…` and `connection failed … retryIn=…` (`client.go:484, 512`), plus the new `initial connect delayed`; the original's `reconnect scheduled cause=…` was never added. G2 (d) reads "`ws_first_reconnect_window_seconds: 0` shows the 1–5 s spread".
+- **Must not ship in the W09 PR:** a `drain` sender (W5c, D4); a server-hinted reconnect window (follow-up 4); any watchdog edit (`cmd/breeze-watchdog`, `internal/watchdog`; D2); edits to `load-tests/agentsim/storms/storm-suite.json` (W06's); logic in `heartbeat.go` beyond call-site lines; infrastructure names (hosts, IPs, regions) anywhere.
+- **One implementation PR**, body `Closes #8148`, title as in **PR** below.
+
+### A15. Open decisions for Todd
+
+None. Todd's four decisions of 2026-10-16 (A0) cover every owner-level choice. The quorum's disagreements were resolved on the merits (A13). The choices this amendment makes are recorded with their reasons: 300 s stands; `localClose` stays; key value `0` means 1–5 s; drain windows are widened to at least 5 s.
+
+### A16. Follow-up added by this amendment
+
+6. API guard test: every agent-route `Retry-After` upper bound × 1.3 ≤ 300 s (A2), in `apps/api/src/services/admission/agentRouteClasses.test.ts`. Also refresh the stale shipper line references in the `agentRouteClasses.ts:107` comment once Task 9 lands. This is a separate small API PR.
+
+### A17. Self-review of the amendment
+
+- **Every stale claim has evidence.** A1 gives file:line and a verdict for F1–F20, S4, the server ranges, the simulator and the docs, plus every original "today fails" claim. A6 maps each dropped test to the test that pins it on main.
+- **Type consistency.** `reconnectBackoff.firstWindow` and `atStart` (Task 2) feed `afterDrainedDisconnect` and `drainHint` (Task 4). Those feed the `ReconnectPacer` facade (Task 12). `RetryableStatusError.RetryAt`, `RetryAtFrom` and `SetLoopRetryAfter` (Task 5) feed `loopDeferral` (Task 7), UniFi (Task 8) and the shipper (Task 9). `Config.FirstReconnectWindow` (Task 2) is fed by the config key (Task 10).
+- **Numbers.** The window is 30 s, with 0–5 equal to #9145, the range 0–300, and a 300 s clamp. The start window is 10 s. The drain cap is 600 s and the hint lifetime N + 30 s. The `Retry-After` ceiling is 300 s everywhere; the original text's remaining 390 s mentions are all overridden by A2/A4/A12. Expected waits at r = 0.5: first window 15.5 s, #9145 spread 3 s, drain 120 s → 60 s, drain 0 → 2.5 s.
+- **Scope.** Docs only in this PR. The implementation stays one PR. There is no API change, and follow-up 6 is a separate PR.
+
+---
 
 ## Global Constraints
 
@@ -52,7 +345,7 @@ rigor: HIGH (program plan row W09) — ships in the Go agent to customer machine
 
 ---
 
-## Verified findings that shape this plan
+## Verified findings that shape this plan (as of 2026-10-12 — current evidence in Amendment A1)
 
 Labels: **[V]** read in code at `origin/main` `dfb96cb50e` (or the W06 branch where named). **[I]** inferred. **[C]** claimed by the Codex review and checked as noted.
 
@@ -136,7 +429,7 @@ The draft went to an independent Codex review (`gpt-6-astra`, reasoning `xhigh`,
 | D10 | Escape hatch | — (added after the review: agents never downgrade, R3) | — | Two agent config keys, read at start: `ws_first_reconnect_window_seconds` (default 30; 0 restores today's immediate redial after a stable socket; max 300) and `loop_retry_after` (default `true`; `false` restores today's per-request-only handling, including sleeping into the deadline). A Breeze script run can set them fleet-wide without a release. `drain` handling and the short-lived backoff (a bug fix) have no switch. |
 | D11 | Codex blocker: results during longer offline windows | — | Persist disconnected/buffered results before journal handoff; test abrupt termination | **Adopt (Task 6).** Only the **command-result** path changes: `processCommand` checks `IsConnected()` before `SendResult` and, with no socket, hands the result to the outbox before `OnResultHandedOff`. `SendResult` itself is unchanged, because three non-durable callers (tunnel-closed, clipboard summary, desktop-disconnect notices) rely on it buffering while disconnected. The outbox already flushes on `OnConnected`. |
 
-### Reconnect policy table (the contract Task 2 implements)
+### Reconnect policy table (superseded by Amendment A3)
 
 | Last event | Next delay | Backoff after |
 |---|---|---|
@@ -193,7 +486,7 @@ The draft went to an independent Codex review (`gpt-6-astra`, reasoning `xhigh`,
 
 Every task: write the test, run it, **see it fail for the stated reason**, implement, run it green, run the package under `-race`, commit. Test names below are the contract; bodies may grow.
 
-### Task 1: Clock and randomness seams in `internal/websocket`
+### Task 1: Clock and randomness seams in `internal/websocket` — amended: keep, smaller (A5)
 
 **Files:** create `agent/internal/websocket/clock.go`, `agent/internal/websocket/fakeclock_test.go`, `agent/internal/websocket/clock_test.go`.
 
@@ -225,7 +518,7 @@ Run `cd agent && go test -race -run TestFakeWSClock ./internal/websocket/` → f
 - [ ] **Step 3:** `go test -race -run TestFakeWSClock ./internal/websocket/` green; `go test -race ./internal/websocket/...` green (no behaviour change yet).
 - [ ] **Step 4: Commit** — `test(agent): fake clock and rand seams for the websocket client (W09, #8148)`
 
-### Task 2: Reconnect policy and the loop that uses it (spec items 1 and the tight-loop fix)
+### Task 2: Reconnect policy and the loop that uses it — amended: REWRITTEN, run A6 instead
 
 **Files:** create `agent/internal/websocket/reconnect_policy.go`, `reconnect_policy_test.go`, `client_reconnect_policy_test.go`; modify `client.go`.
 
@@ -288,7 +581,7 @@ Run `go test -race -run 'TestStableRemoteDrop|TestShortLived|TestForceReconnectI
 - [ ] **Step 4:** the Step 1 and Step 2 tests green; `go test -race ./internal/websocket/...` green, including the existing real-clock tests (`TestReconnectLoop_ReconnectsAfterDisconnect` dials, is closed at once and expects a second dial within 10 s: with `StartWindow: 0` the only wait is the 1 s short-lived backoff; if it still fails, move the test to the fake clock rather than widening its timeout).
 - [ ] **Step 5: Commit** — `feat(agent): jittered first reconnect and short-lived-socket backoff in the WS loop (W09, #8148)`
 
-### Task 3: Honour `Retry-After` on a refused WS upgrade (D1)
+### Task 3: Honour `Retry-After` on a refused WS upgrade (D1) — amended: DROPPED, delivered by #9145
 
 **Files:** modify `agent/internal/websocket/client.go`; extend `client_reconnect_policy_test.go`, `reconnect_policy_test.go`.
 
@@ -302,7 +595,7 @@ Run `go test -race -run 'TestStableRemoteDrop|TestShortLived|TestForceReconnectI
 - [ ] **Step 3:** green; package green under `-race`.
 - [ ] **Step 4: Commit** — `feat(agent): honour Retry-After on a refused WebSocket upgrade (W09, #8148)`
 
-### Task 4: The `drain` message (spec item 2)
+### Task 4: The `drain` message (spec item 2) — amended: plumbing rewritten (A7)
 
 **Files:** create `agent/internal/websocket/drain.go`, `drain_test.go`; modify `client.go` (`readPump`, loop); extend `client_reconnect_policy_test.go`, `reconnect_policy_test.go`.
 
@@ -385,7 +678,7 @@ func TestDrainSpread10kAgents(t *testing.T) {
 - [ ] **Step 5:** green; package green under `-race`.
 - [ ] **Step 6: Commit** — `feat(agent): honour the server drain hint and spread reconnects over its window (W09, #8148)`
 
-### Task 5: `httputil.Do` keeps the server's delay (D5 part 1)
+### Task 5: `httputil.Do` keeps the server's delay (D5 part 1) — amended: REWRITTEN, run A8 instead
 
 **Files:** create `agent/internal/httputil/clock.go`; modify `retry.go`, `retryafter.go`; add `retry_loop_test.go`; update `retry_jitter_test.go`.
 
@@ -401,7 +694,7 @@ func TestDrainSpread10kAgents(t *testing.T) {
 - [ ] **Step 3:** update `retry_jitter_test.go:70-72`: it references `retryAfterMaxCap`, which this task renames, and asserts the 300 s clamp; rename it to `retryAfterCeiling` and assert 390 s, with a comment pointing at D1 (clamping after jitter re-synchronises the fleet). `logging/retryafter.go:12` keeps its own copy of the cap (Task 9). Sweep the other `httputil.Do` callers outside the heartbeat's periodic senders, `discovery/adjacency_transport.go:265`, `heartbeat/handlers_elevation.go:44` and `heartbeat/pam_reconciliation.go:135`: when a `Retry-After` outlasts their context they now get `*RetryableStatusError` instead of `ctx.Err()`. Confirm none branches on `context.DeadlineExceeded` for that case, and list them in the PR. `go test -race ./internal/httputil/... ./internal/discovery/...` green.
 - [ ] **Step 4: Commit** — `feat(agent): return the server's Retry-After as an absolute RetryAt instead of sleeping into the deadline (W09, #8148)`
 
-### Task 6: Results sent while disconnected go to the durable outbox (D11)
+### Task 6: Results sent while disconnected go to the durable outbox (D11) — amended: keep
 
 **Files:** modify `agent/internal/websocket/client.go` (`SendResult`); create `agent/internal/websocket/result_disconnected_test.go`.
 
@@ -441,7 +734,7 @@ Add `TestSendResultWhileConnectedStillUsesChannel` (no change when a socket is h
 - [ ] **Step 3:** green; `go test -race ./internal/websocket/...` and `go test -race -run 'Result|Outbox|Journal' ./internal/heartbeat/` green.
 - [ ] **Step 4: Commit** — `fix(agent): persist command results to the outbox while the WS is down (W09, #8148)`
 
-### Task 7: Per-route loop deferral in the heartbeat (D5 part 2, D6)
+### Task 7: Per-route loop deferral in the heartbeat (D5 part 2, D6) — amended: keep with A9 edits
 
 **Files:** create `agent/internal/heartbeat/loop_deferral.go`, `loop_deferral_test.go`, `loop_deferral_senders_test.go`; modify `heartbeat.go` call sites.
 
@@ -461,7 +754,7 @@ Add `TestSendResultWhileConnectedStillUsesChannel` (no change when a socket is h
 - [ ] **Step 5:** green; `go test -race ./internal/heartbeat/...` green (run with `-timeout 15m`; the package is large).
 - [ ] **Step 6: Commit** — `feat(agent): defer each periodic route until the server's Retry-After, before collecting (W09, #8148)`
 
-### Task 8: UniFi collector honours `Retry-After`
+### Task 8: UniFi collector honours `Retry-After` — amended: keep, 300 s bound
 
 **Files:** modify `agent/internal/unifi/collector.go`, `collector_schedule.go`; extend their tests.
 
@@ -475,7 +768,7 @@ Add `TestSendResultWhileConnectedStillUsesChannel` (no change when a socket is h
 - [ ] **Step 3:** `go test -race ./internal/unifi/...` green.
 - [ ] **Step 4: Commit** — `feat(agent): UniFi collector honours Retry-After on fetch and telemetry (W09, #8148)`
 
-### Task 9: Log shipper — cancellable waits and a carried `notBefore`
+### Task 9: Log shipper — cancellable waits and a carried `notBefore` — amended: keep, 300 s bound
 
 **Files:** modify `agent/internal/logging/shipper.go`; extend `shipper_test.go` (or create `shipper_retryafter_test.go`).
 
@@ -489,7 +782,7 @@ Add `TestSendResultWhileConnectedStillUsesChannel` (no change when a socket is h
 - [ ] **Step 3:** `go test -race ./internal/logging/...` green.
 - [ ] **Step 4: Commit** — `fix(agent): log shipper waits are cancellable and honour Retry-After across batches (W09, #8148)`
 
-### Task 10: Startup spread (spec item 4) and the config escape hatch (D7, D10)
+### Task 10: Startup spread (spec item 4) and the config escape hatch (D7, D10) — amended: keep with A10 edits
 
 **Files:** create `agent/internal/heartbeat/startup_stagger.go`, `startup_stagger_test.go`; modify `heartbeat.go` (three lines of the startup bundle), `agent/internal/monitoring/monitor.go` (+ test), `agent/internal/config/config.go` (+ test), `agent/internal/agentapp/main.go`, `agent/internal/websocket/client.go` (`Config` gains `FirstReconnectWindow`).
 
@@ -506,7 +799,7 @@ Add `TestSendResultWhileConnectedStillUsesChannel` (no change when a socket is h
 - [ ] **Step 3:** green: `go test -race ./internal/heartbeat/... ./internal/monitoring/... ./internal/config/... ./internal/websocket/... ./internal/agentapp/...` (one package per command on a loaded host).
 - [ ] **Step 4: Commit** — `feat(agent): spread startup requests and add reconnect/Retry-After config escape hatches (W09, #8148)`
 
-### Task 11: Docs and release note
+### Task 11: Docs and release note — amended: keep, wording per A4
 
 **Files:** `apps/docs/src/content/docs/deploy/upgrades.mdx`, `docs/release-notes/next-release-draft.md`.
 
@@ -515,7 +808,7 @@ Add `TestSendResultWhileConnectedStillUsesChannel` (no change when a socket is h
 - [ ] **Step 3:** `pnpm --filter @breeze/docs build` if the docs app builds locally on this host; otherwise state in the PR that the docs build runs in CI.
 - [ ] **Step 4: Commit** — `docs(agent): reconnect spreading and Retry-After behaviour (W09, #8148)`
 
-### Task 12: Simulator uses the real policy; `drain` storm scenario (after #8587 merges)
+### Task 12: Simulator uses the real policy; `drain` storm scenario — amended: REWRITTEN, run A11 instead
 
 **Gate:** start only when `gh pr view 8587 --json state --jq .state` prints `MERGED`. Then `git fetch origin && git rebase origin/main` and re-run `go test -race ./tools/agentsim/...` before editing. If #8587 is not merged when Tasks 1–11 are done, open the PR without this task and file it as the first follow-up with the text below.
 
@@ -592,7 +885,7 @@ There is no percentage or ring mechanism for agent binaries. The levers are the 
 - **Self-hosters** get the behaviour when they update agents; no server change is needed for any of it.
 - **CI:** `test-agent` runs `go test -race ./...` in `agent/`.
 
-## Owner decisions surfaced by this plan (Todd)
+## Owner decisions surfaced by this plan (Todd) — all four decided 2026-10-16 (Amendment A0)
 
 1. **First-reconnect window 30 s** (D2). It is the user-visible cost: after an API restart a device may show offline and a remote session may take up to 30 s longer to come back. Recommend 30 s; the key allows 0–300.
 2. **Watchdog overload liveness** (follow-up 2) is out of W09 and pre-existing. Recommend filing it now so W5's rolling deploys do not depend on it.
