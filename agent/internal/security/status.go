@@ -1077,8 +1077,32 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		}
 	}
 
-	// Defender on macOS (Microsoft Defender for Endpoint via mdatp).
+	// macOS AV sources, in attribution order (#9390):
+	//  1. CylancePROTECT / Aurora Endpoint Defense (app bundle + launch daemon probe).
+	//  2. Microsoft Defender for Endpoint (mdatp). It takes the provider label
+	//     only under the Windows Defender-fallback rule (macDefenderClaimsProvider):
+	//     when nothing was identified, or when it is the only source with active
+	//     real-time protection. Both products are always listed in AVProducts.
 	if runtime.GOOS == "darwin" {
+		cylanceProduct, cylanceVersion, cylanceErr := getMacCylanceProduct()
+		if cylanceErr != nil {
+			if !errors.Is(cylanceErr, ErrNotSupported) {
+				errs = append(errs, cylanceErr)
+				avFailed = true
+			}
+		} else if cylanceProduct != nil {
+			avCollected = true
+			status.AVProducts = append(status.AVProducts, *cylanceProduct)
+			if !providerIdentified {
+				status.Provider = cylanceProduct.Provider
+				status.ProviderVersion = cylanceVersion
+				providerIdentified = true
+			}
+			if cylanceProduct.RealTimeProtection {
+				realTime = true
+			}
+		}
+
 		macDefenderStatus, macDefenderProduct, macDefenderErr := getMacDefenderStatus()
 		if macDefenderErr != nil {
 			if !errors.Is(macDefenderErr, ErrNotSupported) {
@@ -1087,8 +1111,11 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 			}
 		} else {
 			avCollected = true
-			if !providerIdentified && macDefenderStatus.Enabled {
+			if macDefenderClaimsProvider(providerIdentified, realTime, macDefenderStatus) {
 				status.Provider = "windows_defender"
+				// The version must describe the product that owns the label,
+				// not a Cylance version recorded above.
+				status.ProviderVersion = macDefenderStatus.ProviderVersion
 				providerIdentified = true
 			}
 			if macDefenderProduct != nil {
