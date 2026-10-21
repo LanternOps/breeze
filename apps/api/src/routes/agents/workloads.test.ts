@@ -41,6 +41,8 @@ it('ingests with the authenticated ids and returns the per-runtime applied flags
   expect(await response.json()).toEqual({ accepted: true, runtimes: [{ runtime: 'docker', applied: true }] });
   expect(m.ingest).toHaveBeenCalledWith({
     deviceId,
+    // #8318 §6.4: the host-column write is bound to the authenticated agent id.
+    agentId: 'agent-1',
     orgId,
     report: expect.objectContaining({ protocolVersion: 1 }),
     receivedAt: expect.any(Date),

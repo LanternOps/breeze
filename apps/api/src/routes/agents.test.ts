@@ -279,6 +279,7 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../middleware/agentAuth', () => ({
   agentAuthMiddleware: vi.fn((c: any, next: any) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-123',
       agentId: 'agent-123',
       orgId: 'org-123',
@@ -1182,6 +1183,7 @@ describe('agent routes', () => {
     it('rejects a watchdog credential through the primary-agent role gate', async () => {
       vi.mocked(agentAuthMiddleware).mockImplementationOnce((c: any, next: any) => {
         c.set('agent', {
+          installIncarnation: 1,
           deviceId: 'device-123',
           agentId: 'agent-123',
           orgId: 'org-123',

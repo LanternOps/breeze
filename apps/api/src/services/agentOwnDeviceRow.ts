@@ -58,7 +58,9 @@ export interface UpdateOwnDeviceRowOptionsReturning<TReturning extends SelectedF
   returning: TReturning;
 }
 
-const DEFAULT_RETURNING = { id: devices.id } as const;
+// Built lazily: some unit suites mock '../db/schema' with a partial table set,
+// and this module sits on every agent route's import path.
+const defaultReturning = () => ({ id: devices.id });
 
 /** `devices.id = deviceId AND devices.agent_id = agentId` — the identity half of every own-row update. */
 export function ownDeviceRowCondition(agent: OwnDeviceRowIdentity): SQL {
@@ -88,7 +90,7 @@ export async function updateOwnDeviceRow(
   set: OwnDeviceRowUpdateSet,
   opts: UpdateOwnDeviceRowOptions & { returning?: SelectedFields } = {},
 ): Promise<unknown[]> {
-  const returning = opts.returning ?? DEFAULT_RETURNING;
+  const returning = opts.returning ?? defaultReturning();
   return exec
     .update(devices)
     .set(set)
