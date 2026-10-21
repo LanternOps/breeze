@@ -36,6 +36,7 @@ import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
 import InvoiceLineDevices from './InvoiceLineDevices';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { localDateInputValue } from '@/lib/localDate';
 import {
   ACCOUNTING_PROVIDER_NAMES,
   isAccountingProviderId,
@@ -167,7 +168,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState<PaymentMethod>('bank_transfer');
   const [payRef, setPayRef] = useState('');
-  const [payDate, setPayDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [payDate, setPayDate] = useState(() => localDateInputValue());
 
   // Payment confirm dialog
   const [payConfirmOpen, setPayConfirmOpen] = useState(false);

@@ -18,6 +18,7 @@ import {
 import { listChecklistTemplates, type ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
+import { localDateInputValue } from '../../lib/localDate';
 
 const CADENCES: readonly DeliverableCadence[] = ['monthly', 'quarterly', 'semiannual', 'annual', 'one_time'];
 const COMPLETION_MODES: readonly DeliverableCompletionMode[] = ['explicit', 'on_ticket_resolve'];
@@ -77,7 +78,7 @@ function laterOf(a: string, b: string): string {
 }
 
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localDateInputValue();
 }
 
 function initialState(initial: Deliverable | undefined, fixedContractId: string | null | undefined, contractStartDate?: string | null): FormState {
