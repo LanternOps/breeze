@@ -2846,6 +2846,10 @@
       "confirm": "Confirmer",
       "failed": "Échec de la vérification. Réessayez.",
       "unavailable": "Impossible de démarrer la vérification"
+    },
+    "notEnabled": {
+      "title": "Les paiements automatiques ne sont pas activés pour votre compte",
+      "hint": "Les paiements automatiques n'ont pas encore été activés. Demandez à votre administrateur Breeze de les activer, puis revenez demander l'inscription à vos clients."
     }
   },
   "reminders": {

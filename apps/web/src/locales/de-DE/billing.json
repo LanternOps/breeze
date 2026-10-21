@@ -2846,6 +2846,10 @@
       "confirm": "Bestätigen",
       "failed": "Verifizierung fehlgeschlagen. Versuchen Sie es erneut.",
       "unavailable": "Verifizierung konnte nicht gestartet werden"
+    },
+    "notEnabled": {
+      "title": "Automatische Zahlungen sind für Ihr Konto nicht aktiviert",
+      "hint": "Automatische Zahlungen wurden noch nicht aktiviert. Bitten Sie Ihre Breeze-Administration, sie zu aktivieren, und kehren Sie dann zurück, um die Anmeldung bei Ihren Kunden anzufordern."
     }
   },
   "reminders": {

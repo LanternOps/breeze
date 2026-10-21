@@ -2846,6 +2846,10 @@
       "confirm": "Confirmar",
       "failed": "Falha na verificação. Tente novamente.",
       "unavailable": "Não foi possível iniciar a verificação"
+    },
+    "notEnabled": {
+      "title": "Os pagamentos automáticos não estão ativados para sua conta",
+      "hint": "Os pagamentos automáticos ainda não foram ativados. Peça ao administrador do Breeze para ativá-los e depois volte para solicitar a adesão dos seus clientes."
     }
   },
   "reminders": {

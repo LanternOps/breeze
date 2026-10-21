@@ -2846,6 +2846,10 @@
       "confirm": "Conferma",
       "failed": "Verifica non riuscita. Riprova.",
       "unavailable": "Impossibile avviare la verifica"
+    },
+    "notEnabled": {
+      "title": "I pagamenti automatici non sono abilitati per il tuo account",
+      "hint": "I pagamenti automatici non sono ancora stati attivati. Chiedi al tuo amministratore Breeze di abilitarli, poi torna qui per richiedere l'adesione ai tuoi clienti."
     }
   },
   "reminders": {

@@ -2846,6 +2846,10 @@
       "confirm": "Confirm",
       "failed": "Verification failed. Try again.",
       "unavailable": "Unable to start verification"
+    },
+    "notEnabled": {
+      "title": "Automatic payments aren't enabled for your account",
+      "hint": "Automatic payments haven't been turned on yet. Ask your Breeze administrator to enable them, then come back to request enrollment from your clients."
     }
   },
   "reminders": {

@@ -2846,6 +2846,10 @@
       "confirm": "Onayla",
       "failed": "Doğrulama başarısız oldu. Tekrar deneyin.",
       "unavailable": "Doğrulama başlatılamadı"
+    },
+    "notEnabled": {
+      "title": "Hesabınız için otomatik ödemeler etkin değil",
+      "hint": "Otomatik ödemeler henüz açılmadı. Breeze yöneticinizden etkinleştirmesini isteyin, ardından müşterilerinizden kayıt talep etmek için geri dönün."
     }
   },
   "reminders": {
