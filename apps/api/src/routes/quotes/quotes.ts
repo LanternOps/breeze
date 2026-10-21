@@ -39,7 +39,7 @@ import { PdfMergeError } from '../../services/pdfMerge';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { auditBillingDocument } from '../../services/billingDocumentAudit';
 import { QUOTE_ACCEPTANCE_EVIDENCE_META, toAcceptanceEvidenceMeta } from '../../services/quoteAcceptanceEvidence';
-import { assembleCustomerQuoteDocument } from '../../services/customerDocument';
+import { assembleCustomerQuoteDocument } from '../../services/customerQuoteDocument';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');

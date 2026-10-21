@@ -21,7 +21,7 @@ import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { toPublicQuotePresentation } from '../services/publicQuoteDto';
 import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE, type PublicLinkOrgGate } from '../services/publicLinkOrgGate';
 import { isPayOnAcceptAvailable, resolveAcceptCheckoutUrl } from '../services/quoteAcceptCheckout';
-import { assembleCustomerQuoteDocument } from '../services/customerDocument';
+import { assembleCustomerQuoteDocument } from '../services/customerQuoteDocument';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a

@@ -38,7 +38,7 @@ vi.mock('./contractTemplateRender', async (importActual) => {
 import {
   assembleCustomerQuoteDocument, loadCustomerQuoteRows, quoteDisplayStatus, CustomerDocumentModeError,
   type CustomerQuoteAssetPaths, type QuoteRow,
-} from './customerDocument';
+} from './customerQuoteDocument';
 import { QuoteServiceError } from './quoteTypes';
 import { buildSellerSnapshot } from './sellerSnapshot';
 import { renderSql } from '../__tests__/helpers/tableKeyedDb';

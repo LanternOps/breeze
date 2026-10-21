@@ -16,7 +16,7 @@ import { portalBranding } from '../db/schema/portal';
 import { quotes, quoteBlocks, quoteLines } from '../db/schema/quotes';
 import {
   assembleCustomerQuoteDocument, CustomerDocumentModeError, type CustomerQuoteAssetPaths, type QuoteRow,
-} from './customerDocument';
+} from './customerQuoteDocument';
 import { getAccessibleQuoteRow } from './quoteService';
 
 const RUN = !!process.env.DATABASE_URL;

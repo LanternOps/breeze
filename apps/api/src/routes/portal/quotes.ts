@@ -16,7 +16,7 @@ import { readQuoteImage, loadCustomerLineImage } from '../../services/quoteImage
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
 import { loadContractBlockRenderData, loadContractPdfInputs } from '../../services/contractTemplateRender';
-import { assembleCustomerQuoteDocument } from '../../services/customerDocument';
+import { assembleCustomerQuoteDocument } from '../../services/customerQuoteDocument';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
 import { InvoiceServiceError } from '../../services/invoiceTypes';

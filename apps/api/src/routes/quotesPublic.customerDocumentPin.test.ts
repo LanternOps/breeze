@@ -48,8 +48,8 @@ vi.mock('../services/quoteAcceptCheckout', () => ({
 }));
 vi.mock('../services/quoteOutcomeNotify', () => ({ notifyQuoteOutcome: vi.fn() }));
 const { assembleSpy } = vi.hoisted(() => ({ assembleSpy: vi.fn() }));
-vi.mock('../services/customerDocument', async (importActual) => {
-  const actual = await importActual<typeof import('../services/customerDocument')>();
+vi.mock('../services/customerQuoteDocument', async (importActual) => {
+  const actual = await importActual<typeof import('../services/customerQuoteDocument')>();
   return {
     ...actual,
     assembleCustomerQuoteDocument: (...args: Parameters<typeof actual.assembleCustomerQuoteDocument>) => {
