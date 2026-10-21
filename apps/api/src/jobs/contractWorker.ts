@@ -149,13 +149,16 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
 
 /**
  * The daily billing-sweep job, in order: renewal → billing → block-hours close-out → threshold alerts.
- * Renewal MUST run before billing so an about-to-expire auto-renew contract has
- * its term extended before generateDueInvoice decides expiry. The close-out runs
+ * Renewal MUST run before billing so an auto-renew contract whose term ends today
+ * is extended before generateDueInvoice bills the period starting on end_date
+ * (#9243). Billing defers rather than expires an auto-renew contract it meets
+ * un-renewed. The close-out runs
  * AFTER billing so a contract the billing run just expired or cancelled has its
  * block line retired before the sweep looks for the periods it left behind.
  */
 export async function runBillingSweepJob(asOf: Date = new Date()): Promise<{ billed: number; failed: number }> {
-  await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep()));
+  // Same asOf as billing: renewal and billing must agree on what "today" is (#9243).
+  await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep(asOf)));
   const billing = await runContractBillingSweep(asOf);
   // Self-wrapping: one system transaction per contract, failures captured per contract.
   const hb = await runHourBlockCloseOutSweep(asOf);
