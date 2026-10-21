@@ -89,7 +89,8 @@ func TestSyncPAMHelperHoldAppliesCurrentStateToLateLifecycle(t *testing.T) {
 type pamSpawnFixture struct {
 	mu         sync.Mutex
 	finds      int
-	readyAfter int // find returns a session once finds > readyAfter
+	readyAfter int      // find returns a session once finds > readyAfter
+	targets    []string // the targetWinSession of every find, in order
 	dismissed  []*sessionbroker.Session
 	dialogs    int
 	// reports records every "cannot act" report RunPamFlow sends (#9517).
@@ -126,10 +127,11 @@ func (f *pamSpawnFixture) expectNoUnableReport(t *testing.T) {
 func (f *pamSpawnFixture) heartbeat(lc helperLifecycleController) *Heartbeat {
 	helper := &sessionbroker.Session{SessionID: "spawned-pam-helper"}
 	h := &Heartbeat{
-		pamFindSession: func(capability, _ string) *sessionbroker.Session {
+		pamFindSession: func(capability, target string) *sessionbroker.Session {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.finds++
+			f.targets = append(f.targets, target)
 			if f.finds > f.readyAfter {
 				return helper
 			}
@@ -272,16 +274,28 @@ func TestRunPamFlowStopsWhenOnDemandSpawnFails(t *testing.T) {
 // verdict on the request, so nothing is reported.
 func TestRunPamFlowCancelledWhileWaitingDoesNotReportUnable(t *testing.T) {
 	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
-	lc := &fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
-		key: {Status: sessionbroker.HelperWaitTimeout},
-	}}
+	lc := &fakeLifecycle{mode: "on-demand", blockWait: true}
 	f := &pamSpawnFixture{readyAfter: 1}
 	h := f.heartbeat(lc)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
+	// Cancel only once the flow is inside WaitForHelperReady.
+	go func() {
+		for {
+			if _, _, waited, _ := lc.snapshot(); len(waited) > 0 {
+				cancel()
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
 
 	h.RunPamFlow(ctx, etwlua.Event{SubjectSessionID: 7},
 		etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-cancel"})
+
+	if _, _, waited, _ := lc.snapshot(); len(waited) != 1 || waited[0] != key {
+		t.Fatalf("waited = %v, want the flow to have been waiting on [%s]", waited, key)
+	}
 
 	if f.dialogs != 0 || len(f.dismissed) != 0 {
 		t.Fatalf("flow continued after cancellation: dialogs=%d dismissed=%d", f.dialogs, len(f.dismissed))
@@ -399,7 +413,9 @@ func TestRunPamFlowOnDemandSpawnFailsFastWhenSessionCannotHostHelper(t *testing.
 func TestRunPamFlowOnDemandSpawnedHelperWithoutPamScopeStops(t *testing.T) {
 	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
 	lc := &fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
-		key: {Status: sessionbroker.HelperWaitReady},
+		key: {Status: sessionbroker.HelperWaitReady, Session: &sessionbroker.Session{
+			SessionID: "unscoped", HelperRole: ipc.HelperRoleSystem, AllowedScopes: []string{"desktop"},
+		}},
 	}}
 	f := &pamSpawnFixture{readyAfter: 100} // find never returns a PAM-capable session
 	h := f.heartbeat(lc)
@@ -434,4 +450,82 @@ func TestInstallHelperLifecycleSyncsPAMHold(t *testing.T) {
 	if !lastHold(t, lc.pamHoldCalls()) {
 		t.Fatalf("install did not carry the enabled PAM hold over: %v", lc.pamHoldCalls())
 	}
+}
+
+// #9517: a ready helper the PAM lookup then misses is only reported when the
+// wait's own helper lacks the PAM scope; otherwise it is a race with the
+// session list and the request stays pending.
+func TestRunPamFlowReadyHelperMissedByLookupDoesNotReportUnable(t *testing.T) {
+	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
+	cases := map[string]*sessionbroker.Session{
+		"wait names no helper": nil,
+		"wait's helper holds the PAM scope": {
+			SessionID: "scoped", HelperRole: ipc.HelperRoleSystem, AllowedScopes: []string{ipc.ScopePam},
+		},
+	}
+	for name, ready := range cases {
+		ready := ready
+		t.Run(name, func(t *testing.T) {
+			lc := &fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+				key: {Status: sessionbroker.HelperWaitReady, Session: ready},
+			}}
+			f := &pamSpawnFixture{readyAfter: 100}
+			h := f.heartbeat(lc)
+
+			h.RunPamFlow(context.Background(), etwlua.Event{SubjectSessionID: 7},
+				etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-race"})
+
+			if f.dialogs != 0 || len(f.dismissed) != 0 {
+				t.Fatalf("flow continued without a found helper: dialogs=%d dismissed=%d", f.dialogs, len(f.dismissed))
+			}
+			f.expectNoUnableReport(t)
+		})
+	}
+}
+
+// #9517: GetConsoleSessionID answers "0" when the console lookup fails; that
+// is not proof the requester has no session, so nothing is leased or reported.
+func TestRunPamFlowUnresolvedConsoleDoesNotReportUnable(t *testing.T) {
+	lc := &fakeLifecycle{mode: "on-demand"}
+	f := &pamSpawnFixture{readyAfter: 100}
+	h := f.heartbeat(lc)
+	h.pamConsoleSessionID = func() string { return "0" }
+
+	h.RunPamFlow(context.Background(), etwlua.Event{SubjectSessionID: 0},
+		etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-noconsole"})
+
+	if acquired, _, waited, _ := lc.snapshot(); len(acquired) != 0 || len(waited) != 0 {
+		t.Fatalf("leased/waited without a resolved session: acquired=%v waited=%v", acquired, waited)
+	}
+	f.expectNoUnableReport(t)
+}
+
+// #9517: after the spawn, the PAM lookup targets the session the helper was
+// leased in, not the console again: the console can move in between.
+func TestRunPamFlowReFindsTheLeasedSessionNotTheConsole(t *testing.T) {
+	key := sessionbroker.HelperKey{WindowsSessionID: 1, Role: ipc.HelperRoleSystem}
+	lc := &fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+		key: {Status: sessionbroker.HelperWaitReady},
+	}}
+	f := &pamSpawnFixture{readyAfter: 1}
+	h := f.heartbeat(lc)
+	consoles := []string{"1", "8"}
+	h.pamConsoleSessionID = func() string {
+		c := consoles[0]
+		if len(consoles) > 1 {
+			consoles = consoles[1:]
+		}
+		return c
+	}
+
+	h.RunPamFlow(context.Background(), etwlua.Event{SubjectSessionID: 0},
+		etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-console-moved"})
+
+	f.mu.Lock()
+	targets := append([]string(nil), f.targets...)
+	f.mu.Unlock()
+	if len(targets) < 2 || targets[0] != "" || targets[1] != "1" {
+		t.Fatalf("find targets = %q, want the unresolved lookup then the leased session \"1\"", targets)
+	}
+	f.expectNoUnableReport(t)
 }

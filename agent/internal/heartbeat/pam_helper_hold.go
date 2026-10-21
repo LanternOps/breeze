@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -80,11 +81,16 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	}
 	winID, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(leaseTarget)
 	if err != nil || winID == 0 {
+		// Not proof either: GetConsoleSessionID answers "0" when the console
+		// lookup fails, which can happen during a session switch. Stop, leave
+		// the request pending (#9517).
 		reason := fmt.Sprintf("target Windows session %q could not be resolved", leaseTarget)
 		if err != nil {
 			reason += ": " + err.Error()
 		}
-		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableSessionUnavailable, reason)
+		log.Error("pam: could not resolve the Windows session for a SYSTEM helper; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "detail", reason)
+		return nil, release, nil
 	}
 
 	// Fail fast on a session the reconciler will never give a SYSTEM helper
@@ -145,10 +151,20 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	}
 
 	// Ready means authenticated with capabilities; PAM additionally needs the
-	// pam scope, which FindCapableSession checks.
-	session = find(ipc.ScopePam, targetWinSession)
+	// pam scope, which FindCapableSession checks. Look up the session the
+	// helper was spawned in, not targetWinSession: an empty target re-reads
+	// the console session, which may have moved since the lease (#9517).
+	session = find(ipc.ScopePam, strconv.FormatUint(uint64(winID), 10))
 	if session == nil {
-		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableHelperUnavailable, "spawned helper does not hold the PAM scope")
+		if res.Session != nil && (res.Session.HelperRole != ipc.HelperRoleSystem || !res.Session.HasScope(ipc.ScopePam)) {
+			return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableHelperUnavailable, "spawned helper does not hold the PAM scope")
+		}
+		// The ready helper holds the scope (or the wait did not say which
+		// helper came up), yet the lookup missed it: a race with the session
+		// list, not proof. Stop, leave the request pending.
+		log.Error("pam: on-demand SYSTEM helper was ready but not found for the PAM flow; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID)
+		return nil, release, nil
 	}
 	return session, release, nil
 }
