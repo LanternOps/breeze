@@ -11,3 +11,7 @@ export { documentSellerLines, documentAddressLines } from './sellerLines';
 export { DOCUMENT_LABELS_EN, DOCUMENT_LABELS_PT_BR, documentLabelsFor, type DocumentLabels, type DocumentRichParts } from './labels';
 export { buildInvoiceDocumentModel, DocumentModelError } from './invoiceBuilder';
 export { INVOICE_DTO_FIXTURES, type InvoiceFixtureName } from './fixtures/invoiceDtos';
+
+// ---- W2a (#9418): quote document ----
+export * from './quoteDto';
+export type { DocumentQuoteLabels } from './labels/types';
