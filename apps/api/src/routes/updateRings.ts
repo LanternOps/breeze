@@ -401,16 +401,17 @@ updateRingRoutes.patch(
     if (data.appRules !== undefined) updateFields.appRules = data.appRules;
     if (data.targets !== undefined) updateFields.targets = data.targets;
 
+    // Disabling a ring fails closed for every policy linked to it (#8909):
+    // report who is affected. Read before the write so a lookup failure leaves
+    // the ring untouched. The caller is a full-partner admin (gate above), so
+    // RLS does not narrow the count.
+    const linked = data.enabled === false ? await getRingLinkedPolicies(id) : null;
+
     const [updated] = await db
       .update(patchPolicies)
       .set(updateFields)
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .returning();
-
-    // Disabling a ring fails closed for every policy linked to it (#8909):
-    // report who is affected. The caller is a full-partner admin (gate above),
-    // so RLS does not narrow the count.
-    const linked = data.enabled === false ? await getRingLinkedPolicies(id) : null;
 
     writeRouteAudit(c, {
       orgId: null,
@@ -453,12 +454,13 @@ updateRingRoutes.delete(
     const deleteDenial = partnerWideRingWriteDenial(c, auth);
     if (deleteDenial) return deleteDenial.response;
 
+    // Read before the write so a lookup failure is a clean 500 with the ring untouched.
+    const linked = await getRingLinkedPolicies(id);
+
     await db
       .update(patchPolicies)
       .set({ enabled: false, updatedAt: new Date() })
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')));
-
-    const linked = await getRingLinkedPolicies(id);
 
     writeRouteAudit(c, {
       orgId: null,

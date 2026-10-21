@@ -213,4 +213,12 @@ describe('update rings partner-wide capability gate', () => {
     expect(await res.json()).toEqual({ success: true, linkedPolicies: [], linkedPolicyCount: 0 });
     expect(dbUpdateMock).toHaveBeenCalledOnce();
   });
+
+  it('GET /:id/linked-policies is denied for selected-access partner users (no undercount)', async () => {
+    setPartnerOrgAccess('selected');
+    selectResult.mockResolvedValueOnce([makeRing()]);
+    const res = await makeApp().request(`/update-rings/${RING_ID}/linked-policies`);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+  });
 });

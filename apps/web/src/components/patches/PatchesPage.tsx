@@ -788,7 +788,8 @@ export default function PatchesPage() {
       if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
       if (!response.ok) throw new Error(`linked-policies ${response.status}`);
       const body = await response.json();
-      linked = Array.isArray(body?.linkedPolicies) ? body.linkedPolicies : [];
+      if (!Array.isArray(body?.linkedPolicies)) throw new Error('linked-policies: malformed response');
+      linked = body.linkedPolicies;
     } catch {
       // Fail closed: without the linked-policy list we cannot warn, so do not delete.
       showToast({ message: t('patchesPage.errors.checkRingLinks'), type: 'error' });

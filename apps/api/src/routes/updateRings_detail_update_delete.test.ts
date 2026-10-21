@@ -878,6 +878,21 @@ describe('updateRings routes', () => {
       }));
     });
 
+    it('DELETE/PATCH-disable: a failing lookup is a 500 and the ring is not written', async () => {
+      linkedMock.mockRejectedValue(new Error('boom'));
+      ringSelect({ id: RING_ID, partnerId: PARTNER_ID, name: 'Test Ring' });
+      const del = await app.request(`/update-rings/${RING_ID}`, { method: 'DELETE', headers: { Authorization: 'Bearer token' } });
+      expect(del.status).toBe(500);
+      ringSelect({ id: RING_ID, partnerId: PARTNER_ID, autoApprove: {}, enabled: true });
+      const patch = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'PATCH', headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: false }),
+      });
+      expect(patch.status).toBe(500);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
     it('DELETE with no links reports zero', async () => {
       linkedMock.mockResolvedValue([]);
       ringSelect({ id: RING_ID, partnerId: PARTNER_ID, name: 'Test Ring' });

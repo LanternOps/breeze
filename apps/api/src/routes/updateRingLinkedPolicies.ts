@@ -20,7 +20,8 @@ export interface RingLinkedPolicy {
  * is gated accordingly.
  */
 export async function getRingLinkedPolicies(ringId: string): Promise<RingLinkedPolicy[]> {
-  const rows = await db
+  // (config_policy_id, feature_type) is unique, so one row per policy.
+  return db
     .select({
       id: configurationPolicies.id,
       name: configurationPolicies.name,
@@ -34,9 +35,6 @@ export async function getRingLinkedPolicies(ringId: string): Promise<RingLinkedP
       ne(configurationPolicies.status, 'archived'),
     ))
     .orderBy(asc(configurationPolicies.name));
-
-  const seen = new Set<string>();
-  return rows.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
 }
 
 export function linkedPolicyPayload(linked: RingLinkedPolicy[]) {

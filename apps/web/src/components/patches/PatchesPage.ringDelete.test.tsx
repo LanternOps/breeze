@@ -94,6 +94,19 @@ describe('PatchesPage — ring delete warns about linked policies (#8909)', () =
     expect(screen.queryByTestId('confirm-delete-ring')).not.toBeInTheDocument();
   });
 
+  it('does not delete when the lookup response is malformed (fail closed)', async () => {
+    setup([]);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input) === '/update-rings/ring-1/linked-policies' ? json({ unexpected: true }) : base(input, init));
+    render(<PatchesPage />);
+
+    fireEvent.click(await screen.findByLabelText('Delete Pilot'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(deleteCalls()).toHaveLength(0);
+  });
+
   it('does not delete when the linked-policy lookup fails', async () => {
     setup([]);
     const base = fetchMock.getMockImplementation()!;
