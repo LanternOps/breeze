@@ -34655,19 +34655,6 @@
   padding-bottom: 0.25rem !important;
 }
 
-/* Condensed document theme (Task 12) — plain CSS vars/selectors, deliberately
-   NOT @theme tokens (see the @theme inline self-reference NB near the top of
-   this file: a --font-sans self-reference there resolves to an invalid empty
-   value). Scoped to [data-doc-theme='condensed'], stamped by QuoteDocument.tsx
-   on the rendered proposal root, so it never touches the rest of the app. */
-[data-doc-theme='condensed'] {
-  font-family: 'DM Sans', var(--font-sans, system-ui), sans-serif;
-}
-[data-doc-theme='condensed'] :is(h1, h2, h3, h4, th) {
-  font-family: 'Barlow Condensed', 'DM Sans', sans-serif;
-  letter-spacing: 0.01em;
-}
-
 /* Toast bottom anchor (#2151). ToastContainer reads --breeze-toast-bottom; a
    page that renders a sticky bottom-anchored right rail opts into the lift by
    calling useToastRailOffset(), which stamps data-toast-rail on <html>. This

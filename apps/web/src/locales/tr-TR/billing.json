@@ -1576,76 +1576,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Tah.",
-        "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
         "setDevices": "cihazlar",
         "setSeats": "kullanıcılar",
-        "setGroup": "“{{name}}” içindeki cihazlar",
-        "atSite": "{{site}} konumundaki {{set}}",
-        "allowanceBill": "{{included}} dahildir; ek birimler beher {{price}} olarak faturalandırılır.",
-        "allowanceFlag": "{{included}} dahildir; ek birimler otomatik faturalandırılmaz, inceleme için raporlanır."
+        "setGroup": "“{{name}}” içindeki cihazlar"
       },
       "additionalItems": "Ek öğeler",
       "contract": {
-        "download": "Anlaşmayı indirin",
-        "previewTitle": "{{name}} anlaşması",
         "unavailable": "Anlaşma dosyası mevcut değil",
         "versionFooter": "{{name}} — v{{version}}"
       },
-      "agreements": {
-        "heading": "Anlaşmalar",
-        "termsTitle": "Şartlar ve Koşullar",
-        "read": "Oku",
-        "hide": "Gizle",
-        "readTime": "~{{minutes}} dk okuma",
-        "sectionsReadTime_one": "{{count}} bölüm · ~{{minutes}} dk okuma",
-        "sectionsReadTime_other": "{{count}} bölüm · ~{{minutes}} dk okuma",
-        "pdfDocument": "PDF belgesi",
-        "unavailable": "Kullanılamıyor",
-        "untitled": "Anlaşma"
-      },
-      "draft": "Taslak",
-      "empty": "Bu teklifin henüz içeriği yok.",
-      "imageUnavailable": "Resim kullanılamıyor",
-      "issued": "Verildi",
-      "preparedFor": "için hazırlandı",
-      "taxId": "Vergi Numarası: {{id}}",
-      "imageZoomAria": "Daha büyük resmi görüntüle",
       "preview": {
         "description": "Bu, müşterinizin teklif bağlantısında gördüğü şeydir.",
         "downloadPdf": "PDF'yi indir",
-        "preparing": "Hazırlanıyor…"
-      },
-      "pricing": "Fiyatlandırma",
-      "pricingScrollAria": "Fiyatlandırma — daha fazla sütun için yana doğru kaydırın",
-      "proposal": "Teklif",
-      "proposalImageAlt": "Teklif resmi",
-      "recurrence": {
-        "annual": "Yıllık",
-        "monthly": "Aylık"
-      },
-      "table": {
-        "amount": "Tutar",
-        "description": "Açıklama",
-        "qty": "Adet",
-        "tax": "Vergi",
-        "unitPrice": "Birim fiyatı"
-      },
-      "totals": {
-        "annualRecurring": "Yıllık yinelenen",
-        "depositDue": "Depozito ödenmesi gerekiyor",
-        "depositDueNow": "Depozito ödemesinin şimdi yapılması gerekiyor",
-        "dueOnAcceptance": "Kabul sırasında vadesi gelecek",
-        "firstPeriodSubtotal": "İlk dönem ara toplamı",
-        "firstPeriodTotal": "Birinci dönem toplamı",
-        "monthlyRecurring": "Aylık olarak yinelenen",
-        "recurringNote": "Bu teklifi kabul ettiğinizde tek seferlik ücretler artık faturalandırılır. Yinelenen hatlar kendi programlarına göre faturalandırılır.",
-        "remainingBalance": "Kalan bakiye (şartlara göre vadesi gelecek)",
-        "subtotal": "Ara Toplam",
-        "tax": "Vergi"
-      },
-      "unsupportedBlock": "Bu blok türü henüz bu görüntüleyici tarafından desteklenmiyor.",
-      "validUntil": "Geçerlilik tarihi:"
+        "preparing": "Hazırlanıyor…",
+        "loading": "Müşteri görünümü yükleniyor…",
+        "loadError": "Bu teklifin müşteri görünümü yüklenemedi.",
+        "retry": "Yeniden dene",
+        "signatureInert": "Müşteriniz burada imzalar"
+      }
     },
     "page": {
       "accessDenied": "Alıntıları görüntüleme izniniz yok.",

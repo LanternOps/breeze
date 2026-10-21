@@ -1576,76 +1576,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Stima",
-        "estimate": "Quantità stimata — fatturata in base al numero effettivo di {{set}} in ogni periodo di fatturazione.",
         "setDevices": "dispositivi",
         "setSeats": "postazioni",
-        "setGroup": "dispositivi in “{{name}}”",
-        "atSite": "{{set}} presso {{site}}",
-        "allowanceBill": "Include {{included}}; le unità aggiuntive sono fatturate a {{price}} ciascuna.",
-        "allowanceFlag": "Include {{included}}; le unità aggiuntive sono segnalate per revisione, non fatturate automaticamente."
+        "setGroup": "dispositivi in “{{name}}”"
       },
       "additionalItems": "Elementi aggiuntivi",
       "contract": {
-        "download": "Scarica accordo",
-        "previewTitle": "Accordo {{name}}",
         "unavailable": "File accordo non disponibile",
         "versionFooter": "{{name}} — v{{version}}"
       },
-      "agreements": {
-        "heading": "Accordi",
-        "termsTitle": "Termini e condizioni",
-        "read": "Leggi",
-        "hide": "Nascondi",
-        "readTime": "~{{minutes}} min di lettura",
-        "sectionsReadTime_one": "{{count}} sezione · ~{{minutes}} min di lettura",
-        "sectionsReadTime_other": "{{count}} sezioni · ~{{minutes}} min di lettura",
-        "pdfDocument": "Documento PDF",
-        "unavailable": "Non disponibile",
-        "untitled": "Accordo"
-      },
-      "draft": "Bozza",
-      "empty": "Questa proposta non contiene ancora contenuti.",
-      "imageUnavailable": "Immagine non disponibile",
-      "issued": "Emesso",
-      "preparedFor": "Preparato per",
-      "taxId": "ID fiscale: {{id}}",
-      "imageZoomAria": "Visualizza immagine più grande",
       "preview": {
         "description": "Questo è ciò che il cliente vede nel link della proposta.",
         "downloadPdf": "Scarica PDF",
-        "preparing": "Preparazione…"
-      },
-      "pricing": "Prezzi",
-      "pricingScrollAria": "Prezzi — scorri lateralmente per altre colonne",
-      "proposal": "Proposta",
-      "proposalImageAlt": "Immagine della proposta",
-      "recurrence": {
-        "annual": "Annuale",
-        "monthly": "Mensile"
-      },
-      "table": {
-        "amount": "Importo",
-        "description": "Descrizione",
-        "qty": "Qtà",
-        "tax": "Imposta",
-        "unitPrice": "Prezzo unitario"
-      },
-      "totals": {
-        "annualRecurring": "Ricorrente annuale",
-        "depositDue": "Acconto dovuto",
-        "depositDueNow": "Acconto dovuto ora",
-        "dueOnAcceptance": "Dovuto all'accettazione",
-        "firstPeriodSubtotal": "Subtotale primo periodo",
-        "firstPeriodTotal": "Totale primo periodo",
-        "monthlyRecurring": "Ricorrente mensile",
-        "recurringNote": "Accettando questa proposta vengono fatturati ora gli addebiti una tantum. Le righe ricorrenti vengono fatturate secondo la propria pianificazione.",
-        "remainingBalance": "Saldo residuo (dovuto secondo i termini)",
-        "subtotal": "Subtotale",
-        "tax": "Imposta"
-      },
-      "unsupportedBlock": "Questo tipo di blocco non è ancora supportato da questo visualizzatore.",
-      "validUntil": "Valido fino al"
+        "preparing": "Preparazione…",
+        "loading": "Caricamento della vista cliente…",
+        "loadError": "Impossibile caricare la vista cliente di questa proposta.",
+        "retry": "Riprova",
+        "signatureInert": "Qui firma il cliente"
+      }
     },
     "page": {
       "accessDenied": "Non hai l'autorizzazione per visualizzare i preventivi.",

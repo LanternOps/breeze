@@ -392,4 +392,33 @@ describe('buildQuoteDocumentModel — carried-over portal assertions', () => {
   it('agreements expose the labels the component prints (heading, Read, Hide)', () => {
     expect(build('agreements').agreementLabels).toEqual({ heading: 'Agreements', read: 'Read', hide: 'Hide' });
   });
+
+  // #3205 W05 decision 21 (the web Preview's zero-recurring test, carried over): a device-set line
+  // counting ZERO devices is a first-class state; visibility keys on recurrence, amounts stay 0.00.
+  it('a zero-quantity recurring device-set line still shows the recurring rows, the aside and the estimate sentence', () => {
+    const zero = withLines(
+      {
+        ...fx.deviceSet,
+        quote: { ...fx.deviceSet.quote, subtotal: '0.00', total: '0.00', monthlyRecurringTotal: '0.00', dueOnAcceptanceTotal: '0.00' },
+      },
+      (l) => ({ ...l, quantity: '0.00', lineTotal: '0.00' }),
+    );
+    const m = buildQuoteDocumentModel(zero, EN);
+    expect(m.totals.rows.map((r) => r.key)).toContain('monthly');
+    expect(m.totals.aside?.rows[0]?.value).toMatchObject({ text: '$0.00' });
+    expect(allRows(m)[0]!.descriptor[0]).toMatch(/each billing period/);
+  });
+
+  it('uses the canonical case-sensitive nouns for IoT and NAS roles', () => {
+    const m = buildQuoteDocumentModel(
+      withLines(fx.deviceSet, (l) => (l.contractLineType === 'per_device_role' ? { ...l, deviceRoles: ['iot', 'nas'], siteName: null } : l)),
+      EN,
+    );
+    expect(allRows(m)[0]!.descriptor[0]).toContain('IoT devices, NAS devices');
+  });
+
+  it('a single-category quote has no category breakdown rows', () => {
+    const m = buildQuoteDocumentModel({ ...fx.recurring, quote: { ...fx.recurring.quote, categoryBreakdown: [fx.recurring.quote.categoryBreakdown[1]!] } }, EN);
+    expect(m.totals.rows.some((r) => r.key.startsWith('category:'))).toBe(false);
+  });
 });

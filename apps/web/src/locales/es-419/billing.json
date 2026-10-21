@@ -1576,76 +1576,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.",
-        "estimate": "Cantidad estimada: se factura la cantidad real de {{set}} en cada período de facturación.",
         "setDevices": "dispositivos",
         "setSeats": "licencias",
-        "setGroup": "dispositivos en “{{name}}”",
-        "atSite": "{{set}} en {{site}}",
-        "allowanceBill": "Incluye {{included}}; las unidades adicionales se facturan a {{price}} cada una.",
-        "allowanceFlag": "Incluye {{included}}; las unidades adicionales se informan para revisión y no se facturan automáticamente."
+        "setGroup": "dispositivos en “{{name}}”"
       },
       "additionalItems": "Artículos adicionales",
       "contract": {
-        "download": "Descargar acuerdo",
-        "previewTitle": "Acuerdo {{name}}",
         "unavailable": "Archivo del acuerdo no disponible",
         "versionFooter": "{{name}} — versión {{version}}"
       },
-      "agreements": {
-        "heading": "Acuerdos",
-        "termsTitle": "Términos y condiciones",
-        "read": "Leer",
-        "hide": "Ocultar",
-        "readTime": "~{{minutes}} min de lectura",
-        "sectionsReadTime_one": "{{count}} sección · ~{{minutes}} min de lectura",
-        "sectionsReadTime_other": "{{count}} secciones · ~{{minutes}} min de lectura",
-        "pdfDocument": "Documento PDF",
-        "unavailable": "No disponible",
-        "untitled": "Acuerdo"
-      },
-      "draft": "Borrador",
-      "empty": "Esta propuesta aún no tiene ningún contenido.",
-      "imageUnavailable": "Imagen no disponible",
-      "issued": "Emitido",
-      "preparedFor": "preparado para",
-      "taxId": "ID fiscal: {{id}}",
-      "imageZoomAria": "Ver imagen más grande",
       "preview": {
         "description": "Esto es lo que su cliente ve en el enlace de su propuesta.",
         "downloadPdf": "Descargar PDF",
-        "preparing": "Preparando…"
-      },
-      "pricing": "Precios",
-      "pricingScrollAria": "Precios: desplácese hacia los lados para ver más columnas",
-      "proposal": "Propuesta",
-      "proposalImageAlt": "Imagen de propuesta",
-      "recurrence": {
-        "annual": "Anual",
-        "monthly": "Mensual"
-      },
-      "table": {
-        "amount": "Cantidad",
-        "description": "Descripción",
-        "qty": "Cantidad",
-        "tax": "Impuesto",
-        "unitPrice": "Precio unitario"
-      },
-      "totals": {
-        "annualRecurring": "Recurrente anual",
-        "depositDue": "Depósito adeudado",
-        "depositDueNow": "Depósito a pagar ahora",
-        "dueOnAcceptance": "Vencimiento al momento de la aceptación",
-        "firstPeriodSubtotal": "Subtotal del primer período",
-        "firstPeriodTotal": "Total del primer período",
-        "monthlyRecurring": "Recurrente mensual",
-        "recurringNote": "Al aceptar esta propuesta se facturan los cargos únicos ahora. Las líneas recurrentes facturan según su propio horario.",
-        "remainingBalance": "Saldo restante (según los términos)",
-        "subtotal": "Total parcial",
-        "tax": "Impuesto"
-      },
-      "unsupportedBlock": "Este tipo de bloque aún no es compatible con este visor.",
-      "validUntil": "Válido hasta"
+        "preparing": "Preparando…",
+        "loading": "Cargando la vista del cliente…",
+        "loadError": "No se pudo cargar la vista del cliente de esta propuesta.",
+        "retry": "Reintentar",
+        "signatureInert": "Aquí firma su cliente"
+      }
     },
     "page": {
       "accessDenied": "No tiene permiso para ver cotizaciones.",

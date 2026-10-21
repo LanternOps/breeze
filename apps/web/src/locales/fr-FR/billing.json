@@ -1576,76 +1576,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.",
-        "estimate": "Quantité estimée — facturée selon le nombre réel de {{set}} à chaque période de facturation.",
         "setDevices": "appareils",
         "setSeats": "postes",
-        "setGroup": "appareils dans « {{name}} »",
-        "atSite": "{{set}} sur le site {{site}}",
-        "allowanceBill": "Comprend {{included}}; les unités supplémentaires sont facturées {{price}} chacune.",
-        "allowanceFlag": "Comprend {{included}}; les unités supplémentaires sont signalées pour révision, pas facturées automatiquement."
+        "setGroup": "appareils dans « {{name}} »"
       },
       "additionalItems": "Articles supplémentaires",
       "contract": {
-        "download": "Télécharger la convention",
-        "previewTitle": "Convention {{name}}",
         "unavailable": "Fichier de la convention indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
-      "agreements": {
-        "heading": "Conventions",
-        "termsTitle": "Conditions générales",
-        "read": "Lire",
-        "hide": "Masquer",
-        "readTime": "~{{minutes}} min de lecture",
-        "sectionsReadTime_one": "{{count}} section · ~{{minutes}} min de lecture",
-        "sectionsReadTime_other": "{{count}} sections · ~{{minutes}} min de lecture",
-        "pdfDocument": "Document PDF",
-        "unavailable": "Non disponible",
-        "untitled": "Convention"
-      },
-      "draft": "Brouillon",
-      "empty": "Cette proposition n'a encore aucun contenu.",
-      "imageUnavailable": "Image indisponible",
-      "issued": "Émis",
-      "preparedFor": "Préparé pour",
-      "taxId": "Identifiant fiscal : {{id}}",
-      "imageZoomAria": "Voir l'image en grand",
       "preview": {
         "description": "Voici ce que votre client voit sur son lien de proposition.",
         "downloadPdf": "Télécharger le PDF",
-        "preparing": "Préparation…"
-      },
-      "pricing": "Tarification",
-      "pricingScrollAria": "Tarification — faites défiler horizontalement pour plus de colonnes",
-      "proposal": "Proposition",
-      "proposalImageAlt": "Image de la proposition",
-      "recurrence": {
-        "annual": "Annuel",
-        "monthly": "Mensuel"
-      },
-      "table": {
-        "amount": "Montant",
-        "description": "Description",
-        "qty": "Qté",
-        "tax": "Taxe",
-        "unitPrice": "Prix unitaire"
-      },
-      "totals": {
-        "annualRecurring": "Récurrent annuel",
-        "depositDue": "Acompte dû",
-        "depositDueNow": "Acompte dû maintenant",
-        "dueOnAcceptance": "Dû à l'acceptation",
-        "firstPeriodSubtotal": "Sous-total de la première période",
-        "firstPeriodTotal": "Total de la première période",
-        "monthlyRecurring": "Récurrent mensuel",
-        "recurringNote": "L'acceptation de cette proposition facture maintenant les frais ponctuels. Les lignes récurrentes sont facturées selon leur propre calendrier.",
-        "remainingBalance": "Solde restant (selon les conditions)",
-        "subtotal": "Sous-total",
-        "tax": "Taxe"
-      },
-      "unsupportedBlock": "Ce type de bloc n'est pas encore pris en charge par cette visionneuse.",
-      "validUntil": "Valide jusqu'au"
+        "preparing": "Préparation…",
+        "loading": "Chargement de la vue client…",
+        "loadError": "Impossible de charger la vue client de cette proposition.",
+        "retry": "Réessayer",
+        "signatureInert": "Votre client signe ici"
+      }
     },
     "page": {
       "accessDenied": "Vous n'avez pas l'autorisation de consulter les devis.",

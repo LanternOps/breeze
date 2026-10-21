@@ -560,7 +560,7 @@ function BlockView({ block, lines, currency, taxRate, showTax }: { block: QuoteB
   }
   if (block.blockType === 'contract') {
     // Read-only summary — the Detail tab isn't the customer document, so skip
-    // the PDF preview/iframe (QuoteDocument's DocContractFile) and just show
+    // the PDF preview/iframe (the Preview tab's agreement viewer) and just show
     // what a staff member needs: which agreement this is and its body text.
     const content = (block.content ?? {}) as Partial<ContractBlockContent>;
     const templateName = content.templateName?.trim() || '';

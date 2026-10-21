@@ -1576,76 +1576,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Gesch.",
-        "estimate": "Geschätzte Menge — abgerechnet wird die tatsächliche Anzahl {{set}} in jedem Abrechnungszeitraum.",
         "setDevices": "Geräte",
         "setSeats": "Benutzerplätze",
-        "setGroup": "Geräte in „{{name}}“",
-        "atSite": "{{set}} am Standort {{site}}",
-        "allowanceBill": "Enthält {{included}}; weitere Einheiten werden mit je {{price}} berechnet.",
-        "allowanceFlag": "Enthält {{included}}; weitere Einheiten werden zur Prüfung gemeldet, nicht automatisch berechnet."
+        "setGroup": "Geräte in „{{name}}“"
       },
       "additionalItems": "Zusätzliche Artikel",
       "contract": {
-        "download": "Vereinbarung herunterladen",
-        "previewTitle": "Vereinbarung {{name}}",
         "unavailable": "Vereinbarungsdatei nicht verfügbar",
         "versionFooter": "{{name}} — Version {{version}}"
       },
-      "agreements": {
-        "heading": "Vereinbarungen",
-        "termsTitle": "Allgemeine Geschäftsbedingungen",
-        "read": "Lesen",
-        "hide": "Ausblenden",
-        "readTime": "ca. {{minutes}} Min. Lesezeit",
-        "sectionsReadTime_one": "{{count}} Abschnitt · ca. {{minutes}} Min. Lesezeit",
-        "sectionsReadTime_other": "{{count}} Abschnitte · ca. {{minutes}} Min. Lesezeit",
-        "pdfDocument": "PDF-Dokument",
-        "unavailable": "Nicht verfügbar",
-        "untitled": "Vereinbarung"
-      },
-      "draft": "Entwurf",
-      "empty": "Dieser Vorschlag hat noch keinen Inhalt.",
-      "imageUnavailable": "Bild nicht verfügbar",
-      "issued": "Ausgestellt",
-      "preparedFor": "Vorbereitet für",
-      "taxId": "Steuernummer: {{id}}",
-      "imageZoomAria": "Größeres Bild anzeigen",
       "preview": {
         "description": "Das sieht Ihr Kunde auf seinem Angebotslink.",
         "downloadPdf": "Laden Sie PDF herunter",
-        "preparing": "Vorbereiten…"
-      },
-      "pricing": "Preise",
-      "pricingScrollAria": "Preise – scrollen Sie seitwärts für weitere Spalten",
-      "proposal": "Vorschlag",
-      "proposalImageAlt": "Angebotsbild",
-      "recurrence": {
-        "annual": "Jährlich",
-        "monthly": "Monatlich"
-      },
-      "table": {
-        "amount": "Betrag",
-        "description": "Beschreibung",
-        "qty": "Menge",
-        "tax": "Steuer",
-        "unitPrice": "Stückpreis"
-      },
-      "totals": {
-        "annualRecurring": "Jährlich wiederkehrend",
-        "depositDue": "Anzahlung fällig",
-        "depositDueNow": "Anzahlung jetzt fällig",
-        "dueOnAcceptance": "Fällig bei Abnahme",
-        "firstPeriodSubtotal": "Zwischensumme erster Zeitraum",
-        "firstPeriodTotal": "Gesamtsumme erster Zeitraum",
-        "monthlyRecurring": "Monatlich wiederkehrend",
-        "recurringNote": "Wenn Sie diesen Vorschlag annehmen, werden die einmaligen Kosten jetzt in Rechnung gestellt. Wiederkehrende Positionen werden nach ihrem eigenen Zeitplan abgerechnet.",
-        "remainingBalance": "Restbetrag (gemäß Bedingungen)",
-        "subtotal": "Zwischensumme",
-        "tax": "Steuer"
-      },
-      "unsupportedBlock": "Dieser Blocktyp wird in dieser Ansicht noch nicht unterstützt.",
-      "validUntil": "Gültig bis"
+        "preparing": "Vorbereiten…",
+        "loading": "Kundenansicht wird geladen …",
+        "loadError": "Die Kundenansicht dieses Angebots konnte nicht geladen werden.",
+        "retry": "Erneut versuchen",
+        "signatureInert": "Hier unterschreibt Ihr Kunde"
+      }
     },
     "page": {
       "accessDenied": "Sie sind nicht berechtigt, Angebote anzuzeigen.",
