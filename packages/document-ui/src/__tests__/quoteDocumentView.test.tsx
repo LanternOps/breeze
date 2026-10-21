@@ -2,7 +2,6 @@ import { act, fireEvent } from '@testing-library/react';
 import { buildQuoteDocumentModel, documentLabelsFor, QUOTE_DTO_FIXTURES, QUOTE_FIXTURE_IDS } from '@breeze/shared/documents';
 import { quoteAgreementLinks } from '../QuoteDocumentView';
 import { renderQuote } from '../__fixtures__/renderQuote';
-import { STAND_IN_COMPONENTS } from '../__fixtures__/testing';
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
@@ -16,14 +15,13 @@ describe('QuoteDocumentView — blocks', () => {
   });
 
   it('rich_text and callout render their sanitized html; blank ones render nothing', () => {
-    const { getByTestId, queryByTestId, container } = renderQuote('blocks');
+    const { getByTestId, queryByTestId } = renderQuote('blocks');
     expect(getByTestId(`document-block-${id(21)}`).innerHTML).toContain('<p>We will replace the core switch.</p>');
     expect(queryByTestId(`document-block-${id(22)}`)).toBeNull();
     const callout = getByTestId(`document-block-${id(25)}`);
     expect(callout.className).toContain('border-warning/40');
     expect(callout.textContent).toContain('Downtime');
     expect(queryByTestId(`document-block-${id(26)}`)).toBeNull();
-    expect(container.querySelectorAll('[data-testid^="document-block-"]').length).toBeGreaterThan(0);
   });
 
   it('table block: plain header, right alignment as a class, zebra, caption; empty table renders nothing', () => {
@@ -224,6 +222,14 @@ describe('QuoteDocumentView — agreements', () => {
   });
 });
 
-it('uses the injected host components (stand-ins are the default)', () => {
-  expect(STAND_IN_COMPONENTS.Image).toBeTypeOf('function');
+it('never prints internal cost / markup / net, even if the payload carries them', () => {
+  const dto = QUOTE_DTO_FIXTURES.issued;
+  const leaky = {
+    ...dto,
+    lines: dto.lines.map((l) => ({ ...l, unitCost: '77.77', markup: '13.13', netTotal: '66.66' })),
+    quote: { ...dto.quote, totalCost: '88.88', margin: '99.99' },
+  } as unknown as typeof dto;
+  const model = buildQuoteDocumentModel(leaky, documentLabelsFor('en'));
+  const json = JSON.stringify(model);
+  for (const secret of ['77.77', '13.13', '66.66', '88.88', '99.99']) expect(json).not.toContain(secret);
 });

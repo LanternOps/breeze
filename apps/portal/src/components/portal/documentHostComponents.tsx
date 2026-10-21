@@ -35,7 +35,7 @@ export function quoteAssetSource(
 /** Quote host components: images are plain `<img>` against the page's own image routes. */
 export function portalQuoteHostComponents(src: QuoteAssetSource): DocumentHostComponents {
   return {
-    Image: ({ asset, alt, className, width }) => {
+    Image: ({ asset, alt, className, width, unavailableText }) => {
       if (asset.kind === 'line_thumb') {
         const path = src.lineImagePaths.get(asset.id);
         if (!path) return null;
@@ -52,7 +52,27 @@ export function portalQuoteHostComponents(src: QuoteAssetSource): DocumentHostCo
         );
       }
       if (asset.kind === 'cover' || asset.kind === 'block_image') {
-        return <img src={src.imageUrl(asset.id)} alt={alt} width={width} className={className} />;
+        return (
+          <img
+            src={src.imageUrl(asset.id)}
+            alt={alt}
+            width={width}
+            className={className}
+            onError={(e) => {
+              // Say so instead of leaving a broken-image icon (or a blank cover band) on a customer document.
+              console.warn('[portal] quote image failed to load', asset.kind, asset.id);
+              const img = e.currentTarget;
+              if (unavailableText && asset.kind === 'block_image') {
+                const note = document.createElement('div');
+                note.className = 'rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground';
+                note.textContent = unavailableText;
+                img.replaceWith(note);
+              } else {
+                img.style.display = 'none';
+              }
+            }}
+          />
+        );
       }
       return null;
     },
