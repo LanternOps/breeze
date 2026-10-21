@@ -27,6 +27,23 @@ describe('document labels', () => {
     expect(shape(DOCUMENT_LABELS_PT_BR)).toEqual(shape(DOCUMENT_LABELS_EN));
   });
 
+  it('pt-BR quote labels are real translations, not the English placeholder (W2b)', () => {
+    const q = DOCUMENT_LABELS_PT_BR.quote;
+    expect(q).not.toBe(DOCUMENT_LABELS_EN.quote);
+    expect(q.eyebrow).toBe('Proposta');
+    expect(q.preparedFor).toBe('Preparado para');
+    expect(q.validUntil).toBe('Válida até');
+    expect(q.columns).toEqual({ description: 'Descrição', qty: 'Qtd.', unitPrice: 'Preço unitário', tax: 'Imposto', amount: 'Valor' });
+    expect(q.totals.dueOnAcceptance).toBe('Devido na aceitação');
+    expect(q.totals.tax('8.25')).toBe('Imposto (8.25%)');
+    expect(q.deviceSet.role('server')).toBe('servidores');
+    expect(q.deviceSet.estimated('dispositivos')).toBe('Quantidade estimada — cobrada pelo número real de dispositivos em cada período de faturamento.');
+    expect(q.agreement.termsMeta(2, 3)).toBe('2 seções · ~3 min de leitura');
+    expect(q.agreement.termsMeta(1, 3)).toBe('1 seção · ~3 min de leitura');
+    expect(q.agreement.readMinutes(4)).toBe('~4 min de leitura');
+    expect(q.cadence).toEqual({ one_time: 'Único', monthly: 'Mensal', annual: 'Anual' });
+  });
+
   it('English PDF-only strings (W3a)', () => {
     expect(DOCUMENT_LABELS_EN.pdf.from).toBe('From');
     expect(DOCUMENT_LABELS_EN.pdf.taxId('12-345')).toBe('Tax ID: 12-345');
