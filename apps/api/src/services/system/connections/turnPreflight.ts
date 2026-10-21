@@ -90,7 +90,11 @@ export const udpAllocateTransport: AllocateTransport = (host, port, request, tim
       if (done) return;
       done = true;
       clearTimeout(timer);
-      socket.close();
+      try {
+        socket.close();
+      } catch {
+        // already closed
+      }
       fn();
     };
     const timer = setTimeout(() => finish(() => resolve(null)), timeoutMs);
@@ -109,7 +113,8 @@ export interface TurnPreflightResult {
 }
 
 function parsePort(raw: string | undefined): number {
-  const n = Number.parseInt(raw?.trim() ?? '', 10);
+  const text = raw?.trim() ?? '';
+  const n = /^\d+$/.test(text) ? Number.parseInt(text, 10) : NaN;
   return Number.isInteger(n) && n > 0 && n < 65536 ? n : 3478;
 }
 
@@ -126,8 +131,13 @@ export async function runTurnPreflight(
   let reply: Buffer | null;
   try {
     reply = await transport(host, parsePort(env.TURN_PORT), buildAllocateRequest(txId), timeoutMs);
-  } catch {
-    return { status: 'info', message: 'TURN relay could not be probed from the API host (socket error)', checkedAt };
+  } catch (err) {
+    // Only the errno token is mapped (to a fixed phrase); the host and raw error text never leave.
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    const why = code === 'ENOTFOUND' || code === 'EAI_AGAIN'
+      ? 'TURN_HOST did not resolve from the API host'
+      : 'TURN relay could not be probed from the API host (socket error)';
+    return { status: 'info', message: why, checkedAt };
   }
   if (!reply) {
     return {
@@ -167,5 +177,6 @@ export async function startTurnPreflight(
   const result = await runTurnPreflight(env, transport);
   lastResult = result;
   if (result.status === 'warn') console.warn(`[turn-preflight] ${result.message}`);
+  else if (result.status === 'info') console.info(`[turn-preflight] ${result.message}`);
   return result;
 }

@@ -2004,7 +2004,9 @@ async function bootstrap(): Promise<void> {
   });
 
   // #9372: one non-blocking TURN preflight (never rejects, never delays boot).
-  void startTurnPreflight(process.env);
+  startTurnPreflight(process.env).catch(() => {
+    console.warn('[turn-preflight] preflight failed unexpectedly');
+  });
 
   injectWebSocket(server);
 
