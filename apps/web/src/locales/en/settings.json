@@ -5752,16 +5752,12 @@
       "nameRequired": "Organization name is required",
       "slugRequired": "Slug is required",
       "slugFormat": "Use lowercase letters, numbers, and hyphens only",
-      "maxDevicesRequired": "Enter a max device limit",
-      "maxDevicesInteger": "Max devices must be a whole number",
-      "maxDevicesMin": "Max devices must be at least 1",
       "contractEndAfterStart": "Contract end must be on or after start date"
     },
     "fields": {
       "name": "Organization name",
       "slug": "Slug",
       "type": "Organization type",
-      "maxDevices": "Max devices",
       "contractStart": "Contract start",
       "contractEnd": "Contract end"
     },
