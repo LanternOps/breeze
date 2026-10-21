@@ -7,7 +7,6 @@ import { runAction, ActionError } from '../../../lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { acceptQuoteOnBehalf, uploadQuoteAcceptanceEvidence, QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES } from '../../../lib/api/quotes';
 import { Dialog } from '../../shared/Dialog';
-import { useEmailConfigured } from '../../../lib/useEmailConfigured';
 import { type Quote, type QuoteLine, formatMoney } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -65,6 +64,8 @@ interface Props {
    *  the honest answer while we don't know. Matches the server's own
    *  `!== false` default: only `false` suppresses the line. */
   autoEmailInvoiceOnAccept?: boolean;
+  /** #9256: from the quote detail payload; `false` = no email transport. Omitted = unknown (no fetch). */
+  emailConfigured?: boolean;
   /** Called after a successful accept, so the workspace can reload and switch
    *  to the converted view. Never called on failure. */
   onAccepted: () => void;
@@ -83,7 +84,7 @@ interface Props {
  *
  *  Its own file: QuoteActions.tsx is already 1551 lines, and this surface has a
  *  fetch, a form and five conditional consequences of its own. */
-export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, recipients, autoEmailInvoiceOnAccept, onAccepted }: Props) {
+export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, recipients, autoEmailInvoiceOnAccept, emailConfigured, onAccepted }: Props) {
   const { t } = useTranslation('billing');
   const [method, setMethod] = useState<QuoteAcceptOnBehalfMethod>('verbal');
   const [reference, setReference] = useState('');
@@ -110,7 +111,6 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
   const autoEmail = autoEmailInvoiceOnAccept === true;
   const hasRecipients = recipients.length > 0;
   // #9256: `false` = the server has no email transport, so nothing will be emailed.
-  const emailConfigured = useEmailConfigured();
 
   // Reset to the quote's own values each time the dialog opens, so a cancelled
   // attempt doesn't leave last time's reference sitting in the field.
