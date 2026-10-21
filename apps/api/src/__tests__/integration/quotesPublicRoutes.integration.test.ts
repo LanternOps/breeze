@@ -105,6 +105,8 @@ describe('public quote routes (HTTP, unauthenticated token)', () => {
       'sellerSnapshot',
       'coverPage',
       'termsAndConditions',
+      // #9418: the customer document's one additive header key (the pill).
+      'displayStatus',
     ]);
   });
 
