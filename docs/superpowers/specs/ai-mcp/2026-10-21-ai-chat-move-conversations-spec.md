@@ -26,8 +26,8 @@ A conversation cannot move between them:
 
 Verified facts that shape the design:
 
-1. **Only one live stream exists, and it is the send.** `POST /ai/sessions/:id/messages` (`routes/ai.ts:778`) is the only route that streams a staff chat. It subscribes to the in-memory `SessionEventBus` (`services/streamingSessionManager.ts:319`). That bus supports several subscribers and keeps a 100-event ring buffer (`:72`) with `getReplayEvents()` (`:357`), but nothing outside tests calls `getReplayEvents()`. No route lets a second client attach to a turn that is running. A second send while a turn runs gets a 409 (`routes/ai.ts:893`, `:989` `turn_in_progress`, `:1046`). The one exception is a turn blocked only on approvals: `settleBlockedTurnForNewMessage` concludes that turn so the new message can go through.
-2. **Pending cards exist only in the stream.** `mapMessagesFromApi` (`processStreamEvent.ts:543`) restores persisted messages only. `pendingApproval`, `pendingPlan` and `activePlan` are set only from SSE events (`:267`, `:309`, `:320-344`). A reload, or a second surface, loses the approval card while the server still waits on it.
+1. **Only one live stream exists, and it is the send.** `POST /ai/sessions/:id/messages` (`routes/ai.ts:778`) is the only route that streams a staff chat. It subscribes to the in-memory `SessionEventBus` (`services/streamingSessionManager.ts:319`). That bus supports several subscribers and keeps a 100-event ring buffer (`:72`) with `getReplayEvents()` (`:357`), but nothing outside tests calls `getReplayEvents()`. No route lets a second client attach to a turn that is running. A second send while a turn runs gets a 409 (`routes/ai.ts:890-895`, `:989` `turn_in_progress`, `:1046`). The one exception is a turn blocked only on approvals: `settleBlockedTurnForNewMessage` concludes that turn so the new message can go through.
+2. **Pending cards exist only in the stream.** `mapMessagesFromApi` (`processStreamEvent.ts:543`) restores persisted messages only. `pendingApproval` and `pendingPlan` are set only from SSE events (`:267`, `:309`). `activePlan` is created on the client when a plan is approved (`aiStore.ts:713`, `workspaceStore.ts:472`) and is then updated from SSE events (`:320-344`). Nothing restores any of the three on reload. A reload, or a second surface, loses the approval card while the server still waits on it.
 3. **The workspace drops its streams on navigation.** `WorkspacePage` unmount calls `cleanupAllStreams` (`WorkspacePage.tsx:38`). Leaving `/workspace` mid-turn cancels the reader. The turn keeps running on the server (inferred), but the tab never sees its end.
 4. **The device pin lives on the server.** `ai_sessions.device_id` and the `context_snapshot.orgAnchor` written by `buildSessionContextSnapshot` drive `buildChatSessionToolAuth` (`streamingSessionManager.ts:745`, `aiSessionOrgAnchor.ts:41`). Passing the session id to the other surface keeps both the device-bound pin and the device-page write default. Nothing about the pin travels in client state.
 5. **Sessions are owner-only and ignore the org switcher.** `getSession` and `listSessions` (`services/aiAgent.ts:279`, `:304`) filter on `user_id = auth.user.id` plus the caller's accessible orgs. No middleware on `/ai/*` narrows by the `?orgId=` that `fetchWithAuth` injects, and `aiSessionQuerySchema` strips that parameter. A partner user therefore sees their sessions from every org they can access.
@@ -71,7 +71,7 @@ Keep `aiStore` (side panel) and `workspaceStore` (tabs) as separate stores, as r
 
 Two parity rules move into the shared code. They apply to any session the workspace may now open:
 
-- Coded 409s get the same treatment in both stores. `turn_in_progress` attaches instead of showing an error. `continuation_required` and the recoverable model codes tell the user to "Continue in side panel to choose a model". The model picker stays in the side panel only (§5).
+- Coded 409s get the same treatment in both stores. A 409 caused by another turn (`turn_in_progress`, which W1 adds to every such 409, §3.5) attaches instead of showing an error. `continuation_required` and the recoverable model codes tell the user to "Continue in side panel to choose a model". The model picker stays in the side panel only (§5).
 - Topology sessions never open in the workspace (D4). That keeps the workspace off the topology event filter, which exists only in `aiStore`.
 
 ### 3.3 Side panel → AI Assistant
@@ -80,9 +80,9 @@ Two parity rules move into the shared code. They apply to any session the worksp
 2. **Steps** (`moveToAssistant`):
    1. If `/workspace` already has a tab for this session, it is used. Otherwise the tab cap (`MAX_TABS = 5`) is checked first. When the cap is reached, the move stops, the user sees "Close a tab in the AI Assistant to open this conversation", and the side panel keeps the session.
    2. Navigate with Astro `navigate('/workspace#session=<id>')`, or set the hash if the user is already on `/workspace`.
-   3. When the workspace reports the tab is open (§3.6), the side panel releases the session. Release supersedes `activeStreamToken`, clears `sessionId` and `sessionOrgId` without a DELETE (which also clears the persisted `breeze-ai-chat` reference), resets the model picker the way `CLEARED_SESSION` does, and closes the panel.
+   3. When the workspace reports the tab is open, the side panel releases the session. The signal is explicit: `moveToAssistant` records a pending hand-off `{sessionId, origin: 'panel'}` in `aiConversationHandoff`, a module-level store that survives the navigation because the panel stays mounted. When `WorkspacePage`'s hash handler (§3.6) finishes `openSession` it calls `handoff.complete(sessionId)`, and only that call releases the origin. A failure calls `handoff.abort(sessionId)`, and the panel keeps the session. Release supersedes `activeStreamToken`, clears `sessionId` and `sessionOrgId` without a DELETE (which also clears the persisted `breeze-ai-chat` reference), resets the model picker the way `CLEARED_SESSION` does, and closes the panel.
 3. **A turn already running** in the side panel is handed over, not finished first (D2):
-   - The panel's reader is cancelled when it releases. Cancelling a fetch-SSE reader unsubscribes it on the server. The turn itself is not interrupted (inferred from `routes/ai.ts:1147`, to be verified in the plan).
+   - The panel's reader is cancelled when it releases. The turn itself is not interrupted: the `finally` block at `routes/ai.ts:1148` only unsubscribes. The server unsubscribes the cancelled reader immediately only once W1 adds the `onAbort` handler to `POST /messages` (§3.5). Today it stays subscribed until `done`.
    - The new tab attaches (§3.5). It renders the partial assistant text and any pending approval or plan from the snapshot, then follows the live tail.
 4. **What carries over:**
    - **Full history:** the tab hydrates from the server.
@@ -90,14 +90,14 @@ Two parity rules move into the shared code. They apply to any session the worksp
    - **Model:** the session's stored offering is server-side, so the next turn runs on it.
    - **M365 binding:** server-side. The tab shows a read-only customer chip.
    - **Pending approval or plan:** from the attach snapshot, with the original deadlines.
-   - **Draft text:** a non-empty composer draft goes with the move. Otherwise the panel would drop it silently.
+   - **Draft text:** a non-empty composer draft goes with the move, carried as an optional `draft` field on the pending hand-off. The destination puts it into its composer, and it is never persisted. Otherwise the panel would drop it silently.
 
 ### 3.4 AI Assistant → side panel
 
 1. **Control.** "Continue in side panel" goes on each tab: in the tab's menu (`WorkspaceTab.tsx`) and as a button in the chat panel header (`WorkspaceChatPanel.tsx`).
 2. **Steps** (`continueInSidePanel`):
    1. If the side panel already holds a *different* session with a non-empty draft or a running turn, the user confirms first: "Replace the conversation in the side panel? It stays in your history." It is never replaced silently.
-   2. `aiStore.switchSession(id)` binds the panel. This is an explicit pick, so it is not dropped on an org mismatch (`aiStore.ts:848`). The panel opens, and `aiSessionAttach` attaches if the session reports a running turn.
+   2. `aiStore.switchSession(id)` binds the panel. This is an explicit pick, so it is not dropped on an org mismatch (`aiStore.ts:848`). The panel opens, and `aiSessionAttach` attaches (unconditionally, §3.5). The tab's draft rides on the hand-off as in §3.3.
    3. On success, the workspace closes the tab. `closeTab` already makes no API call. It cancels that tab's reader, and the panel is now the subscriber. The `#session=` hash then follows the newly active tab (§3.6).
 3. The user stays on `/workspace` (the panel is mounted there too), or keeps working on any other page.
 4. **Known existing behaviour, kept on purpose:** if the user later opens a device page in another org, `setPageContext` → `pageContextOrgMismatch` unbinds the panel, as it does today (#5684). The session is not lost. It stays in history.
@@ -106,46 +106,66 @@ Two parity rules move into the shared code. They apply to any session the worksp
 
 This is a new owner-only, read-only route on `aiRoutes`.
 
+**One turn, not one session (verified, PR review).** Every `POST /messages` replaces the session's in-memory state before the new turn starts. `routes/ai.ts:898-900` calls `streamingSessionManager.remove()`, which runs `eventBus.closeAll()` (`streamingSessionManager.ts:1386`), and the turn then runs on a new `ActiveSession` with a new `SessionEventBus`. An event bus therefore lives for one turn. The attach stream is designed around that:
+
+- An attach covers **at most one turn**. On an idle session it sends one frame and closes. On a running turn it streams until that turn's `done`, or until the bus closes, and then it ends.
+- A surface does not hold a stream open between turns. A surface that sends gets its turn's events from its own `POST /messages`, as today.
+
+Making the attach per turn also settles three review findings:
+
+- Access is re-checked by `getSession` at the start of every attach, so a stream can never outlive a revoked permission, org access or topology site by more than the one turn it covers. That turn is bounded by the turn timeout.
+- Persistent streams are not possible, so six tabs cannot fill the browser's per-host connection limit between turns.
+- Nothing is subscribed while a session is idle.
+
 **Access and guards**
 
 - Middleware: `requireScope('organization','partner','system')`, then `requireAiUse`. No `requireMfa`, the same as `GET /sessions/:id`, because the route reads only.
-- The route authorizes through `getSession(sessionId, auth)` before it subscribes. A 404 means not the owner, no org access, or a revoked topology site. The response does not say which.
+- The route authorizes through `getSession(sessionId, auth)` before it subscribes. A 404 means not the owner, no org access, a revoked topology site, or a session `type` other than `general` and `topology` (`script_builder`, `mcp`). The response does not say which. `openSession` applies the same type rule.
 - It is registered in `selfManagedDbContextRoutes`, so no request transaction stays open for the life of the SSE stream. This copies the `/messages` route and is what #3127 was about.
 - It **never creates** an in-memory session. The client-AI `/events` route does create one (`routes/clientAi/sessions.ts:909`), but for staff chat that would start an SDK subprocess just because someone looked.
 - It **never sends**. Reconnecting must never go through `POST /messages`, because that path can settle an approval-blocked turn.
+- It **must tear down on abort.** Hono's stream `write` swallows write errors, so without a handler a closed client stays subscribed until `done`. The route registers `stream.onAbort(() => { clearInterval(ping); eventBus.unsubscribe(id) })`, as `routes/clientAi/sessions.ts:958-961` does. W1 adds the same `onAbort` unsubscribe to `POST /messages`, which has none today (`routes/ai.ts:1123-1149`). That is what makes "the origin's cancelled reader stops receiving" true.
+- Each `SessionEventBus` gets a small cap on subscribers. The plan sets the value. Past the cap the route answers 429.
 
-**First frame.** The first frame is always a new `attach_state` event, added to the shared `AiStreamEvent` union. The exhaustive switch in `processStreamEvent` then forces both stores to handle it. Its fields:
+**First frame.** The first frame is always a new `attach_state` event, added to the shared `AiStreamEvent` union. The exhaustive switch in `processStreamEvent` (`:514`) then forces both stores to handle it. Its fields:
 
 | Field | Meaning |
 |---|---|
 | `turn` | `idle`, `running`, or `unavailable`. `unavailable` means the session is not in memory on this instance. |
-| `turnId`, `lastSeq` | identity of the current turn, and the highest sequence the snapshot covers |
+| `turnId`, `lastSeq` | identity of the current turn (one per `ActiveSession`), and the highest sequence the snapshot covers |
 | `replay` | the current turn's events from its `message_start`, when the buffer still holds them all. Otherwise `partial: true`, and the client shows "Joined mid-response. The full reply appears when it finishes." It reloads persisted messages on `done`. |
 | `pendingCards` | the **verbatim** `approval_required` and `plan_approval_required` events that are still unresolved. Being verbatim, they keep the server's sanitisation, `intentBacked`, `approvalExpiresAt` and `intentExpiresAt`. The original deadline is never extended. |
-| `activePlan` | the executing plan's id, steps and current index. Durable status comes from `ai_action_plans`, live step state from the in-memory session. |
+| `activePlan` | the executing plan's id, steps and current index. Durable status comes from `ai_action_plans` (`schema/ai.ts:364`), live step state from the in-memory session. |
 | `turnModel` | what is running the turn |
 
 **Server additions**
 
-- Each `SessionEventBus.publish` stamps a per-session monotonic `seq`. The session records `turnStartSeq`.
-- The `ActiveSession` keeps the unresolved card events, keyed by execution id or plan id. Each entry is removed when its `tool_result`, `unattended_release`, plan decision or turn end arrives.
-- The ring buffer is resized, or kept per turn, so that a normal turn replays in full. The plan picks the limit and measures memory against it.
+- Each `SessionEventBus.publish` stamps a monotonic `seq`. The bus is per turn, so `seq` restarts with each turn, and `(turnId, seq)` identifies an event.
+- The `ActiveSession` keeps the unresolved card events, keyed by execution id or plan id. Each entry is removed when its `tool_result`, `unattended_release` or plan decision arrives, or when the turn ends.
+- **Known limit: tier-3 intents.** A tier-3 intent stays pending after its turn concludes, for example after `settleBlockedTurnForNewMessage` (`routes/ai.ts:877-884`). Once the turn is gone, its card is not in any snapshot. Those intents remain decidable from the existing approvals surfaces. Carrying them into an idle attach is out of scope (§5).
+- The replay buffer holds the whole current turn, capped by **bytes**, not by event count. `plan_screenshot` events carry `imageBase64` (`packages/shared/src/types/ai.ts:309`), and up to `MAX_ACTIVE_SESSIONS = 200` sessions (`streamingSessionManager.ts:68`) may be in memory, so screenshots are replaced by a placeholder in replay. A turn that overflows the cap replays as `partial: true`.
 
-**Ordering.** The route subscribes first, then builds the snapshot, then streams live events with `seq > lastSeq`. That makes the boundary atomic, and the client de-duplicates by `seq` as well. A sequence gap, or a new `turnId`, makes the client ask for a fresh snapshot. The plan may do that by re-attaching.
+**Ordering.** The route subscribes first, then builds the snapshot, then streams live events with `seq > lastSeq`. That makes the boundary atomic, and the client de-duplicates by `(turnId, seq)` as well. A sequence gap makes the client re-attach for a fresh snapshot.
 
-**Lifetime.** The stream lasts across turns until the client disconnects or the session is evicted or closed, like client-AI `/events`. It sends a `ping` at once (the subscriber-registered beacon) and then on an interval. That interval also keeps idle proxies open, which serves #6474.
+**Pings.** The route sends a `ping` at once, as the subscriber-registered beacon, and then on an interval while the turn runs. The interval keeps idle proxies open during long tool calls, which is compatible with #6474.
 
 **Topology.** The provider text of a topology turn never reaches the bus; the output gate handles that. `aiStore` still applies `TOPOLOGY_TURN_EVENTS` to replayed and live events. The workspace never attaches to a topology session.
 
-**More than one API instance.** The route reads in-process state. Under #8139 W4, AI streaming sessions are routed by owner slot, and that routing must cover this route as well as `/messages`. The plan adds this route to that spec's in-process-state table. Until then, `turn: 'unavailable'` is an honest answer, and the client falls back to `GET /sessions/:id`.
+**More than one API instance.** The route reads in-process state. Under #8139 W4, AI streaming sessions are routed by owner slot (`horizontal-api-scaling-design.md:245`), and that routing must cover this route as well as `/messages`. The plan adds this route to that spec's in-process-state table. Until then:
 
-**When clients attach**
+- `turn: 'unavailable'` is an honest answer, and the client falls back to `GET /sessions/:id`.
+- An instance can hold a stale idle copy while the turn runs on another instance. The client therefore treats `idle` followed by a 409 on its next send as `unavailable`.
+- Re-attach after a 409 uses capped backoff with jitter, so a wrong-instance answer cannot become a retry loop.
 
-- On every move or open.
-- On `restoreWorkspace`, and on side-panel restore after a reload, when the session may be mid-turn.
-- On a `turn_in_progress` 409.
+**When clients attach.** `GET /sessions/:id` reports no turn state (`routes/ai.ts:325-345`), so clients attach unconditionally. Attaching to an idle session costs one frame.
+
+- On every move or open, right after hydration.
+- On `restoreWorkspace`, and on side-panel restore after a reload.
+- On a 409 caused by another turn. W1 adds `code: 'turn_in_progress'` to the two ordinary second-send 409s, which carry no code today (`routes/ai.ts:890-895` failed settle, `:1046` lost the processing slot). Only the reservation path (`:989`) carries the code now.
 
 This also fixes fact 3: returning to `/workspace` re-attaches the tabs whose readers were cancelled.
+
+**Logout.** Logout aborts every open attach reader, in both stores, before it clears storage (§3.8).
 
 ### 3.6 Deep link and URL state
 
@@ -175,11 +195,12 @@ The side-panel History view and a new workspace "Open a past conversation" picke
 - **Where a session is already open:**
   - If it is open in the *other* surface of this document, the row says so ("Open in side panel" or "Open in AI Assistant"). Picking it **moves** the session; it is never duplicated.
   - In the workspace picker, topology rows are hidden (D4).
-- **Search:** `searchSessions` (owner-only, any status) stays a side-panel feature. The workspace picker gets the same search box through a shared component.
+- **Search:** `searchSessions` (owner-only, any status) gains the same `type` filter, and its results gain `status` and `type`, which they lack today (`services/aiAgent.ts:800`). Both lists use one shared search box. The side panel keeps opening closed hits as it does today. The workspace picker lists only `active` hits, so it never offers a conversation it would refuse to open (§3.6, D4).
+- **Mobile:** mobile reads the same `GET /ai/sessions` (`apps/mobile/src/services/aiChat.ts:148`), so it also stops listing script-builder and MCP sessions. That is the intended fix and the only mobile-visible change.
 
 ### 3.8 Logout
 
-Logout also removes `breeze-workspace` (fact 8). With this feature the workspace can hold sessions from several orgs, so leaving its titles and page contexts behind after a sign-out is no longer acceptable.
+Logout aborts every attach reader in both stores, then also removes `breeze-workspace` (fact 8). With this feature the workspace can hold sessions from several orgs, so leaving its titles and page contexts behind after a sign-out is no longer acceptable.
 
 ## 4. Tenancy and data model impact
 
@@ -200,8 +221,9 @@ Logout also removes `breeze-workspace` (fact 8). With this feature the workspace
 - **A model picker, M365 picker or topology investigations in the workspace.** A moved session keeps its server-side model and binding. Choosing another model happens in the side panel.
 - **Opening closed or expired sessions** (read-only view, continue-from-closed). See D4.
 - **Locking a session to one browser tab.** Release applies within one document only. Two browser tabs can still show the same session, as they can today. The server serialises turns, and the second tab now attaches instead of erroring.
+- **Tier-3 intents that outlive their turn** in attach snapshots (§3.5). They stay decidable from the existing approvals surfaces.
 - **Merging the two stores** (if D1 goes as recommended). It is tracked as its own spec.
-- **Mobile.**
+- **Mobile**, apart from the list filter it shares (§3.7).
 
 ## 6. Advisor quorum
 
@@ -219,6 +241,15 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
   - no silent replacement of an occupied side panel, and the tab cap checked after reusing an existing tab (§3.4, §3.6)
 - **One correction from Codex:** plans have durable status in `ai_action_plans` (`schema/ai.ts:364`), while the executable resolver is in memory. §3.5 uses both.
 
+**PR review round (pr-review-toolkit, one round).** The review found that every send replaces the session's event bus (`routes/ai.ts:898-900` → `remove()` → `closeAll()`). §3.5 was rewritten so that an attach covers exactly one turn. That rewrite also answers three further findings: the stream outlived the access check, it lacked an `onAbort` teardown, and persistent streams per tab could exhaust the browser's connection limit. The review also led to:
+
+- `turn_in_progress` on the uncoded 409s
+- the type rule on attach and open
+- a byte-capped replay with screenshots stripped
+- an explicit hand-off signal
+- search status and type, and the mobile note
+- complete wave lists
+
 ## 7. Open decisions
 
 **D1. Keep `aiStore` and `workspaceStore` separate, or merge them?**
@@ -228,7 +259,7 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
   - Cons: two places still hold messages and approval state. The drift in fact 7 has to be held back by the shared modules and parity rules, not removed.
 - **B: One session-keyed store.** The side panel becomes a single slot and tabs reference session ids (Codex).
   - Pros: one authority for each session. A move within the same document keeps the existing reader with no reconnect. Drift cannot recur.
-  - Cons: it rewrites both stores, and the model picker must become per-session (`aiModelPickerStore.ts:15` is a singleton). The ownership tokens have to become per-session. It needs a feature flag, and every listed test needs reworking.
+  - Cons: it rewrites both stores, and the model picker must become per-session (`aiModelPickerStore.ts:60` is a singleton store). The ownership tokens have to become per-session. It needs a feature flag, and every listed test needs reworking.
 - **Recommend A for this feature, with B filed as a follow-up spec.** Attach (§3.5) is needed anyway for reloads, deep links and other browser tabs, so a merge buys only the same-document reader. That is not worth reopening `aiStore`'s invariants inside a UX feature. *(Codex recommends B.)*
 
 **D2. Attaching to a turn already streaming in the other surface.**
@@ -287,18 +318,25 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
 - **No feature flag** under D1 option A. If Todd picks B, the store merge ships behind a web flag, and its rollout gets its own section in the follow-up spec.
 - **Two waves, released together.** W1 can merge first because nothing calls it.
   - **W1 (API):**
-    - the attach route
-    - `seq`, `turnStartSeq` and pending-card tracking on `SessionEventBus` and `ActiveSession`
+    - the attach route (one turn per attach, `onAbort` teardown, a subscriber cap, the type rule, pings)
+    - `onAbort` unsubscribe on `POST /messages`
+    - `code: 'turn_in_progress'` on the two uncoded second-send 409s
+    - `seq` and pending-card tracking on `SessionEventBus` and `ActiveSession`
+    - the replay buffer for the whole turn: capped by bytes, screenshots replaced by a placeholder
+    - the `activePlan` read from `ai_action_plans`
     - the `attach_state` event in `packages/shared`
-    - the list `type` filter and projection
+    - the list and search `type` filter and projections (`orgId`, `type`, `deviceId`; search also `status`)
     - registration in `selfManagedDbContextRoutes`
+    - the attach route added to #8139's in-process-state table
   - **W2 (web):**
-    - the shared modules
+    - the shared modules, including the hand-off store and its `complete` and `abort` signal
     - `openSession` and the hash
     - the controls
+    - the shared history list and search, and the workspace "Open a past conversation" picker, with org and device chips
+    - draft carry-over
     - the parity rules
-    - re-attach on restore
-    - the logout key
+    - attach on open, on restore and on a 409, with backoff
+    - logout: abort the readers and remove the key
 - **Existing tests that pin the stores** (must stay green, and are extended where behaviour changes):
   - `apps/web/src/stores/`:
     - `aiStore.test.ts`
@@ -324,7 +362,12 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
     - `attach_state` on an idle session, and `unavailable` when the session is not in memory.
     - A running turn replays from `message_start`, with no duplicate events at the snapshot boundary.
     - A pending approval card is replayed verbatim with its original `approvalExpiresAt`.
-    - Disconnecting an attach subscriber does not interrupt the turn.
+    - Disconnecting an attach subscriber, or a `/messages` reader, drops `subscriberCount` at once and does not interrupt the turn.
+    - An attach on an idle session closes after one frame.
+    - An attach on a running turn ends at that turn's `done`. A new `POST /messages` closes it through `remove()`.
+    - Attach returns 404 for `script_builder` and `mcp` sessions.
+    - Both uncoded second-send 409s now carry `turn_in_progress`.
+    - A replay containing `plan_screenshot` carries the placeholder, and a turn over the byte cap replays as `partial`.
     - The list excludes `script_builder` and `mcp` sessions and includes `orgId`, `type` and `deviceId`.
   - **Web:**
     - A move keeps the session id and makes no DELETE.
