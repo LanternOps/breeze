@@ -89,7 +89,6 @@ export function buildQuoteDocumentModel(dto: CustomerQuoteDocument, labels: Docu
 
   const toRow = <T extends RowTax>(l: CustomerQuoteLineDto, cadence: Cadence, cell: (l: CustomerQuoteLineDto) => T): DocumentLineRow<T> => {
     const title = (l.name ?? l.description ?? '').trim() || '—';
-    if (!title) throw new DocumentModelError(`quote line ${l.id} has an empty title`);
     const suffix = suffixFor(cadence);
     return {
       key: l.id,

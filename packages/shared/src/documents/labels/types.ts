@@ -1,5 +1,5 @@
 import type { InvoiceStatus } from '../../types/billing-enums';
-import type { CustomerQuoteDisplayStatus } from '../quoteDto'; // W2a (#9418)
+import type { CustomerQuoteDisplayStatus, CustomerQuoteLineDto } from '../quoteDto'; // W2a (#9418)
 
 /** A sentence with emphasised fragments: plain strings and `{ strong }` runs. */
 export type DocumentRichParts = (string | { strong: string })[];
@@ -71,7 +71,8 @@ export interface DocumentQuoteLabels {
   columns: { description: string; qty: string; unitPrice: string; tax: string; amount: string };
   /** A line_items block's label when the author gave none, and the trailing default table's. */
   pricing: string;
-  cadence: { one_time: string; monthly: string; annual: string };
+  /** Keyed by the line recurrence, so a new recurrence value fails the build until labelled. */
+  cadence: Record<CustomerQuoteLineDto['recurrence'], string>;
   tableSubtotal: string;
   imageAlt: string;
   imageUnavailable: string;

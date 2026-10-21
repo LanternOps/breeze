@@ -119,6 +119,15 @@ describe('GET /quotes/public/:token — characterization pin (#9418)', () => {
     expect(markViewedMock).not.toHaveBeenCalled();
   });
 
+  it('a draft behind a token is 404 and never reaches the assembler or the view stamp', async () => {
+    state.quote = { ...PIN_QUOTE_ROW, status: 'draft' };
+    const res = await app().request(`/quotes/public/${PIN_QUOTE_TOKEN}`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Quote not found', code: 'NOT_FOUND' });
+    expect(assembleSpy).not.toHaveBeenCalled();
+    expect(markViewedMock).not.toHaveBeenCalled();
+  });
+
   it("today's superseded payload (410, no document)", async () => {
     state.quote = { ...PIN_QUOTE_ROW, status: 'superseded', publicLinkRevokedAt: new Date('2026-03-05T00:00:00.000Z') };
     const res = await app().request(`/quotes/public/${PIN_QUOTE_TOKEN}`);

@@ -46,8 +46,8 @@ export type AgreementBody =
 
 export interface QuoteAgreementModel {
   id: string;
-  /** `agreement-<blockId>` | `terms` — the deep-link target the signature slot links to. */
-  anchor: string;
+  /** The deep-link target the signature slot links to. */
+  anchor: `agreement-${string}` | 'terms';
   title: string;
   meta: string;
   body: AgreementBody;

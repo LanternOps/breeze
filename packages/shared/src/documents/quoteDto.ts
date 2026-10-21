@@ -1,6 +1,6 @@
 /**
  * The customer quote DTO (spec §3.4, #9418 W2a): exactly what
- * `apps/api/src/services/customerDocument.ts` (`assembleCustomerQuoteDocument`)
+ * `apps/api/src/services/customerQuoteDocument.ts` (`assembleCustomerQuoteDocument`)
  * sends to the public proposal link, the logged-in portal and the staff Preview
  * (`GET /quotes/:id/customer-view`). Every field here leaves the server for a
  * customer, so adding one is a visibility decision.

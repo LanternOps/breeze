@@ -72,6 +72,23 @@ vi.mock('../../services/quoteService', async (importActual) => {
   };
 });
 
+const { auditSpy, billingAuditSpy, mintTokenSpy } = vi.hoisted(() => ({
+  auditSpy: vi.fn(), billingAuditSpy: vi.fn(), mintTokenSpy: vi.fn(),
+}));
+vi.mock('../../services/auditEvents', async (importActual) => ({
+  ...(await importActual<typeof import('../../services/auditEvents')>()),
+  writeRouteAudit: auditSpy,
+}));
+vi.mock('../../services/billingDocumentAudit', async (importActual) => ({
+  ...(await importActual<typeof import('../../services/billingDocumentAudit')>()),
+  auditBillingDocument: billingAuditSpy,
+}));
+vi.mock('../../services/quoteAcceptToken', async (importActual) => ({
+  ...(await importActual<typeof import('../../services/quoteAcceptToken')>()),
+  createQuoteAcceptToken: mintTokenSpy,
+  regenerateQuoteAcceptToken: mintTokenSpy,
+}));
+
 import { quoteRoutes } from './index';
 import { quoteRoutes as portalQuoteRoutes } from '../portal/quotes';
 import { MCP_COVERAGE } from '../../services/mcpCoverage';
@@ -130,6 +147,9 @@ const DETAIL = `/quotes/${PIN_QUOTE_ID}`;
 beforeEach(() => {
   markViewedMock.mockReset();
   refreshSpy.mockReset();
+  auditSpy.mockReset();
+  billingAuditSpy.mockReset();
+  mintTokenSpy.mockReset();
   state.quote = undefined;
   state.quotesTable = null;
   state.db!.reads.length = 0;
@@ -170,6 +190,9 @@ describe('GET /quotes/:id/customer-view', () => {
     expect(res.status).toBe(200);
     expect(markViewedMock).not.toHaveBeenCalled();
     expect(refreshSpy).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();         // no audit row: it reads what the caller can read
+    expect(billingAuditSpy).not.toHaveBeenCalled();
+    expect(mintTokenSpy).not.toHaveBeenCalled();     // no accept token minted
     // The table-keyed db throws on any write, and the route answered 200.
     expect(state.db!.reads.every((t) => ['quotes', 'quote_blocks', 'quote_lines', 'partners', 'portal_branding'].includes(t))).toBe(true);
   });
@@ -184,7 +207,9 @@ describe('GET /quotes/:id/customer-view', () => {
     expect(text).not.toMatch(/INTERNAL-/);           // accept-token jti/kid, send job, pdf ref, decline reason, procurement…
     expect(text).not.toContain('acceptToken');
     expect(text).not.toContain('unitCost');
-    expect(text).not.toContain('HIDDEN-QUOTE-LINE');
+    // Hidden-line ABSENCE is not provable here (the mocked quote_lines table only
+    // holds visible rows; the filter is SQL). customerDocument.quote.test.ts pins
+    // the WHERE clause and customerDocument.quote.integration.test.ts proves it on Postgres.
   });
 
   it('asset paths are the staff routes (authed quote image, catalog image)', async () => {
@@ -201,8 +226,9 @@ describe('GET /quotes/:id/customer-view', () => {
     ['a caller without quotes:read', ACTORS.noReadPerm, 403],
     ['an organization-scoped token', ACTORS.orgScoped, 403],
   ] as const)('%s is rejected exactly as GET /quotes/:id rejects it', async (_n, actor, status) => {
-    const detail = await get(DETAIL, actor);
     const view = await get(VIEW, actor);
+    expect(refreshSpy).not.toHaveBeenCalled(); // the customer view never takes the detail route's refresh path
+    const detail = await get(DETAIL, actor);
     expect(detail.status).toBe(status); // guards against a mis-built actor making both 200
     expect(view.status).toBe(status);
     expect(await view.text()).toBe(await detail.text());
