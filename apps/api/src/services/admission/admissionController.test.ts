@@ -175,4 +175,55 @@ describe('AdmissionController', () => {
     const now = make();
     expect(run(now, blip).map((s) => s.level)).toEqual([0, 0, 0]);
   });
+
+  describe('rise gate state machine (#9353)', () => {
+    it('a rise from level 1 to 2 needs its own streak; a target equal to the current level starts none', () => {
+      const c = make();
+      run(c, Array(3).fill(sig({ lagMs: 220 })));                  // -> 1 at t=3s
+      const same = run(c, Array(5).fill(sig({ lagMs: 220 })), 3_000);
+      expect(same.every((s) => s.level === 1 && s.suppressed === null)).toBe(true);
+      const up = run(c, Array(3).fill(sig({ lagMs: 300 })), 8_000);
+      expect(up.map((s) => s.level)).toEqual([1, 1, 2]);
+      expect(up[2]).toMatchObject({ previous: 1, changed: true, trigger: 'lag' });
+    });
+
+    it('at level 1, a stale lag median plus level-1 DB evidence holds a level-2 streak', () => {
+      const c = make();
+      run(c, Array(3).fill(sig({ lagMs: 220 })));                  // -> 1
+      const steps = run(c, [
+        sig({ lagMs: 300 }), sig({ lagMs: 300, lagFresh: false, dbWaitMs: 160 }), sig({ lagMs: 300 }), quiet,
+      ], 3_000);
+      expect(steps.every((s) => s.level === 1)).toBe(true);
+      expect(steps[3]!.suppressed).toEqual({ level: 2, trigger: 'lag', ticks: 2 });
+    });
+
+    it('enters the lowest level in a mixed streak, with that tick\'s trigger', () => {
+      const dbFirst = run(make(), [sig({ dbWaitMs: 210 }), sig({ lagMs: 700 }), sig({ lagMs: 700 })]);
+      expect(dbFirst[2]).toMatchObject({ level: 2, trigger: 'db' });
+      const dbMiddle = run(make(), [sig({ lagMs: 700 }), sig({ dbWaitMs: 210 }), sig({ lagMs: 700 })]);
+      expect(dbMiddle[2]).toMatchObject({ level: 2, trigger: 'db' });
+      const tie = run(make(), [sig({ dbWaitMs: 210 }), sig({ lagMs: 300 }), sig({ lagMs: 300 })]);
+      expect(tie[2]).toMatchObject({ level: 2, trigger: 'db' });   // equal levels keep the first trigger
+      const broken = run(make(), [sig({ lagMs: 700 }), sig({ dbWaitMs: 210 }), quiet]);
+      expect(broken[2]!.suppressed).toEqual({ level: 2, trigger: 'db', ticks: 2 });
+    });
+
+    it('an emergency clears an unfinished streak: nothing is reported as suppressed afterwards', () => {
+      const c = make();
+      run(c, [sig({ lagMs: 300 }), sig({ lagMs: 300 })]);
+      expect(c.step(sig({ peakLagMs: 1_500 }), 3_000)).toMatchObject({ level: 3, suppressed: null });
+      expect(c.step(quiet, 4_000).suppressed).toBeNull();
+    });
+
+    it('a stale-only elevated tick with no streak behind it is not reported as suppressed', () => {
+      const steps = run(make(), [sig({ lagMs: 300, lagFresh: false }), quiet]);
+      expect(steps.map((s) => [s.level, s.suppressed])).toEqual([[0, null], [0, null]]);
+    });
+
+    it('honours a non-default level1HoldMs', () => {
+      const c = make({ level1HoldMs: 1_000 });
+      run(c, Array(3).fill(sig({ lagMs: 220 })));                  // -> 1 at t=3s
+      expect(run(c, [quiet, quiet], 3_000).map((s) => s.level)).toEqual([1, 0]); // below since t=4s, 0 at t=5s
+    });
+  });
 });

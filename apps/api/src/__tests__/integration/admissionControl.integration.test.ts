@@ -64,7 +64,7 @@ describe('admission control (real loop, real pool)', () => {
     const app = buildApp(runtime);
     const control = buildApp(null);
 
-    // ~230 ms of synchronous work every 350 ms: a loop that is two-thirds busy in long
+    // ~230 ms of synchronous work every 300 ms: a loop that is ~3/4 busy in long
     // slices. Each slice is above the level-1 lag entry (200 ms, #9353) on every
     // monitor sample, so the rise gate sees sustained pressure. It stays far below
     // the 1 s emergency, so this exercises the gated path and not the emergency one.

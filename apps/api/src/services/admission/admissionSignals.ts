@@ -7,7 +7,7 @@
  * - lagFresh: whether this tick consumed a new monitor sample (see the field).
  * - peakLagMs: the worst of the in-flight stall and the samples consumed this
  *   tick — drives the controller's emergency path.
- * - dbWaitMs: max(grant-wait p95 over W04's gate window, one tick wide; oldest waiter). The
+ * - dbWaitMs: max(grant-wait p95 over W04's gate window, 1.5 ticks wide; oldest waiter). The
  *   second term makes a stuck queue visible before any permit is granted.
  * - msSinceLastDbTimeout: time since the pool-acquire-timeout + prologue-expiry
  *   counter last increased; null until it has moved during this process's

@@ -8,8 +8,10 @@
  *
  * The controller constants below are deliberately NOT env knobs: they shape
  * stability (tick, hysteresis), and exposing them invites oscillating configs.
- * The two exceptions, riseTicks and level1HoldMs (#9353), are bounded so that
- * no accepted value can make the level change faster than once per tick.
+ * The two exceptions, riseTicks and level1HoldMs (#9353), have hard bounds
+ * (see their *_BOUNDS constants). A level always needs at least one elevated
+ * tick to rise and one tick to drop, so no accepted value can make it switch
+ * on and off within a single tick.
  *
  * Why the level-1 defaults moved (#9353). In production observe mode at idle
  * (7 and ~90 agents), single sub-second blips crossed the old level-1 entry
@@ -76,7 +78,7 @@ export const ADMISSION_TICK_MS = 1_000;
  *
  * Default 3 (#9353). The old 2-tick gate let a single blip through because each
  * signal is smoothed over more than one tick: lag is the median of three 1 s
- * monitor samples, and the DB grant-wait p95 used a 3 s window (now one tick,
+ * monitor samples, and the DB grant-wait p95 used a 3 s window (now 1.5 ticks,
  * POOL_WAIT_STATS_WINDOW_MS). Three fresh ticks is about three seconds of
  * continuous pressure.
  */
@@ -86,11 +88,13 @@ export const ADMISSION_RECOVER_MS = 15_000;
 /**
  * level1HoldMs bounds: at least one tick, at most a minute.
  *
- * Default 5 s (#9353), down from the shared 15 s. Level 1 sheds only bulk
- * uploads. Each shed bulk request carries a 120-180 s Retry-After, and agents
- * honour it for the whole loop (W09). The shed load stays away for minutes
- * whatever the level does next. Holding level 1 after the pressure ends
- * protects nothing and only refuses more uploads. Under real pressure the
+ * Default 5 s (#9353), down from the shared 15 s. Level 1 sheds only bulk-class
+ * uploads. Almost all of them carry a 120-180 s Retry-After; /logs is the
+ * exception at 2-4 s (agentRouteClasses.ts). Shipped agents give up that
+ * cycle's attempt, and W09 agents defer the loop for the full Retry-After. The
+ * shed inventory load stays away for minutes whatever the level does next.
+ * Holding level 1 after the pressure ends protects nothing and only refuses
+ * more uploads. Under real pressure the
  * signal stays above the 60 % exit line, so the hold never starts. 5 s is
  * still longer than the 3-tick rise, so a borderline signal cycles
  * 0 -> 1 -> 0 at most about once every 9 s.

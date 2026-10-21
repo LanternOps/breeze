@@ -298,7 +298,7 @@ describe('AdmissionRuntime rise gate and level-1 hold (#9353)', () => {
     expect(now.wouldShed).toBe(0);
   });
 
-  it('a single slow pool grant at idle never raises the level (grant-wait window is one tick wide)', async () => {
+  it('a single slow pool grant at idle never raises the level (grant-wait window is 1.5 ticks wide)', async () => {
     // The issue's other shape: "level 0 -> 1 (trigger=db, dbWait=110ms, dbWaiting=0, dbInUse=0)".
     // Real gate + real sampler: one 243 ms grant must not be read on three consecutive ticks.
     let nowMs = 0;
