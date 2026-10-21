@@ -153,7 +153,7 @@ describe('renderQuotePdf — header strings and dates from the shared labels', (
   it('prints the From label and the dates in the document locale (pt-BR), English unchanged', async () => {
     const pt = texts(await render(quote({ documentLocale: 'pt-BR' }), [line(1)], [], { ...branding, locale: 'pt-BR' })).map((f) => f.text);
     expect(pt).toContain('DE');                       // labels.pdf.from, upper-cased
-    expect(pt.some((x) => /^Issued: /.test(x))).toBe(true); // quote labels are English until W2b translates them
+    expect(pt.some((x) => /^Emitida: /.test(x))).toBe(true); // pt-BR quote labels landed in W2b (labels/pt-BR.ts quote.issued)
     expect(pt.some((x) => /out/i.test(x) && /2026/.test(x))).toBe(true); // 20 de out. de 2026
     const en = texts(await render(quote(), [line(1)])).map((f) => f.text);
     expect(en).toContain('FROM');
