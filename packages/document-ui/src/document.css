@@ -99,3 +99,36 @@
 .doc-paper {
   font-family: var(--doc-font-sans);
 }
+
+/* rich_text / callout / authored-agreement bodies render sanitized author HTML
+   (the server's fixed p/br/strong/em/u/h3/h4/ul/ol/li/a + table subset). Tailwind's
+   base reset strips list markers and emphasis, so restore the minimal styling that
+   subset needs — plain CSS, kept visually in step with the PDF's rich text
+   (richTextPdf.ts): tinted header row, hairline borders, no zebra. Moved here from
+   the portal's globals.css so the web Preview and the portal draw the same. */
+[data-document-root] .quote-rich-text p { margin-bottom: 0.5rem; }
+[data-document-root] .quote-rich-text p:last-child { margin-bottom: 0; }
+[data-document-root] .quote-rich-text h3 {
+  margin-top: 1rem; margin-bottom: 0.375rem; font-size: 1rem; line-height: 1.5rem; font-weight: 600; color: hsl(var(--foreground));
+}
+[data-document-root] .quote-rich-text h4 {
+  margin-top: 0.75rem; margin-bottom: 0.25rem; font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; color: hsl(var(--foreground));
+}
+[data-document-root] .quote-rich-text :is(h3, h4):first-child { margin-top: 0; }
+[data-document-root] .quote-rich-text :is(ul, ol) { margin-bottom: 0.5rem; padding-left: 1.25rem; }
+[data-document-root] .quote-rich-text :is(ul, ol):last-child { margin-bottom: 0; }
+[data-document-root] .quote-rich-text :is(ul, ol) > * + * { margin-top: 0.25rem; }
+[data-document-root] .quote-rich-text ul { list-style: disc; }
+[data-document-root] .quote-rich-text ol { list-style: decimal; }
+[data-document-root] .quote-rich-text :is(strong, b) { font-weight: 600; color: hsl(var(--foreground)); }
+[data-document-root] .quote-rich-text :is(em, i) { font-style: italic; }
+[data-document-root] .quote-rich-text u { text-decoration: underline; text-underline-offset: 2px; }
+[data-document-root] .quote-rich-text a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 2px; }
+[data-document-root] .quote-rich-text table {
+  margin-bottom: 0.75rem; width: 100%; table-layout: auto; border-collapse: collapse; text-align: left; font-size: 0.875rem; line-height: 1.25rem;
+}
+[data-document-root] .quote-rich-text table:last-child { margin-bottom: 0; }
+[data-document-root] .quote-rich-text :is(th, td) {
+  border: 1px solid hsl(var(--border)); padding: 0.25rem 0.5rem; vertical-align: top;
+}
+[data-document-root] .quote-rich-text th { background-color: hsl(var(--muted)); font-weight: 600; color: hsl(var(--foreground)); }

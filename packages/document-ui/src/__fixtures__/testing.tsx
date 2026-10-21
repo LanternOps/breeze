@@ -5,19 +5,23 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ReactElement } from 'react';
-import type { InvoiceFixtureName } from '@breeze/shared/documents';
+import type { InvoiceFixtureName, QuoteFixtureName } from '@breeze/shared/documents';
 import type { DocumentHostComponents } from '../hostComponents';
 
 /** Stand-in host components: the asset identity is the whole output, so hosts
  *  with different fetch strategies still produce identical normalized markup. */
 export const STAND_IN_COMPONENTS: DocumentHostComponents = {
-  Image: ({ asset, alt, className }): ReactElement => (
-    <img data-asset={`${asset.kind}:${asset.id}`} alt={alt} className={className} />
+  Image: ({ asset, alt, className, width }): ReactElement => (
+    <img data-asset={`${asset.kind}:${asset.id}`} alt={alt} className={className} width={width} />
   ),
   AgreementFile: ({ asset, title }): ReactElement => (
     <a data-asset={`${asset.kind}:${asset.id}`}>{title}</a>
   ),
 };
+
+export function quoteSnapshotPath(name: QuoteFixtureName): string {
+  return join(dirname(fileURLToPath(import.meta.url)), `quote-${name}.snap.html`);
+}
 
 export function invoiceSnapshotPath(name: InvoiceFixtureName): string {
   return join(dirname(fileURLToPath(import.meta.url)), `invoice-${name}.snap.html`);

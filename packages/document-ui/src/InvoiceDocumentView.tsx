@@ -29,7 +29,7 @@ export function InvoiceDocumentView({
       <Slot name="before-paper">{slots?.beforePaper}</Slot>
       <DocumentPaper theme={model.branding.theme}>
         <DocumentHeader header={model.header} branding={model.branding} components={components} />
-        <DocumentLineTable table={model.lines} />
+        <DocumentLineTable table={model.lines} components={components} />
         <DocumentTotals totals={model.totals} />
         <Slot name="after-totals">{slots?.afterTotals}</Slot>
         <Slot name="signature">{slots?.signature}</Slot>

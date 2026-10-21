@@ -121,6 +121,9 @@ export const DOCUMENT_LABELS_PT_BR: DocumentLabels = Object.freeze({
       contentUnavailable: 'Conteúdo do acordo indisponível',
       fileUnavailable: 'Arquivo do acordo indisponível',
       download: 'Baixar acordo',
+      heading: 'Acordos',
+      read: 'Ler',
+      hide: 'Ocultar',
     }),
     status: Object.freeze({
       viewed: 'Visualizada',

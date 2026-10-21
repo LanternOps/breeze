@@ -2,19 +2,15 @@ import { Fragment, type ReactElement } from 'react';
 import type { DocumentLineRow, DocumentLineTableModel, DocumentMoney as DocumentMoneyValue } from '@breeze/shared/documents';
 import { DocumentLineDescription } from './DocumentLineDescription';
 import { DocumentMoney } from './DocumentMoney';
+import type { DocumentHostComponents } from './hostComponents';
 
 type Cell = DocumentMoneyValue | 'exempt' | null;
 type AnyRow = DocumentLineRow<Cell>;
 
 const NUM = 'hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell';
 
-function Row({ row, showTax, notTaxable }: { row: AnyRow; showTax: boolean; notTaxable: string }): ReactElement {
-  return (
-    <tr className="border-b align-top last:border-0" data-testid={`document-line-${row.key}`}>
-      {/* V-6: an unbroken token (a URL, a part number) wraps instead of pushing the
-          Amount column out of the paper at phone width. */}
-      <td className={`w-full min-w-0 px-4 py-3 [overflow-wrap:anywhere] sm:px-5 ${row.isChild ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
-        {row.isChild && <span aria-hidden>↳ </span>}
+function Row({ row, showTax, notTaxable, components }: { row: AnyRow; showTax: boolean; notTaxable: string; components: DocumentHostComponents }): ReactElement {
+  const description = (
         <DocumentLineDescription
           rowKey={row.key}
           title={row.title}
@@ -25,6 +21,21 @@ function Row({ row, showTax, notTaxable }: { row: AnyRow; showTax: boolean; notT
           ticketText={row.ticketText}
           qtyFold={`${row.qty} × ${row.unit.text}`}
         />
+  );
+  return (
+    <tr className="border-b align-top last:border-0" data-testid={`document-line-${row.key}`}>
+      {/* V-6: an unbroken token (a URL, a part number) wraps instead of pushing the
+          Amount column out of the paper at phone width. */}
+      <td className={`w-full min-w-0 px-4 py-3 [overflow-wrap:anywhere] sm:px-5 ${row.isChild ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
+        {row.isChild && <span aria-hidden>↳ </span>}
+        {row.thumbnail ? (
+          // A quote line's product image sits beside the description; a host Image that
+          // cannot fetch it renders nothing, so image-less lines get no empty box.
+          <div className="flex items-start gap-2.5">
+            <components.Image asset={row.thumbnail} alt="" className="h-10 w-10 shrink-0 rounded border bg-card object-contain" />
+            <div className="min-w-0">{description}</div>
+          </div>
+        ) : description}
       </td>
       <td className={NUM}>{row.qty}</td>
       <td className={NUM}><DocumentMoney value={row.unit} /></td>
@@ -42,7 +53,7 @@ function Row({ row, showTax, notTaxable }: { row: AnyRow; showTax: boolean; notT
   );
 }
 
-export function DocumentLineTable({ table }: { table: DocumentLineTableModel }): ReactElement {
+export function DocumentLineTable({ table, components }: { table: DocumentLineTableModel; components: DocumentHostComponents }): ReactElement {
   if (table.emptyText) {
     return (
       <div className="rounded-lg border border-dashed bg-muted/30 px-6 py-12 text-center text-sm text-muted-foreground">
@@ -56,6 +67,9 @@ export function DocumentLineTable({ table }: { table: DocumentLineTableModel }):
   const groups = table.groups as { key: string; header: DocumentLineTableModel['groups'][number]['header']; days: { key: string; header: { date: { text: string; iso: string }; hours: string; total: DocumentMoneyValue } | null; rows: AnyRow[] }[] }[];
   return (
     <div className="overflow-hidden rounded-lg border bg-card">
+      {table.label && (
+        <div className="border-b bg-muted/40 px-4 py-2.5 text-sm font-semibold text-foreground sm:px-5">{table.label}</div>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -102,12 +116,24 @@ export function DocumentLineTable({ table }: { table: DocumentLineTableModel }):
                         </td>
                       </tr>
                     )}
-                    {day.rows.map((row) => <Row key={row.key} row={row} showTax={showTax} notTaxable={notTaxable} />)}
+                    {day.rows.map((row) => <Row key={row.key} row={row} showTax={showTax} notTaxable={notTaxable} components={components} />)}
                   </Fragment>
                 ))}
               </Fragment>
             ))}
           </tbody>
+          {table.subtotal && (
+            <tfoot>
+              <tr className="border-t-2 bg-muted/20" data-testid="document-table-subtotal">
+                <td className="px-4 py-2.5 text-right text-sm font-semibold text-foreground sm:px-5" colSpan={span - 1}>{table.subtotal.label}</td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right text-sm font-semibold tabular-nums text-foreground sm:px-5">
+                  {table.subtotal.parts.map((part, i) => (
+                    <Fragment key={i}>{i > 0 && ' + '}<DocumentMoney value={part} /></Fragment>
+                  ))}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>

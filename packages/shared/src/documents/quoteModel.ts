@@ -74,5 +74,7 @@ export interface QuoteDocumentModel {
   totals: DocumentTotalsModel;
   terms: { short: { label: string; text: string } | null };
   agreements: QuoteAgreementModel[];
+  /** The list heading and the per-row toggle words (components hold no strings). */
+  agreementLabels: { heading: string; read: string; hide: string };
   footer: string | null;
 }

@@ -114,6 +114,10 @@ export interface DocumentQuoteLabels {
     contentUnavailable: string;
     fileUnavailable: string;
     download: string;
+    /** The list heading (shown from two rows up) and the row toggle words. */
+    heading: string;
+    read: string;
+    hide: string;
   };
   status: Record<CustomerQuoteDisplayStatus, string>;
 }

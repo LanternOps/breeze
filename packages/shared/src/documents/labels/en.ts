@@ -109,6 +109,9 @@ export const DOCUMENT_LABELS_EN: DocumentLabels = Object.freeze({
       contentUnavailable: 'Agreement content unavailable',
       fileUnavailable: 'Agreement file unavailable',
       download: 'Download agreement',
+      heading: 'Agreements',
+      read: 'Read',
+      hide: 'Hide',
     }),
     status: Object.freeze({
       viewed: 'Viewed',

@@ -323,6 +323,7 @@ export function buildQuoteDocumentModel(dto: CustomerQuoteDocument, labels: Docu
     totals: { rows, aside, depositStrip: null },
     terms: { short: quote.terms ? { label: L.terms, text: quote.terms } : null },
     agreements,
+    agreementLabels: { heading: A.heading, read: A.read, hide: A.hide },
     footer: null,
   };
 }
