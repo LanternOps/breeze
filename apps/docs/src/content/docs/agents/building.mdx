@@ -10,7 +10,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Prerequisites
 
-- Go 1.26.9 or later. With the default `GOTOOLCHAIN=auto`, `go build` fetches 1.26.9 on its own; with `GOTOOLCHAIN=local`, install Go 1.26.9 first.
+- Go 1.26.10 or a later 1.26 release, or Go 1.27.3 or later (1.27.0 to 1.27.2 lack the GO-2026-6809 fix). With the default `GOTOOLCHAIN=auto`, an older local Go fetches 1.26.10 on its own; a newer local Go is used as is. With `GOTOOLCHAIN=local`, install one of those versions first.
 - Make
 - (Optional) `go-winres` for Windows resource embedding
 - (Optional) WiX Toolset + PowerShell for MSI packaging

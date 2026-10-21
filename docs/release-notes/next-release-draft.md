@@ -18,6 +18,8 @@ _(empty — add the next tag's one-off gates here)_
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **Building the agent from source now needs Go 1.26.10.** The agent module, the YARA pack tool and the release builds move from Go 1.26.9 to 1.26.10 for GO-2026-6809 (`crypto/x509`: distrust compromised intermediate certificates), reachable from the agent's HTTPS network diagnostic. With the default `GOTOOLCHAIN=auto`, an older local Go fetches 1.26.10 on its own, but a newer local Go is used as is, so builders on Go 1.27 need 1.27.3 or later (1.27.0 to 1.27.2 lack the fix). With `GOTOOLCHAIN=local`, install Go 1.26.10 or 1.27.3+ first. Pre-built agent binaries need no action.
+
 ## Features / API
 
 ## Migrations
