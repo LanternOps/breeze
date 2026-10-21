@@ -76,7 +76,7 @@ import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, isSupportedLocale, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 import { tApi } from '../i18n';
-import type { CustomerInvoiceHeaderDto, CustomerInvoiceLineDto, DocumentSellerSnapshot } from '@breeze/shared/documents';
+import type { CustomerInvoiceHeaderDto, CustomerInvoiceLineCore, DocumentSellerSnapshot } from '@breeze/shared/documents';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -976,16 +976,16 @@ export async function resolveDocumentLineDetail(inv: InvoiceRow): Promise<Invoic
   return resolveInvoiceLineDetail(inv, partner ?? null);
 }
 
-/** The customer line projection (#9402: the DTO minus the OD-9 keys, which only
- *  customerDocument.ts's loader may add). Field notes:
+/** The customer line projection (#9402: the DTO's core keyset; the OD-9 keys are
+ *  added only by customerDocument.ts's loader). Field notes:
  *  - `name` mirrors invoice_lines.name (#3319). NULL for legacy lines, where
  *    `description` holds the title — renderers show `name ?? description` as the
  *    title and `description` as a sub-line only when `name` is set.
  *  - `workedMinutes` (#6467) is withheld (null) when the #8604 worked-time
  *    toggle is off; `workDate` (#8604) is null unless the invoice prints dates. */
-export type CustomerInvoiceLine = Omit<CustomerInvoiceLineDto, 'ticketSubject' | 'isChild'>;
+export type CustomerInvoiceLine = CustomerInvoiceLineCore;
 
-type InvoiceRow = typeof invoices.$inferSelect;
+export type InvoiceRow = typeof invoices.$inferSelect;
 
 /** The customer invoice header minus `displayStatus`, which the assembler adds. */
 export type CustomerInvoiceHeader = Omit<CustomerInvoiceHeaderDto, 'displayStatus'>;

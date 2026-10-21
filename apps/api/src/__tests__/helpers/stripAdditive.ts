@@ -26,9 +26,11 @@ function remove(node: unknown, parts: string[]): number {
   if (isArr) {
     const arr = obj[key];
     if (!Array.isArray(arr)) return 0;
+    // An empty array cannot prove a per-element key was added; every element must carry it.
+    if (arr.length === 0) return 0;
     let n = 0;
     for (const el of arr) n += remove(el, rest);
-    return arr.length === 0 ? 1 : (n === arr.length ? n : 0);
+    return n === arr.length ? n : 0;
   }
   return remove(obj[key], rest);
 }

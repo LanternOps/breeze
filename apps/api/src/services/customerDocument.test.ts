@@ -28,10 +28,14 @@ vi.mock('../db', async () => {
   };
 });
 
+const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: captureMock }));
+
 import {
-  assembleCustomerInvoiceDocument, loadCustomerDocumentBranding, invoiceDisplayStatus,
+  assembleCustomerInvoiceDocument, loadCustomerDocumentBranding, loadCustomerInvoiceLines, invoiceDisplayStatus,
   CustomerDocumentModeError, OD9_CUSTOMER_PROJECTION,
 } from './customerDocument';
+import { customerLineDetail } from './invoiceService';
 import { renderSql } from '../__tests__/helpers/tableKeyedDb';
 import {
   PIN_INVOICE_ROW, PIN_PARTNER_ROW, PIN_BRANDING_ROW, PIN_VISIBLE_LINE_ROWS, PIN_VISIBLE_LINE_IDS, PIN_LINE_IDS, PIN_ORG_ID, PIN_INVOICE_ID,
@@ -64,6 +68,7 @@ const lineSelect = () => {
 };
 
 beforeEach(() => {
+  captureMock.mockReset();
   state.ctx = 'caller';
   state.db!.reads.length = 0;
   state.db!.selects.length = 0;
@@ -96,14 +101,23 @@ describe.each(MODES)('%s mode', (mode) => {
     expect(doc.lines).toHaveLength(2);
   });
 
-  it('partner-axis reads run in the system context; portal_branding runs in the caller context', async () => {
+  it('branding reads run in their own system context, keyed on the invoice row (never the caller transaction)', async () => {
     await assembleCustomerInvoiceDocument(row(), mode);
     const partnerReads = state.db!.selects.filter((s) => s.table === 'partners');
-    expect(partnerReads.length).toBeGreaterThan(0);
-    expect(partnerReads.every((s) => s.ctx === 'system')).toBe(true);
+    expect(partnerReads).toHaveLength(1);
+    expect(partnerReads[0]!.ctx).toBe('system');
+    expect(renderSql(partnerReads[0]!.where).params).toEqual([PIN_INVOICE_ROW.partnerId]);
     const brandReads = state.db!.selects.filter((s) => s.table === 'portal_branding');
     expect(brandReads).toHaveLength(1);
-    expect(brandReads[0]!.ctx).toBe('caller');
+    expect(brandReads[0]!.ctx).toBe('system');
+    expect(renderSql(brandReads[0]!.where).params).toEqual([PIN_ORG_ID]);
+  });
+
+  it('#8604: every frozen toggle off withholds date, note and worked time', async () => {
+    const doc = await assembleCustomerInvoiceDocument(row({ lineShowDate: false, lineShowNote: false, lineShowWorkedTime: false }), mode);
+    const te = doc.lines.find((l) => l.id === PIN_LINE_IDS.timeEntry)!;
+    expect(te).toMatchObject({ name: 'Labor', description: '', workedMinutes: null, workDate: null });
+    expect(JSON.stringify(doc)).not.toContain(NOTE);
   });
 });
 
@@ -131,6 +145,18 @@ describe('assembleCustomerInvoiceDocument', () => {
   it('a draft with partner showNote=true keeps the note (the resolver, not a hard-coded withhold)', async () => {
     const doc = await assembleCustomerInvoiceDocument(DRAFT, 'staff');
     expect(doc.lines.find((l) => l.id === PIN_LINE_IDS.timeEntry)!.description).toBe(NOTE);
+  });
+
+  it('a draft header takes its line grouping from the same resolved partner defaults as its lines', async () => {
+    setRows({ partners: [{ ...PIN_PARTNER_ROW, invoiceLineGrouping: 'day', invoiceLineShowDate: true }] });
+    const doc = await assembleCustomerInvoiceDocument(DRAFT, 'staff');
+    expect(doc.invoice.lineGrouping).toBe('day');
+    expect(doc.lines.find((l) => l.id === PIN_LINE_IDS.timeEntry)!.workDate).toBe('2026-02-26');
+  });
+
+  it('an issued invoice keeps its frozen grouping even when the partner default differs', async () => {
+    setRows({ partners: [{ ...PIN_PARTNER_ROW, invoiceLineGrouping: 'day' }] });
+    expect((await assembleCustomerInvoiceDocument(row(), 'staff')).invoice.lineGrouping).toBe('entry');
   });
 
   it('an issued invoice uses its frozen columns even in staff mode (partner defaults ignored)', async () => {
@@ -166,21 +192,28 @@ describe('assembleCustomerInvoiceDocument', () => {
   });
 
   describe('OD-9 switch branches', () => {
-    const saved = JSON.parse(JSON.stringify(OD9_CUSTOMER_PROJECTION));
-    const projection = OD9_CUSTOMER_PROJECTION as unknown as Record<'screen' | 'pdf', { ticketSubject: boolean; bundleNesting: boolean }>;
-    afterEach(() => { Object.assign(projection.screen, saved.screen); Object.assign(projection.pdf, saved.pdf); });
+    const detail = customerLineDetail(row());
+    const nested = [PIN_VISIBLE_LINE_ROWS[0]!, { ...PIN_VISIBLE_LINE_ROWS[1]!, parentLineId: PIN_LINE_IDS.part }];
 
-    it('ships the pending defaults verbatim', () => {
-      expect(saved).toEqual({ screen: { ticketSubject: false, bundleNesting: false }, pdf: { ticketSubject: true, bundleNesting: false } });
+    it('ships the pending defaults verbatim, frozen', () => {
+      expect(OD9_CUSTOMER_PROJECTION).toEqual({ screen: { ticketSubject: false, bundleNesting: false }, pdf: { ticketSubject: true, bundleNesting: false } });
+      expect(Object.isFrozen(OD9_CUSTOMER_PROJECTION)).toBe(true);
+      expect(Object.isFrozen(OD9_CUSTOMER_PROJECTION.screen)).toBe(true);
+      expect(Object.isFrozen(OD9_CUSTOMER_PROJECTION.pdf)).toBe(true);
     });
 
-    it('bundleNesting on: isChild from parentLineId; ticketSubject on: the subject', async () => {
-      projection.screen.bundleNesting = true;
-      projection.screen.ticketSubject = true;
-      setRows({ invoice_lines: [PIN_VISIBLE_LINE_ROWS[0]!, { ...PIN_VISIBLE_LINE_ROWS[1]!, parentLineId: PIN_LINE_IDS.part }] });
-      const doc = await assembleCustomerInvoiceDocument(row(), 'portal');
-      expect(doc.lines.map((l) => l.isChild)).toEqual([false, true]);
-      expect(doc.lines.map((l) => l.ticketSubject)).toEqual(['Printer offline', 'Printer offline']);
+    it.each(['screen', 'pdf'] as const)('%s with bundleNesting + ticketSubject on: isChild from parentLineId and the subject', async (surface) => {
+      setRows({ invoice_lines: nested });
+      const projection = { ...OD9_CUSTOMER_PROJECTION, [surface]: { ticketSubject: true, bundleNesting: true } };
+      const lines = await loadCustomerInvoiceLines(row(), { detail, surface, projection });
+      expect(lines.map((l) => l.isChild)).toEqual([false, true]);
+      expect(lines.map((l) => l.ticketSubject)).toEqual(['Printer offline', 'Printer offline']);
+    });
+
+    it('both flags off: the keys are omitted, not undefined', async () => {
+      setRows({ invoice_lines: nested });
+      const lines = await loadCustomerInvoiceLines(row(), { detail, surface: 'screen' });
+      for (const l of lines) { expect('isChild' in l).toBe(false); expect('ticketSubject' in l).toBe(false); }
     });
   });
 
@@ -240,7 +273,34 @@ describe('assembleCustomerInvoiceDocument', () => {
       expect(doc.branding).toEqual({ partnerName: null, contactEmail: null, logoUrl: null, primaryColor: null, theme: 'condensed', pageSize: 'a4' });
       expect(doc.documentLocale).toBe('en');
       expect(doc.lines).toHaveLength(2);
+      expect(err).toHaveBeenCalledWith('[customerDocument] partner lookup failed', expect.objectContaining({ invoiceId: PIN_INVOICE_ID }));
       expect(err).toHaveBeenCalledWith('[customerDocument] branding lookup failed', expect.objectContaining({ invoiceId: PIN_INVOICE_ID }));
+      // Reported, not just logged: a DB outage that blanks every customer's branding must page someone.
+      expect(captureMock).toHaveBeenCalledTimes(2);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('a failing portal_branding read alone keeps the partner name and the partner locale', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      setRows({ partners: [{ ...PIN_PARTNER_ROW, settings: { language: 'pt-BR' } }], portal_branding: new Error('branding down') });
+      const doc = await assembleCustomerInvoiceDocument(row(), 'portal');
+      expect(doc.branding).toMatchObject({ partnerName: 'Example MSP', contactEmail: 'billing@example-msp.test', logoUrl: null, primaryColor: null });
+      expect(doc.documentLocale).toBe('pt-BR');
+      expect(captureMock).toHaveBeenCalledTimes(1);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('a failing partner read alone keeps the portal branding', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      setRows({ partners: new Error('partners down') });
+      const doc = await assembleCustomerInvoiceDocument(row(), 'portal');
+      expect(doc.branding).toMatchObject({ partnerName: null, contactEmail: null, logoUrl: PIN_BRANDING_ROW.logoUrl, primaryColor: PIN_BRANDING_ROW.primaryColor });
     } finally {
       err.mockRestore();
     }

@@ -7,11 +7,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { state } = vi.hoisted(() => ({ state: { db: null as null | import('../__tests__/helpers/tableKeyedDb').TableKeyedDb } }));
+const { state } = vi.hoisted(() => ({
+  state: {
+    db: null as null | import('../__tests__/helpers/tableKeyedDb').TableKeyedDb,
+    overrides: {} as Record<string, import('../__tests__/helpers/tableKeyedDb').TableRows>,
+  },
+}));
 vi.mock('../db', async () => {
   const { createTableKeyedDb } = await import('../__tests__/helpers/tableKeyedDb');
   const { pinRowsByTable } = await import('./__fixtures__/customerInvoicePin');
-  state.db = createTableKeyedDb(pinRowsByTable);
+  state.db = createTableKeyedDb(() => ({ ...pinRowsByTable(), ...state.overrides }));
   return {
     db: state.db.db,
     getCurrentDbAccessContext: () => undefined,
@@ -82,6 +87,7 @@ beforeEach(() => {
   markViewedMock.mockReset();
   resolveMock.mockReset();
   assembleSpy.mockReset();
+  state.overrides = {};
 });
 
 // Recorded at origin/main 5dfeddf233 before customerDocument.ts existed.
@@ -204,6 +210,26 @@ describe('GET /invoices/public/:token — characterization pin (#9402)', () => {
     expect(assembleSpy).toHaveBeenCalledTimes(1);
     expect(assembleSpy.mock.calls[0]![1]).toBe('public');
     expect(markViewedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing partner/branding read is fail-soft: 200, the generic name, every non-branding key as pinned', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      state.overrides = { partners: new Error('partners down'), portal_branding: new Error('branding down') };
+      resolveMock.mockResolvedValue({ ...PIN_INVOICE_ROW });
+      const res = await app().request(`/invoices/public/${PIN_PUBLIC_TOKEN}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.branding).toEqual({
+        partnerName: 'Invoice', contactEmail: null, logoUrl: null, primaryColor: null,
+        theme: PIN_INVOICE_ROW.documentTheme, pageSize: PIN_INVOICE_ROW.documentPageSize,
+      });
+      const { branding: _b, ...rest } = stripAdditive(body, PUBLIC_ADDITIVE).data;
+      const { branding: _p, ...pinRest } = PIN.data;
+      expect(rest).toEqual(pinRest);
+    } finally {
+      err.mockRestore();
+    }
   });
 
   it('a void invoice (the no-amounts state) never reaches the assembler', async () => {

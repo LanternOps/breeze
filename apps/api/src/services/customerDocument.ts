@@ -22,26 +22,29 @@ import type {
   CustomerDocumentBrandingDto, CustomerDocumentMode, CustomerInvoiceDocument, CustomerInvoiceLineDto,
 } from '@breeze/shared/documents';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { invoiceLines, invoices, partners, tickets } from '../db/schema';
+import { invoiceLines, partners, tickets } from '../db/schema';
 import { portalBranding } from '../db/schema/portal';
 import {
-  customerLineDetail, resolveDocumentLineDetail, toCustomerInvoiceHeader, toCustomerInvoiceLine,
+  customerLineDetail, resolveDocumentLineDetail, toCustomerInvoiceHeader, toCustomerInvoiceLine, type InvoiceRow,
 } from './invoiceService';
+import { captureException } from './sentry';
 import { invoiceLineTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql } from './invoicePdf';
 import { resolveInvoicePresentation } from './invoicePresentation';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 
 export type { CustomerDocumentMode } from '@breeze/shared/documents';
-export type InvoiceRow = typeof invoices.$inferSelect;
+export type { InvoiceRow } from './invoiceService';
 export type DocumentSurface = 'screen' | 'pdf';
+export type Od9Projection = Readonly<Record<DocumentSurface, Readonly<{ ticketSubject: boolean; bundleNesting: boolean }>>>;
 
 /** OD-9 (#9402) — pending Todd. Flip the line for a surface when the ruling lands.
  *  The projection itself carries or withholds the data, so a withheld field is
- *  never on the wire (a builder-only flag would leave it there). */
-export const OD9_CUSTOMER_PROJECTION = {
-  screen: { ticketSubject: false, bundleNesting: false }, // web Preview + portal public + portal logged-in (W1 invoices, W2 quotes)
-  pdf:    { ticketSubject: true,  bundleNesting: false }, // invoicePdf/quotePdf via the assembler (W3); keeps today's PDF subject
-} as const;
+ *  never on the wire (a builder-only flag would leave it there). Frozen: it gates
+ *  what leaves the server, so nothing may flip it at runtime. */
+export const OD9_CUSTOMER_PROJECTION: Od9Projection = Object.freeze({
+  screen: Object.freeze({ ticketSubject: false, bundleNesting: false }), // web Preview + portal public + portal logged-in (W1 invoices, W2 quotes)
+  pdf:    Object.freeze({ ticketSubject: true,  bundleNesting: false }), // invoicePdf/quotePdf via the assembler (W3); keeps today's PDF subject
+});
 
 /** A route asked for a document its mode may not see (a draft outside staff
  *  mode). A programming error: routes refuse drafts before calling, so this
@@ -67,7 +70,8 @@ export function invoiceDisplayStatus(status: InvoiceStatus): Exclude<InvoiceStat
  */
 export async function loadCustomerInvoiceLines(
   invoice: InvoiceRow,
-  opts: { detail: InvoiceLineDetail; surface: DocumentSurface },
+  /** `projection` defaults to OD9_CUSTOMER_PROJECTION; overridable only so tests can drive both branches. */
+  opts: { detail: InvoiceLineDetail; surface: DocumentSurface; projection?: Od9Projection },
 ): Promise<CustomerInvoiceLineDto[]> {
   const rows = await db.select({
     id: invoiceLines.id,
@@ -98,7 +102,7 @@ export async function loadCustomerInvoiceLines(
     ))
     .orderBy(invoiceLines.sortOrder);
 
-  const flags = OD9_CUSTOMER_PROJECTION[opts.surface];
+  const flags = (opts.projection ?? OD9_CUSTOMER_PROJECTION)[opts.surface];
   const locale = invoice.documentLocale ?? 'en';
   return rows.map((r) => {
     const line: CustomerInvoiceLineDto = toCustomerInvoiceLine(r, opts.detail, locale);
@@ -116,20 +120,35 @@ type DocumentPartner = {
   settings: unknown;
 };
 
+/** Log AND report a fail-soft read: the document still renders, but a DB outage
+ *  that blanks every customer's branding must reach Sentry, not just stdout. */
+function reportSoftFailure(what: 'partner' | 'branding', invoice: InvoiceRow, err: unknown): void {
+  console.error(`[customerDocument] ${what} lookup failed`, { invoiceId: invoice.id, err });
+  captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+    phase: `customer_document_${what}`, invoice_id: invoice.id,
+  });
+}
+
 /**
- * Branding plus the partner row it was read from (shared with the locale
- * chain). `partners` is partner-axis RLS — invisible to an org-scoped portal
- * caller (#1375 class: 0 rows, no error) — so it reads in the system context,
- * keyed on the invoice's own partnerId. `portal_branding` is org-scoped and
- * reads in the caller's context (the public route's caller context is already
- * system). Fail-soft, as the portal always was: branding is decoration on a
- * document the customer came to read or pay.
+ * Branding plus the partner row it was read from (shared with the locale chain).
+ *
+ * Both reads run in their OWN system context, keyed on the already-authorized
+ * invoice row's partnerId / orgId:
+ *  - `partners` is partner-axis RLS — invisible to an org-scoped portal caller
+ *    (#1375 class: 0 rows, no error);
+ *  - neither read may run on the caller's transaction: these reads are
+ *    fail-soft, and a swallowed error inside the request transaction would leave
+ *    it aborted (25P02) for every query after it.
+ * Each read fails soft on its own, as the portal always did — branding is
+ * decoration on a document the customer came to read or pay — so a branding
+ * failure keeps the partner name and locale, and vice versa.
  */
 async function loadBrandingAndPartner(
   invoice: InvoiceRow,
 ): Promise<{ branding: CustomerDocumentBrandingDto; partner: DocumentPartner | null }> {
+  let partner: DocumentPartner | null = null;
   try {
-    const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
       db.select({
         name: partners.name,
         billingEmail: partners.billingEmail,
@@ -137,32 +156,34 @@ async function loadBrandingAndPartner(
         documentPageSize: partners.documentPageSize,
         settings: partners.settings,
       }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1)));
-    const [brand] = await db
-      .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
-      .from(portalBranding)
-      .where(eq(portalBranding.orgId, invoice.orgId))
-      .limit(1);
-    return {
-      partner: partner ?? null,
-      branding: {
-        partnerName: partner?.name ?? null,
-        contactEmail: partner?.billingEmail ?? null,
-        logoUrl: brand?.logoUrl ?? null,
-        primaryColor: brand?.primaryColor ?? null,
-        // #6227: the invoice's issue-time snapshot; partner live values only for a draft.
-        ...resolveInvoicePresentation(invoice, partner),
-      },
-    };
+    partner = row ?? null;
   } catch (err) {
-    console.error('[customerDocument] branding lookup failed', { invoiceId: invoice.id, err });
-    return {
-      partner: null,
-      branding: {
-        partnerName: null, contactEmail: null, logoUrl: null, primaryColor: null,
-        ...resolveInvoicePresentation(invoice, undefined),
-      },
-    };
+    reportSoftFailure('partner', invoice, err);
   }
+
+  let brand: { logoUrl: string | null; primaryColor: string | null } | null = null;
+  try {
+    const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
+        .from(portalBranding)
+        .where(eq(portalBranding.orgId, invoice.orgId))
+        .limit(1)));
+    brand = row ?? null;
+  } catch (err) {
+    reportSoftFailure('branding', invoice, err);
+  }
+
+  return {
+    partner,
+    branding: {
+      partnerName: partner?.name ?? null,
+      contactEmail: partner?.billingEmail ?? null,
+      logoUrl: brand?.logoUrl ?? null,
+      primaryColor: brand?.primaryColor ?? null,
+      // #6227: the invoice's issue-time snapshot; partner live values only for a draft.
+      ...resolveInvoicePresentation(invoice, partner),
+    },
+  };
 }
 
 /** The document's branding block (fail-soft; see loadBrandingAndPartner). */
@@ -189,7 +210,13 @@ export async function assembleCustomerInvoiceDocument(
   const lines = await loadCustomerInvoiceLines(invoice, { detail, surface: opts.surface ?? 'screen' });
   const { branding, partner } = await loadBrandingAndPartner(invoice);
   return {
-    invoice: { ...toCustomerInvoiceHeader(invoice), displayStatus: invoiceDisplayStatus(invoice.status) },
+    invoice: {
+      ...toCustomerInvoiceHeader(invoice),
+      // The grouping the lines were projected with: for a draft, the partner
+      // default issuing will freeze; for an issued document, its frozen column.
+      lineGrouping: detail.grouping,
+      displayStatus: invoiceDisplayStatus(invoice.status),
+    },
     lines,
     branding,
     documentLocale: invoice.documentLocale ?? resolvePartnerDocumentLocale(partner),

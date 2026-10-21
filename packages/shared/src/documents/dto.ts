@@ -15,7 +15,9 @@ export type CustomerDocumentMode = 'public' | 'portal' | 'staff';
 /** Same structure as the quote seller snapshot; reused rather than copied. */
 export type DocumentSellerSnapshot = PublicQuoteSellerSnapshot;
 
-export interface CustomerInvoiceLineDto {
+/** The line keyset every surface receives. `toCustomerInvoiceLine` (the #8604
+ *  boundary) produces exactly this — never the OD-9 keys. */
+export interface CustomerInvoiceLineCore {
   /** The invoice_lines id: an opaque row key, not customer content. */
   id: string;
   ticketNumber: string | null;
@@ -28,11 +30,16 @@ export interface CustomerInvoiceLineDto {
   lineTotal: string;
   workedMinutes: number | null;
   workDate: string | null;
-  /** Present only when `OD9_CUSTOMER_PROJECTION[surface].ticketSubject` is on. */
+}
+
+/** OD-9 (#9402) keys: present only when the assembler's per-surface projection
+ *  switch enables them; omitted (never `undefined`) otherwise. */
+export interface CustomerInvoiceLineOd9 {
   ticketSubject?: string | null;
-  /** Present only when `OD9_CUSTOMER_PROJECTION[surface].bundleNesting` is on. */
   isChild?: boolean;
 }
+
+export type CustomerInvoiceLineDto = CustomerInvoiceLineCore & CustomerInvoiceLineOd9;
 
 export interface CustomerInvoiceHeaderDto {
   id: string;

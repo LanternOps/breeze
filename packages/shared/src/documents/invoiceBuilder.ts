@@ -54,7 +54,9 @@ export function buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: 
     return money((Math.round(cents * safeRate) / 100).toFixed(2));
   };
 
-  const toRow = (l: CustomerInvoiceLineDto): DocumentLineRow<RowTax> => {
+  // Generic over the tax cell, so the taxed and untaxed tables below are typed
+  // from the cell function itself: the column and the row cells cannot disagree.
+  const toRow = <T extends RowTax>(l: CustomerInvoiceLineDto, cell: (l: CustomerInvoiceLineDto) => T): DocumentLineRow<T> => {
     const title = (l.name ?? l.description).trim() || '—';
     if (!title) throw new DocumentModelError(`invoice line ${l.id} has an empty title`);
     const wb = lineWorkedVsBilled(l);
@@ -65,7 +67,7 @@ export function buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: 
       workDate: invoice.lineGrouping === 'entry' && l.workDate ? documentDate(l.workDate, locale) : null,
       qty: l.quantity,
       unit: money(l.unitPrice),
-      tax: showTax ? rowTax(l) : null,
+      tax: cell(l),
       amount: money(l.lineTotal),
       note: wb ? labels.workedVsBilled(wb.worked, wb.billed) : null,
       descriptor: [],
@@ -89,7 +91,7 @@ export function buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: 
     g.lines.push(l);
   }
 
-  const groups: DocumentLineGroup<RowTax>[] = ticketGroups.map((g) => {
+  const buildGroups = <T extends RowTax>(cell: (l: CustomerInvoiceLineDto) => T): DocumentLineGroup<T>[] => ticketGroups.map((g) => {
     const n = g.first.ticketNumber;
     const subject = g.first.ticketSubject;
     return {
@@ -103,9 +105,9 @@ export function buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: 
             header: day.workDate
               ? { date: documentDate(day.workDate, locale), hours: String(Number(day.hours)), total: money(day.total) }
               : null,
-            rows: day.lines.map(toRow),
+            rows: day.lines.map((l) => toRow(l, cell)),
           }))
-        : [{ key: 'entries', header: null, rows: g.lines.map(toRow) }],
+        : [{ key: 'entries', header: null, rows: g.lines.map((l) => toRow(l, cell)) }],
     };
   });
 
@@ -115,10 +117,9 @@ export function buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: 
     emptyText: dto.lines.length === 0 ? labels.empty : null,
   };
   const { description, qty, unitPrice, tax, amount } = labels.columns;
-  // The two branches are typed apart so the tax column and the row cells cannot disagree.
   const lines: DocumentLineTableModel = showTax
-    ? { ...base, columns: { description, qty, unitPrice, tax, amount, notTaxable: labels.notTaxable }, groups: groups as DocumentLineGroup<DocumentMoney | 'exempt'>[] }
-    : { ...base, columns: { description, qty, unitPrice, tax: null, amount }, groups: groups as DocumentLineGroup<null>[] };
+    ? { ...base, columns: { description, qty, unitPrice, tax, amount, notTaxable: labels.notTaxable }, groups: buildGroups(rowTax) }
+    : { ...base, columns: { description, qty, unitPrice, tax: null, amount }, groups: buildGroups(() => null) };
 
   const isPaid = invoice.status === 'paid';
   const pct = safeRate > 0 ? String(Number((safeRate * 100).toFixed(3))) : null;

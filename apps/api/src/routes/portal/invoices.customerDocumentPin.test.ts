@@ -179,9 +179,11 @@ describe('GET /portal/invoices/:id — characterization pin (#9402)', () => {
   });
 
   it('another org\'s invoice is the same 404 (org guard) and reads no lines', async () => {
+    state.db!.reads.length = 0;
     const res = await app('99999999-9999-4999-8999-999999999999').request(`/invoices/${PIN_INVOICE_ID}`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Invoice not found', code: 'NOT_FOUND' });
     expect(markViewedMock).not.toHaveBeenCalled();
+    expect(state.db!.reads).toEqual(['invoices']);
   });
 });

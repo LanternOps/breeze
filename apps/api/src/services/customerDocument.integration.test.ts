@@ -38,6 +38,7 @@ async function seed(): Promise<Fixture> {
     const [p] = await db.insert(partners).values({
       name: partnerName, slug: `custdoc-${suffix}`, type: 'msp', plan: 'pro', status: 'active',
       billingEmail, settings: { language: 'pt-BR' }, invoiceLineShowNote: false,
+      invoiceLineGrouping: 'day', invoiceLineShowDate: true,
     }).returning({ id: partners.id });
     const partnerId = p!.id;
     const [o] = await db.insert(organizations).values({
@@ -71,7 +72,7 @@ async function seed(): Promise<Fixture> {
     }).returning({ id: invoices.id });
     const draftId = draft!.id;
     await db.insert(invoiceLines).values([
-      { invoiceId: draftId, orgId, sourceType: 'time_entry', name: null, description: NOTE, quantity: '0.75', unitPrice: '100.00', taxable: false, customerVisible: true, lineTotal: '75.00', sortOrder: 0 },
+      { invoiceId: draftId, orgId, sourceType: 'time_entry', name: null, description: NOTE, quantity: '0.75', unitPrice: '100.00', taxable: false, customerVisible: true, lineTotal: '75.00', sortOrder: 0, workDate: '2026-02-26' },
       { invoiceId: draftId, orgId, sourceType: 'manual', name: 'Hidden draft line', description: HIDDEN, quantity: '1', unitPrice: '0.00', taxable: false, customerVisible: false, lineTotal: '0.00', sortOrder: 1 },
     ]);
     return { partnerId, orgId, userId: u!.id, issuedId, draftId, partnerName, billingEmail, logoUrl };
@@ -94,7 +95,7 @@ function expectCustomerDocument(f: Fixture, doc: Awaited<ReturnType<typeof assem
   // Partner-axis reads returned the partner row (not zero rows under RLS).
   expect(doc.branding.partnerName).toBe(f.partnerName);
   expect(doc.branding.contactEmail).toBe(f.billingEmail);
-  // portal_branding is org-scoped and visible to the caller.
+  // portal_branding row (read in its own system context, keyed on the invoice's org).
   expect(doc.branding.logoUrl).toBe(f.logoUrl);
   expect(doc.branding).toMatchObject({ theme: 'condensed', pageSize: 'a4' });
   expect(doc.documentLocale).toBe('pt-BR');
@@ -132,6 +133,18 @@ describe.runIf(RUN)('customer-document assembler on Postgres (#9402)', () => {
     expect(JSON.stringify(draft)).not.toContain(NOTE);
     expect(JSON.stringify(draft)).not.toContain(HIDDEN);
     expect(draft.documentLocale).toBe('pt-BR');
+    // The header groups the way the lines were projected: the partner default issuing will freeze.
+    expect(draft.invoice.lineGrouping).toBe('day');
+    expect(draft.lines[0]!.workDate).toBe('2026-02-26');
+  });
+
+  it('staff context of ANOTHER partner cannot load the row (RLS), so it never reaches the assembler', async () => {
+    const f = await seed();
+    const otherPartner: DbAccessContext = {
+      scope: 'partner', orgId: null, accessibleOrgIds: [], accessiblePartnerIds: ['00000000-0000-4000-8000-00000000abcd'], userId: f.userId,
+    };
+    await expect(withDbAccessContext(otherPartner, () => getOwnedInvoiceOr404(f.issuedId)))
+      .rejects.toMatchObject({ status: 404 });
   });
 
   it('system context (public route): same', async () => {
