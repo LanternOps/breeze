@@ -47,10 +47,25 @@ vi.mock('../services/quoteAcceptCheckout', () => ({
   resolveAcceptCheckoutUrl: vi.fn(),
 }));
 vi.mock('../services/quoteOutcomeNotify', () => ({ notifyQuoteOutcome: vi.fn() }));
+const { assembleSpy } = vi.hoisted(() => ({ assembleSpy: vi.fn() }));
+vi.mock('../services/customerDocument', async (importActual) => {
+  const actual = await importActual<typeof import('../services/customerDocument')>();
+  return {
+    ...actual,
+    assembleCustomerQuoteDocument: (...args: Parameters<typeof actual.assembleCustomerQuoteDocument>) => {
+      assembleSpy(...args);
+      return actual.assembleCustomerQuoteDocument(...args);
+    },
+  };
+});
 
 import { quotesPublicRoutes } from './quotesPublic';
-import { PIN_QUOTE_ROW, PIN_QUOTE_TOKEN } from './__fixtures__/customerQuotePin';
+import { PIN_QUOTE_ROW, PIN_QUOTE_TOKEN, PIN_QUOTE_LINE_IDS } from './__fixtures__/customerQuotePin';
 import PUBLIC_PIN from './__fixtures__/customerQuotePin.public.json';
+import { stripAdditive } from '../__tests__/helpers/stripAdditive';
+
+// The ONLY keys the assembler refactor may add to this response (#9418 W2a).
+const PUBLIC_ADDITIVE = ['data.quote.displayStatus', 'data.documentLocale'] as const;
 
 function app() {
   const a = new Hono();
@@ -60,6 +75,7 @@ function app() {
 
 beforeEach(() => {
   markViewedMock.mockReset();
+  assembleSpy.mockReset();
   state.quote = undefined;
   state.db!.reads.length = 0;
   state.db!.selects.length = 0;
@@ -70,11 +86,37 @@ beforeEach(() => {
 const PIN = PUBLIC_PIN;
 
 describe('GET /quotes/public/:token — characterization pin (#9418)', () => {
-  it("today's live payload", async () => {
+  it('the live payload is the pin plus only the declared additive keys', async () => {
     const res = await app().request(`/quotes/public/${PIN_QUOTE_TOKEN}`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual(PIN);
+    expect(stripAdditive(body, PUBLIC_ADDITIVE)).toEqual(PIN);
+    expect(body.data.quote.displayStatus).toBe('viewed');
+    expect(body.data.documentLocale).toBe('en');
+    expect(body.data.lines.map((l: { id: string }) => l.id)).toEqual([PIN_QUOTE_LINE_IDS.firewall, PIN_QUOTE_LINE_IDS.monitoring]);
+    expect(assembleSpy).toHaveBeenCalledTimes(1);
+    expect(assembleSpy.mock.calls[0]![1]).toBe('public');
+    expect(markViewedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing view stamp never fails the render', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      markViewedMock.mockRejectedValueOnce(new Error('stamp down'));
+      const res = await app().request(`/quotes/public/${PIN_QUOTE_TOKEN}`);
+      expect(res.status).toBe(200);
+      expect(stripAdditive(await res.json(), PUBLIC_ADDITIVE)).toEqual(PIN);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('a dead (superseded) link answers its 410 without reaching the assembler', async () => {
+    state.quote = { ...PIN_QUOTE_ROW, status: 'superseded', publicLinkRevokedAt: new Date('2026-03-05T00:00:00.000Z') };
+    const res = await app().request(`/quotes/public/${PIN_QUOTE_TOKEN}`);
+    expect(res.status).toBe(410);
+    expect(assembleSpy).not.toHaveBeenCalled();
+    expect(markViewedMock).not.toHaveBeenCalled();
   });
 
   it("today's superseded payload (410, no document)", async () => {

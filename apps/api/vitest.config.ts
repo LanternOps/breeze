@@ -229,6 +229,7 @@ export default defineConfig({
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',
       'src/services/customerDocument.integration.test.ts',
+      'src/services/customerDocument.quote.integration.test.ts',
       // #5861 Customer Portal Network Visibility: real-Postgres proof of org
       // isolation and partner-wide monitor result scoping. Imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
