@@ -14,7 +14,6 @@ export type EventType =
   | 'device.online'
   | 'device.offline'
   | 'device.updated'
-  | 'device.decommissioned'
   | 'device.main_agent_silent' // #800: watchdog OK, main agent silent
   // Alert events
   | 'alert.triggered'
@@ -599,7 +598,6 @@ export const EVENT_TYPES = {
   DEVICE_ONLINE: 'device.online' as const,
   DEVICE_OFFLINE: 'device.offline' as const,
   DEVICE_UPDATED: 'device.updated' as const,
-  DEVICE_DECOMMISSIONED: 'device.decommissioned' as const,
   // #800: server-detected asymmetry (watchdog OK, main agent silent past threshold)
   DEVICE_MAIN_AGENT_SILENT: 'device.main_agent_silent' as const,
   // Alert
