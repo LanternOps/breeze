@@ -72,11 +72,12 @@ function addFrameOrigin(sources: Set<string>, rawUrl: string | undefined): void 
  * same-origin, in-memory blob URLs the app itself creates. It was originally
  * required by the auth-gated quote PDF preview (`QuotePreview`), which fetched
  * the PDF with a Bearer header and framed the resulting `blob:` object URL.
- * That component has been removed — the quote preview now renders the document
- * as HTML (`QuoteDocumentPreview`) and uses no iframe — so nothing currently
- * depends on this. It permits only same-origin app-created blobs (the
- * `frame-ancestors` and `object-src` directives are independent and
- * unaffected); tighten/remove it when the CSP is next revisited.
+ * That component was replaced by the HTML preview (`QuoteDocumentPreview`),
+ * but an uploaded agreement's PDF inside it is framed the same way
+ * (`AgreementFrame` in billing/documentHostComponents.tsx), so `blob:` is
+ * load-bearing again: removing it breaks the agreement viewer. It permits only
+ * same-origin app-created blobs (the `frame-ancestors` and `object-src`
+ * directives are independent and unaffected).
  */
 export function resolveFrameSrcDirective(options: { env?: EnvMap }): string {
   const env = options.env ?? process.env;
