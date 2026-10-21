@@ -58,7 +58,7 @@ type pamUnable struct {
 
 // reportPamUnable tells the server the device cannot act on requestID, so the
 // server closes a still-pending request instead of offering it to a
-// technician who could approve something the device will never carry out
+// technician who could approve something the device will not carry out
 // (#9517, follow-up to #8996). Asynchronous: RunPamFlow runs on the etwlua
 // loop goroutine, and a slow or unreachable server must not stall the next UAC
 // prompt. A transient failure (network, 5xx) is retried for
