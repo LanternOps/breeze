@@ -900,7 +900,7 @@
     "alertHistoryForThisDevice": "Histórico de alertas deste dispositivo",
     "anomalies": "Anomalias",
     "metricAnomalySignalsForThisDevice": "Sinais de anomalias de métricas deste dispositivo",
-    "tickets": "Tickets",
+    "tickets": "Chamados",
     "ticketsLinkedToThisDevice": "Tickets vinculados a este dispositivo",
     "eventLog": "Log de eventos",
     "windowsMacosSystemEventLogs": "Logs de eventos do sistema Windows/macOS",

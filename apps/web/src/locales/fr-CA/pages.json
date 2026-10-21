@@ -177,7 +177,7 @@
     "securityScans": "Balayages IOC",
     "devicesTime": "Synchronisation de l’heure",
     "adminAiModels": "Modèles d'IA",
-    "billingAutopay": "Automatic payments",
+    "billingAutopay": "Paiements automatiques",
     "endpointMessages": "Messages aux terminaux"
   },
   "layout": {

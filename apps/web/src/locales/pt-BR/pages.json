@@ -177,7 +177,7 @@
     "securityScans": "Varreduras de IOC",
     "devicesTime": "Sincronização de horário",
     "adminAiModels": "Modelos de IA",
-    "billingAutopay": "Automatic payments",
+    "billingAutopay": "Pagamentos automáticos",
     "endpointMessages": "Mensagens para dispositivos"
   },
   "layout": {

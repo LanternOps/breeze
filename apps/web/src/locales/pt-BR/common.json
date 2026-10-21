@@ -111,7 +111,7 @@
     "timeSync": "Sincronização de horário",
     "aiModels": "Modelos de IA",
     "autopay": "Autopay",
-    "payments": "Payments",
+    "payments": "Pagamentos",
     "ticketsIncidents": "Incidentes",
     "ticketsServiceRequests": "Solicitações de serviço",
     "ticketsProblems": "Problemas",
@@ -1275,7 +1275,7 @@
         },
         "headers": {
           "linkedAlert": "Alerta vinculado",
-          "ticket": "Ticket",
+          "ticket": "Chamado",
           "updated": "Atualizado"
         },
         "searchPlaceholder": "Pesquisar tickets",
@@ -1705,7 +1705,7 @@
         "errors": {
           "stopFailed": "Falha ao parar o cronômetro."
         },
-        "ticketFallback": "ticket",
+        "ticketFallback": "chamado",
         "stopTimer": "Parar cronômetro",
         "descriptionPlaceholder": "Em que você trabalhou?",
         "billable": "Faturável",
