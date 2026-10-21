@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { buildYaraBundleJson, YARA_BUILTIN_RULE_SET_ID, YARA_MAX_RULES_PER_SET } from '@breeze/shared';
 import { securityRoutes } from '../../routes/security';
 import { yaraRuleSets, yaraRules } from '../../db/schema';
@@ -248,11 +248,26 @@ describe('/security/yara routes (real Postgres)', () => {
 
     const create = (name: string) =>
       call(w.org, 'POST', `/yara/rule-sets/${set.id}/rules`, { name, source: `rule ${name} { condition: true }` });
-    const inflight = Promise.all([create('racer_a'), create('racer_b')]);
-    await new Promise((r) => setTimeout(r, 500));
-    release();
-    await holder;
-    const responses = await inflight;
+    let responses: Response[];
+    try {
+      const inflight = Promise.all([create('racer_a'), create('racer_b')]);
+      // Release only once both requests are parked on the row lock (not a fixed sleep).
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const waiting = await db.execute(
+          sql`select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()`,
+        );
+        const rows = (waiting.rows ?? waiting) as Array<{ n: number }>;
+        if (Number(rows[0]?.n) >= 2) break;
+        if (Date.now() > deadline) throw new Error('creates never blocked on the set lock');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      release();
+      responses = await inflight;
+    } finally {
+      release();
+      await holder.catch(() => {});
+    }
 
     expect(responses.map((r) => r.status).sort()).toEqual([201, 400]);
     const capped = responses.find((r) => r.status === 400)!;

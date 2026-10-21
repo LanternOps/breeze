@@ -163,3 +163,14 @@ describe('POST /yara/rule-sets/:id/rules cap vs. set lock (#9176)', () => {
     expect(publishMock).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /yara/rule-sets/:id/rules set vanished before lock (#9176)', () => {
+  it('404s without counting or inserting when the lock finds no row', async () => {
+    mockVisibleSet({ id: SET, orgId: ORG, partnerId: null, isBuiltin: false, autoQuarantine: false, enabled: true, currentVersion: 1 });
+    selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ for: () => Promise.resolve([]) }) }) });
+    const res = await post(app({}), `/yara/rule-sets/${SET}/rules`, { name: 'r1', source: 'rule r1 { condition: true }' });
+    expect(res.status).toBe(404);
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+});
