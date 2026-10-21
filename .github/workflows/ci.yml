@@ -2608,6 +2608,23 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: TestWindowsVPNServiceQuery').Count
           if ($passes -ne 1) { throw "TestWindowsVPNServiceQuery did not run - renamed or removed without updating this step" }
 
+      # #9267: link speed is read in-process via GetIfTable2Ex. These are the
+      # only tests that exercise the real Windows getLinkSpeed (it must never
+      # spawn PowerShell again) and the real MIB_IF_TABLE2 read; elsewhere
+      # they only compile.
+      - name: Run Windows link-speed tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^(TestGetLinkSpeedWindowsNeverSpawnsProcess|TestReadIfTable2LinkSpeedsLive)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
       # codes (#2997) against golang.org/x/sys/windows, and those codes drive

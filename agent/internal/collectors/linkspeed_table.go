@@ -110,7 +110,9 @@ func (s *linkSpeedSource) speed(name string) uint64 {
 	if !s.loaded || now.Sub(s.readAt) >= s.ttl {
 		rows, err := s.read()
 		if err != nil {
-			slog.Debug("interface table read failed; link speeds unknown this cycle", "error", err.Error())
+			// Warn: a 0 here is cached per interface for speedCacheTTL, so this
+			// logs at most about once per 5 minutes while the read keeps failing.
+			slog.Warn("interface table read failed; link speeds reported as unknown", "error", err.Error())
 			rows = nil
 		}
 		s.table = newLinkSpeedTable(rows)

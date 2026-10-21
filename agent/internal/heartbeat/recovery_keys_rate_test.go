@@ -94,23 +94,31 @@ func TestSendRecoveryKeysCollectsAtMostOncePerInterval(t *testing.T) {
 	}
 }
 
-// A failed escrow upload must be retried on the next tick, not after the
-// full interval — the keys were never escrowed.
-func TestSendRecoveryKeysRetriesNextTickAfterUploadFailure(t *testing.T) {
+// A failed escrow upload is retried after recoveryKeyErrorRetry — sooner
+// than the full interval (the keys were never escrowed), but not on every
+// tick (a server outage must not put the PowerShell read back on the tick).
+func TestSendRecoveryKeysRetriesSoonAfterUploadFailure(t *testing.T) {
 	h, rec, collects := newRecoveryKeyTestHeartbeat(t)
 
 	rec.mu.Lock()
 	rec.fail = true
 	rec.mu.Unlock()
 	h.sendRecoveryKeys()
+	h.sendRecoveryKeys() // next tick: still backing off
+	if *collects != 1 {
+		t.Fatalf("collections right after failed upload = %d, want 1 (no per-tick retry)", *collects)
+	}
 
 	rec.mu.Lock()
 	rec.fail = false
 	rec.mu.Unlock()
+	h.mu.Lock()
+	h.lastRecoveryKeysCollect = h.lastRecoveryKeysCollect.Add(-recoveryKeyErrorRetry)
+	h.mu.Unlock()
 	h.sendRecoveryKeys()
 
 	if *collects != 2 {
-		t.Fatalf("collections = %d, want 2 (retry right after failed upload)", *collects)
+		t.Fatalf("collections after error retry = %d, want 2", *collects)
 	}
 	if got := rec.puts(); len(got) != 1 || got[0] != "snapshot" {
 		t.Fatalf("escrow puts = %v, want one successful snapshot", got)
@@ -131,6 +139,13 @@ func TestSendRecoveryKeysCollectFailureIsRateLimited(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("failed collections over 3 ticks = %d, want 1", attempts)
 	}
+	h.mu.Lock()
+	h.lastRecoveryKeysCollect = h.lastRecoveryKeysCollect.Add(-recoveryKeyErrorRetry)
+	h.mu.Unlock()
+	h.sendRecoveryKeys()
+	if attempts != 2 {
+		t.Fatalf("failed read not retried after %s (attempts %d)", recoveryKeyErrorRetry, attempts)
+	}
 	if got := rec.puts(); len(got) != 0 {
 		t.Fatalf("unexpected escrow puts: %v", got)
 	}
@@ -149,6 +164,27 @@ func TestSendRecoveryKeysDrainsPendingEveryTick(t *testing.T) {
 
 	if got := rec.puts(); len(got) != 2 || got[1] != "rotation" {
 		t.Fatalf("escrow puts = %v, want [snapshot rotation]", got)
+	}
+}
+
+// A rotation (successful or not) makes the next tick re-read and
+// re-snapshot the protector set instead of waiting out the interval.
+func TestEncryptionRotateKeyResetsCollectInterval(t *testing.T) {
+	h, _, collects := newRecoveryKeyTestHeartbeat(t)
+	prevB, prevF := rotateBitLockerKey, rotateFileVaultKey
+	rotateBitLockerKey = func(string) (security.RecoveryKey, error) {
+		return security.RecoveryKey{}, errors.New("stub: rotation failed")
+	}
+	rotateFileVaultKey = func(string, string, string) (security.RecoveryKey, error) {
+		return security.RecoveryKey{}, errors.New("stub: rotation failed")
+	}
+	t.Cleanup(func() { rotateBitLockerKey, rotateFileVaultKey = prevB, prevF })
+
+	h.sendRecoveryKeys() // interval starts
+	_ = handleEncryptionRotateKey(h, Command{ID: "r1", Type: tools.CmdEncryptionRotateKey})
+	h.sendRecoveryKeys()
+	if *collects != 2 {
+		t.Fatalf("collections after rotation = %d, want 2 (rotation must reset the interval)", *collects)
 	}
 }
 

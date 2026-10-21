@@ -14,6 +14,12 @@ import (
 // recovery protectors (one PowerShell spawn on Windows).
 var collectRecoveryKeys = security.CollectRecoveryKeys
 
+// Rotation seams for tests.
+var (
+	rotateBitLockerKey = security.RotateBitLockerKey
+	rotateFileVaultKey = security.RotateFileVaultKey
+)
+
 // recoveryKeyCollectInterval bounds how often the 5-minute security tick
 // re-reads BitLocker recovery protectors (#9267). Protectors change only when
 // BitLocker is enabled or a key is rotated; rotation through Breeze resets
@@ -21,6 +27,11 @@ var collectRecoveryKeys = security.CollectRecoveryKeys
 // command bypasses it. Key material is never cached between reads — only the
 // time of the last read and the fingerprint of what was escrowed.
 const recoveryKeyCollectInterval = 30 * time.Minute
+
+// recoveryKeyErrorRetry is the wait after a failed read (matches the security
+// package's slowProbeErrorTTL): a persistent failure, such as no BitLocker
+// module on Home editions, is not re-spawned every tick.
+const recoveryKeyErrorRetry = 10 * time.Minute
 
 func init() {
 	handlerRegistry[tools.CmdEncryptionCollectKeys] = handleEncryptionCollectKeys
@@ -51,6 +62,14 @@ func handleEncryptionCollectKeys(h *Heartbeat, _ Command) tools.CommandResult {
 // tick. The CommandResult never contains key or credential material.
 func handleEncryptionRotateKey(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+	// Rotation changed (or may have partly changed) the protector set: once it
+	// returns, have the next security tick re-read and re-snapshot it instead
+	// of waiting out recoveryKeyCollectInterval (#9267).
+	defer func() {
+		h.mu.Lock()
+		h.lastRecoveryKeysCollect = time.Time{}
+		h.mu.Unlock()
+	}()
 	var (
 		key       security.RecoveryKey
 		rotateErr error
@@ -58,22 +77,15 @@ func handleEncryptionRotateKey(h *Heartbeat, cmd Command) tools.CommandResult {
 	switch runtime.GOOS {
 	case "windows":
 		mount := strings.ToUpper(tools.GetPayloadString(cmd.Payload, "volumeMount", "C:"))
-		key, rotateErr = security.RotateBitLockerKey(mount)
+		key, rotateErr = rotateBitLockerKey(mount)
 	case "darwin":
 		username := tools.GetPayloadString(cmd.Payload, "username", "")
 		password := tools.GetPayloadString(cmd.Payload, "password", "")
 		currentKey := tools.GetPayloadString(cmd.Payload, "currentRecoveryKey", "")
-		key, rotateErr = security.RotateFileVaultKey(username, password, currentKey)
+		key, rotateErr = rotateFileVaultKey(username, password, currentKey)
 	default:
 		return tools.NewErrorResult(fmt.Errorf("recovery key rotation is not supported on %s", runtime.GOOS), time.Since(start).Milliseconds())
 	}
-
-	// Rotation changed (or may have partly changed) the protector set: have the
-	// next security tick re-read and re-snapshot it instead of waiting out
-	// recoveryKeyCollectInterval.
-	h.mu.Lock()
-	h.lastRecoveryKeysCollect = time.Time{}
-	h.mu.Unlock()
 
 	if key.Key != "" {
 		if pushErr := h.pushRecoveryKeys("rotation", []security.RecoveryKey{key}); pushErr != nil {

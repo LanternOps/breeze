@@ -277,7 +277,7 @@ func handleRefreshInventory(h *Heartbeat, _ Command) tools.CommandResult {
 		// full refresh of everything in the dispatched list below.
 		go h.sendHardwareInventory()
 		go h.sendPatchInventory()
-		go h.sendSecurityStatus()
+		go h.sendSecurityStatus(true)
 		go h.sendSessionInventory()
 		// Reset the daily gates so the scheduler doesn't immediately re-run the
 		// hardware/patch scans right after this manual refresh.
