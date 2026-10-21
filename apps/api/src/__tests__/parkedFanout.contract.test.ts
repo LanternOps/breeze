@@ -160,6 +160,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/monitors/listServiceMonitors.ts': 'scopes candidates via auth.orgCondition/site/device axes, re-checks org access per row',
   'services/partnerTrustEvidenceCard.ts': 'review card for one partner, emailed to human admins; not an action selector',
   'services/patchInstallFailures.ts': 'per-patch failure counts for patch dashboards; RLS-scoped read, no action selection',
+  'services/patchSeverityOverlay.ts': 'effective per-device severity/category SQL fragments + aggregate for the patch catalog list (#9387 gap 1); read model only, applied inside a device_patches query the caller already scoped via resolveOutstandingDeviceScope, selects no targets',
   'services/scriptProposals/queries.ts': 'Proposal detail read model for the UI; device ids derived from an org-scoped proposal row',
   'services/softwarePolicyInstallPreview.ts': 'Dry-run device count shown to the operator before confirming a fleet install',
   'services/ticketTriage.ts': 'Site-scoped read model/aggregate for ticket-triage quality stats',
