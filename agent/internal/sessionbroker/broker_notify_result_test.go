@@ -88,6 +88,9 @@ func TestBroadcastNotificationRecordsUndelivered(t *testing.T) {
 	if strings.Contains(out, "dropping unsolicited") {
 		t.Fatalf("undelivered notify_result was dropped as unsolicited:\n%s", out)
 	}
+	if !strings.Contains(out, "undeliveredTotal=1") {
+		t.Errorf("undelivered line should carry the running total:\n%s", out)
+	}
 	if got := b.BroadcastNotifyUndeliveredCount(); got != 1 {
 		t.Fatalf("BroadcastNotifyUndeliveredCount() = %d, want 1", got)
 	}
@@ -106,4 +109,27 @@ func TestUnmatchedNotifyResultStillDropped(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 	waitForLog(t, buf, "dropping unsolicited or unauthorized helper message")
+}
+
+// TestStartCommandSendErrorLeavesNothingPending: when the send fails,
+// startCommand returns the error and unregisters the reply it had reserved,
+// so a broadcast to a dying helper cannot leak a pending entry.
+func TestStartCommandSendErrorLeavesNothingPending(t *testing.T) {
+	serverConn, clientConn := createSocketPair(t)
+	_ = clientConn.Close()
+	s := NewSession(ipc.NewConn(serverConn), 1000, "1000", "alice", "", "dying", []string{"notify"})
+	t.Cleanup(func() { _ = s.Close() })
+	// Close the transport under the session (not s.Close, which would make
+	// startCommand refuse before registering anything) so SendTyped fails.
+	_ = serverConn.Close()
+
+	if _, err := s.startCommand("notify-bcast-x", ipc.TypeNotify, &ipc.NotifyRequest{}); err == nil {
+		t.Fatal("startCommand on a closed transport succeeded; the send-error path is not exercised")
+	}
+	s.mu.Lock()
+	pending := len(s.pending)
+	s.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("%d pending entries left after a failed send", pending)
+	}
 }

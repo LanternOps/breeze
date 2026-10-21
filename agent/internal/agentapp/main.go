@@ -2117,6 +2117,21 @@ const (
 	helperLogMaxBackups = 3
 )
 
+// helperPanicFileMaxBytes bounds the stderr file. Panics are rare, but
+// anything else a library writes to stderr lands there too, and nothing
+// rotates it.
+const helperPanicFileMaxBytes = 1 << 20
+
+// openHelperPanicFile opens the stderr/panic file for appending, starting it
+// afresh when it has grown past helperPanicFileMaxBytes.
+func openHelperPanicFile(path string) (*os.File, error) {
+	flags := os.O_CREATE | os.O_APPEND | os.O_WRONLY
+	if fi, err := os.Stat(path); err == nil && fi.Size() > helperPanicFileMaxBytes {
+		flags |= os.O_TRUNC
+	}
+	return os.OpenFile(path, flags, 0600)
+}
+
 func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind string) {
 	// Detach any inherited console immediately. This runs at the top of
 	// every helper role — user-helper, desktop-helper, and any future
@@ -2147,6 +2162,7 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	}
 	logPath := filepath.Join(logDir, logFileName)
 	var output io.Writer = os.Stdout
+	var panicFileErr error
 	// Rotated like agent.log: the helper lives for the whole logon session
 	// and used to append to one file forever.
 	rw, openErr := logging.NewRotatingWriter(logPath, helperLogMaxSizeMB, helperLogMaxBackups)
@@ -2163,7 +2179,8 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		// service. Its own plain file, not the rotating one: rotation
 		// renames the file out from under any handle handed to the OS
 		// (same choice as cmd/breeze-backup).
-		if pf, err := os.OpenFile(filepath.Join(logDir, panicFileName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+		var pf *os.File
+		if pf, panicFileErr = openHelperPanicFile(filepath.Join(logDir, panicFileName)); panicFileErr == nil {
 			redirectStderr(pf)
 		}
 	}
@@ -2249,6 +2266,12 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// or a CREATE_NO_WINDOW spawn, stdout goes nowhere at all). Emitted
 	// after the shipper is up so the warn still reaches Agent Logs.
 	logging.EmitLogFileOutcome(slog.Default(), logPath, openErr, mkdirErr, homeErr)
+	if panicFileErr != nil {
+		// Otherwise a later panic under CREATE_NO_WINDOW goes to NUL with
+		// nothing anywhere saying why.
+		slog.Warn("helper panic log unavailable; a panic stack trace would be lost",
+			"path", filepath.Join(logDir, panicFileName), "error", panicFileErr)
+	}
 
 	// Top-level panic recovery for the main goroutine of runHelperProcess.
 	// NOTE: recover() only catches panics in THIS goroutine. Panics in

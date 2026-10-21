@@ -1454,25 +1454,29 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 }
 
 // broadcastNotifyResultTimeout bounds how long a broadcast waits for the
-// helper's notify_result. Showing a toast is non-blocking; the slow path is the
-// PowerShell fallback starting up, which takes seconds, not minutes.
-// A var only so tests can shorten it.
-var broadcastNotifyResultTimeout = 60 * time.Second
+// helper's notify_result. Showing a toast is normally quick, but the helper
+// answers only after its PowerShell fallback returns, and that has no timeout
+// of its own. A reply arriving after the wait has given up is dropped as
+// unsolicited at WARN again — the noise #9266 removed — so this is generous:
+// it costs one parked goroutine per helper per broadcast, and broadcasts are
+// rare (the reboot-warning ladder). A var only so tests can shorten it.
+var broadcastNotifyResultTimeout = 5 * time.Minute
 
 // awaitBroadcastNotifyResult consumes the reply a broadcast notification is
-// owed and records its outcome. A missing reply is not a failure worth a warn:
-// the helper may have exited, and the reboot ladder never depends on it.
+// owed and records its outcome. A missing or unreadable reply is Info, not a
+// warn: the helper may simply have exited, and the reboot ladder never depends
+// on the answer.
 func (b *Broker) awaitBroadcastNotifyResult(s *Session, wait func(time.Duration) (*ipc.Envelope, error), timeout time.Duration) {
 	resp, err := wait(timeout)
 	if err != nil {
-		log.Debug("no notify_result for broadcast notification",
+		log.Info("no notify_result for broadcast notification",
 			"sessionId", s.SessionID, "role", s.HelperRole, "error", err.Error())
 		return
 	}
 	var res ipc.NotifyResult
 	if resp.Error == "" {
 		if err := json.Unmarshal(resp.Payload, &res); err != nil {
-			log.Debug("undecodable notify_result for broadcast notification",
+			log.Info("undecodable notify_result for broadcast notification",
 				"sessionId", s.SessionID, "role", s.HelperRole, "error", err.Error())
 			return
 		}
@@ -1482,9 +1486,10 @@ func (b *Broker) awaitBroadcastNotifyResult(s *Session, wait func(time.Duration)
 			"sessionId", s.SessionID, "role", s.HelperRole)
 		return
 	}
-	b.broadcastNotifyUndelivered.Add(1)
+	total := b.broadcastNotifyUndelivered.Add(1)
 	log.Info("broadcast notification not delivered",
-		"sessionId", s.SessionID, "role", s.HelperRole, "helperError", resp.Error)
+		"sessionId", s.SessionID, "role", s.HelperRole, "helperError", resp.Error,
+		"undeliveredTotal", total)
 }
 
 // notifyDecisionSeq numbers the envelope ids RequestNotificationDecision

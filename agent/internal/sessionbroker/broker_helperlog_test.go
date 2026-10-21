@@ -108,3 +108,31 @@ func TestHelperLogRateCapped(t *testing.T) {
 		t.Fatalf("post-cap record should carry droppedByAgent=15, got:\n%s", strings.Join(after, "\n"))
 	}
 }
+
+// TestHelperLogRelayedThroughRealConn drives a helper_log through a real
+// ipc.Conn and the session's RecvLoop, exactly as userhelper.LogForwarder.Pump
+// sends it (empty envelope id), so the wire encoding and the
+// HandleResponse-then-dispatch path are covered, not just the dispatch switch.
+func TestHelperLogRelayedThroughRealConn(t *testing.T) {
+	buf := captureLogs(t)
+	b := New("helper-log-wire", nil)
+	p := newNotifyProbe(t, b, "user-helper", []string{"notify"})
+	p.session.HelperRole = ipc.HelperRoleUser
+	go p.session.RecvLoop(b.dispatchHelperMessage)
+
+	if err := p.client.SendTyped("", ipc.TypeHelperLog, ipc.HelperLogRecord{
+		Level:   "warn",
+		Message: "toast notifications are disabled; not retrying via PowerShell",
+		Dropped: 2,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	out := waitForLog(t, buf, "toast notifications are disabled")
+	line := linesContaining(out, "toast notifications are disabled")[0]
+	for _, want := range []string{"level=WARN", "component=helper", "helperRole=user", "droppedByHelper=2"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("relayed line missing %q: %s", want, line)
+		}
+	}
+}
