@@ -2192,36 +2192,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Cobrar a",
-    "documentType": "Factura",
-    "due": "Pendiente",
-    "empty": "Esta factura aún no tiene ninguna partida.",
-    "fallbackTitle": "Factura",
-    "issued": "Emitido",
-    "laborLine": "Mano de obra",
     "preview": {
       "description": "Esto es lo que su cliente ve en su factura.",
       "downloadError": "No se pudo descargar la factura PDF.",
       "downloadPdf": "Descargar PDF",
-      "preparing": "Preparando…"
+      "loadError": "No se pudo cargar la vista del cliente de esta factura.",
+      "loading": "Cargando la vista del cliente…",
+      "preparing": "Preparando…",
+      "retry": "Reintentar"
     },
-    "table": {
-      "amount": "Cantidad",
-      "description": "Descripción",
-      "qty": "Cantidad",
-      "tax": "Impuesto",
-      "unitPrice": "Precio unitario"
-    },
-    "terms": "Términos y condiciones",
-    "ticketHeader": "Ticket n.º {{number}}",
-    "ticketWork": "Trabajo de ticket",
-    "totals": {
-      "amountDue": "Monto adeudado",
-      "paid": "Pagado",
-      "subtotal": "Total parcial",
-      "tax": "Impuesto",
-      "total": "Total"
-    }
+    "ticketHeader": "Ticket n.º {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Facturas",
@@ -2846,6 +2826,10 @@
       "confirm": "Confirmar",
       "failed": "Verificación fallida. Inténtelo de nuevo.",
       "unavailable": "No se pudo iniciar la verificación"
+    },
+    "notEnabled": {
+      "title": "Los pagos automáticos no están habilitados para su cuenta",
+      "hint": "Los pagos automáticos aún no se han activado. Pida a su administrador de Breeze que los habilite y luego vuelva para solicitar la inscripción a sus clientes."
     }
   },
   "reminders": {

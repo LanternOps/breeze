@@ -445,6 +445,14 @@
         "message": "Homebrew'u, resmi yükleyicinin sabitlenmiş ve sağlama toplamı doğrulanmış bir kopyasını kullanarak o anda oturum açmış kullanıcı olarak yükler. Etkin veya parolasız bir sudo kimlik bilgisine sahip bir yönetici konsol oturumu gerektirir; aksi takdirde yükleme başarısız olur ve hata geri bildirilir.",
         "confirm": "Homebrew'u yükle"
       },
+      "restartAgent": {
+        "title": "Breeze ajanı yeniden başlatılsın mı?",
+        "message": "{{hostname}} üzerindeki watchdog'dan Breeze ajan hizmetini yeniden başlatmasını iste. Watchdog bunu bir sonraki bağlantısında, genellikle bir dakika içinde alır ve yalnızca ajan çalışmıyorken bağlanır.",
+        "watchdogLastSeen": "Watchdog'un son bildirimi: {{date}}.",
+        "watchdogStale": "Watchdog en son {{date}} tarihinde bildirimde bulundu; isteği almak için çok eski. Tekrar bağlanana kadar istek reddedilir.",
+        "watchdogNeverSeen": "Watchdog henüz bildirimde bulunmadı; bağlanana kadar istek reddedilir.",
+        "confirm": "Ajanı yeniden başlat"
+      },
       "bulkDeleteManual": {
         "title": "{{count}} manuel varlık silinsin mi?",
         "message": "Bu, seçili manuel varlıkları kalıcı olarak siler. Bu işlem geri alınamaz.",
@@ -492,7 +500,8 @@
     "power": "Güç",
     "shutdown": "Kapatma",
     "deviceSettings": "Cihaz Ayarları",
-    "installHomebrew": "Homebrew'u yükle"
+    "installHomebrew": "Homebrew'u yükle",
+    "restartAgent": "Ajanı yeniden başlat"
   },
   "deviceActivityFeed": {
     "activity": "Etkinlik",
@@ -868,7 +877,12 @@
     "devices": "Cihazlar",
     "devicesCrumbOtherOrg": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz {{workingOrg}} olarak kalır",
     "devicesCrumbOtherOrgUnnamed": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz değişmez",
-    "switchOrgFailed": "Kuruluş değiştirilemedi. Tekrar deneyin."
+    "switchOrgFailed": "Kuruluş değiştirilemedi. Tekrar deneyin.",
+    "restartAgent": {
+      "queued": "{{hostname}} için ajanın yeniden başlatılması istendi. Watchdog bunu bir sonraki bağlantısında çalıştırır.",
+      "alreadyPending": "{{hostname}} için bir ajan yeniden başlatma isteği zaten watchdog'u bekliyor.",
+      "failed": "{{hostname}} için ajanın yeniden başlatılması istenemedi"
+    }
   },
   "deviceDetails": {
     "overview": "Genel Bakış",
@@ -2052,6 +2066,7 @@
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
+      "excludedDeclinedTitle": "Reddedildi: bu yama açıkça reddedildi, bu nedenle halkanın otomatik onayı onu yüklemez. İzin vermek için yeniden onaylayın.",
       "pending": "Onay bekliyor",
       "needsApprovalRingTitle": "{{ring}} güncelleme halkası bu yamayı otomatik onaylamıyor. Yüklemek için el ile onaylayın.",
       "needsApprovalNoRingTitle": "Bu cihazın yama ilkesine bağlı bir güncelleme halkası yok; bu yüzden bu yama yalnızca el ile onaydan sonra yüklenir.",

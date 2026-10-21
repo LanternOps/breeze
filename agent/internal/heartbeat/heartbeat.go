@@ -4122,6 +4122,12 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		if p.Scope != "" {
 			item["scope"] = p.Scope
 		}
+		// Where the severity came from (vendor rating vs. derived from the
+		// update's classification, #9387). Omitted when the provider has no
+		// provenance, so the API stores NULL rather than a guess.
+		if p.SeveritySource != "" && severity != "unknown" {
+			item["severitySource"] = p.SeveritySource
+		}
 		items[i] = item
 	}
 	return items

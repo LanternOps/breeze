@@ -1,7 +1,11 @@
 import { config } from 'dotenv';
-// Load .env from monorepo root (when running from apps/api) or cwd (when running from root)
-config({ path: '../../.env', quiet: true });
-config({ quiet: true }); // Also try cwd
+// Load .env from monorepo root (when running from apps/api) or cwd (when running from root).
+// Never under vitest (#9344): a developer's root .env must not change what unit
+// tests do, and the integration / RLS-coverage configs load .env.test themselves.
+if (!process.env.VITEST) {
+  config({ path: '../../.env', quiet: true });
+  config({ quiet: true }); // Also try cwd
+}
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { sql, type SQL } from 'drizzle-orm';

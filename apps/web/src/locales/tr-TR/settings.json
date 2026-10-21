@@ -2952,6 +2952,7 @@
           "blocked_by_category": "Halkanın kategori kuralları tarafından hariç tutuldu",
           "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
           "awaiting_manual_approval": "Manuel onay bekleniyor",
+          "explicitly_declined": "Açıkça reddedildi",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
           "ring_reference_invalid": "İlkenin güncelleme halkası geçersiz",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
@@ -5757,16 +5758,12 @@
       "nameRequired": "Kuruluş adı gerekli",
       "slugRequired": "Bilgi notu gerekli",
       "slugFormat": "Yalnızca küçük harf, rakam ve kısa çizgi kullanın",
-      "maxDevicesRequired": "Maksimum cihaz sınırını girin",
-      "maxDevicesInteger": "Maksimum cihaz tam sayı olmalıdır",
-      "maxDevicesMin": "Maksimum cihaz sayısı en az 1 olmalıdır",
       "contractEndAfterStart": "Sözleşme sonu başlangıç tarihinde veya sonrasında olmalıdır"
     },
     "fields": {
       "name": "Kuruluş adı",
       "slug": "Sümüklüböcek",
       "type": "Kuruluş türü",
-      "maxDevices": "Maksimum cihaz sayısı",
       "contractStart": "Sözleşme başlangıcı",
       "contractEnd": "Sözleşme sonu"
     },

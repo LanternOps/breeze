@@ -1,3 +1,4 @@
+import { DOCUMENT_LABELS_EN } from './en';
 import type { DocumentLabels } from './types';
 
 /**
@@ -51,4 +52,9 @@ export const DOCUMENT_LABELS_PT_BR: DocumentLabels = Object.freeze({
     payOnline: 'Pagar on-line:',
     category: (name: string) => `Categoria: ${name}`,
   }),
+  // ---- W2a (#9418): quote document ----
+  // Not translated yet: W2b ports the web app's pt-BR `quotes.document.*`
+  // strings here before it deletes them. Until then pt-BR proposals read in
+  // English, exactly as the portal and the PDF did before this package.
+  quote: DOCUMENT_LABELS_EN.quote,
 });

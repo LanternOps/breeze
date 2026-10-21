@@ -43,6 +43,10 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
   // nothing left to charge). That's terminal, so drop the CTA instead of leaving a
   // button whose only outcome is the same error again.
   const [payUnavailable, setPayUnavailable] = useState(false);
+  // Same source of truth as the invoice page (#7509): GET /portal/invoices/:id's
+  // onlinePaymentAvailable. Only an explicit false hides the CTA; a failed lookup
+  // keeps it, and the pay route's 409 stays the backstop.
+  const [onlinePaymentOff, setOnlinePaymentOff] = useState(false);
 
   if (error || !detail) {
     return (
@@ -91,14 +95,28 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
     setMsg(null);
     setMsgError(false);
     const res = await portalApi.acceptQuote(quote.id, signerName.trim());
-    setBusy(false);
     if (res.error) {
+      setBusy(false);
       setMsg(res.error);
       setMsgError(true);
       return;
     }
+    const invoiceId = res.data?.data?.invoiceId ?? null;
+    // Resolve availability before flipping to the accepted state so the CTA never
+    // flashes in and then disappears.
+    // The quote is already accepted, so a failed lookup must never block the
+    // accepted state; busy stays set meanwhile so Accept can't be re-sent.
+    if (invoiceId) {
+      try {
+        const inv = await portalApi.getInvoice(invoiceId);
+        if (inv.data?.onlinePaymentAvailable === false) setOnlinePaymentOff(true);
+      } catch (err) {
+        console.error('[portal] post-accept invoice availability lookup failed', err);
+      }
+    }
+    setBusy(false);
     setStatus('converted');
-    setAcceptedInvoiceId(res.data?.data?.invoiceId ?? null);
+    setAcceptedInvoiceId(invoiceId);
     setMsg('Accepted. Your invoice is ready.');
   };
 
@@ -186,7 +204,7 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
   // is known-good. A quote that was already converted when the page loaded carries no
   // invoice figures (or payment state), so that customer gets the invoice link only,
   // where InvoiceDetailView pays against a live balance.
-  const canPay = acceptedInvoiceId !== null && !payUnavailable && Number(payCharge.amount) > 0;
+  const canPay = acceptedInvoiceId !== null && !payUnavailable && !onlinePaymentOff && Number(payCharge.amount) > 0;
   const invoiceHref = withBase(acceptedInvoiceId ? `/invoices/${acceptedInvoiceId}` : '/invoices');
 
   return (
@@ -420,6 +438,11 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
             <p data-testid="quote-accepted-on-behalf">
               Accepted on your behalf by {branding?.partnerName || 'your provider'}
               {quote.acceptedAt ? ` on ${shortDate(quote.acceptedAt)}` : ''}.
+            </p>
+          )}
+          {onlinePaymentOff && acceptedInvoiceId !== null && (
+            <p data-testid="quote-pay-offline">
+              {`Online payment isn't available for this invoice. Please contact ${branding?.partnerName || 'your provider'} to pay.`}
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">

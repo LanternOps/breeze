@@ -1,332 +1,74 @@
-import { useMemo, Fragment, type CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
-import { useOrgStore } from '../../stores/orgStore';
+import { InvoiceDocumentView, type DocumentHostComponents } from '@breeze/document-ui';
+import {
+  buildInvoiceDocumentModel,
+  documentLabelsFor,
+  type CustomerInvoiceDocument,
+  type InvoiceDocumentModel,
+} from '@breeze/shared/documents';
+import { fetchWithAuth } from '../../stores/auth';
 import { usePdfDownload } from './shared/usePdfDownload';
-import {
-  type InvoiceDetail as InvoiceDetailData,
-  type InvoiceLine,
-  STATUS_ROLES,
-  formatDate,
-  formatMoney,
-  lineTaxAmount,
-  lineWorkedVsBilledNote,
-  pctFromFraction,
-  sellerLines,
-} from './invoiceTypes';
-import { StatusPill } from './shared/StatusPill';
-import {
-  DEFAULT_INVOICE_LINE_DETAIL,
-  formatWorkDate,
-  groupLinesByDay,
-  invoiceLineText,
-  lineWorkDateToShow,
-  type InvoiceLineDetail,
-} from '@breeze/shared';
+import type { InvoiceDetail as InvoiceDetailData } from './invoiceTypes';
+import { webHostComponents } from './documentHostComponents';
 
-function LineRow({ line, currency, taxRate, showTax, lineDetail }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean; lineDetail: InvoiceLineDetail }) {
-  const { t, i18n } = useTranslation();
-  const child = !!line.parentLineId;
-  const tax = showTax ? lineTaxAmount(line.lineTotal, line.taxable, taxRate) : null;
-  const workedVsBilledNote = lineDetail.showWorkedTime ? lineWorkedVsBilledNote(line, t) : null;
-  const text = invoiceLineText(line, lineDetail);
-  const workDate = lineWorkDateToShow(line, lineDetail);
-  return (
-    <tr className="border-b align-top last:border-0">
-      <td className={`px-4 py-3 sm:px-5 ${child ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
-        <span className={child ? '' : 'font-medium'}>{child ? <span aria-hidden="true">↳ </span> : ''}{text.title ?? t('billing:invoiceDocument.laborLine')}</span>
-        {workDate && (
-          <p className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-document-line-date-${line.id}`}>
-            {formatWorkDate(workDate, i18n.language)}
-          </p>
-        )}
-        {text.blurb && <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{text.blurb}</p>}
-        {/* #6467: worked-vs-billed disclosure, sourced from workedMinutes — never
-            from `description`, so editing the description can't erase it. */}
-        {workedVsBilledNote && (
-          <p className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-document-line-worked-vs-billed-${line.id}`}>
-            {workedVsBilledNote}
-          </p>
-        )}
-      </td>
-      <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{line.quantity}</td>
-      <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{formatMoney(line.unitPrice, currency)}</td>
-      {showTax && (
-        <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>
-      )}
-      <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{formatMoney(line.lineTotal, currency)}</td>
-    </tr>
-  );
-}
+type PreviewState =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'ready'; model: InvoiceDocumentModel; accent: string | null };
 
-interface DocumentProps {
+/** Preview-tab wrapper: renders the CUSTOMER document (`GET /invoices/:id/customer-view`,
+ *  the same assembler the portal and the public link use), so what staff see is what the
+ *  customer sees. The staff `detail` is only the refetch trigger: the workspace hands a new
+ *  object after every `reload()`, and the tab remounts this component on each visit. */
+export default function InvoiceDocumentPreview({
+  detail,
+  components = webHostComponents,
+}: {
   detail: InvoiceDetailData;
-  /** Resolved customer/bill-to name (parent looks it up against the org list). */
-  customerName: string;
-}
-
-/** Pure, presentational customer-facing invoice document. Renders the same
- *  customer-visible lines and totals the customer receives on their invoice,
- *  using the seller snapshot and the app accent. The sibling of QuoteDocument;
- *  works for drafts without a portal round-trip. */
-export function InvoiceDocument({ detail, customerName }: DocumentProps) {
-  const { t, i18n } = useTranslation('billing');
-  const { invoice, lines, branding } = detail;
-  const currency = branding?.currencyCode ?? invoice.currencyCode;
-  const seller = branding?.seller ?? invoice.sellerSnapshot;
-  // Partner brand accent when resolved; otherwise the app's primary accent.
-  const accent = branding?.primaryColor || 'hsl(var(--primary))';
-  const accentStyle = { ['--doc-accent']: accent } as CSSProperties;
-  // Wordmark/logo identity: partner logo → partner name → seller name. The
-  // letterhead rule renders whenever any identity is shown. Same source and
-  // precedence as QuoteDocument so invoices and quotes brand identically.
-  const wordmark = branding?.partnerName || seller?.name || null;
-
-  // Customers only ever see customer-visible lines — cost/margin and hidden
-  // bundle components never reach the document.
-  const visibleLines = useMemo(
-    () => lines.filter((l) => l.customerVisible).sort((a, b) => a.sortOrder - b.sortOrder),
-    [lines],
-  );
-  const groups = useMemo(() => {
-    const list: { key: string; ticketId: string | null; ticketNumber?: string | null; ticketSubject?: string | null; ticketCategory?: string | null; lines: InvoiceLine[] }[] = [];
-    const map = new Map<string, typeof list[0]>();
-    for (const l of visibleLines) {
-      const key = l.ticketId ?? '__none__';
-      let g = map.get(key);
-      if (!g) {
-        g = {
-          key,
-          ticketId: l.ticketId ?? null,
-          ticketNumber: l.ticketNumber ?? null,
-          ticketSubject: l.ticketSubject ?? null,
-          ticketCategory: l.ticketCategory ?? null,
-          lines: [],
-        };
-        map.set(key, g);
-        list.push(g);
-      }
-      g.lines.push(l);
-    }
-    return list;
-  }, [visibleLines]);
-  const lineDetail = detail.lineDetail ?? DEFAULT_INVOICE_LINE_DETAIL;
-  const isEmpty = visibleLines.length === 0;
-  const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
-    ? t('invoice.status.issued')
-    : t(/* i18n-dynamic */ `invoice.status.${invoice.status}`);
-  const amountPaid = Number(invoice.amountPaid);
-  // Only surface the per-line Tax column when this invoice carries tax — mirrors
-  // the header Tax row's visibility (otherwise it's a column of dashes).
-  const showTax = Number(invoice.taxTotal) > 0;
-
-  return (
-    <div
-      style={accentStyle}
-      data-testid="invoice-document"
-      className="mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xs"
-    >
-      <div className="space-y-10 px-4 py-7 sm:px-12 sm:py-10">
-        {/* ── Header ─────────────────────────────────────────────── */}
-        <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-3">
-            {/* Partner logo (or wordmark) + letterhead rule, mirroring the quote
-                document. An unbranded invoice with no seller name lets the
-                right-hand "Invoice" meta carry identity instead. */}
-            {branding?.logoUrl ? (
-              <img src={branding.logoUrl} alt={branding.partnerName} className="h-11 w-auto max-w-[220px] object-contain" />
-            ) : wordmark ? (
-              <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
-                {wordmark}
-              </p>
-            ) : null}
-            {(branding?.logoUrl || wordmark) && (
-              /* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */
-              <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
-            )}
-            {seller && (
-              <address className="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
-                {sellerLines(seller.address).map((line, i) => <p key={i}>{line}</p>)}
-                {seller.phone && <p>{seller.phone}</p>}
-                {seller.email && <p>{seller.email}</p>}
-                {seller.website && <p>{seller.website}</p>}
-              </address>
-            )}
-          </div>
-
-          <div className="space-y-2 sm:text-right">
-            <p className="text-[1.75rem] font-semibold leading-none tracking-tight text-foreground" data-testid="invoice-document-number">
-              {invoice.invoiceNumber ?? t('invoiceDocument.fallbackTitle')}
-            </p>
-            {/* The "Invoice" type label is redundant on an unnumbered draft, where the
-                heading above already reads "Invoice" and the status pill reads "Draft". */}
-            {invoice.invoiceNumber && <p className="text-sm font-medium text-muted-foreground">{t('invoiceDocument.documentType')}</p>}
-            <StatusPill
-              role={STATUS_ROLES[invoice.status].role}
-              label={invoiceStatusLabel}
-              className={STATUS_ROLES[invoice.status].className}
-            />
-            <dl className="space-y-0.5 pt-1 text-xs text-muted-foreground sm:flex sm:flex-col sm:items-end">
-              {invoice.issueDate && (
-                <div className="flex gap-2"><dt>{t('invoiceDocument.issued')}</dt><dd className="font-medium text-foreground/80">{formatDate(invoice.issueDate)}</dd></div>
-              )}
-              {invoice.dueDate && (
-                <div className="flex gap-2"><dt>{t('invoiceDocument.due')}</dt><dd className="font-medium text-foreground/80">{formatDate(invoice.dueDate)}</dd></div>
-              )}
-            </dl>
-          </div>
-        </header>
-
-        {/* ── Bill to + notes ────────────────────────────────────── */}
-        <section className="space-y-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceDocument.billTo')}</p>
-            <p className="mt-1 text-base font-medium text-foreground" data-testid="invoice-document-customer">{customerName}</p>
-          </div>
-          {invoice.notes?.trim() && (
-            <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">
-              {invoice.notes.trim()}
-            </p>
-          )}
-        </section>
-
-        {/* ── Lines ──────────────────────────────────────────────── */}
-        {isEmpty ? (
-          <div className="rounded-lg border border-dashed bg-muted/30 px-6 py-12 text-center text-sm text-muted-foreground">
-            {t('invoiceDocument.empty')}
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-lg border bg-card">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[30rem] text-sm" data-testid="invoice-document-lines">
-                <thead>
-                  <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-2.5 text-left font-medium sm:px-5">{t('invoiceDocument.table.description')}</th>
-                    <th className="px-2 py-2.5 text-right font-medium">{t('invoiceDocument.table.qty')}</th>
-                    <th className="px-2 py-2.5 text-right font-medium">{t('invoiceDocument.table.unitPrice')}</th>
-                    {showTax && <th className="px-2 py-2.5 text-right font-medium">{t('invoiceDocument.table.tax')}</th>}
-                    <th className="px-4 py-2.5 text-right font-medium sm:px-5">{t('invoiceDocument.table.amount')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groups.map((group) => (
-                    <Fragment key={group.key}>
-                      {group.ticketId && (
-                        <tr className="border-b bg-muted/30">
-                          <td colSpan={showTax ? 5 : 4} className="px-4 py-2 sm:px-5">
-                            <div className="flex flex-wrap items-center gap-2 text-xs">
-                              <span className="font-semibold text-foreground">
-                                {group.ticketNumber
-                                  ? t('invoiceDocument.ticketHeader', { number: group.ticketNumber })
-                                  : t('invoiceDocument.ticketWork')}
-                                {group.ticketSubject ? `: ${group.ticketSubject}` : ''}
-                              </span>
-                              {group.ticketCategory && (
-                                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground font-medium">
-                                  {group.ticketCategory}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                      {(lineDetail.grouping === 'day' && lineDetail.showDate
-                        ? groupLinesByDay(group.lines)
-                        : [{ workDate: null, lines: group.lines, hours: '', total: '' }]
-                      ).map((bucket) => (
-                        <Fragment key={bucket.workDate ?? '__undated__'}>
-                          {bucket.workDate && (
-                            <tr className="border-b bg-muted/10" data-testid={`invoice-document-day-${bucket.workDate}`}>
-                              <td className="px-4 py-2 text-xs font-semibold text-foreground sm:px-5">{formatWorkDate(bucket.workDate, i18n.language)}</td>
-                              <td className="whitespace-nowrap px-2 py-2 text-right text-xs tabular-nums text-muted-foreground">{String(Number(bucket.hours))}</td>
-                              <td />
-                              {showTax && <td />}
-                              <td className="whitespace-nowrap px-4 py-2 text-right text-xs font-semibold tabular-nums text-foreground sm:px-5">{formatMoney(bucket.total, currency)}</td>
-                            </tr>
-                          )}
-                          {bucket.lines.map((l) => (
-                            <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} lineDetail={lineDetail} />
-                          ))}
-                        </Fragment>
-                      ))}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* ── Totals ─────────────────────────────────────────────── */}
-        {!isEmpty && (
-          <section className="flex justify-end">
-            <div className="w-full max-w-xs space-y-2.5">
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">{t('invoiceDocument.totals.subtotal')}</span>
-                <span className="tabular-nums text-foreground">{formatMoney(invoice.subtotal, currency)}</span>
-              </div>
-              {showTax && (
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">{t('invoiceDocument.totals.tax')}{invoice.taxRate ? ` (${pctFromFraction(invoice.taxRate)}%)` : ''}</span>
-                  <span className="tabular-nums text-foreground">{formatMoney(invoice.taxTotal, currency)}</span>
-                </div>
-              )}
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">{t('invoiceDocument.totals.total')}</span>
-                <span className="tabular-nums text-foreground">{formatMoney(invoice.total, currency)}</span>
-              </div>
-              {amountPaid > 0 && (
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">{t('invoiceDocument.totals.paid')}</span>
-                  <span className="tabular-nums text-foreground">{formatMoney(invoice.amountPaid, currency)}</span>
-                </div>
-              )}
-              <div
-                className="flex items-baseline justify-between border-t pt-3"
-                style={{ borderColor: 'var(--doc-accent)' }}
-              >
-                <span className="text-sm font-semibold text-foreground">{t('invoiceDocument.totals.amountDue')}</span>
-                <span
-                  className="text-2xl font-semibold tabular-nums"
-                  style={{ color: 'var(--doc-accent)' }}
-                  data-testid="invoice-document-due"
-                >
-                  {formatMoney(invoice.balance, currency)}
-                </span>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* ── Terms ──────────────────────────────────────────────── */}
-        {invoice.termsAndConditions?.trim() && (
-          <section className="space-y-2 border-t pt-6">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceDocument.terms')}</h3>
-            <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">
-              {invoice.termsAndConditions.trim()}
-            </p>
-          </section>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Preview-tab wrapper: resolves the customer name from the loaded org list (same
- *  source as InvoiceDetail), renders the document, and offers a PDF download. */
-export default function InvoiceDocumentPreview({ detail }: { detail: InvoiceDetailData }) {
+  /** Test seam: parity tests inject deterministic stand-ins. */
+  components?: DocumentHostComponents;
+}) {
   const { t } = useTranslation('billing');
   const { invoice } = detail;
-  const organizations = useOrgStore((s) => s.organizations);
+  const [state, setState] = useState<PreviewState>({ status: 'loading' });
+  const [retryNonce, setRetryNonce] = useState(0);
+  const accentRef = useRef<HTMLDivElement>(null);
 
-  const customerName = useMemo(() => {
-    const billTo = invoice.billToName?.trim();
-    if (billTo) return billTo;
-    const resolved = organizations.find((o) => o.id === invoice.orgId)?.name?.trim();
-    // Never leak a raw org UUID fragment onto a customer-facing document — if the
-    // org store hasn't resolved a name yet, show a neutral em-dash instead.
-    return resolved || '—';
-  }, [invoice.billToName, invoice.orgId, organizations]);
+  useEffect(() => {
+    // Cleanup flips this, so an older request finishing after a newer one is discarded.
+    let current = true;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(`/invoices/${invoice.id}/customer-view`);
+        if (!res.ok) throw new Error(`customer-view ${res.status}`);
+        const body = (await res.json()) as { data?: CustomerInvoiceDocument };
+        if (!body.data?.invoice || !Array.isArray(body.data.lines)) throw new Error('customer-view: malformed body');
+        // Built inside the try: a payload that passes the shape check but breaks the builder
+        // (missing branding, bad currency) shows the error state instead of throwing in render.
+        const dto = body.data;
+        const model = buildInvoiceDocumentModel(dto, documentLabelsFor(dto.documentLocale));
+        if (current) setState({ status: 'ready', model, accent: dto.branding.primaryColor });
+      } catch (err) {
+        console.error('[InvoiceDocumentPreview] customer view failed', invoice.id, err instanceof Error ? err.message : err);
+        if (current) setState({ status: 'error' });
+      }
+    })();
+    return () => { current = false; };
+    // `detail` is the refetch trigger (new object per reload()); `invoice.id` rides along with it.
+  }, [detail, retryNonce]);
+
+  const model = state.status === 'ready' ? state.model : null;
+
+  // The accent is host chrome (the package writes no style attribute): the wrapper, not the paper, carries it.
+  const accent = state.status === 'ready' ? state.accent : null;
+  useEffect(() => {
+    const el = accentRef.current;
+    if (!el) return;
+    if (accent) el.style.setProperty('--doc-accent', accent);
+    else el.style.removeProperty('--doc-accent');
+  }, [accent, model]);
 
   const { download: downloadPdf, downloading: busy } = usePdfDownload({
     path: `/invoices/${invoice.id}/pdf`,
@@ -349,7 +91,29 @@ export default function InvoiceDocumentPreview({ detail }: { detail: InvoiceDeta
         </button>
       </div>
       <div className="rounded-xl bg-muted/30 p-2 sm:p-8">
-        <InvoiceDocument detail={detail} customerName={customerName} />
+        {state.status === 'loading' && (
+          <p className="py-12 text-center text-sm text-muted-foreground" data-testid="invoice-preview-loading">
+            {t('invoiceDocument.preview.loading')}
+          </p>
+        )}
+        {state.status === 'error' && (
+          <div className="space-y-3 py-12 text-center text-sm text-muted-foreground" data-testid="invoice-preview-error">
+            <p>{t('invoiceDocument.preview.loadError')}</p>
+            <button
+              type="button"
+              onClick={() => { setState({ status: 'loading' }); setRetryNonce((n) => n + 1); }}
+              data-testid="invoice-preview-retry"
+              className="inline-flex items-center justify-center rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            >
+              {t('invoiceDocument.preview.retry')}
+            </button>
+          </div>
+        )}
+        {model && (
+          <div ref={accentRef} data-testid="invoice-preview-paper" className="mx-auto max-w-3xl">
+            <InvoiceDocumentView model={model} components={components} />
+          </div>
+        )}
       </div>
     </div>
   );

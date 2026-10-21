@@ -5,10 +5,9 @@
 // with the app primary as the fallback. Mirrors the dashboard's QuoteDocument so
 // staff preview and customer view match.
 import { markChipClass, type MarkTone } from './ui';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { flushSync } from 'react-dom';
+import { type ReactNode } from 'react';
 import { ChevronDown, FileText } from 'lucide-react';
-import { parseTermsSections, textReadMinutes as readMinutes } from '@breeze/shared';
+import { useDeepLinkedDisclosure, termsMeta, TermsBody, DocumentTermsCollapsible } from '@breeze/document-ui';
 import { sellerLines } from '@/lib/sellerLines';
 import type { DocumentThemeId } from '@breeze/shared';
 
@@ -175,135 +174,8 @@ export function DocumentTerms({ label, children, testId }: { label: string; chil
   );
 }
 
-/**
- * Open state for a collapsible legal section, keyed by its anchor id. `#<id>`
- * opens it (on load, on hashchange, and on a re-click of a link to a hash that
- * is already set, which fires no hashchange), and it is force-expanded while
- * printing, then restored. Open state is only touched after mount so SSR and
- * first client paint agree.
- */
-function useDeepLinkedDisclosure(id: string): [boolean, (open: boolean) => void] {
-  const [open, setOpen] = useState(false);
-  const wasOpenRef = useRef(false);
-  const printingRef = useRef(false);
-  const openRef = useRef(false);
-  openRef.current = open;
-
-  useEffect(() => {
-    const syncHash = () => {
-      if (window.location.hash === `#${id}`) setOpen(true);
-    };
-    // flushSync: the browser snapshots the page for print as soon as
-    // beforeprint returns, and React would otherwise commit this update on a
-    // later task — printing every agreement collapsed.
-    const beforePrint = () => {
-      if (printingRef.current) return; // duplicate beforeprint must not overwrite the saved state
-      printingRef.current = true;
-      wasOpenRef.current = openRef.current;
-      flushSync(() => setOpen(true));
-    };
-    const afterPrint = () => {
-      printingRef.current = false;
-      flushSync(() => setOpen(wasOpenRef.current));
-    };
-    const onLinkClick = (e: MouseEvent) => {
-      const a = (e.target as Element | null)?.closest?.(`a[href="#${id}"]`);
-      if (a) setOpen(true);
-    };
-    syncHash();
-    window.addEventListener('hashchange', syncHash);
-    window.addEventListener('beforeprint', beforePrint);
-    window.addEventListener('afterprint', afterPrint);
-    document.addEventListener('click', onLinkClick);
-    return () => {
-      document.removeEventListener('click', onLinkClick);
-      window.removeEventListener('hashchange', syncHash);
-      window.removeEventListener('beforeprint', beforePrint);
-      window.removeEventListener('afterprint', afterPrint);
-    };
-  }, [id]);
-
-  return [open, setOpen];
-}
-
-/** "N sections · ~M min read" (or just the read time) for free-text terms. */
-export function termsMeta(text: string): string {
-  const { sectionCount } = parseTermsSections(text);
-  const minutes = readMinutes(text);
-  return sectionCount > 0
-    ? `${sectionCount} section${sectionCount === 1 ? '' : 's'} · ~${minutes} min read`
-    : `~${minutes} min read`;
-}
-
-/** Free-text terms as readable sections: detected headings become <h4>s (with
- *  a contents list at 4+ sections); text with no headings stays pre-wrapped. */
-export function TermsBody({ text, label = 'Terms & Conditions' }: { text: string; label?: string }) {
-  const { blocks, sectionCount } = useMemo(() => parseTermsSections(text), [text]);
-  if (sectionCount === 0) {
-    return <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">{text}</p>;
-  }
-  return (
-    <div className="max-w-prose space-y-2 text-xs leading-relaxed text-muted-foreground">
-      {sectionCount >= 4 && (
-        <nav aria-label={`${label} contents`} className="space-y-1 pb-2">
-          {blocks.map((b) =>
-            b.kind === 'heading' ? (
-              <a key={b.id} href={`#${b.id}`} className="block underline underline-offset-2">
-                {b.text}
-              </a>
-            ) : null
-          )}
-        </nav>
-      )}
-      {blocks.map((b, i) =>
-        b.kind === 'heading' ? (
-          <h4 key={b.id} id={b.id} className="pt-2 text-xs font-semibold text-foreground">
-            {b.text}
-          </h4>
-        ) : (
-          <p key={i} className="text-pretty">{b.text}</p>
-        )
-      )}
-    </div>
-  );
-}
-
-/**
- * Long-form legal text (Terms & Conditions), collapsed by default so it never
- * sits between the price and the pay/sign action. Native <details> that opens
- * on `#terms` and expands while printing (useDeepLinkedDisclosure). Invoices
- * use this standalone; a quote groups its T&C with its contract blocks in
- * DocumentAgreements instead.
- */
-export function DocumentTermsCollapsible({
-  label = 'Terms & Conditions',
-  text,
-  testId,
-  id = 'terms',
-}: {
-  label?: string;
-  text: string;
-  testId?: string;
-  id?: string;
-}) {
-  const [open, setOpen] = useDeepLinkedDisclosure(id);
-  return (
-    <details
-      id={id}
-      open={open}
-      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
-      className="scroll-mt-4 border-t pt-6"
-      data-testid={testId}
-    >
-      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {`${label} · ${termsMeta(text)}`}
-      </summary>
-      <div className="mt-3">
-        <TermsBody text={text} label={label} />
-      </div>
-    </details>
-  );
-}
+// Moved to @breeze/document-ui (#9414 W1c); re-exported until W2b deletes this file.
+export { useDeepLinkedDisclosure, termsMeta, TermsBody, DocumentTermsCollapsible };
 
 export interface DocumentAgreement {
   /** Anchor id: a `#<id>` link (e.g. from the signature checkbox) opens this row. */

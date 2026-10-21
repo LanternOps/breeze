@@ -259,7 +259,9 @@
       "moderate": "Moderat",
       "low": "Niedrig",
       "unrated": "Unbewertet",
-      "unratedNote": "Wird nicht automatisch genehmigt"
+      "unratedNote": "Wird nicht automatisch genehmigt",
+      "derivedNote": "Abgeleitete Bewertung",
+      "derivedTooltip": "Der Hersteller hat für dieses Update keine Bewertung veröffentlicht. Dieser Schweregrad wurde aus Klassifizierung und Titel abgeleitet."
     },
     "approval": {
       "pending": "Ausstehend",

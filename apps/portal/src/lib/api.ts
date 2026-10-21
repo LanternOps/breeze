@@ -459,6 +459,16 @@ export interface Asset {
 // components keep importing it from '@/lib/api' unchanged.
 export type { InvoiceStatus, PublicQuoteHeader };
 
+/** Branding on a customer document payload (mirrors `CustomerDocumentBrandingDto`). */
+export interface CustomerDocumentBranding {
+  partnerName: string | null;
+  contactEmail?: string | null;
+  logoUrl: string | null;
+  primaryColor: string | null;
+  theme: DocumentThemeId;
+  pageSize: DocumentPageSize;
+}
+
 export interface InvoiceSummary {
   id: string;
   invoiceNumber: string | null;
@@ -497,6 +507,8 @@ export interface SellerSnapshot {
 }
 
 export interface InvoiceLine {
+  /** The invoice_lines id: an opaque row key (the document's `document-line-*-<id>` test ids). */
+  id: string;
   ticketNumber: string | null;
   ticketCategory?: string | null;
   /** Line title; NULL on legacy lines where `description` holds the title (#3319). */
@@ -561,12 +573,20 @@ export interface InvoiceDetail {
     termsAndConditions?: string | null;
     /** #8604: resolved line grouping; 'day' only when dates are on. */
     lineGrouping?: 'entry' | 'day';
+    /** The status pill the customer sees (never 'draft'); #9414. */
+    displayStatus: Exclude<InvoiceStatus, 'draft'> | null;
+    billToAddress?: SellerSnapshot['address'];
+    billToTaxId?: string | null;
+    /** The short document terms line (invoices.terms). */
+    terms?: string | null;
   };
   lines: InvoiceLine[];
-  /** Partner branding for the document shell, matching QuoteDetail. Optional:
-   *  older API responses and fixtures predate it, in which case the view falls
-   *  back to GET /portal/branding. */
-  branding?: QuoteBranding;
+  /** `invoice.documentLocale ?? partner locale ?? 'en'` — the language the document prints in. */
+  documentLocale: string;
+  /** Partner branding for the document (theme and page size are the invoice's frozen
+   *  presentation, D14). Optional only for API responses that predate it, in which
+   *  case the view falls back to GET /portal/branding. */
+  branding?: CustomerDocumentBranding;
   /** #7509: whether the partner can take online payment. `false` hides the Pay
    *  CTA; absent (older API / fixtures) is treated as available — the pay route
    *  still 409s as the backstop. */
@@ -784,8 +804,15 @@ export interface PublicInvoiceDetail {
     paidAt?: string | null;
     /** #8604: resolved line grouping; 'day' only when dates are on. */
     lineGrouping?: 'entry' | 'day';
+    /** Absent on the void payload (identity fields only). */
+    displayStatus?: Exclude<InvoiceStatus, 'draft'> | null;
+    billToAddress?: SellerSnapshot['address'];
+    billToTaxId?: string | null;
+    terms?: string | null;
   };
   lines: InvoiceLine[];
+  /** Absent on the void payload. */
+  documentLocale?: string;
   chargeNow: { amount: string; isDeposit: boolean } | null;
   payable: boolean;
   /** #7824: an autopay collection is in flight (server reservation).

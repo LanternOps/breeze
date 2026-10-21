@@ -125,3 +125,20 @@ it('names why a client needs attention, and a returned last charge as returned',
   expect(row).toHaveTextContent('Returned');
   expect(row).not.toHaveTextContent('Payment received');
 });
+
+it('shows an explicit not-enabled empty state (no error, no retry, no toast) when autopay is off for the partner', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json(
+    { error: 'Automatic payments are not enabled', code: 'autopay_not_enabled' }, { status: 404 }));
+  render(<AutopayListPage />);
+  const empty = await screen.findByTestId('autopay-not-enabled');
+  expect(empty).toHaveTextContent("Automatic payments aren't enabled for your account");
+  expect(screen.queryByTestId('autopay-list-error')).toBeNull();
+  expect(screen.queryByRole('button')).toBeNull();
+  expect(showToast).not.toHaveBeenCalled();
+});
+
+it('still shows the generic error for other failures', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json({ error: 'boom' }, { status: 500 }));
+  render(<AutopayListPage />);
+  expect(await screen.findByTestId('autopay-list-error')).toBeInTheDocument();
+});

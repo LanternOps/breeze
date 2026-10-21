@@ -80,7 +80,6 @@ type OrganizationFormValues = {
   slug: string;
   type: 'customer' | 'internal';
   status: 'active' | 'trial' | 'suspended' | 'churned' | 'offboarding';
-  maxDevices: number;
   contractStart?: string;
   contractEnd?: string;
 };
