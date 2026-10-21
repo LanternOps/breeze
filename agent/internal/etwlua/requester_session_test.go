@@ -137,10 +137,37 @@ func TestResolveRequesterSessionWith(t *testing.T) {
 			wantUsername:     `DOMAIN\requester`,
 			wantSessionID:    3,
 			wantSource:       "consent_process",
+			// Two live prompts in the window: the session pick stays as before,
+			// but which consent.exe belongs to THIS request is a guess, so no
+			// instance is recorded and an approve will not dismiss either (#8995).
+			wantLookups: []uint32{3},
+		},
+		{
+			name:             "single consent candidate records its exact instance",
+			candidates:       candidates[1:],
+			consoleSessionID: 1,
+			users:            map[uint32]string{3: `DOMAIN\requester`},
+			wantUsername:     `DOMAIN\requester`,
+			wantSessionID:    3,
+			wantSource:       "consent_process",
 			// The interception records the exact consent.exe it attributed the
 			// request to, so a later approve can dismiss only that prompt (#8995).
 			wantConsent: ConsentInstance{PID: 201, CreatedAt: now.Add(-time.Second)},
 			wantLookups: []uint32{3},
+		},
+		{
+			name: "stale prompt outside the window does not make attribution ambiguous",
+			candidates: []consentProcessCandidate{
+				{PID: 150, SessionID: 3, ImagePath: trustedPath, StartedAt: now.Add(-10 * time.Minute)},
+				{PID: 201, SessionID: 3, ImagePath: trustedPath, StartedAt: now.Add(-time.Second)},
+			},
+			consoleSessionID: 1,
+			users:            map[uint32]string{3: `DOMAIN\requester`},
+			wantUsername:     `DOMAIN\requester`,
+			wantSessionID:    3,
+			wantSource:       "consent_process",
+			wantConsent:      ConsentInstance{PID: 201, CreatedAt: now.Add(-time.Second)},
+			wantLookups:      []uint32{3},
 		},
 		{
 			name:             "unresolved consent session falls back to console",

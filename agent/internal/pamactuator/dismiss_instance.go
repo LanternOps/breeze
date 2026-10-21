@@ -2,6 +2,8 @@ package pamactuator
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 )
 
@@ -43,6 +45,49 @@ func (c ConsentInstance) valid() bool { return c.PID != 0 && !c.CreatedAt.IsZero
 // codes. Only "ok" and ReasonNoConsentWindow mean the target is gone.
 type InstanceDismisser interface {
 	DismissInstance(ctx context.Context, inst ConsentInstance) Result
+}
+
+// stillActiveExitCode is Windows' STILL_ACTIVE (259) from GetExitCodeProcess.
+const stillActiveExitCode = uint32(259)
+
+var (
+	errConsentInstanceWrongSession = errors.New("consent.exe instance is in a different Windows session than this helper")
+	errConsentInstanceWrongImage   = errors.New("process is not consent.exe")
+)
+
+// consentProcessFacts is what the platform layer read about the process that
+// currently holds the target PID.
+type consentProcessFacts struct {
+	CreatedAt     time.Time
+	ExitCode      uint32
+	ImagePath     string
+	Session       uint32
+	HelperSession uint32
+}
+
+// consentProcessMatches decides whether the process now holding inst.PID is
+// still the recorded consent.exe. (false, nil) = positively gone (exited, or
+// the PID was reused by a process created at another instant); an error = it
+// is something we must not touch and cannot call gone (wrong image, another
+// user's session).
+func consentProcessMatches(inst ConsentInstance, facts consentProcessFacts) (bool, error) {
+	if !facts.CreatedAt.Equal(inst.CreatedAt) {
+		return false, nil
+	}
+	if facts.ExitCode != stillActiveExitCode {
+		return false, nil
+	}
+	base := facts.ImagePath
+	if i := strings.LastIndexAny(base, `\/`); i >= 0 {
+		base = base[i+1:]
+	}
+	if !strings.EqualFold(base, "consent.exe") {
+		return false, errConsentInstanceWrongImage
+	}
+	if facts.Session != facts.HelperSession {
+		return false, errConsentInstanceWrongSession
+	}
+	return true, nil
 }
 
 // consentInstanceOps are the Win32 primitives the targeted dismissal needs.
@@ -138,16 +183,27 @@ func dismissConsentInstance(ctx context.Context, ops consentInstanceOps, inst Co
 		return Result{Success: false, Reason: "send_input_failed", DetailMessage: "Escape: " + err.Error()}
 	}
 
+	var lastLiveErr error
 	for {
 		if !ops.WindowAlive(hwnd) {
 			return Result{Success: true, Reason: "ok", DetailMessage: "targeted consent.exe prompt closed after Escape"}
 		}
-		if live, err := ops.InstanceLive(inst); err == nil && !live {
+		// Process exit is a second way to see the prompt close. A liveness
+		// error is not fatal here (Escape is already sent and the window
+		// check still bounds the loop), but it is kept for the diagnosis.
+		live, err := ops.InstanceLive(inst)
+		if err == nil && !live {
 			return Result{Success: true, Reason: "ok", DetailMessage: "targeted consent.exe exited after Escape"}
 		}
+		if err != nil {
+			lastLiveErr = err
+		}
 		if time.Now().After(deadline) {
-			return Result{Success: false, Reason: "consent_did_not_close",
-				DetailMessage: "targeted consent.exe still present after Escape"}
+			detail := "targeted consent.exe still present after Escape"
+			if lastLiveErr != nil {
+				detail += " (process liveness could not be verified: " + lastLiveErr.Error() + ")"
+			}
+			return Result{Success: false, Reason: "consent_did_not_close", DetailMessage: detail}
 		}
 		select {
 		case <-ctx.Done():

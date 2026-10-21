@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -18,16 +16,12 @@ import (
 )
 
 var (
-	winFindWindowEx              = winUser32.NewProc("FindWindowExW")
-	winGetWindowThreadProcessId  = winUser32.NewProc("GetWindowThreadProcessId")
-	winGetForegroundWindow       = winUser32.NewProc("GetForegroundWindow")
-	winSetForegroundWindow       = winUser32.NewProc("SetForegroundWindow")
-	consentPromptWindowClasses   = []string{"$$$Secure UAP Background Window$$$", "Credential Dialog Xaml Host"}
-	maxConsentWindowsPerClass    = 64
-	stillActiveExitCode          = uint32(259)
-	consentExecutableName        = "consent.exe"
-	errConsentInstanceInSession  = errors.New("consent.exe instance is in a different Windows session than this helper")
-	errConsentInstanceWrongImage = errors.New("process is not consent.exe")
+	winFindWindowEx             = winUser32.NewProc("FindWindowExW")
+	winGetWindowThreadProcessId = winUser32.NewProc("GetWindowThreadProcessId")
+	winGetForegroundWindow      = winUser32.NewProc("GetForegroundWindow")
+	winSetForegroundWindow      = winUser32.NewProc("SetForegroundWindow")
+	consentPromptWindowClasses  = []string{"$$$Secure UAP Background Window$$$", "Credential Dialog Xaml Host"}
+	maxConsentWindowsPerClass   = 64
 )
 
 // DismissInstance cancels exactly one consent.exe prompt (#8995). It attaches
@@ -64,6 +58,9 @@ func (a *windowsActuator) DismissInstance(ctx context.Context, inst ConsentInsta
 
 type winConsentInstanceOps struct{}
 
+// InstanceLive reads the process now holding inst.PID and lets the
+// platform-neutral consentProcessMatches decide whether it is still the
+// recorded prompt.
 func (winConsentInstanceOps) InstanceLive(inst ConsentInstance) (bool, error) {
 	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, inst.PID)
 	if err != nil {
@@ -74,43 +71,29 @@ func (winConsentInstanceOps) InstanceLive(inst ConsentInstance) (bool, error) {
 	}
 	defer func() { _ = windows.CloseHandle(process) }()
 
+	var facts consentProcessFacts
 	var creation, exit, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(process, &creation, &exit, &kernel, &user); err != nil {
 		return false, fmt.Errorf("GetProcessTimes(%d): %w", inst.PID, err)
 	}
 	// Same conversion etwlua uses when it records the instance.
-	if !time.Unix(0, creation.Nanoseconds()).Equal(inst.CreatedAt) {
-		return false, nil // PID reused by a different process
-	}
-
-	var code uint32
-	if err := windows.GetExitCodeProcess(process, &code); err != nil {
+	facts.CreatedAt = time.Unix(0, creation.Nanoseconds())
+	if err := windows.GetExitCodeProcess(process, &facts.ExitCode); err != nil {
 		return false, fmt.Errorf("GetExitCodeProcess(%d): %w", inst.PID, err)
 	}
-	if code != stillActiveExitCode {
-		return false, nil
-	}
-
 	buf := make([]uint16, windows.MAX_LONG_PATH)
 	size := uint32(len(buf))
 	if err := windows.QueryFullProcessImageName(process, 0, &buf[0], &size); err != nil {
 		return false, fmt.Errorf("QueryFullProcessImageName(%d): %w", inst.PID, err)
 	}
-	if !strings.EqualFold(filepath.Base(windows.UTF16ToString(buf[:size])), consentExecutableName) {
-		return false, errConsentInstanceWrongImage
-	}
-
-	var targetSession, ownSession uint32
-	if err := windows.ProcessIdToSessionId(inst.PID, &targetSession); err != nil {
+	facts.ImagePath = windows.UTF16ToString(buf[:size])
+	if err := windows.ProcessIdToSessionId(inst.PID, &facts.Session); err != nil {
 		return false, fmt.Errorf("ProcessIdToSessionId(%d): %w", inst.PID, err)
 	}
-	if err := windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &ownSession); err != nil {
+	if err := windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &facts.HelperSession); err != nil {
 		return false, fmt.Errorf("ProcessIdToSessionId(self): %w", err)
 	}
-	if targetSession != ownSession {
-		return false, errConsentInstanceInSession
-	}
-	return true, nil
+	return consentProcessMatches(inst, facts)
 }
 
 func (winConsentInstanceOps) FindInstanceWindow(pid uint32) uintptr {

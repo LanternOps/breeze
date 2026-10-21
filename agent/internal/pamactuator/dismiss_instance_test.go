@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,9 +13,11 @@ import (
 type fakeInstanceOps struct {
 	// liveSeq is returned by successive InstanceLive calls; the last value
 	// repeats once exhausted.
-	liveSeq  []bool
-	liveErr  error
-	liveCall int
+	liveSeq []bool
+	liveErr error
+	// liveErrAfterEscape makes InstanceLive fail once Escape has been sent.
+	liveErrAfterEscape error
+	liveCall           int
 
 	window       uintptr
 	windowAfter  int // FindInstanceWindow returns 0 for this many calls first
@@ -31,6 +34,9 @@ type fakeInstanceOps struct {
 func (f *fakeInstanceOps) InstanceLive(ConsentInstance) (bool, error) {
 	if f.liveErr != nil {
 		return false, f.liveErr
+	}
+	if f.liveErrAfterEscape != nil && f.escapes > 0 {
+		return false, f.liveErrAfterEscape
 	}
 	i := f.liveCall
 	f.liveCall++
@@ -188,6 +194,50 @@ func TestDismissConsentInstanceCancelledBeforeInput(t *testing.T) {
 	res := dismissConsentInstance(ctx, ops, testInstance, time.Now().Add(time.Second), time.Millisecond)
 	if res.Reason != dismissCancelledReason || ops.escapes != 0 {
 		t.Fatalf("result = %+v escapes=%d, want %s and no input", res, ops.escapes, dismissCancelledReason)
+	}
+}
+
+// The identity rules that decide "this PID is still OUR prompt" — previously
+// inline in the Windows-only InstanceLive — are pure and table-tested here.
+func TestConsentProcessMatches(t *testing.T) {
+	good := consentProcessFacts{
+		CreatedAt:     testInstance.CreatedAt,
+		ExitCode:      stillActiveExitCode,
+		ImagePath:     `C:\Windows\System32\consent.exe`,
+		Session:       2,
+		HelperSession: 2,
+	}
+	tests := []struct {
+		name     string
+		mutate   func(*consentProcessFacts)
+		wantLive bool
+		wantErr  bool
+	}{
+		{"exact live instance in this session", func(*consentProcessFacts) {}, true, false},
+		{"PID reused by a later process", func(f *consentProcessFacts) { f.CreatedAt = f.CreatedAt.Add(100 * time.Nanosecond) }, false, false},
+		{"creation time in another zone is the same instant", func(f *consentProcessFacts) { f.CreatedAt = f.CreatedAt.In(time.FixedZone("x", 3600)) }, true, false},
+		{"exited", func(f *consentProcessFacts) { f.ExitCode = 0 }, false, false},
+		{"image is not consent.exe", func(f *consentProcessFacts) { f.ImagePath = `C:\Windows\System32\notepad.exe` }, false, true},
+		{"image check is case-insensitive", func(f *consentProcessFacts) { f.ImagePath = `C:\WINDOWS\system32\CONSENT.EXE` }, true, false},
+		{"another user's session", func(f *consentProcessFacts) { f.Session = 3 }, false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := good
+			tc.mutate(&facts)
+			live, err := consentProcessMatches(testInstance, facts)
+			if live != tc.wantLive || (err != nil) != tc.wantErr {
+				t.Fatalf("consentProcessMatches = (%v, %v), want (%v, err=%v)", live, err, tc.wantLive, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDismissConsentInstanceDidNotCloseReportsUnverifiableLiveness(t *testing.T) {
+	ops := &fakeInstanceOps{window: 0xBEEF, foreground: true, closeOnEsc: false, liveErrAfterEscape: errors.New("access denied")}
+	res := runTargeted(t, ops, testInstance)
+	if res.Reason != "consent_did_not_close" || !strings.Contains(res.DetailMessage, "access denied") {
+		t.Fatalf("result = %+v, want consent_did_not_close mentioning the liveness error", res)
 	}
 }
 

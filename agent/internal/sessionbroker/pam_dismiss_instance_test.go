@@ -109,6 +109,26 @@ func TestDismissPamConsentStaysUntargeted(t *testing.T) {
 	}
 }
 
+// The auth path copies the advertised bit onto the session through
+// applyAuthAdvertisements; dropping that copy would refuse every real helper.
+func TestApplyAuthAdvertisementsSetsTargetedPamDismiss(t *testing.T) {
+	session := &Session{}
+	applyAuthAdvertisements(session, ipc.HelperRoleSystem, ipc.AuthRequest{SupportsTargetedPamDismiss: true})
+	if !session.SupportsTargetedPamDismiss {
+		t.Fatal("SYSTEM helper's targeted-dismiss advertisement was not recorded on the session")
+	}
+	older := &Session{}
+	applyAuthAdvertisements(older, ipc.HelperRoleSystem, ipc.AuthRequest{})
+	if older.SupportsTargetedPamDismiss {
+		t.Fatal("older SYSTEM helper marked as supporting targeted dismissal")
+	}
+	assist := &Session{}
+	applyAuthAdvertisements(assist, ipc.HelperRoleAssist, ipc.AuthRequest{ConsentProtocolVersion: 2})
+	if assist.ConsentProtocolVersion != 2 {
+		t.Fatalf("ConsentProtocolVersion = %d, want 2 (existing advertisement must still apply)", assist.ConsentProtocolVersion)
+	}
+}
+
 func TestTargetedPamDismissFromAuth(t *testing.T) {
 	tests := []struct {
 		name string

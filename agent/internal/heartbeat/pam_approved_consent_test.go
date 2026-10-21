@@ -3,6 +3,8 @@ package heartbeat
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -179,12 +181,20 @@ func TestApprovedConsentDismissalDefersToAnEngagedGate(t *testing.T) {
 	if len(rig.calls) != 0 {
 		t.Fatal("approved-consent dismissal drove the desktop while the dismissal gate was engaged")
 	}
+	// Skipping is not giving up: once the gate is released, a redelivered
+	// apply for the same request can still close the prompt.
+	rig.h.pamDismissalUncertain = false
+	rig.apply(t)
+	if len(rig.calls) != 1 {
+		t.Fatalf("targeted dismissals after the gate cleared = %d, want 1", len(rig.calls))
+	}
 }
 
 func TestApprovedConsentDismissalUncertaintyDoesNotDisablePam(t *testing.T) {
 	rig := newApprovedConsentRig(t, pamlifetime.ResultVerifiedActive)
+	rig.h.pamApprovedConsentQuiesceWait = 20 * time.Millisecond
 	rig.h.recordPendingPamConsent(approvedTestRequestID, "42", approvedTestConsent)
-	quiesced := make(chan sessionbroker.PamDismissOutcome)
+	quiesced := make(chan sessionbroker.PamDismissOutcome) // helper never answers
 	rig.err = &sessionbroker.PamDismissUncertainError{Cause: errors.New("command timed out"), Quiesced: quiesced}
 
 	rig.apply(t)
@@ -199,26 +209,111 @@ func TestApprovedConsentDismissalUncertaintyDoesNotDisablePam(t *testing.T) {
 	}
 }
 
-func TestApprovedConsentDismissalToleratesHelperResults(t *testing.T) {
+// After a broker timeout the helper may still be about to press Escape. The
+// actuation lock must stay held until the helper proves it finished (bounded),
+// so no other actuation types into a consent prompt while that keystroke can
+// still land.
+func TestApprovedConsentDismissalHoldsActuationLockUntilHelperQuiesces(t *testing.T) {
+	rig := newApprovedConsentRig(t, pamlifetime.ResultVerifiedActive)
+	rig.h.pamApprovedConsentQuiesceWait = 5 * time.Second
+	rig.h.recordPendingPamConsent(approvedTestRequestID, "42", approvedTestConsent)
+	quiesced := make(chan sessionbroker.PamDismissOutcome, 1)
+	rig.err = &sessionbroker.PamDismissUncertainError{Cause: errors.New("command timed out"), Quiesced: quiesced}
+
+	var helperFinished atomic.Bool
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		helperFinished.Store(true)
+		quiesced <- sessionbroker.PamDismissOutcome{Proven: true, Result: ipc.PamDismissConsentResult{Success: true, Reason: "ok"}}
+	}()
+
+	applied := make(chan struct{})
+	go func() {
+		rig.apply(t)
+		close(applied)
+	}()
+
+	// Wait until the dismissal is in flight, then contend for the lock the
+	// way a concurrent actuateElevation would.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rig.h.pamActuateMu.Lock()
+		inFlight := len(rig.calls) == 1
+		finished := helperFinished.Load()
+		rig.h.pamActuateMu.Unlock()
+		if inFlight {
+			if !finished {
+				t.Fatal("actuation lock was released while the uncertain dismissal could still press Escape")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dismissal never ran")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	<-applied
+}
+
+func TestApprovedConsentDismissalRetriesOnlyWhilePromptMayRemain(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		result ipc.PamDismissConsentResult
-		err    error
+		name      string
+		result    ipc.PamDismissConsentResult
+		err       error
+		wantCalls int // after two applies for the same request
 	}{
-		{"already closed", ipc.PamDismissConsentResult{Reason: "no_consent_window"}, nil},
-		{"not foreground", ipc.PamDismissConsentResult{Reason: "consent_not_foreground"}, nil},
-		{"older helper", ipc.PamDismissConsentResult{}, sessionbroker.ErrPamTargetedDismissUnsupported},
-		{"ipc error", ipc.PamDismissConsentResult{}, errors.New("helper pipe closed")},
+		{"dismissed", ipc.PamDismissConsentResult{Success: true, Reason: "ok"}, nil, 1},
+		{"already closed", ipc.PamDismissConsentResult{Reason: "no_consent_window"}, nil, 1},
+		{"not foreground", ipc.PamDismissConsentResult{Reason: "consent_not_foreground"}, nil, 2},
+		{"did not close", ipc.PamDismissConsentResult{Reason: "consent_did_not_close"}, nil, 2},
+		{"older helper", ipc.PamDismissConsentResult{}, sessionbroker.ErrPamTargetedDismissUnsupported, 2},
+		{"ipc error", ipc.PamDismissConsentResult{}, errors.New("helper pipe closed"), 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newApprovedConsentRig(t, pamlifetime.ResultVerifiedActive)
 			rig.result, rig.err = tc.result, tc.err
 			rig.h.recordPendingPamConsent(approvedTestRequestID, "42", approvedTestConsent)
 			rig.apply(t)
-			if len(rig.calls) != 1 || rig.untarget != 0 {
-				t.Fatalf("targeted=%d untargeted=%d, want 1/0", len(rig.calls), rig.untarget)
+			rig.apply(t)
+			if len(rig.calls) != tc.wantCalls || rig.untarget != 0 {
+				t.Fatalf("targeted=%d untargeted=%d, want %d/0", len(rig.calls), rig.untarget, tc.wantCalls)
 			}
 		})
+	}
+}
+
+func TestApprovedConsentDismissalNoHelperKeepsTheRecord(t *testing.T) {
+	rig := newApprovedConsentRig(t, pamlifetime.ResultVerifiedActive)
+	helper := rig.session
+	rig.session = nil
+	rig.h.recordPendingPamConsent(approvedTestRequestID, "42", approvedTestConsent)
+
+	rig.apply(t)
+	rig.session = helper // helper reconnects
+	rig.apply(t)
+	if len(rig.calls) != 1 {
+		t.Fatalf("targeted dismissals = %d, want 1 once the helper is back", len(rig.calls))
+	}
+}
+
+// Two parked requests attributed to the same consent.exe means one of them is
+// wrong; dismissing on either approval could close the other request's prompt.
+func TestPendingPamConsentsRefuseOneInstanceForTwoRequests(t *testing.T) {
+	var reg pendingPamConsents
+	reg.record("req-a", "42", approvedTestConsent)
+	reg.record("req-b", "42", approvedTestConsent)
+	if _, ok := reg.peek("req-a"); ok {
+		t.Fatal("req-a kept an instance also claimed by req-b")
+	}
+	if _, ok := reg.peek("req-b"); ok {
+		t.Fatal("req-b kept an instance also claimed by req-a")
+	}
+	// The same request re-recording its own instance (a re-fired ETW event)
+	// is not a conflict.
+	reg.record("req-c", "42", etwlua.ConsentInstance{PID: 9, CreatedAt: approvedTestConsent.CreatedAt})
+	reg.record("req-c", "42", etwlua.ConsentInstance{PID: 9, CreatedAt: approvedTestConsent.CreatedAt})
+	if _, ok := reg.peek("req-c"); !ok {
+		t.Fatal("re-recording the same request dropped it")
 	}
 }
 
@@ -272,15 +367,23 @@ func TestPendingPamConsentsAreBounded(t *testing.T) {
 	var reg pendingPamConsents
 	reg.now = func() time.Time { return now }
 
+	instance := func(i int) etwlua.ConsentInstance {
+		return etwlua.ConsentInstance{PID: uint32(1000 + i), CreatedAt: approvedTestConsent.CreatedAt}
+	}
 	for i := 0; i < maxPendingPamConsents+5; i++ {
-		reg.record(string(rune('a'+i%26))+time.Duration(i).String(), "1", approvedTestConsent)
+		reg.record(fmt.Sprintf("req-%03d", i), "1", instance(i))
 		now = now.Add(time.Second)
 	}
 	if n := reg.len(); n != maxPendingPamConsents {
 		t.Fatalf("entries = %d, want cap %d", n, maxPendingPamConsents)
 	}
-	if _, ok := reg.peek("a0s"); ok {
-		t.Fatal("oldest entry survived past the cap")
+	for i := 0; i < 5; i++ {
+		if _, ok := reg.peek(fmt.Sprintf("req-%03d", i)); ok {
+			t.Fatalf("req-%03d (among the oldest) survived past the cap", i)
+		}
+	}
+	if _, ok := reg.peek(fmt.Sprintf("req-%03d", maxPendingPamConsents+4)); !ok {
+		t.Fatal("newest entry was evicted")
 	}
 
 	reg.record("fresh", "1", approvedTestConsent)

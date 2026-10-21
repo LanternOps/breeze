@@ -2537,8 +2537,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
-	session.ConsentProtocolVersion = consentProtocolFromAuth(helperRole, authReq)
-	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(helperRole, authReq)
+	applyAuthAdvertisements(session, helperRole, authReq)
 	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
@@ -2946,6 +2945,14 @@ func consentProtocolFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) int {
 		return ipc.ConsentProtocolVersion
 	}
 	return v
+}
+
+// applyAuthAdvertisements records the optional protocol features a helper
+// advertised at auth onto its session. Set once, before the session is
+// registered, and never changed afterwards.
+func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.AuthRequest) {
+	session.ConsentProtocolVersion = consentProtocolFromAuth(role, authReq)
+	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(role, authReq)
 }
 
 // targetedPamDismissFromAuth reports whether the agent may send this helper a

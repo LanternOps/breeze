@@ -3,6 +3,7 @@ package userhelper
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -105,6 +106,47 @@ func TestHandlePamDismissConsentRejectsInvalidInstance(t *testing.T) {
 	}
 	if actuator.instanceCalls.Load() != 0 || actuator.dismissCalls.Load() != 0 {
 		t.Fatal("an invalid targeted request reached the actuator")
+	}
+}
+
+// The pure helper below is only half the contract: the advertised bit must
+// actually reach the wire in the auth request, or every real helper is refused
+// targeted dismissal and the #8995 fix silently does nothing.
+func TestAuthenticateSendsTargetedPamDismissCapability(t *testing.T) {
+	for role, want := range map[ipc.HelperRole]bool{ipc.HelperRoleSystem: true, ipc.HelperRoleUser: false} {
+		t.Run(string(role), func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			got := make(chan map[string]json.RawMessage, 1)
+			go func() {
+				srv := ipc.NewConn(serverConn)
+				env, err := srv.Recv()
+				if err != nil {
+					got <- nil
+					return
+				}
+				var fields map[string]json.RawMessage
+				_ = json.Unmarshal(env.Payload, &fields)
+				got <- fields
+				payload, _ := json.Marshal(ipc.PreAuthReject{Code: "test_done", Reason: "captured", Permanent: true})
+				_ = srv.Send(&ipc.Envelope{Type: ipc.TypePreAuthReject, ID: "0", Payload: payload})
+			}()
+
+			c := New("/unused", role)
+			c.conn = ipc.NewConn(clientConn)
+			_ = c.authenticate()
+
+			fields := <-got
+			if fields == nil {
+				t.Fatal("no auth request captured")
+			}
+			raw, present := fields["supportsTargetedPamDismiss"]
+			if present != want || (want && string(raw) != "true") {
+				t.Fatalf("supportsTargetedPamDismiss on the wire = %q (present=%v), want present=%v", raw, present, want)
+			}
+		})
 	}
 }
 
