@@ -22,8 +22,9 @@
  * already in the actuation lifecycle, which reports its own outcome.
  *
  * The caller runs this inside the agent's org-scoped DB context. The request
- * must belong to the reporting device; a request the device does not own (or
- * cannot see under RLS) is reported as not found.
+ * must be a uac_intercept request belonging to the reporting device; any other
+ * request (another device's, another org's under RLS, or a tech_jit_admin /
+ * ai_tool_action request on this device) is reported as not found.
  */
 import { and, eq, isNull } from 'drizzle-orm';
 
@@ -104,6 +105,10 @@ export async function recordElevationDeviceUnable(args: {
       .where(and(
         eq(elevationRequests.id, args.elevationRequestId),
         eq(elevationRequests.deviceId, args.deviceId),
+        // Only the flow the agent itself creates (POST elevation-requests).
+        // A technician's JIT grant or a governed AI tool action on the same
+        // device is not the agent's to close.
+        eq(elevationRequests.flowType, 'uac_intercept'),
       ))
       .limit(1)
       .for('no key update');

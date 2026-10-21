@@ -19,8 +19,8 @@
 -- elevation_requests is already RLS-covered by org_id. Nullable columns with
 -- no default are metadata-only: no rewrite, no row writes. The CHECK is
 -- validated when added, which scans the table once (every existing row has
--- all three columns NULL, so it passes); elevation_requests holds one row per
--- reported UAC prompt, so the scan is short. NOT VALID + VALIDATE would not
+-- all three columns NULL, so it passes) and lasts one sequential scan of every
+-- elevation request (UAC, technician JIT, governed AI). NOT VALID + VALIDATE would not
 -- help here: autoMigrate runs this file in one transaction, so the
 -- ACCESS EXCLUSIVE lock from ADD COLUMN is held through VALIDATE anyway.
 ALTER TABLE elevation_requests ADD COLUMN IF NOT EXISTS device_unable_at timestamptz;

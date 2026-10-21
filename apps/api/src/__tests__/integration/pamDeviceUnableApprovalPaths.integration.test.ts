@@ -238,6 +238,18 @@ describe.skipIf(!RUN)('device-unable elevations cannot be approved (#9517)', () 
     expect((await statuses(elevationId, [])).elevation.status).toBe('approved');
   });
 
+  it('positive control: the harness approves an unreported request from a phone', async () => {
+    const s = await seedScenario();
+    const { elevationId, approvalIds } = await seedElevation(s, [s.approverA]);
+
+    const res = await decide(s, s.approverA, approvalIds[0]!, 'approve');
+
+    expect(res.status).toBe(200);
+    const after = await statuses(elevationId, approvalIds);
+    expect(after.elevation.status).toBe('approved');
+    expect(after.approvals.get(approvalIds[0]!)).toBe('approved');
+  });
+
   it('the web console respond route refuses a request the device reported unable', async () => {
     const s = await seedScenario();
     const { elevationId } = await seedElevation(s, [s.approverA]);

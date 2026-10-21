@@ -159,15 +159,6 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
     expect(mocks.writeAuditEvent).toHaveBeenCalledOnce();
   });
 
-  it('only uac_intercept requests fan out to phones', async () => {
-    mocks.record.mockResolvedValue({ ...recordedClosed, flowType: 'tech_jit_admin' });
-
-    await post(buildApp(), validBody);
-
-    expect(mocks.expireMobile).not.toHaveBeenCalled();
-    expect(mocks.publishEvent).toHaveBeenCalledOnce();
-  });
-
   it('a repeated report writes nothing new but retries the phone-approval withdrawal', async () => {
     mocks.record.mockResolvedValue({ kind: 'already_reported', id: REQUEST, orgId: ORG, flowType: 'uac_intercept', status: 'expired' });
 

@@ -152,3 +152,95 @@ func TestReportPamUnableIgnoresNilAndEmptyRequest(t *testing.T) {
 		t.Fatalf("calls = %d, want 0", calls)
 	}
 }
+
+// statusSequenceServer answers with statuses in order, repeating the last.
+func statusSequenceServer(t *testing.T, statuses ...int) (*httptest.Server, func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	n := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		i := n
+		n++
+		mu.Unlock()
+		if i >= len(statuses) {
+			i = len(statuses) - 1
+		}
+		w.WriteHeader(statuses[i])
+	}))
+	t.Cleanup(ts.Close)
+	return ts, func() int { mu.Lock(); defer mu.Unlock(); return n }
+}
+
+// A server outage (5xx) is retried until the report lands.
+func TestDeliverPamUnableRetriesTransientFailures(t *testing.T) {
+	ts, attempts := statusSequenceServer(t, http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusOK)
+	h := unableReportHeartbeat(ts.URL)
+	var slept []time.Duration
+
+	err := h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, time.Minute,
+		[]time.Duration{time.Second, 2 * time.Second}, func(d time.Duration) { slept = append(slept, d) }, time.Now)
+
+	if err != nil {
+		t.Fatalf("deliverPamUnable: %v", err)
+	}
+	if attempts() != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts())
+	}
+	if len(slept) != 2 || slept[0] != time.Second || slept[1] != 2*time.Second {
+		t.Fatalf("slept = %v, want [1s 2s]", slept)
+	}
+}
+
+// 429 is the server shedding load, not a rejection: retry it.
+func TestDeliverPamUnableRetriesRateLimit(t *testing.T) {
+	ts, attempts := statusSequenceServer(t, http.StatusTooManyRequests, http.StatusOK)
+	h := unableReportHeartbeat(ts.URL)
+
+	if err := h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, time.Minute,
+		[]time.Duration{time.Millisecond}, func(time.Duration) {}, time.Now); err != nil {
+		t.Fatalf("deliverPamUnable: %v", err)
+	}
+	if attempts() != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts())
+	}
+}
+
+// A 4xx rejection is final: resending the same report cannot help.
+func TestDeliverPamUnableStopsOnRejection(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound} {
+		ts, attempts := statusSequenceServer(t, status)
+		h := unableReportHeartbeat(ts.URL)
+
+		err := h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, time.Minute,
+			[]time.Duration{time.Millisecond}, func(time.Duration) {}, time.Now)
+
+		if err == nil {
+			t.Fatalf("status %d: want an error", status)
+		}
+		if attempts() != 1 {
+			t.Fatalf("status %d: attempts = %d, want 1", status, attempts())
+		}
+	}
+}
+
+// A server that stays down is given up on once the window would be exceeded.
+func TestDeliverPamUnableGivesUpAfterWindow(t *testing.T) {
+	ts, attempts := statusSequenceServer(t, http.StatusServiceUnavailable)
+	h := unableReportHeartbeat(ts.URL)
+	clock := time.Date(2027, 1, 2, 12, 0, 0, 0, time.UTC)
+	var slept []time.Duration
+
+	err := h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, 10*time.Second,
+		[]time.Duration{3 * time.Second},
+		func(d time.Duration) { slept = append(slept, d); clock = clock.Add(d) },
+		func() time.Time { return clock })
+
+	if err == nil {
+		t.Fatal("want an error once the window is spent")
+	}
+	// 10s window, 3s delays: attempts at t=0,3,6,9; the next would start at 12s.
+	if attempts() != 4 || len(slept) != 3 {
+		t.Fatalf("attempts=%d slept=%v, want 4 attempts and 3 sleeps", attempts(), slept)
+	}
+}

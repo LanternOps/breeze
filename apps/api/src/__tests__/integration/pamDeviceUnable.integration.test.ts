@@ -218,7 +218,7 @@ describe('recordElevationDeviceUnable (#9517)', () => {
 
     const again = await report(id, 'helper_unavailable', 'something else');
 
-    expect(again).toEqual({ kind: 'already_reported', status: 'expired' });
+    expect(again).toEqual({ kind: 'already_reported', id, orgId, flowType: 'uac_intercept', status: 'expired' });
     const row = await readRequest(id);
     expect(row.deviceUnableReason).toBe('helper_start_failed');
     expect(row.deviceUnableDetail).toBe('helper failed to start after repeated attempts');
@@ -236,6 +236,36 @@ describe('recordElevationDeviceUnable (#9517)', () => {
     expect(row.status).toBe('pending');
     expect(row.deviceUnableAt).toBeNull();
     expect(await readAudit(id)).toHaveLength(0);
+  });
+
+  it('a technician JIT grant or governed AI action on the same device cannot be closed', async () => {
+    const tdb = getTestDb();
+    const [jit] = await tdb.insert(elevationRequests).values({
+      orgId, siteId, partnerId, deviceId,
+      deviceEpoch: currentOwnershipEpochSql(deviceId),
+      flowType: 'tech_jit_admin',
+      subjectUserId: approverIds[0]!,
+      subjectUsername: 'tech@msp',
+      reason: 'JIT admin for printer install',
+      status: 'pending',
+    }).returning({ id: elevationRequests.id });
+    const [ai] = await tdb.insert(elevationRequests).values({
+      orgId, siteId, partnerId, deviceId,
+      deviceEpoch: currentOwnershipEpochSql(deviceId),
+      flowType: 'ai_tool_action',
+      subjectUsername: 'ai',
+      reason: 'governed tool call',
+      toolName: 'run_script',
+      status: 'pending',
+    }).returning({ id: elevationRequests.id });
+
+    for (const id of [jit!.id, ai!.id]) {
+      expect(await report(id)).toEqual({ kind: 'not_found' });
+      const row = await readRequest(id);
+      expect(row.status).toBe('pending');
+      expect(row.deviceUnableAt).toBeNull();
+      expect(await readAudit(id)).toHaveLength(0);
+    }
   });
 
   it('another org’s request is invisible under the agent’s org context (RLS)', async () => {
