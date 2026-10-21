@@ -14,7 +14,7 @@ it('no topology source calls fetchWithAuth directly outside topologyApi.ts and t
   const offenders = sources(dir)
     .map((f) => f.slice(dir.length + 1))
     .filter((rel) => !allowed.has(rel))
-    .filter((rel) => /\bfetchWithAuth\s*\(/.test(readFileSync(join(dir, rel), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')));
+    .filter((rel) => /\bfetchWithAuth\b/.test(readFileSync(join(dir, rel), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')));
   expect(offenders).toEqual([]);
 });
 
