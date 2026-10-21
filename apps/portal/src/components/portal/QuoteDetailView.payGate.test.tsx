@@ -34,9 +34,10 @@ const DETAIL = {
   branding: { partnerName: 'Lantern IT', logoUrl: null, primaryColor: '#123456' },
 } as unknown as QuoteDetail;
 
-async function acceptQuoteFlow(onlinePaymentAvailable: boolean | undefined) {
+async function acceptQuoteFlow(onlinePaymentAvailable: boolean | undefined, invoiceResult?: unknown) {
   acceptQuote.mockResolvedValue({ data: { data: { invoiceId: 'inv-1', status: 'converted' } } });
-  getInvoice.mockResolvedValue({ data: { onlinePaymentAvailable } });
+  if (invoiceResult === 'reject') getInvoice.mockRejectedValue(new Error('boom'));
+  else getInvoice.mockResolvedValue(invoiceResult ?? { data: { onlinePaymentAvailable } });
   render(<QuoteDetailView detail={DETAIL} />);
   fireEvent.change(screen.getByTestId('quote-signer'), { target: { value: 'Pat Customer' } });
   const agree = screen.queryByTestId('quote-agree');
@@ -58,6 +59,17 @@ describe('portal quote accepted state — online payment gate (#9264)', () => {
 
   it('shows Pay deposit when online payment is available', async () => {
     await acceptQuoteFlow(true);
+    expect((await screen.findByTestId('quote-pay')).textContent).toBe('Pay deposit $90.00');
+    expect(screen.queryByTestId('quote-pay-offline')).toBeNull();
+  });
+
+  it.each([
+    ['availability absent', undefined, undefined],
+    ['lookup returns an error', undefined, { error: 'Network error' }],
+    ['lookup rejects', undefined, 'reject'],
+  ])('keeps Pay deposit and still reaches the accepted state when %s', async (_n, avail, result) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await acceptQuoteFlow(avail, result);
     expect((await screen.findByTestId('quote-pay')).textContent).toBe('Pay deposit $90.00');
     expect(screen.queryByTestId('quote-pay-offline')).toBeNull();
   });

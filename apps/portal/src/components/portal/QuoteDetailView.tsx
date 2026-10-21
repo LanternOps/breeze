@@ -95,8 +95,8 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
     setMsg(null);
     setMsgError(false);
     const res = await portalApi.acceptQuote(quote.id, signerName.trim());
-    setBusy(false);
     if (res.error) {
+      setBusy(false);
       setMsg(res.error);
       setMsgError(true);
       return;
@@ -104,10 +104,17 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
     const invoiceId = res.data?.data?.invoiceId ?? null;
     // Resolve availability before flipping to the accepted state so the CTA never
     // flashes in and then disappears.
+    // The quote is already accepted, so a failed lookup must never block the
+    // accepted state; busy stays set meanwhile so Accept can't be re-sent.
     if (invoiceId) {
-      const inv = await portalApi.getInvoice(invoiceId);
-      if (inv.data?.onlinePaymentAvailable === false) setOnlinePaymentOff(true);
+      try {
+        const inv = await portalApi.getInvoice(invoiceId);
+        if (inv.data?.onlinePaymentAvailable === false) setOnlinePaymentOff(true);
+      } catch (err) {
+        console.error('[portal] post-accept invoice availability lookup failed', err);
+      }
     }
+    setBusy(false);
     setStatus('converted');
     setAcceptedInvoiceId(invoiceId);
     setMsg('Accepted. Your invoice is ready.');
