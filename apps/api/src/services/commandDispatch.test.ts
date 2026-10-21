@@ -210,7 +210,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toHaveLength(1);
@@ -228,7 +228,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toEqual([]);
@@ -243,7 +243,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1',
+      { deviceId: 'dev-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall'],
@@ -265,7 +265,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1',
+      { deviceId: 'dev-1', installIncarnation: 1 },
       10,
       'agent',
       undefined,
@@ -289,7 +289,7 @@ describe('command dispatch helpers', () => {
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2,
       rollbackProtocolVersion: 0,
       pamLifetimeProtocolVersion: 2,
@@ -308,7 +308,7 @@ describe('command dispatch helpers', () => {
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2,
       rollbackProtocolVersion: 1,
       pamLifetimeProtocolVersion: 0,
@@ -323,7 +323,7 @@ describe('command dispatch helpers', () => {
   it.each([undefined, 0, 2, 1])('gates reset on its independent protocol capability %s while PAM is unavailable', async (resetVersion) => {
     const tx = { select: selectChain([]), update: vi.fn() };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1,
       pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: resetVersion,
     });
@@ -400,7 +400,7 @@ describe('command dispatch helpers', () => {
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2,
     });
 
@@ -446,7 +446,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toHaveLength(1);
@@ -467,7 +467,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toEqual([]);
@@ -495,7 +495,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(partitionClaimableMock).toHaveBeenCalledWith(
@@ -540,7 +540,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toEqual([]);
@@ -708,7 +708,7 @@ describe('command dispatch helpers', () => {
     }));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(partitionClaimableMock).toHaveBeenCalledWith(tx, parkedDevice, refusedRows);
@@ -720,7 +720,7 @@ describe('command dispatch helpers', () => {
     const tx = { select: selectChain([]), update: vi.fn() };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 });
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', installIncarnation: 1 }, 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 });
 
     expect(partitionClaimableMock).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();

@@ -11,6 +11,8 @@ const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 vi.mock('drizzle-orm', () => ({
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
+  // updateOwnDeviceRow (#8318 §6.4) ANDs the id + agent_id identity predicate.
+  and: (...args: unknown[]) => ({ op: 'and', args }),
 }));
 
 vi.mock('../../db', () => ({
@@ -85,7 +87,10 @@ function mockDeviceLookup(
   vi.mocked(db.select)
     .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, managementPosture: null, ...device }]))
     .mockReturnValueOnce(selectResolving(previousStatus));
-  const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  // updateOwnDeviceRow (#8318 §6.4) always asks for the matched rows back.
+  const set = vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: DEVICE_ID }]) }),
+  });
   vi.mocked(db.update).mockReturnValue({ set } as never);
   return set;
 }

@@ -71,7 +71,8 @@ function mockTransactionCapture() {
           set: vi.fn().mockImplementation((row: { activeVpns?: unknown }) => {
             captured.updateCalled = true;
             captured.activeVpns = row.activeVpns;
-            return { where: vi.fn().mockResolvedValue(undefined) };
+            // updateOwnDeviceRow (#8318 §6.4) always asks for the matched rows back.
+            return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]) }) };
           }),
         };
       }),

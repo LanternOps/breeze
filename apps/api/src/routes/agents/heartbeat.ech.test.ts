@@ -449,6 +449,7 @@ function buildApp(agentOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',

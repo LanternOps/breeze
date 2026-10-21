@@ -158,7 +158,7 @@ export async function seedTopologyCommandFixture(
     async claimThrough(transport: 'http' | 'websocket') {
       const claimed = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
         if (transport === 'http') {
-          return (await claimPendingCommandsForDevice(scope.deviceId, 10, 'agent')).map((row) => row.id);
+          return (await claimPendingCommandsForDevice({ deviceId: scope.deviceId, installIncarnation: 1 }, 10, 'agent')).map((row) => row.id);
         }
         const outcome = await claimPendingCommandForDelivery(commandId);
         return outcome.status === 'claimed' ? [outcome.id] : [];

@@ -1,8 +1,9 @@
 import type { Context } from 'hono';
-import { and, eq, notInArray } from 'drizzle-orm';
+import { eq, notInArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST, type AgentAuthContext } from '../../middleware/agentAuth';
+import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { ERROR_CODES } from '@breeze/shared';
@@ -85,6 +86,7 @@ export async function respondParkedHeartbeat(
       const [device] = await db
         .select({
           id: devices.id,
+          agentId: devices.agentId,
           mtlsCertIssuedAt: devices.mtlsCertIssuedAt,
           mtlsCertExpiresAt: devices.mtlsCertExpiresAt,
           agentTokenHash: devices.agentTokenHash,
@@ -113,10 +115,11 @@ export async function respondParkedHeartbeat(
             status: 'online',
             agentVersion: data.agentVersion,
           };
-      await db
-        .update(devices)
-        .set(liveness)
-        .where(and(eq(devices.id, device.id), notInArray(devices.status, TERMINAL_DEVICE_STATUSES)));
+      // #8318 §6.4: bound to the authenticated id + agent_id (a stale beat
+      // after a reattach confirm matches 0 rows), plus the terminal guard.
+      await updateOwnDeviceRow(db, agent, liveness, {
+        where: notInArray(devices.status, TERMINAL_DEVICE_STATUSES),
+      });
 
       if (isWatchdog) return { found: true, maintenance: {} };
 
@@ -139,7 +142,7 @@ export async function respondParkedHeartbeat(
   const commands = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const claimed = await claimPendingCommandsForDevice(
-        agent.deviceId,
+        { deviceId: agent.deviceId, installIncarnation: agent.installIncarnation },
         10,
         agent.role,
         // Fail closed: the middleware always narrows a parked device, but an

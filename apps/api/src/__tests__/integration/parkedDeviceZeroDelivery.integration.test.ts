@@ -237,7 +237,7 @@ describe('a parked device receives nothing (real Postgres)', () => {
     });
 
     it('the claim path hands the parked device no non-removal work', async () => {
-      const claimed = await withSystemDbAccessContext(() => claimPendingCommandsForDevice(f.parked, 10, 'agent'));
+      const claimed = await withSystemDbAccessContext(() => claimPendingCommandsForDevice({ deviceId: f.parked, installIncarnation: 1 }, 10, 'agent'));
       expect(claimed.filter((c) => !isParkedDeliverableCommandType(c.type))).toEqual([]);
     });
 

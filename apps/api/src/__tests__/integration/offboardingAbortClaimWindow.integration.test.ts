@@ -155,7 +155,7 @@ async function seedDrainingTenant(
  */
 async function ordinaryClaim(deviceId: string): Promise<string[]> {
   const claimed = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => claimPendingCommandsForDevice(deviceId, 10, 'agent'))
+    withSystemDbAccessContext(() => claimPendingCommandsForDevice({ deviceId: deviceId, installIncarnation: 1 }, 10, 'agent'))
   );
   return claimed.map((row) => row.type);
 }

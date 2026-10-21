@@ -124,7 +124,7 @@ describe('#2785 offboarding drain entered from a severed state', () => {
       //    it over and CAS-flips it to `sent`. This is the end-to-end property;
       //    everything above is intermediate state.
       const claimed = await withSystemDbAccessContext(() =>
-        claimPendingCommandsForDevice(stranded.id, 10, 'agent', ['self_uninstall'])
+        claimPendingCommandsForDevice({ deviceId: stranded.id, installIncarnation: 1 }, 10, 'agent', ['self_uninstall'])
       );
       expect(claimed.map((row) => row.type)).toEqual(['self_uninstall']);
 
@@ -144,7 +144,7 @@ describe('#2785 offboarding drain entered from a severed state', () => {
 
     expect((await readSuspension(stranded.id)).suspendedAt).toBeNull();
     const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(stranded.id, 10, 'agent', ['self_uninstall'])
+      claimPendingCommandsForDevice({ deviceId: stranded.id, installIncarnation: 1 }, 10, 'agent', ['self_uninstall'])
     );
     expect(claimed.map((row) => row.type)).toEqual(['self_uninstall']);
   });

@@ -13,6 +13,7 @@ import {
   partners,
   supportSessions,
 } from '../../db/schema';
+import { collectAgentCredentialHashes } from '../../services/agentCredentialHashes';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKeyCandidates, hashEnrollmentSecret } from '../../services/enrollmentKeySecurity';
@@ -467,6 +468,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         previousTokenHash: devices.previousTokenHash,
         previousTokenExpiresAt: devices.previousTokenExpiresAt,
         pendingTokenHash: devices.pendingTokenHash,
+        // #8318 §6.4: re-enroll revokes EVERY hash of the row it rewrites —
+        // watchdog and helper, current, previous and pending — not the agent
+        // hashes alone.
+        watchdogTokenHash: devices.watchdogTokenHash,
+        previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
+        pendingWatchdogTokenHash: devices.pendingWatchdogTokenHash,
+        helperTokenHash: devices.helperTokenHash,
+        previousHelperTokenHash: devices.previousHelperTokenHash,
+        pendingHelperTokenHash: devices.pendingHelperTokenHash,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
       })
       .from(devices)
@@ -814,6 +824,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       // collision-free in practice (8 hex chars = ~4B namespace) and
       // mirrors the SQL workaround documented in the #896 incident notes.
       if (decomBypassFreshRow && existingDevice) {
+        // own-device-row-allowlisted: enroll-decom-bypass-rename
         await tx
           .update(devices)
           .set({
@@ -825,6 +836,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
       let dev;
       if (!insertFreshRow && existingDevice) {
+        // #8318 §6.4 (F3): the token was matched against `existingDevice`
+        // without a lock, and this path is not on the agent auth context, so
+        // the identity predicate is carried here: the row must still bear the
+        // agent_id it was matched by. If a reattach confirm (or another
+        // re-enroll) changed it in between, this matches 0 rows and the
+        // enrollment is REFUSED below — never answered with a fresh row.
+        // own-device-row-allowlisted: reenroll-matched-row-agent-id
         [dev] = await tx
           .update(devices)
           .set({
@@ -867,8 +885,16 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             status: 'pending',
             updatedAt: new Date(),
           })
-          .where(eq(devices.id, existingDevice.id))
+          .where(and(eq(devices.id, existingDevice.id), eq(devices.agentId, existingDevice.agentId)))
           .returning();
+        if (!dev) {
+          throw Object.assign(
+            new HTTPException(409, {
+              message: 'The device row changed during re-enrollment; retry the enrollment',
+            }),
+            { code: 'reenrollment_conflict' },
+          );
+        }
       } else {
         [dev] = await tx
           .insert(devices)
@@ -1161,12 +1187,11 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       // Preserve the pre-update connection key. In-place re-enrollment mints
       // a new agentId, while the stale socket is still indexed by the old one.
       replacedAgentId: !insertFreshRow ? existingDevice?.agentId : undefined,
+      // #8318 §6.4: every hash of the replaced row — agent, watchdog and
+      // helper; current, previous and pending — so a stale watchdog or helper
+      // session is revoked with the agent socket.
       replacedCredentialHashes: !insertFreshRow && existingDevice
-        ? [
-            existingDevice.agentTokenHash,
-            existingDevice.previousTokenHash,
-            existingDevice.pendingTokenHash,
-          ].filter((hash): hash is string => typeof hash === 'string')
+        ? collectAgentCredentialHashes(existingDevice)
         : undefined,
       // #2764: raised AFTER this context closes (see below). Only when the
       // colliding row is currently ONLINE — that is the lookalike signal;

@@ -332,7 +332,7 @@ describe('endpoint messaging W02 flow (real Postgres)', () => {
       source: 'endpoint_message', title: 'Reboot tonight', body: 'Body still needed for delivery', messageId: randomUUID(), batchId: randomUUID(),
     }, 'pending');
     await sys(() => db.execute(sql`UPDATE device_commands SET submitted_org_id = ${f.orgA}::uuid WHERE id = ${cmdId}::uuid`));
-    const claimed = await sys(() => claimPendingCommandsForDevice(f.devA1));
+    const claimed = await sys(() => claimPendingCommandsForDevice({ deviceId: f.devA1, installIncarnation: 1 }));
     const mine = claimed.find((c) => c.id === cmdId);
     expect(mine, 'the pending message must be claimable').toBeDefined();
     expect((mine!.payload as Record<string, unknown>).body).toBe('Body still needed for delivery');

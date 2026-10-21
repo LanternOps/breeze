@@ -63,7 +63,7 @@ async function sendDeskStartResult(
   status: 'completed' | 'failed' = 'completed',
   generation = START_GENERATION,
 ): Promise<void> {
-  const handlers = createAgentWsHandlers(agentId, { deviceId, orgId, partnerId, credentialTokenHash: CREDENTIAL_HASH });
+  const handlers = createAgentWsHandlers(agentId, { agentId: agentId, siteId: 'site-test', installIncarnation: 1, deviceId, orgId, partnerId, credentialTokenHash: CREDENTIAL_HASH });
   const event = {
     data: JSON.stringify({
       type: 'command_result',
@@ -520,6 +520,9 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     const dev = await insertDevice(env.organization.id, env.site.id);
     const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
     const handlers = createAgentWsHandlers(dev.agentId, {
+      agentId: dev.agentId,
+      siteId: 'site-test',
+      installIncarnation: 1,
       deviceId: dev.id,
       orgId: env.organization.id,
       partnerId: env.partner.id,

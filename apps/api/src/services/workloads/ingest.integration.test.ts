@@ -74,6 +74,7 @@ async function fixture(opts: { enabled?: boolean } = {}) {
     withDbAccessContext(context, () =>
       ingestWorkloadsReport({
         deviceId: device!.id,
+        agentId: device!.agentId,
         orgId,
         report: workloadsReportSchema.parse(report),
         receivedAt: new Date(),

@@ -7,6 +7,7 @@ import {
 } from '@breeze/shared';
 import { db, withDbTransaction } from '../../db';
 import { deviceWorkloadRuntimes, deviceWorkloads, devices } from '../../db/schema';
+import { updateOwnDeviceRow } from '../agentOwnDeviceRow';
 import { lockDeviceInventory } from '../inventoryChildSync';
 import { planWorkloadSync, type WorkloadRuntimePlan } from './plan';
 import { getDeviceWorkloadInventorySettings } from './settings';
@@ -16,6 +17,8 @@ import { containerImageSubjectKey } from '../alertConditions/handlers/containerI
 
 export interface IngestWorkloadsArgs {
   deviceId: string;
+  /** The `agent_id` the request authenticated as; the host-column write is bound to it (#8318 §6.4). */
+  agentId: string;
   orgId: string;
   report: WorkloadsReport;
   receivedAt: Date;
@@ -275,10 +278,12 @@ export async function ingestWorkloadsReport(args: IngestWorkloadsArgs): Promise<
     }
     await retireDroppedImageSubjects(args.deviceId, plan.runtimes, storedWorkloads);
     if (plan.host.changed) {
-      await db
-        .update(devices)
-        .set({ hostsWorkloads: plan.host.hostsWorkloads, workloadRuntimes: plan.host.workloadRuntimes })
-        .where(and(eq(devices.id, args.deviceId), eq(devices.orgId, args.orgId)));
+      await updateOwnDeviceRow(
+        db,
+        { deviceId: args.deviceId, agentId: args.agentId },
+        { hostsWorkloads: plan.host.hostsWorkloads, workloadRuntimes: plan.host.workloadRuntimes },
+        { where: eq(devices.orgId, args.orgId) },
+      );
     }
     return {
       accepted: true as const,

@@ -128,6 +128,9 @@ async function seedInFlightRun(fx: Fixture): Promise<{ commandId: string; execut
 
 async function sendWsResult(fx: Fixture, commandId: string, body: Record<string, unknown>): Promise<void> {
   const handlers = createAgentWsHandlers(fx.agentId, {
+    agentId: fx.agentId,
+    siteId: 'site-test',
+    installIncarnation: 1,
     deviceId: fx.deviceId,
     orgId: fx.orgId,
     partnerId: fx.partnerId,
@@ -142,6 +145,7 @@ async function sendHttpResult(fx: Fixture, commandId: string, body: Record<strin
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: fx.deviceId,
       agentId: fx.agentId,
       orgId: fx.orgId,

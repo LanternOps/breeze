@@ -126,7 +126,7 @@ describe('heartbeat claim — script revalidation for a partner-level requester'
 
   async function claimAsAgent() {
     return withDbAccessContext(agentContext(org.id, partner.id), () =>
-      claimPendingCommandsForDevice(deviceId, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: deviceId, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
   }
 

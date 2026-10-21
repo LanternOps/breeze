@@ -138,7 +138,7 @@ describe('#8729 — POST /devices/:id/force-reboot (real grant, real claim path)
         accessiblePartnerIds: [],
         currentPartnerId: env.partner.id,
       },
-      () => claimPendingCommandsForDevice(deviceId, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      () => claimPendingCommandsForDevice({ deviceId: deviceId, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
   beforeEach(async () => {

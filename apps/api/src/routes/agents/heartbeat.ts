@@ -19,6 +19,7 @@ import {
   onedriveDeviceState,
   bareMetalRecoveries,
 } from '../../db/schema';
+import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
@@ -614,7 +615,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     const drainCommands = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         const claimed = await claimPendingCommandsForDevice(
-          agent.deviceId,
+          { deviceId: agent.deviceId, installIncarnation: agent.installIncarnation },
           10,
           'agent',
           // Fail closed: the middleware always populates this while draining,
@@ -844,9 +845,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
 
     try {
-      await db.update(devices)
-        .set(watchdogUpdates)
-        .where(eq(devices.id, device.id));
+      // #8318 §6.4: bound to the authenticated id + agent_id, so a watchdog
+      // beat of a superseded install matches 0 rows after a reattach confirm.
+      await updateOwnDeviceRow(db, agent, watchdogUpdates);
     } catch (err) {
       console.error('Failed to update watchdog status:', err);
     }
@@ -915,7 +916,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // this line via a TENANT drain: a device-remove drain admits `role==='agent'`
     // only (middleware/agentAuth.ts Layer 1b).
     const watchdogCommands = await claimPendingCommandsForDevice(
-      device.id,
+      { deviceId: device.id, installIncarnation: agent.installIncarnation },
       10,
       'watchdog',
       agent?.claimTypeAllowlist
@@ -1567,14 +1568,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // terminal-status device matches 0 rows, so `updatedRows` is empty and the
   // state-transition audit below is skipped (finding #10 — never audit a write
   // that the guard rejected).
-  const updatedRows = await db
-    .update(devices)
-    .set(deviceUpdates)
-    .where(and(
-      eq(devices.id, device.id),
-      notInArray(devices.status, ['decommissioned', 'quarantined'])
-    ))
-    .returning({ id: devices.id });
+  //
+  // #8318 §6.4: through updateOwnDeviceRow, so the write is also bound to the
+  // agent_id this beat authenticated as. A beat the previous install sent just
+  // before a reattach confirm matches 0 rows, exactly like a terminal-status
+  // row, and records no phantom transition.
+  const updatedRows = await updateOwnDeviceRow(db, agent, deviceUpdates, {
+    where: notInArray(devices.status, ['decommissioned', 'quarantined']),
+  });
 
   // Durable audit of security-relevant device state transitions (finding #10).
   // The heartbeat mutates several security-relevant fields but previously left
@@ -1908,7 +1909,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // this handler and never reaches this line; the invariant is stated here
   // because that branch is what a future refactor is most likely to remove.
   const commands = await claimPendingCommandsForDevice(
-    device.id,
+    { deviceId: device.id, installIncarnation: agent.installIncarnation },
     10,
     'agent',
     agent?.claimTypeAllowlist,

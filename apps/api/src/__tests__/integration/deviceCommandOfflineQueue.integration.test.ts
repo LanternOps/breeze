@@ -71,7 +71,7 @@ function asSystem<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 function claim(deviceId: string) {
-  return asSystem(() => claimPendingCommandsForDevice(deviceId, 10, 'agent', undefined, { ...AGENT_CAPS }));
+  return asSystem(() => claimPendingCommandsForDevice({ deviceId: deviceId, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }));
 }
 
 type DeviceStatus = (typeof devices.$inferInsert)['status'];

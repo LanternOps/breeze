@@ -285,7 +285,7 @@ describe('backups started before a new device reports its backup helper', () => 
     // The command poll carries no helper report: the stored NULL decides.
     const polled = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () =>
-        prepareClaimedCommandsForDelivery(await claimPendingCommandsForDevice(t.deviceId, 10, 'agent'))),
+        prepareClaimedCommandsForDelivery(await claimPendingCommandsForDevice({ deviceId: t.deviceId, installIncarnation: 1 }, 10, 'agent'))),
     );
     expect(polled).toEqual([]);
     const [row] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, commandId));

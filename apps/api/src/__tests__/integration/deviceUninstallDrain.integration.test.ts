@@ -641,7 +641,7 @@ describe('#3986 overlap — a device Removed while its tenant is offboarding', (
 
     // Still genuinely deliverable on the tenant drain's narrowed claim.
     const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(device.id, 10, 'agent', ['self_uninstall']),
+      claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', ['self_uninstall']),
     );
     expect(claimed.map((row) => row.type)).toEqual(['self_uninstall']);
     void tenant;

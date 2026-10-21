@@ -3,6 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, securityStatus } from '../../db/schema';
+import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordAgentIngestSubmission } from '../metrics';
 import { securityStatusIngestSchema, managementPostureIngestSchema } from './schemas';
@@ -139,13 +140,12 @@ agentSecurityRoutes.put('/:id/management/posture', zValidator('json', management
   }
 
   try {
-    await db
-      .update(devices)
-      .set({
-        managementPosture: payload,
-        updatedAt: new Date(),
-      })
-      .where(eq(devices.id, device.id));
+    // #8318 §6.4: the row was read by the authenticated agent_id (`:id`);
+    // the write is bound to the same identity through updateOwnDeviceRow.
+    await updateOwnDeviceRow(db, { deviceId: device.id, agentId }, {
+      managementPosture: payload,
+      updatedAt: new Date(),
+    });
   } catch (err) {
     console.error('[agents] management posture DB update failed:', { agentId, deviceId: device.id, error: err });
     recordAgentIngestSubmission('management_posture', 'failed');

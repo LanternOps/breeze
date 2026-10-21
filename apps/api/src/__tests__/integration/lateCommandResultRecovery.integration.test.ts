@@ -179,6 +179,9 @@ async function sendWsResult(
   body: Record<string, unknown>,
 ): Promise<void> {
   const handlers = createAgentWsHandlers(fx.agentId, {
+    agentId: fx.agentId,
+    siteId: 'site-test',
+    installIncarnation: 1,
     deviceId: fx.deviceId,
     orgId: fx.orgId,
     partnerId: fx.partnerId,
@@ -207,6 +210,7 @@ async function sendHttpResult(
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: fx.deviceId,
       agentId: fx.agentId,
       orgId: fx.orgId,

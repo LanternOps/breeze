@@ -487,6 +487,7 @@ function buildApp(agentOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -505,6 +506,7 @@ function buildWatchdogApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -524,6 +526,7 @@ function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -550,6 +553,7 @@ function buildDeviceDrainApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -6396,7 +6400,7 @@ describe('POST /agents/:id/heartbeat — terminal-status guard (#2230)', () => {
     const firstSet = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(firstSet.status).toBe('online');
     expect((whereSpy.mock.calls as any[])[0]?.[0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
 
     // Finding #10: a guard-rejected (0-row) write must NOT record a phantom
@@ -7345,7 +7349,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'watchdog', undefined);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'watchdog', undefined);
     const body = (await resp.json()) as { commands: Array<{ id: string }> };
     expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
     expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-bad', claimedAt);
@@ -7386,7 +7390,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      'device-1', 10, 'agent', undefined,
+      { deviceId: 'device-1', installIncarnation: 1 }, 10, 'agent', undefined,
       { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
     );
   });
@@ -7422,7 +7426,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
 
     expect(resp.status).toBe(200);
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      'device-1',
+      { deviceId: 'device-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall'],
@@ -7570,7 +7574,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'watchdog', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'watchdog', [
       'self_uninstall',
     ]);
   });
@@ -7924,7 +7928,7 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     await drainBeat();
 
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'agent', [
       'self_uninstall',
     ]);
   });
@@ -8166,6 +8170,7 @@ describe('POST /agents/:id/heartbeat implicit pending-rotation promotion (#2773)
     const app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -8235,7 +8240,7 @@ describe('POST /agents/:id/heartbeat implicit pending-rotation promotion (#2773)
     expect(resp.status).toBe(200);
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledTimes(1);
     expect(promotePendingAgentCredentialsMock.mock.calls[0]![0]).toMatchObject({
-      deviceId: 'device-1',
+      agent: expect.objectContaining({ deviceId: 'device-1' }),
       pendingTokenHash: 'presented-hash',
       expectedAgentTokenHash: 'current-hash',
     });
@@ -8815,6 +8820,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       c.set('agentTokenRotationRequired', flags.rotationRequired === true);
       c.set('agentPendingTokenPresented', flags.pendingPresented === true);
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'pool-org-1',
@@ -8886,7 +8892,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       await parkedBeat(role);
 
       expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
-      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, role, ['self_uninstall']);
+      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, role, ['self_uninstall']);
     });
 
     it(`${role}: runs no ingest, config, upgrade, policy or trust resolution`, async () => {
@@ -8970,7 +8976,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     expect(await resp.json()).toEqual({ commands: [], renewCert: true, confirmTokenRotation: true });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
-      deviceId: 'device-1',
+      agent: expect.objectContaining({ deviceId: 'device-1' }),
       pendingTokenHash: 'pending-hash',
       expectedAgentTokenHash: 'hash',
     }));
@@ -8997,7 +9003,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     expect(written.agentVersion).toBe('0.70.1');
     expect(written.lastSeenAt).toBeInstanceOf(Date);
     expect(whereSpy.mock.calls[0]![0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
   });
 
@@ -9010,7 +9016,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(Object.keys(written).sort()).toEqual(['watchdogLastSeen', 'watchdogStatus', 'watchdogVersion']);
     expect(whereSpy.mock.calls[0]![0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
   });
 

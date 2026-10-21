@@ -240,7 +240,7 @@ describe('script secret delivery (integration)', () => {
     await setSecretEnvVersion(scn.deviceId, 0);
 
     const deliverable = await withSystemDbAccessContext(async () => {
-      const claimed = await claimPendingCommandsForDevice(scn.deviceId);
+      const claimed = await claimPendingCommandsForDevice({ deviceId: scn.deviceId, installIncarnation: 1 });
       expect(claimed).toHaveLength(1);
       return prepareClaimedCommandsForDelivery(
         claimed.map((cmd) => ({

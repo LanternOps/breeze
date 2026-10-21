@@ -1,8 +1,7 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices } from '../../db/schema';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
+import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 
 export const uninstallIntentRoutes = new Hono();
 
@@ -44,10 +43,9 @@ uninstallIntentRoutes.post('/:id/uninstall-intent', async (c) => {
     return c.json({ error: 'This endpoint requires the agent credential' }, 403);
   }
 
-  await db
-    .update(devices)
-    .set({ uninstallIntentAt: new Date() })
-    .where(eq(devices.id, agent.deviceId));
+  // #8318 §6.4: bound to the authenticated id + agent_id; an uninstaller of a
+  // superseded install cannot stamp the row a reattach handed to a new one.
+  await updateOwnDeviceRow(db, agent, { uninstallIntentAt: new Date() });
 
   return c.json({ acknowledged: true });
 });

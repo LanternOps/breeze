@@ -114,7 +114,7 @@ describe('claim-time partner trust check reads on the claim transaction connecti
 
     const outcome = await withSystemDbAccessContext(async () => {
       await db.update(partners).set({ trustState: 'restricted' }).where(eq(partners.id, partner.id));
-      const claimed = await claimPendingCommandsForDevice(device.id, 10, 'agent', undefined, { ...AGENT_CAPS });
+      const claimed = await claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS });
       const rows = await db
         .select({ id: deviceCommands.id, status: deviceCommands.status, result: deviceCommands.result })
         .from(deviceCommands)
@@ -135,7 +135,7 @@ describe('claim-time partner trust check reads on the claim transaction connecti
     const cmd = await queue(device.id, org.id);
 
     const claimed = await withDbAccessContext(agentContext(org.id, partner.id), () =>
-      claimPendingCommandsForDevice(device.id, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
     expect(claimed).toEqual([]);
@@ -159,7 +159,7 @@ describe('claim-time partner trust check reads on the claim transaction connecti
     const cmd = await queue(device.id, org.id);
 
     const claimed = await withDbAccessContext(agentContext(org.id, partner.id), () =>
-      claimPendingCommandsForDevice(device.id, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
     expect(claimed.map((c) => c.id)).toEqual([cmd.id]);

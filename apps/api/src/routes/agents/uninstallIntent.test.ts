@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 const setMock = vi.fn();
-const whereMock = vi.fn(() => Promise.resolve());
+// updateOwnDeviceRow (#8318 §6.4) always asks for the matched rows back.
+const returningMock = vi.fn(() => Promise.resolve([{ id: 'dev-1' }]));
+const whereMock = vi.fn(() => ({ returning: returningMock }));
 setMock.mockImplementation(() => ({ where: whereMock }));
 const updateMock = vi.fn(() => ({ set: setMock }));
 
@@ -13,12 +15,14 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
-  devices: { id: 'devices.id' },
+  devices: { id: 'devices.id', agentId: 'devices.agentId' },
 }));
 
 const eqMock = vi.fn((col: unknown, val: unknown) => ({ op: 'eq', col, val }));
 vi.mock('drizzle-orm', () => ({
   eq: (...args: unknown[]) => eqMock(...(args as [unknown, unknown])),
+  // updateOwnDeviceRow (#8318 §6.4) ANDs the id + agent_id identity predicate.
+  and: (...args: unknown[]) => ({ op: 'and', args }),
 }));
 
 import { uninstallIntentRoutes } from './uninstallIntent';

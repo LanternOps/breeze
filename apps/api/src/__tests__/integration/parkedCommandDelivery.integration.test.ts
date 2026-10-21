@@ -179,7 +179,7 @@ describe('command delivery to a parked device (real Postgres)', () => {
     // Exactly the call routes/agents/heartbeatParked.ts and the command poll
     // make for a parked agent: system context, the removal allowlist.
     const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(parked.id, 10, 'agent', DRAIN_CLAIM_TYPE_ALLOWLIST, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: parked.id, installIncarnation: 1 }, 10, 'agent', DRAIN_CLAIM_TYPE_ALLOWLIST, { ...AGENT_CAPS }),
     );
 
     expect(claimed.map((c) => c.id)).toEqual([uninstall]);
@@ -195,7 +195,7 @@ describe('command delivery to a parked device (real Postgres)', () => {
     const uninstall = await pending(parked.id, 'self_uninstall');
 
     const claimed = await withDbAccessContext(agentContext(pool.orgId, partnerId), () =>
-      claimPendingCommandsForDevice(parked.id, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: parked.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
     expect(claimed.map((c) => c.id)).toEqual([uninstall]);
@@ -205,7 +205,7 @@ describe('command delivery to a parked device (real Postgres)', () => {
   it('a drain allowlist on a device in a customer org still leaves other work pending', async () => {
     const inventory = await pending(control.id, 'refresh_inventory');
     const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(control.id, 10, 'agent', DRAIN_CLAIM_TYPE_ALLOWLIST, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: control.id, installIncarnation: 1 }, 10, 'agent', DRAIN_CLAIM_TYPE_ALLOWLIST, { ...AGENT_CAPS }),
     );
     expect(claimed).toEqual([]);
     expect((await commandRow(inventory)).status).toBe('pending');
@@ -215,7 +215,7 @@ describe('command delivery to a parked device (real Postgres)', () => {
     const inventory = await pending(control.id, 'refresh_inventory');
 
     const claimed = await withDbAccessContext(agentContext(customerOrgId, partnerId), () =>
-      claimPendingCommandsForDevice(control.id, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: control.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
     expect(claimed.map((c) => c.id)).toEqual([inventory]);

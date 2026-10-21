@@ -1,4 +1,4 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { and, sql, type SQL } from 'drizzle-orm';
 import { deviceCommands } from '../db/schema';
 
 /**
@@ -51,4 +51,42 @@ export function commandStampIsCurrent(
  */
 export function commandIncarnationIsCurrentCondition(): SQL {
   return sql`public.breeze_device_command_incarnation_is_current(${deviceCommands.id})`;
+}
+
+/**
+ * The incarnation an agent-authenticated caller proved (#8318 §6.4, item 2).
+ * REST agent auth and the WS handshake read `devices.install_incarnation`
+ * with the row they authenticate against and carry it here.
+ */
+export interface CommandCallerIncarnation {
+  installIncarnation: number;
+}
+
+/** In-memory twin of {@link commandStampMatchesCallerCondition}. */
+export function commandStampMatchesCaller(
+  stamp: number | null | undefined,
+  callerInstallIncarnation: number,
+): boolean {
+  return commandStampIncarnation(stamp) === callerInstallIncarnation;
+}
+
+/**
+ * SQL predicate over `device_commands`: the row's stamp (NULL = 1) equals the
+ * incarnation the CALLER authenticated under. On its own it says nothing about
+ * the device's current incarnation; see
+ * {@link commandIncarnationAcceptedForCallerCondition}.
+ */
+export function commandStampMatchesCallerCondition(caller: CommandCallerIncarnation): SQL {
+  return sql`COALESCE(${deviceCommands.deviceIncarnation}, 1) = ${caller.installIncarnation}`;
+}
+
+/**
+ * The full §6.4 check for a claim or a result: the row's stamp equals BOTH the
+ * caller's authenticated incarnation AND the device's current one, read in
+ * the same statement. A caller that authenticated under `n` therefore never
+ * takes a row stamped `n+1` (enqueued after a confirm it predates), and a row
+ * stamped `n` is refused once the device moved on, reopen paths included.
+ */
+export function commandIncarnationAcceptedForCallerCondition(caller: CommandCallerIncarnation): SQL {
+  return and(commandIncarnationIsCurrentCondition(), commandStampMatchesCallerCondition(caller))!;
 }

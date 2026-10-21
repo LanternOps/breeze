@@ -9,6 +9,7 @@ import {
   devices,
   deviceHardware,
 } from '../../db/schema';
+import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { syncDeviceDisks, syncDeviceNetwork, writeHardwareReport } from '../../services/inventoryChildSync';
 import {
   agentMemoryInventorySchema,
@@ -250,11 +251,11 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
     // Leave devices.activeVpns untouched when the agent didn't report VPN
     // state, so an old agent (or a transient collection failure) never
     // overwrites last-known-good.
+    //
+    // #8318 §6.4: bound to the authenticated agent_id (`:id`, which the row
+    // was read by) through updateOwnDeviceRow.
     if (vpnProvided) {
-      await tx
-        .update(devices)
-        .set({ activeVpns, updatedAt: now })
-        .where(eq(devices.id, device.id));
+      await updateOwnDeviceRow(tx, { deviceId: device.id, agentId }, { activeVpns, updatedAt: now });
     }
 
     await syncDeviceNetwork(tx, device, data.adapters, now);

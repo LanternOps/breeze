@@ -130,6 +130,9 @@ async function sendWsResult(
   body: Record<string, unknown>,
 ): Promise<void> {
   const handlers = createAgentWsHandlers(fx.agentId, {
+    agentId: fx.agentId,
+    siteId: 'site-test',
+    installIncarnation: 1,
     deviceId: fx.deviceId,
     orgId: fx.orgId,
     partnerId: fx.partnerId,

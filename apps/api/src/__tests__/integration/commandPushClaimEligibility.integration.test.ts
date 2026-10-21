@@ -216,7 +216,7 @@ describe('WebSocket push claim — same claim-time eligibility as the heartbeat 
       const cmd = await queue(device.id, org.id, starter.id, 'desktop_stream_stop', stopPayload());
 
       const claimed = await withDbAccessContext(agentContext(), () =>
-        claimPendingCommandsForDevice(device.id, 10, 'agent', undefined, { ...AGENT_CAPS }),
+        claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
       );
 
       expect(claimed.map((c) => c.id)).toEqual([cmd.id]);

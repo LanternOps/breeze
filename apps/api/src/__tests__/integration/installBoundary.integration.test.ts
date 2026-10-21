@@ -562,7 +562,8 @@ describe('install incarnation boundary — every category (#8318 §5, §5.8)', (
       .returning({ id: deviceCommands.id, deviceIncarnation: deviceCommands.deviceIncarnation });
     expect(fresh!.deviceIncarnation).toBe(2);
     const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(target, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      // The NEW install claims: it authenticated under incarnation 2.
+      claimPendingCommandsForDevice({ deviceId: target, installIncarnation: 2 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
     expect(claimed.map((c) => c.id)).toEqual([fresh!.id]);
 
@@ -571,7 +572,7 @@ describe('install incarnation boundary — every category (#8318 §5, §5.8)', (
     const acceptable = await getTestDb()
       .select({ id: deviceCommands.id })
       .from(deviceCommands)
-      .where(sql`${deviceCommands.deviceId} = ${target} AND ${commandAcceptsAgentResultCondition()}`);
+      .where(sql`${deviceCommands.deviceId} = ${target} AND ${commandAcceptsAgentResultCondition({ installIncarnation: 2 })}`);
     // Only the fresh command (now `sent`) accepts a result.
     expect(acceptable.map((r) => r.id)).toEqual([fresh!.id]);
     expect(acceptable.map((r) => r.id)).not.toContain(ids.commandTimedOut);

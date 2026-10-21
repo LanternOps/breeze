@@ -48,7 +48,7 @@ import {
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
 } from '../../services/commandResultAcceptance';
-import { commandIncarnationIsCurrentCondition } from '../../services/commandIncarnation';
+import { commandIncarnationIsCurrentCondition, commandStampMatchesCaller } from '../../services/commandIncarnation';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandTypes';
 import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import {
@@ -221,7 +221,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
   const deliverableCommands = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const commands = await claimPendingCommandsForDevice(
-        agent.deviceId,
+        { deviceId: agent.deviceId, installIncarnation: agent.installIncarnation },
         10,
         agent.role,
         // #2774 / #3986 — drain narrowing (tenant offboarding OR device
@@ -338,7 +338,14 @@ commandsRoutes.post(
     // same check in SQL (commandAcceptsAgentResultCondition); this answers
     // before any of the branches that bypass it. Compared with `=== false`
     // because the column is always a boolean from the database.
-    if (command.incarnationCurrent === false) {
+    //
+    // §6.4, the caller half: a row stamped for a LATER incarnation than the
+    // one this request authenticated under (enqueued after a reattach confirm
+    // the request predates) is refused the same way.
+    if (
+      command.incarnationCurrent === false
+      || !commandStampMatchesCaller(command.deviceIncarnation, agent.installIncarnation)
+    ) {
       if (PAM_COMMAND_TYPES.has(command.type)) {
         return c.json<PamResultAcknowledgement>({ protocolVersion: 1, classification: 'stale' });
       }
@@ -550,7 +557,7 @@ commandsRoutes.post(
                 eq(deviceCommands.id, commandId),
                 eq(deviceCommands.deviceId, deviceId),
                 eq(deviceCommands.targetRole, agent.role),
-                commandAcceptsAgentResultCondition()
+                commandAcceptsAgentResultCondition(agent)
               )) as any;
 
             updated = typeof query.returning === 'function'
@@ -737,6 +744,7 @@ commandsRoutes.post(
           commandId,
           deviceId,
           targetRole: agent.role,
+          caller: agent,
           storedResult: storedCommandResult,
         });
       } catch (markErr) {

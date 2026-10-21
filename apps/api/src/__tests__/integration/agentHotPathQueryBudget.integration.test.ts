@@ -1204,6 +1204,9 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // with credentialTokenHash set, every frame after the re-check lease
     // re-authorizes the credential, exactly as on a production socket.
     const handlers = createAgentWsHandlers(device.agentId, {
+      agentId: device.agentId,
+      siteId: 'site-test',
+      installIncarnation: 1,
       deviceId: device.deviceId,
       orgId: device.orgId,
       partnerId: device.partnerId,

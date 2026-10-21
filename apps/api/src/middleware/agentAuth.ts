@@ -29,12 +29,23 @@ import {
   isReservedIngestPath,
   resolveOrgRateLimit,
 } from '../services/agentOrgRateLimit';
+import { updateOwnDeviceRow, type OwnDeviceRowIdentity } from '../services/agentOwnDeviceRow';
+import { recordAgentCredentialUse } from '../services/agentCredentialUse';
 
 export interface AgentAuthContext {
   deviceId: string;
   agentId: string;
   orgId: string;
   siteId: string;
+  /**
+   * #8318 §6.4 — `devices.install_incarnation` as read by the row this
+   * request authenticated against. Every command claim and result acceptance
+   * on this request takes a row only when its stamp equals this value AND the
+   * device's current incarnation, so a request the previous install
+   * authenticated just before a reattach confirm never claims or completes
+   * the new install's work.
+   */
+  installIncarnation: number;
   /**
    * #4673 W02 — the partner (MSP) that OWNS this device's organization,
    * resolved by the device auth select's join to `organizations`.
@@ -295,22 +306,26 @@ export function isAgentTokenRotationDue(tokenIssuedAt: Date | null | undefined, 
  * or via a future admin endpoint); the agent will retry forever and produce
  * a loud reconnect-loop signal that surfaces the suspension to ops.
  */
-export async function suspendAgentToken(deviceId: string, reason: AgentTokenSuspendReason): Promise<void> {
+export async function suspendAgentToken(agent: OwnDeviceRowIdentity, reason: AgentTokenSuspendReason): Promise<void> {
   try {
     await withSystemDbAccessContext(async () => {
-      await db
-        .update(devices)
-        .set({
+      // #8318 §6.4: bound to the identity the socket authenticated as, so a
+      // probe from a superseded install cannot suspend the row's new owner.
+      await updateOwnDeviceRow(
+        db,
+        agent,
+        {
           agentTokenSuspendedAt: new Date(),
           agentTokenSuspendedReason: reason.slice(0, 100),
-        })
-        .where(and(eq(devices.id, deviceId), isNull(devices.agentTokenSuspendedAt)));
+        },
+        { where: isNull(devices.agentTokenSuspendedAt) },
+      );
     });
   } catch (err) {
     // Best-effort: the auth gate is the source of truth. A failed suspension
     // write just means the next probe will try again.
     console.error('[agentAuth] suspendAgentToken failed', {
-      deviceId,
+      deviceId: agent.deviceId,
       reason,
       err: err instanceof Error ? err.message : String(err),
     });
@@ -644,6 +659,9 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
         hostname: devices.hostname,
         lastSeenIp: devices.lastSeenIp,
+        // #8318 §6.4: the incarnation this request authenticates under, read
+        // with the row it authenticates against.
+        installIncarnation: devices.installIncarnation,
         // #4673 W02 — the owning MSP, for `currentPartnerId`. An INNER join is
         // correct rather than a LEFT one: `devices.org_id` and
         // `organizations.partner_id` are both NOT NULL with an FK between them,
@@ -861,12 +879,13 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // a machine collecting its own uninstall. It is NOT a liveness signal —
     // `last_seen_at` is, and that one is guarded on terminal status in the
     // heartbeat handler, so the device still reads as Removed in the UI.
+    //
+    // #8318 §6.4: bound to the identity that authenticated (id + agent_id), so
+    // a request the previous install authenticated just before a reattach
+    // confirm matches 0 rows instead of stamping the new install's row.
     if (device.lastSeenIp !== sourceIp) {
       void withSystemDbAccessContext(async () => {
-        await db
-          .update(devices)
-          .set({ lastSeenIp: sourceIp })
-          .where(eq(devices.id, device.id));
+        await updateOwnDeviceRow(db, { deviceId: device.id, agentId: device.agentId }, { lastSeenIp: sourceIp });
       }).catch((err) => {
         console.error('[agentAuth] last_seen_ip update failed:', err);
       });
@@ -1057,11 +1076,17 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // agent holds a durable copy of the new token and promotes pending->current.
   c.set('agentPendingTokenPresented', match.pendingTokenPresented);
 
+  // #8318 §6.5: the liveness marker the reattach confirm reads. Every gate
+  // above passed, so this credential was genuinely used. Throttled and
+  // fire-and-forget inside; never throws into the request.
+  recordAgentCredentialUse(device.id);
+
   c.set('agent', {
     deviceId: device.id,
     agentId: device.agentId,
     orgId: device.orgId,
     siteId: device.siteId,
+    installIncarnation: device.installIncarnation,
     // #4673 W02 — surfaced here (not just baked into the wrap below) because
     // the three SELF_MANAGED_DB_CONTEXT_ACTIONS routes skip that wrap and
     // hand-build their own org context; they read this to populate

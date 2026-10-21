@@ -242,6 +242,7 @@ describe('agent commands routes', () => {
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -930,7 +931,7 @@ describe('agent commands routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', undefined);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'agent', undefined);
     await expect(res.json()).resolves.toEqual({
       commands: [
         {
@@ -949,6 +950,7 @@ describe('agent commands routes', () => {
     const drainApp = new Hono();
     drainApp.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -969,7 +971,7 @@ describe('agent commands routes', () => {
 
     expect(res.status).toBe(200);
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      'device-1',
+      { deviceId: 'device-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall']
@@ -1649,6 +1651,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     const app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: opts.deviceId ?? 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -1847,7 +1850,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     });
 
     expect(res.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'agent', [
       'self_uninstall',
     ]);
   });

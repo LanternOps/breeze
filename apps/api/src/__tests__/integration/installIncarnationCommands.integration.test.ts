@@ -124,9 +124,20 @@ async function commandRow(id: string) {
   return row!;
 }
 
-function claim(deviceId: string) {
+/** A claim by the install that currently owns the row (it authenticated after any advance). */
+async function claim(deviceId: string) {
+  const [row] = await getTestDb()
+    .select({ installIncarnation: devices.installIncarnation })
+    .from(devices)
+    .where(eq(devices.id, deviceId));
   return withSystemDbAccessContext(() =>
-    claimPendingCommandsForDevice(deviceId, 10, 'agent', undefined, { ...AGENT_CAPS }),
+    claimPendingCommandsForDevice(
+      { deviceId, installIncarnation: row!.installIncarnation },
+      10,
+      'agent',
+      undefined,
+      { ...AGENT_CAPS },
+    ),
   );
 }
 
@@ -380,6 +391,9 @@ describe('result acceptance refuses an earlier incarnation (#8318 §4.2, §5.2)'
 
   async function sendWsResult(fx: Fixture, commandId: string) {
     const handlers = createAgentWsHandlers(fx.agentId, {
+      agentId: fx.agentId,
+      siteId: 'site-test',
+      installIncarnation: 1,
       deviceId: fx.deviceId,
       orgId: fx.orgId,
       partnerId: fx.partnerId,
@@ -404,6 +418,7 @@ describe('result acceptance refuses an earlier incarnation (#8318 §4.2, §5.2)'
     const app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: fx.deviceId,
         agentId: fx.agentId,
         orgId: fx.orgId,
@@ -447,7 +462,7 @@ describe('result acceptance refuses an earlier incarnation (#8318 §4.2, §5.2)'
     const accepted = await getTestDb()
       .select({ id: deviceCommands.id })
       .from(deviceCommands)
-      .where(sql`${deviceCommands.deviceId} = ${fx.deviceId} AND ${commandAcceptsAgentResultCondition()}`);
+      .where(sql`${deviceCommands.deviceId} = ${fx.deviceId} AND ${commandAcceptsAgentResultCondition({ installIncarnation: 2 })}`);
     expect(accepted.map((r) => r.id)).toEqual([sentCurrent]);
     expect([sentStale, timedOutStale, legacyStale]).not.toContain(accepted[0]?.id);
   });

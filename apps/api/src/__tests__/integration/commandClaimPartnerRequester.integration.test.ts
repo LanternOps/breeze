@@ -106,7 +106,7 @@ describe('heartbeat claim — requester resolution under the agent RLS context',
 
   async function claimAsAgent() {
     return withDbAccessContext(agentContext(org.id, partner.id), () =>
-      claimPendingCommandsForDevice(device.id, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
   }
 
