@@ -502,7 +502,20 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
   const assembled = await assembleCustomerInvoiceDocument(loaded.invoice, 'staff', { surface: 'pdf' });
   const pdf = await drawInvoicePdf(
     // The loader's wordmark chain (partner -> seller snapshot -> 'Invoice') is more forgiving than the assembler's.
-    { ...assembled, branding: { ...assembled.branding, partnerName: loaded.branding.partnerName } },
+    // Locale and page size too: the loader's partner read THROWS on failure, the assembler's is fail-soft
+    // (a blip there must not freeze an English/A4 PDF for a legacy unstamped pt-BR/Letter partner).
+    {
+      ...assembled,
+      documentLocale: loaded.branding.locale ?? assembled.documentLocale,
+      branding: {
+        ...assembled.branding,
+        partnerName: loaded.branding.partnerName,
+        // The persisted PDF is frozen: take the strictly loaded (throwing) values, not the fail-soft ones.
+        logoUrl: loaded.branding.logoUrl ?? null,
+        primaryColor: loaded.branding.primaryColor ?? null,
+        pageSize: resolvePageSize(loaded.invoice.documentPageSize ?? loaded.branding.pageSize),
+      },
+    },
     {
       appendix: loaded.appendix, footerText: loaded.branding.footerText, payOnlineUrl: loaded.branding.payOnlineUrl,
       billToEmailFallback: loaded.branding.billToEmailFallback,

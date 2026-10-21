@@ -87,14 +87,20 @@ describe('measureDocumentLineRow / drawDocumentLineRow', () => {
   });
 
   it('draws title, qty and amount on one baseline, each line of a bulleted blurb on its own row', async () => {
-    const row = firstRow(model([lineDto(1, { name: 'Remote support', description: '• one\n• two', lineTotal: '25.00', unitPrice: '25.00' })]).lines);
-    const pdf = await render((doc) => { drawDocumentLineRow(doc, row, 100, { cols: cols(), style: STYLE, showTax: false }); });
+    const row = firstRow(model([lineDto(1, { name: 'Remote support', description: '• one\n• two', quantity: '2', unitPrice: '10.00', lineTotal: '20.00' })]).lines);
+    const c = cols();
+    const pdf = await render((doc) => { drawDocumentLineRow(doc, row, 100, { cols: c, style: STYLE, showTax: false }); });
     const t = extractPositionedPdfText(pdf);
     const title = t.find((f) => f.text === 'Remote support')!;
-    const amount = t.find((f) => f.text === '$25.00' && f.x > 400)!;
-    const one = t.find((f) => f.text === '• one' || f.text.includes('one'))!;
+    // Distinct unit and total, so the amount cell cannot be mistaken for the unit-price cell.
+    const amount = t.find((f) => f.text === '$20.00')!;
+    const unit = t.find((f) => f.text === '$10.00')!;
+    expect(amount.x).toBeGreaterThanOrEqual(c.colAmtX - 0.5);
+    expect(unit.x).toBeLessThan(c.colAmtX);
+    const one = t.find((f) => f.text.includes('one'))!;
     const two = t.find((f) => f.text.includes('two'))!;
     expect(amount.y).toBeCloseTo(title.y, 0);
+    expect(unit.y).toBeCloseTo(title.y, 0);
     expect(two.y).toBeGreaterThan(one.y + 6);
     expect(one.y).toBeGreaterThan(title.y + 6);
   });

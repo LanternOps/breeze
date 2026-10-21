@@ -31,6 +31,17 @@ describe('invoice PDF — line detail (hidden lines, frozen columns, locale)', (
     const t = await texts(byDay);
     expect(t).toEqual(expect.arrayContaining(['$150.00', '$50.00', '$200.00']));
     expect(t.filter((x) => x === 'Block hours overage')).toHaveLength(1);
+    // Positions: one header per date (lines do not repeat it), ascending, hours at the
+    // qty column and the day total at the amount column on the header's baseline.
+    const f = await pdfText(byDay);
+    const h16 = f.filter((x) => x.text === 'Sep 16, 2026');
+    const h17 = f.filter((x) => x.text === 'Sep 17, 2026');
+    expect(h16).toHaveLength(1);
+    expect(h17).toHaveLength(1);
+    expect(h16[0]!.y).toBeLessThan(h17[0]!.y);   // stored order had Sep 17 first
+    const row16 = f.filter((x) => Math.abs(x.y - h16[0]!.y) < 0.5).map((x) => x.text);
+    expect(row16).toEqual(expect.arrayContaining(['2', '$200.00']));   // 1.50 + 0.50 h (the hidden 0.25 h excluded)
+    expect(f.find((x) => x.text === 'Fuser unit')!.y).toBeGreaterThan(h17[0]!.y);   // undated lines follow
   });
 
   it('note OFF: the generic labor label replaces each technician note; other lines unchanged', async () => {
