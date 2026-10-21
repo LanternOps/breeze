@@ -51,6 +51,7 @@ export const DOCUMENT_LABELS_EN: DocumentLabels = Object.freeze({
     taxId: (id: string) => `Tax ID: ${id}`,
     payOnline: 'Pay online:',
     category: (name: string) => `Category: ${name}`,
+  }),
 
   // ---- W2a (#9418): quote document ----
   // Copied verbatim from the portal: quoteBlocks.tsx (table, device-set
