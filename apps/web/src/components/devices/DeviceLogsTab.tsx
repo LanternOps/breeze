@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Filter,
@@ -453,6 +454,8 @@ export default function DeviceLogsTab({
               <button
                 key={log.id}
                 type="button"
+                aria-expanded={isExpanded}
+                data-testid={`device-log-entry-${log.id}`}
                 onClick={() => setExpandedId(isExpanded ? null : log.id)}
                 className="w-full text-left px-4 py-3 hover:bg-muted/50 transition"
               >
@@ -460,7 +463,9 @@ export default function DeviceLogsTab({
                   <div className="flex items-start gap-3 min-w-0">
                     <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                     <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">
+                      <p
+                        className={`text-sm font-medium ${isExpanded ? "whitespace-pre-wrap break-words [overflow-wrap:anywhere]" : "truncate"}`}
+                      >
                         {log.message}
                       </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
@@ -482,6 +487,10 @@ export default function DeviceLogsTab({
                     >
                       {lc.label}
                     </span>
+                    <ChevronDown
+                      aria-hidden="true"
+                      className={`h-4 w-4 text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                    />
                   </div>
                 </div>
                 {isExpanded && log.details && (
