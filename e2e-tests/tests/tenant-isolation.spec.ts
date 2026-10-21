@@ -80,12 +80,13 @@ async function sniffToken(page: Page, who: string): Promise<string> {
     await page.goto('/');
     try {
       await expect.poll(() => token, { timeout: 30_000 }).toBeTruthy();
-    } catch {
+    } catch (err) {
       throw new Error(
         `[tenant-isolation] positive control failed for ${who}: no authenticated /api/v1 request within 30s. ` +
           `Page ended on ${page.url()}; POST /auth/refresh responses seen: ` +
           `${refreshStatuses.length ? refreshStatuses.join(', ') : 'none'}. ` +
-          'A run of 401s ending on /login means the session was already dead (stale or rotated refresh cookie in the storage state), not a tenant-isolation failure.'
+          'If the page ended on /login after refresh 401s, the session was likely already dead (stale or rotated refresh cookie in the storage state), not a tenant-isolation failure.',
+        { cause: err }
       );
     }
   } finally {

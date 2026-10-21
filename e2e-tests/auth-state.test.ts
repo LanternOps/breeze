@@ -108,4 +108,61 @@ describe('snapshotAfterMountRefresh (#9252)', () => {
       snapshotAfterMountRefresh({ storageState: async () => ({}) }, page, tracker, { pollMs: 5 })
     ).rejects.toThrow(/HTTP 401/);
   });
+
+  it('requestfailed clears in-flight and is reported as a failure', async () => {
+    const page = fakePage();
+    const tracker = trackRefreshes(page);
+    const req = { ...refreshReq(), failure: () => ({ errorText: 'net::ERR_ABORTED' }) };
+    page.emit('request', req);
+    page.emit('requestfailed', req);
+    expect(tracker.inflight).toBe(0);
+    await expect(
+      snapshotAfterMountRefresh({ storageState: async () => ({}) }, page, tracker, { pollMs: 5 })
+    ).rejects.toThrow(/request failed: net::ERR_ABORTED/);
+  });
+
+  it('reports a refresh still in flight at the deadline without snapshotting', async () => {
+    const page = fakePage();
+    const tracker = trackRefreshes(page);
+    page.emit('request', refreshReq());
+    const ctx = { storageState: vi.fn(async () => ({})) };
+    await expect(
+      snapshotAfterMountRefresh(ctx, page, tracker, { pollMs: 5, deadlineMs: 50 })
+    ).rejects.toThrow(/1 still in flight/);
+    expect(ctx.storageState).not.toHaveBeenCalled();
+  });
+
+  it('re-snapshots when a refresh starts AND finishes inside storageState()', async () => {
+    const page = fakePage();
+    const tracker = trackRefreshes(page);
+    const first = refreshReq();
+    page.emit('request', first);
+    page.emit('requestfinished', first);
+    let calls = 0;
+    const ctx = {
+      storageState: async () => {
+        calls++;
+        if (calls === 1) {
+          const late = refreshReq();
+          page.emit('request', late);
+          page.emit('requestfinished', late);
+        }
+        return { calls };
+      },
+    };
+    const snap = await snapshotAfterMountRefresh(ctx, page, tracker, { pollMs: 5 });
+    expect(snap.calls).toBe(2);
+  });
+
+  it('ignores non-refresh requests', () => {
+    const page = fakePage();
+    const tracker = trackRefreshes(page);
+    const get = { method: () => 'GET', url: () => 'http://x.test/api/v1/auth/refresh', failure: () => null };
+    const login = { method: () => 'POST', url: () => 'http://x.test/api/v1/auth/login', failure: () => null };
+    page.emit('request', get);
+    page.emit('request', login);
+    page.emit('response', { request: () => login, status: () => 500 });
+    expect(tracker.starts).toBe(0);
+    expect(tracker.failures).toEqual([]);
+  });
 });
