@@ -46,7 +46,14 @@ async function getTunnelWs() {
   return _tunnelWs;
 }
 
-async function teardownDisconnectedTunnels(disconnected: DisconnectedSession[]): Promise<void> {
+/**
+ * Given tunnel rows already marked `disconnected`, revoke their viewer tokens
+ * and close the tunnel (locally, or with a `tunnel_close` to the owning
+ * agent). Exported for writers that disconnect tunnels inside their own
+ * transaction and tear down after it commits (the install incarnation
+ * boundary, services/deviceInstallBoundary).
+ */
+export async function teardownDisconnectedTunnels(disconnected: DisconnectedSession[]): Promise<void> {
   if (disconnected.length === 0) return;
   const agentByDevice = new Map<string, string | null>();
   try {

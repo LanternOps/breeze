@@ -32,6 +32,14 @@ interface InteractionDetails {
     // origin. Empty strings signal missing metadata → fail-closed render.
     redirect_uri: string;
     redirect_origin: string;
+    // B-W03 (#6157): 'metadata_document' = the client_id is an https URL whose
+    // host publishes the app's details (CIMD). That host is NOT a verified
+    // identity — the integration stays labelled unverified. Optional so an
+    // older API that omits them renders as before.
+    registration?: 'metadata_document' | 'dynamic';
+    client_id_host?: string | null;
+    redirect_host?: string;
+    localhost_redirect?: boolean;
   };
   scopes: string[];
   resource: string | null;
@@ -254,6 +262,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
   const selectedPartnerScopes = selectedPartner?.effectiveScopes ?? details.scopes;
 
   const displayName = details.client.display_name?.trim() || details.client.client_id;
+  const isMetadataDocument = details.client.registration === 'metadata_document';
   const showClientIdSubtitle = displayName !== details.client.client_id;
 
   // MCP-OAUTH-08: fail closed if we can't show the user where the
@@ -279,7 +288,23 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
     >
       <UnverifiedNotice />
 
+      {isMetadataDocument && details.client.client_id_host && (
+        <p data-testid="oauth-metadata-host" className="text-xs text-muted-foreground break-all">
+          {t('longTail.oauth.ConsentForm.metadataHostedAt', { host: details.client.client_id_host })}
+        </p>
+      )}
+
       <CallbackDestination origin={redirectOrigin} />
+
+      {isMetadataDocument && details.client.localhost_redirect === true && (
+        <div
+          data-testid="oauth-localhost-warning"
+          role="alert"
+          className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-300"
+        >
+          {t('longTail.oauth.ConsentForm.localhostRedirectWarning')}
+        </div>
+      )}
 
       <ScopeList scopes={selectedPartnerScopes} />
 

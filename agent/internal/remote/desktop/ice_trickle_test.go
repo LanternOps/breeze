@@ -334,23 +334,30 @@ func TestSessionManager_AddRemoteICECandidateAfterAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Take the answer snapshot BEFORE SetLocalDescription starts gathering, so
+	// every candidate is provably "late". Snapshotting after it raced pion's
+	// gather goroutine: on a slow runner gathering finished first, the SDP
+	// carried a=end-of-candidates, nothing trickled, and the wait below timed
+	// out (#9367).
+	s.trickle.snapshot(answerer.LocalDescription)
 	if err := answerer.SetLocalDescription(answer); err != nil {
 		t.Fatal(err)
 	}
 
 	m := NewSessionManager()
-	s.trickle.snapshot(answerer.LocalDescription)
 	m.mu.Lock()
 	m.sessions[s.id] = s
 	m.mu.Unlock()
 
-	var emitted []LocalICECandidate
 	var gens []string
+	complete := make(chan struct{})
 	m.OnLocalICECandidate = func(sessionID, generation string, c LocalICECandidate) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		gens = append(gens, generation)
-		emitted = append(emitted, c)
+		if c.Complete {
+			close(complete)
+		}
 	}
 	if !m.BeginICETrickle("sess-9182", "7") {
 		t.Fatal("BeginICETrickle refused a live session")
@@ -368,16 +375,10 @@ func TestSessionManager_AddRemoteICECandidateAfterAnswer(t *testing.T) {
 	}
 	// The answerer's host candidates were gathered after the snapshot above,
 	// so they (and the completion marker) trickle under the bound generation.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		m.mu.RLock()
-		n := len(emitted)
-		done := n > 0 && emitted[n-1].Complete
-		m.mu.RUnlock()
-		if done {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-complete:
+	case <-time.After(30 * time.Second): // failure backstop only; the event normally lands in milliseconds
+		t.Fatal("gathering never reported completion after BeginICETrickle")
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()

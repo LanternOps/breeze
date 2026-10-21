@@ -23,6 +23,8 @@
     "adminUsersDetailDevices": "Kullanıcı cihazları",
     "aiAgentsImpact": "Yapay Zeka Etkisi",
     "aiAgentsFixMemory": "Düzeltme belleği",
+    "flows": "Akışlar",
+    "flowDetail": "Akış",
     "aiAgentsRunsDetail": "Çalıştırma Detayı",
     "aiAgentsRuns": "Aracı Çalıştırmaları",
     "aiForOffice": "Office için AI",

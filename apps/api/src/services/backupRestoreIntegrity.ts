@@ -53,6 +53,12 @@ export type RestoreIntegrity =
       snapshotId: string;
       sourceDeviceId: string;
       objects: IntegrityObject[];
+      /**
+       * #8318 §5.4: the snapshot was taken before its device's current install
+       * incarnation began, so an EARLIER install produced it. Server-side
+       * only (never in the wire block); see decideRestoreGate.
+       */
+      producedByEarlierIncarnation?: boolean;
     }
   | { mode: 'unattested'; snapshotId: string; reason: UnattestedRestoreReason };
 
@@ -65,6 +71,12 @@ export type IntegritySnapshotInput = {
   storageIdentity: string | null;
   keyLayout: string;
   integrityStatus: string;
+  /**
+   * #8318 §5.4: true when the snapshot was taken before its device's
+   * `incarnation_started_at` ({@link snapshotPredatesDeviceIncarnationSql}).
+   * Absent/false on a device never reattached.
+   */
+  producedBeforeDeviceIncarnation?: boolean | null;
 };
 
 /** The attestation row fields the decision reads. */
@@ -164,6 +176,8 @@ export function evaluateRestoreIntegrity(
         snapshotId: snapshot.snapshotId,
         sourceDeviceId: attestation.deviceId,
         objects: attestedObjects(attestation),
+        // Only present when true, so a never-reattached device's block is unchanged.
+        ...(snapshot.producedBeforeDeviceIncarnation === true ? { producedByEarlierIncarnation: true } : {}),
       };
     default:
       // 'mismatch', or a status this server does not know.
@@ -301,6 +315,22 @@ export function joinedAttestation(value: unknown): IntegrityAttestationInput | n
 }
 
 /**
+ * #8318 §5.4: the snapshot row was taken before its device's current install
+ * incarnation began. Read in the snapshot's own statement. False for a device
+ * that was never reattached (NULL `incarnation_started_at`).
+ */
+export function snapshotPredatesDeviceIncarnationSql(): SQL<boolean> {
+  // backup_snapshots.timestamp is `timestamp` holding UTC wall-clock time;
+  // compare it with the timestamptz as UTC wall-clock too, so the session
+  // TimeZone never shifts the boundary.
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM devices incarnation_device
+     WHERE incarnation_device.id = ${backupSnapshots.deviceId}
+       AND incarnation_device.incarnation_started_at IS NOT NULL
+       AND ${backupSnapshots.timestamp} < (incarnation_device.incarnation_started_at AT TIME ZONE 'UTC'))`;
+}
+
+/**
  * Resolves the integrity expectation for one snapshot row, in the caller's DB
  * context (RLS applies). Null when the snapshot is not visible there.
  */
@@ -313,6 +343,7 @@ export async function resolveRestoreIntegrity(snapshotDbId: string): Promise<Res
       storageIdentity: backupSnapshots.storageIdentity,
       keyLayout: backupSnapshots.keyLayout,
       integrityStatus: backupSnapshots.integrityStatus,
+      producedBeforeDeviceIncarnation: snapshotPredatesDeviceIncarnationSql(),
       attestation: attestationJoinColumns(),
     })
     .from(backupSnapshots)

@@ -1,5 +1,7 @@
 # Action Intents MCP Cutover (Plan 2 of 2) Implementation Plan
 
+> **Superseded (2026-10-20) — do not execute.** Its premise (MCP auto-executes Tier 3) is stale: since 2026-08-02 MCP fails Tier 3 closed with `MCP_APPROVAL_REQUIRED`. The work is re-planned as B-W04 of #6154: `docs/superpowers/plans/ai-mcp/2026-10-20-mcp-modernization-b04-tier3-intents.md`. The status mapping and non-oracle rule below were carried over; the rest was not.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the external MCP Tier-3 bypass: API-key callers can request T3 work (durable intent) but never auto-execute it; add `get_action_status` / `cancel_action`; delete the auto-execute path.

@@ -3,6 +3,7 @@ import {
   ACCESS_TOKEN_TTL_SECONDS,
   ALL_MCP_SCOPES,
   buildExtraTokenClaims,
+  buildOidcProviderConfiguration,
   handleRevocationSuccess,
   logProviderGrantError,
   REFRESH_TOKEN_TTL_SECONDS,
@@ -520,3 +521,45 @@ describe('grant.error listener feeds the connection-health retry counter (W4)', 
     expect(recordRefreshRetryMock).toHaveBeenCalledWith('client-a');
   });
 });
+
+describe('buildOidcProviderConfiguration (B-W03 #6157)', () => {
+  const jwks = { keys: [] };
+
+  it('buildOidcProviderConfiguration enables CIMD with ack draft-02 only when OAUTH_CIMD_ENABLED', () => {
+    const on = buildOidcProviderConfiguration(jwks, { cimdEnabled: true }) as any;
+    expect(on.features.clientIdMetadataDocument).toMatchObject({
+      enabled: true,
+      ack: 'draft-02',
+      cacheDuration: { min: 300, max: 86400 },
+    });
+    expect(typeof on.features.clientIdMetadataDocument.allowFetch).toBe('function');
+    expect(typeof on.features.clientIdMetadataDocument.allowClient).toBe('function');
+    const off = buildOidcProviderConfiguration(jwks, { cimdEnabled: false }) as any;
+    expect(off.features.clientIdMetadataDocument.enabled).toBe(false);
+  });
+
+  it('routes every provider fetch through the CIMD-approved fetch wrapper', async () => {
+    const config = buildOidcProviderConfiguration(jwks, { cimdEnabled: true }) as any;
+    expect(typeof config.fetch).toBe('function');
+    await expect(config.fetch('https://evil.example.net/sector', {})).rejects.toThrow(/not approved/);
+  });
+
+  it('iss is always emitted: no jwtResponseModes, response types are code only (D-B21 pin)', () => {
+    const config = buildOidcProviderConfiguration(jwks, { cimdEnabled: false }) as any;
+    // Absent on purpose: oidc-provider 9.12.2's defaults are JARM off and
+    // responseTypes ['code id_token', 'code', 'id_token', 'none']; the DCR
+    // pre-handler and validateCimdMetadata only ever admit `code`.
+    expect(config.features).not.toHaveProperty('jwtResponseModes');
+    expect(Object.keys(config)).not.toContain('responseModes');
+    expect(Object.keys(config)).not.toContain('responseTypes');
+  });
+
+  it('keeps the existing posture (PKCE required, public DCR defaults, EdDSA only)', () => {
+    const config = buildOidcProviderConfiguration(jwks, { cimdEnabled: true }) as any;
+    expect(config.pkce.required()).toBe(true);
+    expect(config.clientDefaults.token_endpoint_auth_method).toBe('none');
+    expect(config.enabledJWA.idTokenSigningAlgValues).toEqual(['EdDSA']);
+    expect(config.jwks).toBe(jwks);
+  });
+});
+

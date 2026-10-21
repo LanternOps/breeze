@@ -226,7 +226,9 @@ const CATEGORY_CAPABILITY_PAIRS: Record<ToolCategory, AgentCapabilityId[]> = {
   'Files, Disk & Registry': ['files_disk', 'scripts_commands'],
   'Logs & Audit': ['alerts_monitoring', 'automations_reports', 'endpoint_agent'],
   'Services & Processes': ['services_startup', 'scripts_commands'],
-  'Scripts & Automation': ['scripts_commands', 'author_scripts'],
+  // automations_reports: Tool Catalog W03 flow tools (#5218) — flows are automations, read and
+  // drafted with automations.read/write, shown with the other scripting tools.
+  'Scripts & Automation': ['scripts_commands', 'author_scripts', 'automations_reports'],
   'Configuration Policies': ['config_policies'],
   'Fleet Operations': [
     'automations_reports',

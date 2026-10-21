@@ -14,6 +14,8 @@ export const providerCatalog = {
   emsisoft: { id: 'emsisoft', name: 'Emsisoft', vendor: 'Emsisoft' },
   webroot: { id: 'webroot', name: 'Webroot SecureAnywhere', vendor: 'OpenText' },
   withsecure: { id: 'withsecure', name: 'WithSecure Elements', vendor: 'WithSecure' },
+  // Rebranded from CylancePROTECT; the old name stays so either search finds it (#9178).
+  cylance: { id: 'cylance', name: 'Aurora Endpoint Defense (CylancePROTECT)', vendor: 'Arctic Wolf' },
   other: { id: 'other', name: 'Other', vendor: 'Other' },
   // Failed / not-collected provider (#8538). The web client localizes this
   // bucket by id; `name` is the English fallback.
