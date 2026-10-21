@@ -232,6 +232,8 @@ export const PATCH_INELIGIBLE_REASONS = [
   'blocked_by_app_rule',
   /** No manual approval and no auto-approve rule admits it. */
   'awaiting_manual_approval',
+  /** An operator explicitly declined this patch (`patch_approvals.status='rejected'`) — terminal, beats auto-approve (#9369). */
+  'explicitly_declined',
   /** The device resolves to no update ring, so only a manual approval could admit it — and none does. */
   'no_ring_resolved',
   'device_not_in_org',

@@ -2952,6 +2952,7 @@
           "blocked_by_category": "Durch die Kategorieregeln des Rings ausgeschlossen",
           "blocked_by_app_rule": "Durch eine App-Regel blockiert",
           "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
+          "explicitly_declined": "Ausdrücklich abgelehnt",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
           "ring_reference_invalid": "Update-Ring der Richtlinie ist ungültig",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
