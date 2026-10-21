@@ -95,6 +95,7 @@ vi.mock('./aiAgentSdkTools', () => ({
     execute_command: 3,
     take_screenshot: 2,
     diagnose_connectivity: 3,
+    remediate_vulnerability: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -961,5 +962,121 @@ describe('handoff terminal read-back (#6022)', () => {
 
     expect(result.handoff).toBe('approved_executing');
     expect(session.pendingApprovalWaits).toBe(0);
+  });
+
+  // #9530: the hand-off branch returned before the ledger row left `pending`
+  // (postToolUse's update is guarded on `executing`, which this branch never
+  // sets, and the worker never touches ai_tool_executions), so every
+  // worker-executed intent left a `pending` row with no output forever.
+  describe('closes the ai_tool_executions ledger row (#9530)', () => {
+    function ledgerClose(set: ReturnType<typeof vi.fn>) {
+      return set.mock.calls
+        .map((c) => c[0] as Record<string, unknown>)
+        .find((patch) => typeof patch.status === 'string');
+    }
+
+    it('marks the row completed with the projected result after a lost claim', async () => {
+      casLostAfterApproval('intent-ledger-done');
+      const { set, where } = mockUpdateChain();
+      mockWaitForIntentTerminalOutcome.mockResolvedValue({
+        status: 'completed',
+        errorCode: null,
+        result: { scheduled: 3, alreadyQueued: [], skipped: [], message: 'Scheduled 3 remediation(s); 0 skipped.', tempPassword: 'hunter2' },
+      });
+      const session = makeActiveSession();
+
+      const result = (await createSessionPreToolUse(session)('remediate_vulnerability', {
+        deviceVulnerabilityIds: ['dv-1'],
+      })) as { error: string; handoff?: string };
+
+      expect(result.handoff).toBe('approved_completed');
+      expect(result.error).toContain('Scheduled 3 remediation(s); 0 skipped.');
+      const patch = ledgerClose(set);
+      expect(patch).toMatchObject({
+        status: 'completed',
+        toolOutput: { status: 'approved_completed', message: result.error },
+      });
+      expect(patch!.completedAt).toBeInstanceOf(Date);
+      expect(JSON.stringify(patch)).not.toContain('hunter2');
+      // Guarded on `pending` so it can never clobber a row another path closed.
+      // Each set() call is followed by exactly one where() call, so the indices line up.
+      const setCalls = set.mock.calls as unknown as Array<[Record<string, unknown>]>;
+      const whereCalls = where.mock.calls as unknown as Array<[unknown]>;
+      const ledgerIndex = setCalls.findIndex((c) => c[0] === patch);
+      expect(ledgerIndex).toBeGreaterThanOrEqual(0);
+      expect(whereCalls[ledgerIndex]?.[0]).toEqual({
+        _and: [{ _eq: ['id', 'exec-intent-ledger-done'] }, { _eq: ['status', 'pending'] }],
+      });
+      // Still an observer of the intent: the lost CAS was the only intent write.
+      expect(mockTransitionIntent).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks the row 'approved' (not completed) when no outcome arrives inside the budget", async () => {
+      casLostAfterApproval('intent-ledger-running');
+      const { set } = mockUpdateChain();
+      mockWaitForIntentTerminalOutcome.mockResolvedValue({ status: 'executing', errorCode: null, result: null });
+      const session = makeActiveSession();
+
+      const result = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+        error: string;
+        handoff?: string;
+      };
+
+      expect(result.handoff).toBe('approved_executing');
+      const patch = ledgerClose(set);
+      expect(patch).toMatchObject({ status: 'approved', toolOutput: { status: 'approved_executing' } });
+      expect(patch!.completedAt).toBeUndefined();
+    });
+
+    it('marks the row failed with the reason when the worker failed it', async () => {
+      casLostAfterApproval('intent-ledger-failed');
+      const { set } = mockUpdateChain();
+      mockWaitForIntentTerminalOutcome.mockResolvedValue({
+        status: 'failed',
+        errorCode: 'tool_returned_error',
+        result: { error: guardrail },
+      });
+      const session = makeActiveSession();
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+      const patch = ledgerClose(set);
+      expect(patch).toMatchObject({ status: 'failed', toolOutput: { status: 'approved_failed' } });
+      expect(String(patch!.errorMessage)).toContain(guardrail);
+      expect(patch!.completedAt).toBeInstanceOf(Date);
+    });
+
+    it('closes the row on the DURABLE_RELEASE_ONLY exit too', async () => {
+      tier3Guardrail('supervised');
+      mockInsertReturning({ id: 'exec-durable-ledger' });
+      const { set } = mockUpdateChain();
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-durable-ledger' }));
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockRequiresDurableRelease.mockReturnValue(true);
+      mockWaitForIntentTerminalOutcome.mockResolvedValue({ status: 'completed', errorCode: null, result: null });
+      const session = makeActiveSession();
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+      expect(ledgerClose(set)).toMatchObject({ status: 'completed' });
+      expect(mockTransitionIntent).not.toHaveBeenCalled();
+    });
+
+    it('still returns the hand-off outcome if the ledger write fails', async () => {
+      casLostAfterApproval('intent-ledger-dbfail');
+      const where = vi.fn((cond: unknown) =>
+        JSON.stringify(cond).includes('pending') ? Promise.reject(new Error('db down')) : Promise.resolve(undefined),
+      );
+      vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where })) } as any);
+      mockWaitForIntentTerminalOutcome.mockResolvedValue({ status: 'completed', errorCode: null, result: null });
+      const session = makeActiveSession();
+
+      const result = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+        handoff?: string;
+      };
+
+      expect(result.handoff).toBe('approved_completed');
+      expect(session.pendingApprovalWaits).toBe(0);
+    });
   });
 });

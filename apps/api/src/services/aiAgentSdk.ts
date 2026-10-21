@@ -69,8 +69,10 @@ import {
 import { requiresDurableRelease } from './actionIntents/durableRelease';
 import {
   APPROVED_FAILED_STATUS,
+  buildToolHandoffResult,
   describeIntentOutcome,
   handoffDenialForOutcome,
+  handoffLedgerStatus,
   type HandoffOutcome,
   type ToolHandoffStatus,
 } from './aiToolHandoff';
@@ -313,6 +315,18 @@ const DECIDED_APPROVAL_METHODS: ReadonlySet<ApprovalMethod> = new Set([
   'pam',
   'plan_step',
 ]);
+
+/**
+ * The approval method a decided tier>=2 call records: the durable tier-3
+ * intent (requester self-decided a SUPERVISED intent, or a second approver
+ * decided a four_eyes one — an unscoped tier 3 never defaults to the weaker
+ * `supervised_self`) or the tier-2 lightweight card. Shared by the inline
+ * release and the #9530 worker hand-off so the two cannot drift.
+ */
+function decidedApprovalMethod(check: { tier: number; approvalScope?: string }): ApprovalMethod {
+  if (check.tier >= 3) return check.approvalScope === 'supervised' ? 'supervised_self' : 'action_intent';
+  return 'per_step_user';
+}
 
 /** Consume the recorded approval method for the audit event's details. */
 function approvalAuditDetails(
@@ -1220,6 +1234,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
        */
       const releaseHandoffDenial = async (
         intentId: string,
+        executionId: string,
       ): Promise<{ allowed: false; error: string; handoff: ToolHandoffStatus }> => {
         const readBack = beginApprovalWait(session);
         let outcome: HandoffOutcome;
@@ -1251,6 +1266,48 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           outcome = describeIntentOutcome(null);
         } finally {
           readBack.end();
+        }
+
+        // #9530: the human DID decide this call (decisionStatus was
+        // approved/executing/completed/failed to get here) — only the executor
+        // differs. Without this the postToolUse audit row read approved:false /
+        // approvalMethod:'unknown', contradicting `action_intent.approved`.
+        lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
+
+        // #9530: close the execution-ledger row. Nothing else will — the worker
+        // never touches ai_tool_executions, and postToolUse's update is guarded
+        // on `executing`, which this branch never sets — so it stayed `pending`
+        // with no output forever. The stored output is the hand-off payload the
+        // model reads (already default-deny projected), NEVER the raw intent
+        // result, which can carry sealed secrets. Guarded on `pending` so it
+        // can never clobber a row another path already closed. Best-effort: a
+        // failed write leaves the old `pending` row, and must not change what
+        // the turn reports.
+        const ledgerStatus = handoffLedgerStatus(outcome.handoff);
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db
+                .update(aiToolExecutions)
+                .set({
+                  status: ledgerStatus,
+                  toolOutput: { ...buildToolHandoffResult(outcome.handoff, outcome.message) },
+                  ...(ledgerStatus === 'failed' ? { errorMessage: outcome.message.slice(0, 1000) } : {}),
+                  ...(ledgerStatus === 'approved' ? {} : { completedAt: new Date() }),
+                })
+                .where(and(
+                  eq(aiToolExecutions.id, executionId),
+                  eq(aiToolExecutions.status, 'pending'),
+                )),
+          );
+        } catch (err) {
+          console.error(`[AI-SDK] Failed to close hand-off execution record ${executionId}:`, err);
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            area: 'ai_handoff_ledger_close',
+            intent_id: intentId,
+            tool_name: toolName,
+          });
         }
 
         return await failMatchedPlanStep(
@@ -1756,7 +1813,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // `approved -> executing` CAS below, so the worker's claim remains
           // available and the intent is never stranded in `executing`.
           if (requiresDurableRelease(toolName)) {
-            return await releaseHandoffDenial(intent.id);
+            return await releaseHandoffDenial(intent.id, approvalExec.id);
           }
 
           // COORDINATION INVARIANT (CRITICAL — prevents double execution): the
@@ -1796,7 +1853,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // Nothing about the invariant changes: the CAS was attempted and
             // lost, we still refuse to execute inline, and we still do not
             // touch the intent (the winner owns every subsequent transition).
-            return await releaseHandoffDenial(intent.id);
+            return await releaseHandoffDenial(intent.id, approvalExec.id);
           }
 
           // Won the CAS: record the intent id so the outer catch can
@@ -2379,15 +2436,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // decided: the durable tier-3 intent flow (approver via the approvals
       // surface, or the requester self-deciding a SUPERVISED intent — Task 6)
       // or the tier-2 lightweight card (user clicked Approve).
-      lastApprovalBySession.set(session, {
-        toolName,
-        method:
-          guardrailCheck.tier >= 3
-            ? guardrailCheck.approvalScope === 'supervised'
-              ? 'supervised_self'
-              : 'action_intent'
-            : 'per_step_user',
-      });
+      lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
     }
     return { allowed: true, intentId: createdIntentId, context: verifiedToolContext };
   };

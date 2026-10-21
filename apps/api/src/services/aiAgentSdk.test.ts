@@ -15,7 +15,7 @@ import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
-import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
+import { APPROVED_COMPLETED_STATUS, APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
 import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { CallerVerificationRequiredError } from './callerVerification/errors';
@@ -173,9 +173,11 @@ vi.mock('./pamToolActionGovernance', () => ({
 const mockCreateActionIntent = vi.fn();
 const mockWaitForIntentDecision = vi.fn();
 const mockTransitionIntent = vi.fn();
+const mockWaitForIntentTerminalOutcome = vi.fn();
 vi.mock('./actionIntents/intentService', () => ({
   createActionIntent: (...args: unknown[]) => mockCreateActionIntent(...args),
   waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),
+  waitForIntentTerminalOutcome: (...args: unknown[]) => mockWaitForIntentTerminalOutcome(...args),
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
@@ -2106,6 +2108,64 @@ describe('createSessionPreToolUse', () => {
 
       expect(details).toMatchObject({ approved: true, approvalMethod: 'action_intent' });
     });
+
+    // #9530: when the durable release worker wins the approved -> executing
+    // claim, the pre-tool-use gate hands off and returned BEFORE recording the
+    // approval method, so the `ai.tool.<name>` audit row said approved:false /
+    // approvalMethod:'unknown' two seconds after `action_intent.approved`
+    // recorded the human's decision for the same call.
+    for (const scope of [
+      { approvalScope: 'supervised' as const, method: 'supervised_self' },
+      { approvalScope: 'four_eyes' as const, method: 'action_intent' },
+    ]) {
+      it(`audits a HAND-OFF (worker won the claim) as approved:true / ${scope.method}`, async () => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Execute command',
+          approvalScope: scope.approvalScope,
+        } as any);
+        mockInsertReturning({ id: `exec-handoff-${scope.method}` });
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({ id: `intent-handoff-${scope.method}`, approvalRequestIds: ['appr-h'] }),
+        );
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(false); // the worker won the CAS
+        mockWaitForIntentTerminalOutcome.mockResolvedValueOnce({ status: 'completed', errorCode: null, result: null });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+        } as any);
+        const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+        const pre = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+          allowed: boolean;
+          error: string;
+          handoff?: string;
+        };
+        expect(pre.allowed).toBe(false);
+        expect(pre.handoff).toBe(APPROVED_COMPLETED_STATUS);
+
+        await createSessionPostToolUse(session)(
+          'execute_command',
+          { deviceId: 'd-1' },
+          JSON.stringify({ status: APPROVED_COMPLETED_STATUS, message: pre.error }),
+          false,
+          0,
+          undefined,
+          APPROVED_COMPLETED_STATUS,
+        );
+
+        const auditCall = mockWriteAuditEvent.mock.calls.find(
+          (c) => (c[1] as any)?.action === 'ai.tool.execute_command',
+        );
+        expect((auditCall![1] as any).details).toMatchObject({
+          approved: true,
+          approvalMethod: scope.method,
+          toolOutcome: APPROVED_COMPLETED_STATUS,
+        });
+      });
+    }
 
     it('defaults to action_intent when the guardrail carries no approvalScope (never the weaker supervised_self)', async () => {
       // Fail-safe direction: an unclassified tier-3 tool must not be recorded

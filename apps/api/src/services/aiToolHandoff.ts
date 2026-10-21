@@ -73,7 +73,11 @@ import {
   type AiToolHandoffStatus,
 } from '@breeze/shared';
 import { stripMcpPrefix } from './mcpToolNames';
-import { sanitizeUntrustedToolStdout, sanitizeUntrustedToolText } from './aiInputSanitizer';
+import {
+  sanitizeUntrustedToolStdout,
+  sanitizeUntrustedToolText,
+  sanitizeUntrustedToolValue,
+} from './aiInputSanitizer';
 
 /** Approved and still running — the one non-failure, non-success outcome. */
 export const APPROVED_EXECUTING_STATUS = AI_TOOL_APPROVED_EXECUTING;
@@ -98,12 +102,14 @@ export const APPROVED_EXECUTING_MESSAGE =
   'tell the user it is approved and still running, and do not claim that it succeeded or took effect.';
 
 /**
- * The tool-result text for an action the worker ran to completion.
+ * The tool-result text for an action the worker ran to completion, when the
+ * tool has no allow-listed read-back (see `HANDOFF_RESULT_FIELDS` and the
+ * #7828 read splice below).
  *
  * Deliberately claims completion and NOTHING else. The intent's stored
  * `result` can hold sealed secret material (`actionIntents/resultSecrets.ts`),
- * so this read-back path never splices it into the transcript — the reveal-once
- * endpoint owns that.
+ * so this read-back path never splices an unvetted result into the transcript
+ * — the reveal-once endpoint owns that.
  */
 export const APPROVED_COMPLETED_MESSAGE =
   'Approved. The approval worker carried this action out and it COMPLETED successfully. ' +
@@ -267,6 +273,60 @@ function spliceableStdout(
 }
 
 /**
+ * (#9530) Per-tool allow-list of COMPLETED-result fields the handoff read-back
+ * may show the model. Default-deny: a tool that is not listed here — and any
+ * field that is not listed for it — never reaches the transcript, because an
+ * intent `result` can carry sealed secret material
+ * (`actionIntents/resultSecrets.ts`, #6022). Before this, every tool except
+ * the #7828 read splice got the bare "it completed" text, so after a lost claim
+ * the model could not tell the operator what the approved action actually did
+ * (e.g. which remediations were queued and which were skipped).
+ *
+ * Only list fields the TOOL HANDLER authors from server-side state — counts,
+ * row ids, fixed reason labels — never device output, credentials, or
+ * free-form provider text. Values are still passed through
+ * `sanitizeUntrustedToolValue` and bounded below as defence in depth.
+ *
+ * Keyed by the bare tool name (`stripMcpPrefix`). Kept as a local constant
+ * because this module must stay a leaf (see the header); the longer-term home
+ * is a `handoffResultFields` declaration on the tool registry entry, passed in
+ * by the caller.
+ */
+const HANDOFF_RESULT_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  // aiToolsVulnerability.ts: `scheduled` is a count, `alreadyQueued` finding
+  // ids, `skipped` `{ id, reason }` with reason mapped through the fixed
+  // VULN_SKIP_REASON_LABELS, `message` a sentence built from those.
+  remediate_vulnerability: Object.freeze(['message', 'scheduled', 'alreadyQueued', 'skipped']),
+});
+
+/** Bound on a projected result so one call cannot flood the turn. */
+const MAX_PROJECTED_RESULT_CHARS = 8000;
+
+/**
+ * The allow-listed own fields of a completed result, or `null` when the tool
+ * has no projection or none of its fields are present.
+ */
+function projectHandoffResult(
+  result: Record<string, unknown> | null,
+  call: HandoffToolCall | undefined,
+): Record<string, unknown> | null {
+  if (!call || !result) return null;
+  const fields = HANDOFF_RESULT_FIELDS[stripMcpPrefix(call.toolName)];
+  if (!fields) return null;
+  const projected: Record<string, unknown> = {};
+  let any = false;
+  for (const field of fields) {
+    // Own properties only: an inherited value is not part of the stored result.
+    if (!Object.prototype.hasOwnProperty.call(result, field)) continue;
+    const value = result[field];
+    if (value === undefined) continue;
+    projected[field] = value;
+    any = true;
+  }
+  return any ? projected : null;
+}
+
+/**
  * Map an intent's terminal snapshot onto the outcome the chat turn publishes.
  *
  * `null` (unreadable row) and any non-terminal status both stay
@@ -302,6 +362,24 @@ export function describeIntentOutcome(
           `\n<tool_output untrusted>\n${body}\n</tool_output>`,
       };
     }
+    const projected = projectHandoffResult(snapshot.result, call);
+    if (projected !== null) {
+      // Fence every string (a forged `</tool_output>` or instruction-shaped
+      // text cannot escape the block), serialize, then cut.
+      const serialized = JSON.stringify(sanitizeUntrustedToolValue(projected));
+      const truncated = serialized.length > MAX_PROJECTED_RESULT_CHARS;
+      const body = truncated ? serialized.slice(0, MAX_PROJECTED_RESULT_CHARS) : serialized;
+      return {
+        handoff: APPROVED_COMPLETED_STATUS,
+        message:
+          'Approved. The approval worker carried this action out and it COMPLETED successfully. ' +
+          'Its result is below; report it to the user and do not re-run the action. ' +
+          (truncated
+            ? `The result was cut at ${MAX_PROJECTED_RESULT_CHARS} characters and is INCOMPLETE; say so rather than guessing at the rest.`
+            : '') +
+          `\n<tool_output>\n${body}\n</tool_output>`,
+      };
+    }
     return { handoff: APPROVED_COMPLETED_STATUS, message: APPROVED_COMPLETED_MESSAGE };
   }
 
@@ -326,4 +404,23 @@ export function handoffDenialForOutcome(outcome: HandoffOutcome): {
   handoff: ToolHandoffStatus;
 } {
   return { allowed: false, error: outcome.message, handoff: outcome.handoff };
+}
+
+/**
+ * (#9530) The `ai_tool_executions.status` that closes the ledger row for a
+ * handoff. The worker never touches that table and the session's postToolUse
+ * update is guarded on `executing` (which a handoff never sets), so without
+ * this the row stayed `pending` forever. A still-running outcome is
+ * `approved`, never `completed`: the action is authorized but not yet known to
+ * have taken effect.
+ */
+export function handoffLedgerStatus(status: ToolHandoffStatus): 'approved' | 'completed' | 'failed' {
+  switch (status) {
+    case APPROVED_COMPLETED_STATUS:
+      return 'completed';
+    case APPROVED_FAILED_STATUS:
+      return 'failed';
+    default:
+      return 'approved';
+  }
 }
