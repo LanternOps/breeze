@@ -190,6 +190,11 @@ export interface IntentOutcomeSnapshot {
 export interface HandoffOutcome {
   handoff: ToolHandoffStatus;
   message: string;
+  /**
+   * `approved_failed` only: the bare reason (no model instructions), for
+   * records such as the ledger's `error_message` that a human reads.
+   */
+  reason?: string;
 }
 
 /** Keeps a runaway tool error from crowding out the rest of the turn. */
@@ -284,46 +289,106 @@ function spliceableStdout(
  *
  * Only list fields the TOOL HANDLER authors from server-side state — counts,
  * row ids, fixed reason labels — never device output, credentials, or
- * free-form provider text. Values are still passed through
+ * free-form provider text. The allow-list is typed and applies at EVERY depth:
+ * a value of the wrong type is dropped, and an array of objects keeps only the
+ * listed scalar keys of each element. Values are still passed through
  * `sanitizeUntrustedToolValue` and bounded below as defence in depth.
  *
- * Keyed by the bare tool name (`stripMcpPrefix`). Kept as a local constant
- * because this module must stay a leaf (see the header); the longer-term home
- * is a `handoffResultFields` declaration on the tool registry entry, passed in
- * by the caller.
+ * Keyed by the bare tool name (`stripMcpPrefix`); a `Map`, so a tool name such
+ * as `constructor` can never resolve to an inherited property. Kept as a local
+ * constant because this module must stay a leaf (see the header); the
+ * longer-term home is a `handoffResultFields` declaration on the tool registry
+ * entry, passed in by the caller.
  */
-const HANDOFF_RESULT_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  // aiToolsVulnerability.ts: `scheduled` is a count, `alreadyQueued` finding
-  // ids, `skipped` `{ id, reason }` with reason mapped through the fixed
-  // VULN_SKIP_REASON_LABELS, `message` a sentence built from those.
-  remediate_vulnerability: Object.freeze(['message', 'scheduled', 'alreadyQueued', 'skipped']),
-});
+type HandoffFieldSpec =
+  | 'string'
+  | 'number'
+  | 'string[]'
+  /** An array of objects; each element keeps only these string/number keys. */
+  | { readonly objectKeys: readonly string[] };
+
+const HANDOFF_RESULT_FIELDS: ReadonlyMap<string, Readonly<Record<string, HandoffFieldSpec>>> = new Map([
+  [
+    // aiToolsVulnerability.ts: `scheduled` is a count, `alreadyQueued` finding
+    // ids, `skipped` `{ id, reason }` with reason mapped through the fixed
+    // VULN_SKIP_REASON_LABELS, `message` a sentence built from those.
+    'remediate_vulnerability',
+    Object.freeze({
+      message: 'string',
+      scheduled: 'number',
+      alreadyQueued: 'string[]',
+      skipped: Object.freeze({ objectKeys: Object.freeze(['id', 'reason']) }),
+    } satisfies Record<string, HandoffFieldSpec>),
+  ],
+]);
 
 /** Bound on a projected result so one call cannot flood the turn. */
 const MAX_PROJECTED_RESULT_CHARS = 8000;
 
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** `value` narrowed to `spec`, or `undefined` when it does not match. */
+function projectField(value: unknown, spec: HandoffFieldSpec): unknown {
+  if (spec === 'string') return typeof value === 'string' ? value : undefined;
+  if (spec === 'number') return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  if (!Array.isArray(value)) return undefined;
+  if (spec === 'string[]') return value.filter((entry): entry is string => typeof entry === 'string');
+  const items: Record<string, string | number>[] = [];
+  for (const entry of value) {
+    if (!isPlainRecord(entry)) continue;
+    const item: Record<string, string | number> = {};
+    for (const key of spec.objectKeys) {
+      if (!hasOwn(entry, key)) continue;
+      const scalar = entry[key];
+      if (typeof scalar === 'string' || (typeof scalar === 'number' && Number.isFinite(scalar))) item[key] = scalar;
+    }
+    if (Object.keys(item).length > 0) items.push(item);
+  }
+  return items;
+}
+
 /**
- * The allow-listed own fields of a completed result, or `null` when the tool
- * has no projection or none of its fields are present.
+ * The allow-listed, type-checked own fields of a completed result, or `null`
+ * when the tool has no projection or none of its fields survive.
  */
 function projectHandoffResult(
   result: Record<string, unknown> | null,
   call: HandoffToolCall | undefined,
 ): Record<string, unknown> | null {
-  if (!call || !result) return null;
-  const fields = HANDOFF_RESULT_FIELDS[stripMcpPrefix(call.toolName)];
+  if (!call) return null;
+  const toolName = stripMcpPrefix(call.toolName);
+  const fields = HANDOFF_RESULT_FIELDS.get(toolName);
   if (!fields) return null;
   const projected: Record<string, unknown> = {};
   let any = false;
-  for (const field of fields) {
-    // Own properties only: an inherited value is not part of the stored result.
-    if (!Object.prototype.hasOwnProperty.call(result, field)) continue;
-    const value = result[field];
-    if (value === undefined) continue;
-    projected[field] = value;
-    any = true;
+  if (result) {
+    for (const [field, spec] of Object.entries(fields)) {
+      // Own properties only: an inherited value is not part of the stored result.
+      if (!hasOwn(result, field)) continue;
+      const value = projectField(result[field], spec);
+      if (value === undefined) continue;
+      projected[field] = value;
+      any = true;
+    }
   }
-  return any ? projected : null;
+  if (!any) {
+    // A listed tool whose completed result carries none of its fields: the
+    // worker stored `{truncated:true}` (over its size cap), or the handler's
+    // shape drifted from this list. The model still gets the honest generic
+    // "completed, detail not available" text; this makes the drift visible.
+    console.warn(
+      `[aiToolHandoff] completed ${toolName} result had no projectable field` +
+        (result?.truncated === true ? ' (result was truncated by the release worker)' : ''),
+    );
+    return null;
+  }
+  return projected;
 }
 
 /**
@@ -383,10 +448,12 @@ export function describeIntentOutcome(
     return { handoff: APPROVED_COMPLETED_STATUS, message: APPROVED_COMPLETED_MESSAGE };
   }
 
+  const reason = intentTerminalReason(snapshot);
   return {
     handoff: APPROVED_FAILED_STATUS,
+    reason,
     message:
-      `Approved, but the action FAILED and did NOT take effect. Reason: ${intentTerminalReason(snapshot)}. ` +
+      `Approved, but the action FAILED and did NOT take effect. Reason: ${reason}. ` +
       'You must tell the user it did not succeed and report this reason to them. ' +
       'Do not claim it succeeded, and do not retry it without addressing the reason.',
   };

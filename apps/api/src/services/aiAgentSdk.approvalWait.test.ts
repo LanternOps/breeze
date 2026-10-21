@@ -20,6 +20,7 @@ import { actionIntents } from '../db/schema/actionIntents';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
+import { captureException } from './sentry';
 
 // ============================================
 // Mocks (mirrors aiAgentSdk.test.ts)
@@ -1026,6 +1027,23 @@ describe('handoff terminal read-back (#6022)', () => {
       const patch = ledgerClose(set);
       expect(patch).toMatchObject({ status: 'approved', toolOutput: { status: 'approved_executing' } });
       expect(patch!.completedAt).toBeUndefined();
+      expect(patch!.errorMessage).toBeUndefined();
+    });
+
+    it("marks the row 'approved' when the read-back itself throws — never a fabricated outcome", async () => {
+      casLostAfterApproval('intent-ledger-readback-throws');
+      const { set } = mockUpdateChain();
+      mockWaitForIntentTerminalOutcome.mockRejectedValue(new Error('db down'));
+      const session = makeActiveSession();
+
+      const result = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+        handoff?: string;
+      };
+
+      expect(result.handoff).toBe('approved_executing');
+      const patch = ledgerClose(set);
+      expect(patch).toMatchObject({ status: 'approved' });
+      expect(patch!.completedAt).toBeUndefined();
     });
 
     it('marks the row failed with the reason when the worker failed it', async () => {
@@ -1042,7 +1060,8 @@ describe('handoff terminal read-back (#6022)', () => {
 
       const patch = ledgerClose(set);
       expect(patch).toMatchObject({ status: 'failed', toolOutput: { status: 'approved_failed' } });
-      expect(String(patch!.errorMessage)).toContain(guardrail);
+      // The bare reason, not the model-facing instructions around it.
+      expect(patch!.errorMessage).toBe(guardrail);
       expect(patch!.completedAt).toBeInstanceOf(Date);
     });
 
@@ -1077,6 +1096,12 @@ describe('handoff terminal read-back (#6022)', () => {
 
       expect(result.handoff).toBe('approved_completed');
       expect(session.pendingApprovalWaits).toBe(0);
+      // ...but the failure is reported, not swallowed.
+      expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'db down' }),
+        undefined,
+        expect.objectContaining({ area: 'ai_handoff_ledger_close', execution_id: 'exec-intent-ledger-dbfail' }),
+      );
     });
   });
 });

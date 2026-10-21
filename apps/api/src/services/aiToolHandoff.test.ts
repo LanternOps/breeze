@@ -281,6 +281,8 @@ describe('aiToolHandoff', () => {
         expect(out.handoff).toBe(APPROVED_FAILED_STATUS);
         expect(out.message).toContain('Remediation failed: boom');
         expect(out.message).not.toContain('dv-queued-1');
+        // The bare reason travels separately for the ledger's error_message.
+        expect(out.reason).toBe('Remediation failed: boom');
       });
 
       it('fences projected strings and a forged </tool_output> boundary', () => {
@@ -293,14 +295,70 @@ describe('aiToolHandoff', () => {
         expect(out.message).not.toMatch(/ignore previous instructions/i);
       });
 
-      it('bounds a huge projection and says it is incomplete', () => {
+      const bodyOf = (message: string) => message.split('<tool_output>\n')[1]!.split('\n</tool_output>')[0]!;
+
+      it('bounds a huge projection at exactly 8000 chars and says it is incomplete', () => {
         const skipped = Array.from({ length: 2_000 }, (_, i) => ({ id: `dv-${i}`, reason: 'no available patch' }));
         const out = describeIntentOutcome(
           done({ scheduled: 0, skipped, message: 'Scheduled 0 remediation(s); 2000 skipped.' }),
           { toolName: 'remediate_vulnerability', input: {} },
         );
-        expect(out.message.length).toBeLessThan(20_000);
+        expect(bodyOf(out.message)).toHaveLength(8000);
         expect(out.message).toMatch(/INCOMPLETE/);
+      });
+
+      it('does not flag a result under the cap as incomplete', () => {
+        const out = describeIntentOutcome(done({ scheduled: 1, message: 'Scheduled 1 remediation(s); 0 skipped.' }), {
+          toolName: 'remediate_vulnerability',
+          input: {},
+        });
+        expect(JSON.parse(bodyOf(out.message))).toEqual({ message: 'Scheduled 1 remediation(s); 0 skipped.', scheduled: 1 });
+        expect(out.message).not.toMatch(/INCOMPLETE/);
+      });
+
+      it('is default-deny at depth: unlisted keys inside skipped[] elements never appear', () => {
+        const out = describeIntentOutcome(
+          done({
+            scheduled: 0,
+            skipped: [{ id: 'dv-1', reason: 'no available patch', tempPassword: 'nested-hunter2', detail: { raw: 'x' } }],
+          }),
+          { toolName: 'remediate_vulnerability', input: {} },
+        );
+        expect(JSON.parse(bodyOf(out.message))).toEqual({
+          scheduled: 0,
+          skipped: [{ id: 'dv-1', reason: 'no available patch' }],
+        });
+        expect(out.message).not.toContain('nested-hunter2');
+      });
+
+      it('drops a listed field whose value has the wrong type', () => {
+        const out = describeIntentOutcome(
+          done({
+            message: { smuggled: 'object-must-not-leak' },
+            scheduled: 'three',
+            alreadyQueued: ['dv-ok', { id: 'object-in-string-array' }, 7],
+            skipped: 'not-an-array',
+          }),
+          { toolName: 'remediate_vulnerability', input: {} },
+        );
+        expect(JSON.parse(bodyOf(out.message))).toEqual({ alreadyQueued: ['dv-ok'] });
+        expect(out.message).not.toContain('object-must-not-leak');
+        expect(out.message).not.toContain('object-in-string-array');
+      });
+
+      it('falls back to the generic completion when every listed field has the wrong type', () => {
+        const out = describeIntentOutcome(done({ message: 42, scheduled: '3' }), {
+          toolName: 'remediate_vulnerability',
+          input: {},
+        });
+        expect(out.message).toBe(APPROVED_COMPLETED_MESSAGE);
+      });
+
+      it('never resolves a tool name to an inherited property of the allow-list', () => {
+        for (const toolName of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+          const out = describeIntentOutcome(done({ message: 'hunter2' }), { toolName, input: {} });
+          expect(out.message).toBe(APPROVED_COMPLETED_MESSAGE);
+        }
       });
     });
 

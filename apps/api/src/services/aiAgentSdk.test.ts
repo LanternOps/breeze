@@ -15,7 +15,7 @@ import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
-import { APPROVED_COMPLETED_STATUS, APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
+import { APPROVED_COMPLETED_STATUS, APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS, APPROVED_FAILED_STATUS } from './aiToolHandoff';
 import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { CallerVerificationRequiredError } from './callerVerification/errors';
@@ -2166,6 +2166,58 @@ describe('createSessionPreToolUse', () => {
         });
       });
     }
+
+    it('audits a HAND-OFF whose worker execution FAILED as approved:true with the failure outcome', async () => {
+      // The human approved; the worker then failed it. The audit row must keep
+      // both facts — approved, and approved_failed / result:failure — rather
+      // than demoting the approval because the action did not take effect.
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+        approvalScope: 'four_eyes',
+      } as any);
+      mockInsertReturning({ id: 'exec-handoff-failed' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: 'intent-handoff-failed', approvalRequestIds: ['appr-hf'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(false);
+      mockWaitForIntentTerminalOutcome.mockResolvedValueOnce({
+        status: 'failed',
+        errorCode: 'tool_returned_error',
+        result: { error: 'guardrail refused' },
+      });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+      const pre = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+        error: string;
+        handoff?: string;
+      };
+      expect(pre.handoff).toBe(APPROVED_FAILED_STATUS);
+
+      await createSessionPostToolUse(session)(
+        'execute_command',
+        { deviceId: 'd-1' },
+        JSON.stringify({ status: APPROVED_FAILED_STATUS, message: pre.error }),
+        true,
+        0,
+        undefined,
+        APPROVED_FAILED_STATUS,
+      );
+
+      const auditCall = mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'ai.tool.execute_command',
+      );
+      expect(auditCall![1]).toMatchObject({
+        result: 'failure',
+        details: { approved: true, approvalMethod: 'action_intent', toolOutcome: APPROVED_FAILED_STATUS },
+      });
+    });
 
     it('defaults to action_intent when the guardrail carries no approvalScope (never the weaker supervised_self)', async () => {
       // Fail-safe direction: an unclassified tier-3 tool must not be recorded

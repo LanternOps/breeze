@@ -1268,9 +1268,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           readBack.end();
         }
 
-        // #9530: the human DID decide this call (decisionStatus was
-        // approved/executing/completed/failed to get here) — only the executor
-        // differs. Without this the postToolUse audit row read approved:false /
+        // #9530: the human DID approve this call — both callers sit behind the
+        // decision gate, which only lets approved/executing/completed/failed
+        // through — and only the executor differs. That stays true even if the
+        // intent later expired or was cancelled before the worker ran it; the
+        // audit row's `toolOutcome` (approved_failed) and error carry that
+        // half. Without this the postToolUse audit row read approved:false /
         // approvalMethod:'unknown', contradicting `action_intent.approved`.
         lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
 
@@ -1293,7 +1296,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
                 .set({
                   status: ledgerStatus,
                   toolOutput: { ...buildToolHandoffResult(outcome.handoff, outcome.message) },
-                  ...(ledgerStatus === 'failed' ? { errorMessage: outcome.message.slice(0, 1000) } : {}),
+                  ...(ledgerStatus === 'failed'
+                    ? { errorMessage: (outcome.reason ?? outcome.message).slice(0, 1000) }
+                    : {}),
                   ...(ledgerStatus === 'approved' ? {} : { completedAt: new Date() }),
                 })
                 .where(and(
@@ -1306,6 +1311,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
             area: 'ai_handoff_ledger_close',
             intent_id: intentId,
+            execution_id: executionId,
+            session_id: session.breezeSessionId,
             tool_name: toolName,
           });
         }
