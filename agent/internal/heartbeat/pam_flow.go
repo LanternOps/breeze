@@ -94,6 +94,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		log.Warn("pam: no session broker available; skipping elevation flow",
 			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
 			"targetWinSession", targetWinSession)
+		h.reportPamUnable(outcome.RequestID, &pamUnable{Reason: pamUnableHelperUnavailable, Detail: "no session broker available"})
 		return
 	}
 
@@ -107,9 +108,13 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// this session yet. Lease and spawn one rather than stranding the
 		// request (#8996). The lease is held until the flow returns.
 		var releaseLease func()
-		session, releaseLease = h.spawnPamHelperOnDemand(ctx, find, outcome.RequestID, targetWinSession)
+		var unable *pamUnable
+		session, releaseLease, unable = h.spawnPamHelperOnDemand(ctx, find, outcome.RequestID, targetWinSession)
 		defer releaseLease()
 		if session == nil {
+			// Tell the server, so it closes the request rather than offering
+			// it to a technician (#9517). nil unable = the flow was cancelled.
+			h.reportPamUnable(outcome.RequestID, unable)
 			return
 		}
 		log.Info("pam: on-demand SYSTEM helper ready; continuing elevation flow",

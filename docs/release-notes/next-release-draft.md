@@ -20,4 +20,8 @@ _(empty — add the next tag's one-off gates here)_
 
 ## Features / API
 
+- **PAM: agents report an elevation they cannot act on (#9517).** New agent route `POST /api/v1/agents/:id/pam/elevation-unable` (admission class `protected`). When the agent cannot find or start a SYSTEM helper in the requester's session, it reports the request; a still-pending request is closed as `expired` (its mobile approvals are withdrawn) and the PAM requests list shows that the device could not act. New log lines: agent `pam: reported the elevation as unable to the server` / `pam: could not report the elevation as unable`; the API publishes `elevation.expired` with `cause: device_unable`. Older agents keep the previous behavior (the request stays pending until the stale-request expiry).
+
 ## Migrations
+
+- `2027-01-02-170000-elevation-device-unable.sql`: three nullable columns on `elevation_requests` (`device_unable_at`, `device_unable_reason`, `device_unable_detail`) with a CHECK, and the `device_unable` value on `elevation_audit_event_type`. Metadata-only; no rewrite.

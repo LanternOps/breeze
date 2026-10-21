@@ -2,6 +2,7 @@ import '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { Inbox } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
 import { navigateTo } from '@/lib/navigation';
@@ -54,6 +55,32 @@ const STATUS_OPTIONS: Array<ElevationStatus | ''> = [
   'revoked',
 ];
 const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_jit_admin', 'ai_tool_action'];
+
+/**
+ * #9517: the agent reported it could not act on this request. Each known
+ * category gets its own copy; an unknown code (a newer agent) falls back to
+ * the generic line. The agent's diagnostic text is the row's tooltip.
+ */
+function deviceUnableLabel(t: TFunction, reason: string | null | undefined): string {
+  switch (reason) {
+    case 'helper_unavailable':
+      return t('pamPamRequestsTab.table.deviceUnable.helperUnavailable', {
+        defaultValue: 'Device could not act: no PAM helper available',
+      });
+    case 'session_unavailable':
+      return t('pamPamRequestsTab.table.deviceUnable.sessionUnavailable', {
+        defaultValue: "Device could not act: user's session unavailable",
+      });
+    case 'helper_start_failed':
+      return t('pamPamRequestsTab.table.deviceUnable.helperStartFailed', {
+        defaultValue: 'Device could not act: PAM helper failed to start',
+      });
+    default:
+      return t('pamPamRequestsTab.table.deviceUnable.generic', {
+        defaultValue: 'Device could not act on this request',
+      });
+  }
+}
 
 export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
   const { t } = useTranslation('security');
@@ -282,6 +309,15 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                       {showDenialReason && r.denialReason && (
                         <div className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground" title={r.denialReason}>
                           {r.denialReason}
+                        </div>
+                      )}
+                      {r.deviceUnableAt && (
+                        <div
+                          className="mt-0.5 max-w-[180px] truncate text-xs text-destructive"
+                          data-testid={`pam-device-unable-${r.id}`}
+                          title={r.deviceUnableDetail ?? undefined}
+                        >
+                          {deviceUnableLabel(t, r.deviceUnableReason)}
                         </div>
                       )}
                     </td>

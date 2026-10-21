@@ -92,6 +92,35 @@ type pamSpawnFixture struct {
 	readyAfter int // find returns a session once finds > readyAfter
 	dismissed  []*sessionbroker.Session
 	dialogs    int
+	// reports records every "cannot act" report RunPamFlow sends (#9517).
+	reports []pamUnableReport
+}
+
+type pamUnableReport struct {
+	requestID string
+	unable    pamUnable
+}
+
+func (f *pamSpawnFixture) reported() []pamUnableReport {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]pamUnableReport(nil), f.reports...)
+}
+
+// expectUnableReport asserts exactly one report for requestID with reason.
+func (f *pamSpawnFixture) expectUnableReport(t *testing.T, requestID, reason string) {
+	t.Helper()
+	got := f.reported()
+	if len(got) != 1 || got[0].requestID != requestID || got[0].unable.Reason != reason || got[0].unable.Detail == "" {
+		t.Fatalf("unable reports = %+v, want one for %q with reason %q and a detail", got, requestID, reason)
+	}
+}
+
+func (f *pamSpawnFixture) expectNoUnableReport(t *testing.T) {
+	t.Helper()
+	if got := f.reported(); len(got) != 0 {
+		t.Fatalf("unexpected unable reports: %+v", got)
+	}
 }
 
 func (f *pamSpawnFixture) heartbeat(lc helperLifecycleController) *Heartbeat {
@@ -117,6 +146,11 @@ func (f *pamSpawnFixture) heartbeat(lc helperLifecycleController) *Heartbeat {
 			f.dismissed = append(f.dismissed, s)
 			f.mu.Unlock()
 			return ipc.PamDismissConsentResult{Success: true, Reason: "dismissed"}, nil
+		},
+		pamReportUnable: func(requestID string, unable pamUnable) {
+			f.mu.Lock()
+			f.reports = append(f.reports, pamUnableReport{requestID: requestID, unable: unable})
+			f.mu.Unlock()
 		},
 	}
 	if lc != nil {
@@ -152,6 +186,7 @@ func TestRunPamFlowSpawnsSystemHelperOnDemand(t *testing.T) {
 	if len(released) != 1 || released[0] != key {
 		t.Fatalf("released = %v, want the flow's lease released on return", released)
 	}
+	f.expectNoUnableReport(t)
 }
 
 // The lease must outlive the dialog round-trip: releasing it before the user
@@ -183,13 +218,26 @@ func TestRunPamFlowHoldsOnDemandLeaseThroughDialog(t *testing.T) {
 
 func TestRunPamFlowStopsWhenOnDemandSpawnFails(t *testing.T) {
 	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
-	cases := map[string]*fakeLifecycle{
-		"helper never ready": {mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+	cases := map[string]struct {
+		lc     *fakeLifecycle
+		reason string
+	}{
+		"helper never ready": {&fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
 			key: {Status: sessionbroker.HelperWaitRetriesExhausted},
-		}},
-		"lease refused": {mode: "on-demand", acquireErr: sessionbroker.ErrLeaseSessionNotFound},
+		}}, pamUnableHelperStartFailed},
+		"helper in crash cooldown": {&fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+			key: {Status: sessionbroker.HelperWaitFatalCooldown, RetryAfter: time.Minute},
+		}}, pamUnableHelperStartFailed},
+		"helper wait timed out": {&fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+			key: {Status: sessionbroker.HelperWaitTimeout},
+		}}, pamUnableHelperStartFailed},
+		"session ended while waiting": {&fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+			key: {Status: sessionbroker.HelperWaitSessionGone},
+		}}, pamUnableSessionUnavailable},
+		"lease refused": {&fakeLifecycle{mode: "on-demand", acquireErr: sessionbroker.ErrLeaseSessionNotFound}, pamUnableHelperUnavailable},
 	}
-	for name, lc := range cases {
+	for name, tc := range cases {
+		lc := tc.lc
 		t.Run(name, func(t *testing.T) {
 			f := &pamSpawnFixture{readyAfter: 1}
 			h := f.heartbeat(lc)
@@ -201,14 +249,62 @@ func TestRunPamFlowStopsWhenOnDemandSpawnFails(t *testing.T) {
 				t.Fatalf("flow continued without a helper: dialogs=%d dismissed=%d", f.dialogs, len(f.dismissed))
 			}
 			acquired, released, _, _ := lc.snapshot()
-			if name == "helper never ready" && len(acquired) != 1 {
+			if name != "lease refused" && len(acquired) != 1 {
 				t.Fatalf("acquired = %v, want the flow to have tried a lease", acquired)
 			}
 			if len(released) != len(acquired) {
 				t.Fatalf("lease leaked: acquired=%v released=%v", acquired, released)
 			}
+			f.expectUnableReport(t, "req-3", tc.reason)
 		})
 	}
+}
+
+// #9517: agent shutdown cancelling the flow mid-wait is not the device's
+// verdict on the request, so nothing is reported.
+func TestRunPamFlowCancelledWhileWaitingDoesNotReportUnable(t *testing.T) {
+	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
+	lc := &fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+		key: {Status: sessionbroker.HelperWaitTimeout},
+	}}
+	f := &pamSpawnFixture{readyAfter: 1}
+	h := f.heartbeat(lc)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	h.RunPamFlow(ctx, etwlua.Event{SubjectSessionID: 7},
+		etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-cancel"})
+
+	if f.dialogs != 0 || len(f.dismissed) != 0 {
+		t.Fatalf("flow continued after cancellation: dialogs=%d dismissed=%d", f.dialogs, len(f.dismissed))
+	}
+	f.expectNoUnableReport(t)
+}
+
+// #9517: no session broker at all still leaves the device unable to act.
+func TestRunPamFlowWithoutSessionBrokerReportsUnable(t *testing.T) {
+	f := &pamSpawnFixture{}
+	h := &Heartbeat{pamReportUnable: func(requestID string, unable pamUnable) {
+		f.mu.Lock()
+		f.reports = append(f.reports, pamUnableReport{requestID: requestID, unable: unable})
+		f.mu.Unlock()
+	}}
+
+	h.RunPamFlow(context.Background(), etwlua.Event{SubjectSessionID: 7},
+		etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-nobroker"})
+
+	f.expectUnableReport(t, "req-nobroker", pamUnableHelperUnavailable)
+}
+
+// A status RunPamFlow has no local flow for is not an inability to act.
+func TestRunPamFlowUnsupportedStatusDoesNotReportUnable(t *testing.T) {
+	f := &pamSpawnFixture{readyAfter: 100}
+	h := f.heartbeat(nil)
+
+	h.RunPamFlow(context.Background(), etwlua.Event{SubjectSessionID: 7},
+		etwlua.ElevationOutcome{Status: etwlua.ElevationStatus("ignored"), RequestID: "req-ignored"})
+
+	f.expectNoUnableReport(t)
 }
 
 // An unresolved requester session falls back to the console session, the same
@@ -242,6 +338,7 @@ func TestRunPamFlowNoLifecycleKeepsOldBehavior(t *testing.T) {
 	if f.finds != 1 || len(f.dismissed) != 0 {
 		t.Fatalf("finds=%d dismissed=%d, want 1 and 0", f.finds, len(f.dismissed))
 	}
+	f.expectUnableReport(t, "req-5", pamUnableHelperUnavailable)
 }
 
 // A session that cannot host a SYSTEM helper (disconnected, gone) must fail
@@ -253,6 +350,7 @@ func TestRunPamFlowOnDemandSpawnFailsFastWhenSessionCannotHostHelper(t *testing.
 		"session cannot host":      {mode: "on-demand", unavailable: map[sessionbroker.HelperKey]bool{key: true}},
 		"availability check fails": {mode: "on-demand", availableErr: sessionbroker.ErrLeaseSessionNotFound},
 	}
+	// Both are the requester's session being unable to host a helper.
 	for name, lc := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := &pamSpawnFixture{readyAfter: 1}
@@ -268,6 +366,7 @@ func TestRunPamFlowOnDemandSpawnFailsFastWhenSessionCannotHostHelper(t *testing.
 			if f.dialogs != 0 || len(f.dismissed) != 0 {
 				t.Fatalf("flow continued without a helper: dialogs=%d dismissed=%d", f.dialogs, len(f.dismissed))
 			}
+			f.expectUnableReport(t, "req-6", pamUnableSessionUnavailable)
 		})
 	}
 }
@@ -294,6 +393,7 @@ func TestRunPamFlowOnDemandSpawnedHelperWithoutPamScopeStops(t *testing.T) {
 	if acquired, released, _, _ := lc.snapshot(); len(acquired) != 1 || len(released) != 1 {
 		t.Fatalf("acquired=%v released=%v, want one lease taken and released", acquired, released)
 	}
+	f.expectUnableReport(t, "req-7", pamUnableHelperUnavailable)
 }
 
 // Start installs the lifecycle manager after the PAM policy may already have
