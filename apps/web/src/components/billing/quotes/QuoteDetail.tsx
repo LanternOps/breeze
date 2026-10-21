@@ -668,7 +668,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
         // Shared description cell (#9414 W5): the title keeps its weight, the rest goes back to normal.
         <div className="font-medium text-foreground [&>*]:font-normal">
           <DocumentLineDescription
-            {...lineDescriptionProps(l, { workedVsBilled: () => '' })}
+            {...lineDescriptionProps(l, {})}
             rowKey={l.id}
           />
         </div>

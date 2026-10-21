@@ -56,6 +56,15 @@ describe('InvoiceDetail staff rows use the shared description cell (#9423)', () 
     expect(screen.getByTestId('document-line-blurb-a').textContent).toBe('Blurb');
   });
 
+  it('hides the child-line arrow from assistive tech', () => {
+    render(<InvoiceDetail onChanged={vi.fn()} detail={{
+      autopay: null, invoice,
+      lines: [line('a', {}), line('c', { name: 'Child', parentLineId: 'a' })],
+    }} />);
+    const arrow = screen.getByTestId('invoice-detail-line-c').querySelector('[aria-hidden="true"]');
+    expect(arrow?.textContent).toContain('↳');
+  });
+
   it('omits the internal-only line from the customer view', () => {
     render(<InvoiceDetail onChanged={vi.fn()} detail={{
       autopay: null, invoice,

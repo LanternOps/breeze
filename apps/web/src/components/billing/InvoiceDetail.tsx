@@ -532,12 +532,13 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                     </div>
                   )}
                   {/* The shared description cell (#9414 W5). The host owns the child arrow
-                      and the hidden marker, so they ride on the title string; the wrapper
+                      and the hidden marker (title prefix/suffix); the wrapper
                       gives the title its weight and the muted rows go back to normal. */}
                   <div className={l.parentLineId ? '' : 'font-medium text-foreground [&>*]:font-normal'}>
                     <DocumentLineDescription
                       {...desc}
-                      title={`${l.parentLineId ? '↳ ' : ''}${desc.title}${internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}`}
+                      titlePrefix={l.parentLineId ? '↳ ' : undefined}
+                      titleSuffix={internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : undefined}
                       rowKey={l.id}
                     />
                   </div>

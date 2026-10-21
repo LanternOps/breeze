@@ -16,7 +16,7 @@ export interface StaffLineDescriptionInput {
 }
 
 export interface StaffLineDescriptionLabels {
-  workedVsBilled: (worked: string, billed: string) => string;
+  workedVsBilled?: (worked: string, billed: string) => string;
   locale?: string;
 }
 
@@ -45,7 +45,7 @@ export function lineDescriptionProps(
     title,
     blurb: blurb || null,
     workDate: line.workDate && labels.locale ? documentDate(line.workDate, labels.locale) : null,
-    note: wb ? labels.workedVsBilled(wb.worked, wb.billed) : null,
+    note: wb && labels.workedVsBilled ? labels.workedVsBilled(wb.worked, wb.billed) : null,
     descriptor: [],
     ticketText: line.ticketText ?? null,
     qtyFold: null,
