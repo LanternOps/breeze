@@ -87,15 +87,14 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		sessionTarget = "requester_session"
 	}
 
-	// No session broker (e.g. an interactive agent with no user-helper): every
-	// supported flow needs a helper, so the device cannot act on this request.
-	// etwlua_start_windows.go passes the heartbeat as the runner even then so
-	// this report reaches the server (#9517).
+	// No session broker (e.g. an interactive agent with no user-helper, or an
+	// event that beat hb.Start's broker setup): every supported flow needs a
+	// helper. Not reported (#9517): early in startup it is not proof, so the
+	// request is left for the server's stale-request expiry.
 	if h.pamFindSession == nil && h.sessionBroker == nil {
-		log.Warn("pam: no session broker available; skipping elevation flow",
+		log.Warn("pam: no session broker available; skipping elevation flow, request left pending",
 			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
 			"targetWinSession", targetWinSession)
-		h.reportPamUnable(outcome.RequestID, &pamUnable{Reason: pamUnableHelperUnavailable, Detail: "no session broker available"})
 		return
 	}
 

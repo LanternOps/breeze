@@ -62,7 +62,12 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	release = func() {}
 	lc := h.lifecycleController()
 	if lc == nil {
-		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableHelperUnavailable, "no helper lifecycle manager to spawn one")
+		// Not proof either: hb.Start installs the lifecycle manager on its own
+		// goroutine, so an early UAC event can arrive before it. Leave the
+		// request pending for the server's stale-request expiry.
+		log.Error("pam: no helper lifecycle manager to spawn a SYSTEM helper; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession)
+		return nil, release, nil
 	}
 
 	leaseTarget := targetWinSession

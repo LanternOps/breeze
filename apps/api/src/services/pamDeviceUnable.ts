@@ -37,8 +37,8 @@ import { elevationAudit, elevationRequests } from '../db/schema';
  * route only accepts these, which the web console knows how to label.
  */
 export const PAM_DEVICE_UNABLE_REASONS = [
-  // No SYSTEM helper with the PAM scope can be had: no session broker, no
-  // helper lifecycle manager, or the ready helper lacks the PAM scope.
+  // The SYSTEM helper that started for the session does not hold the PAM
+  // scope, so it cannot run the elevation flow.
   'helper_unavailable',
   // The requester's Windows session cannot host a helper: unresolved, found
   // but not active or connected, or ended while waiting for the helper.

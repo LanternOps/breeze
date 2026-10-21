@@ -266,7 +266,9 @@ func TestDeliverPamUnableAttemptNeverOutlivesWindow(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error from a server that never answers")
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
+	// 300ms window plus scheduling slack; a regression that lets an attempt run
+	// its full 30s timeout lands far outside this.
+	if elapsed := time.Since(start); elapsed > 900*time.Millisecond {
 		t.Fatalf("delivery ran %s past a 300ms window", elapsed)
 	}
 }

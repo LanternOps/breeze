@@ -286,8 +286,9 @@ func TestRunPamFlowCancelledWhileWaitingDoesNotReportUnable(t *testing.T) {
 	f.expectNoUnableReport(t)
 }
 
-// #9517: no session broker at all still leaves the device unable to act.
-func TestRunPamFlowWithoutSessionBrokerReportsUnable(t *testing.T) {
+// #9517: no session broker (interactive agent, or an event that beat broker
+// setup) is not reported: early in startup it is not proof.
+func TestRunPamFlowWithoutSessionBrokerDoesNotReportUnable(t *testing.T) {
 	f := &pamSpawnFixture{}
 	h := &Heartbeat{pamReportUnable: func(requestID string, unable pamUnable) {
 		f.mu.Lock()
@@ -298,7 +299,7 @@ func TestRunPamFlowWithoutSessionBrokerReportsUnable(t *testing.T) {
 	h.RunPamFlow(context.Background(), etwlua.Event{SubjectSessionID: 7},
 		etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-nobroker"})
 
-	f.expectUnableReport(t, "req-nobroker", pamUnableHelperUnavailable)
+	f.expectNoUnableReport(t)
 }
 
 // A status RunPamFlow has no local flow for is not an inability to act.
@@ -343,7 +344,8 @@ func TestRunPamFlowNoLifecycleKeepsOldBehavior(t *testing.T) {
 	if f.finds != 1 || len(f.dismissed) != 0 {
 		t.Fatalf("finds=%d dismissed=%d, want 1 and 0", f.finds, len(f.dismissed))
 	}
-	f.expectUnableReport(t, "req-5", pamUnableHelperUnavailable)
+	// No lifecycle manager is not proof (startup race): not reported.
+	f.expectNoUnableReport(t)
 }
 
 // A session that cannot host a SYSTEM helper (disconnected, gone) must fail
