@@ -57,19 +57,40 @@ function seedTenantB(): TenantB {
   return { orgId: pick('ORG_ID'), siteId: pick('SITE_ID'), deviceId: pick('DEVICE_ID'), alertId: pick('ALERT_ID') };
 }
 
-/** Captures the bearer token the app attaches to its own /api/v1 calls. */
-async function sniffToken(page: Page): Promise<string> {
+/**
+ * Captures the bearer token the app attaches to its own /api/v1 calls. `who`
+ * names the tenant/page so a failed positive control says which session broke
+ * and what it observed (#9252 F2) instead of a bare poll timeout.
+ */
+async function sniffToken(page: Page, who: string): Promise<string> {
   let token: string | null = null;
+  const refreshStatuses: string[] = [];
   const onRequest = (req: { headers(): Record<string, string>; url(): string }) => {
     const header = req.headers()['authorization'];
     if (!token && header?.startsWith('Bearer ') && req.url().includes('/api/v1/')) token = header.slice(7);
   };
+  const onResponse = (res: { url(): string; status(): number; request(): { method(): string } }) => {
+    if (res.request().method() === 'POST' && new URL(res.url()).pathname.endsWith('/auth/refresh')) {
+      refreshStatuses.push(String(res.status()));
+    }
+  };
   page.on('request', onRequest);
+  page.on('response', onResponse);
   try {
     await page.goto('/');
-    await expect.poll(() => token, { message: 'an authenticated /api/v1 request', timeout: 30_000 }).toBeTruthy();
+    try {
+      await expect.poll(() => token, { timeout: 30_000 }).toBeTruthy();
+    } catch {
+      throw new Error(
+        `[tenant-isolation] positive control failed for ${who}: no authenticated /api/v1 request within 30s. ` +
+          `Page ended on ${page.url()}; POST /auth/refresh responses seen: ` +
+          `${refreshStatuses.length ? refreshStatuses.join(', ') : 'none'}. ` +
+          'A run of 401s ending on /login means the session was already dead (stale or rotated refresh cookie in the storage state), not a tenant-isolation failure.'
+      );
+    }
   } finally {
     page.off('request', onRequest);
+    page.off('response', onResponse);
   }
   return token!;
 }
@@ -142,8 +163,8 @@ test.describe('Tenant isolation (browser)', () => {
     ctxB = await loginAsTenantB(browser, baseURL);
     pageA = await ctxA.newPage();
     pageB = await ctxB.newPage();
-    tokenA = await sniffToken(pageA);
-    tokenB = await sniffToken(pageB);
+    tokenA = await sniffToken(pageA, 'tenant A (worker storage state)');
+    tokenB = await sniffToken(pageB, 'tenant B (form login)');
     expect(tokenA).not.toBe(tokenB);
   });
 
