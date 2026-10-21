@@ -66,4 +66,11 @@ describe('summarizeCondition — device groups', () => {
     expect(summary).toBe('Device Group is not Domain Controllers');
     expect(summary).not.toContain('33333333');
   });
+
+  it('keeps the raw id for a scalar value missing from the groups lookup (#9262)', () => {
+    const groups = [{ id: 'known', name: 'Known' }];
+    const condition: FilterCondition = { field: 'groupId', operator: 'equals', value: 'unknown-id' };
+
+    expect(summarizeCondition(groupField, condition, { groups })).toBe('Device Group is unknown-id');
+  });
 });
