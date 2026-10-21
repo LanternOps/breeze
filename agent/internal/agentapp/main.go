@@ -2110,6 +2110,13 @@ func desktopHelperRole() ipc.HelperRole {
 	return ipc.HelperRoleSystem
 }
 
+// Helper log rotation. Smaller than the agent's defaults: on Windows the
+// user-role helper's log lives in the user's own profile.
+const (
+	helperLogMaxSizeMB  = 10
+	helperLogMaxBackups = 3
+)
+
 func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind string) {
 	// Detach any inherited console immediately. This runs at the top of
 	// every helper role — user-helper, desktop-helper, and any future
@@ -2125,31 +2132,40 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	detachHelperConsole()
 
 	// Log to file in the same logs folder as the main agent (e.g.
-	// C:\ProgramData\Breeze\logs) — except on macOS, where these helpers
-	// run as the logged-in user and the shared directory is root-owned
-	// 0700 and re-hardened on every agent log open/rotation. There they
-	// get ~/Library/Logs/Breeze instead (#5877).
-	logDir, homeErr := config.HelperLogDir()
+	// C:\ProgramData\Breeze\logs) — except where the helper runs as the
+	// logged-in user and cannot write there: macOS, where the shared
+	// directory is root-owned 0700 and re-hardened on every agent log
+	// open/rotation (~/Library/Logs/Breeze, #5877), and the Windows
+	// user-role helper (%LOCALAPPDATA%\Breeze\logs, #9266).
+	logDir, homeErr := config.HelperLogDir(role == ipc.HelperRoleUser)
 	mkdirErr := os.MkdirAll(logDir, 0700)
 	logFileName := "user-helper.log"
+	panicFileName := "user-helper-panic.log"
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
 		logFileName = "desktop-helper.log"
+		panicFileName = "desktop-helper-panic.log"
 	}
 	logPath := filepath.Join(logDir, logFileName)
 	var output io.Writer = os.Stdout
-	f, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	// Rotated like agent.log: the helper lives for the whole logon session
+	// and used to append to one file forever.
+	rw, openErr := logging.NewRotatingWriter(logPath, helperLogMaxSizeMB, helperLogMaxBackups)
 	if openErr == nil {
 		// When spawned with CREATE_NO_WINDOW (service helper), stdout is invalid.
-		// Use file-only to avoid io.MultiWriter aborting on stdout write errors.
+		// Use file-only to avoid a tee aborting on stdout write errors.
 		if hasConsole() {
-			output = io.MultiWriter(os.Stdout, f)
+			output = logging.TeeWriter(os.Stdout, rw)
 		} else {
-			output = f
+			output = rw
 		}
-		// Redirect stderr to the same log file so Go panic stack traces
-		// are captured instead of being lost to NUL when spawned with
-		// CREATE_NO_WINDOW from the service.
-		redirectStderr(f)
+		// Redirect stderr so Go panic stack traces are captured instead of
+		// being lost to NUL when spawned with CREATE_NO_WINDOW from the
+		// service. Its own plain file, not the rotating one: rotation
+		// renames the file out from under any handle handed to the OS
+		// (same choice as cmd/breeze-backup).
+		if pf, err := os.OpenFile(filepath.Join(logDir, panicFileName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+			redirectStderr(pf)
+		}
 	}
 	logging.Init("text", "info", output)
 
@@ -2216,6 +2232,12 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 			logging.SetShipperLevel("info")
 		}
 		defer logging.StopShipper()
+	} else {
+		// No shipper (always the case on Windows): relay warn+ lines to
+		// the agent over IPC instead, so they still reach Agent Logs
+		// (#9266). Records logged before the first connection queue
+		// (bounded) and go out once it authenticates.
+		userhelper.EnableLogForwarding()
 	}
 	// Same pion warning elevation as the agent: a helper hosts the peer
 	// connection on service installs (#9182).

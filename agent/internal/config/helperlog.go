@@ -23,28 +23,52 @@ var helperLogDirBase = filepath.Join("Library", "Logs", "Breeze")
 // not grant the user write access anyway. Those helpers therefore get a
 // per-user location the LaunchAgent can always write (#5877).
 //
+// Windows has the same problem for the USER-role helper (#9266): it runs
+// with the logged-in user's token, and C:\ProgramData\Breeze\logs is not
+// writable by a standard user, so it opened nothing and wrote nowhere. It
+// gets %LOCALAPPDATA%\Breeze\logs (derived from the profile directory when
+// the variable is unset). userRole is the helper's --role; it only matters
+// on Windows, where the role — not the euid — decides which token the
+// helper runs with.
+//
 // Every other case keeps the historical behaviour of sharing the agent's
-// log directory: Linux and Windows helpers, and any macOS helper that does
-// run as root (the login-window desktop-helper), where the shared
-// directory is writable.
+// log directory: Linux helpers, the SYSTEM-role Windows helper, and any
+// macOS helper that does run as root (the login-window desktop-helper),
+// where the shared directory is writable.
 // The returned homeErr is diagnostic only: the directory is always
-// usable-as-returned, but on darwin an unresolvable home directory means
-// the caller falls back to the shared directory it cannot write. Callers
-// log homeErr so that failure is attributed to "HOME could not be
-// resolved" rather than looking like a plain permissions problem.
-func HelperLogDir() (dir string, homeErr error) {
+// usable-as-returned, but an unresolvable home directory means the caller
+// falls back to the shared directory it cannot write. Callers log homeErr
+// so that failure is attributed to "HOME could not be resolved" rather
+// than looking like a plain permissions problem.
+func HelperLogDir(userRole bool) (dir string, homeErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
 	}
-	return helperLogDir(runtime.GOOS, os.Geteuid(), home, LogDir()), err
+	return helperLogDir(runtime.GOOS, os.Geteuid(), userRole, home, os.Getenv("LOCALAPPDATA"), LogDir()), err
 }
 
 // helperLogDir is the pure core of HelperLogDir, parameterised so the
-// platform/euid/home matrix is testable on any host.
-func helperLogDir(goos string, euid int, home string, sharedDir string) string {
-	if goos != "darwin" || euid == 0 || home == "" {
+// platform/euid/role/home matrix is testable on any host.
+func helperLogDir(goos string, euid int, userRole bool, home, localAppData, sharedDir string) string {
+	switch goos {
+	case "darwin":
+		if euid == 0 || home == "" {
+			return sharedDir
+		}
+		return filepath.Join(home, helperLogDirBase)
+	case "windows":
+		if !userRole {
+			return sharedDir
+		}
+		if localAppData == "" {
+			if home == "" {
+				return sharedDir
+			}
+			localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		return filepath.Join(localAppData, "Breeze", "logs")
+	default:
 		return sharedDir
 	}
-	return filepath.Join(home, helperLogDirBase)
 }

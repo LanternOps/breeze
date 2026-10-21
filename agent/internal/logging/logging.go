@@ -262,6 +262,9 @@ func (h *shippingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	if h.base.Enabled(ctx, level) {
 		return true
 	}
+	if fwd := activeForwarder.Load(); fwd != nil && level >= fwd.minLevel {
+		return true
+	}
 	shipperMu.RLock()
 	shipper := globalShipper
 	shipperMu.RUnlock()
@@ -275,29 +278,13 @@ func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error 
 	shipperMu.RUnlock()
 
 	if shipper != nil && (shipper.ShouldShip(record.Level) || h.shipAlways(record)) {
-		fields := make(map[string]any)
-		for _, attr := range h.attrs {
-			if attr.Key != KeyShipAlways {
-				addField(fields, h.groups, attr)
-			}
-		}
-		record.Attrs(func(a slog.Attr) bool {
-			if a.Key != KeyShipAlways {
-				addField(fields, h.groups, a)
-			}
-			return true
-		})
+		shipper.Enqueue(h.entry(record, shipper.agentVersion))
+	}
 
-		entry := LogEntry{
-			Timestamp:    record.Time,
-			Level:        strings.ToLower(record.Level.String()),
-			Component:    extractComponent(fields),
-			Message:      record.Message,
-			Fields:       fields,
-			AgentVersion: shipper.agentVersion,
-		}
-
-		shipper.Enqueue(entry)
+	// Hand warn+ records to the IPC forwarder of a helper that has no
+	// shipper of its own (#9266). The forwarder must not block or log.
+	if fwd := activeForwarder.Load(); fwd != nil && record.Level >= fwd.minLevel {
+		fwd.fn(h.entry(record, ""))
 	}
 
 	// Still write to local handler, without the shipping marker and with
@@ -307,6 +294,57 @@ func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error 
 		return nil
 	}
 	return h.base.Handle(ctx, localRecord(record))
+}
+
+// entry builds the LogEntry for record: the logger's and the record's attrs,
+// minus the ShipAlways marker. A fresh map per call, so the shipper and the
+// forwarder never share one.
+func (h *shippingHandler) entry(record slog.Record, agentVersion string) LogEntry {
+	fields := make(map[string]any)
+	for _, attr := range h.attrs {
+		if attr.Key != KeyShipAlways {
+			addField(fields, h.groups, attr)
+		}
+	}
+	record.Attrs(func(a slog.Attr) bool {
+		if a.Key != KeyShipAlways {
+			addField(fields, h.groups, a)
+		}
+		return true
+	})
+	return LogEntry{
+		Timestamp:    record.Time,
+		Level:        strings.ToLower(record.Level.String()),
+		Component:    extractComponent(fields),
+		Message:      record.Message,
+		Fields:       fields,
+		AgentVersion: agentVersion,
+	}
+}
+
+// forwarder is the installed SetForwarder sink.
+type forwarder struct {
+	minLevel slog.Level
+	fn       func(LogEntry)
+}
+
+var activeForwarder atomic.Pointer[forwarder]
+
+// SetForwarder installs fn to receive every record at or above minLevel, in
+// addition to the local log and the shipper. A nil fn removes it.
+//
+// It exists for helper processes that have no shipping credentials of their
+// own — the Windows helpers, where no user-readable file carries the helper
+// token — so their warn+ lines can be relayed to the agent over IPC and reach
+// Agent Logs that way (#9266). fn runs synchronously on the logging
+// goroutine: it must not block, and it must not log at or above minLevel
+// itself, or it recurses.
+func SetForwarder(minLevel slog.Level, fn func(LogEntry)) {
+	if fn == nil {
+		activeForwarder.Store(nil)
+		return
+	}
+	activeForwarder.Store(&forwarder{minLevel: minLevel, fn: fn})
 }
 
 // shipAlways reports whether the record, or the logger it came from, carries

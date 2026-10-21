@@ -3383,6 +3383,10 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		if b.onMessage != nil {
 			b.onMessage(s, env)
 		}
+	case ipc.TypeHelperLog:
+		// Any authenticated helper may relay its own warn+ lines; the record
+		// is sanitized and rate-capped per session (#9266).
+		b.relayHelperLog(s, env)
 	default:
 		log.Warn("unknown message type from helper, ignoring",
 			"type", env.Type, "identity", s.IdentityKey, "sessionId", s.SessionID)

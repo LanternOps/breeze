@@ -59,6 +59,10 @@ type Session struct {
 
 	broker      *Broker
 	peerProcess *ownedPeerProcessRef
+
+	// helperLog caps relayed helper_log records (#9266); see helperLogLimiter.
+	helperLogOnce sync.Once
+	helperLog     *ipc.HelperLogCap
 }
 
 // NewSession creates a new session for a verified user helper connection.
