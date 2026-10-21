@@ -914,7 +914,15 @@ describe('ReportBuilder submit config keys (#9265)', () => {
     expect(call).toBeDefined();
     return (JSON.parse(String((call![1] as RequestInit).body)) as { config: Record<string, unknown> }).config;
   };
-  const builderKeys = ['builderType', 'dataSource', 'columns', 'aggregation', 'filterConditions', 'groupBy', 'chartType'];
+  const builderKeys = [
+    'builderType', 'dataSource', 'columns', 'aggregation', 'filterConditions', 'groupBy', 'chartType',
+    'saveTemplate', 'templateName'
+  ];
+  // Every builder key pre-polluted into the stored config: all must be stripped.
+  const pollutedBaseConfig = {
+    staleAfterHours: 48,
+    ...Object.fromEntries(builderKeys.map(key => [key, 'stale']))
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -932,7 +940,7 @@ describe('ReportBuilder submit config keys (#9265)', () => {
         mode="edit"
         reportId="report-1"
         reportOrgId="org-1"
-        baseConfig={{ staleAfterHours: 48 }}
+        baseConfig={pollutedBaseConfig}
         defaultValues={{ name: 'Backups', type: 'backup_status', schedule: 'weekly' }}
       />
     );
@@ -942,6 +950,7 @@ describe('ReportBuilder submit config keys (#9265)', () => {
     for (const key of builderKeys) expect(config).not.toHaveProperty(key);
     expect(config).toMatchObject({ staleAfterHours: 48 });
     expect(config).toHaveProperty('schedule');
+    expect(config).toHaveProperty('exportFormats');
     expect(config).toHaveProperty('emailRecipients');
   });
 
