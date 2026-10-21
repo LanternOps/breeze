@@ -329,6 +329,7 @@
         },
         "approve": "Approva",
         "approved": "Richiesta approvata. Il richiedente ha ricevuto un link di download via e-mail.",
+        "approvedNoEmail": "Accesso approvato. Nessun servizio e-mail è configurato, quindi il richiedente non è stato avvisato via e-mail: condividi il link dalla richiesta.",
         "approveFailed": "Impossibile approvare la richiesta.",
         "deny": "Rifiuta",
         "denyTitle": "Rifiutare questa richiesta?",
@@ -345,6 +346,7 @@
         "revokeFailed": "Impossibile revocare l'accesso.",
         "resend": "Invia di nuovo il link",
         "resent": "Un nuovo link di download è stato inviato via e-mail. Il link precedente non funziona più.",
+        "resentNoEmail": "Nuovo link di download creato. Nessun servizio e-mail è configurato, quindi non è stato inviato via e-mail: condividi il link dalla richiesta. Il link precedente non funziona più.",
         "resendFailed": "Impossibile inviare di nuovo il link.",
         "errors": {
           "mfaRequired": "Approvare o inviare di nuovo richiede l'autenticazione a più fattori. Attiva la MFA nelle impostazioni di sicurezza del tuo profilo e riprova.",

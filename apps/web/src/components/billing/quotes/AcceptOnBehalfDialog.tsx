@@ -7,6 +7,7 @@ import { runAction, ActionError } from '../../../lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { acceptQuoteOnBehalf, uploadQuoteAcceptanceEvidence, QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES } from '../../../lib/api/quotes';
 import { Dialog } from '../../shared/Dialog';
+import { useEmailConfigured } from '../../../lib/useEmailConfigured';
 import { type Quote, type QuoteLine, formatMoney } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -108,6 +109,8 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
   // as `false` (auto-email genuinely off). Only an explicit `true` renders it.
   const autoEmail = autoEmailInvoiceOnAccept === true;
   const hasRecipients = recipients.length > 0;
+  // #9256: `false` = the server has no email transport, so nothing will be emailed.
+  const emailConfigured = useEmailConfigured();
 
   // Reset to the quote's own values each time the dialog opens, so a cancelled
   // attempt doesn't leave last time's reference sitting in the field.
@@ -385,14 +388,19 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
             {t('quotes.actions.acceptOnBehalf.consequenceContracts')}
           </li>
         )}
-        {autoEmail && hasRecipients && (
+        {autoEmail && emailConfigured === false && (
+          <li data-testid="accept-on-behalf-consequence-email">
+            {t('quotes.actions.acceptOnBehalf.consequenceEmailNotConfigured')}
+          </li>
+        )}
+        {autoEmail && emailConfigured !== false && hasRecipients && (
           <li data-testid="accept-on-behalf-consequence-email">
             {t('quotes.actions.acceptOnBehalf.consequenceEmail', { recipients: recipients.join(', ') })}
           </li>
         )}
         {/* The API exposes no signal for the server's org-billing-contact
             fallback, so with no recorded recipients don't promise an email. */}
-        {autoEmail && !hasRecipients && (
+        {autoEmail && emailConfigured !== false && !hasRecipients && (
           <li data-testid="accept-on-behalf-consequence-email-none">
             {t('quotes.actions.acceptOnBehalf.consequenceEmailNoRecipient')}
           </li>

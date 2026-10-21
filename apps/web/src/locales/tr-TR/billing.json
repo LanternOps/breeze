@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "{{amount}} tutarında bir fatura şimdi oluşturulup numaralandırılacak.",
         "consequenceContracts": "Yinelenen satırlar, sonradan etkinleştireceğiniz taslak sözleşmelere dönüşür.",
         "consequenceEmail": "Fatura {{recipients}} adresine e-postayla gönderilecek.",
+        "consequenceEmailNotConfigured": "Yapılandırılmış bir e-posta hizmeti yok; fatura e-posta ile gönderilmeyecek. Fatura sayfasından paylaşın.",
         "consequenceDraft": "Bu teklif hiç gönderilmedi. Müşterinin onu ilk görüşü fatura olacak.",
         "submit": "Kabul et ve fatura oluştur",
         "success": "Teklif kabul edildi. {{number}} numaralı fatura oluşturuldu.",

@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "Eine Rechnung über {{amount}} wird jetzt erstellt und nummeriert.",
         "consequenceContracts": "Wiederkehrende Positionen werden zu Vertragsentwürfen, die Sie später aktivieren.",
         "consequenceEmail": "Die Rechnung wird per E-Mail an {{recipients}} gesendet.",
+        "consequenceEmailNotConfigured": "Es ist kein E-Mail-Dienst konfiguriert; die Rechnung wird nicht per E-Mail gesendet. Teilen Sie sie über die Rechnungsseite.",
         "consequenceDraft": "Dieses Angebot wurde nie versendet. Der Kunde sieht es zum ersten Mal als Rechnung.",
         "submit": "Annehmen und Rechnung stellen",
         "success": "Angebot angenommen. Rechnung {{number}} erstellt.",

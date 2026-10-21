@@ -329,6 +329,7 @@
         },
         "approve": "Genehmigen",
         "approved": "Anfrage genehmigt. Die anfragende Person hat einen Download-Link per E-Mail erhalten.",
+        "approvedNoEmail": "Zugriff genehmigt. Es ist kein E-Mail-Dienst konfiguriert, daher wurde die anfragende Person nicht benachrichtigt – teilen Sie den Link aus der Anfrage.",
         "approveFailed": "Die Anfrage konnte nicht genehmigt werden.",
         "deny": "Ablehnen",
         "denyTitle": "Diese Anfrage ablehnen?",
@@ -345,6 +346,7 @@
         "revokeFailed": "Der Zugriff konnte nicht widerrufen werden.",
         "resend": "Link erneut senden",
         "resent": "Ein neuer Download-Link wurde per E-Mail gesendet. Der vorherige Link funktioniert nicht mehr.",
+        "resentNoEmail": "Neuer Download-Link erstellt. Es ist kein E-Mail-Dienst konfiguriert, daher wurde er nicht per E-Mail gesendet – teilen Sie den Link aus der Anfrage. Der vorherige Link funktioniert nicht mehr.",
         "resendFailed": "Der Link konnte nicht erneut gesendet werden.",
         "errors": {
           "mfaRequired": "Zum Genehmigen oder erneuten Senden ist eine Multi-Faktor-Authentifizierung erforderlich. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut.",

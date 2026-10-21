@@ -11,6 +11,8 @@ const api = vi.hoisted(() => ({
 vi.mock('@/lib/api/trustPageAccess', () => api);
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('@/components/shared/Toast', () => ({ showToast: toast }));
+const emailFlag = vi.hoisted(() => ({ value: true as boolean | undefined }));
+vi.mock('@/lib/useEmailConfigured', () => ({ useEmailConfigured: () => emailFlag.value }));
 import TrustAccessSection from './TrustAccessSection';
 
 const ok = () => new Response(JSON.stringify({ data: {} }), { status: 200 });
@@ -33,6 +35,7 @@ const mount = (o: { canWrite?: boolean; page?: Record<string, unknown>; document
 
 beforeEach(() => {
   vi.clearAllMocks();
+  emailFlag.value = true;
   pageApi.updateTrustPage.mockResolvedValue(ok());
   api.listTrustAccessRequests.mockResolvedValue([row('r1', 'pending_approval'), row('r2', 'approved', { grantExpiresAt: '2026-10-24T00:00:00.000Z', expiresAt: '2026-10-24T00:00:00.000Z' })]);
   for (const fn of [api.approveTrustAccessRequest, api.denyTrustAccessRequest, api.revokeTrustAccessGrant, api.resendTrustAccessGrant]) fn.mockResolvedValue(ok());
@@ -124,5 +127,35 @@ describe('TrustAccessSection', () => {
     await screen.findByTestId('trust-access-row-r1');
     fireEvent.change(screen.getByTestId('trust-access-filter'), { target: { value: 'approved' } });
     await waitFor(() => expect(api.listTrustAccessRequests).toHaveBeenLastCalledWith(orgFetch, 'o1', 'approved'));
+  });
+
+  describe('no email transport (#9256)', () => {
+    it('Approve says the requester was emailed when email is configured', async () => {
+      mount();
+      fireEvent.click(await screen.findByTestId('trust-access-approve-r1'));
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/requester was emailed/) })));
+    });
+
+    it('Approve says the requester was NOT emailed when email is not configured', async () => {
+      emailFlag.value = false;
+      mount();
+      fireEvent.click(await screen.findByTestId('trust-access-approve-r1'));
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/No email service is configured.*not emailed/) })));
+      expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/was emailed/) }));
+    });
+
+    it('Resend says a new link was emailed when configured', async () => {
+      mount();
+      fireEvent.click(await screen.findByTestId('trust-access-resend-r2'));
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/new download link was emailed/) })));
+    });
+
+    it('Resend says it was NOT emailed when email is not configured', async () => {
+      emailFlag.value = false;
+      mount();
+      fireEvent.click(await screen.findByTestId('trust-access-resend-r2'));
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/No email service is configured.*not emailed/) })));
+      expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/was emailed/) }));
+    });
   });
 });

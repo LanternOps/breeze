@@ -6,6 +6,7 @@ import { organizations, devices, partners, partnerUsers } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { summarizeActiveContractMrrByOrg } from '../services/contractService';
+import { getEmailService } from '../services/email';
 
 import { notHiddenOrgType } from '../services/unassignedPool/visibility';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
@@ -89,6 +90,9 @@ partnerRoutes.get('/me', async (c) => {
     statusActionLabel: (settings.statusActionLabel as string) ?? null,
     statusMeetingUrl: pendingAccountMeetingUrl(),
     statusMeetingLabel: process.env.PENDING_ACCOUNT_MEETING_LABEL?.trim() || null,
+    // Capability flag only (#9256): lets the web say "created but not emailed"
+    // instead of promising an email on a server with no transport.
+    emailConfigured: !!getEmailService(),
   });
 });
 
