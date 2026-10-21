@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { afterEach, describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
 import { useRef } from 'react';
 import { useDocumentAccent } from './useDocumentAccent';

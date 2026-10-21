@@ -2,13 +2,15 @@ import { InvoicePaymentPanel } from './autopay/InvoicePaymentPanel';
 import { Notice } from './ui';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
-import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
-import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
-import { InvoiceLineTable, InvoiceTotals } from './invoicePaper';
+import { InvoiceDocumentView } from '@breeze/document-ui';
+import { DocumentPaper, DocumentHeader } from './documentShell';
+import { portalHostComponents } from './documentHostComponents';
+import { invoiceModelFor } from '@/lib/invoiceDocument';
+import { useDocumentAccent } from '@/lib/useDocumentAccent';
 import { INVOICE_GRID, RAIL } from './autopay/InvoicePaymentPanel';
 import { longDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -45,6 +47,14 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
   const [payError, setPayError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  // D17: this page learns the partner accent after the client fetch, so the colour is set on
+  // the host wrapper through CSSOM (the layout's nonced <style> cannot know it).
+  const paperRef = useRef<HTMLDivElement>(null);
+  useDocumentAccent(paperRef, detail?.branding.primaryColor);
+  const model = useMemo(
+    () => (detail && detail.invoice.status !== 'void' ? invoiceModelFor(detail) : null),
+    [detail],
+  );
 
   // Client-side fetch (see [token].astro). A 401 gets ONE generic message —
   // never a login redirect for an anonymous customer.
@@ -134,18 +144,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
 
   const currency = invoice.currencyCode ?? 'USD';
   const isPaid = invoice.status === 'paid';
-  const isOverdue = invoice.status === 'overdue';
-  const hasDeposit = invoice.depositDue != null;
-  const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
-  const showTax = Number(invoice.taxTotal ?? 0) > 0;
-  const taxPct = taxRate > 0 ? Number((taxRate * 100).toFixed(3)) : 0;
-  const seller = (invoice.sellerSnapshot ?? null) as DocSeller | null;
   const canPay = payable && chargeNow != null && !justPaid && !paymentPending;
-
-  const headerDates = [
-    { label: 'Issued', value: longDate(invoice.issueDate ?? null) || '—' },
-    { label: 'Due', value: longDate(invoice.dueDate ?? null) || '—' },
-  ];
 
   const pay = async (saveForAutopay: boolean) => {
     if (paying) return; setPaying(true); setPayError(null);
@@ -229,38 +228,23 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
       </div>
 
       <div className="min-w-0 space-y-5 lg:col-start-1 lg:row-start-1">
-      <DocumentPaper primaryColor={branding.primaryColor} testId="public-invoice" docTheme={branding.theme}>
-        <DocumentHeader
-          logoUrl={branding.logoUrl}
-          partnerName={branding.partnerName}
-          seller={seller}
-          eyebrow="Invoice"
-          title={invoice.invoiceNumber ?? 'Invoice'}
-          statusLabel={STATUS_LABELS[invoice.status] ?? invoice.status}
-          statusTone={statusTone(invoice.status)}
-          dates={headerDates}
-          preparedForLabel="Bill to"
-          preparedForName={invoice.billToName ?? undefined}
-        />
-
-        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} lineGrouping={invoice.lineGrouping ?? 'entry'} />
-
-        <InvoiceTotals currency={currency} subtotal={invoice.subtotal ?? 0} taxTotal={invoice.taxTotal ?? 0} taxPct={taxPct}
-          total={invoice.total ?? 0} amountPaid={invoice.amountPaid ?? 0} balance={invoice.balance ?? 0} paid={isPaid}
-          deposit={hasDeposit && chargeNow ? { due: invoice.depositDue!, isDeposit: chargeNow.isDeposit } : null}
-          testIds={{ balance: 'public-invoice-balance', deposit: 'public-invoice-deposit-strip' }} />
-
-        {invoice.notes && <DocumentTerms label="Notes">{invoice.notes}</DocumentTerms>}
-        {invoice.termsAndConditions && (
-          <DocumentTermsCollapsible text={invoice.termsAndConditions} testId="public-invoice-terms" />
+      <div ref={paperRef} data-testid="public-invoice-paper">
+        {model && (
+          <InvoiceDocumentView
+            model={model}
+            components={portalHostComponents}
+            slots={{
+              afterPaper: (
+                <p className="pb-4 pt-5 text-center text-xs text-muted-foreground">
+                  Have a customer portal account?{' '}
+                  <a href={withBase('/login')} className="text-primary hover:underline">Sign in</a>{' '}
+                  to see all your invoices.
+                </p>
+              ),
+            }}
+          />
         )}
-      </DocumentPaper>
-
-      <p className="pb-4 text-center text-xs text-muted-foreground">
-        Have a customer portal account?{' '}
-        <a href={withBase('/login')} className="text-primary hover:underline">Sign in</a>{' '}
-        to see all your invoices.
-      </p>
+      </div>
       </div>
     </div>
   );
