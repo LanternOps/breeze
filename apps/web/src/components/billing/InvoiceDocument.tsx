@@ -52,7 +52,6 @@ export default function InvoiceDocumentPreview({
     })();
     return () => { current = false; };
     // `detail` is the refetch trigger (new object per reload()); `invoice.id` rides along with it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail, retryNonce]);
 
   const model = useMemo(

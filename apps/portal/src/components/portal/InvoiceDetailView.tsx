@@ -76,7 +76,6 @@ export function InvoiceDetailView({ detail: detailProp = null, initial, error, s
       }
     : null;
   const model = useMemo(() => (detail ? invoiceModelFor(detail, fallbackBranding) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [detail, fetchedBranding]);
   const paperRef = useRef<HTMLDivElement>(null);
   useDocumentAccent(paperRef, branding?.primaryColor);
