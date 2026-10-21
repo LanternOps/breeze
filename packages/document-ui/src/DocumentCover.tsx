@@ -13,16 +13,18 @@ import { DocumentCoverCrop } from './DocumentCoverCrop';
  * padding (`px-4 py-7`, plus the article's `sm:px-[3.25rem]`).
  */
 export function DocumentCover({ cover, pageSize, components }: { cover: QuoteCoverModel; pageSize: DocumentPageSize; components: DocumentHostComponents }): ReactElement {
+  // The band is a fixed 38% of the page, so on a phone its type is smaller than the flowing layout's.
+  const inBand = cover.image !== null;
   const text = (
     <>
       <div className="space-y-2 sm:space-y-3">
         <p className="doc-accent-text text-xs font-semibold uppercase tracking-[0.18em]">{cover.eyebrow}</p>
-        <h1 className="doc-font-display max-w-[24ch] text-2xl font-semibold leading-tight tracking-tight text-foreground sm:text-4xl">
+        <h1 className={`doc-font-display max-w-[24ch] font-semibold leading-tight tracking-tight text-foreground sm:text-4xl ${inBand ? 'text-xl' : 'text-3xl'}`}>
           {cover.title}
         </h1>
       </div>
       {(cover.preparedFor || cover.preparedBy) && (
-        <dl className="grid grid-cols-2 gap-4 text-xs sm:text-sm">
+        <dl className={`grid gap-4 ${inBand ? 'grid-cols-2 text-xs sm:text-sm' : 'text-sm sm:grid-cols-2'}`}>
           {cover.preparedFor && (
             <div>
               <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{cover.preparedForLabel}</dt>
@@ -51,7 +53,7 @@ export function DocumentCover({ cover, pageSize, components }: { cover: QuoteCov
     <section data-testid="document-cover" className={bleed}>
       <DocumentCoverCrop pageSize={pageSize}>
         <components.Image asset={cover.image} alt="" className="doc-cover-image" />
-        <div data-testid="document-cover-band" className="doc-cover-band space-y-4 px-4 py-4 sm:space-y-6 sm:px-[4.25rem] sm:py-8">
+        <div data-testid="document-cover-band" className="doc-cover-band space-y-4 px-4 py-3 sm:space-y-6 sm:px-[4.25rem] sm:py-8">
           {text}
         </div>
       </DocumentCoverCrop>

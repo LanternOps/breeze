@@ -38,16 +38,23 @@ export type MatrixTheme = 'classic' | 'condensed';
 export type MatrixPageSize = 'a4' | 'letter';
 
 export function presentInvoice(id: string, theme: MatrixTheme, pageSize: MatrixPageSize, locale: string): void {
-  psql(`UPDATE invoices SET document_theme=${q(theme)}, document_page_size=${q(pageSize)}, document_locale=${q(locale)} WHERE id=${q(id)}`);
+  expectOneRow(psql(`UPDATE invoices SET document_theme=${q(theme)}, document_page_size=${q(pageSize)}, document_locale=${q(locale)} WHERE id=${q(id)}`), 'invoice');
+}
+
+/** `psql -c UPDATE` exits 0 on "UPDATE 0": a variant switch that matched nothing must not pass silently. */
+function expectOneRow(out: string, what: string): void {
+  if (!/UPDATE 1$/.test(out)) throw new Error(`${what} presentation update matched no row (psql said "${out}")`);
 }
 
 export function presentQuote(id: string, theme: MatrixTheme, pageSize: MatrixPageSize, locale: string): void {
   const snapshot = JSON.stringify({ theme, pageSize });
-  psql(`UPDATE quotes SET presentation_snapshot=${q(snapshot)}::jsonb, document_locale=${q(locale)} WHERE id=${q(id)}`);
+  expectOneRow(psql(`UPDATE quotes SET presentation_snapshot=${q(snapshot)}::jsonb, document_locale=${q(locale)} WHERE id=${q(id)}`), 'quote');
 }
 
 export function portalOrgId(): string {
-  return psql(`SELECT org_id FROM portal_users WHERE email='portal@breeze.local'`);
+  const id = psql(`SELECT org_id FROM portal_users WHERE email='portal@breeze.local'`);
+  if (!id) throw new Error('no seeded portal user (portal@breeze.local) — run the e2e seed');
+  return id;
 }
 
 /** The access token the app itself is using, lifted off one of its own API requests (see multi-currency.spec.ts). */

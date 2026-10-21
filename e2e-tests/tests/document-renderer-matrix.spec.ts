@@ -30,6 +30,8 @@ import {
  */
 
 const MAX_DIFF_RATIO = 0.02;
+const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+const enText = new Map<string, string>();
 const COVER_ASPECT = { a4: 210 / 297, letter: 8.5 / 11 } as const;
 const VIEWPORTS = [{ name: 'desktop', width: 1280, height: 3200, pin: 768 }, { name: 'mobile-390', width: 390, height: 3200, pin: 358 }] as const;
 const DENSITIES = ['compact', 'dense'] as const;
@@ -67,6 +69,8 @@ async function settled(page: Page) {
       const i = img as HTMLImageElement;
       if (!i.complete) await new Promise((r) => { i.addEventListener('load', r, { once: true }); i.addEventListener('error', r, { once: true }); });
       if (i.decode) await i.decode().catch(() => undefined);
+      // A broken image would screenshot as an alt-text box on every surface and still "match".
+      if (!i.complete || i.naturalWidth === 0) throw new Error(`document image failed to load: ${i.currentSrc || i.getAttribute('src')}`);
     }));
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   });
@@ -185,6 +189,15 @@ test.describe('document renderer — screenshot matrix (W4)', () => {
                 for (const p of [authedPage, cleanPage, portalPage]) await isolate(p);
                 await expect(roots.public).toHaveAttribute('data-doc-theme', theme);
                 await expect(roots.preview).toHaveAttribute('data-doc-theme', theme);
+                await expect(roots.portal).toHaveAttribute('data-doc-theme', theme);
+                // Locale: all three surfaces must read the same words, and pt-BR must differ from en
+                // (otherwise a database write that did not take would pass every pixel comparison).
+                const text = { preview: await roots.preview.innerText(), public: await roots.public.innerText(), portal: await roots.portal.innerText() };
+                expect.soft(norm(text.public), `${label}: public text equals Preview`).toBe(norm(text.preview));
+                expect.soft(norm(text.portal), `${label}: portal text equals Preview`).toBe(norm(text.preview));
+                const key = `${k.kind}|${theme}|${pageSize}`;
+                if (locale === 'en') enText.set(key, norm(text.preview));
+                else expect.soft(norm(text.preview), `${label}: pt-BR text differs from en`).not.toBe(enText.get(key));
 
                 for (const vp of VIEWPORTS) {
                   for (const p of [authedPage, cleanPage, portalPage]) await p.setViewportSize({ width: vp.width, height: vp.height });
@@ -206,7 +219,7 @@ test.describe('document renderer — screenshot matrix (W4)', () => {
                       expect.soft(ratio, `${label} ${vp.name} ${density} Preview↔${surface}`).toBeLessThanOrEqual(MAX_DIFF_RATIO);
                     }
                     const failing = rows.slice(-2).some((r) => !r.ok);
-                    if (failing && theme === 'classic' && pageSize !== 'letter' && locale === 'en') {
+                    if (failing) {
                       const stem = `FAIL-${k.kind}-${theme}-${pageSize}-${locale}-${vp.name}-${density}`;
                       for (const s of ['preview', 'public', 'portal'] as const) writeFileSync(testInfo.outputPath(`${stem}-${s}.png`), shot[s]);
                     }
@@ -235,22 +248,26 @@ test.describe('document renderer — screenshot matrix (W4)', () => {
         }
       }
     } finally {
+      // Written even when a hard failure aborts the loop, so a partial run is still readable.
+      const bad = rows.filter((r) => !r.ok);
+      const summary = {
+        variantsRun: rows.length / 2,
+        comparisons: rows.length,
+        failed: bad.length,
+        worstRatio: rows.length ? Math.max(...rows.map((r) => r.ratio)) : null,
+        tolerance: MAX_DIFF_RATIO,
+        cspViolations: cspSeen,
+        rows,
+        geometry,
+      };
+      writeFileSync(testInfo.outputPath('matrix-results.json'), JSON.stringify(summary, null, 2));
+      await testInfo.attach('matrix-results.json', { body: JSON.stringify(summary, null, 2), contentType: 'application/json' });
       await portalCtx.close();
     }
 
-    const bad = rows.filter((r) => !r.ok);
-    const summary = {
-      variantsRun: rows.length / 2,
-      comparisons: rows.length,
-      failed: bad.length,
-      worstRatio: Math.max(...rows.map((r) => r.ratio)),
-      tolerance: MAX_DIFF_RATIO,
-      cspViolations: cspSeen,
-      rows,
-      geometry,
-    };
-    writeFileSync(testInfo.outputPath('matrix-results.json'), JSON.stringify(summary, null, 2));
-    await testInfo.attach('matrix-results.json', { body: JSON.stringify(summary, null, 2), contentType: 'application/json' });
+    // The matrix must be complete, not merely green: 12 document tuples × 2 viewports × 2 densities × 2 portal surfaces.
+    expect(rows).toHaveLength(96);
+    expect(rows.filter((r) => !r.ok)).toEqual([]);
     expect(cspSeen).toEqual([]);
   });
 });

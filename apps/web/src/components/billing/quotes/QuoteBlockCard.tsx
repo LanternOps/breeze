@@ -1152,11 +1152,11 @@ export function QuoteImagePreview({ quoteId, imageId, caption, crop }: { quoteId
     return (
       <DocumentCoverCrop pageSize={crop} testId="quote-cover-page-image-crop" className="w-40 shrink-0 rounded border bg-muted">
         {failed ? (
-          <p className="p-2 text-xs text-muted-foreground">{t('quotes.editor.image.previewUnavailable')}</p>
+          <p className="absolute inset-0 overflow-auto p-2 text-xs text-muted-foreground">{t('quotes.editor.image.previewUnavailable')}</p>
         ) : url ? (
           <img src={url} alt={caption || t('quotes.editor.image.alt')} className="doc-cover-image" />
         ) : (
-          <div className="h-full w-full animate-pulse" data-testid="quote-image-loading" />
+          <div className="absolute inset-0 animate-pulse" data-testid="quote-image-loading" />
         )}
       </DocumentCoverCrop>
     );
