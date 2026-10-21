@@ -103,6 +103,8 @@ const namespaceDuplicateBaselines = {
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
     'fleetDesign.json': 2,
+    // Flows (#5218): 'Status', 'Webhook' (loanword) and 'Manual' are spelled identically in pt-BR.
+    'flows.json': 3,
     // +3 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
     // in pt-BR), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns pinned byte-identical by localeParity.
@@ -123,7 +125,7 @@ const namespaceDuplicateBaselines = {
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     // +1 #5288: titles.jobs — "Jobs" is the same loanword in pt-BR.
     'pages.json': 11, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
-    'patches.json': 31, // +2 #8728: outstanding-device status "Online"/"Offline" are identical cognates in pt-BR (as in devices.json).
+    'patches.json': 29,
     'peripherals.json': 4,
     'policies.json': 357,
     'portal.json': 3,
@@ -286,6 +288,8 @@ const namespaceDuplicateBaselines = {
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
+    // Flows (#5218): 'Webhook' (loanword), 'Manual' and 'Error' are spelled identically in es-419.
+    'flows.json': 3,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
@@ -466,6 +470,8 @@ const namespaceDuplicateBaselines = {
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
     'fleetDesign.json': 3,
+    // Flows (#5218): 'Webhook' (loanword), 'Validation' and 'Version {{version}}' are spelled identically in French.
+    'flows.json': 3,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
@@ -482,7 +488,7 @@ const namespaceDuplicateBaselines = {
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
     // standard fr-FR loanword) on top of the pre-existing ones.
     'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
-    'patches.json': 24, // +1 #8728: outstanding-device status "Maintenance" is spelled identically in French (as in devices.json).
+    'patches.json': 23,
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
@@ -665,6 +671,8 @@ const namespaceDuplicateBaselines = {
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
     'fleetDesign.json': 3,
+    // Flows (#5218): 'Webhook' (loanword), 'Validation' and 'Version {{version}}' are spelled identically in French.
+    'flows.json': 3,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     'integrations.json': 41,
@@ -680,7 +688,7 @@ const namespaceDuplicateBaselines = {
     // here) made titles.scripts an intentional cognate ("Script" is the
     // standard loanword) on top of the pre-existing ones.
     'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
-    'patches.json': 24, // +1 #8728: outstanding-device status "Maintenance" is spelled identically in French (as in devices.json).
+    'patches.json': 23,
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
@@ -878,6 +886,8 @@ const namespaceDuplicateBaselines = {
     'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
+    // Flows (#5218): 'Name', 'Status', 'Webhook' and 'Version {{version}}' are spelled identically in German.
+    'flows.json': 4,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
@@ -893,7 +903,7 @@ const namespaceDuplicateBaselines = {
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     'pages.json': 15, // Cognates: Backup, CIS Benchmarks, Dashboard, Webhooks (x2), OneDrive, Patches, EDR, Software (x2), Tickets, Ticket (singular), and two settings-card titles (Ticketing, Single Sign-On); +1 system page W02: titles.adminSystem "System".
-    'patches.json': 34, // +2 #8728: outstanding-device status "Online"/"Offline" are the German loanwords (as in devices.json).
+    'patches.json': 32,
     'peripherals.json': 4,
     'policies.json': 205,
     'portal.json': 4,
@@ -1044,6 +1054,8 @@ const namespaceDuplicateBaselines = {
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
+    // Flows (#5218): 'Trigger' (twice), 'Webhook', 'Timeout' and 'Input' are the standard Italian IT loanwords.
+    'flows.json': 5,
     // +4 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
     // in it-IT), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns, and one more backupProviders label spells
@@ -1059,7 +1071,7 @@ const namespaceDuplicateBaselines = {
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
-    'patches.json': 24, // +2 #8728: outstanding-device status "Online"/"Offline" are the Italian loanwords (as in devices.json).
+    'patches.json': 22,
     'peripherals.json': 4,
     'policies.json': 363,
     'portal.json': 9,
@@ -1186,6 +1198,8 @@ const namespaceDuplicateBaselines = {
     'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
+    // Flows (#5218): 'Webhook' is the untranslated industry loanword.
+    'flows.json': 1,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
     'integrations.json': 24,

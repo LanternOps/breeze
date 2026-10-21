@@ -1,10 +1,10 @@
-// #8604: invoice labor line itemization on the API renderers (customer HTML +
-// PDF). The default-settings case is pinned byte-for-byte by
+// #8604: invoice labor line itemization on the invoice PDF renderer (the HTML
+// renderer was deleted in #9414 W3a). The default-settings case is pinned by
 // invoicePdf.golden.test.ts; this file covers every non-default toggle, per-day
 // grouping, the frozen issued-invoice columns, and pagination of tall rows.
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_INVOICE_LINE_DETAIL, type InvoiceLineDetail } from '@breeze/shared';
-import { renderInvoiceHtml, renderInvoicePdfBuffer } from './invoicePdf';
+import { renderInvoicePdfBuffer } from './invoicePdf';
 import {
   extractPositionedPdfText, fixtureBranding, goldenLines, makeFixtureInvoice, makeFixtureLine, pdfPageCount,
 } from '../testUtils/invoiceRenderFixtures';
@@ -12,78 +12,67 @@ import {
 const D = DEFAULT_INVOICE_LINE_DETAIL;
 const withDate: InvoiceLineDetail = { ...D, showDate: true };
 const byDay: InvoiceLineDetail = { ...D, showDate: true, grouping: 'day' };
-const count = (hay: string, needle: string) => hay.split(needle).length - 1;
 const pdfText = async (detail: InvoiceLineDetail, lines = goldenLines(), invoice = makeFixtureInvoice()) =>
   extractPositionedPdfText(await renderInvoicePdfBuffer(invoice, lines, fixtureBranding, null, detail));
 
-describe('renderInvoiceHtml — line detail', () => {
-  it('explicit default settings render the same bytes as no settings (the golden path)', () => {
-    const inv = makeFixtureInvoice();
-    expect(renderInvoiceHtml(inv, goldenLines(), fixtureBranding, D)).toBe(renderInvoiceHtml(inv, goldenLines(), fixtureBranding));
+describe('invoice PDF — line detail (hidden lines, frozen columns, locale)', () => {
+  const texts = async (detail?: InvoiceLineDetail, invoice = makeFixtureInvoice(), lines = goldenLines()) =>
+    extractPositionedPdfText(await renderInvoicePdfBuffer(invoice, lines, fixtureBranding, null, detail)).map((f) => f.text);
+
+  it('date ON (per entry): hidden lines never render; part, manual and overage lines carry no date', async () => {
+    const t = await texts(withDate);
+    expect(t.filter((x) => x === 'Sep 16, 2026')).toHaveLength(2);   // two visible entries that day (the hidden one never renders)
+    expect(t.filter((x) => x === 'Sep 17, 2026')).toHaveLength(1);
+    expect(t).not.toContain('Internal follow-up');
+    expect(t).toEqual(expect.arrayContaining(['Fuser unit', 'Block hours overage']));
   });
 
-  it('date ON (per entry): each dated time-entry line prints its day; undated lines print none', () => {
-    const html = renderInvoiceHtml(makeFixtureInvoice(), goldenLines(), fixtureBranding, withDate);
-    expect(count(html, 'Sep 16, 2026')).toBe(2);           // two visible entries that day (the hidden one never renders)
-    expect(count(html, 'Sep 17, 2026')).toBe(1);
-    // The date sits in the title cell of its own line, after the title.
-    expect(html).toMatch(/Diagnosed paper jam<div[^>]*>Sep 16, 2026<\/div>/);
-    // Part, manual and the aggregated block-hours overage line carry no date.
-    expect(html).toMatch(/Fuser unit<\/td>/);
-    expect(html).toMatch(/Block hours overage<\/td>/);
-    expect(html).not.toContain('Internal follow-up');
+  it('per day: hours and the day amount are exact; lines keep their own amounts and the overage stays one undated row', async () => {
+    const t = await texts(byDay);
+    expect(t).toEqual(expect.arrayContaining(['$150.00', '$50.00', '$200.00']));
+    expect(t.filter((x) => x === 'Block hours overage')).toHaveLength(1);
+    // Positions: one header per date (lines do not repeat it), ascending, hours at the
+    // qty column and the day total at the amount column on the header's baseline.
+    const f = await pdfText(byDay);
+    const h16 = f.filter((x) => x.text === 'Sep 16, 2026');
+    const h17 = f.filter((x) => x.text === 'Sep 17, 2026');
+    expect(h16).toHaveLength(1);
+    expect(h17).toHaveLength(1);
+    expect(h16[0]!.y).toBeLessThan(h17[0]!.y);   // stored order had Sep 17 first
+    const row16 = f.filter((x) => Math.abs(x.y - h16[0]!.y) < 0.5).map((x) => x.text);
+    expect(row16).toEqual(expect.arrayContaining(['2', '$200.00']));   // 1.50 + 0.50 h (the hidden 0.25 h excluded)
+    expect(f.find((x) => x.text === 'Fuser unit')!.y).toBeGreaterThan(h17[0]!.y);   // undated lines follow
   });
 
-  it('per day: one sub-header per date, ascending, with exact per-day hours and amount; lines keep their own rows', () => {
-    const html = renderInvoiceHtml(makeFixtureInvoice(), goldenLines(), fixtureBranding, byDay);
-    expect(count(html, 'Sep 16, 2026')).toBe(1);           // on the header only — lines do not repeat it
-    expect(count(html, 'Sep 17, 2026')).toBe(1);
-    expect(html.indexOf('Sep 16, 2026')).toBeLessThan(html.indexOf('Sep 17, 2026'));   // stored order had Sep 17 first
-    const day16 = html.slice(html.indexOf('data-day="2026-09-16"'));
-    const header16 = day16.slice(0, day16.indexOf('</tr>'));
-    expect(header16).toContain('>2<');                     // 1.50 + 0.50 h (hidden 0.25 h excluded)
-    expect(header16).toContain('$200.00');
-    // Both entries under that day keep their own amounts.
-    expect(html).toContain('$150.00');
-    expect(html).toContain('$50.00');
-    // Undated lines follow the dated ones inside the ticket group, with no header of their own.
-    expect(html.indexOf('Sep 17, 2026')).toBeLessThan(html.indexOf('Fuser unit'));
-    // The overage line stays one aggregated, undated row.
-    expect(count(html, 'Block hours overage')).toBe(1);
+  it('note OFF: the generic labor label replaces each technician note; other lines unchanged', async () => {
+    const t = await texts({ ...D, showNote: false });
+    for (const note of ['Replaced fuser unit', 'Diagnosed paper jam', 'Tested print queue']) expect(t).not.toContain(note);
+    expect(t.filter((x) => x === 'Labor')).toHaveLength(3);
+    expect(t).toEqual(expect.arrayContaining(['Fuser unit', 'Travel and setup', 'Block hours overage']));  // a manual line's blurb is not a time-entry note
   });
 
-  it('note OFF: a time-entry line prints the generic labor label, never the technician note; other lines unchanged', () => {
-    const html = renderInvoiceHtml(makeFixtureInvoice(), goldenLines(), fixtureBranding, { ...D, showNote: false });
-    for (const note of ['Replaced fuser unit', 'Diagnosed paper jam', 'Tested print queue']) expect(html).not.toContain(note);
-    expect(count(html, '>Labor<')).toBe(3);
-    expect(html).toContain('Fuser unit');
-    expect(html).toContain('Travel and setup');            // a manual line's blurb is not a time-entry note
-    expect(html).toContain('Block hours overage');
+  it('note OFF localises the labor label', async () => {
+    const t = await texts({ ...D, showNote: false }, makeFixtureInvoice({ documentLocale: 'pt-BR' }));
+    expect(t.filter((x) => x === 'M\u00e3o de obra')).toHaveLength(3);
   });
 
-  it('note OFF localises the labor label', () => {
-    const html = renderInvoiceHtml(makeFixtureInvoice({ documentLocale: 'pt-BR' }), goldenLines(), fixtureBranding, { ...D, showNote: false });
-    expect(html).toContain('Mão de obra');
+  it('worked time OFF hides the worked-vs-billed disclosure; ON (default) shows it', async () => {
+    expect(await texts(D)).toContain('1.83 h worked \u00b7 1.50 h billed');
+    expect((await texts({ ...D, showWorkedTime: false })).join('|')).not.toContain('h worked');
   });
 
-  it('worked time OFF hides the worked-vs-billed disclosure; ON (default) shows it', () => {
-    expect(renderInvoiceHtml(makeFixtureInvoice(), goldenLines(), fixtureBranding, D)).toContain('1.83 h worked · 1.50 h billed');
-    expect(renderInvoiceHtml(makeFixtureInvoice(), goldenLines(), fixtureBranding, { ...D, showWorkedTime: false })).not.toContain('h worked');
-  });
-
-  it('with no settings passed, an issued invoice renders from its frozen columns', () => {
+  it('with no settings passed, an issued invoice renders from its frozen columns', async () => {
     const issued = makeFixtureInvoice({ status: 'sent', lineGrouping: 'entry', lineShowDate: true, lineShowNote: true, lineShowWorkedTime: false } as never);
-    const html = renderInvoiceHtml(issued, goldenLines(), fixtureBranding);
-    expect(html).toContain('Sep 16, 2026');
-    expect(html).not.toContain('h worked');
+    const t = await texts(undefined, issued);
+    expect(t).toContain('Sep 16, 2026');
+    expect(t.join('|')).not.toContain('h worked');
   });
 
-  it('escapes a hostile note and keeps the date beside it', () => {
+  it('draws a hostile note verbatim as text and keeps the date beside it', async () => {
     const lines = [makeFixtureLine({ sourceType: 'time_entry', description: '<script>alert(1)</script>', workedMinutes: 60, workDate: '2026-09-16' })];
-    const html = renderInvoiceHtml(makeFixtureInvoice(), lines, fixtureBranding, withDate);
-    expect(html).not.toContain('<script>alert(1)</script>');
-    expect(html).toContain('&lt;script&gt;');
-    expect(html).toContain('Sep 16, 2026');
+    const t = await texts(withDate, makeFixtureInvoice(), lines);
+    expect(t).toContain('<script>alert(1)</script>');   // a PDF has no markup to inject into
+    expect(t).toContain('Sep 16, 2026');
   });
 });
 

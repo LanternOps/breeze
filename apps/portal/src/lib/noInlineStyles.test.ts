@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
  * build, or this test.
  *
  * Runtime-valued styling belongs in one of two places instead:
- *  - a utility class in globals.css (`.doc-accent-*`, `.signature-preview`), or
+ *  - a utility class in @breeze/document-ui/document.css (`.doc-accent-*`, `.signature-preview`), or
  *  - the nonced `<style>` element the layouts emit (see lib/docAccent.ts) when
  *    the value genuinely varies per request.
  * A presentational HTML attribute (`width`, `height`) is also fine — those are
@@ -63,7 +63,7 @@ describe('no inline style attributes (production CSP sets style-src-attr none)',
     expect(
       violations,
       `These are refused in production by style-src-attr 'none'.\n` +
-        `Use a class in globals.css, the nonced <style> element (lib/docAccent.ts),\n` +
+        `Use a class in document.css or globals.css, the nonced <style> element (lib/docAccent.ts),\n` +
         `or a presentational attribute instead:\n${violations.join('\n')}`
     ).toEqual([]);
   });

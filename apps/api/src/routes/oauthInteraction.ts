@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { isCimdClientId } from '../oauth/cimdHosts';
+import { isLoopbackRedirectHost } from '../oauth/redirectUriPolicy';
 import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
 import { and, eq } from 'drizzle-orm';
@@ -181,13 +183,24 @@ if (MCP_OAUTH_ENABLED) {
     const rawRedirectUri = (details.params as { redirect_uri?: unknown }).redirect_uri;
     const redirectUri = typeof rawRedirectUri === 'string' ? rawRedirectUri : '';
     let redirectOrigin = '';
+    let redirectHost = '';
     if (redirectUri) {
       try {
-        redirectOrigin = new URL(redirectUri).origin;
+        const parsedRedirect = new URL(redirectUri);
+        redirectOrigin = parsedRedirect.origin;
+        redirectHost = parsedRedirect.hostname;
       } catch {
         redirectOrigin = '';
+        redirectHost = '';
       }
     }
+
+    // B-W03 (#6157, D-B20): a Client ID Metadata Document client. Its host
+    // proves only who publishes the metadata, never who the application is,
+    // so `verification` stays 'unverified'. A loopback callback is called
+    // out because any local process can claim a well-known name there.
+    const isMetadataDocument = isCimdClientId(clientId);
+    const clientIdHost = isMetadataDocument ? new URL(clientId).hostname : null;
 
     // On a first-visit single-step flow the prompt is `login`, and
     // `prompt.details.scopes.new` doesn't exist yet — fall back to the
@@ -226,6 +239,10 @@ if (MCP_OAUTH_ENABLED) {
         verification: 'unverified' as const,
         redirect_uri: redirectUri,
         redirect_origin: redirectOrigin,
+        registration: isMetadataDocument ? 'metadata_document' as const : 'dynamic' as const,
+        client_id_host: clientIdHost,
+        redirect_host: redirectHost,
+        localhost_redirect: redirectHost !== '' && isLoopbackRedirectHost(redirectHost),
       },
       scopes: displayScopes,
       resource: resource ?? null,

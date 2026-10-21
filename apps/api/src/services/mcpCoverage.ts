@@ -746,6 +746,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/templateApplications.ts': { gap: '#6778' },
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { gap: '#6778' },
+  'flows.ts': { tools: ['list_flows', 'get_flow'] }, // Tool Catalog W03 (#5218): read-only list/detail; drafts are written via draft_flow.
   'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },
   'trustPageAttestation.ts': { exempt: 'portal', note: 'Unauthenticated signed copy of the public trust payload plus its JWKS; read by insurer/auditor tooling, not a tool surface.' },

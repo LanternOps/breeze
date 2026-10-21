@@ -25,7 +25,17 @@ export type BrandingField = BrandingTextField | BrandingColorField;
 export type BrandingValues = Partial<Record<BrandingField, string>>;
 
 const BRANDING_FIELDS: ReadonlySet<string> = new Set<string>([...Object.keys(TEXT_LIMITS), ...COLOR_FIELDS]);
-const CONTROL_CHARS = /\p{Cc}/u;
+/**
+ * Characters that can reorder or hide sender text in the Helper and the toast
+ * (#9396): control (Cc), format (Cf: bidi embeddings/overrides U+202A-U+202E and
+ * isolates U+2066-U+2069, U+200B, U+2060, U+FEFF, ...), surrogate (Cs), private
+ * use (Co), and the line/paragraph separators U+2028/U+2029 (Zl/Zp).
+ *
+ * Allowlist: U+200C (ZWNJ) and U+200D (ZWJ) are allowed because Persian and
+ * Indic names and emoji sequences need them. Unassigned code points (Cn) are
+ * not rejected, so an emoji newer than Node's Unicode table is not refused.
+ */
+const DISALLOWED_TEXT_CHARS = /(?![\u200C\u200D])[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/u;
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 export type BrandingValidation = { ok: true; value: BrandingValues } | { ok: false; errors: string[] };
@@ -53,7 +63,7 @@ export function validateBrandingValues(input: unknown): BrandingValidation {
     }
     if (raw.length === 0) {
       errors.push(`empty:${key}`);
-    } else if (CONTROL_CHARS.test(raw)) {
+    } else if (DISALLOWED_TEXT_CHARS.test(raw)) {
       errors.push(`control:${key}`);
     } else if ([...raw].length > TEXT_LIMITS[key as BrandingTextField]) {
       errors.push(`length:${key}`);
