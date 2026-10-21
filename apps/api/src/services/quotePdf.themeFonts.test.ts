@@ -39,8 +39,8 @@ afterEach(() => {
   textSpy.mockRestore();
 });
 
-// A quote that exercises every draw call in renderLineTable and
-// renderRecurringSummary: a section label, the tax column, a per-table
+// A quote that exercises every draw call the shared table/totals module makes
+// for a quote: a section label, the tax column, a per-table
 // subtotal, a device-set estimate sentence, a two-row category breakdown, and
 // the deposit variant of the summary (bold + emphasis + remaining-balance rows).
 const quote = {
@@ -96,7 +96,7 @@ function fontForPrefix(prefix: string): string | undefined {
   return state.draws.find((d) => d.text.startsWith(prefix))?.font;
 }
 
-describe('quotePdf line table + recurring summary theme fonts (#4438)', () => {
+describe('quotePdf line table + totals theme fonts (#4438)', () => {
   it('draws the whole condensed-theme table and summary in the resolved theme fonts', async () => {
     const condensed = registerThemeFonts(
       // Throwaway doc: registerThemeFonts needs one to register the TTFs on,

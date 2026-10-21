@@ -4,10 +4,11 @@
 // pdfkit (no headless browser in the API path). The novel part here is that a
 // quote is BLOCK-based — the customer document is an ordered list of content
 // blocks (heading / rich_text / image / line_items) rather than a single fixed
-// table. renderQuotePdf walks the blocks in sortOrder and draws each; pricing
-// tables (line_items blocks + any orphan lines) reuse the invoice table styling,
-// and the document closes with a recurring-summary footer (one-time / monthly /
-// annual / first-invoice total) drawn from the quote header buckets.
+// table. renderQuotePdf walks the blocks in sortOrder and draws each. Pricing
+// tables (line_items blocks + any orphan lines) and the totals box are drawn by
+// the shared documentPdfTable.ts module from the same view model the screens
+// render (buildQuoteDocumentModel, #9414 W3b); the cover page, contents list,
+// rich text, tables, callouts and agreements keep their own PDF renderers.
 //
 // renderQuotePdf is intentionally pure (image bytes arrive via the injected
 // `loadImage`, branding via `branding`) so it is unit-testable without a DB; the
