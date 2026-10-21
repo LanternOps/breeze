@@ -179,6 +179,7 @@ export function buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: 
     branding,
     header,
     notes: invoice.notes || null,
+    sectionLabels: { notes: labels.notes, terms: labels.terms },
     lines,
     totals: { rows, aside: null, depositStrip },
     terms: {

@@ -46,6 +46,9 @@ const tables = vi.hoisted(() => ({
     installedVersion: 'devicePatches.installedVersion',
     availableVersion: 'devicePatches.availableVersion',
     scope: 'devicePatches.scope',
+    reportedSeverity: 'devicePatches.reportedSeverity',
+    reportedSeveritySource: 'devicePatches.reportedSeveritySource',
+    reportedCategory: 'devicePatches.reportedCategory',
     updatedAt: 'devicePatches.updatedAt',
   },
 }));
@@ -155,6 +158,7 @@ function mockDeviceLookup(osType = 'linux') {
 function mockPatchInsertTx() {
   const insertedRows: Array<Record<string, unknown>> = [];
   const devicePatchValues: Array<Record<string, unknown>> = [];
+  const devicePatchConflictSets: Array<Record<string, unknown>> = [];
   const tx = {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -173,7 +177,7 @@ function mockPatchInsertTx() {
     })),
     insert: vi.fn((table) => ({
       values: vi.fn((values) => ({
-        onConflictDoUpdate: vi.fn(() => {
+        onConflictDoUpdate: vi.fn((config?: { set?: Record<string, unknown> }) => {
           if (table === patches) {
             const row = { id: PATCH_ID, ...values };
             insertedRows.push(row);
@@ -183,6 +187,7 @@ function mockPatchInsertTx() {
           }
 
           devicePatchValues.push(values as Record<string, unknown>);
+          devicePatchConflictSets.push(config?.set ?? {});
           return {
             returning: vi.fn().mockResolvedValue([]),
           };
@@ -190,7 +195,7 @@ function mockPatchInsertTx() {
       })),
     })),
   };
-  return { tx, insertedRows, devicePatchValues };
+  return { tx, insertedRows, devicePatchValues, devicePatchConflictSets };
 }
 
 type MockSqlFragment = {
@@ -955,6 +960,91 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
 
     expect(res.status).toBe(200);
     expect(devicePatchValues[0]).toMatchObject({ scope: 'user' });
+  });
+
+  // #9387 gap 2: the agent derives a Windows severity when MSRC sends none and
+  // says so. The provenance is stored beside this device's reported severity
+  // and moves with it, so a later real rating can never sit next to a stale
+  // 'derived' flag.
+  describe('reported severity provenance (#9387)', () => {
+    async function submit(patch: Record<string, unknown>) {
+      const mocks = mockPatchInsertTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(mocks.tx as unknown as Parameters<typeof fn>[0]));
+      const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'microsoft',
+          patches: [{ name: 'Cumulative Update', source: 'microsoft', externalId: 'KB5127001', ...patch }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      return mocks;
+    }
+
+    it('stores a derived severity with its derived flag on the device row only', async () => {
+      const { insertedRows, devicePatchValues, devicePatchConflictSets } = await submit({
+        severity: 'important',
+        severitySource: 'derived',
+      });
+
+      expect(devicePatchValues[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: 'derived' });
+      expect(devicePatchConflictSets[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: 'derived' });
+      // The shared, un-tenanted row is never graded by a derived (or any
+      // uncurated) agent report.
+      expect(insertedRows[0]).toMatchObject({ severity: 'unknown' });
+    });
+
+    it('stores a vendor rating as vendor', async () => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({
+        severity: 'critical',
+        severitySource: 'vendor',
+      });
+
+      expect(devicePatchValues[0]).toMatchObject({ reportedSeverity: 'critical', reportedSeveritySource: 'vendor' });
+      expect(devicePatchConflictSets[0]).toMatchObject({ reportedSeveritySource: 'vendor' });
+    });
+
+    it('clears the flag when a scan reports a severity without provenance (older agent)', async () => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ severity: 'important' });
+
+      expect(devicePatchValues[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: null });
+      // Explicit NULL, not "keep the stored value": the stored flag described
+      // the previous severity, not this one.
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedSeveritySource', null);
+    });
+
+    it('never flags an unknown severity as derived', async () => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({
+        severity: 'unknown',
+        severitySource: 'derived',
+      });
+
+      expect(devicePatchValues[0]).toMatchObject({ reportedSeverity: 'unknown', reportedSeveritySource: null });
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedSeveritySource', null);
+    });
+
+    it('ignores an unrecognised provenance value instead of rejecting the scan', async () => {
+      const { devicePatchValues } = await submit({ severity: 'important', severitySource: 'msrc-cvrf' });
+
+      expect(devicePatchValues[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: null });
+    });
+
+    it('does not reject the scan over a malformed provenance value', async () => {
+      const { devicePatchValues } = await submit({ severity: 'important', severitySource: 'x'.repeat(200) });
+      expect(devicePatchValues[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: null });
+
+      const numeric = await submit({ severity: 'important', severitySource: 7 });
+      expect(numeric.devicePatchValues[0]).toMatchObject({ reportedSeverity: 'important', reportedSeveritySource: null });
+    });
+
+    it('keeps the stored severity and flag together when a scan carries no severity', async () => {
+      const { devicePatchConflictSets } = await submit({});
+
+      const set = devicePatchConflictSets[0] ?? {};
+      expect(JSON.stringify(set.reportedSeverity)).toContain(tables.devicePatches.reportedSeverity);
+      expect(JSON.stringify(set.reportedSeveritySource)).toContain(tables.devicePatches.reportedSeveritySource);
+    });
   });
 
   it('full scan with empty coveredSources tombstones nothing', async () => {

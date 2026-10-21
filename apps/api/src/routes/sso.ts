@@ -2234,6 +2234,7 @@ ssoRoutes.post(
 
     writeRouteAudit(c, {
       orgId: provider.orgId,
+      partnerId: provider.partnerId,
       action: 'sso.identity.link_started',
       resourceType: 'sso_provider',
       resourceId: provider.id,
@@ -2372,6 +2373,7 @@ ssoRoutes.post('/reauth/start', authMiddleware, async (c) => {
 
   writeRouteAudit(c, {
     orgId: provider.orgId,
+    partnerId: provider.partnerId,
     action: 'sso.reauth.started',
     resourceType: 'sso_provider',
     resourceId: provider.id,
@@ -2734,6 +2736,7 @@ ssoRoutes.get('/callback', async (c) => {
   if (!generation.ok) {
     writeRouteAudit(c, {
       orgId: provider.orgId,
+      partnerId: provider.partnerId,
       action: 'sso.callback.rejected',
       resourceType: 'sso_provider',
       resourceId: provider.id,
@@ -2870,6 +2873,7 @@ ssoRoutes.get('/callback', async (c) => {
       captureException(verifyError, c);
       writeRouteAudit(c, {
         orgId: provider.orgId,
+        partnerId: provider.partnerId,
         action: callbackMode === 'reauth' ? 'sso.reauth.rejected' : 'sso.identity.link_rejected',
         resourceType: 'sso_provider',
         resourceId: provider.id,
@@ -2953,6 +2957,7 @@ ssoRoutes.get('/callback', async (c) => {
     if (emailVerifiedClaim === 'false') {
       writeRouteAudit(c, {
         orgId: provider.orgId,
+        partnerId: provider.partnerId,
         action: 'sso.callback.rejected',
         resourceType: 'sso_provider',
         resourceId: provider.id,
@@ -3027,6 +3032,7 @@ ssoRoutes.get('/callback', async (c) => {
       if (!freshness.ok) {
         writeRouteAudit(c, {
           orgId: provider.orgId,
+          partnerId: provider.partnerId,
           action: 'sso.reauth.rejected',
           resourceType: 'sso_provider',
           resourceId: provider.id,
@@ -3123,6 +3129,7 @@ ssoRoutes.get('/callback', async (c) => {
       if (!outcome.ok) {
         writeRouteAudit(c, {
           orgId: provider.orgId,
+          partnerId: provider.partnerId,
           action: 'sso.reauth.rejected',
           resourceType: 'sso_provider',
           resourceId: provider.id,
@@ -3155,6 +3162,7 @@ ssoRoutes.get('/callback', async (c) => {
         console.error(`[sso] reauth grant mint failed for user ${reauthUserId} (provider ${provider.id})`);
         writeRouteAudit(c, {
           orgId: provider.orgId,
+          partnerId: provider.partnerId,
           action: 'sso.reauth.rejected',
           resourceType: 'sso_provider',
           resourceId: provider.id,
@@ -3167,6 +3175,7 @@ ssoRoutes.get('/callback', async (c) => {
 
       writeRouteAudit(c, {
         orgId: provider.orgId,
+        partnerId: provider.partnerId,
         action: 'sso.reauth.completed',
         resourceType: 'sso_provider',
         resourceId: provider.id,
@@ -3251,6 +3260,7 @@ ssoRoutes.get('/callback', async (c) => {
       if ('error' in outcome) {
         writeRouteAudit(c, {
           orgId: provider.orgId,
+          partnerId: provider.partnerId,
           action: 'sso.identity.link_rejected',
           resourceType: 'sso_provider',
           resourceId: provider.id,
@@ -3271,6 +3281,7 @@ ssoRoutes.get('/callback', async (c) => {
       }
       writeRouteAudit(c, {
         orgId: provider.orgId,
+        partnerId: provider.partnerId,
         action: 'sso.identity.linked',
         resourceType: 'sso_provider',
         resourceId: provider.id,
@@ -3339,6 +3350,7 @@ ssoRoutes.get('/callback', async (c) => {
         if (!domainProven) {
           writeRouteAudit(c, {
             orgId: provider.orgId,
+            partnerId: provider.partnerId,
             action: 'sso.callback.rejected',
             resourceType: 'sso_provider',
             resourceId: provider.id,
@@ -3368,6 +3380,7 @@ ssoRoutes.get('/callback', async (c) => {
         // (SR2-11 / SR2-12) — a console line is not an audit trail.
         writeRouteAudit(c, {
           orgId: provider.orgId,
+          partnerId: provider.partnerId,
           action: 'sso.callback.rejected',
           resourceType: 'sso_provider',
           resourceId: provider.id,
@@ -3483,6 +3496,7 @@ ssoRoutes.get('/callback', async (c) => {
             });
             writeRouteAudit(c, {
               orgId: provider.orgId,
+              partnerId: provider.partnerId,
               action: 'sso.link.ceremony_started',
               resourceType: 'sso_provider',
               resourceId: provider.id,
@@ -3554,6 +3568,7 @@ ssoRoutes.get('/callback', async (c) => {
       if (!jitRole.ok) {
         writeRouteAudit(c, {
           orgId: provider.orgId,
+          partnerId: provider.partnerId,
           action: 'sso.callback.rejected',
           resourceType: 'sso_provider',
           resourceId: provider.id,
@@ -3789,6 +3804,7 @@ ssoRoutes.get('/callback', async (c) => {
     if (!liveProviderAuthority.ok) {
       writeRouteAudit(c, {
         orgId: provider.orgId,
+        partnerId: provider.partnerId,
         action: 'sso.callback.rejected',
         resourceType: 'sso_provider',
         resourceId: provider.id,
@@ -4131,6 +4147,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
     clearLinkCookie();
     writeRouteAudit(c, {
       orgId: record.providerOrgId,
+      partnerId: record.providerPartnerId,
       action: 'sso.link.ceremony_rejected',
       resourceType: 'sso_provider',
       resourceId: record.providerId,

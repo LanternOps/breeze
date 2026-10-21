@@ -259,7 +259,9 @@
       "moderate": "Moderate",
       "low": "Low",
       "unrated": "Unrated",
-      "unratedNote": "Will not auto-approve"
+      "unratedNote": "Will not auto-approve",
+      "derivedNote": "Derived rating",
+      "derivedTooltip": "The vendor published no rating for this update. This severity was derived from its classification and title."
     },
     "approval": {
       "pending": "Pending",

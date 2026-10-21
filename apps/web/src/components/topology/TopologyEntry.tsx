@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'rea
 import { useTranslation } from 'react-i18next';
 import { useHashState } from '../../lib/useHashState';
 import { formatTopologyHash, parseTopologyHash, writeTopologyHash } from './topologyHash';
-import { topologyApi, topologyNodeListSchema, topologyRead, TopologyReadError, type TopologySettings } from './topologyApi';
+import { setTopologyOrgPin, topologyApi, topologyNodeListSchema, topologyRead, TopologyReadError, type TopologySettings } from './topologyApi';
 import { clearTopologyPrefetch, prefetchTopologyGraph, prefetchTopologySettings, takePrefetchedSettings } from './topologyPrefetch';
 import TopologyEmptyState from './TopologyEmptyState';
 const loadExplorer = () => import('./TopologyExplorer');
@@ -14,10 +14,14 @@ type LinkedSite = 'checking' | 'switching' | 'sameOrg' | 'missing' | 'failed';
  * than read from the org store so this component stays free of store wiring for site-bound callers.
  */
 export type TopologyOrganization = { currentOrgId: string | null; selectOrganization: (orgId: string) => void };
-export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, legacy, organization }: {
-  siteId?: string | null; sites?: { id: string; name: string }[]; deviceId?: string; assetId?: string; legacy?: ReactNode; organization?: TopologyOrganization;
+export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, legacy, organization, orgId }: {
+  /** The org that owns the device/asset shown, when it may differ from the working org (#9258). */
+  orgId?: string | null; siteId?: string | null; sites?: { id: string; name: string }[]; deviceId?: string; assetId?: string; legacy?: ReactNode; organization?: TopologyOrganization;
 }) {
   const { t } = useTranslation('topology');
+  // Set during render so the first (child/effect) reads already carry it; cleared on unmount.
+  setTopologyOrgPin(orgId);
+  useEffect(() => () => setTopologyOrgPin(null), []);
   const [hashSite, setHashSite] = useHashState<string | undefined>(undefined, (hash) => parseTopologyHash(hash)?.siteId);
   // A linked site is shown only once this organization's list contains it: never fall back to another site (#7880).
   const linkedSite = !siteId && hashSite && !sites.some((site) => site.id === hashSite) ? hashSite : undefined;

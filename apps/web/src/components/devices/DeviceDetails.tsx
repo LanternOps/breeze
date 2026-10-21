@@ -1301,7 +1301,7 @@ export default function DeviceDetails({
         />
       )}
 
-      {activeTab === "topology" && <TopologyEntry siteId={device.siteId} deviceId={device.id} />}
+      {activeTab === "topology" && <TopologyEntry siteId={device.siteId} deviceId={device.id} orgId={device.orgId} />}
 
       {activeTab === "monitoring" && (
         <DeviceMonitoringTab

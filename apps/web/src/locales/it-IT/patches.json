@@ -259,7 +259,9 @@
       "moderate": "Moderata",
       "low": "Bassa",
       "unrated": "Non valutata",
-      "unratedNote": "Non verrà approvata automaticamente"
+      "unratedNote": "Non verrà approvata automaticamente",
+      "derivedNote": "Valutazione derivata",
+      "derivedTooltip": "Il fornitore non ha pubblicato una valutazione per questo aggiornamento. Questa gravità è stata derivata dalla classificazione e dal titolo."
     },
     "approval": {
       "pending": "In sospeso",

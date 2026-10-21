@@ -50,6 +50,12 @@ function toPublicCoverPage(value: unknown): PublicQuoteCoverPage | null {
   };
 }
 
+/** The public link's status mapping, exported for the customer-document
+ *  assembler's `public` mode (#9418). Behaviour unchanged. */
+export function toPublicQuoteStatus(status: QuoteRow['status']): PublicQuoteHeader['status'] {
+  return toPublicStatus(status);
+}
+
 function toPublicStatus(status: QuoteRow['status']): PublicQuoteHeader['status'] {
   if (status === 'draft') {
     throw new Error('Draft quotes cannot be serialized for public access');
@@ -89,11 +95,32 @@ export function toPublicQuoteHeader(
   row: QuoteRow,
   totals: QuoteTotals,
 ): PublicQuoteHeader {
+  return withQuoteStatus(toCustomerQuoteHeaderFields(row, totals), toPublicStatus(row.status)) satisfies PublicQuoteHeader;
+}
+
+/** Put a status into the header at its wire position (after `title`). */
+export function withQuoteStatus<S>(
+  fields: Omit<PublicQuoteHeader, 'status'>,
+  status: S,
+): Omit<PublicQuoteHeader, 'status'> & { status: S } {
+  const { id, quoteNumber, title, ...rest } = fields;
+  return { id, quoteNumber, title, status, ...rest };
+}
+
+/**
+ * Every customer-visible quote header field EXCEPT the status — the one
+ * allowlist behind the public link, the logged-in portal and the staff Preview
+ * (#9418). The status is mode-dependent (the public mapping vs the raw status),
+ * so the caller adds it with `withQuoteStatus`.
+ */
+export function toCustomerQuoteHeaderFields(
+  row: QuoteRow,
+  totals: QuoteTotals,
+): Omit<PublicQuoteHeader, 'status'> {
   return {
     id: row.id,
     quoteNumber: row.quoteNumber,
     title: row.title,
-    status: toPublicStatus(row.status),
     currencyCode: row.currencyCode,
     issueDate: row.issueDate,
     expiryDate: row.expiryDate,
@@ -120,5 +147,5 @@ export function toPublicQuoteHeader(
     sellerSnapshot: toPublicSellerSnapshot(row.sellerSnapshot),
     coverPage: toPublicCoverPage(row.coverPage),
     termsAndConditions: row.termsAndConditions,
-  } satisfies PublicQuoteHeader;
+  } satisfies Omit<PublicQuoteHeader, 'status'>;
 }

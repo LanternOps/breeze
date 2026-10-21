@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getTrustEmbedCard, loadTrustEmbedPage, trustEmbedFullPagePath } from './trustEmbed';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { embedCardView, getTrustEmbedCard, loadTrustEmbedPage, trustEmbedFullPagePath } from './trustEmbed';
 
 const GENERIC_404 = { error: 'Not found', code: 'NOT_FOUND' };
 
@@ -107,5 +109,37 @@ describe('trustEmbedFullPagePath', () => {
   it('maps the embed to its full page (base-relative)', () => {
     expect(trustEmbedFullPagePath('nw', 'acme')).toBe('/trust/nw/acme');
     expect(trustEmbedFullPagePath('nw', null)).toBe('/trust/nw');
+  });
+});
+
+describe('embedCardView (#9257): the card follows the frozen page locale', () => {
+  it('de-DE → German lang, title and strings', () => {
+    const v = embedCardView({ ...CARD, locale: 'de-DE', stale: true, frameAncestors: [] });
+    expect(v.lang).toBe('de-DE');
+    expect(v.title).toBe('Acme · Sicherheitsstatus');
+    expect(v.badge).toContain('Sicherheitsstatus');
+    expect(v.viewFull).toBe('Vollständige Vertrauensseite ansehen');
+    expect(v.paused).toContain('pausiert');
+    expect(v.summary).toContain('15');
+    expect(v.summary).not.toContain('Showing');
+  });
+  it('en and unknown locales fall back to English with lang=en', () => {
+    for (const locale of ['en', 'xx-XX']) {
+      const v = embedCardView({ ...CARD, locale, frameAncestors: [] });
+      expect(v.lang).toBe('en');
+      expect(v.title).toBe('Acme · Security posture');
+      expect(v.viewFull).toBe('View the full trust page');
+    }
+  });
+});
+
+describe('embed shell sources (#9257)', () => {
+  const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8');
+  it('layout takes lang instead of hard-coding en; pages pass the view', () => {
+    const layout = read('../layouts/TrustEmbedLayout.astro');
+    expect(layout).toMatch(/<html lang=\{lang\}>/);
+    expect(layout).not.toMatch(/<html lang="en">/);
+    expect(read('../pages/trust/embed/[partnerSlug]/[orgSlug].astro')).toMatch(/lang=\{view\.lang\}/);
+    expect(read('../pages/trust/embed/[partnerSlug]/index.astro')).toMatch(/lang=\{view\.lang\}/);
   });
 });

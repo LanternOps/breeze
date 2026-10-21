@@ -11,6 +11,7 @@ import {
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
 import { Drawer } from '../shared/Drawer';
+import { localDateInputValue } from '../../lib/localDate';
 
 export interface ApplyTemplateModalProps {
   fetcher: Fetcher;
@@ -31,7 +32,7 @@ type SetsState = 'loading' | 'failed' | TemplateSet[];
 type ContractsState = 'loading' | 'failed' | ContractOption[];
 
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localDateInputValue();
 }
 
 function collisionNames(err: ActionError): string[] {

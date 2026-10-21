@@ -340,10 +340,15 @@ export const m365SyncActionResultSchema: z.ZodType<M365SyncActionResult> = z.obj
 }).strict();
 
 /**
- * The read failure codes plus `continuation_invalid`. Deliberately NOT folded
- * into readActionFailureCodeSchema: that enum keys the exhaustive
+ * The read failure codes plus two sync-only codes: `continuation_invalid`, and
+ * `graph_provider_rejected` — Graph refused the request itself (a 400 on a bad
+ * $filter, a 5xx), as opposed to answering with a body Breeze could not parse
+ * (`graph_response_invalid`). Folding the first into the second made a rejected
+ * query read like malformed JSON in connection health (#9393). Deliberately NOT
+ * folded into readActionFailureCodeSchema: that enum keys the exhaustive
  * FAILURE_MESSAGES record in the API's readActionService, which this contract
- * has no business widening.
+ * has no business widening, and the interactive read path still folds a
+ * rejection into `graph_response_invalid`.
  *
  * The member list is spelled out rather than spread from
  * `readActionFailureCodeSchema.options` because `z.enum` needs a literal tuple
@@ -351,7 +356,8 @@ export const m365SyncActionResultSchema: z.ZodType<M365SyncActionResult> = z.obj
  * honest two ways: the `_AssertSyncFailureCodeParity` line below fails `tsc` if
  * the schema and the exported type drift apart, and `readActions.test.ts`
  * asserts `m365SyncFailureCodeSchema.options` equals
- * `[...readActionFailureCodeSchema.options, 'continuation_invalid']`, so adding
+ * `[...readActionFailureCodeSchema.options, 'continuation_invalid',
+ * 'graph_provider_rejected']`, so adding
  * a read code without adding it here is a red test, not a silent gap.
  */
 export const m365SyncFailureCodeSchema = z.enum([
@@ -366,6 +372,7 @@ export const m365SyncFailureCodeSchema = z.enum([
   'graph_transport_failed',
   'graph_response_invalid',
   'continuation_invalid',
+  'graph_provider_rejected',
 ]);
 
 /**
@@ -379,7 +386,11 @@ export const m365SyncFailureCodeSchema = z.enum([
  * contract names it and because sync callers reason about throttling
  * explicitly.
  */
-export type M365SyncFailureCode = ReadActionFailureCode | 'continuation_invalid' | 'graph_throttled';
+export type M365SyncFailureCode =
+  | ReadActionFailureCode
+  | 'continuation_invalid'
+  | 'graph_provider_rejected'
+  | 'graph_throttled';
 
 /** Compile-time proof the hand-written enum and the contract type are one set. */
 type _Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;

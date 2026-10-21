@@ -283,23 +283,40 @@ export async function evaluatePatchInstallEligibility(args: {
       patchId: patchApprovals.patchId,
       status: patchApprovals.status,
       ringId: patchApprovals.ringId,
+      updatedAt: patchApprovals.updatedAt,
     })
     .from(patchApprovals)
     .where(
       and(
         eq(patchApprovals.partnerId, partnerId),
         inArray(patchApprovals.patchId, patchIds),
-        eq(patchApprovals.status, 'approved')
+        inArray(patchApprovals.status, ['approved', 'rejected'])
       )
     );
 
-  // Index manual approvals by patchId for fast lookup
-  const manualApprovalSet = new Set<string>();
+  // Index manual decisions by patchId. A decline ('rejected') is a TERMINAL
+  // deny (#9369) — it must beat ring auto-approve, which never sees it
+  // otherwise. Rows that apply: this ring's, or partner-wide (null ringId).
+  // The most recent decision wins (updatedAt); a tie or missing timestamp
+  // resolves to the decline (fail-closed).
+  const latest = new Map<string, { status: string; at: number }>();
   for (const approval of manualApprovals) {
-    // Ring-scoped approval: match if ringId matches, or approval is partner-wide (null ringId)
-    if (approval.ringId === ringConfig.ringId || approval.ringId === null) {
-      manualApprovalSet.add(approval.patchId);
+    if (approval.ringId !== ringConfig.ringId && approval.ringId !== null) continue;
+    const t = approval.updatedAt ? new Date(approval.updatedAt).getTime() : 0;
+    const at = Number.isFinite(t) ? t : 0;
+    const prev = latest.get(approval.patchId);
+    if (
+      !prev ||
+      at > prev.at ||
+      (at === prev.at && approval.status === 'rejected')
+    ) {
+      latest.set(approval.patchId, { status: approval.status, at });
     }
+  }
+  const manualApprovalSet = new Set<string>();
+  const declinedSet = new Set<string>();
+  for (const [patchId, d] of latest) {
+    (d.status === 'rejected' ? declinedSet : manualApprovalSet).add(patchId);
   }
 
   // 3. Build category rules index
@@ -320,7 +337,7 @@ export async function evaluatePatchInstallEligibility(args: {
 
   const now = new Date();
   for (const patch of finalCandidates) {
-    const decision = decidePatchApproval(patch, ringConfig, manualApprovalSet, categoryRuleMap, ringAutoApprove, now);
+    const decision = decidePatchApproval(patch, ringConfig, manualApprovalSet, categoryRuleMap, ringAutoApprove, now, declinedSet);
     if ('approved' in decision) {
       eligible.push({
         patchId: patch.patchId,

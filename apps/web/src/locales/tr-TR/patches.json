@@ -259,7 +259,9 @@
       "moderate": "Orta",
       "low": "Düşük",
       "unrated": "Derecelendirilmemiş",
-      "unratedNote": "Otomatik onaylanmayacak"
+      "unratedNote": "Otomatik onaylanmayacak",
+      "derivedNote": "Türetilmiş derecelendirme",
+      "derivedTooltip": "Satıcı bu güncelleme için bir derecelendirme yayımlamadı. Bu önem derecesi, sınıflandırmasından ve başlığından türetildi."
     },
     "approval": {
       "pending": "Beklemede",

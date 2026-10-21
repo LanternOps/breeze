@@ -512,9 +512,27 @@ updateRingRoutes.get(
       WHERE "device_patches"."patch_id" = "patches"."id"
         AND "device_patches"."device_id" IN ${ringDeviceIdListSql}
         AND "device_patches"."reported_severity" IS NOT NULL
-      ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST
+      ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST, "device_patches"."id" DESC
       LIMIT 1
     ), 'unknown')::patch_severity`;
+    // Provenance of the severity shown above (#9387): the reported_severity_source
+    // of the very row the fallback picked — same predicate, same ORDER BY with
+    // the same unique tiebreaker, so the two subqueries cannot land on
+    // different rows. NULL when the trusted shared classification supplied the
+    // value (it is not a device report) or nothing was reported. 'derived'
+    // drives the "derived" marker in the web.
+    const effectiveSeveritySourceSql = sql<string | null>`CASE
+      WHEN NULLIF(${patches.severity}::text, 'unknown') IS NOT NULL THEN NULL
+      ELSE (
+        SELECT "device_patches"."reported_severity_source"
+        FROM "device_patches"
+        WHERE "device_patches"."patch_id" = "patches"."id"
+          AND "device_patches"."device_id" IN ${ringDeviceIdListSql}
+          AND "device_patches"."reported_severity" IS NOT NULL
+        ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST, "device_patches"."id" DESC
+        LIMIT 1
+      )
+    END`;
     const effectiveCategorySql = sql<string | null>`COALESCE(${patches.category}, (
       SELECT "device_patches"."reported_category"
       FROM "device_patches"
@@ -545,6 +563,7 @@ updateRingRoutes.get(
         description: patches.description,
         source: patches.source,
         severity: effectiveSeveritySql,
+        severitySource: effectiveSeveritySourceSql,
         category: effectiveCategorySql,
         osTypes: patches.osTypes,
         // Same device-derived OS hint as GET /patches (list.ts): the most

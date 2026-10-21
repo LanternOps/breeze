@@ -2952,6 +2952,7 @@
           "blocked_by_category": "Excluída pelas regras de categoria do anel",
           "blocked_by_app_rule": "Bloqueada por uma regra de aplicativo",
           "awaiting_manual_approval": "Aguardando aprovação manual",
+          "explicitly_declined": "Recusado explicitamente",
           "no_ring_resolved": "O dispositivo não tem um anel de atualização",
           "ring_reference_invalid": "O anel de atualização da política é inválido",
           "device_not_in_org": "O dispositivo não pertence a esta organização"
@@ -5757,16 +5758,12 @@
       "nameRequired": "O nome da organização é obrigatório",
       "slugRequired": "Slug é obrigatório",
       "slugFormat": "Use apenas letras minúsculas, números e hifens",
-      "maxDevicesRequired": "Insira um limite máximo de dispositivos",
-      "maxDevicesInteger": "O máximo de dispositivos precisa ser um número inteiro",
-      "maxDevicesMin": "O máximo de dispositivos deve ser pelo menos 1",
       "contractEndAfterStart": "O término do contrato deve ser na data de início ou após ela"
     },
     "fields": {
       "name": "Nome da organização",
       "slug": "Slug",
       "type": "Tipo de organização",
-      "maxDevices": "Máximo de dispositivos",
       "contractStart": "Início do contrato",
       "contractEnd": "Fim do contrato"
     },

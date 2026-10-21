@@ -77,7 +77,7 @@ const row = (o: Partial<Row>): Row => ({
   source: 'microsoft', packageId: null, version: null, firstSeenAt: null, status: 'pending',
   supersededBy: null, ...o,
 });
-type Approval = { patchId: string; status: string; ringId: string | null };
+type Approval = { patchId: string; status: string; ringId: string | null; updatedAt?: Date };
 
 function chain(resolveAt: 'where' | 'limit', rows: unknown[]) {
   const c: Record<string, unknown> = {};
@@ -620,5 +620,73 @@ describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => 
     expect(config.apps ?? []).toEqual([]);
     expect(config.ringReferenceInvalid).toBe(true);
     warn.mockRestore();
+  });
+});
+
+// #9369: a decline (status='rejected') is a terminal deny — ring auto-approve must not override it.
+describe('evaluatePatchInstallEligibility — explicit decline is terminal (#9369)', () => {
+  const unrated = (id = P1) => row({ patchId: id, category: null, severity: null, source: 'linux', releaseDate: null });
+  const autoUnrated = { enabled: true, severities: ['critical'], autoApproveUnrated: true };
+  const T1 = new Date('2026-10-01T00:00:00Z');
+  const T2 = new Date('2026-10-02T00:00:00Z');
+
+  it('control: with no decline, autoApproveUnrated admits an unrated patch', async () => {
+    mockEvaluatorReads([unrated()], []);
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig({ autoApprove: autoUnrated }) });
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+  });
+
+  it.each([
+    ['ring-specific', RING],
+    ['blanket (ring_id NULL)', null],
+  ])('a %s rejected row denies despite autoApproveUnrated', async (_n, ringId) => {
+    mockEvaluatorReads([unrated()], [{ patchId: P1, status: 'rejected', ringId }]);
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig({ autoApprove: autoUnrated }) });
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toContainEqual({ patchId: P1, reason: 'explicitly_declined' });
+  });
+
+  it('a rejected row for a DIFFERENT ring does not deny', async () => {
+    mockEvaluatorReads([unrated()], [{ patchId: P1, status: 'rejected', ringId: OTHER_RING }]);
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig({ autoApprove: autoUnrated }) });
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+  });
+
+  it('a LATER explicit approval supersedes an earlier decline', async () => {
+    mockEvaluatorReads([unrated()], [
+      { patchId: P1, status: 'rejected', ringId: null, updatedAt: T1 },
+      { patchId: P1, status: 'approved', ringId: RING, updatedAt: T2 },
+    ]);
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig() });
+    expect(res.eligible[0]).toMatchObject({ patchId: P1, approvalReason: 'manual' });
+  });
+
+  it('a LATER decline beats an earlier approval', async () => {
+    mockEvaluatorReads([unrated()], [
+      { patchId: P1, status: 'approved', ringId: RING, updatedAt: T1 },
+      { patchId: P1, status: 'rejected', ringId: null, updatedAt: T2 },
+    ]);
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig() });
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toContainEqual({ patchId: P1, reason: 'explicitly_declined' });
+  });
+
+  it('the executor entry point drops a declined patch', async () => {
+    mockEvaluatorReads([unrated()], [{ patchId: P1, status: 'rejected', ringId: RING }]);
+    const approved = await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig({ autoApprove: autoUnrated }));
+    expect(approved).toEqual([]);
+  });
+});
+
+describe('explicit decline — tie-break (#9369)', () => {
+  const T = new Date('2026-10-01T00:00:00Z');
+  it.each([
+    ['approved first', ['approved', 'rejected']],
+    ['rejected first', ['rejected', 'approved']],
+  ])('same updatedAt resolves to the decline (%s)', async (_n, order) => {
+    mockEvaluatorReads([row({ patchId: P1 })], order.map((status, i) => ({ patchId: P1, status, ringId: i === 0 ? RING : null, updatedAt: T })));
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig() });
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toContainEqual({ patchId: P1, reason: 'explicitly_declined' });
   });
 });

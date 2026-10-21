@@ -518,7 +518,7 @@ import {
 import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../services/ssoDomainVerification';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getUserPermissions } from '../services/permissions';
-import { writeRouteAudit } from '../services/auditEvents';
+import { derivePartnerAttribution, writeRouteAudit } from '../services/auditEvents';
 import { auditLogin } from './auth/helpers';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
@@ -4222,6 +4222,55 @@ describe('sso routes', () => {
           details: expect.objectContaining({ reason: 'idp_verify_failed', userId: USER_UUID }),
         })
       );
+    });
+
+    // #9377: /callback is unauthenticated, so a partner-level provider's link
+    // rows reach the partner audit trail only via an explicit top-level
+    // partnerId. Feed the (mocked) writeRouteAudit argument to the real
+    // derivation with a no-auth context to get the partner_id the row persists.
+    const persistedLinkPartnerIds = (action: string): Array<string | null> =>
+      vi.mocked(writeRouteAudit).mock.calls
+        .map(([, event]) => event)
+        .filter((event) => event.action === action)
+        .map((event) => derivePartnerAttribution({ req: { header: () => undefined } } as any, event));
+
+    it('attributes sso.identity.linked to the partner for a partner-level provider (#9377)', async () => {
+      primeLinkCallback({ linkUserId: USER_UUID, provider: PARTNER_PROVIDER });
+      vi.mocked(db.select).mockReturnValueOnce(sel([])); // (provider, sub) not in use
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }))
+      } as any);
+
+      const res = await doCallback();
+
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinked=1');
+      expect(persistedLinkPartnerIds('sso.identity.linked')).toEqual([PARTNER_UUID]);
+    });
+
+    it('attributes sso.identity.link_rejected (idp_verify_failed) to the partner for a partner-level provider (#9377)', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      primeLinkCallback({ linkUserId: USER_UUID, provider: PARTNER_PROVIDER });
+      vi.mocked(verifyIdTokenSignature).mockRejectedValueOnce(
+        Object.assign(new Error('Invalid nonce'), { failureKind: 'nonce' })
+      );
+
+      const res = await doCallback();
+
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=idp_verify_failed');
+      expect(persistedLinkPartnerIds('sso.identity.link_rejected')).toEqual([PARTNER_UUID]);
+    });
+
+    it('attributes sso.identity.link_rejected (binding failure) to the partner for a partner-level provider (#9377)', async () => {
+      primeLinkCallback({
+        linkUserId: USER_UUID,
+        provider: PARTNER_PROVIDER,
+        linkingUser: { ...ACTIVE_LINKING_USER, status: 'suspended' },
+      });
+
+      const res = await doCallback();
+
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=session_invalid');
+      expect(persistedLinkPartnerIds('sso.identity.link_rejected')).toEqual([PARTNER_UUID]);
     });
 
     it('callback link mode rejects an email mismatch (no insert)', async () => {

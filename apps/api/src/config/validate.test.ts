@@ -122,6 +122,16 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('AGENT_ENROLL_RATE_WINDOW_SECONDS upper bound (#9457)', () => {
+    // The window is the /enroll 429 Retry-After; W09 agents cap at 300 s after x1.3 jitter.
+    it('accepts 230 and refuses 231', () => {
+      withEnv({ ...validEnv, AGENT_ENROLL_RATE_WINDOW_SECONDS: '230' }, () => { expect(() => validateConfig()).not.toThrow(); });
+      withEnv({ ...validEnv, AGENT_ENROLL_RATE_WINDOW_SECONDS: '231' }, () => {
+        expect(() => validateConfig()).toThrow(/AGENT_ENROLL_RATE_WINDOW_SECONDS/);
+      });
+    });
+  });
+
   describe.each(['AGENT_ENROLL_RATE_LIMIT', 'AGENT_ENROLL_RATE_WINDOW_SECONDS'])('%s (#7472)', (name) => {
     it('is valid when unset, blank, or a positive integer', () => {
       withEnv(validEnv, () => { expect(() => validateConfig()).not.toThrow(); });
