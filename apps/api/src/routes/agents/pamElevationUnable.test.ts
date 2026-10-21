@@ -7,8 +7,6 @@ const mocks = vi.hoisted(() => ({
   writeAuditEvent: vi.fn(),
   publishEvent: vi.fn(),
   expireMobile: vi.fn(),
-  afterExit: [] as Array<{ label: string; work: () => unknown }>,
-  afterCommit: [] as Array<{ label: string; work: () => unknown }>,
 }));
 
 vi.mock('../../services/pamDeviceUnable', async () => ({
@@ -22,12 +20,6 @@ vi.mock('../../services/eventBus', () => ({ publishEvent: mocks.publishEvent }))
 vi.mock('../../services/pamMobileApprovals', () => ({ expireSupersededMobileApprovals: mocks.expireMobile }));
 vi.mock('../../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  runAfterDbContextExit: vi.fn((label: string, work: () => unknown) => {
-    mocks.afterExit.push({ label, work });
-  }),
-  runAfterDbContextCommit: vi.fn((label: string, work: () => unknown) => {
-    mocks.afterCommit.push({ label, work });
-  }),
 }));
 
 import { withDbAccessContext } from '../../db';
@@ -80,8 +72,6 @@ const recordedClosed = {
 describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mocks.afterExit.length = 0;
-    mocks.afterCommit.length = 0;
     vi.mocked(withDbAccessContext).mockImplementation(async (_ctx: any, fn: any) => fn());
     mocks.rateLimiter.mockResolvedValue({ allowed: true, remaining: 119, resetAt: new Date('2027-01-02T12:01:00Z') });
     mocks.record.mockResolvedValue(recordedClosed);
@@ -110,16 +100,7 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
       details: { flow_type: 'uac_intercept', reason: 'session_unavailable', prior_status: 'pending', closed: true },
     }));
 
-    // Sibling phone approvals expire after the context exits (#7526 order).
-    expect(mocks.expireMobile).not.toHaveBeenCalled();
-    expect(mocks.afterExit).toHaveLength(1);
-    await mocks.afterExit[0]!.work();
     expect(mocks.expireMobile).toHaveBeenCalledWith(REQUEST);
-
-    // The close is announced only after commit.
-    expect(mocks.publishEvent).not.toHaveBeenCalled();
-    expect(mocks.afterCommit).toHaveLength(1);
-    await mocks.afterCommit[0]!.work();
     expect(mocks.publishEvent).toHaveBeenCalledWith('elevation.expired', ORG, {
       elevationRequestId: REQUEST,
       deviceId: DEVICE,
@@ -137,13 +118,19 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
       return { allowed: true, remaining: 1, resetAt: new Date() };
     });
     vi.mocked(withDbAccessContext).mockImplementation(async (_ctx: any, fn: any) => {
-      order.push('context');
-      return fn();
+      order.push('context:open');
+      const out = await fn();
+      order.push('context:committed');
+      return out;
     });
+    mocks.expireMobile.mockImplementation(async () => { order.push('expireMobile'); return 1; });
+    mocks.publishEvent.mockImplementation(async () => { order.push('publish'); });
 
     await post(buildApp(), validBody);
 
-    expect(order).toEqual(['rateLimit', 'context']);
+    // Phone approvals and the event come only after the elevation committed
+    // (#7526: elevation first, then approval rows).
+    expect(order).toEqual(['rateLimit', 'context:open', 'context:committed', 'expireMobile', 'publish']);
     expect(mocks.rateLimiter).toHaveBeenCalledWith(expect.anything(), `pam:elevation-unable:rate:device:${DEVICE}`, 120, 60);
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
       {
@@ -164,8 +151,11 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ status: 'recorded', elevationStatus: 'auto_approved' });
-    expect(mocks.afterExit).toHaveLength(0);
-    expect(mocks.afterCommit).toHaveLength(0);
+    // An auto-approved request was never waiting on a technician, but its
+    // status is not pending, so the (idempotent) withdrawal still runs; it
+    // only touches approval rows still marked pending.
+    expect(mocks.expireMobile).toHaveBeenCalledWith(REQUEST);
+    expect(mocks.publishEvent).not.toHaveBeenCalled();
     expect(mocks.writeAuditEvent).toHaveBeenCalledOnce();
   });
 
@@ -174,20 +164,38 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
 
     await post(buildApp(), validBody);
 
-    expect(mocks.afterExit).toHaveLength(0);
-    expect(mocks.afterCommit).toHaveLength(1);
+    expect(mocks.expireMobile).not.toHaveBeenCalled();
+    expect(mocks.publishEvent).toHaveBeenCalledOnce();
   });
 
-  it('a repeated report is a 200 that changes nothing', async () => {
-    mocks.record.mockResolvedValue({ kind: 'already_reported', status: 'expired' });
+  it('a repeated report writes nothing new but retries the phone-approval withdrawal', async () => {
+    mocks.record.mockResolvedValue({ kind: 'already_reported', id: REQUEST, orgId: ORG, flowType: 'uac_intercept', status: 'expired' });
 
     const res = await post(buildApp(), validBody);
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ status: 'already_reported', elevationStatus: 'expired' });
     expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
-    expect(mocks.afterExit).toHaveLength(0);
-    expect(mocks.afterCommit).toHaveLength(0);
+    expect(mocks.publishEvent).not.toHaveBeenCalled();
+    expect(mocks.expireMobile).toHaveBeenCalledWith(REQUEST);
+  });
+
+  it('503s (retryable for the agent) when the phone-approval withdrawal fails, and the retry heals it', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.expireMobile.mockRejectedValueOnce(new Error('pool exhausted'));
+
+    const first = await post(buildApp(), validBody);
+    expect(first.status).toBe(503);
+    expect(mocks.publishEvent).not.toHaveBeenCalled();
+
+    // The elevation write committed, so the agent's retry is already_reported
+    // and runs the withdrawal again.
+    mocks.record.mockResolvedValue({ kind: 'already_reported', id: REQUEST, orgId: ORG, flowType: 'uac_intercept', status: 'expired' });
+    mocks.expireMobile.mockResolvedValueOnce(2);
+    const retry = await post(buildApp(), validBody);
+    expect(retry.status).toBe(200);
+    expect(mocks.expireMobile).toHaveBeenCalledTimes(2);
+    errSpy.mockRestore();
   });
 
   it('404s a request the device does not own or cannot see', async () => {
@@ -246,13 +254,12 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
     expect(mocks.record).not.toHaveBeenCalled();
   });
 
-  it('a failed event publish does not throw out of the commit hook', async () => {
+  it('a failed event publish still answers 200: the row is the record', async () => {
     mocks.publishEvent.mockRejectedValue(new Error('redis down'));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const res = await post(buildApp(), validBody);
     expect(res.status).toBe(200);
-    await expect(mocks.afterCommit[0]!.work()).resolves.toBeUndefined();
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
   });

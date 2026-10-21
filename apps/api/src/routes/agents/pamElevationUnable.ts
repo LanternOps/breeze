@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 
-import { runAfterDbContextCommit, runAfterDbContextExit, withDbAccessContext } from '../../db';
+import { withDbAccessContext } from '../../db';
 import { zValidator } from '../../lib/validation';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
@@ -82,7 +82,8 @@ pamElevationUnableRoutes.post(
     // (middleware/agentAuth.ts), so no request-long transaction is open: the
     // Redis round-trip above held no pooled connection, and this handler opens
     // its own org-scoped context — the same one pamReconciliation.ts uses.
-    return withDbAccessContext(
+    // When the callback returns, that transaction has committed.
+    const result = await withDbAccessContext(
       {
         scope: 'organization' as const,
         orgId: agent.orgId,
@@ -90,70 +91,75 @@ pamElevationUnableRoutes.post(
         accessiblePartnerIds: [],
         currentPartnerId: agent.partnerId ?? null,
       },
-      async () => {
-        const result = await recordElevationDeviceUnable({
-          deviceId: agent.deviceId,
-          elevationRequestId: body.elevationRequestId,
-          reason: body.reason,
-          detail: body.detail,
-        });
-
-        if (result.kind === 'not_found') {
-          return c.json({ error: 'Elevation request not found' }, 404);
-        }
-        if (result.kind === 'already_reported') {
-          return c.json({ status: 'already_reported', elevationStatus: result.status }, 200);
-        }
-
-        writeAuditEvent(c, {
-          orgId: result.orgId,
-          actorType: 'agent',
-          actorId: agent.agentId,
-          action: 'agent.elevation_request.device_unable',
-          resourceType: 'elevation_request',
-          resourceId: result.id,
-          details: {
-            flow_type: result.flowType,
-            reason: body.reason,
-            prior_status: result.priorStatus,
-            closed: result.closed,
-          },
-        });
-
-        if (result.closed) {
-          // A closed request may have fanned out to approvers' phones (only
-          // uac_intercept does). approval_requests is Shape-6, so the expiry
-          // runs in system scope after this context exits (#7526 ordering:
-          // elevation first, then approval rows). It only touches rows whose
-          // elevation is no longer pending, so a rollback makes it a no-op.
-          if (result.flowType === 'uac_intercept') {
-            const elevationId = result.id;
-            runAfterDbContextExit(`pam: expire mobile approvals for device-unable elevation ${elevationId}`, () =>
-              expireSupersededMobileApprovals(elevationId),
-            );
-          }
-          // Announce the close only once it has committed. Same event the
-          // stale-request expirer publishes, with its own cause.
-          const payload = {
-            elevationRequestId: result.id,
-            deviceId: result.deviceId,
-            flowType: result.flowType,
-            status: 'expired',
-            cause: 'device_unable',
-            reason: body.reason,
-          };
-          const orgId = result.orgId;
-          runAfterDbContextCommit(`pam: publish device-unable expiry ${result.id}`, async () => {
-            try {
-              await publishEvent('elevation.expired', orgId, payload, 'pam-device-unable');
-            } catch (err) {
-              console.error(`[PamElevationUnable] event publish failed for ${payload.elevationRequestId}:`, err);
-            }
-          });
-        }
-
-        return c.json({ status: 'recorded', elevationStatus: result.status }, 200);
-      },
+      () => recordElevationDeviceUnable({
+        deviceId: agent.deviceId,
+        elevationRequestId: body.elevationRequestId,
+        reason: body.reason,
+        detail: body.detail,
+      }),
     );
+
+    if (result.kind === 'not_found') {
+      return c.json({ error: 'Elevation request not found' }, 404);
+    }
+
+    if (result.kind === 'recorded') {
+      writeAuditEvent(c, {
+        orgId: result.orgId,
+        actorType: 'agent',
+        actorId: agent.agentId,
+        action: 'agent.elevation_request.device_unable',
+        resourceType: 'elevation_request',
+        resourceId: result.id,
+        details: {
+          flow_type: result.flowType,
+          reason: body.reason,
+          prior_status: result.priorStatus,
+          closed: result.closed,
+        },
+      });
+    }
+
+    // Withdraw the request's phone approvals (only uac_intercept fans out).
+    // Outside the committed context and in system scope: approval_requests is
+    // Shape-6, and #7526 orders elevation first, then approval rows. This runs
+    // on a repeated report too, so a failure here heals on the agent's retry:
+    // a 503 is retryable for the agent, and the retry lands in
+    // 'already_reported'. expireSupersededMobileApprovals only touches rows
+    // whose elevation is no longer pending, so it is a no-op for a request the
+    // report did not close. Even if it never runs, a phone cannot approve a
+    // closed request: decideApprovalRequest locks the elevation, sees it is
+    // not pending, and expires that approval row instead.
+    if (result.flowType === 'uac_intercept' && result.status !== 'pending') {
+      try {
+        await expireSupersededMobileApprovals(result.id);
+      } catch (err) {
+        console.error(`[PamElevationUnable] mobile approval expiry failed for ${result.id}:`, err);
+        return c.json({ error: 'Mobile approval withdrawal failed; retry' }, 503);
+      }
+    }
+
+    if (result.kind === 'already_reported') {
+      return c.json({ status: 'already_reported', elevationStatus: result.status }, 200);
+    }
+
+    if (result.closed) {
+      // Committed: announce the close. Same event the stale-request expirer
+      // publishes, with its own cause. Best-effort; the row is the record.
+      try {
+        await publishEvent('elevation.expired', result.orgId, {
+          elevationRequestId: result.id,
+          deviceId: result.deviceId,
+          flowType: result.flowType,
+          status: 'expired',
+          cause: 'device_unable',
+          reason: body.reason,
+        }, 'pam-device-unable');
+      } catch (err) {
+        console.error(`[PamElevationUnable] event publish failed for ${result.id}:`, err);
+      }
+    }
+
+    return c.json({ status: 'recorded', elevationStatus: result.status }, 200);
   },
 );

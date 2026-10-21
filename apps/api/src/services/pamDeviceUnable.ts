@@ -54,7 +54,7 @@ export const PAM_DEVICE_UNABLE_DETAIL_MAX = 1000;
 
 export type RecordDeviceUnableResult =
   | { kind: 'not_found' }
-  | { kind: 'already_reported'; status: string }
+  | { kind: 'already_reported'; id: string; orgId: string; flowType: string; status: string }
   | {
       kind: 'recorded';
       id: string;
@@ -109,7 +109,9 @@ export async function recordElevationDeviceUnable(args: {
       .for('no key update');
 
     if (!row) return { kind: 'not_found' as const };
-    if (row.deviceUnableAt) return { kind: 'already_reported' as const, status: row.status };
+    if (row.deviceUnableAt) {
+      return { kind: 'already_reported' as const, id: row.id, orgId: row.orgId, flowType: row.flowType, status: row.status };
+    }
 
     const now = new Date();
     const close = row.status === 'pending';
@@ -135,7 +137,7 @@ export async function recordElevationDeviceUnable(args: {
     if (updated.length === 0) {
       // Unreachable under the row lock above; report what is there rather
       // than claiming a write that did not happen.
-      return { kind: 'already_reported' as const, status: row.status };
+      return { kind: 'already_reported' as const, id: row.id, orgId: row.orgId, flowType: row.flowType, status: row.status };
     }
 
     const auditRows: (typeof elevationAudit.$inferInsert)[] = [

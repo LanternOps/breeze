@@ -206,7 +206,8 @@ type HeartbeatPoster interface {
 // decision. It is the single edge from etwlua into the session broker +
 // actuator, kept behind an interface so etwlua stays unit-testable without
 // a live broker or Windows. A nil PamRunner disables the flow (detection +
-// post only) — used on non-Windows builds and when the broker is absent.
+// post only) — used on non-Windows builds. On Windows the heartbeat is always
+// the runner; with no session broker it reports the request unable (#9517).
 //
 // Implementations must be non-blocking-forever: bound the dialog round-trip
 // to consent.exe's lifetime. RunPamFlow is called synchronously from the

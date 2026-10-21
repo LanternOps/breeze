@@ -40,13 +40,13 @@ func startETWLua(ctx context.Context, hb *heartbeat.Heartbeat) <-chan struct{} {
 		close(done)
 		return done
 	}
-	// The local PAM elevation flow (dialog → actuate) needs the user-helper
-	// session broker. When it's absent (e.g. an interactive agent with no
-	// user-helper), pass a nil PamRunner so etwlua stays detection-only.
-	var pam etwlua.PamRunner
-	if hb.SessionBroker() != nil {
-		pam = hb
-	}
+	// The heartbeat always runs the PAM flow, even when the user-helper session
+	// broker is absent (e.g. an interactive agent with no user-helper): the
+	// request is already posted by then, and with no broker the device cannot
+	// act on it, so RunPamFlow reports it unable and the server closes it
+	// instead of leaving it approvable (#9517). Before #9517 a nil runner here
+	// kept etwlua detection-only and the request sat pending until expiry.
+	var pam etwlua.PamRunner = hb
 	go func() {
 		defer close(done)
 		if err := etwlua.Start(ctx, sub, hb, pam); err != nil {

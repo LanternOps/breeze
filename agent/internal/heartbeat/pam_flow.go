@@ -87,9 +87,10 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		sessionTarget = "requester_session"
 	}
 
-	// Defensive: the PamRunner contract (see etwlua.PamRunner) says the caller
-	// passes a nil runner when the broker is absent. Guard anyway so a wiring
-	// slip can't panic the ETW hot path — every supported flow needs a helper.
+	// No session broker (e.g. an interactive agent with no user-helper): every
+	// supported flow needs a helper, so the device cannot act on this request.
+	// etwlua_start_windows.go passes the heartbeat as the runner even then so
+	// this report reaches the server (#9517).
 	if h.pamFindSession == nil && h.sessionBroker == nil {
 		log.Warn("pam: no session broker available; skipping elevation flow",
 			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
