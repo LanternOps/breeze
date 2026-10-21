@@ -149,13 +149,9 @@ export interface InvoiceLineDevice {
 }
 
 // A line's title falls back to its description for legacy lines created before
-// the name/description split; the blurb only renders when a distinct name exists.
+// the name/description split.
 export function lineTitle(l: { name: string | null; description: string | null }): string {
   return (l.name ?? l.description ?? '').trim();
-}
-export function lineBlurb(l: { name: string | null; description: string | null }): string | null {
-  const b = l.name ? (l.description ?? '').trim() : '';
-  return b || null;
 }
 
 /** #6467 — one line naming the worked time whenever it differs from the

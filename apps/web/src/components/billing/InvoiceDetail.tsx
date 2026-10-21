@@ -21,9 +21,6 @@ import {
   formatDate,
   formatMoney,
   lineTaxAmount,
-  lineTitle,
-  lineBlurb,
-  lineWorkedVsBilledNote,
   pctFromFraction,
   sellerLines,
   computeInvoiceProfit,
@@ -35,6 +32,8 @@ import AccountingSyncCard from './AccountingSyncCard';
 import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
 import InvoiceLineDevices from './InvoiceLineDevices';
+import { DocumentLineDescription } from '@breeze/document-ui';
+import { lineDescriptionProps } from '@breeze/shared/documents';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { localDateInputValue } from '@/lib/localDate';
 import {
@@ -513,7 +512,9 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             rowClassName={(l) => (l.parentLineId ? 'bg-muted/20 text-xs text-muted-foreground' : '')}
             descriptionCellClassName={(l) => (l.parentLineId ? 'pl-8' : '')}
             renderDescription={(l) => {
-              const workedVsBilledNote = lineWorkedVsBilledNote(l, t);
+              const desc = lineDescriptionProps(l, {
+                workedVsBilled: (worked, billed) => t('tickets:ticketTimeBilling.billedVsWorked', { worked, billed }),
+              });
               return (
                 <>
                   {/* sweep F9: Preview/PDF/portal already show the frozen
@@ -530,16 +531,16 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       </span>
                     </div>
                   )}
-                  <span className={l.parentLineId ? '' : 'font-medium text-foreground'}>
-                    {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(l)}
-                  </span>
-                  {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
-                  {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
-                  {workedVsBilledNote && (
-                    <div className="text-xs text-muted-foreground" data-testid={`invoice-detail-line-worked-vs-billed-${l.id}`}>
-                      {workedVsBilledNote}
-                    </div>
-                  )}
+                  {/* The shared description cell (#9414 W5). The host owns the child arrow
+                      and the hidden marker, so they ride on the title string; the wrapper
+                      gives the title its weight and the muted rows go back to normal. */}
+                  <div className={l.parentLineId ? '' : 'font-medium text-foreground [&>*]:font-normal'}>
+                    <DocumentLineDescription
+                      {...desc}
+                      title={`${l.parentLineId ? '↳ ' : ''}${desc.title}${internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}`}
+                      rowKey={l.id}
+                    />
+                  </div>
                   <InvoiceLineDevices invoiceId={invoice.id} line={l} />
                 </>
               );

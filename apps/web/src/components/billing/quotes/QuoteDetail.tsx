@@ -28,14 +28,14 @@ import {
   formatQuantity,
   resolveQuoteOrgName,
   lineTaxAmount,
-  lineTitle,
-  lineBlurb,
   pctFromFraction,
   sellerLines,
 } from './quoteTypes';
 import { StatusPill } from '../shared/StatusPill';
 import { LineItemsTable, type LineItemColumn } from '../shared/LineItemsTable';
 import { EntityLink } from '@/components/shared/EntityLink';
+import { DocumentLineDescription } from '@breeze/document-ui';
+import { lineDescriptionProps } from '@breeze/shared/documents';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -665,10 +665,13 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
       descriptionHeader={t('quotes.detail.table.item')}
       emptyMessage={t('quotes.detail.table.noLines')}
       renderDescription={(l) => (
-        <>
-          <div className="font-medium text-foreground">{lineTitle(l)}</div>
-          {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
-        </>
+        // Shared description cell (#9414 W5): the title keeps its weight, the rest goes back to normal.
+        <div className="font-medium text-foreground [&>*]:font-normal">
+          <DocumentLineDescription
+            {...lineDescriptionProps(l, { workedVsBilled: () => '' })}
+            rowKey={l.id}
+          />
+        </div>
       )}
       columns={columns}
     />

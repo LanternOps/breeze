@@ -164,7 +164,7 @@ describe('InvoiceDetail', () => {
     };
     render(<InvoiceDetail detail={withNote} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
-    expect(screen.getByTestId('invoice-detail-line-worked-vs-billed-l3')).toHaveTextContent('0.50 h worked · 1.00 h billed');
+    expect(screen.getByTestId('document-line-worked-vs-billed-l3')).toHaveTextContent('0.50 h worked · 1.00 h billed');
   });
 
   it('shows no worked-vs-billed note when worked minutes equal the billed quantity', async () => {
@@ -179,7 +179,7 @@ describe('InvoiceDetail', () => {
     };
     render(<InvoiceDetail detail={noNote} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
-    expect(screen.queryByTestId('invoice-detail-line-worked-vs-billed-l4')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('document-line-worked-vs-billed-l4')).not.toBeInTheDocument();
   });
 
   it('renders the internal margin summary (billed-only, one-time, excludes tax)', async () => {
