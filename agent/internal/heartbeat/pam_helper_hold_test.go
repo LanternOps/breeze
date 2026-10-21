@@ -234,7 +234,8 @@ func TestRunPamFlowStopsWhenOnDemandSpawnFails(t *testing.T) {
 		"session ended while waiting": {&fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
 			key: {Status: sessionbroker.HelperWaitSessionGone},
 		}}, pamUnableSessionUnavailable},
-		"lease refused": {&fakeLifecycle{mode: "on-demand", acquireErr: sessionbroker.ErrLeaseSessionNotFound}, pamUnableHelperUnavailable},
+		// A lease refusal can come from a transient re-enumeration: not reported.
+		"lease refused": {&fakeLifecycle{mode: "on-demand", acquireErr: sessionbroker.ErrLeaseSessionNotFound}, ""},
 	}
 	for name, tc := range cases {
 		lc := tc.lc
@@ -255,7 +256,11 @@ func TestRunPamFlowStopsWhenOnDemandSpawnFails(t *testing.T) {
 			if len(released) != len(acquired) {
 				t.Fatalf("lease leaked: acquired=%v released=%v", acquired, released)
 			}
-			f.expectUnableReport(t, "req-3", tc.reason)
+			if tc.reason == "" {
+				f.expectNoUnableReport(t)
+			} else {
+				f.expectUnableReport(t, "req-3", tc.reason)
+			}
 		})
 	}
 }
@@ -353,8 +358,9 @@ func TestRunPamFlowOnDemandSpawnFailsFastWhenSessionCannotHostHelper(t *testing.
 		reported bool
 	}{
 		"session cannot host": {&fakeLifecycle{mode: "on-demand", unavailable: map[sessionbroker.HelperKey]bool{key: true}}, true},
-		// Enumeration succeeded and the session is gone: definite.
-		"session not found": {&fakeLifecycle{mode: "on-demand", availableErr: sessionbroker.ErrLeaseSessionNotFound}, true},
+		// Absent from the snapshot: the detector can skip unreadable rows or
+		// truncate, so absence is not proof. Not reported.
+		"session not found": {&fakeLifecycle{mode: "on-demand", availableErr: sessionbroker.ErrLeaseSessionNotFound}, false},
 		// The check itself failed: not known to be permanent.
 		"availability check fails": {&fakeLifecycle{mode: "on-demand", availableErr: errors.New("WTSEnumerateSessions failed")}, false},
 	}

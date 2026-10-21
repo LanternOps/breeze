@@ -2,7 +2,6 @@ package heartbeat
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -88,17 +87,15 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	// waiting out pamHelperSpawnWait would stall every queued elevation.
 	key := sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleSystem}
 	available, err := lc.HelperRoleAvailable(key)
-	if errors.Is(err, sessionbroker.ErrLeaseSessionNotFound) {
-		// A fresh WTS enumeration (or the absence of a session detector) says
-		// the session does not exist: definite, so report it.
-		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableSessionUnavailable,
-			fmt.Sprintf("session %d not found: %v", winID, err))
-	}
 	if err != nil {
-		// The check itself failed (e.g. a transient WTS enumeration error), so
-		// whether the session can host a helper is unknown: stop this flow but
-		// do not report the request unable, which would close it for good.
-		log.Error("pam: could not check whether the requester session can host a SYSTEM helper; elevation flow stopped, request left pending",
+		// Not proof the session cannot host a helper: the check failed
+		// (transient WTS enumeration error), or the session was not in the
+		// snapshot, which the detector can also produce by skipping a row it
+		// could not read or truncating a very long list (ListSessions, not
+		// ListSessionsComplete). Stop this flow but do not report the request
+		// unable, which would close it for good; the server's stale-request
+		// expiry still closes it if nothing else happens (#9517).
+		log.Error("pam: could not confirm the requester session can host a SYSTEM helper; elevation flow stopped, request left pending",
 			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID, "error", err.Error())
 		return nil, release, nil
 	}
@@ -109,7 +106,12 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 
 	opID := "pam-" + requestID
 	if err := lc.AcquireLease(winID, ipc.HelperRoleSystem, opID, pamHelperLeaseTTL); err != nil {
-		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableHelperUnavailable, "helper lease refused: "+err.Error())
+		// AcquireLease re-enumerates sessions and returns those errors
+		// unchanged, so a refusal here is not known to be permanent either:
+		// stop the flow, leave the request pending.
+		log.Error("pam: helper lease refused; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID, "error", err.Error())
+		return nil, release, nil
 	}
 	release = func() { lc.ReleaseLease(winID, ipc.HelperRoleSystem, opID) }
 
