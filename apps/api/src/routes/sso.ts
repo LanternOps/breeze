@@ -3945,6 +3945,7 @@ ssoRoutes.get('/callback', async (c) => {
     if (provider.partnerId) {
       auditLogin(c, {
         orgId: null,
+        partnerId: provider.partnerId,
         userId: finalized.user.id,
         email: finalized.user.email,
         name: finalized.user.name,

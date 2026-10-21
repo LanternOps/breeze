@@ -662,6 +662,7 @@ export async function finalizeSsoPendingLink(
   if (provider.partnerId) {
     auditLogin(c, {
       orgId: null,
+      partnerId: provider.partnerId,
       userId: user.id,
       email: user.email,
       name: user.name,
