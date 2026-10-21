@@ -33,6 +33,8 @@ cp .env.example .env
 #   JWT_SECRET: openssl rand -base64 64
 #   AGENT_ENROLLMENT_SECRET: openssl rand -hex 32
 #   APP_ENCRYPTION_KEY: openssl rand -hex 32
+# THEN change the three values in "Local .env values" below:
+# .env.example is the production template.
 
 # Start infrastructure (Postgres and Redis)
 # The base compose file requires digest-pinned BREEZE_*_IMAGE_REF values and
@@ -60,6 +62,24 @@ docker compose ls -a   # shows any stack still running, from any checkout
 - **Frontend**: http://localhost:4321
 - **API**: http://localhost:3001
 - **Default login**: `admin@breeze.local` / `BreezeAdmin123!` (change after first login)
+
+### Local `.env` values
+
+`.env.example` is the template for a production install, so a few of its defaults are wrong for
+local development. After copying it, change these three:
+
+| Variable | `.env.example` | Local dev | Why |
+|---|---|---|---|
+| `NODE_ENV` | `production` | `development` | In production mode `pnpm db:migrate` refuses to create the default `admin@breeze.local` account and fails with *Production bootstrap requires BREEZE_BOOTSTRAP_ADMIN_EMAIL and BREEZE_BOOTSTRAP_ADMIN_PASSWORD*. |
+| `FORCE_HTTPS` | `true` | `false` | With it on, the API refuses to start unless `PUBLIC_API_URL` is an `https://` URL; local dev is plain HTTP. |
+| `REDIS_URL` | `redis://:${REDIS_PASSWORD}@localhost:6379` | `redis://:<your REDIS_PASSWORD>@localhost:6379` | Docker Compose expands `${REDIS_PASSWORD}`, but the API reads `.env` with dotenv, which does not, so Redis rejects the login (`WRONGPASS`). Write the password into the URL, percent-encoding any `@`, `:`, `/`, `#` or `?` in it (a password from `openssl rand -hex 32` needs none). |
+
+Two more look like they need changing but do not:
+
+- `PUBLIC_API_URL`: leave it empty. The web dev server proxies `/api` to the API on port 3001, so
+  the browser calls its own origin and needs no CORS setup.
+- `BREEZE_*_IMAGE_REF`: the placeholders are fine, because the `docker-compose.override.yml.dev`
+  layer above replaces those images with local dev builds.
 
 ### Agent Development
 
