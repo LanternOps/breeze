@@ -888,9 +888,14 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           .where(and(eq(devices.id, existingDevice.id), eq(devices.agentId, existingDevice.agentId)))
           .returning();
         if (!dev) {
+          const message = 'The device row changed during re-enrollment; retry the enrollment';
+          // `code` rides on the exception for the app's onError (index.ts),
+          // which builds the JSON body itself; `res` is the body for a Hono
+          // app that uses the default HTTPException rendering.
           throw Object.assign(
             new HTTPException(409, {
-              message: 'The device row changed during re-enrollment; retry the enrollment',
+              message,
+              res: c.json({ error: message, code: 'reenrollment_conflict' }, 409),
             }),
             { code: 'reenrollment_conflict' },
           );

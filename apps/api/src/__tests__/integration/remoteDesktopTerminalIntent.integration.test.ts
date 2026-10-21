@@ -294,7 +294,7 @@ const fakeWs = { send: () => {}, close: () => {} } as unknown as Parameters<
 async function agentResult(fx: Fixture, message: Record<string, unknown>): Promise<void> {
   const handlers = createAgentWsHandlers(fx.agentId, {
     agentId: fx.agentId,
-    siteId: 'site-test',
+    siteId: fx.env.site.id,
     installIncarnation: 1,
     deviceId: fx.deviceId,
     orgId: fx.env.organization.id,

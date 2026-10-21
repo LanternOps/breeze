@@ -63,7 +63,18 @@ async function sendDeskStartResult(
   status: 'completed' | 'failed' = 'completed',
   generation = START_GENERATION,
 ): Promise<void> {
-  const handlers = createAgentWsHandlers(agentId, { agentId: agentId, siteId: 'site-test', installIncarnation: 1, deviceId, orgId, partnerId, credentialTokenHash: CREDENTIAL_HASH });
+  // #8318 §6.4: the socket caches the device's real site; the lease re-check
+  // denies a socket whose cached identity differs from the row.
+  const [deviceRow] = await getTestDb().select({ siteId: devices.siteId }).from(devices).where(eq(devices.id, deviceId));
+  const handlers = createAgentWsHandlers(agentId, {
+    agentId,
+    siteId: deviceRow!.siteId,
+    installIncarnation: 1,
+    deviceId,
+    orgId,
+    partnerId,
+    credentialTokenHash: CREDENTIAL_HASH,
+  });
   const event = {
     data: JSON.stringify({
       type: 'command_result',
@@ -521,7 +532,7 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
     const handlers = createAgentWsHandlers(dev.agentId, {
       agentId: dev.agentId,
-      siteId: 'site-test',
+      siteId: env.site.id,
       installIncarnation: 1,
       deviceId: dev.id,
       orgId: env.organization.id,

@@ -196,7 +196,7 @@ async function postHttpResult(t: Tenant, commandId: string, body: Record<string,
 async function sendWsResult(t: Tenant, commandId: string, body: Record<string, unknown>): Promise<void> {
   const handlers = createAgentWsHandlers(t.device.agentId, {
     agentId: t.device.agentId,
-    siteId: 'site-test',
+    siteId: t.siteId,
     installIncarnation: 1,
     deviceId: t.device.id, orgId: t.orgId, partnerId: t.partnerId,
   });

@@ -13,6 +13,7 @@ import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 import {
   commandIncarnationAcceptedForCallerCondition,
   commandIncarnationIsCurrentCondition,
+  commandStampMatchesCaller,
   commandStampMatchesCallerCondition,
   type CommandCallerIncarnation,
 } from './commandIncarnation';
@@ -430,8 +431,6 @@ export async function claimPendingCommandsForDevice(
               eq(deviceCommands.status, 'pending'),
               eq(deviceCommands.targetRole, targetRole),
               notInArray(deviceCommands.type, [...typeAllowlist]),
-              // #8318 §6.4: a stale caller touches no row of a later incarnation.
-              commandStampMatchesCallerCondition(caller),
             ),
           )
           .orderBy(deviceCommands.createdAt)
@@ -454,13 +453,6 @@ export async function claimPendingCommandsForDevice(
           eq(deviceCommands.targetRole, targetRole),
           // #5128: a row past its delivery deadline is the reaper's, not ours.
           or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, now)),
-          // #8318 §6.4: only rows stamped for the incarnation this caller
-          // authenticated under. A row of a LATER incarnation is not this
-          // caller's to claim (and not to cancel either): it stays pending for
-          // the install it was enqueued for. A row of an EARLIER one is seen
-          // by a caller of that incarnation and terminalised by the
-          // current-incarnation check in partitionClaimable.
-          commandStampMatchesCallerCondition(caller),
           ...(typeAllowlist ? [inArray(deviceCommands.type, [...typeAllowlist])] : []),
           ...(unsupportedProtocolTypes.length > 0
             ? [notInArray(deviceCommands.type, unsupportedProtocolTypes)]
@@ -507,11 +499,24 @@ export async function claimPendingCommandsForDevice(
         )
         .limit(1);
 
+      // Every pending row goes through eligibility, so a row stamped for an
+      // EARLIER incarnation is terminalised (superseded_by_reattach) by
+      // whichever install's beat finds it — a device fact, not a caller fact.
       const { claimable } = await partitionClaimable(tx, dev, pendingCommands, {
         inFlight: inFlightRow?.inFlight ?? 0,
       });
       const claimableIds = new Set(claimable.map((c) => c.id));
-      deliverable = pendingCommands.filter((c) => claimableIds.has(c.id));
+      // #8318 §6.4: delivery is a CALLER fact. A row stamped for an
+      // incarnation other than the one this caller authenticated under is
+      // not this caller's to take: a caller that authenticated under `n`
+      // after a confirm moved the device to `n+1` leaves the `n+1` rows
+      // pending for the install they were enqueued for. (After the step
+      // above, a surviving row's stamp is the device's current incarnation,
+      // so a mismatch here means the CALLER is stale.) The flip below
+      // re-checks both halves in SQL.
+      deliverable = pendingCommands.filter(
+        (c) => claimableIds.has(c.id) && commandStampMatchesCaller(c.deviceIncarnation, caller.installIncarnation),
+      );
       if (deliverable.length === 0) return [];
     }
 

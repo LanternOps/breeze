@@ -129,7 +129,7 @@ async function seedInFlightRun(fx: Fixture): Promise<{ commandId: string; execut
 async function sendWsResult(fx: Fixture, commandId: string, body: Record<string, unknown>): Promise<void> {
   const handlers = createAgentWsHandlers(fx.agentId, {
     agentId: fx.agentId,
-    siteId: 'site-test',
+    siteId: fx.siteId,
     installIncarnation: 1,
     deviceId: fx.deviceId,
     orgId: fx.orgId,

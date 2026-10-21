@@ -392,7 +392,7 @@ describe('result acceptance refuses an earlier incarnation (#8318 §4.2, §5.2)'
   async function sendWsResult(fx: Fixture, commandId: string) {
     const handlers = createAgentWsHandlers(fx.agentId, {
       agentId: fx.agentId,
-      siteId: 'site-test',
+      siteId: fx.siteId,
       installIncarnation: 1,
       deviceId: fx.deviceId,
       orgId: fx.orgId,
