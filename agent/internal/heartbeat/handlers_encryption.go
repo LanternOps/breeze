@@ -10,6 +10,18 @@ import (
 	"github.com/breeze-rmm/agent/internal/security"
 )
 
+// collectRecoveryKeys is a seam for tests; production reads BitLocker
+// recovery protectors (one PowerShell spawn on Windows).
+var collectRecoveryKeys = security.CollectRecoveryKeys
+
+// recoveryKeyCollectInterval bounds how often the 5-minute security tick
+// re-reads BitLocker recovery protectors (#9267). Protectors change only when
+// BitLocker is enabled or a key is rotated; rotation through Breeze resets
+// the interval and escrows the new key directly, and the explicit collect
+// command bypasses it. Key material is never cached between reads — only the
+// time of the last read and the fingerprint of what was escrowed.
+const recoveryKeyCollectInterval = 30 * time.Minute
+
 func init() {
 	handlerRegistry[tools.CmdEncryptionCollectKeys] = handleEncryptionCollectKeys
 	handlerRegistry[tools.CmdEncryptionRotateKey] = handleEncryptionRotateKey
@@ -19,7 +31,7 @@ func init() {
 // full snapshot immediately. Results carry counts only — never key material.
 func handleEncryptionCollectKeys(h *Heartbeat, _ Command) tools.CommandResult {
 	start := time.Now()
-	keys, err := security.CollectRecoveryKeys()
+	keys, err := collectRecoveryKeys()
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -28,6 +40,7 @@ func handleEncryptionCollectKeys(h *Heartbeat, _ Command) tools.CommandResult {
 	}
 	h.mu.Lock()
 	h.lastRecoveryKeysFP = security.FingerprintRecoveryKeys(keys)
+	h.lastRecoveryKeysCollect = time.Now()
 	h.mu.Unlock()
 	return tools.NewSuccessResult(map[string]any{"keysCollected": len(keys)}, time.Since(start).Milliseconds())
 }
@@ -54,6 +67,13 @@ func handleEncryptionRotateKey(h *Heartbeat, cmd Command) tools.CommandResult {
 	default:
 		return tools.NewErrorResult(fmt.Errorf("recovery key rotation is not supported on %s", runtime.GOOS), time.Since(start).Milliseconds())
 	}
+
+	// Rotation changed (or may have partly changed) the protector set: have the
+	// next security tick re-read and re-snapshot it instead of waiting out
+	// recoveryKeyCollectInterval.
+	h.mu.Lock()
+	h.lastRecoveryKeysCollect = time.Time{}
+	h.mu.Unlock()
 
 	if key.Key != "" {
 		if pushErr := h.pushRecoveryKeys("rotation", []security.RecoveryKey{key}); pushErr != nil {
