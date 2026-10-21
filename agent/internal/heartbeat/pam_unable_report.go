@@ -16,11 +16,11 @@ import (
 // (#9517). They match PAM_DEVICE_UNABLE_REASONS in
 // apps/api/src/services/pamDeviceUnable.ts; the server rejects any other value.
 const (
-	// No SYSTEM helper with the PAM scope is available and none could be
-	// leased (no lifecycle manager, lease refused, helper lacks the PAM scope).
+	// No SYSTEM helper with the PAM scope can be had: no session broker, no
+	// helper lifecycle manager, or the ready helper lacks the PAM scope.
 	pamUnableHelperUnavailable = "helper_unavailable"
-	// The requester's Windows session cannot host a helper: unresolved, not
-	// active or connected, or ended while waiting.
+	// The requester's Windows session cannot host a helper: unresolved, found
+	// but not active or connected, or ended while waiting for the helper.
 	pamUnableSessionUnavailable = "session_unavailable"
 	// A helper was requested but did not start: crash cooldown, retries
 	// exhausted, spawning unavailable, or not ready in time.
