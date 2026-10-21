@@ -16,6 +16,34 @@ const withLines = (d: CustomerInvoiceDocument, f: (l: CustomerInvoiceLineDto) =>
   ({ ...d, lines: d.lines.map(f) });
 const row = (m: InvoiceDocumentModel, key: string) => m.totals.rows.find((r) => r.key === key);
 
+describe('buildInvoiceDocumentModel — bill-to address, tax id and short terms (W3a)', () => {
+  const withHeader = (patch: Partial<CustomerInvoiceDocument['invoice']>): CustomerInvoiceDocument =>
+    ({ ...fx.issued, invoice: { ...fx.issued.invoice, ...patch } });
+
+  it('prints the address as lines (blanks dropped), the tax id and the short terms', () => {
+    const m = buildInvoiceDocumentModel(withHeader({
+      billToAddress: { line1: '1 Example Way', line2: ' ', city: 'Springfield', region: 'IL', postalCode: '62704', country: 'US' },
+      billToTaxId: '12-3456789',
+      terms: 'Net 30.',
+    }), EN);
+    expect(m.header.billTo).toEqual({
+      label: 'Bill to', name: 'Acme Dental',
+      addressLines: ['1 Example Way', 'Springfield, IL, 62704', 'US'], taxId: '12-3456789',
+    });
+    expect(m.terms.short).toBe('Net 30.');
+  });
+
+  it('absent address, tax id and terms stay empty', () => {
+    const m = buildInvoiceDocumentModel(withHeader({ billToAddress: null, billToTaxId: null, terms: null }), EN);
+    expect(m.header.billTo).toEqual({ label: 'Bill to', name: 'Acme Dental', addressLines: [], taxId: null });
+    expect(m.terms.short).toBeNull();
+  });
+
+  it('a blank terms string is no terms (the frozen "no footer" case)', () => {
+    expect(buildInvoiceDocumentModel(withHeader({ terms: '' }), EN).terms.short).toBeNull();
+  });
+});
+
 describe('buildInvoiceDocumentModel', () => {
   it('issued: header, dates, bill-to, status pill and seller', () => {
     const m = build('issued');

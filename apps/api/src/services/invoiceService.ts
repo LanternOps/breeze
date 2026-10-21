@@ -76,7 +76,7 @@ import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, isSupportedLocale, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 import { tApi } from '../i18n';
-import type { CustomerInvoiceHeaderDto, CustomerInvoiceLineCore, DocumentSellerSnapshot } from '@breeze/shared/documents';
+import type { CustomerInvoiceHeaderDto, CustomerInvoiceLineCore, DocumentBillToAddress, DocumentSellerSnapshot } from '@breeze/shared/documents';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -1068,6 +1068,9 @@ export function toCustomerInvoiceHeader(invoice: InvoiceRow): CustomerInvoiceHea
     balance: invoice.balance,
     depositDue: invoice.depositDue,
     billToName: invoice.billToName,
+    billToAddress: asDocumentBillToAddress(invoice.billToAddress),
+    billToTaxId: invoice.billToTaxId ?? null,
+    terms: invoice.terms ?? null,
     notes: invoice.notes,
     sellerSnapshot: asDocumentSellerSnapshot(invoice.sellerSnapshot),
     termsAndConditions: invoice.termsAndConditions,
@@ -1076,6 +1079,16 @@ export function toCustomerInvoiceHeader(invoice: InvoiceRow): CustomerInvoiceHea
 }
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+
+/** Narrow the untyped `bill_to_address` jsonb to the DTO address; same rebuild-from-known-keys rule as the seller. */
+export function asDocumentBillToAddress(value: unknown): DocumentBillToAddress | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const a = value as Record<string, unknown>;
+  return {
+    line1: str(a.line1), line2: str(a.line2), city: str(a.city),
+    region: str(a.region), postalCode: str(a.postalCode), country: str(a.country),
+  };
+}
 
 /** Narrow the untyped `seller_snapshot` jsonb to the customer DTO shape. Rebuilds
  *  the object from the known keys, so an unexpected key frozen into a legacy

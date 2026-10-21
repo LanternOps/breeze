@@ -44,4 +44,11 @@ export const DOCUMENT_LABELS_EN: DocumentLabels = Object.freeze({
   }),
   perMonth: Object.freeze({ text: '/mo', srText: 'per month' }),
   perYear: Object.freeze({ text: '/yr', srText: 'per year' }),
+  // ---- W3a: strings only the PDF prints ----
+  pdf: Object.freeze({
+    from: 'From',
+    taxId: (id: string) => `Tax ID: ${id}`,
+    payOnline: 'Pay online:',
+    category: (name: string) => `Category: ${name}`,
+  }),
 });

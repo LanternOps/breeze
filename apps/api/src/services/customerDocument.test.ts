@@ -231,9 +231,9 @@ describe('assembleCustomerInvoiceDocument', () => {
   it('the header is the customer keyset plus displayStatus; no internal field', async () => {
     const doc = await assembleCustomerInvoiceDocument(row(), 'staff');
     expect(Object.keys(doc.invoice).sort()).toEqual([
-      'amountPaid', 'balance', 'billToName', 'currencyCode', 'depositDue', 'displayStatus', 'dueDate', 'id',
-      'invoiceNumber', 'issueDate', 'lineGrouping', 'notes', 'sellerSnapshot', 'status', 'subtotal', 'taxRate',
-      'taxTotal', 'termsAndConditions', 'total',
+      'amountPaid', 'balance', 'billToAddress', 'billToName', 'billToTaxId', 'currencyCode', 'depositDue', 'displayStatus',
+      'dueDate', 'id', 'invoiceNumber', 'issueDate', 'lineGrouping', 'notes', 'sellerSnapshot', 'status', 'subtotal',
+      'taxRate', 'taxTotal', 'terms', 'termsAndConditions', 'total',
     ]);
     expect(Object.keys(doc).sort()).toEqual(['branding', 'documentLocale', 'invoice', 'lines']);
     expect(JSON.stringify(doc)).not.toContain('INTERNAL-ONLY');

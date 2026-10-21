@@ -502,7 +502,9 @@ describe('invoiceService guards', () => {
     expect(Object.keys(invoice).sort()).toEqual([
       'amountPaid',
       'balance',
+      'billToAddress',
       'billToName',
+      'billToTaxId',
       'currencyCode',
       'depositDue',
       'dueDate',
@@ -516,9 +518,14 @@ describe('invoiceService guards', () => {
       'subtotal',
       'taxRate',
       'taxTotal',
+      'terms',
       'termsAndConditions',
       'total',
     ].sort());
+    // W3a: the three PDF-parity fields the customer already receives in the emailed PDF.
+    expect(invoice.billToAddress).toEqual({ line1: 'internal-address-field', line2: null, city: null, region: null, postalCode: null, country: null });
+    expect(invoice.billToTaxId).toBe('internal-tax-id');
+    expect(invoice.terms).toBe('implementation-only legacy terms');
     expect(invoice).not.toHaveProperty('createdBy');
     expect(invoice).not.toHaveProperty('replacesInvoiceId');
     expect(invoice).not.toHaveProperty('replacedByInvoiceId');

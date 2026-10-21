@@ -10,7 +10,7 @@ import { groupLinesByDay, lineWorkedVsBilled } from '../utils/invoiceLineDetail'
 import type { InvoiceStatus } from '../types/billing-enums';
 import { documentDate } from './dates';
 import { documentMoney } from './money';
-import { documentSellerLines } from './sellerLines';
+import { documentAddressLines, documentSellerLines } from './sellerLines';
 import type { CustomerInvoiceDocument, CustomerInvoiceLineDto } from './dto';
 import type { DocumentLabels } from './labels';
 import type {
@@ -155,7 +155,9 @@ export function buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: 
     subtitle: null,
     status: invoice.displayStatus ? { label: labels.status[invoice.displayStatus], tone: STATUS_TONE[invoice.displayStatus] } : null,
     dates,
-    billTo: billToName ? { label: labels.billTo, name: billToName, addressLines: [], taxId: null } : null,
+    billTo: billToName
+      ? { label: labels.billTo, name: billToName, addressLines: documentAddressLines(invoice.billToAddress), taxId: invoice.billToTaxId?.trim() || null }
+      : null,
   };
 
   const seller = invoice.sellerSnapshot;
@@ -180,7 +182,7 @@ export function buildInvoiceDocumentModel(dto: CustomerInvoiceDocument, labels: 
     lines,
     totals: { rows, aside: null, depositStrip },
     terms: {
-      short: null,
+      short: invoice.terms?.trim() ? invoice.terms : null,
       full: invoice.termsAndConditions ? { label: labels.termsFull, text: invoice.termsAndConditions, meta: '' } : null,
     },
     footer: null,

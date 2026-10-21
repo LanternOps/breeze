@@ -1,12 +1,37 @@
 import { describe, it, expect } from 'vitest';
-import { documentLabelsFor, DOCUMENT_LABELS_EN } from './index';
+import { documentLabelsFor, DOCUMENT_LABELS_EN, DOCUMENT_LABELS_PT_BR } from './index';
 import { INVOICE_STATUSES } from '../../types/billing-enums';
 
 describe('document labels', () => {
-  it('every locale falls back to English in W1', () => {
+  it('a locale without document labels falls back to English', () => {
     expect(documentLabelsFor('fr-FR')).toBe(DOCUMENT_LABELS_EN);
-    expect(documentLabelsFor('pt-BR')).toBe(DOCUMENT_LABELS_EN);
     expect(documentLabelsFor('en')).toBe(DOCUMENT_LABELS_EN);
+  });
+
+  it('pt-BR has its own map (W3a)', () => {
+    const pt = documentLabelsFor('pt-BR');
+    expect(pt).not.toBe(DOCUMENT_LABELS_EN);
+    expect(pt).toBe(DOCUMENT_LABELS_PT_BR);
+    expect(pt.totals.balanceDue).toBe('Saldo devedor');
+    expect(pt.columns.qty).toBe('Qtd');
+    expect(pt.laborLine).toBe('Mão de obra');
+    expect(pt.workedVsBilled('1,5', '2')).toBe('1,5 h trabalhadas · 2 h faturadas');
+    expect(pt.issued).toBe('Emitida');
+    expect(pt.pdf.from).toBe('De');
+  });
+
+  it('pt-BR has exactly the English key structure (functions stay functions)', () => {
+    const shape = (o: unknown): unknown => (o && typeof o === 'object')
+      ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, shape(v)]).sort(([a], [b]) => String(a).localeCompare(String(b))))
+      : typeof o;
+    expect(shape(DOCUMENT_LABELS_PT_BR)).toEqual(shape(DOCUMENT_LABELS_EN));
+  });
+
+  it('English PDF-only strings (W3a)', () => {
+    expect(DOCUMENT_LABELS_EN.pdf.from).toBe('From');
+    expect(DOCUMENT_LABELS_EN.pdf.taxId('12-345')).toBe('Tax ID: 12-345');
+    expect(DOCUMENT_LABELS_EN.pdf.payOnline).toBe('Pay online:');
+    expect(DOCUMENT_LABELS_EN.pdf.category('Network')).toBe('Category: Network');
   });
 
   it('English matches the strings the portal prints today', () => {

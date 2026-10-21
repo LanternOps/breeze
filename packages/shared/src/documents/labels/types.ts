@@ -43,4 +43,12 @@ export interface DocumentLabels {
   /** OD-11 recurrence suffixes (used by W2 quotes). */
   perMonth: { text: string; srText: string };
   perYear: { text: string; srText: string };
+
+  // ---- W3a: strings only the PDF prints (appended section; W2a appends its own below/above) ----
+  pdf: {
+    from: string;
+    taxId(id: string): string;
+    payOnline: string;
+    category(name: string): string;
+  };
 }
