@@ -206,6 +206,35 @@ func TestDeliverPamUnableRetriesRateLimit(t *testing.T) {
 	}
 }
 
+// A 429 with Retry-After longer than the next scheduled delay is honored.
+func TestDeliverPamUnableHonorsRetryAfter(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		i := n
+		n++
+		mu.Unlock()
+		if i == 0 {
+			w.Header().Set("Retry-After", "45")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+	h := unableReportHeartbeat(ts.URL)
+	var slept []time.Duration
+
+	if err := h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, 5*time.Minute,
+		[]time.Duration{5 * time.Second}, func(d time.Duration) { slept = append(slept, d) }, time.Now); err != nil {
+		t.Fatalf("deliverPamUnable: %v", err)
+	}
+	if len(slept) != 1 || slept[0] != 45*time.Second {
+		t.Fatalf("slept = %v, want [45s] from Retry-After", slept)
+	}
+}
+
 // A 4xx rejection is final: resending the same report cannot help.
 func TestDeliverPamUnableStopsOnRejection(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound} {

@@ -117,6 +117,12 @@ func (h *Heartbeat) deliverPamUnable(requestID string, u pamUnable, window time.
 		if attempt < len(delays) {
 			delay = delays[attempt]
 		}
+		// Never come back sooner than the server asked: the attempt's
+		// timeout can cut httputil's own Retry-After sleep short.
+		var answered *httputil.RetryableStatusError
+		if errors.As(err, &answered) && answered.RetryAfter > delay {
+			delay = answered.RetryAfter
+		}
 		if now().Add(delay).After(deadline) {
 			return fmt.Errorf("giving up after %d attempts: %w", attempt+1, err)
 		}
