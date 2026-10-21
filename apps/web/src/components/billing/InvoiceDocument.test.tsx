@@ -115,9 +115,32 @@ describe('InvoiceDocumentPreview — renders the customer view', () => {
       ...INVOICE_DTO_FIXTURES.issued,
       invoice: { ...INVOICE_DTO_FIXTURES.issued.invoice, billToName: null },
     }));
-    render(<InvoiceDocumentPreview detail={detail} />);
+    const { unmount } = render(<InvoiceDocumentPreview detail={detail} />);
     await waitFor(() => expect(screen.getByTestId('document-root')).toBeInTheDocument());
     expect(screen.queryByText('Bill to')).not.toBeInTheDocument();
+    // The org the invoice belongs to (staff `orgId`) never stands in for the customer.
+    expect(screen.getByTestId('document-root')).not.toHaveTextContent('org-1');
+    unmount();
+    // Whitespace-only counts as blank; a real name renders (paired positive control).
+    fetchWithAuth.mockResolvedValue(respondWith({
+      ...INVOICE_DTO_FIXTURES.issued,
+      invoice: { ...INVOICE_DTO_FIXTURES.issued.invoice, billToName: '   ' },
+    }));
+    const second = render(<InvoiceDocumentPreview detail={detail} />);
+    await waitFor(() => expect(screen.getByTestId('document-root')).toBeInTheDocument());
+    expect(screen.queryByText('Bill to')).not.toBeInTheDocument();
+    second.unmount();
+    fetchWithAuth.mockResolvedValue(respondWith(INVOICE_DTO_FIXTURES.issued));
+    render(<InvoiceDocumentPreview detail={detail} />);
+    await waitFor(() => expect(screen.getByText('Acme Dental')).toBeInTheDocument());
+    expect(screen.getByText('Bill to')).toBeInTheDocument();
+  });
+
+  it('a payload that breaks the builder shows the error state, not a crash', async () => {
+    fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: { invoice: {}, lines: [] } }) });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<InvoiceDocumentPreview detail={detail} />);
+    expect(await screen.findByTestId('invoice-preview-error')).toBeInTheDocument();
   });
 
   it('keeps the PDF download affordance', async () => {

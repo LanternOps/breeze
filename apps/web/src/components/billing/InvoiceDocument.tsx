@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { InvoiceDocumentView, type DocumentHostComponents } from '@breeze/document-ui';
@@ -6,6 +6,7 @@ import {
   buildInvoiceDocumentModel,
   documentLabelsFor,
   type CustomerInvoiceDocument,
+  type InvoiceDocumentModel,
 } from '@breeze/shared/documents';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePdfDownload } from './shared/usePdfDownload';
@@ -15,7 +16,7 @@ import { webHostComponents } from './documentHostComponents';
 type PreviewState =
   | { status: 'loading' }
   | { status: 'error' }
-  | { status: 'ready'; dto: CustomerInvoiceDocument };
+  | { status: 'ready'; model: InvoiceDocumentModel; accent: string | null };
 
 /** Preview-tab wrapper: renders the CUSTOMER document (`GET /invoices/:id/customer-view`,
  *  the same assembler the portal and the public link use), so what staff see is what the
@@ -44,9 +45,13 @@ export default function InvoiceDocumentPreview({
         if (!res.ok) throw new Error(`customer-view ${res.status}`);
         const body = (await res.json()) as { data?: CustomerInvoiceDocument };
         if (!body.data?.invoice || !Array.isArray(body.data.lines)) throw new Error('customer-view: malformed body');
-        if (current) setState({ status: 'ready', dto: body.data });
+        // Built inside the try: a payload that passes the shape check but breaks the builder
+        // (missing branding, bad currency) shows the error state instead of throwing in render.
+        const dto = body.data;
+        const model = buildInvoiceDocumentModel(dto, documentLabelsFor(dto.documentLocale));
+        if (current) setState({ status: 'ready', model, accent: dto.branding.primaryColor });
       } catch (err) {
-        console.error('[InvoiceDocumentPreview] customer view failed', err instanceof Error ? err.message : err);
+        console.error('[InvoiceDocumentPreview] customer view failed', invoice.id, err instanceof Error ? err.message : err);
         if (current) setState({ status: 'error' });
       }
     })();
@@ -54,13 +59,10 @@ export default function InvoiceDocumentPreview({
     // `detail` is the refetch trigger (new object per reload()); `invoice.id` rides along with it.
   }, [detail, retryNonce]);
 
-  const model = useMemo(
-    () => (state.status === 'ready' ? buildInvoiceDocumentModel(state.dto, documentLabelsFor(state.dto.documentLocale)) : null),
-    [state],
-  );
+  const model = state.status === 'ready' ? state.model : null;
 
   // The accent is host chrome (the package writes no style attribute): the wrapper, not the paper, carries it.
-  const accent = state.status === 'ready' ? state.dto.branding.primaryColor : null;
+  const accent = state.status === 'ready' ? state.accent : null;
   useEffect(() => {
     const el = accentRef.current;
     if (!el) return;
