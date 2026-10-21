@@ -370,15 +370,21 @@ export default function PatchApprovalModal({
       variant="warning"
       confirmLabel={t('patchApprovalModal.actions.approve.label')}
       confirmTestId="confirm-fleet-action"
-      message={t(
-        /* i18n-dynamic */ (ringDeviceCount ?? 1) === 1
-          ? 'patchApprovalModal.confirm.messageOne'
-          : 'patchApprovalModal.confirm.messageMany',
-        {
-          count: ringDeviceCount ?? 1,
-          org: orgName ?? t('patchApprovalModal.confirm.selectedOrganization'),
-        }
-      )}
+      message={
+        // No ring => the approval is partner-wide (patch_approvals.ring_id IS NULL)
+        // and applies to every organization; never name a single org or a count.
+        ringId
+          ? t(
+              /* i18n-dynamic */ (ringDeviceCount ?? 1) === 1
+                ? 'patchApprovalModal.confirm.messageOne'
+                : 'patchApprovalModal.confirm.messageMany',
+              {
+                count: ringDeviceCount ?? 1,
+                org: orgName ?? t('patchApprovalModal.confirm.selectedOrganization'),
+              }
+            )
+          : t('patchApprovalModal.confirm.messagePartnerWide')
+      }
     />
     </>
   );
