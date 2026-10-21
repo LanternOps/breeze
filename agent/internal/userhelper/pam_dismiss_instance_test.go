@@ -116,8 +116,8 @@ func TestAuthenticateSendsTargetedPamDismissCapability(t *testing.T) {
 	for role, want := range map[ipc.HelperRole]bool{ipc.HelperRoleSystem: true, ipc.HelperRoleUser: false} {
 		t.Run(string(role), func(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
+			defer func() { _ = clientConn.Close() }()
+			defer func() { _ = serverConn.Close() }()
 
 			got := make(chan map[string]json.RawMessage, 1)
 			go func() {
