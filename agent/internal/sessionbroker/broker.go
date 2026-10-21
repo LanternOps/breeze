@@ -3238,7 +3238,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"screenRecordingState", sanitized.ScreenRecordingState,
 				"accessibility", sanitized.Accessibility,
 				"fullDiskAccess", sanitized.FullDiskAccess,
-				"remoteDesktop", sanitized.RemoteDesktop,
+				"remoteDesktop", boolPtrString(sanitized.RemoteDesktop),
 			)
 		}
 	case ipc.TypeDisconnect:
