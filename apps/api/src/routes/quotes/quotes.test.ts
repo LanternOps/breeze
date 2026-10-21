@@ -815,14 +815,6 @@ describe('quote crud + lines routes', () => {
     });
   });
 
-  // #6636: AcceptOnBehalfDialog needs the quote's PARTNER's auto-email flag to
-  // preview whether accepting will email the invoice. The dialog used to fetch
-  // it from GET /orgs/partners/me — requireScope('partner') + requireOrgRead —
-  // which an org-scoped-permission tech (quotes:read but no orgs:read) 403s on,
-  // so the line silently never rendered for that whole class of session. The
-  // flag is read here instead, for the QUOTE's own partner (never the caller's),
-  // under the same ambient db context the branding/stripe reads already use —
-  // no extra permission gate, since it's the quote's own tenant data.
   describe('GET /:id — emailConfigured (#9256)', () => {
     it.each([[true, { sendEmail: vi.fn() }], [false, null]])('returns emailConfigured=%s from the server email transport', async (expected, svcValue) => {
       (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });
@@ -833,6 +825,14 @@ describe('quote crud + lines routes', () => {
     });
   });
 
+  // #6636: AcceptOnBehalfDialog needs the quote's PARTNER's auto-email flag to
+  // preview whether accepting will email the invoice. The dialog used to fetch
+  // it from GET /orgs/partners/me — requireScope('partner') + requireOrgRead —
+  // which an org-scoped-permission tech (quotes:read but no orgs:read) 403s on,
+  // so the line silently never rendered for that whole class of session. The
+  // flag is read here instead, for the QUOTE's own partner (never the caller's),
+  // under the same ambient db context the branding/stripe reads already use —
+  // no extra permission gate, since it's the quote's own tenant data.
   describe('GET /:id — autoEmailInvoiceOnAccept (#6636)', () => {
     it('returns the flag from the quote\'s partner row', async () => {
       (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });

@@ -110,7 +110,6 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
   // as `false` (auto-email genuinely off). Only an explicit `true` renders it.
   const autoEmail = autoEmailInvoiceOnAccept === true;
   const hasRecipients = recipients.length > 0;
-  // #9256: `false` = the server has no email transport, so nothing will be emailed.
 
   // Reset to the quote's own values each time the dialog opens, so a cancelled
   // attempt doesn't leave last time's reference sitting in the field.
