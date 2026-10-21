@@ -151,6 +151,11 @@ const DIRECT_READ_ALLOWLIST = new Set([
 
   // Standalone-entity delete guards and authored-link editors.
   'routes/updateRingsHelpers.ts',
+  // #8909 — ring delete/disable preflight lists the policies whose AUTHORED
+  // link names this ring, the same authored-row set updateRingsHelpers.ts's
+  // delete guard reads; an inherited projection would list child policies the
+  // tech never attached and could not detach.
+  'routes/updateRingLinkedPolicies.ts',
   'routes/policyManagement/helpers.ts',
   'routes/scripts.ts',
   'routes/backup/profiles.ts',
