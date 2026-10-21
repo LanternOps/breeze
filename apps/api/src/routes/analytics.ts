@@ -53,8 +53,11 @@ function slaWindowStart(now: Date, window: string, excludeWeekends: boolean): Da
   else since.setMonth(since.getMonth() - 1);
   if (!excludeWeekends) return since;
 
+  // Count calendar days from the window name, not a ms diff (DST makes a
+  // 7-day window 169h, which would round up to 8).
   const dayMs = 86_400_000;
-  let remaining = Math.ceil((now.getTime() - since.getTime()) / dayMs);
+  let remaining =
+    window === 'daily' ? 1 : window === 'weekly' ? 7 : Math.round((now.getTime() - since.getTime()) / dayMs);
   const cursor = new Date(now);
   while (remaining > 0) {
     cursor.setUTCDate(cursor.getUTCDate() - 1);
@@ -1871,7 +1874,12 @@ analyticsRoutes.get(
     // this caller cannot reach stays hidden (same gate as GET /analytics/sla).
     const compliancePerms = c.get('permissions') as UserPermissions | undefined;
     const visibleSla = await filterSlaDefinitionsForSiteScope(sla.orgId, compliancePerms, [sla]);
-    if (visibleSla.length === 0) {
+    // The shared gate treats `group` as an org aggregate, but a group figure
+    // spans members the caller's allowlist cannot be checked against: fail
+    // closed for narrowed callers.
+    const groupDeniedToNarrowed =
+      (sla.targetType ?? '').toLowerCase() === 'group' && slaScopeNarrowed(slaScopeAuthFor(compliancePerms));
+    if (visibleSla.length === 0 || groupDeniedToNarrowed) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -1918,7 +1926,7 @@ analyticsRoutes.get(
 
     // Maintenance exclusion is a point-in-time check (devices in a window right
     // now); historical window overlap needs the availability-interval work (#9273).
-    let maintenanceWindows: 'not_requested' | 'applied' | 'skipped_too_many_devices' = 'not_requested';
+    let maintenanceWindows: 'not_requested' | 'applied' | 'skipped_too_many_devices' | 'unavailable' = 'not_requested';
     let excludedDevices = 0;
     if (sla.excludeMaintenanceWindows === true) {
       if (targetDevices.length > SLA_MAINTENANCE_CHECK_CAP) {
@@ -1926,12 +1934,20 @@ analyticsRoutes.get(
       } else {
         maintenanceWindows = 'applied';
         const inMaintenance = new Set<string>();
-        for (let i = 0; i < targetDevices.length; i += 25) {
-          const chunk = targetDevices.slice(i, i + 25);
-          const statuses = await Promise.all(chunk.map((d) => isDeviceInMaintenance(d.id)));
-          statuses.forEach((st, idx) => {
-            if (st.active) inMaintenance.add(chunk[idx]!.id);
-          });
+        try {
+          for (let i = 0; i < targetDevices.length; i += 10) {
+            const chunk = targetDevices.slice(i, i + 10);
+            const statuses = await Promise.all(chunk.map((d) => isDeviceInMaintenance(d.id)));
+            statuses.forEach((st, idx) => {
+              if (st.active) inMaintenance.add(chunk[idx]!.id);
+            });
+          }
+        } catch (err) {
+          // Report the exclusion as unavailable rather than failing the read or
+          // silently half-applying it.
+          captureException(err);
+          inMaintenance.clear();
+          maintenanceWindows = 'unavailable';
         }
         excludedDevices = inMaintenance.size;
         targetDevices = targetDevices.filter((d) => !inMaintenance.has(d.id));

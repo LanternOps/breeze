@@ -1216,6 +1216,44 @@ describe('analytics routes', () => {
         expect(body.exclusions.maintenanceWindows).toBe('applied');
         expect(body.exclusions.excludedDevices).toBe(1);
       });
+
+      it('reports maintenance exclusion as unavailable when the lookup throws', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'M', uptimeTarget: 90,
+          measurementWindow: 'monthly', excludeMaintenanceWindows: true
+        }]);
+        mockSelectOnce([online('d1'), offline('d2')]);
+        isDeviceInMaintenanceMock.mockRejectedValue(new Error('boom'));
+
+        const res = await getCompliance();
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.liveUptime).toBe(50);
+        expect(body.exclusions.maintenanceWindows).toBe('unavailable');
+        expect(body.exclusions.excludedDevices).toBe(0);
+      });
+
+      it('denies a group-targeted definition to a site-narrowed caller', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_A] };
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'G', uptimeTarget: 90,
+          measurementWindow: 'monthly', targetType: 'group', targetIds: ['g-1']
+        }]);
+        const res = await getCompliance();
+        expect(res.status).toBe(403);
+        currentPermissions = undefined;
+      });
+
+      it('a scoped definition with no targets measures nothing', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'E', uptimeTarget: 90,
+          measurementWindow: 'monthly', targetType: 'site', targetIds: []
+        }]);
+        mockSelectOnce([]);
+        const body = await (await getCompliance()).json();
+        expect(body.liveUptime).toBeNull();
+        expect(body.meetsTarget).toBeNull();
+      });
     });
   });
 
