@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures';
+import { QuotesPage } from '../pages/QuotesPage';
 
 /**
  * One Document Renderer — W1 slice (#9414, spec §8.2): the invoice on the web
@@ -172,4 +173,90 @@ test('web dense density does not re-space the Preview paper', async ({ authedPag
 
   expect(padDense).toBe(padComfortable);
   expect(await diffRatio(authedPage, comfortable, dense)).toBe(0);
+});
+
+// ---- W2b (#9419): the quote pair ------------------------------------------------------------
+// The public proposal page is server-rendered, so its API call cannot be intercepted from the
+// browser: these tests drive a REAL quote (create → one manual line → send) and compare the
+// staff Preview with the customer's public link for it.
+
+async function sendRealQuote(authedPage: Page): Promise<{ quoteId: string; token: string }> {
+  const quotes = new QuotesPage(authedPage);
+  await quotes.goto();
+  await quotes.createOpen().click();
+  await quotes.createDialog().waitFor();
+  const orgId = await quotes.createOrg().locator('option:not([value=""])').first().getAttribute('value');
+  await quotes.createDialog().press('Escape');
+  const quoteId = await quotes.create(orgId!, `Renderer proposal ${Date.now()}`);
+  await quotes.addManualPricingLine('Onboarding', '400.00');
+  await quotes.sendButton().click();
+  await quotes.sendConfirm().waitFor();
+  await authedPage.getByTestId('quote-send-to').fill('e2e-recipient@example.com');
+  const [scheduled] = await Promise.all([
+    authedPage.waitForResponse((r) => r.request().method() === 'POST' && /\/quotes\/[^/]+\/schedule-send$/.test(new URL(r.url()).pathname), { timeout: 20_000 }),
+    quotes.sendConfirm().click(),
+  ]);
+  expect(scheduled.ok()).toBeTruthy();
+  const [sent] = await Promise.all([
+    authedPage.waitForResponse((r) => r.request().method() === 'POST' && /\/quotes\/[^/]+\/send$/.test(new URL(r.url()).pathname), { timeout: 30_000 }),
+    quotes.sendNow().click(),
+  ]);
+  expect(sent.ok()).toBeTruthy();
+  const { acceptUrl } = (await sent.json()).data as { acceptUrl: string };
+  const token = decodeURIComponent(acceptUrl.split('/').filter(Boolean).pop() ?? '');
+  expect(token.length).toBeGreaterThan(10);
+  return { quoteId, token };
+}
+
+test('public quote under style-src-attr none: renders the shared document, no CSP violations', async ({ authedPage, cleanPage }) => {
+  const { token } = await sendRealQuote(authedPage);
+  await cleanPage.addInitScript(() => {
+    (window as unknown as { __cspViolations: string[] }).__cspViolations = [];
+    document.addEventListener('securitypolicyviolation', (e) =>
+      (window as unknown as { __cspViolations: string[] }).__cspViolations.push(`${e.violatedDirective} <${(e.target as Element | null)?.tagName ?? '?'}>`));
+  });
+  await cleanPage.route(`**/portal/quote/${token}*`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, headers: { ...response.headers(), 'content-security-policy': "style-src-attr 'none'" } });
+  });
+  const origin = new URL(authedPage.url()).origin;
+  await cleanPage.goto(`${origin}/portal/quote/${token}`);
+  const root = cleanPage.getByTestId('document-root');
+  await expect(root).toBeVisible();
+  await expect(root.getByRole('heading', { level: 1 })).toHaveCount(1);
+  await expect(root).toContainText('Onboarding');
+  await expect(root.locator('.doc-accent-bg').first()).toBeVisible();
+  const violations = (await cleanPage.evaluate(() => (window as unknown as { __cspViolations: string[] }).__cspViolations))
+    .filter((v) => !v.includes('<ASTRO-DEV-TOOLBAR'));
+  expect(violations).toEqual([]);
+});
+
+test('quote Preview and public page render the same proposal (screenshot pair at 1280px)', async ({ authedPage, cleanPage }) => {
+  await authedPage.setViewportSize({ width: 1280, height: 1500 });
+  await cleanPage.setViewportSize({ width: 1280, height: 1500 });
+  const { quoteId, token } = await sendRealQuote(authedPage);
+  await authedPage.goto(`/billing/quotes/${quoteId}#preview`);
+  const previewRoot = authedPage.getByTestId('document-root');
+  await expect(previewRoot).toBeVisible();
+  const origin = new URL(authedPage.url()).origin;
+  await cleanPage.goto(`${origin}/portal/quote/${token}`);
+  const publicRoot = cleanPage.getByTestId('document-root');
+  await expect(publicRoot).toBeVisible();
+
+  // The signature region is host chrome (inert marker vs the real panel) and the pill reads the
+  // same on both; hide the slot so the pair compares the document itself.
+  for (const page of [authedPage, cleanPage]) {
+    await page.evaluate(() => document.querySelectorAll<HTMLElement>('[data-slot="signature"]').forEach((el) => { el.style.display = 'none'; }));
+  }
+  await pinWidth(previewRoot);
+  await pinWidth(publicRoot);
+  await clearOverlays(authedPage);
+  await clearOverlays(cleanPage);
+  const a = await previewRoot.screenshot();
+  const b = await publicRoot.screenshot();
+  const ratio = await diffRatio(authedPage, a, b);
+  test.info().annotations.push({ type: 'diff-ratio', description: String(ratio) });
+  await test.info().attach('quote-preview.png', { body: a, contentType: 'image/png' });
+  await test.info().attach('quote-public.png', { body: b, contentType: 'image/png' });
+  expect(ratio).toBeLessThanOrEqual(MAX_DIFF_RATIO);
 });
