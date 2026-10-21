@@ -25,6 +25,13 @@ related:
 > included (§5.5, §5.9). F31 no longer names main's newest migration. Decisions 24 and 25 stay
 > open for the owner.
 
+> **Revision 3 (2026-10-21): decisions 24 and 25 (#9295).** The owner declined decision 24 and
+> accepted decision 25. Historic owners stay display-only, as #8313 answer 3 and step-1 §8 say: a
+> ticket whose owner matches no user is imported unassigned, with the owner note. The owners
+> option, its `ticket_import_user_links` ledger, its route, its counters and its tests are gone
+> from §1, §5.3, §5.5, §5.7, §5.10–§5.13, §6.4, §7, §8, §10 and §11. The requester-contacts option
+> stays as specified.
+
 ## 1. Summary
 
 Step 1 gave Breeze a way to write historic tickets: a time-boxed migration window for one keyless
@@ -41,9 +48,9 @@ importer an MSP can use:
   bulk and delta passes.
 - **The Zammad 7.2.2 module (§6).** It reads through the REST API with an agent token and needs no
   Elasticsearch. It maps states, priorities, articles, organizations, owners and requesters. It
-  imports inline images as attachments and links merged tickets to their survivor. Two opt-in
-  options, off by default, create missing owners as disabled users and missing requesters as
-  contacts. They revisit #8313 answer 3 for imports (§5.13, decisions 24 and 25).
+  imports inline images as attachments and links merged tickets to their survivor. One opt-in
+  option, off by default, creates missing requesters as contacts; it revisits #8313 answer 3 for
+  imports (§5.13, decision 25). Historic owners stay display-only (decision 24, declined).
 
 The public write routes still do not change, and an import still produces exactly one event per
 org, `migration.window_closed` (#8313 answer 7).
@@ -540,19 +547,15 @@ All in `services/ticketImport/`, so the confinement rules of F4 hold.
       transaction and the last one.
    8. A `writtenByImport` unit case: a matching `principalId` with a kind other than
       `service_principal` is not the import.
-6. **Created people (opt-in, §5.13).** `ImportedTicket` gains two variants, both resolved by the
-   writer inside the ticket's header transaction, so a person is created only for a ticket that is
+6. **Created contacts (opt-in, §5.13).** `ImportedTicket` gains one variant, resolved by the
+   writer inside the ticket's header transaction, so a contact is created only for a ticket that is
    actually written:
-   - `assigneeToCreate?: { email, name, sourceUserKey, fallbackNote }`, exclusive with
-     `assigneeUserId`. It creates or reuses the disabled owner, assigns the ticket, and records the
-     ledger row. When the email cannot be used, it writes `fallbackNote` instead, and the ticket
-     stays unassigned. On a resume it follows the header rule for the assignee (F3).
    - `requester: { createContact: { name?, email, sourceUserKey } }`, a third requester variant.
      It reuses the import's linked contact, or exactly one email match, or creates the contact and
      its link; with several matches it falls back to display-only. It applies on a first import
      only, because the requester is never re-applied on resume (§5.9).
-   - `ImportTicketOptions.people: { sourceId, runId }` names the ledger. Each created person costs
-     1 unit.
+   - `ImportTicketOptions.people: { sourceId, runId }` names the ledger. Each created contact
+     costs 1 unit.
 
 ### 5.4 HTML to text for imports
 
@@ -692,27 +695,13 @@ CREATE TABLE IF NOT EXISTS ticket_import_run_issues (       -- ids, numbers and 
   CONSTRAINT ticket_import_run_issues_run_fk FOREIGN KEY (run_id, partner_id)
     REFERENCES ticket_import_runs(id, partner_id) ON DELETE CASCADE
 );
-
-CREATE TABLE IF NOT EXISTS ticket_import_user_links (       -- owners this source created (§5.13)
-  source_id uuid NOT NULL,
-  partner_id uuid NOT NULL,
-  source_user_key varchar(255) NOT NULL,                -- the Zammad user id
-  user_id uuid NOT NULL,
-  created_run_id uuid,                                  -- FK-less: runs may be deleted
-  created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (source_id, source_user_key),
-  CONSTRAINT ticket_import_user_links_source_fk FOREIGN KEY (source_id, partner_id)
-    REFERENCES ticket_import_sources(id, partner_id) ON DELETE CASCADE,
-  CONSTRAINT ticket_import_user_links_user_fk FOREIGN KEY (user_id, partner_id)
-    REFERENCES users(id, partner_id) ON DELETE CASCADE
-);
 ```
 
 | Table | Shape | Registrations |
 |---|---|---|
 | `ticket_import_sources` | 3 | `PARTNER_TENANT_TABLES`. Partner erasure via `partner_id`. No `org_id`, so no org cascade, merge or export entry (`docs/agents/tenancy-rls.md:65`). `encryptedColumnRegistry` entry `credentials_encrypted`, `aadBinding: 'row'`, with a dedicated writer `services/ticketImport/sourceCredentials.ts` (F20); the AI-output masking test and the `SECRET_ROTATION.md` coverage list follow the registry. |
 | `ticket_import_org_maps` | 3, non-tenancy `org_id` | `PARTNER_TENANT_TABLES` and `ORG_AXIS_POLICY_EXCLUDED_TABLES`; `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical, before `organizations`); `orgMergeRegistry` `repoint` (no unique key contains `org_id`, so no dedupe); export `included` for every column; the composite org FK is `DEFERRABLE INITIALLY IMMEDIATE`. |
-| `ticket_import_category_maps`, `ticket_import_runs`, `ticket_import_items`, `ticket_import_run_issues`, `ticket_import_user_links` | 3 | `PARTNER_TENANT_TABLES`; partner erasure via `partner_id`. No `org_id` and no org-scoped content. `ticket_import_user_links` references `users (id, partner_id)` (F32), so it cannot name another partner's user. |
+| `ticket_import_category_maps`, `ticket_import_runs`, `ticket_import_items`, `ticket_import_run_issues` | 3 | `PARTNER_TENANT_TABLES`; partner erasure via `partner_id`. No `org_id` and no org-scoped content. |
 | `contact_external_links` (existing) | 1 | The contact ledger, with no change: system `ticket-import:<sourceId>`, external id the source user key (§5.13). Already registered (F36). |
 | `ticket_attachments` (3 columns), `ticket_links.migration_window_id` | 1 | Export `included` (§4.2, §5.3). FK-less, so no cascade, merge or deferrability change. |
 
@@ -722,7 +711,8 @@ CREATE TABLE IF NOT EXISTS ticket_import_user_links (       -- owners this sourc
 - **Why child tables.** The org and category maps are child tables, not a jsonb map on the source.
   An org id inside jsonb escapes every registration list (step-1 §3.2). A category id inside jsonb
   dangles when the category is deleted. Priority maps and toggles hold no ids and stay in
-  `options`. No column is added to `users` or `contacts` (§5.13).
+  `options`. No column is added to `users` or `contacts` (§5.13), and no table of users is kept:
+  the import never creates a user (decision 24, declined).
 - **ON DELETE behaviour.** Users are `SET NULL` (an audit trail must not block a user's
   deletion). Orgs and categories are `CASCADE` (a deleted target simply unmaps). Sources cascade to
   their maps, runs, ledger and issues. A deleted principal cascades its source, as it already
@@ -730,9 +720,9 @@ CREATE TABLE IF NOT EXISTS ticket_import_user_links (       -- owners this sourc
 - **Write gate.** The route files call `canManagePartnerWidePolicies`. The service files that
   write these tables are listed in `ALLOWED_WITHOUT_CAPABILITY_CHECK` (F26), each with its reason:
   `services/ticketImport/sourceStore.ts` and `sourceCredentials.ts` ("called only from the gated
-  routes/ticketImports"), `importPeople.ts` ("writes users and the user ledger only inside a
-  migration-window transaction"), and `runStore.ts` ("worker under a partner-scoped context; every
-  caller-facing write is gated in routes/ticketImports").
+  routes/ticketImports") and `runStore.ts` ("worker under a partner-scoped context; every
+  caller-facing write is gated in routes/ticketImports"). `importPeople.ts` writes only
+  org-scoped contact tables, so it needs no entry.
 - **Where these are caught.** `rls-coverage`, org cascade, org merge, tenant export and
   `orgLifecycleFoundations` (the deferrable FK) run only under **Integration Tests**. Each wave
   runs them before its PR.
@@ -782,7 +772,7 @@ The MCP coverage entry is `human_only_migration` (F30).
 | `POST …/:id/runs` | partner-wide admin | `{ kind: 'dry_run' }` or `{ kind: 'import', windowId }`. An import checks: S3 configured; the window open, of this partner, on this source's principal; every mapped org and the fallback in the window. One active run per source. |
 | `GET …/:id/runs`, `GET /ticket-imports/runs/:runId`, `GET …/runs/:runId/issues` | partner-wide admin | progress and the report, polled |
 | `POST /ticket-imports/runs/:runId/cancel` | any partner-wide admin | the run stops at the next ticket boundary |
-| `GET …/:id/created-users`, `GET …/:id/created-contacts` | partner-wide admin | the people this source created, from the ledgers (§5.13) |
+| `GET …/:id/created-contacts` | partner-wide admin | the contacts this source created, from the ledger (§5.13) |
 | `POST …/:id/created-contacts/remove` | any partner-wide admin | removes the created contacts still as imported (§5.13); `409 TICKET_IMPORT_RUN_ACTIVE` while a run is active |
 
 - **Windows** are opened and closed through the existing `/migration-windows` routes, from the
@@ -935,10 +925,8 @@ Breeze, so the report puts these first.
 `failed`; comments `written`, `skipped`, `systemSkipped`; attachments `written`, `skipped`, `bytes`,
 `alternativesIgnored`; `linksWritten`, `linksAsNotes`; `statusKept`; `contentTruncated`;
 `clockClamped`; `deletedInSource`, `hiddenInSource`, `removedInBreeze`; `ownersUnmatched` (distinct owners) and
-`requestersWithoutContact`; `usersCreated`, `contactsCreated`, `ownersNotCreated`;
-`openTicketsOwnedByCreatedUsers`; `customAttributes: { name: count }`; and the dry-run predictions
-(`predicted.*`, including `ownersToCreate`, `contactsToCreate` per org and
-`openTicketsOwnedByCreatedUsers`).
+`requestersWithoutContact`; `contactsCreated`; `customAttributes: { name: count }`; and the dry-run
+predictions (`predicted.*`, including `contactsToCreate` per org).
 
 Issue `kind`s, with at most `TICKET_IMPORT_MAX_ISSUES_PER_RUN` rows (default 50,000; counters stay
 exact beyond it):
@@ -946,9 +934,9 @@ exact beyond it):
 - **Skipped or failed:** `skipped_no_org`, `failed`.
 - **Writer decisions:** `status_kept` (with the #8884 detail), `attachments_skipped`,
   `link_not_written`.
-- **People:** `owner_unmatched` and `owner_not_created`, once per distinct source owner. The row
-  holds the source user key; the wizard shows the name by reading the source's user list live.
-  The people an import created are listed from the ledgers, not from issue rows (§5.13).
+- **People:** `owner_unmatched`, once per distinct source owner. The row holds the source user
+  key; the wizard shows the name by reading the source's user list live. The contacts an import
+  created are listed from the ledger, not from issue rows (§5.13).
 - **Changed in the source:** `comments_changed`, `comments_missing`, `requester_changed`,
   `org_changed`, `deleted_in_source`, `hidden_in_source`.
 - **Removed in Breeze:** `removed_in_breeze` (§5.9).
@@ -974,10 +962,9 @@ partner-level report.
   2. **Preflight.** S3, token identity and permissions, groups with inactive or unreadable ones
      flagged, counts of orgs, users and states, attributes, clock skew.
   3. **Mappings.** Each source org to a Breeze org or "skip", one optional fallback org, groups
-     to categories (default none), priorities, options. Two options are off by default (§5.13):
-     "Create missing owners as disabled users" and "Create missing requester contacts", the
-     second with an optional "only for tickets updated since <date>". The dry run shows how many
-     of each it would create before any run can start.
+     to categories (default none), priorities, options. One option is off by default (§5.13):
+     "Create missing requester contacts", with an optional "only for tickets updated since
+     <date>". The dry run shows how many contacts it would create before any run can start.
   4. **Dry run.** Start it, poll every 5 s, read the report.
   5. **Window.** Open a migration window over the mapped orgs, with the end time and writes per
      hour, through `mintStepUpGrant({ operation: 'migration_window_open' })`. This is that
@@ -1002,54 +989,20 @@ partner-level report.
   would write an org table.
 - *Module-specific tables.* The framework is source-agnostic; a module's specifics are its
   `options` and its id grammar.
-- *Creating contacts or users for historic people by default.* #8313 answer 3 stands as the
-  default. §5.13 adds the opt-in, with its limits.
-- *Creating users for comment authors, or contacts for every source customer.* Only ticket owners
-  and the requesters of imported tickets are ever created; comment authors stay display-only.
+- *Creating contacts for historic people by default.* #8313 answer 3 stands as the default.
+  §5.13 adds the opt-in for requesters, with its limits.
+- *Creating users for historic owners* (decision 24, declined by the owner). A disabled,
+  password-less user with a tenant email is still a latent account that can be enabled later, and
+  it adds a cross-tenant email-uniqueness check at import time, for a label that reads the same
+  either way. Owners stay display-only: unassigned, with the owner note (§6.4).
+- *Creating contacts for comment authors or for every source customer.* Only the requesters of
+  imported tickets are ever created; owners and comment authors stay display-only.
 
-### 5.13 Created people (opt-in)
+### 5.13 Created contacts (opt-in)
 
-Two source options, both **off by default**. Off, an import creates no user and no contact, which is
-#8313 answer 3. On, they revisit that answer for imports (decisions 24 and 25). Comment authors stay
-display-only either way.
-
-**Owners as disabled users** ("Create missing owners as disabled users"):
-
-- **Who.** A source agent who owns an imported ticket, has an email, and matches no user of the
-  partner that import eligibility accepts (§6.4). One user per email, never per ticket.
-- **The row.** It is inserted in the ticket's header transaction, under the window's partner
-  context:
-  - `partner_id` is the partner and `org_id` is NULL;
-  - `status` is `'disabled'` (F32) and `disabled_reason` is `'ticket_import'`;
-  - `password_hash`, `email_verified_at` and every MFA field are NULL;
-  - there is **no `partner_users` row and no role**, so no access and no RBAC grant;
-  - no invite, welcome or verification mail is sent, and nothing is emitted.
-
-  This is the shape the code already gives a removed member (F32). No column is added to
-  `users`: the reason says why it is disabled, and the ledger says which import made it.
-- **Why it is inert** (verified on 8f240ddbe):
-  - it cannot sign in, reset a password, accept an invite, or mint an SSO or CF Access session
-    (F33);
-  - it appears in no assignee picker and in no user list, receives no notification, and cannot be
-    assigned by a live write (F34);
-  - import eligibility accepts it, because it checks only partner and org (F34).
-- **Email held by another tenant.** `users.email` is globally unique. The insert is
-  `ON CONFLICT (email) DO NOTHING`. When nothing is inserted and no user of this partner holds the
-  address, the ticket stays unassigned with the owner note, and the report says
-  `owner_not_created` without saying why. The invite route hides the same fact the same way (F35).
-  The absence of a created user still tells a partner-wide admin that the address is taken
-  somewhere; §11 states that.
-- **Ledger.** `ticket_import_user_links` (source user key → user id), written in the same
-  transaction. A later pass finds the user by email anyway, so there are no duplicates. The ledger
-  exists for the report: "users created by this import".
-- **Audit.** One partner-level `ticket_import.user_created` row per user. Users are identities and
-  security-relevant, and they are few: the agents of the desk.
-- **Activation later** is the normal invite of the same email from Settings › Users (F35). The
-  invite resets the row to `invited` and keeps its id, so every ticket stays assigned to the person.
-- **Deleting the source** removes the ledger rows. The users stay, as ordinary disabled users.
-- **Open tickets.** An open ticket assigned to a created user notifies nobody (F34). The dry run
-  counts these (`openTicketsOwnedByCreatedUsers`), and the runbook reassigns them before the
-  switch.
+One source option, **off by default**. Off, an import creates no contact, which is #8313 answer 3.
+On, it revisits that answer for the requesters of imported tickets (decision 25). An import never
+creates a user: owners (decision 24, declined) and comment authors stay display-only either way.
 
 **Requesters as contacts** ("Create missing requester contacts"):
 
@@ -1200,11 +1153,9 @@ defaults are `1 low` → low, `2 normal` → normal, `3 high` → high, and anyt
     Deactivated users match too: closed Zammad tickets keep inactive owners (Z15), and import
     eligibility accepts them.
   - No match leaves the ticket unassigned, with an internal note "Owner in Zammad: <name> <email>"
-    (step-1 §8). The dry-run report lists the unmatched owners (§5.10).
-  - With "Create missing owners as disabled users" on, an unmatched owner with an email becomes a
-    disabled user instead (§5.13), named from `firstname lastname` or the login. A user of the
-    partner whose `org_id` names another org is not eligible and is never replaced: the ticket
-    gets the note.
+    (step-1 §8). The dry-run report lists the unmatched owners (§5.10). No user is ever created
+    for an owner (decision 24, declined), and a user of the partner whose `org_id` names another
+    org is not eligible: the ticket gets the note.
 - **Requester** (`customer_id`):
   - When exactly one contact in the target org has that email (`matchContactByEmail`, F15), the
     requester is `{ contactId }`.
@@ -1313,8 +1264,9 @@ For §1's case. Times are indicative and use §4.5.
    - Object storage is configured, or the import refuses to start.
    - `APP_ENCRYPTION_KEY_ID` is set, so the token is row-bound (F20).
    - The 17 customer orgs exist.
-   - Current agents exist as users with their Zammad emails. Former agents need nothing: this
-     cutover turns on "Create missing owners as disabled users".
+   - Current agents exist as users with their Zammad emails. Former agents' tickets are imported
+     unassigned, with the owner note (decision 24, declined); their open tickets are reassigned
+     after the bulk run.
    - Categories exist if groups will map to them.
    - Existing contacts are imported first (the contact import on the Organizations page), so the
      import links to them instead of creating duplicates. This cutover turns on "Create missing
@@ -1323,12 +1275,11 @@ For §1's case. Times are indicative and use §4.5.
    reactivate inactive groups, and write down which, for afterwards. Create its token with
    `["ticket.agent"]` and an expiry about two weeks after the cutover.
 3. **Breeze `/tickets/import`.** Connect (this creates the import principal; you own it), run
-   preflight and set the mappings. Turn **both** people options on (§5.13). Run a dry run and read
-   the report:
+   preflight and set the mappings. Turn "Create missing requester contacts" on (§5.13). Run a
+   dry run and read the report:
    - `skipped_no_org`;
-   - `predicted.ownersToCreate`, the agents that will become disabled users, and
-     `owner_not_created` (an email that cannot be used);
-   - `predicted.openTicketsOwnedByCreatedUsers`, to reassign after the bulk run;
+   - `owner_unmatched`, the former agents whose tickets will be unassigned with the note; their
+     open tickets are reassigned after the bulk run;
    - `predicted.contactsToCreate`, per org. If it is far above the number of real customers,
      use the "updated since" filter or turn the option off;
    - requesters left display-only (several contacts share the email, or there is no email);
@@ -1345,8 +1296,8 @@ For §1's case. Times are indicative and use §4.5.
    both passes and stays well inside 14 days. Set `writesPerHour` to 20,000.
 5. Start the bulk run. Expect about 8.5 h at 20,000/h. Zammad stays live meanwhile.
 6. Read the report. Fix the causes of `failed` items, then start another run, which retries only
-   what failed or changed. Check "users created" and "contacts created". Reassign open tickets
-   owned by created users. If the contact set is wrong, remove it as a set and run again with the
+   what failed or changed. Check "contacts created" and `owner_unmatched`. Reassign the open
+   tickets left unassigned. If the contact set is wrong, remove it as a set and run again with the
    option changed. Spot-check tickets in Breeze. Imported tickets are already visible to
    technicians, and to matched contacts in the portal. Nothing notifies anyone (step-1 §4.5).
 
@@ -1388,16 +1339,17 @@ Each wave is one PR against `main`, usable and testable on its own. "Cutover" ma
 | W2: links in import mode | §5.3 item 4: `ticket_links.migration_window_id`, `addTicketLink(…, mode)`, `importTicketLink`. | Live behaviour unchanged (existing suites). Import: no event or audit, feed rows at `mode.at`, the window org check, `ALREADY_LINKED` idempotent, each known-impossible refusal mapped to `link_not_written`, `duplicate_elsewhere` on a chain formed between passes. Side-effect scan extended. Tenant export. | no (merged tickets fall back to the note) |
 | W3: HTML to text | §5.4. | The defaults are byte-identical on the existing inbound fixtures. Links, `javascript:` dropped, nested quotes, image resolver, 200k clamp with marker, surrogate pair at the cut, the pathological-nesting time bound. | yes |
 | W4: framework | §5.1, §5.2, §5.5–§5.10: tables and RLS, every registration, the credential writer, the SSRF client, the routes, the worker with slices and the lease, the ledger and the report, the `ticket-imports` reserved namespace, a fake module for tests, env vars (`.env.example`, `docker-compose.yml`, `internalEnvVars.ts`), locale strings. | **Routes:** owner-only create and edit, any-admin revoke, delete and cancel, no ciphertext returned, mappings locked while running, the run's window checks, S3 refusal. **Credentials:** round trip, foreign row id fails. **Lease (real Redis, `vitest.integration.config.ts`):** cap per partner and global, renew keeps both keys alive past several lease lengths, expiry after a simulated crash, release. **Worker with the fake module:** a slice continues itself; a retried slice whose successor already ran exits on `slice_seq`; a crash mid-page resumes from the ledger; a closed window stops the run; a 429 defers without spending an attempt; deletions probe. **RLS:** cross-partner forge 42501 on every table. **Contract:** `rls-coverage`, org cascade, org merge, tenant export, `orgLifecycleFoundations`, `workerRegistry`, entrypoint closure, readiness coverage, `partner-wide-write-coverage`, `mcpCoverage`, encrypted-column registry and AI-output masking. | yes |
-| W4b: created people | §5.3 item 6 and §5.13: the two variants in the writer, `importPeople.ts`, `ticket_import_user_links`, the created-people routes and the contact removal, the two options and the "updated since" filter, the dry-run predictions. | **Integration, as `breeze_app`:** a created owner is disabled, has no membership, no password, no role; it cannot log in, reset or refresh (the F33 paths); it is absent from `GET /users` and the default-assignee list; a later invite of its email resurrects it with the same id and the ticket still assigned. Another tenant's email leaves the ticket unassigned with the note, and no row. A contact is created once per (org, email) across two tickets and two passes; an existing single match is reused without a link; several matches stay display-only; no email, no contact. Removal falls tickets back to the snapshot and skips an edited contact. No outbox row, no event, no mail; the side-effect scan covers `importPeople.ts`. Both options off: nothing is created. **Contract:** `rls-coverage` (the new table), `partner-wide-write-coverage`. | yes |
+| W4b: created contacts | §5.3 item 6 and §5.13: the requester variant in the writer, `importPeople.ts`, the created-contacts routes and the removal, the option and the "updated since" filter, the dry-run prediction. No table is added. | **Integration, as `breeze_app`:** a contact is created once per (org, email) across two tickets and two passes; an existing single match is reused without a link; several matches stay display-only; no email, no contact; an unmatched owner never creates a user, and the ticket stays unassigned with the note. Removal falls tickets back to the snapshot and skips an edited contact. No outbox row, no event, no mail; the side-effect scan covers `importPeople.ts`. Option off: nothing is created. **Contract:** `partner-wide-write-coverage` (the service writes no partner-axis table). | yes |
 | W5: Zammad module | §6, with the §6.8 fixtures. | §6.8, plus an end-to-end dry run and import of the fixture set through W4's worker against a fake Zammad HTTP server. | yes |
 | W6: wizard | §5.11: the page, the steps, polling, the step-up window open, the Imported chip and filter, the windows list. | Component tests per step; `no-silent-mutations`; a Playwright flow against the fake Zammad server (`data-testid` only). | yes |
 
 Order: W0 → W1 → W4 → W4b → W5 → W6. W2 and W3 can land any time after W0, and W5 needs W3. The
-cutover needs every wave but W2, and W4b because it turns both options on. Without W2, merged tickets get only their note.
+cutover needs every wave but W2, and W4b because it turns the contacts option on. Without W2, merged tickets get only their note.
 
 ## 9. Decisions to confirm in review
 
-Decisions 24 and 25 revisit #8313 answer 3. Please read them first.
+Decisions 24 and 25 revisit #8313 answer 3. The owner decided them on 2026-10-20: 24 declined, 25
+accepted.
 
 1. **Attachment types and risk. Decided in review (2026-10-20): the denylist.** Any type except
    executables is accepted. Outside JPEG/PNG/WebP/PDF a file is stored as
@@ -1418,7 +1370,7 @@ Decisions 24 and 25 revisit #8313 answer 3. Please read them first.
 7. **Orgs:** an explicit map plus one optional fallback. A ticket with no target org is skipped and
    listed.
 8. **Owners matched by email** to the partner's users (deactivated included). Otherwise the ticket
-   is unassigned with a note, unless decision 24's option is on.
+   is unassigned with a note; no user is created (decision 24, declined).
 9. **Requesters:** a contact only when exactly one matches in the target org; otherwise
    display-only, unless decision 25's option is on. The display email becomes optional. Matched contacts see their imported tickets
    in the portal.
@@ -1452,25 +1404,16 @@ Decisions 24 and 25 revisit #8313 answer 3. Please read them first.
 22. **The page lives at `/tickets/import`,** not in settings: an import is an action.
 23. **`attachmentsImported`** is added to the window summary and to the `migration.window_closed`
     payload. The change is additive.
-24. **Revisit #8313 answer 3 for owners: create missing owners as disabled users (opt-in).**
-    Answer 3 reads, verbatim: "**Historic authors:** display-only "originally by" name + email on
-    the comment. No shadow users or contacts; auto-creating contacts from five years of history is
-    how a desk ends up with 4,000 dead contacts." Step 1 (§8) applied it to owners as "unassigned
-    with a note".
-    - **The proposal.** A source option, off by default, creates each unmatched ticket owner with
-      an email as a disabled, password-less, membership-less user. That is the shape Breeze already
-      gives a removed member. It cannot sign in, appears in no picker and receives no
-      notification (F33, F34).
-    - **Why.** In an import-only cutover Breeze becomes the single source of truth. The history
-      should stay attached to real people: per-agent history and reporting on assigned tickets,
-      instead of thousands of unassigned tickets with a note. An admin can later activate a person
-      with the normal invite, which keeps their id and their tickets (F35).
-    - **Why off by default.** Answer 3 stays the product default, and an MSP opts in per source
-      after reading the dry run's count.
-    - **Limits.** Only owners of imported tickets, one per email, never a comment author. Never an
-      email held by another tenant. Listed as "users created by this import". Deleting the
-      source leaves them as ordinary disabled users.
-25. **Revisit #8313 answer 3 for requesters: create missing requester contacts (opt-in).**
+24. **Owners as disabled users. Declined by the owner (2026-10-20).** The proposal was an opt-in
+    source option that created each unmatched ticket owner with an email as a disabled,
+    password-less, membership-less user, the shape Breeze gives a removed member (F32–F35).
+    Declined because a disabled, password-less user with a tenant email is still a latent account
+    that can be enabled later, and it adds a cross-tenant email-uniqueness check at import time,
+    for a label that reads the same either way. #8313 answer 3 stands for owners: a ticket whose
+    owner matches no user is imported unassigned, with the owner note (step-1 §8, §6.4). Nothing
+    in this spec creates a user.
+25. **Revisit #8313 answer 3 for requesters: create missing requester contacts (opt-in).
+    Accepted by the owner (2026-10-20) as specified.**
     - **The proposal.** A source option, off by default, creates a contact for the requester of an
       imported ticket when no contact in the target org has that email. Several matches stay
       display-only, and a customer without an email gets no contact.
@@ -1504,8 +1447,9 @@ Step 1's §8 is binding except for these points. A one-line note in that section
 - **Merged tickets.** §8 says the links of #7900 are not on `main`. They are (#8675, F14). Merged
   tickets are linked `duplicate_of` in import mode (§6.6), and the note stays as the fallback.
 - **Credentials.** Row-bound AAD takes effect only with `APP_ENCRYPTION_KEY_ID` set (F20).
-- **Historic people.** §8's "imported unassigned, with an internal note naming them" stays the
-  default. Decision 24 adds an opt-in that creates the owner as a disabled user instead.
+- **Historic people.** §8's "imported unassigned, with an internal note naming them" stays, and
+  for owners it is the only behaviour (decision 24, declined). Decision 25 adds an opt-in that
+  creates a contact for a requester instead of the display-only snapshot.
 - **Naming.** Step 1's `ImportedTicket` sketch calls the status type `TicketCoreStatus`; the code
   uses `IMPORTED_TICKET_FINAL_STATUSES` and `TicketStatus` (`importedTicket.ts:26`).
 
@@ -1529,11 +1473,9 @@ Step 1's §8 is binding except for these points. A one-line note in that section
 - **Clock skew.** Source times ahead of Breeze fail validation (F2). Skew up to 5 min is clamped
   and counted; beyond that the ticket fails visibly. The #8884 ordering note (§5.3) covers the
   database side.
-- **Created owners on open tickets** notify nobody, because a disabled user is never a recipient
-  (F34). The dry run counts them and the runbook reassigns them.
-- **An email taken by another tenant** cannot become a created owner (F32). Its absence tells the
-  partner-wide admin running the import that the address is in use elsewhere. The report gives no
-  reason, as the invite route does (F35). Each probe costs an owner-opened, step-up window.
+- **Unassigned history.** A former agent's tickets are imported unassigned, with the owner note
+  (decision 24). Per-agent reporting over the imported history is by the note, not by assignee.
+  The runbook reassigns the open ones after the bulk run.
 - **Contact noise.** Even with the mitigations, a five-year history can create many contacts. The
   dry-run count, the date filter and removal as a set are the controls (§5.13).
 - **Owner departure.** Only a principal's owner can open its windows, and ownership cannot be
