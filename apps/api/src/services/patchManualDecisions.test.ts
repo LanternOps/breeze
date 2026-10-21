@@ -38,6 +38,11 @@ describe('resolveLatestManualDecisions', () => {
     expect(resolveLatestManualDecisions([row('approved', null, null), row('rejected', RING, null)], 'any').declined.has(P)).toBe(true);
   });
 
+  it("'any' is latest-wins across rings: a newer approval supersedes an older ring decline", () => {
+    const r = resolveLatestManualDecisions([row('rejected', RING, 1), row('approved', OTHER, 2)], 'any');
+    expect(r.approved.has(P)).toBe(true);
+  });
+
   it('a ring scope ignores other rings but keeps partner-wide rows', () => {
     const rows = [row('approved', null, 1), row('rejected', OTHER, 2)];
     expect(resolveLatestManualDecisions(rows, { ringId: RING }).approved.has(P)).toBe(true);

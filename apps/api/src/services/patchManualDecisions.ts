@@ -26,8 +26,10 @@ export interface ManualDecisionRow {
 /**
  * Which rows apply:
  *  - `{ ringId }` — this ring's rows plus partner-wide (null ring) rows.
- *  - `'any'` — every row, for readers with no ring context. Fail-closed: a
- *    newer decline in ANY ring denies the patch for them.
+ *  - `'any'` — every row, for readers with no ring context. Still latest-wins
+ *    across all rings: a decline denies only until a NEWER approval (any ring
+ *    or blanket) supersedes it. It is not a permanent per-ring veto; the full
+ *    ring-aware verdict lives in `patchEligibility.ts`.
  */
 export type ManualDecisionScope = { ringId: string | null } | 'any';
 
@@ -37,9 +39,10 @@ export interface ManualDecisions {
 }
 
 /**
- * Latest decision wins (`updatedAt`); a tie or missing timestamp resolves to
- * the decline (fail-closed). Rows with a status other than approved/rejected
- * are ignored.
+ * Latest decision wins (`updatedAt`); a TIE resolves to the decline
+ * (fail-closed). A missing/invalid timestamp counts as time 0 (oldest) —
+ * unreachable in practice, `updated_at` is NOT NULL. Rows with a status other
+ * than approved/rejected are ignored.
  */
 export function resolveLatestManualDecisions(
   rows: readonly ManualDecisionRow[],
