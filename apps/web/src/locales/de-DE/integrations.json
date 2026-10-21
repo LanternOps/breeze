@@ -83,7 +83,9 @@
         "intune_devices": "Intune-Geräte",
         "ca_policies": "Bedingter Zugriff",
         "skus": "Lizenzen",
-        "secure_score": "Sicherheitsbewertung"
+        "secure_score": "Sicherheitsbewertung",
+        "signin_events": "Anmeldeereignisse",
+        "unknown": "Unbekannter Datentyp"
       }
     },
     "errors": {

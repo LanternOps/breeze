@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isCimdClientId } from './cimdHosts';
 import { errors } from 'oidc-provider';
 import type { McpGrantableDomain } from '@breeze/shared';
 import { and, eq, gte, isNull, lt, or, sql } from 'drizzle-orm';
@@ -256,6 +257,12 @@ export class BreezeOidcAdapter {
 
   async upsert(id: string, payload: OidcPayload, expiresIn?: number): Promise<void> {
     const expiresAt = expiresAtFrom(expiresIn);
+    // B-W03 (#6157, D-B20): CIMD clients are materialised by
+    // cimdClients.materializeCimdClient after the trust policy passes, never
+    // stored through the provider's registration path.
+    if (this.model === 'Client' && isCimdClientId(id)) {
+      throw new Error('refusing to store a client metadata document client through the adapter');
+    }
     return asSystem(async () => {
       if (this.model === 'Client') {
         await db.insert(oauthClients).values({
@@ -366,6 +373,10 @@ export class BreezeOidcAdapter {
   }
 
   async find(id: string): Promise<OidcPayload | undefined> {
+    // B-W03 (#6157, D-B20): never serve a CIMD client from stored metadata —
+    // returning undefined makes oidc-provider re-resolve it through its
+    // metadata-document cache and our allowClient on every use.
+    if (this.model === 'Client' && isCimdClientId(id)) return undefined;
     return asSystem(async () => {
       if (this.model === 'Client') {
         const [row] = await db.select().from(oauthClients).where(eq(oauthClients.id, id));

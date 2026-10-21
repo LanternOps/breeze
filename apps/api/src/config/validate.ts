@@ -1,4 +1,5 @@
 import { isIP } from 'net';
+import { parseCimdAllowedHosts } from '../oauth/cimdHosts';
 import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES } from '@breeze/shared';
 import { parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
 import { z } from 'zod';
@@ -689,6 +690,12 @@ const envObjectSchema = z
     // "off" for an operator who believed they enabled auto-remediation.
     AGENT_EDITION_AUTO_MIGRATE_ENABLED: z.string().optional(),
 
+    // Stateless MCP 2026-07-28 era kill switch (B-W03 #6157). Default false;
+    // read per request by mcpStatelessEnabled() (services/mcpProtocol.ts).
+    // Validated here for boolean format only, same class as
+    // AGENT_AUTO_PROMOTE above.
+    MCP_STATELESS_ENABLED: z.string().optional(),
+
     // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
     // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
     // env.ts. Validated here for boolean format only, for the same reason as
@@ -715,6 +722,10 @@ const envObjectSchema = z
     // at runtime by toolSourcesEnabled() in env.ts. Validated here for
     // boolean format only, same class as AGENT_AUTO_PROMOTE above.
     TOOL_SOURCES_ENABLED: z.string().optional(),
+
+    // Tool Catalog W3 (#5218). Platform kill switch for Flows, read at runtime
+    // by flowsEnabled() in env.ts. Boolean-format validation only.
+    FLOWS_ENABLED: z.string().optional(),
 
     // Task A7. Sub-flag allowing a tool source to target private/loopback
     // egress — an SSRF vector on the hosted platform, so it's refused there
@@ -841,6 +852,10 @@ const envObjectSchema = z
     OAUTH_DCR_ENABLED: z.string().optional(),
     OAUTH_DCR_REQUIRE_IAT: z.string().optional(),
     OAUTH_DCR_ALLOW_ANONYMOUS: z.string().optional(),
+    // CIMD (B-W03 #6157): boolean flag + optional host allowlist, both checked
+    // in the superRefine below.
+    OAUTH_CIMD_ENABLED: z.string().optional(),
+    OAUTH_CIMD_ALLOWED_HOSTS: z.string().optional(),
 
     // Wave 3 live-authorization rollout controls. Shape is validated in EVERY
     // environment (a garbage value is a bug anywhere); presence is required in
@@ -2054,6 +2069,37 @@ const envSchema = envObjectSchema
       });
     }
 
+    // OAUTH_CIMD_ENABLED / OAUTH_CIMD_ALLOWED_HOSTS (B-W03 #6157). A typo in
+    // the allowlist would otherwise fail closed at runtime with no boot error.
+    const cimdEnabledRaw = (data.OAUTH_CIMD_ENABLED ?? '').trim().toLowerCase();
+    if (cimdEnabledRaw && !boolValues.has(cimdEnabledRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OAUTH_CIMD_ENABLED'],
+        message: 'OAUTH_CIMD_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
+      });
+    }
+    const cimdHosts = parseCimdAllowedHosts(data.OAUTH_CIMD_ALLOWED_HOSTS);
+    if (!cimdHosts.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OAUTH_CIMD_ALLOWED_HOSTS'],
+        message: `OAUTH_CIMD_ALLOWED_HOSTS must be a comma-separated list of hostnames or .suffix entries (no scheme, path, port or wildcard): ${cimdHosts.reason}.`,
+      });
+    }
+
+    // MCP_STATELESS_ENABLED (B-W03 #6157). Same treatment as AGENT_AUTO_PROMOTE.
+    const mcpStatelessRaw = (data.MCP_STATELESS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpStatelessRaw && !boolValues.has(mcpStatelessRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_STATELESS_ENABLED'],
+        message:
+          'MCP_STATELESS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (the MCP server answers only the initialize-based protocol versions).',
+      });
+    }
+
     // ABUSE_SIGNALS_ENABLED (signup-abuse detection). Same treatment and same
     // reasoning as AGENT_AUTO_PROMOTE above: independent of NODE_ENV, because
     // the value silently governs whether the subsystem runs at all. A typo
@@ -2177,6 +2223,18 @@ const envSchema = envObjectSchema
         path: ['TOOL_SOURCES_ENABLED'],
         message:
           'TOOL_SOURCES_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the tool-catalog / tool-sources feature is dark).',
+      });
+    }
+
+    // FLOWS_ENABLED (Tool Catalog W3, #5218). Same treatment as
+    // TOOL_SOURCES_ENABLED: a typo must fail boot rather than read as off.
+    const flowsRaw = (data.FLOWS_ENABLED ?? '').trim().toLowerCase();
+    if (flowsRaw && !boolValues.has(flowsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['FLOWS_ENABLED'],
+        message:
+          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the Flows feature is dark).',
       });
     }
 

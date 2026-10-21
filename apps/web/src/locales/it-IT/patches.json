@@ -331,16 +331,7 @@
       "error": "Impossibile caricare l’elenco dei dispositivi.",
       "showing": "{{shown}} di {{total}} visualizzati",
       "loadMore": "Carica altri",
-      "lastChecked": "Ultimo controllo: {{when}}",
-      "status": {
-        "online": "Online",
-        "offline": "Offline",
-        "maintenance": "Manutenzione",
-        "decommissioned": "Dismesso",
-        "quarantined": "In quarantena",
-        "updating": "In aggiornamento",
-        "pending": "In attesa"
-      }
+      "lastChecked": "Ultimo controllo: {{when}}"
     }
   },
   "patchesPage": {

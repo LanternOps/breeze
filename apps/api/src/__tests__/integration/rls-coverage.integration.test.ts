@@ -605,6 +605,10 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // forge proof: toolSourcesPartnerRls.integration.test.ts.
   'tool_sources',
   'tool_source_tools',
+  // flows (Tool Catalog W03, #5218): org_id XOR partner_id config table,
+  // 2027-01-02-130000-flows.sql (flows_one_owner_chk). Functional
+  // cross-partner forge proof: flowsPartnerRls.integration.test.ts.
+  'flows',
   'users',
   // connection_health_incidents (#8845, spec 2026-10-15 connection health
   // §2.1): partner_id always set, org_id NULL only for a partner-owned
@@ -948,6 +952,9 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // needs a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
   'tool_sources',
   'tool_source_tools',
+  // flows_one_owner_chk, 2027-01-02-130000-flows.sql (#5218); its
+  // partner-wide SELECT branch (flows_partner_wide_select) ships in the same file.
+  'flows',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',

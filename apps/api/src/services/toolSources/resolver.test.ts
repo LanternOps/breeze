@@ -11,7 +11,10 @@ import {
   buildLoadTenantToolBindingStateQuery,
   buildResolveTenantToolHealthQuery,
   buildResolveTenantToolsQuery,
+  buildResolveTenantToolsForOwnerQuery,
+  compileTenantInputSchema,
   compileToolDescriptor,
+  resolveTenantToolsForOwner,
   loadTenantToolForExecution,
   resolveTenantToolHealthByName,
   resolveTenantTools,
@@ -329,5 +332,52 @@ describe('compileToolDescriptor', () => {
     const badRow = makeRow({ inputSchema: { type: 'object', required: 'name' } as unknown as Record<string, unknown> });
     expect(() => compileToolDescriptor(badRow, newTestAjv())).not.toThrow();
     expect(compileToolDescriptor(badRow, newTestAjv())).toBeNull();
+  });
+});
+
+// Tool Catalog W03 (#5218): flows validate against the OWNER's catalog, not
+// the caller's session. The owner predicate is re-derived from organizations
+// for an org owner (a forged partnerId never widens it), and a partner owner
+// sees partner-wide tools only.
+describe('buildResolveTenantToolsForOwnerQuery / resolveTenantToolsForOwner (W03)', () => {
+  beforeEach(() => {
+    vi.mocked(toolSourcesEnabled).mockReturnValue(true);
+  });
+
+  it('org owner: the org\'s own tools OR the org\'s partner\'s partner-wide tools, partner re-derived live — the passed partnerId is ignored', () => {
+    const FORGED = '99999999-9999-4999-8999-999999999999';
+    const { sql: text, params } = buildResolveTenantToolsForOwnerQuery({ orgId: ORG_A, partnerId: FORGED }).toSQL();
+    expect(params).toContain(ORG_A);
+    expect(params).not.toContain(FORGED);
+    expect(text).toContain('select "organizations"."partner_id" from "organizations"');
+    expect(text).toContain('"tool_source_tools"."org_id" is null');
+    expect(text).toContain('"tool_sources"."status"');
+  });
+
+  it('partner owner: partner-wide only — no org branch', () => {
+    const { sql: text, params } = buildResolveTenantToolsForOwnerQuery({ orgId: null, partnerId: PARTNER_A }).toSQL();
+    expect(params).toContain(PARTNER_A);
+    expect(text).toContain('"tool_source_tools"."org_id" is null');
+    expect(text).not.toContain('"tool_source_tools"."org_id" = ');
+    expect(text).not.toContain('from "organizations"');
+  });
+
+  it('returns [] when toolSourcesEnabled() is false (no DB touched)', async () => {
+    vi.mocked(toolSourcesEnabled).mockReturnValue(false);
+    await expect(resolveTenantToolsForOwner({ orgId: ORG_A, partnerId: PARTNER_A })).resolves.toEqual([]);
+  });
+
+  it('compileTenantInputSchema returns an allErrors Ajv validator with instancePath + keyword, or null when uncompilable', () => {
+    const v = compileTenantInputSchema({
+      type: 'object',
+      required: ['a'],
+      properties: { a: { type: 'string' }, b: { type: 'string', format: 'uuid' } },
+      additionalProperties: false,
+    });
+    expect(v).not.toBeNull();
+    expect(v!({ b: 'nope', c: 1 })).toBe(false);
+    const kw = v!.errors!.map((e) => `${e.keyword}:${e.instancePath}`).sort();
+    expect(kw).toEqual(['additionalProperties:', 'format:/b', 'required:'].sort());
+    expect(compileTenantInputSchema({ type: 'nonsense-type' })).toBeNull();
   });
 });

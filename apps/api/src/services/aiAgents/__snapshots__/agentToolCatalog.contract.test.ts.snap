@@ -12,6 +12,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "create_remote_session",
   "diagnostic_list_directory",
   "diagnostic_read_file",
+  "draft_flow",
   "execute_containment",
   "execute_dr_plan",
   "get_sensitive_data_overview",

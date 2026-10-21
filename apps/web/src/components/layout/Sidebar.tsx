@@ -66,6 +66,7 @@ import {
   ServerCog,
   Inbox,
   Sparkles,
+  Workflow,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -75,7 +76,7 @@ import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts'
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
-import { useToolSourcesGate, usePreAssignmentGate } from '../../stores/featuresStore';
+import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate } from '../../stores/featuresStore';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import { isNavGateVisible } from '../../lib/navGates';
 import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
@@ -211,6 +212,8 @@ type NavItem = {
   requiresAiForOffice?: boolean;
   /** #5216 W01: gated on the SERVER's TOOL_SOURCES_ENABLED via /config. */
   requiresToolSources?: boolean;
+  /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
+  requiresFlows?: boolean;
   requiresPreAssignment?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
@@ -259,6 +262,7 @@ export const topLevelNav: NavItem[] = [
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
   // #5288 — Automations finally get a nav home, as Jobs. /automations redirects here.
   { name: 'Jobs', labelKey: 'nav.jobs', href: '/jobs', icon: CalendarClock, requiredPermission: { resource: 'automations', action: 'read' } },
+  { name: 'Flows', labelKey: 'nav.flows', href: '/flows', icon: Workflow, requiresFlows: true, requiredPermission: { resource: 'automations', action: 'read' } },
   { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
@@ -698,6 +702,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // features store (the same one registration/aiOperatorTasks use).
   const autopayEnabled = useAutopayEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
+  const { enabled: flowsEnabled } = useFlowsGate();
   const { enabled: preAssignmentEnabled } = usePreAssignmentGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
   // right sections; the /orgs/partners/me effect below refreshes it.
@@ -927,6 +932,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       getScope: () => jwtScope,
       autopayEnabled,
       toolSourcesEnabled,
+      flowsEnabled,
       preAssignmentEnabled,
       aiForOfficeEnabled,
       serviceManagementMode,

@@ -15,6 +15,7 @@ export type PatchDevice = {
 /** One page (1-based) of GET /patches/:id/devices. */
 export type LoadPatchDevices = (patchId: string, page: number) => Promise<{ devices: PatchDevice[]; total: number }>;
 
+// Labelled with the device list's own wording (devices.json deviceList.statuses.full).
 const DEVICE_STATUSES = ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'];
 const POPOVER_GAP_PX = 4;
 
@@ -35,7 +36,7 @@ type Props = {
  * wrapper, which clips an `absolute` popup.
  */
 export function PatchDevicesPopover({ patchId, patchTitle, count, loadDevices }: Props) {
-  const { t } = useTranslation('patches');
+  const { t } = useTranslation(['patches', 'devices']);
   const [open, setOpen] = useState(false);
   const [devices, setDevices] = useState<PatchDevice[]>([]);
   const [total, setTotal] = useState<number | null>(null);
@@ -136,8 +137,8 @@ export function PatchDevicesPopover({ patchId, patchTitle, count, loadDevices }:
 
   const statusLabel = (status: string) =>
     DEVICE_STATUSES.includes(status)
-      ? t(/* i18n-dynamic */ `patchList.outstandingDevices.status.${status}`)
-      : status;
+      ? t(/* i18n-dynamic */ `devices:deviceList.statuses.full.${status}`)
+      : t('devices:deviceList.statuses.full.unknown');
 
   return (
     <>
