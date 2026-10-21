@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -27,6 +28,17 @@ func (h *Heartbeat) syncPAMHelperHold() {
 		return
 	}
 	lc.SetPAMHelperHold(h.IsUACInterceptionEnabled())
+}
+
+// installHelperLifecycle publishes the lifecycle manager (Start) and carries
+// the current PAM hold over: the PAM policy may already have been applied
+// before the manager existed.
+func (h *Heartbeat) installHelperLifecycle(lc helperLifecycleController, cancel context.CancelFunc) {
+	h.mu.Lock()
+	h.helperLifecycle = lc
+	h.lifecycleCancel = cancel
+	h.mu.Unlock()
+	h.syncPAMHelperHold()
 }
 
 // spawnPamHelperOnDemand is RunPamFlow's fallback when no capable SYSTEM
@@ -60,7 +72,25 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	}
 	winID, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(leaseTarget)
 	if err != nil || winID == 0 {
-		logPamHelperUnavailable(requestID, targetWinSession, "target Windows session could not be resolved")
+		reason := fmt.Sprintf("target Windows session %q could not be resolved", leaseTarget)
+		if err != nil {
+			reason += ": " + err.Error()
+		}
+		logPamHelperUnavailable(requestID, targetWinSession, reason)
+		return nil, release
+	}
+
+	// Fail fast on a session the reconciler will never give a SYSTEM helper
+	// (disconnected, gone): the flow runs synchronously on the etwlua loop, so
+	// waiting out pamHelperSpawnWait would stall every queued elevation.
+	key := sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleSystem}
+	available, err := lc.HelperRoleAvailable(key)
+	if err != nil {
+		logPamHelperUnavailable(requestID, targetWinSession, fmt.Sprintf("session %d availability check failed: %v", winID, err))
+		return nil, release
+	}
+	if !available {
+		logPamHelperUnavailable(requestID, targetWinSession, fmt.Sprintf("session %d cannot host a SYSTEM helper (not active or connected)", winID))
 		return nil, release
 	}
 
@@ -74,9 +104,15 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	log.Info("pam: no SYSTEM helper in the requester session; spawning one on demand",
 		"elevationRequestId", requestID, "targetWinSession", targetWinSession, "leaseWinSession", winID)
 	waitCtx, cancel := context.WithTimeout(ctx, pamHelperSpawnWait)
-	res := lc.WaitForHelperReady(waitCtx, sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleSystem})
+	res := lc.WaitForHelperReady(waitCtx, key)
 	cancel()
 	if res.Status != sessionbroker.HelperWaitReady {
+		if ctx.Err() != nil {
+			// The flow itself was cancelled (agent shutdown), not the helper.
+			log.Warn("pam: elevation flow cancelled while waiting for an on-demand SYSTEM helper",
+				"elevationRequestId", requestID, "targetWinSession", targetWinSession, "error", ctx.Err().Error())
+			return nil, release
+		}
 		logPamHelperUnavailable(requestID, targetWinSession, helperWaitFailureMessage(res))
 		return nil, release
 	}

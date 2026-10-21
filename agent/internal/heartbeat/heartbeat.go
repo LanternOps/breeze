@@ -2163,12 +2163,7 @@ func (h *Heartbeat) Start() {
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
-		h.mu.Lock()
-		h.helperLifecycle = lifecycle
-		h.lifecycleCancel = cancel
-		h.mu.Unlock()
-		// The PAM policy may have been applied before the manager existed.
-		h.syncPAMHelperHold()
+		h.installHelperLifecycle(lifecycle, cancel)
 		go bootstrapThenListenWithRetry(ctx, lifecycle.Bootstrap, func() {
 			go h.sessionBroker.Listen(h.stopChan)
 		}, lifecycleBootstrapRetryInterval)

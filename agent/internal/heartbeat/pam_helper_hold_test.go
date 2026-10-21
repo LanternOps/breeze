@@ -243,3 +243,72 @@ func TestRunPamFlowNoLifecycleKeepsOldBehavior(t *testing.T) {
 		t.Fatalf("finds=%d dismissed=%d, want 1 and 0", f.finds, len(f.dismissed))
 	}
 }
+
+// A session that cannot host a SYSTEM helper (disconnected, gone) must fail
+// fast: RunPamFlow runs on the etwlua loop, and waiting 30 s for a helper the
+// reconciler will never spawn stalls every queued elevation (#6812 shape).
+func TestRunPamFlowOnDemandSpawnFailsFastWhenSessionCannotHostHelper(t *testing.T) {
+	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
+	cases := map[string]*fakeLifecycle{
+		"session cannot host":      {mode: "on-demand", unavailable: map[sessionbroker.HelperKey]bool{key: true}},
+		"availability check fails": {mode: "on-demand", availableErr: sessionbroker.ErrLeaseSessionNotFound},
+	}
+	for name, lc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &pamSpawnFixture{readyAfter: 1}
+			h := f.heartbeat(lc)
+
+			h.RunPamFlow(context.Background(), etwlua.Event{SubjectSessionID: 7},
+				etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-6"})
+
+			acquired, _, waited, _ := lc.snapshot()
+			if len(acquired) != 0 || len(waited) != 0 {
+				t.Fatalf("leased/waited for a session that cannot host a helper: acquired=%v waited=%v", acquired, waited)
+			}
+			if f.dialogs != 0 || len(f.dismissed) != 0 {
+				t.Fatalf("flow continued without a helper: dialogs=%d dismissed=%d", f.dialogs, len(f.dismissed))
+			}
+		})
+	}
+}
+
+// Ready helper without the PAM scope: the flow must stop (never dialog or
+// actuate through it) and release its lease.
+func TestRunPamFlowOnDemandSpawnedHelperWithoutPamScopeStops(t *testing.T) {
+	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
+	lc := &fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+		key: {Status: sessionbroker.HelperWaitReady},
+	}}
+	f := &pamSpawnFixture{readyAfter: 100} // find never returns a PAM-capable session
+	h := f.heartbeat(lc)
+
+	h.RunPamFlow(context.Background(), etwlua.Event{SubjectSessionID: 7},
+		etwlua.ElevationOutcome{Status: etwlua.ElevationPending, RequestID: "req-7"})
+
+	if f.dialogs != 0 || len(f.dismissed) != 0 {
+		t.Fatalf("flow continued without a PAM-scoped helper: dialogs=%d dismissed=%d", f.dialogs, len(f.dismissed))
+	}
+	if f.finds != 2 {
+		t.Fatalf("finds = %d, want the initial lookup plus one re-find after ready", f.finds)
+	}
+	if acquired, released, _, _ := lc.snapshot(); len(acquired) != 1 || len(released) != 1 {
+		t.Fatalf("acquired=%v released=%v, want one lease taken and released", acquired, released)
+	}
+}
+
+// Start installs the lifecycle manager after the PAM policy may already have
+// been applied; the install path itself must carry the hold over.
+func TestInstallHelperLifecycleSyncsPAMHold(t *testing.T) {
+	h := &Heartbeat{}
+	h.uacInterceptionEnabled.Store(true)
+	lc := &fakeLifecycle{mode: "on-demand"}
+
+	h.installHelperLifecycle(lc, func() {})
+
+	if h.lifecycleController() != lc {
+		t.Fatal("lifecycle not installed")
+	}
+	if !lastHold(t, lc.pamHoldCalls()) {
+		t.Fatalf("install did not carry the enabled PAM hold over: %v", lc.pamHoldCalls())
+	}
+}

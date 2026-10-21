@@ -1,8 +1,11 @@
 package sessionbroker
 
 import (
+	"context"
 	"sort"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
@@ -163,10 +166,87 @@ func TestPAMHoldNoOpInAlwaysOnMode(t *testing.T) {
 	}
 }
 
+// A WTSConnected session with a known user (mid-logon / reconnect) is held;
+// one without a user is a logon screen and is not. A non-numeric session id
+// is skipped.
+func TestPAMHoldIncludesConnectedSessionWithUser(t *testing.T) {
+	m, _ := onDemandHarness(t, []DetectedSession{
+		{Session: "7", Username: "dave", State: "connected", Type: "rdp"},
+		{Session: "8", State: "connected", Type: "rdp"},
+		{Session: "x", Username: "eve", State: "active", Type: "rdp"},
+	})
+	m.SetPAMHelperHold(true)
+	if got := desiredKeys(t, m); !equalKeys(got, []HelperKey{sysKey(7)}) {
+		t.Fatalf("desired = %v, want [7-system]", got)
+	}
+}
+
+type mutableLifecycleDetector struct {
+	mu       sync.Mutex
+	sessions []DetectedSession
+}
+
+func (d *mutableLifecycleDetector) set(sessions ...DetectedSession) {
+	d.mu.Lock()
+	d.sessions = sessions
+	d.mu.Unlock()
+}
+
+func (d *mutableLifecycleDetector) ListSessions() ([]DetectedSession, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]DetectedSession(nil), d.sessions...), nil
+}
+
+func (d *mutableLifecycleDetector) WatchSessions(context.Context) <-chan SessionEvent {
+	ch := make(chan SessionEvent)
+	close(ch)
+	return ch
+}
+
+// Disconnect then reconnect: the held helper is reaped while the session is
+// disconnected (no input desktop for the dialog) and comes back on reconnect.
+func TestPAMHoldFollowsDisconnectAndReconnect(t *testing.T) {
+	det := &mutableLifecycleDetector{}
+	det.set(DetectedSession{Session: "2", Username: "alice", State: "active", Type: "rdp"})
+	spawner := newCountingHelperSpawner()
+	b := New("lifecycle-"+t.Name(), nil)
+	m := newHelperLifecycleManager(b, det, nil, spawner)
+	m.gracePeriod = 5 * time.Millisecond
+	m.finalWait = 100 * time.Millisecond
+	m.mode = LifecycleModeOnDemand
+	m.rdsHost = true
+	t.Cleanup(func() { m.Stop(); b.Close() })
+	m.SetPAMHelperHold(true)
+
+	m.reconcile()
+	if got := m.registry.keys(); !equalKeys(got, []HelperKey{sysKey(2)}) {
+		t.Fatalf("tracked after logon = %v, want [2-system]", got)
+	}
+
+	det.set(DetectedSession{Session: "2", Username: "alice", State: "disconnected", Type: "rdp"})
+	m.reconcile()
+	if got := m.registry.keys(); len(got) != 0 {
+		t.Fatalf("tracked after disconnect = %v, want none", got)
+	}
+
+	det.set(DetectedSession{Session: "2", Username: "alice", State: "active", Type: "rdp"})
+	m.reconcile()
+	if got := m.registry.keys(); !equalKeys(got, []HelperKey{sysKey(2)}) {
+		t.Fatalf("tracked after reconnect = %v, want [2-system]", got)
+	}
+	if got := spawner.SpawnCount(sysKey(2)); got != 2 {
+		t.Fatalf("2-system spawned %d times, want 2 (logon + reconnect)", got)
+	}
+}
+
 func equalKeys(a, b []HelperKey) bool {
 	if len(a) != len(b) {
 		return false
 	}
+	a = append([]HelperKey(nil), a...)
+	b = append([]HelperKey(nil), b...)
+	sort.Slice(a, func(i, j int) bool { return a[i].String() < a[j].String() })
 	sort.Slice(b, func(i, j int) bool { return b[i].String() < b[j].String() })
 	for i := range a {
 		if a[i] != b[i] {
