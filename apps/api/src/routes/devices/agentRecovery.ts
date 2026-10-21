@@ -7,7 +7,8 @@ import { deviceCommands } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
-import { WATCHDOG_RECOVERY_COMMAND_TYPES, enqueueWatchdogCommand } from '../../services/commandQueue';
+import { enqueueWatchdogCommand } from '../../services/commandQueue';
+import { WATCHDOG_RECOVERY_COMMAND_TYPES } from '../../services/watchdogCommands';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { trustDenyBody, type TrustDenyCode } from '../../services/partnerTrust';
 

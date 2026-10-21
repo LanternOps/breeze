@@ -70,7 +70,6 @@ vi.mock('./helpers', async (importOriginal) => ({
 const enqueueWatchdogCommandMock = vi.fn();
 
 vi.mock('../../services/commandQueue', () => ({
-  WATCHDOG_RECOVERY_COMMAND_TYPES: ['restart_agent', 'start_agent'],
   enqueueWatchdogCommand: (...args: unknown[]) => enqueueWatchdogCommandMock(...args),
 }));
 

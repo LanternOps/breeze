@@ -79,6 +79,7 @@ export const SEND_RETRY_DELAY_MS = 500;
 // existing `import { CommandTypes } from './commandQueue'` keeps working.
 export { CommandTypes, type CommandType } from './commandTypes';
 import { CommandTypes, type CommandType } from './commandTypes';
+import type { WatchdogRecoveryCommandType } from './watchdogCommands';
 import type { AiOriginRef } from '@breeze/shared';
 import { aiOriginColumns } from './aiOriginColumns';
 import { createAuditLogAsync } from './auditService';
@@ -1880,9 +1881,6 @@ export async function executeCommandWithCallerPrecheck(
   return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
 }
 
-/** Watchdog recovery commands an operator may request directly (#9234). */
-export const WATCHDOG_RECOVERY_COMMAND_TYPES = ['restart_agent', 'start_agent'] as const;
-export type WatchdogRecoveryCommandType = (typeof WATCHDOG_RECOVERY_COMMAND_TYPES)[number];
 
 export type EnqueueWatchdogCommandResult =
   | { status: 'queued'; commandId: string }
