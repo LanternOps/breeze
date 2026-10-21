@@ -80,11 +80,11 @@ vi.mock('./aiAgent', () => ({
 }));
 
 const mockCheckAiRateLimit = vi.fn();
-const mockCheckBudget = vi.fn();
+const mockCheckBudgetDetailed = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
 vi.mock('./aiCostTracker', () => ({
   checkAiRateLimit: (...args: unknown[]) => mockCheckAiRateLimit(...args),
-  checkBudget: (...args: unknown[]) => mockCheckBudget(...args),
+  checkBudgetDetailed: (...args: unknown[]) => mockCheckBudgetDetailed(...args),
   getRemainingBudgetUsd: (...args: unknown[]) => mockGetRemainingBudgetUsd(...args),
 }));
 

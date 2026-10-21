@@ -551,5 +551,8 @@
     "created": "Neuer Chat mit {{model}} aus einer Zusammenfassung gestartet.",
     "failed": "Der neue Chat konnte nicht gestartet werden. Bitte erneut versuchen.",
     "openFailed": "Der neue Chat wurde erstellt, konnte aber nicht geöffnet werden. Sie finden ihn im Chatverlauf; Ihre Nachricht wurde nicht gesendet."
+  },
+  "buyCredits": {
+    "link": "Credits kaufen"
   }
 }

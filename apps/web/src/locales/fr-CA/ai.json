@@ -551,5 +551,8 @@
     "created": "Nouveau clavardage sur {{model}} démarré à partir d'un résumé.",
     "failed": "Impossible de démarrer le nouveau clavardage. Réessayez.",
     "openFailed": "Le nouveau clavardage a été créé, mais n'a pas pu être ouvert. Retrouvez-le dans votre historique; votre message n'a pas été envoyé."
+  },
+  "buyCredits": {
+    "link": "Acheter des crédits"
   }
 }

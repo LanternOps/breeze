@@ -551,5 +551,8 @@
     "created": "New chat on {{model}} started from a summary.",
     "failed": "Couldn't start the new chat. Try again.",
     "openFailed": "The new chat was created but couldn't be opened. Find it in your chat history; your message was not sent."
+  },
+  "buyCredits": {
+    "link": "Buy credits"
   }
 }

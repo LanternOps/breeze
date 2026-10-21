@@ -91,11 +91,11 @@ vi.mock('./aiModels/sessionModel', () => ({
 }));
 
 const mockCheckAiRateLimit = vi.fn();
-const mockCheckBudget = vi.fn();
+const mockCheckBudgetDetailed = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
 vi.mock('./aiCostTracker', () => ({
   checkAiRateLimit: (...args: unknown[]) => mockCheckAiRateLimit(...args),
-  checkBudget: (...args: unknown[]) => mockCheckBudget(...args),
+  checkBudgetDetailed: (...args: unknown[]) => mockCheckBudgetDetailed(...args),
   getRemainingBudgetUsd: (...args: unknown[]) => mockGetRemainingBudgetUsd(...args),
 }));
 
@@ -405,7 +405,7 @@ describe('runPreFlightChecks', () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(makeSession());
     mockCheckAiRateLimit.mockResolvedValue(null);
-    mockCheckBudget.mockResolvedValue(null);
+    mockCheckBudgetDetailed.mockResolvedValue(null);
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
     mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
@@ -444,7 +444,7 @@ describe('runPreFlightChecks', () => {
     if (result.ok) {
       expect(result.model).toBe(model);
     }
-    expect(mockCheckBudget).toHaveBeenCalledWith('org-session-99', 'partner_key');
+    expect(mockCheckBudgetDetailed).toHaveBeenCalledWith('org-session-99', 'partner_key');
   });
 
   it.each(['model_unavailable', 'not_permitted', 'permission_required', 'plan_required', 'connection_unavailable', 'tools_unsupported', 'unpriced'] as const)(
@@ -460,7 +460,7 @@ describe('runPreFlightChecks', () => {
           ok: false, error: 'Model Opus 5.5 is no longer available — choose another.', status: 409, code: reason,
         });
         expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
-        expect(mockCheckBudget).not.toHaveBeenCalled();
+        expect(mockCheckBudgetDetailed).not.toHaveBeenCalled();
         expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
       } finally {
         vi.unstubAllEnvs();
@@ -487,7 +487,7 @@ describe('runPreFlightChecks', () => {
       });
       const result = await runPreFlightChecks('session-1', 'hello', auth);
       expect(result).toEqual({ ok: false, error: 'ai_not_configured', status: 503 });
-      expect(mockCheckBudget).not.toHaveBeenCalled();
+      expect(mockCheckBudgetDetailed).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllEnvs();
     }
@@ -520,7 +520,7 @@ describe('runPreFlightChecks', () => {
       expect(r).not.toHaveProperty('openaiCompatible');
       expect(mockResolveSessionTurn).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'chat', userId: auth.user.id });
       // Funding is the resolved offering's, never an assumed platform path.
-      expect(mockCheckBudget).toHaveBeenCalledWith('org-1', 'partner_key');
+      expect(mockCheckBudgetDetailed).toHaveBeenCalledWith('org-1', 'partner_key');
     } finally {
       vi.unstubAllEnvs();
     }
@@ -553,13 +553,22 @@ describe('runPreFlightChecks', () => {
   // --- Budget uses session's org ---
 
   it('returns error when budget is exceeded', async () => {
-    mockCheckBudget.mockResolvedValue('Monthly budget exhausted');
+    mockCheckBudgetDetailed.mockResolvedValue({ message: 'Monthly budget exhausted', reason: 'monthly_budget', permanent: false });
     const result = await runPreFlightChecks('session-1', 'hello', auth);
-    expect(result).toEqual({ ok: false, error: 'Monthly budget exhausted' });
+    expect(result).toEqual({ ok: false, error: 'Monthly budget exhausted', status: 402 });
+  });
+
+  it.each([
+    ['credits_exhausted', 'You are out of AI credits. Purchase more credits to continue.', 'credits_exhausted'],
+    ['plan_gate', 'AI assistant requires the Community plan.', 'plan_not_eligible'],
+  ] as const)('a %s denial is a 402 carrying billingCode (#9450)', async (reason, message, billingCode) => {
+    mockCheckBudgetDetailed.mockResolvedValue({ message, reason, permanent: reason === 'plan_gate' });
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+    expect(result).toEqual({ ok: false, error: message, status: 402, billingCode });
   });
 
   it('returns error when budget check throws', async () => {
-    mockCheckBudget.mockRejectedValue(new Error('DB error'));
+    mockCheckBudgetDetailed.mockRejectedValue(new Error('DB error'));
     const result = await runPreFlightChecks('session-1', 'hello', auth);
     expect(result).toEqual({ ok: false, error: 'Unable to verify budget. Please try again.' });
   });

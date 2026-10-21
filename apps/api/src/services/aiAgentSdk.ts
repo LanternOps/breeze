@@ -30,7 +30,8 @@ import {
   checkTenantToolRateLimit,
 } from './toolSources/guardrails';
 import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoint';
-import { checkBudget, checkAiRateLimit } from './aiCostTracker';
+import { checkBudgetDetailed, checkAiRateLimit } from './aiCostTracker';
+import { aiDenialClientCode, type AiDenialClientCode } from './aiDenialCode';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
@@ -410,6 +411,8 @@ export type PreFlightResult = {
   status?: number;
   /** A recoverable model-resolution failure (the route answers 409 with it). */
   code?: ResolveFailureReason;
+  /** The credit / plan gate refused the turn (status is 402): the code the client switches on. */
+  billingCode?: AiDenialClientCode;
 };
 
 /**
@@ -474,8 +477,11 @@ export async function runPreFlightChecks(
   // Budget
   try {
     // Funding from the RESOLVED offering (quorum #4).
-    const budgetError = await checkBudget(orgId, model.funding);
-    if (budgetError) return { ok: false, error: budgetError };
+    const denial = await checkBudgetDetailed(orgId, model.funding);
+    if (denial) {
+      const billingCode = aiDenialClientCode(denial.reason);
+      return { ok: false, error: denial.message, status: 402, ...(billingCode ? { billingCode } : {}) };
+    }
   } catch (err) {
     console.error('[AI-SDK] Budget check failed:', err);
     return { ok: false, error: 'Unable to verify budget. Please try again.' };

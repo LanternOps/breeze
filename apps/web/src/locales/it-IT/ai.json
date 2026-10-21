@@ -551,5 +551,8 @@
     "created": "Nuova chat su {{model}} avviata da un riepilogo.",
     "failed": "Impossibile avviare la nuova chat. Riprova.",
     "openFailed": "La nuova chat è stata creata ma non è stato possibile aprirla. Trovala nella cronologia delle chat; il tuo messaggio non è stato inviato."
+  },
+  "buyCredits": {
+    "link": "Acquista crediti"
   }
 }

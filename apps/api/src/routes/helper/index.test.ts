@@ -3,14 +3,14 @@ import { Hono } from 'hono';
 
 const {
   captureExceptionMock,
-  checkBudgetMock,
+  checkBudgetDetailedMock,
   checkSystemAiRateLimitMock,
   reserveAiBudgetMock,
   releaseUnusedAiBudgetMock,
   getEffectiveAiBudgetMock,
 } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
-  checkBudgetMock: vi.fn(),
+  checkBudgetDetailedMock: vi.fn(),
   checkSystemAiRateLimitMock: vi.fn(),
   reserveAiBudgetMock: vi.fn(),
   releaseUnusedAiBudgetMock: vi.fn(),
@@ -141,7 +141,7 @@ vi.mock('../../services/screenshotStorage', () => {
 });
 
 vi.mock('../../services/aiCostTracker', () => ({
-  checkBudget: (...args: unknown[]) => checkBudgetMock(...args),
+  checkBudgetDetailed: (...args: unknown[]) => checkBudgetDetailedMock(...args),
   checkSystemAiRateLimit: (...args: unknown[]) => checkSystemAiRateLimitMock(...args),
   getRemainingBudgetUsd: vi.fn(),
 }));
@@ -531,7 +531,7 @@ describe('helper routes permission derivation', () => {
     expect(allowedTools!.map((n) => n.replace('mcp__breeze__', '')).sort()).toEqual([...onlyTools].sort());
     expect(resolveSessionTurnMock).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'helper', userId: null });
     expect(chooseSessionModelMock).not.toHaveBeenCalled();
-    expect(checkBudgetMock).toHaveBeenCalledWith('org-1', 'partner_key');
+    expect(checkBudgetDetailedMock).toHaveBeenCalledWith('org-1', 'partner_key');
     // Org-axis AI rate limiter — the same ceiling technician chat enforces
     // via checkAiRateLimit. Helper sessions are device-scoped with no acting
     // user id, so this must be the org-only (no per-user bucket) form.
@@ -644,6 +644,28 @@ describe('helper routes permission derivation', () => {
     );
   });
 
+  it('exhausted platform credits are a 402 carrying credits_exhausted and take no reservation (#9450)', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('platform', { surface: 'helper' }));
+    checkBudgetDetailedMock.mockResolvedValueOnce({
+      message: 'You are out of AI credits. Purchase more credits to continue.', reason: 'credits_exhausted', permanent: false,
+    });
+    mockHelperMessageSession();
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({
+      error: 'You are out of AI credits. Purchase more credits to continue.', code: 'credits_exhausted',
+    });
+    expect(reserveAiBudgetMock).not.toHaveBeenCalled();
+  });
+
   it('an ineligible stored model is a recoverable 409 and takes no reservation', async () => {
     mockHelperAuthDevice();
     vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
@@ -664,7 +686,7 @@ describe('helper routes permission derivation', () => {
       error: 'Model Opus 5.5 is no longer available — choose another.', code: 'model_unavailable', recoverable: true,
     });
     expect(reserveAiBudgetMock).not.toHaveBeenCalled();
-    expect(checkBudgetMock).not.toHaveBeenCalled();
+    expect(checkBudgetDetailedMock).not.toHaveBeenCalled();
     expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
   });
 
