@@ -18,6 +18,7 @@
 import { Hono } from 'hono';
 import { buildConnectionsReport } from '../../system/connections/report';
 import { probeM365Executors } from '../../services/system/connections/m365ExecutorProbe';
+import { getLastTurnPreflight, startTurnPreflight } from '../../services/system/connections/turnPreflight';
 
 export const systemConnectionsAdminRoutes = new Hono();
 
@@ -32,4 +33,17 @@ systemConnectionsAdminRoutes.get('/connections', (c) => {
 systemConnectionsAdminRoutes.post('/connections/m365-executors/probe', async (c) => {
   c.header('Cache-Control', 'no-store');
   return c.json({ data: await probeM365Executors(process.env) });
+});
+
+// #9372: TURN preflight. GET returns the result cached by the one-shot startup
+// check (null until it finishes); POST re-probes on demand (outbound UDP, so
+// not a GET). Only TURN_HOST:TURN_PORT from the env is contacted.
+systemConnectionsAdminRoutes.get('/connections/turn', (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json({ data: getLastTurnPreflight() });
+});
+
+systemConnectionsAdminRoutes.post('/connections/turn/probe', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json({ data: await startTurnPreflight(process.env) });
 });
