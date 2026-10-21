@@ -52,3 +52,20 @@ describe('loadInvoiceForRender footer (#7510)', () => {
     expect((await loadInvoiceForRender('inv-1'))!.branding.footerText).toBe('Frozen at issue');
   });
 });
+
+// #9414 W3a: the PDF render holds an open transaction, so the assembler must not open a second
+// connection for the partner/branding reads: the loader hands over what it read on its own.
+describe('loadInvoiceForRender preloaded branding (W3a)', () => {
+  it('hands the assembler the partner and branding rows it read', async () => {
+    queue(invoice, 'Org footer');
+    const loaded = (await loadInvoiceForRender('inv-1'))!;
+    expect(loaded.preloaded?.partner).toMatchObject({ name: 'Lantern IT' });
+    expect(loaded.preloaded?.brand).toEqual({ logoUrl: null, primaryColor: null });
+  });
+
+  it('hands over nothing when the partner row was not visible (org-scoped caller), so the assembler falls back to its own read', async () => {
+    rows.next = [[invoice], [], []];
+    rows.i = 0;
+    expect((await loadInvoiceForRender('inv-1'))!.preloaded).toBeUndefined();
+  });
+});

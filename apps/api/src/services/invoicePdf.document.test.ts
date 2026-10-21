@@ -11,6 +11,7 @@ import {
   extractPositionedPdfText, fixtureBranding, goldenLines, makeFixtureInvoice, makeFixtureLine, pdfPageCount,
 } from '../testUtils/invoiceRenderFixtures';
 
+const state = vi.hoisted(() => ({ draws: [] as { font: string; text: string }[], currentFont: '' }));
 const texts = (pdf: Buffer) => extractPositionedPdfText(pdf).map((f) => f.text);
 
 describe('invoice PDF strings follow the document locale', () => {
@@ -79,7 +80,6 @@ describe('totals', () => {
 });
 
 describe('theme fonts', () => {
-  const state = vi.hoisted(() => ({ draws: [] as { font: string; text: string }[], currentFont: '' }));
   let fontSpy: ReturnType<typeof vi.spyOn>;
   let textSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {

@@ -381,7 +381,7 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
   invoice: InvoiceRow;
   branding: InvoiceBranding;
   /** The partner/branding rows this loader read on the CALLER's connection, for the assembler. */
-  preloaded: PreloadedBranding;
+  preloaded: PreloadedBranding | undefined;
   appendix: InvoiceDeviceAppendix | null;
   /** #8604 line itemization: a draft previews override ?? partner default;
    *  anything issued reads ONLY its frozen invoices.line_* columns. */
@@ -430,12 +430,14 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
     invoice,
     appendix,
     lineDetail,
-    preloaded: {
-      partner: partner
-        ? { name: partner.name, billingEmail: partner.billingEmail, documentTheme: partner.documentTheme, documentPageSize: partner.documentPageSize, settings: partner.settings }
-        : null,
-      brand: branding ? { logoUrl: branding.logoUrl ?? null, primaryColor: branding.primaryColor ?? null } : null,
-    },
+    // Only when the partner row was visible: an org-scoped caller (the portal) reads 0 partner rows
+    // under partner-axis RLS (#1375 class), and then the assembler's own system-context read must run.
+    preloaded: partner
+      ? {
+          partner: { name: partner.name, billingEmail: partner.billingEmail, documentTheme: partner.documentTheme, documentPageSize: partner.documentPageSize, settings: partner.settings },
+          brand: branding ? { logoUrl: branding.logoUrl ?? null, primaryColor: branding.primaryColor ?? null } : null,
+        }
+      : undefined,
     branding: {
       // Seller-snapshot fallback before the document-type literal (#2151), so
       // the invoice PDF degrades the same way the quote side does
