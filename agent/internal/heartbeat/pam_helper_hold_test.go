@@ -352,8 +352,11 @@ func TestRunPamFlowOnDemandSpawnFailsFastWhenSessionCannotHostHelper(t *testing.
 		// check is not known to be permanent, so the request stays pending.
 		reported bool
 	}{
-		"session cannot host":      {&fakeLifecycle{mode: "on-demand", unavailable: map[sessionbroker.HelperKey]bool{key: true}}, true},
-		"availability check fails": {&fakeLifecycle{mode: "on-demand", availableErr: sessionbroker.ErrLeaseSessionNotFound}, false},
+		"session cannot host": {&fakeLifecycle{mode: "on-demand", unavailable: map[sessionbroker.HelperKey]bool{key: true}}, true},
+		// Enumeration succeeded and the session is gone: definite.
+		"session not found": {&fakeLifecycle{mode: "on-demand", availableErr: sessionbroker.ErrLeaseSessionNotFound}, true},
+		// The check itself failed: not known to be permanent.
+		"availability check fails": {&fakeLifecycle{mode: "on-demand", availableErr: errors.New("WTSEnumerateSessions failed")}, false},
 	}
 	for name, tc := range cases {
 		lc := tc.lc

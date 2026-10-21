@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -87,6 +88,12 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	// waiting out pamHelperSpawnWait would stall every queued elevation.
 	key := sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleSystem}
 	available, err := lc.HelperRoleAvailable(key)
+	if errors.Is(err, sessionbroker.ErrLeaseSessionNotFound) {
+		// A fresh WTS enumeration (or the absence of a session detector) says
+		// the session does not exist: definite, so report it.
+		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableSessionUnavailable,
+			fmt.Sprintf("session %d not found: %v", winID, err))
+	}
 	if err != nil {
 		// The check itself failed (e.g. a transient WTS enumeration error), so
 		// whether the session can host a helper is unknown: stop this flow but

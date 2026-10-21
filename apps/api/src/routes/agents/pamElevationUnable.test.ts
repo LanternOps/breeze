@@ -129,8 +129,9 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
     await post(buildApp(), validBody);
 
     // Phone approvals and the event come only after the elevation committed
-    // (#7526: elevation first, then approval rows).
-    expect(order).toEqual(['rateLimit', 'context:open', 'context:committed', 'expireMobile', 'publish']);
+    // (#7526: elevation first, then approval rows). The event goes first so
+    // a failed withdrawal cannot drop it.
+    expect(order).toEqual(['rateLimit', 'context:open', 'context:committed', 'publish', 'expireMobile']);
     expect(mocks.rateLimiter).toHaveBeenCalledWith(expect.anything(), `pam:elevation-unable:rate:device:${DEVICE}`, 120, 60);
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
       {
@@ -177,7 +178,8 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
 
     const first = await post(buildApp(), validBody);
     expect(first.status).toBe(503);
-    expect(mocks.publishEvent).not.toHaveBeenCalled();
+    // The close was already announced before the withdrawal failed.
+    expect(mocks.publishEvent).toHaveBeenCalledOnce();
 
     // The elevation write committed, so the agent's retry is already_reported
     // and runs the withdrawal again.
@@ -186,6 +188,7 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
     const retry = await post(buildApp(), validBody);
     expect(retry.status).toBe(200);
     expect(mocks.expireMobile).toHaveBeenCalledTimes(2);
+    expect(mocks.publishEvent).toHaveBeenCalledOnce();
     errSpy.mockRestore();
   });
 

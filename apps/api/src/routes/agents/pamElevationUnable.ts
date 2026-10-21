@@ -117,6 +117,25 @@ pamElevationUnableRoutes.post(
       });
     }
 
+    if (result.kind === 'recorded' && result.closed) {
+      // Committed: announce the close before the approval withdrawal, so a
+      // withdrawal failure (503, agent retries into 'already_reported') cannot
+      // drop the event. Same event the stale-request expirer publishes, with
+      // its own cause. Best-effort; the row is the record.
+      try {
+        await publishEvent('elevation.expired', result.orgId, {
+          elevationRequestId: result.id,
+          deviceId: result.deviceId,
+          flowType: result.flowType,
+          status: 'expired',
+          cause: 'device_unable',
+          reason: body.reason,
+        }, 'pam-device-unable');
+      } catch (err) {
+        console.error(`[PamElevationUnable] event publish failed for ${result.id}:`, err);
+      }
+    }
+
     // Withdraw the request's phone approvals (only uac_intercept fans out).
     // Outside the committed context and in system scope: approval_requests is
     // Shape-6, and #7526 orders elevation first, then approval rows. This runs
@@ -138,23 +157,6 @@ pamElevationUnableRoutes.post(
 
     if (result.kind === 'already_reported') {
       return c.json({ status: 'already_reported', elevationStatus: result.status }, 200);
-    }
-
-    if (result.closed) {
-      // Committed: announce the close. Same event the stale-request expirer
-      // publishes, with its own cause. Best-effort; the row is the record.
-      try {
-        await publishEvent('elevation.expired', result.orgId, {
-          elevationRequestId: result.id,
-          deviceId: result.deviceId,
-          flowType: result.flowType,
-          status: 'expired',
-          cause: 'device_unable',
-          reason: body.reason,
-        }, 'pam-device-unable');
-      } catch (err) {
-        console.error(`[PamElevationUnable] event publish failed for ${result.id}:`, err);
-      }
     }
 
     return c.json({ status: 'recorded', elevationStatus: result.status }, 200);
