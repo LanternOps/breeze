@@ -376,6 +376,30 @@ Authorization: Bearer brz_<helper-token>
 └─────────────────────────────────┘
 ```
 
+### Windows Helper Lifecycle (Always-On vs. On-Demand)
+
+On Windows the agent service starts the helper processes itself, one per interactive session, in two roles: a **SYSTEM helper** (screen capture, input, the PAM approval dialog and consent-prompt handling) and a **user helper** (tray, chat, notifications, user-context scripts). How many it keeps running depends on the lifecycle mode:
+
+| Mode | Behavior |
+|------|----------|
+| `always-on` | A SYSTEM helper and a user helper in every eligible session, all the time. Default on workstations and on Windows Server without the RD Session Host role. |
+| `on-demand` | No helpers at rest. A helper is started when an operation needs one (a remote desktop connection or a script targeted at a session) and stopped about two minutes after the operation ends. Default on RD Session Hosts, where one helper per session per user adds up. |
+
+**PAM on on-demand hosts.** While the device's effective PAM policy has UAC interception enabled, an on-demand host also keeps a SYSTEM helper in every session a user is signed into. The SYSTEM helper shows the elevation dialog and handles `consent.exe`, and a UAC prompt can appear at any time. Sessions at the logon screen and disconnected sessions get no PAM helper. User helpers stay on-demand. When the policy turns interception off, those SYSTEM helpers are stopped on the next reconcile. If an elevation request arrives before the helper for that session is up (for example, right after the user signs in), the agent starts one for that session and waits up to 30 seconds for it. If no helper comes up, the agent logs an error and cannot act on the request. The request still appears as pending in the console, because agents cannot yet report a request they cannot handle.
+
+**Choosing the mode.** The agent resolves the mode in this order:
+
+1. **Local agent config.** `helper_lifecycle_mode` in `agent.yaml`, or the `BREEZE_HELPER_LIFECYCLE_MODE` environment variable. Values: `always-on`, `on-demand`, or `auto`. Use this when you need to override the mode on one machine. It always wins, so the policy setting below has no effect on that device. Restart the agent service after changing it.
+2. **Configuration policy.** The **Helper lifecycle on RD Session Hosts** setting on the policy's Breeze Helper feature (`auto`, `always-on`, `on-demand`). Applied live from the heartbeat.
+3. **Auto-detection.** With neither set (or both `auto`), RD Session Hosts run on-demand and every other machine runs always-on.
+
+```yaml
+# agent.yaml: force a helper in every session on this host
+helper_lifecycle_mode: always-on
+```
+
+The agent logs the resolved mode at startup (`helper lifecycle mode resolved`, with `mode`, `rdsHost`, and `override` fields) and reports it in its heartbeat.
+
 ### IPC Message Types
 
 The Helper communicates with the agent service over a local IPC connection (Unix domain socket on Linux/macOS, named pipe on Windows). Messages are typed envelopes with JSON payloads.

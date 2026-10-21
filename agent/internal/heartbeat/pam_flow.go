@@ -101,10 +101,18 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	}
 	session := find(ipc.ScopePam, targetWinSession)
 	if session == nil {
-		log.Warn("pam: no capable SYSTEM helper session; cannot complete elevation flow, consent.exe will time out",
+		// On-demand (RDS) lifecycle: the PAM hold may not have a helper up in
+		// this session yet. Lease and spawn one rather than stranding the
+		// request (#8996). The lease is held until the flow returns.
+		var releaseLease func()
+		session, releaseLease = h.spawnPamHelperOnDemand(ctx, find, outcome.RequestID, targetWinSession)
+		defer releaseLease()
+		if session == nil {
+			return
+		}
+		log.Info("pam: on-demand SYSTEM helper ready; continuing elevation flow",
 			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
 			"targetWinSession", targetWinSession)
-		return
 	}
 	if outcome.Status == etwlua.ElevationDenied {
 		h.denyConsent(session, outcome.RequestID, "policy_denied", targetWinSession) // policy hard-deny, no dialog
