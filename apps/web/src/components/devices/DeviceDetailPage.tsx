@@ -61,6 +61,16 @@ export default function DeviceDetailPage(props: DeviceDetailPageProps) {
   );
 }
 
+// True when this document was loaded from a same-origin page (an in-app list,
+// filtered view, etc.), i.e. history.back() stays inside Breeze.
+function cameFromSameOrigin(): boolean {
+  try {
+    return !!document.referrer && new URL(document.referrer).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   const { t } = useTranslation("devices");
   const [device, setDevice] = useState<Device | null>(null);
@@ -391,9 +401,11 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   };
   // Back returns to wherever the tech came from (list filters, scroll, org);
   // a fresh tab / deep link has no history to pop, so fall to the org-aware
-  // Devices crumb instead.
+  // Devices crumb instead. history.length alone can't tell an in-app entry
+  // from about:blank / another site (#9259), so only pop when the page was
+  // reached from a same-origin document.
   const handleBack = () => {
-    if (typeof window !== "undefined" && window.history.length > 1) {
+    if (typeof window !== "undefined" && window.history.length > 1 && cameFromSameOrigin()) {
       window.history.back();
       return;
     }
