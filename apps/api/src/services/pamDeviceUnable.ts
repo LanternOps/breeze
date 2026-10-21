@@ -41,8 +41,8 @@ export const PAM_DEVICE_UNABLE_REASONS = [
   // The SYSTEM helper that started for the session does not hold the PAM
   // scope, so it cannot run the elevation flow.
   'helper_unavailable',
-  // The requester's Windows session cannot host a helper: unresolved, found
-  // but not active or connected, or ended while waiting for the helper.
+  // The requester's Windows session was found but is not active or
+  // connected, so it cannot host a helper.
   'session_unavailable',
   // A helper was requested but did not start: crash cooldown, retries
   // exhausted, spawning unavailable on the host, or not ready in time.

@@ -18,8 +18,8 @@ import (
 const (
 	// The helper that started for the session does not hold the PAM scope.
 	pamUnableHelperUnavailable = "helper_unavailable"
-	// The requester's Windows session cannot host a helper: unresolved, found
-	// but not active or connected, or ended while waiting for the helper.
+	// The requester's Windows session was found but is not active or
+	// connected, so it cannot host a helper.
 	pamUnableSessionUnavailable = "session_unavailable"
 	// A helper was requested but did not start: crash cooldown, retries
 	// exhausted, spawning unavailable, or not ready in time.

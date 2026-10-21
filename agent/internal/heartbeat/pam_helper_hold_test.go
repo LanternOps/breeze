@@ -231,9 +231,12 @@ func TestRunPamFlowStopsWhenOnDemandSpawnFails(t *testing.T) {
 		"helper wait timed out": {&fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
 			key: {Status: sessionbroker.HelperWaitTimeout},
 		}}, pamUnableHelperStartFailed},
-		"session ended while waiting": {&fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
+		// The lease was dropped because the session left a ListSessions
+		// snapshot, which a skipped or truncated listing can also cause: not
+		// proof the session ended, so not reported.
+		"session left the snapshot while waiting": {&fakeLifecycle{mode: "on-demand", waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{
 			key: {Status: sessionbroker.HelperWaitSessionGone},
-		}}, pamUnableSessionUnavailable},
+		}}, ""},
 		// A lease refusal can come from a transient re-enumeration: not reported.
 		"lease refused": {&fakeLifecycle{mode: "on-demand", acquireErr: sessionbroker.ErrLeaseSessionNotFound}, ""},
 	}

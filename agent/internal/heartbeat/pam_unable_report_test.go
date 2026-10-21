@@ -249,7 +249,12 @@ func TestDeliverPamUnableGivesUpAfterWindow(t *testing.T) {
 // timeout is capped by the time left.
 func TestDeliverPamUnableAttemptNeverOutlivesWindow(t *testing.T) {
 	release := make(chan struct{})
+	var mu sync.Mutex
+	hits := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -268,7 +273,19 @@ func TestDeliverPamUnableAttemptNeverOutlivesWindow(t *testing.T) {
 	}
 	// 300ms window plus scheduling slack; a regression that lets an attempt run
 	// its full 30s timeout lands far outside this.
-	if elapsed := time.Since(start); elapsed > 900*time.Millisecond {
+	elapsed := time.Since(start)
+	if elapsed > 900*time.Millisecond {
 		t.Fatalf("delivery ran %s past a 300ms window", elapsed)
+	}
+	// The report was actually attempted and held until the window ran out,
+	// not abandoned before reaching the server.
+	mu.Lock()
+	got := hits
+	mu.Unlock()
+	if got == 0 {
+		t.Fatal("no attempt reached the server")
+	}
+	if elapsed < 250*time.Millisecond {
+		t.Fatalf("delivery gave up after %s, before its 300ms window", elapsed)
 	}
 }

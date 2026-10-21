@@ -132,7 +132,16 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 				"elevationRequestId", requestID, "targetWinSession", targetWinSession, "error", ctx.Err().Error())
 			return nil, release, nil
 		}
-		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableReasonForWait(res), helperWaitFailureMessage(res))
+		if res.Status == sessionbroker.HelperWaitSessionGone {
+			// The lifecycle drops a lease when its session is missing from a
+			// plain ListSessions snapshot, which a skipped row or a truncated
+			// list can also produce, so this is not proof the session ended.
+			// Same rule as the availability check above: stop, leave pending.
+			log.Error("pam: requester session dropped out of the session list while waiting for a SYSTEM helper; elevation flow stopped, request left pending",
+				"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID, "detail", helperWaitFailureMessage(res))
+			return nil, release, nil
+		}
+		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableHelperStartFailed, helperWaitFailureMessage(res))
 	}
 
 	// Ready means authenticated with capabilities; PAM additionally needs the
@@ -152,12 +161,4 @@ func pamHelperUnavailable(requestID, targetWinSession, reason, detail string) *p
 	log.Error("pam: no capable SYSTEM helper session; cannot complete elevation flow, consent.exe will time out — reporting the request as unable to the server",
 		"elevationRequestId", requestID, "targetWinSession", targetWinSession, "reason", reason, "detail", detail)
 	return &pamUnable{Reason: reason, Detail: detail}
-}
-
-// pamUnableReasonForWait maps a failed helper wait to its report category.
-func pamUnableReasonForWait(res sessionbroker.HelperWaitResult) string {
-	if res.Status == sessionbroker.HelperWaitSessionGone {
-		return pamUnableSessionUnavailable
-	}
-	return pamUnableHelperStartFailed
 }
