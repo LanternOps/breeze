@@ -97,13 +97,26 @@ func EngineVersion() string {
 var (
 	engineOnce sync.Once
 	engineErr  error
+	// stderrReason is why EnsureEngine pointed os.Stderr at the null device
+	// (nil when stderr was usable). Written once inside engineOnce.
+	stderrReason error
 )
+
+// StderrRedirect reports whether EnsureEngine had to replace an unusable
+// os.Stderr with the null device so the guest could start (#9253), and why
+// it was unusable. Meaningful only after EnsureEngine has run. yarac does not
+// log (breeze-yarac's stdout is its JSON output); the agent logs this.
+func StderrRedirect() (replaced bool, reason error) {
+	return stderrReason != nil, stderrReason
+}
 
 // EnsureEngine loads and compiles the embedded YARA-X guest module once per
 // process. yaraxwasm would otherwise honour a YARAX_GUEST_WASM environment
 // variable and execute whatever wasm file it names; the agent only ever runs
 // the guest embedded in its own (signed) binary, so the override is cleared
-// before the first load.
+// before the first load. It also makes sure os.Stderr is usable as the
+// guest's WASI stderr (ensureUsableStderr) — without that the engine never
+// starts under a Windows service.
 func EnsureEngine() error {
 	engineOnce.Do(func() {
 		defer func() {
@@ -113,6 +126,14 @@ func EnsureEngine() error {
 		}()
 		if os.Getenv(guestOverrideEnv) != "" {
 			_ = os.Unsetenv(guestOverrideEnv)
+		}
+		replaced, reason, err := ensureUsableStderr()
+		if err != nil {
+			engineErr = fmt.Errorf("YARA engine init failed: %w", err)
+			return
+		}
+		if replaced {
+			stderrReason = reason
 		}
 		if err := yx.Initialise(); err != nil {
 			engineErr = fmt.Errorf("YARA engine init failed: %w", err)

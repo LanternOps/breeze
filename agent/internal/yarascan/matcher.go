@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	yx "github.com/niallnsec/yaraxwasm"
@@ -261,7 +262,9 @@ func LoadMatcher(ctx context.Context, refs []RuleSetRef, f Fetcher, c *Cache) (m
 	if len(bundles) == 0 {
 		return nil, errs
 	}
-	if err := yarac.EnsureEngine(); err != nil {
+	err := yarac.EnsureEngine()
+	noteStderrRedirect(&stderrNoteOnce, yarac.StderrRedirect)
+	if err != nil {
 		for _, b := range bundles {
 			errs = append(errs, RuleSetError{ID: b.RuleSetID, Version: b.Version, Code: CodeEngineUnavailable, Detail: truncate(err.Error(), maxDetailLen)})
 		}
@@ -320,6 +323,22 @@ func LoadMatcher(ctx context.Context, refs []RuleSetRef, f Fetcher, c *Cache) (m
 		}
 	}
 	return &yaraMatcher{entry: entry}, errs
+}
+
+var stderrNoteOnce sync.Once
+
+// noteStderrRedirect logs, once per process, that the engine had to point an
+// unusable os.Stderr at the null device so its guest could start (#9253) —
+// the expected state under a Windows service. INFO, not WARN: the engine
+// works. If the engine still fails, LoadMatcher reports engine_unavailable
+// per set and the scan handler WARN-logs each one with the error.
+func noteStderrRedirect(once *sync.Once, redirect func() (bool, error)) {
+	once.Do(func() {
+		if replaced, reason := redirect(); replaced && reason != nil {
+			log.Info("process has no usable stderr (expected under a Windows service); YARA engine stderr goes to the null device",
+				"reason", reason.Error())
+		}
+	})
 }
 
 // NewMatcherFromEntry wraps an already-compiled entry (breeze-yarac scan).
