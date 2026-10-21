@@ -18,7 +18,9 @@ var _ etwlua.PamRunner = (*Heartbeat)(nil)
 const (
 	// pamDialogTimeout bounds the broker round-trip to comfortably under
 	// consent.exe's idle lifetime (~120s default). Timeout → deny+dismiss
-	// (RequestPamApproval already returns that on timeout).
+	// (RequestPamApproval already returns that on timeout). Do not rely on that
+	// idle lifetime anywhere else: on Windows Server 2022 credential prompts
+	// were observed alive 30+ minutes later (#8995).
 	pamDialogTimeout = 90 * time.Second
 	// pamDismissTimeout gives the helper's eight-second dismissal attempt time
 	// to complete and return its correlated IPC result.
@@ -166,6 +168,9 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	case sessionbroker.PamActionDeny:
 		h.denyConsent(session, outcome.RequestID, dialog.Reason, targetWinSession)
 	case sessionbroker.PamActionAwaitRemote:
+		// Remember this request's own consent.exe so the approved launch can
+		// close it afterwards (#8995); the launch itself never goes through it.
+		h.recordPendingPamConsent(outcome.RequestID, targetWinSession, ev.Consent)
 		log.Info("pam: awaiting remote technician approval; server will issue actuate_elevation", "elevationRequestId", outcome.RequestID)
 	}
 }

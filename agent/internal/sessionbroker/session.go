@@ -43,7 +43,11 @@ type Session struct {
 	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
 	// once at auth by consentProtocolFromAuth, never changed afterwards.
 	ConsentProtocolVersion int
-	ConnectedAt            time.Time
+	// SupportsTargetedPamDismiss is true when this SYSTEM helper advertised it
+	// can dismiss one specific consent.exe (ipc.PamDismissConsentRequest.Instance).
+	// Set once at auth by targetedPamDismissFromAuth, never changed afterwards.
+	SupportsTargetedPamDismiss bool
+	ConnectedAt                time.Time
 	LastSeen               time.Time
 
 	conn    *ipc.Conn

@@ -52,29 +52,46 @@ func selectNewestConsentProcess(
 	return selected, found
 }
 
+// requesterResolution is who raised a UAC prompt and, when it could be pinned
+// down, which consent.exe process is showing it.
+type requesterResolution struct {
+	Username  string
+	SessionID uint32
+	Source    string
+	// Consent identifies the consent.exe the request was attributed to. Set
+	// only for requesterSourceConsentProcess: a console-fallback attribution
+	// names a session, not a prompt, and must never be used to target one.
+	Consent ConsentInstance
+}
+
 func resolveRequesterSessionWith(
 	candidates []consentProcessCandidate,
 	trustedImagePath string,
 	now time.Time,
 	consoleSessionID uint32,
 	lookupSessionUser func(sessionID uint32) string,
-) (username string, sessionID uint32, source string) {
+) requesterResolution {
 	if lookupSessionUser == nil {
-		return "", 0, requesterSourceUnresolved
+		return requesterResolution{Source: requesterSourceUnresolved}
 	}
 
 	if candidate, ok := selectNewestConsentProcess(candidates, trustedImagePath, now); ok {
 		if user := lookupSessionUser(candidate.SessionID); user != "" {
-			return user, candidate.SessionID, requesterSourceConsentProcess
+			return requesterResolution{
+				Username:  user,
+				SessionID: candidate.SessionID,
+				Source:    requesterSourceConsentProcess,
+				Consent:   ConsentInstance{PID: candidate.PID, CreatedAt: candidate.StartedAt},
+			}
 		}
 	}
 
 	if validInteractiveSessionID(consoleSessionID) {
 		if user := lookupSessionUser(consoleSessionID); user != "" {
-			return user, consoleSessionID, requesterSourceConsoleFallback
+			return requesterResolution{Username: user, SessionID: consoleSessionID, Source: requesterSourceConsoleFallback}
 		}
 	}
-	return "", 0, requesterSourceUnresolved
+	return requesterResolution{Source: requesterSourceUnresolved}
 }
 
 func resolveRequesterSessionAfterEnumeration(
@@ -84,7 +101,7 @@ func resolveRequesterSessionAfterEnumeration(
 	now time.Time,
 	consoleSessionID uint32,
 	lookupSessionUser func(sessionID uint32) string,
-) (username string, sessionID uint32, source string) {
+) requesterResolution {
 	if enumerationErr != nil {
 		candidates = nil
 	}

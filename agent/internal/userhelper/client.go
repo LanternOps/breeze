@@ -330,7 +330,8 @@ func (c *Client) authenticate() error {
 		// Advertised only alongside SupportsConsentUI: the agent hands v2
 		// prompts only to helpers that render them (sessionbroker's
 		// consentProtocolFromAuth applies the same condition).
-		ConsentProtocolVersion: consentProtocolForAuth(supportsConsent),
+		ConsentProtocolVersion:     consentProtocolForAuth(supportsConsent),
+		SupportsTargetedPamDismiss: supportsTargetedPamDismissForAuth(c.role),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -1205,9 +1206,16 @@ func (c *Client) handlePamDismissConsent(env *ipc.Envelope) {
 		return
 	}
 
+	if req.Instance != nil && !req.Instance.Valid() {
+		if err := c.conn.SendError(env.ID, ipc.TypePamDismissConsentResult, "invalid PAM consent instance"); err != nil {
+			log.Warn("failed to send PAM dismiss instance error", "id", env.ID, "error", err)
+		}
+		return
+	}
+
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	result := newPamActuator().Dismiss(ctx)
+	result := dismissPamConsent(ctx, newPamActuator(), req.Instance)
 	if err := c.conn.SendTyped(env.ID, ipc.TypePamDismissConsentResult, ipc.PamDismissConsentResult{
 		Success:       result.Success,
 		Reason:        result.Reason,
@@ -1215,6 +1223,35 @@ func (c *Client) handlePamDismissConsent(env *ipc.Envelope) {
 	}); err != nil {
 		log.Warn("failed to send PAM dismiss result", "id", env.ID, "error", err)
 	}
+}
+
+// reasonTargetedDismissUnsupported is reported when a targeted dismissal reaches
+// an actuator that cannot target one consent.exe. Nothing is pressed.
+const reasonTargetedDismissUnsupported = "targeted_dismiss_unsupported"
+
+// dismissPamConsent runs the deny path's untargeted Dismiss, or — when the
+// agent named a consent.exe instance (#8995) — dismisses only that instance. A
+// targeted request never falls back to the untargeted Escape, which would
+// cancel whichever UAC prompt happened to be found first.
+func dismissPamConsent(ctx context.Context, actuator pamactuator.Actuator, instance *ipc.PamConsentInstance) pamactuator.Result {
+	if instance == nil {
+		return actuator.Dismiss(ctx)
+	}
+	targeted, ok := actuator.(pamactuator.InstanceDismisser)
+	if !ok {
+		return pamactuator.Result{Success: false, Reason: reasonTargetedDismissUnsupported,
+			DetailMessage: "this PAM actuator cannot dismiss a specific consent.exe instance"}
+	}
+	return targeted.DismissInstance(ctx, pamactuator.ConsentInstance{
+		PID:       instance.PID,
+		CreatedAt: time.Unix(0, instance.CreatedUnixNano),
+	})
+}
+
+// supportsTargetedPamDismissForAuth is advertised at auth: only the SYSTEM
+// helper handles pam_dismiss_consent, and it honours Instance (#8995).
+func supportsTargetedPamDismissForAuth(role ipc.HelperRole) bool {
+	return role == ipc.HelperRoleSystem
 }
 
 func (c *Client) handleTrayUpdate(env *ipc.Envelope) {

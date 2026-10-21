@@ -598,6 +598,13 @@ type Heartbeat struct {
 	// falls back to.
 	pamConsoleSessionID func() string
 	pamDismissConsent   func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
+	// pamDismissConsentInstance dismisses one specific consent.exe (#8995);
+	// nil means sessionBroker.DismissPamConsentInstance.
+	pamDismissConsentInstance func(session *sessionbroker.Session, id string, instance ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error)
+	// pamPendingConsents remembers the consent.exe each request parked for
+	// technician approval was raised from, so a verified pam_apply_v2 launch
+	// can dismiss that prompt and no other (pam_approved_consent.go).
+	pamPendingConsents pendingPamConsents
 	// pamActuateMu serializes consent.exe actuation/dismissal so the local
 	// etwlua flow (RunPamFlow) and the remote actuate_elevation command never
 	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
