@@ -372,6 +372,8 @@ export const SENTRY_EVENT_CODES = [
   'mcp_session_principal_mismatch',
   /** Unknown/expired `Mcp-Session-Id` rate spiked — suspect session-store loss (#3744). */
   'mcp_session_unknown_rate_high',
+  /** SEP-2243 header/body mismatch rate spiked on stateless MCP — suspect a body-rewriting gateway or request smuggling (B-W03 #6157). */
+  'mcp_header_mismatch_rate_high',
 
   // --- retention --------------------------------------------------------
   /**

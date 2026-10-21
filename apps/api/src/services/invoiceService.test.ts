@@ -440,15 +440,25 @@ describe('invoiceService guards', () => {
       .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
   });
 
-  it('getCustomerInvoice returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {
+  it('getPortalInvoiceRowOr404 returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
     await expect(
-      svc.getCustomerInvoice('i1', 'other-org')
+      svc.getPortalInvoiceRowOr404('i1', 'other-org')
     ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
   });
 
-  it('getCustomerInvoice returns the exact customer-safe invoice header keyset', async () => {
-    queueResult([{
+  it('getPortalInvoiceRowOr404 returns the raw row for its own org (drafts included: the route refuses them)', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    await expect(svc.getPortalInvoiceRowOr404('i1', 'org1')).resolves.toMatchObject({ id: 'i1', status: 'draft', partnerId: 'p1' });
+  });
+
+  it('getPortalInvoiceRowOr404 returns 404 for a missing row', async () => {
+    queueResult([]);
+    await expect(svc.getPortalInvoiceRowOr404('i1', 'org1')).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
+  });
+
+  it('toCustomerInvoiceHeader returns the exact customer-safe invoice header keyset', () => {
+    const invoice = svc.toCustomerInvoiceHeader({
       id: 'i1',
       partnerId: 'internal-partner-id',
       orgId: 'org1',
@@ -487,10 +497,7 @@ describe('invoiceService guards', () => {
       createdBy: 'internal-user-id',
       createdAt: new Date('2026-06-30T00:00:00Z'),
       updatedAt: new Date('2026-07-01T00:00:00Z'),
-    }]);
-    queueResult([]);
-
-    const { invoice } = await svc.getCustomerInvoice('i1', 'org1');
+    } as unknown as Parameters<typeof svc.toCustomerInvoiceHeader>[0]);
 
     expect(Object.keys(invoice).sort()).toEqual([
       'amountPaid',
@@ -522,22 +529,23 @@ describe('invoiceService guards', () => {
     expect(invoice).not.toHaveProperty('siteId');
     expect(invoice).not.toHaveProperty('createdAt');
     expect(invoice).not.toHaveProperty('updatedAt');
+    // The untyped jsonb is rebuilt from the known snapshot keys (#9402).
+    expect(invoice.sellerSnapshot).toEqual({ name: 'MSP, Inc.', address: null, phone: null, email: null, website: null });
   });
 
-  it('getCustomerInvoice returns partnerId OUTSIDE the serialized header for the branding lookup', async () => {
-    // The portal detail route resolves the partner display name from this id.
-    // It used to read `result.invoice.partnerId`, which the serialization
-    // boundary strips — undefined reached the partners query and every portal
-    // invoice-detail request 500ed (postgres.js UNDEFINED_VALUE).
-    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'internal-partner-id' }]);
-    queueResult([]);
-    const result = await svc.getCustomerInvoice('i1', 'org1');
-    expect(result.partnerId).toBe('internal-partner-id');
-    expect(result.invoice).not.toHaveProperty('partnerId');
+  it('asDocumentSellerSnapshot drops unknown keys and non-objects', () => {
+    expect(svc.asDocumentSellerSnapshot(null)).toBeNull();
+    expect(svc.asDocumentSellerSnapshot('MSP')).toBeNull();
+    expect(svc.asDocumentSellerSnapshot([{ name: 'x' }])).toBeNull();
+    expect(svc.asDocumentSellerSnapshot({ name: 'MSP', bankAccount: 'secret', address: { line1: 'A', iban: 'x' } })).toEqual({
+      name: 'MSP', phone: null, email: null, website: null,
+      address: { line1: 'A', line2: null, city: null, region: null, postalCode: null, country: null },
+    });
   });
 
   it('serializes ticketNumber without source metadata', () => {
     expect(svc.toCustomerInvoiceLine({
+      id: 'line-1',
       ticketNumber: 'T-100',
       name: 'Support',
       description: 'Printer repair',
@@ -546,6 +554,7 @@ describe('invoiceService guards', () => {
       taxable: false,
       lineTotal: '100',
     }, DEFAULT_INVOICE_LINE_DETAIL)).toEqual({
+      id: 'line-1',
       ticketNumber: 'T-100',
       ticketCategory: null,
       name: 'Support',
@@ -559,11 +568,21 @@ describe('invoiceService guards', () => {
     });
   });
 
+  it('never emits the OD-9 keys even when the source carries ticketSubject / parentLineId', () => {
+    const line = svc.toCustomerInvoiceLine({
+      id: 'line-1', parentLineId: 'parent-1', ticketNumber: '42', ticketSubject: 'Printer offline',
+      name: 'Support', description: '', quantity: '1', unitPrice: '1', taxable: false, lineTotal: '1',
+    }, DEFAULT_INVOICE_LINE_DETAIL);
+    expect(line).not.toHaveProperty('ticketSubject');
+    expect(line).not.toHaveProperty('isChild');
+    expect(line).not.toHaveProperty('parentLineId');
+  });
+
   // #8604: the customer payload applies the frozen line-detail toggles itself,
   // so a withheld note / worked time / date never leaves the server.
   describe('toCustomerInvoiceLine — #8604 line detail', () => {
     const te = {
-      ticketNumber: null, name: null, description: 'Diagnosed paper jam', quantity: '1.50', unitPrice: '100.00',
+      id: 'line-te', ticketNumber: null, name: null, description: 'Diagnosed paper jam', quantity: '1.50', unitPrice: '100.00',
       taxable: false, lineTotal: '150.00', workedMinutes: 110, sourceType: 'time_entry', workDate: '2026-09-16',
     };
     const D = { grouping: 'entry' as const, showDate: false, showNote: true, showWorkedTime: true };
@@ -586,6 +605,14 @@ describe('invoiceService guards', () => {
     it('worked time OFF withholds workedMinutes', () => {
       expect(svc.toCustomerInvoiceLine(te, { ...D, showWorkedTime: false }).workedMinutes).toBeNull();
     });
+    // The frozen toggles on an issued row reach the serializer through
+    // customerLineDetail (the assembler's path for every issued document).
+    it('an issued row\'s frozen toggles withhold the note and worked time', () => {
+      const detail = svc.customerLineDetail({ status: 'sent', lineGrouping: 'entry', lineShowDate: true, lineShowNote: false, lineShowWorkedTime: false });
+      const line = svc.toCustomerInvoiceLine({ ...te, description: 'Internal tech note' }, detail);
+      expect(line).toMatchObject({ name: 'Labor', description: '', workedMinutes: null, workDate: '2026-09-16' });
+      expect(JSON.stringify(line)).not.toContain('Internal tech note');
+    });
   });
 
   // #6467: worked/billed disclosure travels as structured data, not prose —
@@ -593,6 +620,7 @@ describe('invoiceService guards', () => {
   // description edit) exactly like the web/PDF renderers.
   it('serializes workedMinutes through to the customer-safe line', () => {
     expect(svc.toCustomerInvoiceLine({
+      id: 'line-1',
       ticketNumber: null,
       name: null,
       description: 'On-site',
@@ -604,34 +632,11 @@ describe('invoiceService guards', () => {
     }, DEFAULT_INVOICE_LINE_DETAIL)).toMatchObject({ workedMinutes: 30 });
   });
 
-  it('joins tickets and scopes both sides to the invoice org', async () => {
-    queueResult([{
-      id: 'invoice-1', status: 'sent', orgId: 'org1', partnerId: 'p1',
-    }]);
-    queueResult([]);
-    await svc.getCustomerInvoice('invoice-1', 'org1');
-    const ticketJoinCall = (db as unknown as { leftJoin: Mock }).leftJoin.mock.calls.find((call) => {
-      const q = new PgDialect().sqlToQuery(call[1] as SQL);
-      return q.sql.includes('"tickets"."id" = "invoice_lines"."ticket_id"');
-    })!;
-    expect(ticketJoinCall).toBeDefined();
-    const compiledJoin = new PgDialect().sqlToQuery(ticketJoinCall[1] as SQL);
-    expect(compiledJoin.sql).toContain(
-      '"tickets"."id" = "invoice_lines"."ticket_id"',
-    );
-    expect(compiledJoin.sql).toContain('"tickets"."org_id" =');
-    expect(compiledJoin.sql).toContain('"tickets"."deleted_at" is null');
-    expect(compiledJoin.params).toContain('org1');
+  // The ticket-join / row-filter SQL moved to customerDocument.ts's single line
+  // query (#9402); customerDocument.test.ts renders and asserts it.
 
-    const where = (db as unknown as { where: Mock }).where.mock.calls.at(-1)![0];
-    const compiledWhere = new PgDialect().sqlToQuery(where as SQL);
-    expect(compiledWhere.sql).toContain('"invoice_lines"."org_id" =');
-    expect(compiledWhere.params).toContain('org1');
-  });
-
-  it('getCustomerInvoice returns the exact customer-safe invoice line keyset', async () => {
-    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
-    queueResult([{
+  it('toCustomerInvoiceLine returns the exact customer-safe line keyset from a full internal row', () => {
+    const line = svc.toCustomerInvoiceLine({
       id: 'internal-line-id',
       invoiceId: 'i1',
       orgId: 'org1',
@@ -650,14 +655,13 @@ describe('invoiceService guards', () => {
       customerVisible: true,
       sortOrder: 0,
       workedMinutes: null,
-    }]);
+    } as Parameters<typeof svc.toCustomerInvoiceLine>[0], DEFAULT_INVOICE_LINE_DETAIL);
 
-    const result = await svc.getCustomerInvoice('i1', 'org1');
-
-    expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
+    expect(Object.keys(line).sort()).toEqual([
+      'description', 'id', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
-    expect(result.lines[0]).toEqual({
+    expect(line).toEqual({
+      id: 'internal-line-id',
       ticketNumber: null,
       ticketCategory: null,
       // Legacy line (source row carries no `name`): description stays the title.
@@ -672,35 +676,12 @@ describe('invoiceService guards', () => {
     });
   });
 
-  // #8604: the portal reads lines through getCustomerInvoice, so the frozen
-  // toggles on the issued invoice row must reach the serializer. A regression
-  // to default detail here would leak withheld notes / worked time.
-  it('getCustomerInvoice applies the issued invoice frozen line-detail toggles', async () => {
-    queueResult([{
-      id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1',
-      lineGrouping: 'entry', lineShowDate: true, lineShowNote: false, lineShowWorkedTime: false,
-    }]);
-    queueResult([{
-      id: 'l1', invoiceId: 'i1', orgId: 'org1', sourceType: 'time_entry', name: null,
-      description: 'Internal tech note', quantity: '1.50', unitPrice: '100.00', taxable: false,
-      lineTotal: '150.00', customerVisible: true, sortOrder: 0, workedMinutes: 110, workDate: '2026-09-16',
-    }]);
-
-    const result = await svc.getCustomerInvoice('i1', 'org1');
-
-    expect(result.lines[0]).toMatchObject({ name: 'Labor', description: '', workedMinutes: null, workDate: '2026-09-16' });
-    expect(JSON.stringify(result)).not.toContain('Internal tech note');
-  });
-
   // #3319: the portal DTO used to collapse the pair as `description ?? name`,
   // the INVERSE of the fallback the PDF and the MSP web views use, so a line
   // with both fields set showed the customer the blurb and never the title.
-  it('getCustomerInvoice surfaces name and description as separate fields', async () => {
-    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
-    queueResult([{
+  it('toCustomerInvoiceLine surfaces name and description as separate fields', () => {
+    const line = svc.toCustomerInvoiceLine({
       id: 'internal-line-id',
-      invoiceId: 'i1',
-      orgId: 'org1',
       sourceType: 'manual',
       name: 'Onboarding & network setup',
       description: 'Network audit, agent deployment, endpoint enrollment',
@@ -708,21 +689,13 @@ describe('invoiceService guards', () => {
       unitPrice: '1500.00',
       taxable: true,
       lineTotal: '1500.00',
-      customerVisible: true,
-      sortOrder: 0,
       workedMinutes: null,
-    }]);
+    }, DEFAULT_INVOICE_LINE_DETAIL);
 
-    const result = await svc.getCustomerInvoice('i1', 'org1');
-
-    expect(result.lines[0]).toMatchObject({
+    expect(line).toMatchObject({
       name: 'Onboarding & network setup',
       description: 'Network audit, agent deployment, endpoint enrollment',
     });
-    // Still no internal columns leaked alongside the new field.
-    expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
-    ]);
   });
 
   it('markViewed returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {

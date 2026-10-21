@@ -331,16 +331,7 @@
       "error": "Não foi possível carregar a lista de dispositivos.",
       "showing": "Mostrando {{shown}} de {{total}}",
       "loadMore": "Carregar mais",
-      "lastChecked": "Última verificação: {{when}}",
-      "status": {
-        "online": "Online",
-        "offline": "Offline",
-        "maintenance": "Manutenção",
-        "decommissioned": "Desativado",
-        "quarantined": "Em quarentena",
-        "updating": "Atualizando",
-        "pending": "Pendente"
-      }
+      "lastChecked": "Última verificação: {{when}}"
     }
   },
   "patchesPage": {

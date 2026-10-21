@@ -678,6 +678,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_findings',
   'fleet_remediation_run_targets',
   'fleet_remediation_runs',
+  // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
+  // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
+  // child-before-parent constraint of its own.
+  'flows',
   'google_workspace_connections',
   'group_membership_log',
   // W03 Task 12 (#6859): org-scoped, no device_id — the retirement recovery

@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { eq, and, gte, asc, sql, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceWarranty, devices } from '../../db/schema';
+import { deviceWarranty, deviceHardware, devices } from '../../db/schema';
+import { isAgentCollectedWarrantyDevice } from '../../services/warrantyDataSources';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
@@ -54,6 +55,43 @@ warrantyRoutes.post(
     }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+
+    // #5511 W01 (D11) — never queue a sync that cannot produce anything.
+    //
+    // `warrantyProviders/index.ts` deliberately does not register `hpProvider`,
+    // so there is no server-side lookup for any HP device; and an agent-owned
+    // row is written by the device, not the server. In both cases the queued job
+    // changes nothing an operator can see, while this endpoint would already
+    // have answered "Warranty refresh queued". Refuse with a code the caller
+    // can branch on instead.
+    const [hw] = await db
+      .select({ manufacturer: deviceHardware.manufacturer })
+      .from(deviceHardware)
+      .where(eq(deviceHardware.deviceId, deviceId))
+      .limit(1);
+
+    const [existingWarranty] = await db
+      .select({ dataSource: deviceWarranty.dataSource })
+      .from(deviceWarranty)
+      .where(eq(deviceWarranty.deviceId, deviceId))
+      .limit(1);
+
+    if (
+      isAgentCollectedWarrantyDevice({
+        manufacturer: hw?.manufacturer ?? null,
+        dataSource: existingWarranty?.dataSource ?? null,
+      })
+    ) {
+      return c.json(
+        {
+          error:
+            "This device's warranty is collected by the Breeze agent, not by a vendor lookup. "
+            + 'A server-side refresh cannot produce newer data.',
+          code: 'WARRANTY_REFRESH_NOT_AVAILABLE',
+        },
+        409,
+      );
     }
 
     // force: an explicit click is the escape hatch when virtualization

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildBrandingDecision, brandingScopeId } from './helperBranding';
+import { buildBrandingDecision, brandingScopeId, resolvePartnerOrgBranding } from './helperBranding';
 import { endpointMessageIdentity } from './helperBrandingEndpointIdentity';
 
 const FALLBACK = { companyName: 'Acme IT', displayName: 'Acme IT', accent: '#12AB34' };
@@ -14,24 +14,36 @@ describe('endpointMessageIdentity', () => {
     expect(endpointMessageIdentity({ state: 'cleared' }, FALLBACK)).toEqual(FALLBACK);
   });
 
-  it('uses the Helper branding identity and accent when set', () => {
+  it('never takes the sender name from Helper branding; only the accent follows it (#9396)', () => {
     const decision = buildBrandingDecision(
-      { companyName: 'Example MSP', displayName: 'Example Assist', primaryColor: '#2255AA' },
+      { companyName: 'Microsoft Security', displayName: 'Microsoft Security', primaryColor: '#2255AA' },
       SCOPE,
     );
     expect(endpointMessageIdentity(decision, FALLBACK)).toEqual({
-      companyName: 'Example MSP',
-      displayName: 'Example Assist',
+      companyName: 'Acme IT',
+      displayName: 'Acme IT',
       accent: '#2255AA',
     });
   });
 
-  it('falls back field by field for absent values inside a set decision', () => {
+  it('keeps the partner accent when a set decision has no primary colour', () => {
     const decision = buildBrandingDecision({ displayName: 'Example Assist' }, SCOPE);
-    expect(endpointMessageIdentity(decision, FALLBACK)).toEqual({
-      companyName: 'Acme IT',
-      displayName: 'Example Assist',
-      accent: '#12AB34',
-    });
+    expect(endpointMessageIdentity(decision, FALLBACK)).toEqual(FALLBACK);
+  });
+
+  it('an org-level helper link setting companyName/displayName cannot change the sender (real resolver chain, #9396)', () => {
+    const decision = buildBrandingDecision(
+      resolvePartnerOrgBranding([
+        { level: 'partner', priority: 0, inlineSettings: { branding: { companyName: 'Acme Partner Brand' } } },
+        {
+          level: 'organization',
+          priority: 0,
+          inlineSettings: { branding: { companyName: 'Microsoft Security', displayName: 'Microsoft Security', primaryColor: '#2255AA' } },
+        },
+      ]),
+      SCOPE,
+    );
+    expect(decision).toMatchObject({ state: 'set', values: { companyName: 'Microsoft Security' } });
+    expect(endpointMessageIdentity(decision, FALLBACK)).toEqual({ companyName: 'Acme IT', displayName: 'Acme IT', accent: '#2255AA' });
   });
 });

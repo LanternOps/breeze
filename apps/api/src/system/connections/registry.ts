@@ -289,6 +289,17 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       requiredWhenOn: [],
     },
   }),
+  defineEntry({
+    id: 'flows',
+    group: 'ai',
+    label: 'Flows (AI-drafted automation flows)',
+    vars: [{ name: 'FLOWS_ENABLED', secret: false }],
+    status: {
+      kind: 'flags',
+      flags: ['FLOWS_ENABLED'],
+      requiredWhenOn: [],
+    },
+  }),
   // ── billing ─────────────────────────────────────────────────────────────
   defineEntry({
     id: 'breeze-billing',
