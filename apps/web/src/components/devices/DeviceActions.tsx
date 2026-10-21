@@ -5,6 +5,7 @@ import { usePermissions } from "../../lib/permissions";
 import {
   Play,
   RotateCcw,
+  RotateCw,
   RefreshCw,
   Monitor,
   Settings,
@@ -29,6 +30,7 @@ import { DelegateToOperatorButton } from "../aiOperator/DelegateToOperatorButton
 import { isInMaintenance } from "../../lib/maintenanceResource";
 import { useCanMoveDeviceOrg } from "@/lib/moveOrgCapability";
 import { useMediaQuery } from "@/lib/useMediaQuery";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -111,6 +113,23 @@ function unavailableTitle(status: DeviceStatus, t: DeviceTranslation): string {
   }
 }
 
+// Mirrors WATCHDOG_STALE_MS in apps/api/src/services/commandQueue.ts: past
+// this the API refuses a watchdog command because nothing will claim it.
+const WATCHDOG_STALE_MS = 10 * 60 * 1000;
+
+/** What the confirm for "Restart agent" says about the watchdog (#9234). */
+function watchdogStateSentence(device: Device, t: DeviceTranslation): string {
+  if (!device.watchdogLastSeen) {
+    return t("deviceActions.confirm.restartAgent.watchdogNeverSeen");
+  }
+  const seenAt = new Date(device.watchdogLastSeen).getTime();
+  const date = formatDateTime(device.watchdogLastSeen);
+  if (Number.isNaN(seenAt) || Date.now() - seenAt > WATCHDOG_STALE_MS) {
+    return t("deviceActions.confirm.restartAgent.watchdogStale", { date });
+  }
+  return t("deviceActions.confirm.restartAgent.watchdogLastSeen", { date });
+}
+
 /**
  * Extra answers a confirm dialog collected from the operator (#3987). Today
  * only Remove has one: whether to queue the agent uninstall. Passed through to
@@ -141,7 +160,8 @@ type ModalType =
   | "maintenance"
   | "decommission"
   | "clear-sessions"
-  | "install-homebrew";
+  | "install-homebrew"
+  | "restart-agent";
 
 type ModalConfigEntry = {
   title: string;
@@ -210,6 +230,17 @@ function getModalConfig(
         title: t("deviceActions.confirm.installHomebrew.title"),
         message: t("deviceActions.confirm.installHomebrew.message"),
         confirmLabel: t("deviceActions.confirm.installHomebrew.confirm"),
+        variant: "warning",
+      };
+    case "restart-agent":
+      // #9234: name the machine and say what the watchdog last told us, so the
+      // tech knows before confirming whether anything is there to take it.
+      return {
+        title: t("deviceActions.confirm.restartAgent.title"),
+        message: `${t("deviceActions.confirm.restartAgent.message", {
+          hostname: device.hostname,
+        })} ${watchdogStateSentence(device, t)}`,
+        confirmLabel: t("deviceActions.confirm.restartAgent.confirm"),
         variant: "warning",
       };
     case "clear-sessions":
@@ -389,6 +420,11 @@ export default function DeviceActions({
   // and registry listings) runs a live command on the device and requires
   // devices.execute, so read-only roles are not offered Remote Tools.
   const canUseRemoteTools = can("devices", "execute");
+  // UX gate; POST /devices/:id/agent-recovery requires devices:recover_agent
+  // (#9234). Deliberately NOT gated on `online`: a silent agent is exactly when
+  // the watchdog restart is needed.
+  const canRecoverAgent =
+    can("devices", "recover_agent") && device.status !== "decommissioned";
   const canMoveOrg = useCanMoveDeviceOrg();
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
@@ -427,7 +463,8 @@ export default function DeviceActions({
       (action === "maintenance" && isInMaintenance(device)) ||
       action === "decommission" ||
       action === "clear-sessions" ||
-      action === "install-homebrew"
+      action === "install-homebrew" ||
+      action === "restart-agent"
     ) {
       setModalType(action);
       closeMenus();
@@ -512,6 +549,22 @@ export default function DeviceActions({
         {t("deviceActions.decommission")}{" "}
       </button>
     );
+
+  // One copy for the compact and desktop "…" menus (the phone sheet builds its
+  // own via sheetItem), so the two cannot drift.
+  const restartAgentMenuItem = canRecoverAgent ? (
+    <button
+      type="button"
+      data-testid="device-action-restart-agent"
+      onClick={() => handleAction("restart-agent")}
+      role="menuitem"
+      tabIndex={-1}
+      className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
+    >
+      <RotateCw className="h-4 w-4" />
+      {t("deviceActions.restartAgent")}
+    </button>
+  ) : null;
 
   if (compact) {
     return (
@@ -655,6 +708,7 @@ export default function DeviceActions({
                 <XCircle className="h-4 w-4" />
                 {t("deviceActions.clearSessions")}{" "}
               </button>
+              {restartAgentMenuItem}
               <hr className="my-1" />
               <button
                 type="button"
@@ -921,6 +975,13 @@ export default function DeviceActions({
               label: t("deviceActions.clearSessions"),
               icon: <XCircle className="h-4 w-4" />,
             })}
+            {canRecoverAgent &&
+              sheetItem({
+                action: "restart-agent",
+                label: t("deviceActions.restartAgent"),
+                icon: <RotateCw className="h-4 w-4" />,
+                testId: "device-action-restart-agent",
+              })}
             {sheetItem({
               action: "change-site",
               label: t("deviceActions.changeSite"),
@@ -1189,6 +1250,7 @@ export default function DeviceActions({
                 <XCircle className="h-4 w-4" />
                 {t("deviceActions.clearSessions")}{" "}
               </button>
+              {restartAgentMenuItem}
               <button
                 type="button"
                 onClick={() => handleAction("change-site")}

@@ -1077,42 +1077,17 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		}
 	}
 
-	// Defender on macOS (Microsoft Defender for Endpoint via mdatp).
+	// macOS AV sources, in attribution order (#9390):
+	//  1. CylancePROTECT / Aurora Endpoint Defense (app bundle + launch daemon probe).
+	//  2. Microsoft Defender for Endpoint (mdatp). It takes the provider label
+	//     only under the Windows Defender-fallback rule (macDefenderClaimsProvider):
+	//     when nothing was identified, or when it is the only source with active
+	//     real-time protection. Both products are always listed in AVProducts.
 	if runtime.GOOS == "darwin" {
-		macDefenderStatus, macDefenderProduct, macDefenderErr := getMacDefenderStatus()
-		if macDefenderErr != nil {
-			if !errors.Is(macDefenderErr, ErrNotSupported) {
-				errs = append(errs, macDefenderErr)
-				avFailed = true
-			}
-		} else {
-			avCollected = true
-			if !providerIdentified && macDefenderStatus.Enabled {
-				status.Provider = "windows_defender"
-				providerIdentified = true
-			}
-			if macDefenderProduct != nil {
-				status.AVProducts = append(status.AVProducts, *macDefenderProduct)
-			}
-			if status.ProviderVersion == "" {
-				status.ProviderVersion = macDefenderStatus.ProviderVersion
-			}
-			if macDefenderStatus.RealTimeProtection {
-				realTime = true
-			}
-			if status.DefinitionsVersion == "" {
-				status.DefinitionsVersion = macDefenderStatus.DefinitionsVersion
-			}
-			if status.DefinitionsUpdatedAt == "" {
-				status.DefinitionsUpdatedAt = macDefenderStatus.DefinitionsUpdatedAt
-			}
-			status.LastScanAt = latestScanTime(macDefenderStatus)
-			if macDefenderStatus.LastFullScan != "" {
-				status.LastScanType = "full"
-			} else if macDefenderStatus.LastQuickScan != "" {
-				status.LastScanType = "quick"
-			}
-		}
+		tally := avTally{providerIdentified: providerIdentified, realTime: realTime, collected: avCollected, failed: avFailed}
+		applyMacAVSources(&status, &tally, collectMacAVSources())
+		providerIdentified, realTime, avCollected, avFailed = tally.providerIdentified, tally.realTime, tally.collected, tally.failed
+		errs = append(errs, tally.errs...)
 	}
 
 	// Elastic Defend on Linux (#2018): Linux has no security-center registry,

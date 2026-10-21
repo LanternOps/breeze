@@ -17,7 +17,7 @@ import {
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { computeOpenHourBlockPeriod } from './contractHourBlockEstimate';
-import { periodIndexFor, nextBillingDate, computePeriod, isExpired, todayISO, firstUnclaimedPeriodStart, advancePastClaimed, contractInTermForReporting } from './contractMath';
+import { periodIndexFor, nextBillingDate, isExpired, todayISO, firstUnclaimedPeriodStart, advancePastClaimed, contractInTermForReporting, billingRunPeriods, isAutoRenewing } from './contractMath';
 import { loadBilledFinalTermValues } from './contractBilledFinalTerm';
 import { emitContractEvent } from './contractEvents';
 import { rebaseUnmaterializedDeliverables } from './serviceDeliverableService';
@@ -1187,6 +1187,8 @@ export async function summarizeActiveContractMrrByOrg(
   //  - 'expired' can be running: generateDueInvoice flips an ADVANCE contract to
   //    'expired' as soon as it bills the final period, which is paid for and
   //    still being served until end_date. Those are valued at what was billed.
+  //    An AUTO-RENEWING contract is not expired then (#9243). It stays 'active'
+  //    with the pointer at end_date and is valued the same way.
   // Only expired contracts whose dates still put them in term are loaded, so
   // expired history does not grow this query.
   const asOfISO = todayISO(asOf);
@@ -1198,10 +1200,11 @@ export async function summarizeActiveContractMrrByOrg(
         and(eq(contracts.status, 'expired' as never), lte(contracts.startDate, asOfISO), gt(contracts.endDate, asOfISO)),
       ),
     ));
-  // An expired contract is in term only if a billed period covers asOf; look
-  // that up just for the ones the dates have not already ruled out.
+  // An expired contract, or an active one past its billing end (an auto-renewing
+  // contract after its final invoice, #9243), is in term only if a billed period
+  // covers asOf. Look that up only for contracts whose basis depends on it.
   const finalTermIds = candidates
-    .filter((c) => (c.status as string) === 'expired' && contractInTermForReporting(c, asOfISO, true) !== null)
+    .filter((c) => contractInTermForReporting(c, asOfISO, false) === null && contractInTermForReporting(c, asOfISO, true) !== null)
     .map((c) => c.id);
   const finalTermValues = await loadBilledFinalTermValues(finalTermIds, asOfISO);
 
@@ -2271,7 +2274,9 @@ function chunksOf<T>(items: readonly T[], size: number): T[][] {
 export interface GenerateResult {
   generated: boolean;
   invoiceId?: string;
-  skipped?: 'already_billed' | 'expired' | 'not_due';
+  /** `renewal_pending` (#9243): an auto-renew contract's due period is past end_date and
+   *  the renewal sweep has not extended it yet; nothing was billed or expired. */
+  skipped?: 'already_billed' | 'expired' | 'not_due' | 'renewal_pending';
   /** True only when the contract opts into auto-issue AND an invoice was generated. */
   autoIssue: boolean;
   /** The InvoiceActor the caller needs to finish issue+send post-commit. Present only when generated. */
@@ -2385,12 +2390,27 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
   // arrears: the just-completed period (whose END == nextBillingAt) → one index back.
-  const idxAt = periodIndexFor(c.startDate, c.intervalMonths, c.nextBillingAt);
-  const idx = Math.max(0, c.billingTiming === 'advance' ? idxAt : idxAt - 1);
-  const period = computePeriod(c.startDate, c.intervalMonths, idx);
+  const { due: period, next: nextPeriod } = billingRunPeriods({
+    startDate: c.startDate, intervalMonths: c.intervalMonths,
+    billingTiming: c.billingTiming as 'advance' | 'arrears', nextBillingAt: c.nextBillingAt,
+  });
+  const autoRenewing = isAutoRenewing(c);
 
   // Expiry at due-check: if this period starts on/after the end date, expire (do not bill).
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
+    // #9243: billing never expires an auto-renewing contract; the renewal sweep
+    // owns that term and extends it on end_date. Reaching here means the sweep
+    // has not renewed it yet. Either the manual /generate route ran first on the
+    // renewal day, or the daily sweep missed it. Defer with no writes: nothing is
+    // billed past the term and nothing is expired. The next daily job renews it
+    // and then bills this period.
+    if (autoRenewing) {
+      console.warn(
+        '[contract-billing] renewal pending: auto-renew contract %s reached billing past end_date %s before the renewal sweep extended it; deferring (not billed, not expired)',
+        contractId, c.endDate,
+      );
+      return { generated: false, autoIssue: false, skipped: 'renewal_pending', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
+    }
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await retireLiveHourBlocks(contractId);
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
@@ -2580,14 +2600,27 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     overages,
   });
 
-  // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
-  const nextIdx = idx + 1;
-  const nextPeriod = computePeriod(c.startDate, c.intervalMonths, nextIdx);
-  if (isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
+  // 4. Advance the pointer to the next period, or expire if the next period is past
+  //    end_date. #9243: an auto-renewing contract is never expired here. Its final
+  //    invoice leaves it active with the pointer at the next period, and the
+  //    renewal sweep extends end_date on end_date (the date the advance notice
+  //    promised) before that period is billed. Expiring here is what stopped
+  //    auto-renew from ever firing: the sweep only looks at active contracts.
+  if (!autoRenewing && isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await retireLiveHourBlocks(contractId);
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
   } else {
+    // Crossing end_date BEFORE it arrives is the normal final invoice of an
+    // auto-renewing term. Doing it on/after end_date means the renewal sweep
+    // should already have extended the term and did not, so make that visible.
+    // The contract stays active; the next daily sweep renews it.
+    if (autoRenewing && c.endDate !== null && todayISO(asOf) >= c.endDate && isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
+      console.warn(
+        '[contract-billing] renewal overdue: auto-renew contract %s billed past end_date %s without a renewal; left active for the next renewal sweep',
+        contractId, c.endDate,
+      );
+    }
     const nextAt = c.billingTiming === 'advance' ? nextPeriod.periodStart : nextPeriod.periodEnd;
     await db.update(contracts).set({ nextBillingAt: nextAt, updatedAt: asOf }).where(eq(contracts.id, contractId));
   }

@@ -406,6 +406,9 @@ type helperLifecycleController interface {
 	Done() <-chan struct{}
 	Mode() string
 	SetModeOverride(override string)
+	// SetPAMHelperHold keeps a SYSTEM helper in every signed-in session while
+	// UAC interception is enabled (#8996); a no-op in always-on mode.
+	SetPAMHelperHold(enabled bool)
 	AcquireLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
 	RenewLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
 	ReleaseLease(sessionID uint32, role ipc.HelperRole, opID string)
@@ -587,9 +590,14 @@ type Heartbeat struct {
 	closeSessionBroker         func()
 	// PAM seams default to the real broker methods in RunPamFlow/denyConsent
 	// when nil; overridden in pam_flow_test.go.
-	pamFindSession    func(capability, targetWinSession string) *sessionbroker.Session
-	pamRequestDialog  func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
-	pamDismissConsent func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
+	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
+	pamRequestDialog func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	// pamConsoleSessionID resolves the console session for the on-demand
+	// helper spawn when the requester session is unknown. nil uses
+	// sessionbroker.GetConsoleSessionID — the same target FindCapableSession
+	// falls back to.
+	pamConsoleSessionID func() string
+	pamDismissConsent   func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
 	// pamActuateMu serializes consent.exe actuation/dismissal so the local
 	// etwlua flow (RunPamFlow) and the remote actuate_elevation command never
 	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
@@ -2155,10 +2163,7 @@ func (h *Heartbeat) Start() {
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
-		h.mu.Lock()
-		h.helperLifecycle = lifecycle
-		h.lifecycleCancel = cancel
-		h.mu.Unlock()
+		h.installHelperLifecycle(lifecycle, cancel)
 		go bootstrapThenListenWithRetry(ctx, lifecycle.Bootstrap, func() {
 			go h.sessionBroker.Listen(h.stopChan)
 		}, lifecycleBootstrapRetryInterval)
@@ -4122,6 +4127,12 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		if p.Scope != "" {
 			item["scope"] = p.Scope
 		}
+		// Where the severity came from (vendor rating vs. derived from the
+		// update's classification, #9387). Omitted when the provider has no
+		// provenance, so the API stores NULL rather than a guess.
+		if p.SeveritySource != "" && severity != "unknown" {
+			item["severitySource"] = p.SeveritySource
+		}
 		items[i] = item
 	}
 	return items
@@ -5864,6 +5875,9 @@ func (h *Heartbeat) reconcileAndReapplyPAMPolicyLocked(ctx context.Context) []pa
 }
 
 func (h *Heartbeat) handleUACInterceptionLocked(on bool) {
+	// Every exit path leaves the lifecycle's PAM hold matching the effective
+	// interception state (#8996), including a rejected enable (stays off).
+	defer h.syncPAMHelperHold()
 	if !on {
 		prev := h.uacInterceptionEnabled.Swap(false)
 		if h.pamLifetimeManager != nil {

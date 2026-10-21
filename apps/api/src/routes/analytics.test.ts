@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -35,6 +35,11 @@ vi.mock('drizzle-orm', () => {
     sql
   };
 });
+
+const isDeviceInMaintenanceMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/maintenanceService', () => ({
+  isDeviceInMaintenance: isDeviceInMaintenanceMock
+}));
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
@@ -224,7 +229,12 @@ vi.mock('../db/schema', () => ({
     enrolledAt: 'devices.enrolledAt',
     lastSeenAt: 'devices.lastSeenAt',
     osType: 'devices.osType',
-    osVersion: 'devices.osVersion'
+    osVersion: 'devices.osVersion',
+    isEphemeral: 'devices.isEphemeral'
+  },
+  deviceGroupMemberships: {
+    deviceId: 'deviceGroupMemberships.deviceId',
+    groupId: 'deviceGroupMemberships.groupId'
   },
   slaDefinitions: {
     id: 'slaDefinitions.id',
@@ -1122,29 +1132,128 @@ describe('analytics routes', () => {
       expect(listBody.pagination.total).toBe(1);
     });
 
-    it('should return compliance history for an SLA', async () => {
-      mockSelectOnce([
-        {
-          id: 'sla-1',
-          orgId: ORG_ID,
-          name: 'Response Time',
-          uptimeTarget: 97
-        }
-      ]);
-      mockSelectOnce([]);
-      mockSelectOnce([{ count: 2 }]);
-      mockSelectOnce([{ count: 4 }]);
+    describe('GET /analytics/sla/:id/compliance (definition-aware, #9371)', () => {
+      const SITE_A = '44444444-4444-4444-4444-444444444441';
+      const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
+      const online = (id: string, seen = hoursAgo(1)) => ({ id, status: 'online', lastSeenAt: seen });
+      const offline = (id: string) => ({ id, status: 'offline', lastSeenAt: hoursAgo(1) });
+      const getCompliance = () =>
+        app.request('/analytics/sla/sla-1/compliance', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
 
-      const res = await app.request('/analytics/sla/sla-1/compliance', {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' }
+      beforeEach(() => {
+        isDeviceInMaintenanceMock.mockReset();
+        isDeviceInMaintenanceMock.mockResolvedValue({ active: false });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.slaId).toBe('sla-1');
-      expect(body.history).toEqual([]);
-      expect(body.liveUptime).toBe(50);
+      it('returns uptimeTarget, meetsTarget and an honest empty history', async () => {
+        mockSelectOnce([{ id: 'sla-1', orgId: ORG_ID, name: 'Uptime', uptimeTarget: 40, measurementWindow: 'monthly' }]);
+        mockSelectOnce([online('d1'), offline('d2')]);
+
+        const res = await getCompliance();
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.slaId).toBe('sla-1');
+        expect(body.history).toEqual([]);
+        expect(body.liveUptime).toBe(50);
+        expect(body.uptimeTarget).toBe(40);
+        expect(body.meetsTarget).toBe(true);
+      });
+
+      it('scopes a site-targeted definition to its sites and flags a missed target', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'Site SLA', uptimeTarget: 99,
+          measurementWindow: 'monthly', targetType: 'site', targetIds: [SITE_A]
+        }]);
+        const deviceChain = createChain([online('d1'), offline('d2')]);
+        vi.mocked(db.select).mockImplementationOnce(() => deviceChain as any);
+
+        const res = await getCompliance();
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.liveUptime).toBe(50);
+        expect(body.meetsTarget).toBe(false);
+        const where = JSON.stringify(deviceChain.where.mock.calls[0][0]);
+        expect(where).toContain('devices.siteId');
+        expect(where).toContain(SITE_A);
+      });
+
+      it('excludeWeekends widens the window by the weekend days it skips', async () => {
+        // Wed 2026-10-21. Weekly window = 7 days; skipping weekends reaches back to Mon 10-12.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-10-21T12:00:00Z'));
+        const eightDaysAgo = new Date('2026-10-13T12:00:00Z'); // inside only the weekday-adjusted window
+        const sla = { id: 'sla-1', orgId: ORG_ID, name: 'W', uptimeTarget: 90, measurementWindow: 'weekly' };
+
+        mockSelectOnce([{ ...sla, excludeWeekends: false }]);
+        mockSelectOnce([online('d1', eightDaysAgo)]);
+        expect((await (await getCompliance()).json()).liveUptime).toBe(0);
+
+        mockSelectOnce([{ ...sla, excludeWeekends: true }]);
+        mockSelectOnce([online('d1', eightDaysAgo)]);
+        const body = await (await getCompliance()).json();
+        expect(body.liveUptime).toBe(100);
+        expect(body.exclusions.weekends).toBe(true);
+      });
+
+      it('excludeMaintenanceWindows drops devices currently in a window from the denominator', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'M', uptimeTarget: 90,
+          measurementWindow: 'monthly', excludeMaintenanceWindows: true
+        }]);
+        mockSelectOnce([online('d1'), offline('d2')]);
+        isDeviceInMaintenanceMock.mockImplementation(async (id: string) => ({ active: id === 'd2' }));
+
+        const body = await (await getCompliance()).json();
+        expect(body.liveUptime).toBe(100);
+        expect(body.exclusions.maintenanceWindows).toBe('applied');
+        expect(body.exclusions.excludedDevices).toBe(1);
+      });
+
+      it('reports maintenance exclusion as unavailable when the lookup throws', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'M', uptimeTarget: 90,
+          measurementWindow: 'monthly', excludeMaintenanceWindows: true
+        }]);
+        mockSelectOnce([online('d1'), offline('d2')]);
+        isDeviceInMaintenanceMock.mockRejectedValue(new Error('boom'));
+
+        const res = await getCompliance();
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.liveUptime).toBe(50);
+        expect(body.exclusions.maintenanceWindows).toBe('unavailable');
+        expect(body.exclusions.excludedDevices).toBe(0);
+      });
+
+      it('denies a group-targeted definition to a site-narrowed caller', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_A] };
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'G', uptimeTarget: 90,
+          measurementWindow: 'monthly', targetType: 'group', targetIds: ['g-1']
+        }]);
+        const res = await getCompliance();
+        expect(res.status).toBe(403);
+        currentPermissions = undefined;
+      });
+
+      it('a scoped definition with no targets measures nothing', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'E', uptimeTarget: 90,
+          measurementWindow: 'monthly', targetType: 'site', targetIds: []
+        }]);
+        mockSelectOnce([]);
+        const body = await (await getCompliance()).json();
+        expect(body.liveUptime).toBeNull();
+        expect(body.meetsTarget).toBeNull();
+      });
     });
   });
 
@@ -1476,9 +1585,7 @@ describe('analytics routes', () => {
       it('GET /analytics/sla/:id/compliance still serves an in-scope definition', async () => {
         currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
         mockSelectOnce([SITE_IN]); // the definition
-        mockSelectOnce([]); // compliance history
-        mockSelectOnce([{ count: 2 }]);
-        mockSelectOnce([{ count: 4 }]);
+        mockSelectOnce([]); // target devices
 
         const res = await app.request('/analytics/sla/sla-in/compliance', {
           method: 'GET',

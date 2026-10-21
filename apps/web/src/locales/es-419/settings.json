@@ -5705,16 +5705,12 @@
       "nameRequired": "El nombre de la organización es obligatorio.",
       "slugRequired": "Se requiere babosa",
       "slugFormat": "Utilice únicamente letras minúsculas, números y scripts",
-      "maxDevicesRequired": "Ingrese un límite máximo de dispositivo",
-      "maxDevicesInteger": "El número máximo de dispositivos debe ser un número entero",
-      "maxDevicesMin": "El número máximo de dispositivos debe ser al menos 1",
       "contractEndAfterStart": "La finalización del contrato debe ser en o después de la fecha de inicio."
     },
     "fields": {
       "name": "Nombre de la organización",
       "slug": "Slug",
       "type": "Tipo de organización",
-      "maxDevices": "Dispositivos máximos",
       "contractStart": "Inicio de contrato",
       "contractEnd": "Fin del contrato"
     },

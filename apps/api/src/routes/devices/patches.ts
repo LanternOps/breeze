@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import { readOwnPartnerAxisRows } from '../../db/partnerAxisRead';
-import { patches, devicePatches, patchApprovals, deviceCommands, users } from '../../db/schema';
+import { patches, devicePatches, deviceCommands, users } from '../../db/schema';
+import { resolveLatestManualDecisions, selectManualDecisionRows } from '../../services/patchManualDecisions';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
@@ -218,15 +219,17 @@ function normalizePatchHistoryResult(
 }
 
 /**
- * Resolve which of the given patch IDs carry an explicit partner-wide manual-approval
- * record (`patchApprovals.status = 'approved'`) for the partner.
+ * Resolve which of the given patch IDs are manually approved for the partner:
+ * the latest `patch_approvals` decision (approved vs rejected) wins, and a
+ * ring-level decline newer than a blanket approval denies (#9485) — the shared
+ * resolution in `services/patchManualDecisions.ts`.
  *
- * This is intentionally only the partner-wide manual-approval gate. It does NOT consider
+ * This is intentionally only the manual-approval gate. It does NOT consider
  * the device's effective patch ring or category/auto-approve rules — for the full
  * ring + category-aware evaluation see `services/patchEligibility.ts` (the GET route
  * below reports that verdict as `effectiveApproval` via `loadDevicePatchApprovalView`).
  *
- * Known limitation: because this gate is partner-wide and ring-agnostic, a patch that is
+ * Known limitation: because this gate is ring-agnostic, a patch that is
  * approved for ring A passes this gate for a device in ring B. Wiring the install
  * endpoint through the full evaluator (`resolveApprovedPatchesForDevice`) is a tracked
  * follow-up.
@@ -237,20 +240,11 @@ async function getApprovedPatchIdsForPartner(partnerId: string, patchIds: string
   // patch_approvals is partner-axis RLS; org-scoped callers read it through
   // the own-partner SELECT branch, in the request's own connection (#7647).
   // partnerId is SERVER-DERIVED from the device's org (already access-checked).
-  const approvals = await readOwnPartnerAxisRows(partnerId, () =>
-    db
-      .select({ patchId: patchApprovals.patchId })
-      .from(patchApprovals)
-      .where(
-        and(
-          eq(patchApprovals.partnerId, partnerId),
-          inArray(patchApprovals.patchId, patchIds),
-          eq(patchApprovals.status, 'approved')
-        )
-      )
+  const rows = await readOwnPartnerAxisRows(partnerId, () =>
+    selectManualDecisionRows(partnerId, patchIds)
   );
 
-  return new Set(approvals.map((approval) => approval.patchId));
+  return resolveLatestManualDecisions(rows, 'any').approved;
 }
 
 // GET /devices/:id/patches/history - Get patch operation history for a device

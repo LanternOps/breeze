@@ -5705,16 +5705,12 @@
       "nameRequired": "Der Name der Organisation ist erforderlich",
       "slugRequired": "Slug ist erforderlich",
       "slugFormat": "Verwenden Sie nur Kleinbuchstaben, Zahlen und Bindestriche",
-      "maxDevicesRequired": "Geben Sie ein maximales Gerätelimit ein",
-      "maxDevicesInteger": "Max. Geräte müssen eine ganze Zahl sein",
-      "maxDevicesMin": "Die maximale Anzahl an Geräten muss mindestens 1 betragen",
       "contractEndAfterStart": "Das Vertragsende muss am oder nach dem Startdatum liegen"
     },
     "fields": {
       "name": "Name der Organisation",
       "slug": "Schnecke",
       "type": "Organisationstyp",
-      "maxDevices": "Max. Geräte",
       "contractStart": "Vertragsbeginn",
       "contractEnd": "Vertragsende"
     },

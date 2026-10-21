@@ -7,7 +7,7 @@ import { emitContractEvent } from './contractEvents';
 import { sendInAppNotification } from './notificationSenders/inAppSender';
 import { getEmailService } from './email';
 import { buildContractRenewalEmail } from './contractRenewalTemplate';
-import { duePeriodStartFor, extendTermPastDue, isWithinNoticeWindow } from './contractMath';
+import { extendTermThrough, isAutoRenewing, isWithinNoticeWindow } from './contractMath';
 import { captureException } from './sentry';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
 
@@ -88,9 +88,9 @@ async function dispatchNotice(c: RenewalCandidate, kind: 'advance' | 'renewed', 
 
 /**
  * Renewal pre-pass. Runs (inside a system DB context) BEFORE the billing sweep so an
- * about-to-expire auto-renew contract has its term extended before billing decides expiry.
+ * auto-renew contract whose term has ended is extended before billing bills the next period.
  *  Pass A: advance notice for contracts inside their notice window (keyed on current endDate).
- *  Pass B: extend the term for contracts whose next billable period would expire, then
+ *  Pass B: on/after end_date, extend the term by whole renewal terms (#9243), then
  *          emit contract.auto_renewed and claim a 'renewed' notice keyed on the NEW endDate.
  */
 export async function runContractRenewalSweep(asOf: Date = new Date()): Promise<{ noticed: number; renewed: number }> {
@@ -126,21 +126,35 @@ export async function runContractRenewalSweep(asOf: Date = new Date()): Promise<
       }
     }
 
-    // Pass B — extend if the next billable period would expire.
-    // Only consider contracts whose billing sweep would run today (nextBillingAt <= today);
-    // a future nextBillingAt means the billing sweep hasn't reached this contract yet.
-    if (c.nextBillingAt && c.nextBillingAt <= today) {
-      const duePeriodStart = duePeriodStartFor(c.billingTiming, c.nextBillingAt, c.intervalMonths);
-      const { newEndDate, renewed: didRenew } = extendTermPastDue({ endDate: c.endDate, duePeriodStart, termMonths: c.renewalTermMonths });
-      if (didRenew) {
-        await db.update(contracts).set({ endDate: newEndDate, updatedAt: asOf }).where(eq(contracts.id, c.id));
-        await emitContractEvent({ type: 'contract.auto_renewed', contractId: c.id, orgId: c.orgId, partnerId: c.partnerId });
-        if (await claimNotice(c, newEndDate, 'renewed')) {
-          await dispatchNotice({ ...c, endDate: newEndDate }, 'renewed', newEndDate);
-        }
-        renewed++;
-      }
+    // Pass B — renew once the term has ended (#9243): on end_date itself, the date
+    // the advance notice promised. Not earlier: generateDueInvoice leaves an
+    // auto-renewing contract active after its final invoice, with its pointer at
+    // the next period, so it waits for this pass instead of expiring. Billing runs
+    // after this pass in the same job, so the period starting on end_date bills
+    // under the renewed term (see extendTermThrough for the invariant).
+    if (!isAutoRenewing(c)) continue;
+    const { newEndDate, renewed: didRenew } = extendTermThrough({ endDate: c.endDate, asOfISO: today, termMonths: c.renewalTermMonths });
+    if (!didRenew) continue;
+    // Conditional on everything the decision read. The candidate list was read
+    // unlocked, so a pause, cancel, auto-renew opt-out or end-date edit that
+    // committed since must win. In that case zero rows match and nothing is
+    // emitted or noticed.
+    const updated = await db.update(contracts).set({ endDate: newEndDate, updatedAt: asOf }).where(and(
+      eq(contracts.id, c.id),
+      eq(contracts.status, 'active' as never),
+      eq(contracts.autoRenew, true),
+      eq(contracts.endDate, c.endDate),
+      eq(contracts.renewalTermMonths, c.renewalTermMonths),
+    )).returning({ id: contracts.id });
+    if (updated.length === 0) {
+      console.info('[ContractRenewal] renewal skipped: contract changed since the sweep read it (paused/cancelled/opted out/end date edited)', `contractId=${c.id}`);
+      continue;
     }
+    await emitContractEvent({ type: 'contract.auto_renewed', contractId: c.id, orgId: c.orgId, partnerId: c.partnerId });
+    if (await claimNotice(c, newEndDate, 'renewed')) {
+      await dispatchNotice({ ...c, endDate: newEndDate }, 'renewed', newEndDate);
+    }
+    renewed++;
   }
 
   return { noticed, renewed };

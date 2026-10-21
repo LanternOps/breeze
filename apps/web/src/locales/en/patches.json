@@ -259,7 +259,9 @@
       "moderate": "Moderate",
       "low": "Low",
       "unrated": "Unrated",
-      "unratedNote": "Will not auto-approve"
+      "unratedNote": "Will not auto-approve",
+      "derivedNote": "Derived rating",
+      "derivedTooltip": "The vendor published no rating for this update. This severity was derived from its classification and title."
     },
     "approval": {
       "pending": "Pending",
@@ -372,7 +374,8 @@
       "createRing": "Failed to create update ring",
       "deleteRing": "Failed to delete ring",
       "approveUnknown": "Approval status unknown — the server response could not be read. Refresh to confirm which patches were approved.",
-      "approveAbortedWithFailures": "{{message}} ({{count}} patches were also rejected by the server before this.)"
+      "approveAbortedWithFailures": "{{message}} ({{count}} patches were also rejected by the server before this.)",
+      "checkRingLinks": "Failed to check which policies use this ring — nothing was deleted"
     },
     "toast": {
       "ringSaved": "Update ring saved",
@@ -402,7 +405,13 @@
       "createTitle": "Create update ring"
     },
     "truncatedNotice": "Showing {{shown}} of {{total}} patches. The filters here only narrow what's already loaded, so the rest can't be reached from this view — use the patches API to work through the full catalog.",
-    "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest."
+    "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest.",
+    "ringDelete": {
+      "title": "Delete {{name}}?",
+      "messageOne": "1 policy will stop scheduled patching until you pick another ring.",
+      "messageMany": "{{count}} policies will stop scheduled patching until you pick another ring.",
+      "confirm": "Delete ring"
+    }
   },
   "patchJobsList": {
     "empty": "No patch jobs yet. Jobs created by policies, update rings, or the AI assistant will appear here.",

@@ -5753,16 +5753,12 @@
       "nameRequired": "Il nome dell'organizzazione è obbligatorio",
       "slugRequired": "Lo slug è obbligatorio",
       "slugFormat": "Usa solo lettere minuscole, numeri e trattini",
-      "maxDevicesRequired": "Inserisci un limite massimo di dispositivi",
-      "maxDevicesInteger": "Il numero massimo di dispositivi deve essere un numero intero",
-      "maxDevicesMin": "Il numero massimo di dispositivi deve essere almeno 1",
       "contractEndAfterStart": "La fine del contratto deve essere nella data di inizio o successiva"
     },
     "fields": {
       "name": "Nome organizzazione",
       "slug": "Slug",
       "type": "Tipo organizzazione",
-      "maxDevices": "Dispositivi massimi",
       "contractStart": "Inizio contratto",
       "contractEnd": "Fine contratto"
     },

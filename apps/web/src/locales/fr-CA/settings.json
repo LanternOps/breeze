@@ -5753,16 +5753,12 @@
       "nameRequired": "Le nom de l’organisation est requis",
       "slugRequired": "Un slug est nécessaire",
       "slugFormat": "Utilisez uniquement les lettres minuscules, les chiffres et les traits d’union",
-      "maxDevicesRequired": "Ajoutez une limite maximale d’appareils",
-      "maxDevicesInteger": "Les appareils Max doivent être un nombre entier",
-      "maxDevicesMin": "Le maximum d’appareils doit être au moins 1",
       "contractEndAfterStart": "La fin du contrat doit avoir lieu à la date de début ou après"
     },
     "fields": {
       "name": "Nom de l’organisation",
       "slug": "Identifiant d’URL",
       "type": "Type d’organisation",
-      "maxDevices": "Appareils Max",
       "contractStart": "Début de contrat",
       "contractEnd": "Fin du contrat"
     },

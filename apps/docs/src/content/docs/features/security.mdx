@@ -57,7 +57,7 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
     - **Password policy**: `Win32_AccountPolicy` CIM class reads min length, max age, lockout threshold, and history count
   </TabItem>
   <TabItem label="macOS">
-    - **AV detection**: Microsoft Defender for Endpoint via `mdatp health --output json`, with app bundle fallback
+    - **AV detection**: CylancePROTECT / Aurora Endpoint Defense via its app bundle (`/Applications/Cylance/CylanceUI.app`) and launch daemon (`com.cylance.agent_service`), then Microsoft Defender for Endpoint via `mdatp health --output json`, with app bundle fallback. Cylance is attributed first; Defender takes the provider only when nothing else was found or when it is the only product with real-time protection on
     - **Gatekeeper**: `spctl --status` checks Gatekeeper enforcement state
     - **Firewall**: `socketfilterfw --getglobalstate` or `defaults read com.apple.alf globalstate`
     - **Encryption**: `fdesetup status` detects FileVault state
@@ -541,7 +541,7 @@ All security endpoints require authentication and are scoped to `organization`, 
 The agent could not detect a known AV provider. Common causes:
 
 - **Windows**: The AV product is not registered with Windows Security Center. This can happen with server-only installations or EDR tools that do not register as AV. The agent will still attempt to query Defender directly as a fallback.
-- **macOS**: Microsoft Defender for Endpoint is not installed, or the `mdatp` CLI is not in `PATH`. Verify installation with `which mdatp` and check the app bundle exists at `/Applications/Microsoft Defender.app`.
+- **macOS**: The agent detects only CylancePROTECT / Aurora Endpoint Defense and Microsoft Defender for Endpoint on macOS. For Defender, check that the `mdatp` CLI is in `PATH` (`which mdatp`) and the app bundle exists at `/Applications/Microsoft Defender.app`. For Cylance, check that `/Applications/Cylance/CylanceUI.app` or `/Library/LaunchDaemons/com.cylance.agent_service.plist` exists.
 - **Linux**: The agent does not currently detect Linux AV providers. The provider will always be `other` on Linux endpoints.
 
 ### Encryption status shows `unknown`

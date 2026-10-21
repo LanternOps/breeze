@@ -371,19 +371,27 @@ yaraRoutes.post(
     const denial = writeDenial(auth, set);
     if (denial) return c.json({ error: denial }, 403);
 
-    const [{ value: existing } = { value: 0 }] = await db
-      .select({ value: count() })
-      .from(yaraRules)
-      .where(eq(yaraRules.ruleSetId, id));
-    if (existing >= YARA_MAX_RULES_PER_SET) {
-      return c.json({ error: `A rule set holds at most ${YARA_MAX_RULES_PER_SET} rules` }, 400);
-    }
-
     let ruleId: string;
     try {
       // Savepoint: a duplicate name must not poison the request transaction.
-      const [row] = await withDbTransaction(() =>
-        db
+      // Lock the set row FIRST (the same FOR UPDATE publishRuleSet takes, which
+      // also serialises concurrent creates), then count, then insert (#9176).
+      // Counting before the lock let two creates at cap-1 both pass.
+      const created = await withDbTransaction(async () => {
+        const [locked] = await db
+          .select({ id: yaraRuleSets.id })
+          .from(yaraRuleSets)
+          .where(eq(yaraRuleSets.id, id))
+          .for('update');
+        if (!locked) return { kind: 'not_found' as const };
+
+        const [{ value: existing } = { value: 0 }] = await db
+          .select({ value: count() })
+          .from(yaraRules)
+          .where(eq(yaraRules.ruleSetId, id));
+        if (existing >= YARA_MAX_RULES_PER_SET) return { kind: 'cap' as const };
+
+        const [row] = await db
           .insert(yaraRules)
           .values({
             ruleSetId: id,
@@ -393,10 +401,15 @@ yaraRoutes.post(
             tags: payload.tags ?? [],
             enabled: payload.enabled ?? true,
           })
-          .returning({ id: yaraRules.id }),
-      );
-      if (!row) return c.json({ error: 'Failed to create rule' }, 500);
-      ruleId = row.id;
+          .returning({ id: yaraRules.id });
+        return { kind: 'ok' as const, row };
+      });
+      if (created.kind === 'not_found') return c.json({ error: 'Rule set not found' }, 404);
+      if (created.kind === 'cap') {
+        return c.json({ error: `A rule set holds at most ${YARA_MAX_RULES_PER_SET} rules` }, 400);
+      }
+      if (!created.row) return c.json({ error: 'Failed to create rule' }, 500);
+      ruleId = created.row.id;
     } catch (err) {
       if (isPgUniqueViolation(err)) {
         return c.json({ error: `A rule named "${payload.name}" already exists in this set` }, 409);

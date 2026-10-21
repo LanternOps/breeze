@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "Verrà emessa e numerata subito una fattura di {{amount}}.",
         "consequenceContracts": "Le righe ricorrenti diventano contratti in bozza da attivare in seguito.",
         "consequenceEmail": "La fattura verrà inviata via e-mail a {{recipients}}.",
+        "consequenceEmailNotConfigured": "Nessun servizio e-mail è configurato; la fattura non verrà inviata via e-mail. Condividila dalla pagina della fattura.",
         "consequenceDraft": "Questo preventivo non è mai stato inviato. La prima cosa che il cliente ne vedrà sarà la fattura.",
         "submit": "Accetta ed emetti fattura",
         "success": "Preventivo accettato. Fattura {{number}} emessa.",
@@ -2774,6 +2775,10 @@
       "confirm": "Conferma",
       "failed": "Verifica non riuscita. Riprova.",
       "unavailable": "Impossibile avviare la verifica"
+    },
+    "notEnabled": {
+      "title": "I pagamenti automatici non sono abilitati per il tuo account",
+      "hint": "I pagamenti automatici non sono ancora stati attivati. Chiedi al tuo amministratore Breeze di abilitarli, poi torna qui per richiedere l'adesione ai tuoi clienti."
     }
   },
   "reminders": {

@@ -5758,16 +5758,12 @@
       "nameRequired": "Kuruluş adı gerekli",
       "slugRequired": "Bilgi notu gerekli",
       "slugFormat": "Yalnızca küçük harf, rakam ve kısa çizgi kullanın",
-      "maxDevicesRequired": "Maksimum cihaz sınırını girin",
-      "maxDevicesInteger": "Maksimum cihaz tam sayı olmalıdır",
-      "maxDevicesMin": "Maksimum cihaz sayısı en az 1 olmalıdır",
       "contractEndAfterStart": "Sözleşme sonu başlangıç tarihinde veya sonrasında olmalıdır"
     },
     "fields": {
       "name": "Kuruluş adı",
       "slug": "Sümüklüböcek",
       "type": "Kuruluş türü",
-      "maxDevices": "Maksimum cihaz sayısı",
       "contractStart": "Sözleşme başlangıcı",
       "contractEnd": "Sözleşme sonu"
     },

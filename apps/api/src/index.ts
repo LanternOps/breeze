@@ -340,6 +340,7 @@ import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { closeModelGateway } from './services/aiModels/gateway/server';
 import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
+import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
@@ -2000,6 +2001,11 @@ async function bootstrap(): Promise<void> {
   server = serve({
     fetch: app.fetch,
     port
+  });
+
+  // #9372: one non-blocking TURN preflight (never rejects, never delays boot).
+  startTurnPreflight(process.env).catch(() => {
+    console.warn('[turn-preflight] preflight failed unexpectedly');
   });
 
   injectWebSocket(server);

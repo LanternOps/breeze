@@ -12,13 +12,19 @@ func TestHelperLogDir(t *testing.T) {
 	const home = "/Users/canary"
 	perUser := filepath.Join(home, "Library", "Logs", "Breeze")
 
+	const winShared = `C:\ProgramData\Breeze\logs`
+	const winHome = `C:\Users\canary`
+	const winLocalAppData = `C:\Users\canary\AppData\Local`
+
 	tests := []struct {
-		name   string
-		goos   string
-		euid   int
-		home   string
-		shared string
-		want   string
+		name         string
+		goos         string
+		euid         int
+		userRole     bool
+		home         string
+		localAppData string
+		shared       string
+		want         string
 	}{
 		{
 			// The bug in #5877: the LaunchAgent helper runs as the
@@ -59,21 +65,67 @@ func TestHelperLogDir(t *testing.T) {
 			want:   "/var/log/breeze",
 		},
 		{
-			name:   "windows semantics unchanged",
-			goos:   "windows",
-			euid:   -1,
-			home:   `C:\Users\canary`,
-			shared: `C:\ProgramData\Breeze\logs`,
-			want:   `C:\ProgramData\Breeze\logs`,
+			name:     "linux user-role helper semantics unchanged",
+			goos:     "linux",
+			euid:     1000,
+			userRole: true,
+			home:     home,
+			shared:   "/var/log/breeze",
+			want:     "/var/log/breeze",
+		},
+		{
+			// The SYSTEM-token helper can write ProgramData, so its log
+			// stays next to agent.log.
+			name:         "windows system-role helper keeps the shared directory",
+			goos:         "windows",
+			euid:         -1,
+			userRole:     false,
+			home:         winHome,
+			localAppData: winLocalAppData,
+			shared:       winShared,
+			want:         winShared,
+		},
+		{
+			// The bug in #9266: the user-role helper runs with the
+			// logged-in user's token, cannot create or append to a file
+			// under ProgramData\Breeze\logs, and so wrote nothing at all.
+			name:         "windows user-role helper gets a per-user directory",
+			goos:         "windows",
+			euid:         -1,
+			userRole:     true,
+			home:         winHome,
+			localAppData: winLocalAppData,
+			shared:       winShared,
+			want:         filepath.Join(winLocalAppData, "Breeze", "logs"),
+		},
+		{
+			name:         "windows user-role helper without LOCALAPPDATA derives it from the profile",
+			goos:         "windows",
+			euid:         -1,
+			userRole:     true,
+			home:         winHome,
+			localAppData: "",
+			shared:       winShared,
+			want:         filepath.Join(winHome, "AppData", "Local", "Breeze", "logs"),
+		},
+		{
+			name:         "windows user-role helper with no profile at all falls back to the shared directory",
+			goos:         "windows",
+			euid:         -1,
+			userRole:     true,
+			home:         "",
+			localAppData: "",
+			shared:       winShared,
+			want:         winShared,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := helperLogDir(tt.goos, tt.euid, tt.home, tt.shared)
+			got := helperLogDir(tt.goos, tt.euid, tt.userRole, tt.home, tt.localAppData, tt.shared)
 			if got != tt.want {
-				t.Fatalf("helperLogDir(%q, %d, %q, %q) = %q, want %q",
-					tt.goos, tt.euid, tt.home, tt.shared, got, tt.want)
+				t.Fatalf("helperLogDir(%q, %d, userRole=%v, %q, %q, %q) = %q, want %q",
+					tt.goos, tt.euid, tt.userRole, tt.home, tt.localAppData, tt.shared, got, tt.want)
 			}
 		})
 	}
@@ -95,7 +147,7 @@ func TestHelperLogDirOnThisHost(t *testing.T) {
 		want = filepath.Join(LogDir(), "desktop-helper.log")
 	}
 
-	dir, homeErr := HelperLogDir()
+	dir, homeErr := HelperLogDir(false)
 	if homeErr != nil {
 		t.Skipf("home directory unresolvable on this host: %v", homeErr)
 	}

@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "Se emitirá y numerará ahora una factura por {{amount}}.",
         "consequenceContracts": "Las líneas recurrentes se convierten en contratos en borrador que activas después.",
         "consequenceEmail": "La factura se enviará por correo electrónico a {{recipients}}.",
+        "consequenceEmailNotConfigured": "No hay un servicio de correo configurado; la factura no se enviará por correo. Compártela desde la página de la factura.",
         "consequenceDraft": "Esta propuesta nunca se envió. Lo primero que el cliente verá de ella será la factura.",
         "submit": "Aceptar y emitir factura",
         "success": "Propuesta aceptada. Factura {{number}} emitida.",
@@ -2774,6 +2775,10 @@
       "confirm": "Confirmar",
       "failed": "Verificación fallida. Inténtelo de nuevo.",
       "unavailable": "No se pudo iniciar la verificación"
+    },
+    "notEnabled": {
+      "title": "Los pagos automáticos no están habilitados para su cuenta",
+      "hint": "Los pagos automáticos aún no se han activado. Pida a su administrador de Breeze que los habilite y luego vuelva para solicitar la inscripción a sus clientes."
     }
   },
   "reminders": {

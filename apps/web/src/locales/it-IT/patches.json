@@ -259,7 +259,9 @@
       "moderate": "Moderata",
       "low": "Bassa",
       "unrated": "Non valutata",
-      "unratedNote": "Non verrà approvata automaticamente"
+      "unratedNote": "Non verrà approvata automaticamente",
+      "derivedNote": "Valutazione derivata",
+      "derivedTooltip": "Il fornitore non ha pubblicato una valutazione per questo aggiornamento. Questa gravità è stata derivata dalla classificazione e dal titolo."
     },
     "approval": {
       "pending": "In sospeso",
@@ -372,7 +374,8 @@
       "createRing": "Impossibile creare l'anello di aggiornamento",
       "deleteRing": "Impossibile eliminare l'anello",
       "approveUnknown": "Stato di approvazione sconosciuto: non è stato possibile leggere la risposta del server. Aggiorna per verificare quali patch sono state approvate.",
-      "approveAbortedWithFailures": "{{message}} (Il server aveva inoltre rifiutato {{count}} patch in precedenza.)"
+      "approveAbortedWithFailures": "{{message}} (Il server aveva inoltre rifiutato {{count}} patch in precedenza.)",
+      "checkRingLinks": "Impossibile verificare quali criteri usano questo anello; non è stato eliminato nulla"
     },
     "toast": {
       "ringSaved": "Anello di aggiornamento salvato",
@@ -402,7 +405,13 @@
       "createTitle": "Crea anello di aggiornamento"
     },
     "truncatedNotice": "Vengono mostrate {{shown}} patch su {{total}}. I filtri qui restringono solo ciò che è già caricato, quindi il resto non è raggiungibile da questa vista: usa l'API delle patch per consultare il catalogo completo.",
-    "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto."
+    "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto.",
+    "ringDelete": {
+      "title": "Eliminare {{name}}?",
+      "messageOne": "1 criterio smetterà di applicare le patch pianificate finché non sceglierai un altro anello.",
+      "messageMany": "{{count}} criteri smetteranno di applicare le patch pianificate finché non sceglierai un altro anello.",
+      "confirm": "Elimina anello"
+    }
   },
   "patchJobsList": {
     "empty": "Nessun job di patch ancora. I job creati da criteri, anelli di aggiornamento o dall'assistente IA appariranno qui.",

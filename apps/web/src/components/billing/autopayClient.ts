@@ -4,9 +4,17 @@ import { runAction } from '../../lib/runAction';
 import { i18n } from '../../lib/i18n';
 import type {AutopayListRow as AutopayRow} from '@breeze/shared';
 export type {AutopayListRow as AutopayRow} from '@breeze/shared';
+/** The API answers 404 `autopay_not_enabled` when the feature is off for the partner: an expected state, not a failure. */
+export class AutopayNotEnabledError extends Error {
+  constructor() { super(i18n.t('billing:autopay.error')); this.name = 'AutopayNotEnabledError'; }
+}
 export async function readAutopay<T>(path: string): Promise<T> {
   const response = await fetchWithAuth(path);
-  if (!response.ok) throw new Error(i18n.t('billing:autopay.error'));
+  if (!response.ok) {
+    const body = response.status === 404 ? await response.json().catch(() => null) as { code?: unknown } | null : null;
+    if (body?.code === 'autopay_not_enabled') throw new AutopayNotEnabledError();
+    throw new Error(i18n.t('billing:autopay.error'));
+  }
   return response.json() as Promise<T>;
 }
 /** `success` names what changed (e.g. "Automatic payments paused."); the default is generic.

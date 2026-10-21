@@ -217,6 +217,14 @@ export function buildQuoteDocumentModel(dto: CustomerQuoteDocument, labels: Docu
       if (Number(b.oneTimeTotal) > 0) parts.push(money(b.oneTimeTotal));
       if (Number(b.monthlyTotal) > 0) parts.push(money(b.monthlyTotal, labels.perMonth));
       if (Number(b.annualTotal) > 0) parts.push(money(b.annualTotal, labels.perYear));
+      if (parts.length === 0) {
+        // A zero-valued category is still a row (a $0.00/mo line is meaningful to the customer): show
+        // one zero per cadence its lines use, never a label with no figure.
+        const cadences = new Set(dto.lines.filter((l) => (l.itemType ?? 'other') === b.category).map((l) => l.recurrence || 'one_time'));
+        if (cadences.has('monthly')) parts.push(money(b.monthlyTotal, labels.perMonth));
+        if (cadences.has('annual')) parts.push(money(b.annualTotal, labels.perYear));
+        if (parts.length === 0) parts.push(money(b.oneTimeTotal));
+      }
       rows.push(row(`category:${b.category}`, L.category(b.category), parts, 'muted'));
     }
   }

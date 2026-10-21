@@ -26,6 +26,13 @@ export class TopologyReadError extends Error {
  */
 let topologyOrgPin: string | null = null;
 export function setTopologyOrgPin(orgId: string | null | undefined) { topologyOrgPin = orgId || null; }
+/**
+ * A topology mutation (or any request that must carry the pinned device org, #9470). Returns the raw
+ * `Response` for `runAction` to interpret; the pin is applied exactly as for reads.
+ */
+export function topologyWrite(path: string, init: Parameters<typeof fetchWithAuth>[1] = {}): Promise<Response> {
+  return fetchWithAuth(path, { ...init, ...(topologyOrgPin ? { orgIdOverride: topologyOrgPin } : {}) });
+}
 /** `body` turns the read into a POST with a JSON body, for reads whose ids would overflow a URL (#8307). Still a read: nothing is mutated. */
 export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal, body?: unknown): Promise<T> {
   const response = await fetchWithAuth(path, {

@@ -325,14 +325,11 @@ const normalizeSla = (raw: unknown): SlaSummary | null => {
   const record = getRecord(raw);
   const source = Array.isArray(record.data) && record.data.length > 0 ? record.data[0] : record;
   const sourceRecord = getRecord(source);
-  const history = Array.isArray(sourceRecord.history) ? sourceRecord.history : [];
-  const historyRecord = history.length > 0 ? getRecord(history[0]) : {};
 
   const uptime = pickOptionalNumber(
     sourceRecord.uptime,
     sourceRecord.compliancePercentage,
-    sourceRecord.compliance,
-    historyRecord.compliancePercentage
+    sourceRecord.compliance
   );
   if (uptime === undefined) return null;
 
@@ -649,11 +646,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             if (typeof firstDefinition.id === 'string') {
               try {
                 const compliance = getRecord(await fetchJson(`/analytics/sla/${firstDefinition.id}/compliance`));
-                const history = Array.isArray(compliance.history) ? compliance.history : [];
-                const uptime = pickOptionalNumber(
-                  compliance.liveUptime,
-                  getRecord(history[0]).compliancePercentage
-                );
+                const uptime = pickOptionalNumber(compliance.liveUptime);
                 if (uptime !== undefined) {
                   summary = {
                     uptime,

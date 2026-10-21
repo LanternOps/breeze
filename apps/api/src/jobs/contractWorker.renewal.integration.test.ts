@@ -34,8 +34,9 @@ it.runIf(!!process.env.DATABASE_URL)(
         partnerId: p!.id, name: 'WOrg', slug: `wo-${sfx}`
       }).returning({ id: organizations.id });
 
-      // Contract whose next bill lands exactly at end_date — the renewal sweep
-      // must extend end_date BEFORE billing so it bills rather than expires.
+      // Contract whose next bill lands exactly at end_date: the state its final
+      // advance invoice leaves it in (#9243). The renewal sweep must extend
+      // end_date BEFORE billing so it bills rather than defers.
       const [c] = await db.insert(contracts).values({
         partnerId: p!.id,
         orgId: o!.id,

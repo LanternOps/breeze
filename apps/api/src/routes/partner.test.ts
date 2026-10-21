@@ -13,6 +13,9 @@ vi.mock('../db', () => ({
   }
 }));
 
+const emailMock = vi.hoisted(() => ({ getEmailService: vi.fn() }));
+vi.mock('../services/email', () => emailMock);
+
 vi.mock('../db/schema', () => ({
   partners: {
     id: 'id', name: 'name', slug: 'slug', status: 'status', settings: 'settings'
@@ -177,6 +180,18 @@ describe('partner routes', () => {
       } finally {
         vi.unstubAllEnvs();
       }
+    });
+
+    it('reports emailConfigured=true when an email transport exists, false when not (#9256)', async () => {
+      emailMock.getEmailService.mockReturnValueOnce({ sendEmail: vi.fn() });
+      mockPartnerRow();
+      const on = await app.request('/partner/me', { headers: { Authorization: 'Bearer token' } });
+      expect((await on.json()).emailConfigured).toBe(true);
+
+      emailMock.getEmailService.mockReturnValueOnce(null);
+      mockPartnerRow();
+      const off = await app.request('/partner/me', { headers: { Authorization: 'Bearer token' } });
+      expect((await off.json()).emailConfigured).toBe(false);
     });
 
     it('drops a non-http(s) meeting URL and nulls when unset', async () => {

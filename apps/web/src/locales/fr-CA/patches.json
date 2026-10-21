@@ -259,7 +259,9 @@
       "moderate": "Modéré",
       "low": "Faible",
       "unrated": "Non évalué",
-      "unratedNote": "Ne sera pas approuvé automatiquement"
+      "unratedNote": "Ne sera pas approuvé automatiquement",
+      "derivedNote": "Niveau déduit",
+      "derivedTooltip": "L'éditeur n'a publié aucune évaluation pour cette mise à jour. Cette gravité a été déduite de sa classification et de son titre."
     },
     "approval": {
       "pending": "En attente",
@@ -372,7 +374,8 @@
       "createRing": "Impossible de créer un anneau de mise à jour",
       "deleteRing": "Impossible de supprimer l’anneau",
       "approveUnknown": "État d'approbation inconnu — la réponse du serveur n'a pas pu être lue. Actualisez pour confirmer quels correctifs ont été approuvés.",
-      "approveAbortedWithFailures": "{{message}} ({{count}} correctifs avaient également été refusés par le serveur auparavant.)"
+      "approveAbortedWithFailures": "{{message}} ({{count}} correctifs avaient également été refusés par le serveur auparavant.)",
+      "checkRingLinks": "Impossible de vérifier quelles politiques utilisent cet anneau; rien n’a été supprimé"
     },
     "toast": {
       "ringSaved": "Anneau de mise à jour enregistré",
@@ -402,7 +405,13 @@
       "createTitle": "Créer un anneau de mise à jour"
     },
     "truncatedNotice": "Affichage de {{shown}} correctifs sur {{total}}. Les filtres ici ne réduisent que ce qui est déjà chargé; le reste est donc inaccessible depuis cette vue — utilisez l'API des correctifs pour parcourir le catalogue complet.",
-    "shiftedNotice": "Affichage de {{shown}} correctifs sur {{total}} — le catalogue a changé pendant le chargement. Rechargez pour voir le reste."
+    "shiftedNotice": "Affichage de {{shown}} correctifs sur {{total}} — le catalogue a changé pendant le chargement. Rechargez pour voir le reste.",
+    "ringDelete": {
+      "title": "Supprimer {{name}}?",
+      "messageOne": "1 politique cessera d’appliquer les correctifs planifiés jusqu’à ce que vous choisissiez un autre anneau.",
+      "messageMany": "{{count}} politiques cesseront d’appliquer les correctifs planifiés jusqu’à ce que vous choisissiez un autre anneau.",
+      "confirm": "Supprimer l’anneau"
+    }
   },
   "patchJobsList": {
     "empty": "Aucune tâche de correctif pour le moment. Les tâches créées par des politiques, des anneaux de mise à jour ou l'assistant IA apparaîtront ici.",

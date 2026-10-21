@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "An invoice for {{amount}} will be issued and numbered now.",
         "consequenceContracts": "Recurring lines become draft contracts you activate later.",
         "consequenceEmail": "The invoice will be emailed to {{recipients}}.",
+        "consequenceEmailNotConfigured": "No email service is configured; the invoice will not be emailed. Share it from the invoice page.",
         "consequenceDraft": "This quote was never sent. The customer's first sight of it will be the invoice.",
         "submit": "Accept and issue invoice",
         "success": "Quote accepted. Invoice {{number}} issued.",
@@ -2774,6 +2775,10 @@
       "confirm": "Confirm",
       "failed": "Verification failed. Try again.",
       "unavailable": "Unable to start verification"
+    },
+    "notEnabled": {
+      "title": "Automatic payments aren't enabled for your account",
+      "hint": "Automatic payments haven't been turned on yet. Ask your Breeze administrator to enable them, then come back to request enrollment from your clients."
     }
   },
   "reminders": {

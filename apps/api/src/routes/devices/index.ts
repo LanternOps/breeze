@@ -37,6 +37,7 @@ import { actuateElevationRoutes } from './actuateElevation';
 import { pamReconciliationRoutes } from './pamReconciliation';
 import { softwareActionsRoutes } from './softwareActions';
 import { homebrewBootstrapRoutes } from './homebrewBootstrap';
+import { agentRecoveryRoutes } from './agentRecovery';
 import { networkRoutes } from './network';
 import { manualRoutes } from './manual';
 import { customFieldValuesRoutes } from './customFieldValues';
@@ -191,6 +192,8 @@ deviceRoutes.route('/', deviceRestorePointAttemptsRoutes);
 deviceRoutes.route('/', actuateElevationRoutes);
 deviceRoutes.route('/', pamReconciliationRoutes);
 deviceRoutes.route('/', homebrewBootstrapRoutes);
+// #9234 step 1: POST /:id/agent-recovery (watchdog restart/start of the agent).
+deviceRoutes.route('/', agentRecoveryRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere
 export * from './helpers';

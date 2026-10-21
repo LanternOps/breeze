@@ -203,6 +203,15 @@ describe('setOfferingEnabled', () => {
     expect(h.enableOffering).not.toHaveBeenCalled();
   });
 
+  it('ignores platform-only patch_test rows when deciding if a disable is blocked (#9455)', async () => {
+    h.loadOfferingCandidate.mockResolvedValue(candidate({}, { enabled: true }));
+    h.dbSelectRows = [[{ surface: 'patch_test', orgId: null }]];
+    h.enableOffering.mockResolvedValue(row({ enabled: false }));
+    const r = await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: false, force: false });
+    expect(r.inUse).toEqual([]);
+    expect(h.enableOffering).toHaveBeenCalled();
+  });
+
   it('disables a default offering with force and reports what it affected', async () => {
     h.loadOfferingCandidate.mockResolvedValue(candidate({}, { enabled: true }));
     h.dbSelectRows = [[{ surface: 'chat', orgId: null }]];

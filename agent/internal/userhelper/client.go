@@ -215,6 +215,13 @@ func (c *Client) Run() error {
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
 
+	// Relay queued and future warn+ log records to the agent for the life of
+	// this connection, when the process has no shipper of its own (#9266).
+	if fwd := activeLogForwarder.Load(); fwd != nil {
+		conn := c.conn
+		safeGo("log_forward", func() { fwd.Pump(conn, runDone) })
+	}
+
 	// Enter command loop
 	return c.commandLoop()
 }

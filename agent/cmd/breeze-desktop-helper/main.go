@@ -75,7 +75,9 @@ func runDesktopHelper() {
 	// On macOS this resolves to ~/Library/Logs/Breeze, not the root-owned
 	// 0700 shared agent log directory the user-session LaunchAgent cannot
 	// write (#5877). Other platforms keep the shared directory.
-	logDir, homeErr := config.HelperLogDir()
+	// The role argument only matters on Windows; this standalone binary is
+	// the macOS desktop helper, where the euid decides.
+	logDir, homeErr := config.HelperLogDir(false)
 	mkdirErr := os.MkdirAll(logDir, 0700)
 	logPath := filepath.Join(logDir, "desktop-helper.log")
 	var output io.Writer = os.Stdout

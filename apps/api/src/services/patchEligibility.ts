@@ -37,12 +37,13 @@ import { z } from 'zod';
 import type { PatchIneligibleReason } from '@breeze/shared';
 import { db } from '../db';
 import {
-  devicePatches, devices, organizations, patchApprovals, patches, patchPolicies,
+  devicePatches, devices, organizations, patches, patchPolicies,
   OUTSTANDING_DEVICE_PATCH_STATUSES,
 } from '../db/schema';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
 import { captureException } from './sentry';
+import { resolveLatestManualDecisions, selectManualDecisionRows } from './patchManualDecisions';
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
 import {
   buildAllowedPatchSources,
@@ -278,46 +279,14 @@ export async function evaluatePatchInstallEligibility(args: {
   // 2. Load manual approvals for this partner (optionally scoped to ring).
   //    partner-wide (ring_id NULL) AND ring-specific rows are both returned.
   const patchIds = finalCandidates.map((p) => p.patchId);
-  const manualApprovals = await db
-    .select({
-      patchId: patchApprovals.patchId,
-      status: patchApprovals.status,
-      ringId: patchApprovals.ringId,
-      updatedAt: patchApprovals.updatedAt,
-    })
-    .from(patchApprovals)
-    .where(
-      and(
-        eq(patchApprovals.partnerId, partnerId),
-        inArray(patchApprovals.patchId, patchIds),
-        inArray(patchApprovals.status, ['approved', 'rejected'])
-      )
-    );
+  const manualApprovals = await selectManualDecisionRows(partnerId, patchIds);
 
-  // Index manual decisions by patchId. A decline ('rejected') is a TERMINAL
-  // deny (#9369) — it must beat ring auto-approve, which never sees it
-  // otherwise. Rows that apply: this ring's, or partner-wide (null ringId).
-  // The most recent decision wins (updatedAt); a tie or missing timestamp
-  // resolves to the decline (fail-closed).
-  const latest = new Map<string, { status: string; at: number }>();
-  for (const approval of manualApprovals) {
-    if (approval.ringId !== ringConfig.ringId && approval.ringId !== null) continue;
-    const t = approval.updatedAt ? new Date(approval.updatedAt).getTime() : 0;
-    const at = Number.isFinite(t) ? t : 0;
-    const prev = latest.get(approval.patchId);
-    if (
-      !prev ||
-      at > prev.at ||
-      (at === prev.at && approval.status === 'rejected')
-    ) {
-      latest.set(approval.patchId, { status: approval.status, at });
-    }
-  }
-  const manualApprovalSet = new Set<string>();
-  const declinedSet = new Set<string>();
-  for (const [patchId, d] of latest) {
-    (d.status === 'rejected' ? declinedSet : manualApprovalSet).add(patchId);
-  }
+  // A decline ('rejected') is a TERMINAL deny (#9369) — it must beat ring
+  // auto-approve, which never sees it otherwise. Latest decision wins among
+  // this ring's rows and partner-wide (null ringId) rows; see
+  // patchManualDecisions.ts.
+  const { approved: manualApprovalSet, declined: declinedSet } =
+    resolveLatestManualDecisions(manualApprovals, { ringId: ringConfig.ringId });
 
   // 3. Build category rules index
   const categoryRules = Array.isArray(ringConfig.categoryRules) ? ringConfig.categoryRules : [];

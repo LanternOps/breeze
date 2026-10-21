@@ -96,6 +96,8 @@ The organization policy is authoritative for dormant elevation-account provision
 
 **`pam_enabled` controls local startup provisioning; it is not a local opt-out from organization PAM policy.** Setting it to `true` alone does not enable UAC interception without an enabled effective policy, and setting it to `false` does not block policy-driven provisioning. Support-mode agents do not provision the account.
 
+On RD Session Hosts the agent runs its Windows helpers on demand. While UAC interception is enabled, it also keeps a SYSTEM helper in every signed-in session so the elevation dialog can appear. See [Windows Helper Lifecycle](/agents/helper/#windows-helper-lifecycle-always-on-vs-on-demand).
+
 `PAM_ACTUATOR_ENABLED` gates the legacy `POST /api/v1/devices/:id/actuate-elevation` endpoint. It is not a kill switch for managed PAM v2. To disable policy-driven UAC interception, disable the effective organization's UAC-interception policy.
 
 ---

@@ -11,6 +11,7 @@ import {
   devicePatches,
 } from '../db/schema';
 import { resolveRingDeviceCountsWithWarnings, resolveRingDeviceIdsWithWarnings } from './updateRingsHelpers';
+import { getRingLinkedPolicies, linkedPolicyPayload } from './updateRingLinkedPolicies';
 import { getPagination, inferPatchOs } from './patches/helpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -400,6 +401,12 @@ updateRingRoutes.patch(
     if (data.appRules !== undefined) updateFields.appRules = data.appRules;
     if (data.targets !== undefined) updateFields.targets = data.targets;
 
+    // Disabling a ring fails closed for every policy linked to it (#8909):
+    // report who is affected. Read before the write so a lookup failure leaves
+    // the ring untouched. The caller is a full-partner admin (gate above), so
+    // RLS does not narrow the count.
+    const linked = data.enabled === false ? await getRingLinkedPolicies(id) : null;
+
     const [updated] = await db
       .update(patchPolicies)
       .set(updateFields)
@@ -411,10 +418,14 @@ updateRingRoutes.patch(
       action: 'update_ring.update',
       resourceType: 'update_ring',
       resourceId: id,
-      details: { partnerId: existing.partnerId, changes: Object.keys(data) },
+      details: {
+        partnerId: existing.partnerId,
+        changes: Object.keys(data),
+        ...(linked ? { linkedPolicyCount: linked.length, linkedPolicyIds: linked.map((p) => p.id) } : {}),
+      },
     });
 
-    return c.json(updated);
+    return c.json(linked ? { ...updated, ...linkedPolicyPayload(linked) } : updated);
   }
 );
 
@@ -443,6 +454,9 @@ updateRingRoutes.delete(
     const deleteDenial = partnerWideRingWriteDenial(c, auth);
     if (deleteDenial) return deleteDenial.response;
 
+    // Read before the write so a lookup failure is a clean 500 with the ring untouched.
+    const linked = await getRingLinkedPolicies(id);
+
     await db
       .update(patchPolicies)
       .set({ enabled: false, updatedAt: new Date() })
@@ -454,10 +468,43 @@ updateRingRoutes.delete(
       resourceType: 'update_ring',
       resourceId: id,
       resourceName: existing.name,
-      details: { partnerId: existing.partnerId },
+      details: {
+        partnerId: existing.partnerId,
+        linkedPolicyCount: linked.length,
+        linkedPolicyIds: linked.map((p) => p.id),
+      },
     });
 
-    return c.json({ success: true });
+    return c.json({ success: true, ...linkedPolicyPayload(linked) });
+  }
+);
+
+// GET /update-rings/:id/linked-policies — policies a delete/disable would strand.
+// Full-partner admins only: RLS narrows org-policy visibility for restricted
+// partner users, which would silently undercount (#8909).
+updateRingRoutes.get(
+  '/:id/linked-policies',
+  requireScope('partner', 'system'),
+  requireUpdateRingRead,
+  zValidator('param', ringIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+
+    const [ring] = await db
+      .select({ id: patchPolicies.id, partnerId: patchPolicies.partnerId })
+      .from(patchPolicies)
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
+      .limit(1);
+
+    if (!ring) return c.json({ error: 'Update ring not found' }, 404);
+    if (auth.scope !== 'system' && auth.partnerId !== ring.partnerId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+    const denial = partnerWideRingWriteDenial(c, auth);
+    if (denial) return denial.response;
+
+    return c.json(linkedPolicyPayload(await getRingLinkedPolicies(id)));
   }
 );
 
@@ -512,9 +559,27 @@ updateRingRoutes.get(
       WHERE "device_patches"."patch_id" = "patches"."id"
         AND "device_patches"."device_id" IN ${ringDeviceIdListSql}
         AND "device_patches"."reported_severity" IS NOT NULL
-      ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST
+      ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST, "device_patches"."id" DESC
       LIMIT 1
     ), 'unknown')::patch_severity`;
+    // Provenance of the severity shown above (#9387): the reported_severity_source
+    // of the very row the fallback picked — same predicate, same ORDER BY with
+    // the same unique tiebreaker, so the two subqueries cannot land on
+    // different rows. NULL when the trusted shared classification supplied the
+    // value (it is not a device report) or nothing was reported. 'derived'
+    // drives the "derived" marker in the web.
+    const effectiveSeveritySourceSql = sql<string | null>`CASE
+      WHEN NULLIF(${patches.severity}::text, 'unknown') IS NOT NULL THEN NULL
+      ELSE (
+        SELECT "device_patches"."reported_severity_source"
+        FROM "device_patches"
+        WHERE "device_patches"."patch_id" = "patches"."id"
+          AND "device_patches"."device_id" IN ${ringDeviceIdListSql}
+          AND "device_patches"."reported_severity" IS NOT NULL
+        ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST, "device_patches"."id" DESC
+        LIMIT 1
+      )
+    END`;
     const effectiveCategorySql = sql<string | null>`COALESCE(${patches.category}, (
       SELECT "device_patches"."reported_category"
       FROM "device_patches"
@@ -545,6 +610,7 @@ updateRingRoutes.get(
         description: patches.description,
         source: patches.source,
         severity: effectiveSeveritySql,
+        severitySource: effectiveSeveritySourceSql,
         category: effectiveCategorySql,
         osTypes: patches.osTypes,
         // Same device-derived OS hint as GET /patches (list.ts): the most

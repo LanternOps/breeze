@@ -3667,7 +3667,7 @@ describe('sso routes', () => {
       );
       expect(auditLogin).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ scope: 'partner', method: 'sso-partner', orgId: null, userId: USER_UUID })
+        expect.objectContaining({ scope: 'partner', method: 'sso-partner', orgId: null, partnerId: PARTNER_UUID, userId: USER_UUID })
       );
     });
 

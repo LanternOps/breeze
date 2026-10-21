@@ -28,6 +28,7 @@ import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
 import { getQuoteRecipients } from '../../services/quoteLifecycle';
 import { getConnection } from '../../services/stripeConnectService';
+import { getEmailService } from '../../services/email';
 import {
   renderContractBlocksForClient,
   loadContractPdfInputs,
@@ -262,6 +263,9 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
       acceptance,
       stripeConnected, stripeAccountCurrency, currencyWarning,
       autoEmailInvoiceOnAccept,
+      // #9256: whether the server has an email transport at all, so the web can
+      // say "not emailed" instead of promising an email that cannot go out.
+      emailConfigured: !!getEmailService(),
     } });
   } catch (err) { return handleServiceError(c, err); }
 });
