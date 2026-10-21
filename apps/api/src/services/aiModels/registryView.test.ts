@@ -211,6 +211,13 @@ describe('buildPartnerModelsSnapshot', () => {
     ]);
   });
 
+  it('does not count platform-only surfaces (patch_test) in defaultFor: no UI row can manage them (#9455)', async () => {
+    setOfferings([offering({ id: A })]);
+    h.allRows = [{ surface: 'chat', orgId: null, defaultOfferingId: A }, { surface: 'patch_test', orgId: null, defaultOfferingId: A }];
+    const s = await buildPartnerModelsSnapshot(P);
+    expect(s.offerings[0]!.defaultFor).toEqual([{ surface: 'chat', level: 'partner', orgId: null }]);
+  });
+
   it('returns one defaults row per configurable (surface, role), never patch_test', async () => {
     h.partnerRows = [assignment({ surface: 'chat', orgId: null, defaultOfferingId: A, allowUserChoice: true })];
     h.allRows = [{ surface: 'chat', role: 'default', orgId: 'o1', defaultOfferingId: null }, { surface: 'chat', role: 'default', orgId: 'o2', defaultOfferingId: null }];

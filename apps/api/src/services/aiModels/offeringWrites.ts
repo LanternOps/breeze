@@ -16,7 +16,7 @@
  * failure goes through toRegistryWriteError.
  */
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
-import type { AiSurface, OfferingDetailsPatch, OfferingOptions } from '@breeze/shared';
+import { CONFIGURABLE_AI_SURFACES, type AiSurface, type OfferingDetailsPatch, type OfferingOptions } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgents, aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
 import { isHosted } from '../../config/env';
@@ -79,11 +79,14 @@ export async function listOfferingDefaultUses(partnerId: string, offeringId: str
       eq(aiModelAssignments.offeringPartnerId, partnerId),
       eq(aiModelAssignments.defaultOfferingId, offeringId),
     ));
-  return rows.map((r) => ({
-    surface: r.surface as AiSurface,
-    level: r.orgId === null ? 'partner' : 'org',
-    orgId: r.orgId,
-  }));
+  // Platform-only surfaces (patch_test) are not partner-manageable: never block on them (#9455).
+  return rows
+    .filter((r) => (CONFIGURABLE_AI_SURFACES as readonly string[]).includes(r.surface))
+    .map((r) => ({
+      surface: r.surface as AiSurface,
+      level: r.orgId === null ? 'partner' as const : 'org' as const,
+      orgId: r.orgId,
+    }));
 }
 
 /** Fast mode is selectable on this platform model (supported + rated). */
