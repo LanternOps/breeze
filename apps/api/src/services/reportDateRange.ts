@@ -17,6 +17,11 @@
  *  2. A rolling preset → `[now - N days, now]`, evaluated at generation time,
  *     so each scheduled run covers the N days before it.
  *  3. Otherwise (no range, `custom` without bounds, unknown preset) → open.
+ *     An unknown preset is logged: it means an unbounded report whose PDF
+ *     claims a window, which is the #9562 symptom.
+ *
+ * An explicit bound that does not parse as a date throws, so the run fails
+ * with a message naming the bad bound instead of a serializer RangeError.
  */
 
 const PRESET_DAYS = {
@@ -37,6 +42,14 @@ function asRange(raw: unknown): RawDateRange | null {
 
 const nonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 
+function parseBound(bound: 'start' | 'end', value: string): Date {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid report date range: ${bound} ${JSON.stringify(value)} is not a date`);
+  }
+  return date;
+}
+
 /** The length in days of a rolling preset, or null for `custom`/absent/unknown. */
 export function reportDateRangePresetDays(raw: unknown): number | null {
   const preset = asRange(raw)?.preset;
@@ -51,12 +64,19 @@ export function resolveReportDateRange(raw: unknown, now: Date = new Date()): Re
 
   if (nonEmptyString(range.start) || nonEmptyString(range.end)) {
     return {
-      start: nonEmptyString(range.start) ? new Date(range.start) : null,
-      end: nonEmptyString(range.end) ? new Date(range.end) : null,
+      start: nonEmptyString(range.start) ? parseBound('start', range.start) : null,
+      end: nonEmptyString(range.end) ? parseBound('end', range.end) : null,
     };
   }
 
   const days = reportDateRangePresetDays(range);
-  if (days === null) return { start: null, end: null };
+  if (days === null) {
+    if (range.preset !== undefined && range.preset !== 'custom') {
+      console.warn(
+        `[reportDateRange] Unknown dateRange preset ${JSON.stringify(range.preset)}; the report window is unbounded`,
+      );
+    }
+    return { start: null, end: null };
+  }
   return { start: new Date(now.getTime() - days * DAY_MS), end: new Date(now.getTime()) };
 }

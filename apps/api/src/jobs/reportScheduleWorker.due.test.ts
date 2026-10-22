@@ -57,25 +57,27 @@ const NOW = new Date('2026-06-10T09:30:00Z');
 const HOSTS = ['America/Denver', 'Asia/Tokyo'] as const;
 
 const keyForNow = () => lastOccurrenceKey(NOW, 'daily', DAILY, TZ);
+/** Saved well before every occurrence these fixtures consider. */
+const SAVED_LONG_AGO = new Date('2026-01-01T00:00:00Z');
 
 describe('isReportOccurrenceDue — last_generated_at on any API host', () => {
   it.each(HOSTS)('does not re-fire an occurrence that already ran, on a %s host', (zone) => {
     withHostTimeZone(zone, () => {
       // Ran at 09:05Z, five minutes AFTER the 09:00 occurrence.
-      expect(isReportOccurrenceDue(new Date('2026-06-10T09:05:00Z'), keyForNow(), TZ)).toBe(false);
+      expect(isReportOccurrenceDue(new Date('2026-06-10T09:05:00Z'), keyForNow(), TZ, SAVED_LONG_AGO)).toBe(false);
     });
   });
 
   it.each(HOSTS)('still fires an occurrence that has not run yet, on a %s host', (zone) => {
     withHostTimeZone(zone, () => {
       // Ran at 08:55Z, five minutes BEFORE the 09:00 occurrence.
-      expect(isReportOccurrenceDue(new Date('2026-06-10T08:55:00Z'), keyForNow(), TZ)).toBe(true);
+      expect(isReportOccurrenceDue(new Date('2026-06-10T08:55:00Z'), keyForNow(), TZ, SAVED_LONG_AGO)).toBe(true);
     });
   });
 
   it.each(HOSTS)('fires when the last run was the previous day, on a %s host', (zone) => {
     withHostTimeZone(zone, () => {
-      expect(isReportOccurrenceDue(new Date('2026-06-09T09:05:00Z'), keyForNow(), TZ)).toBe(true);
+      expect(isReportOccurrenceDue(new Date('2026-06-09T09:05:00Z'), keyForNow(), TZ, SAVED_LONG_AGO)).toBe(true);
     });
   });
 
@@ -91,15 +93,15 @@ describe('isReportOccurrenceDue — last_generated_at on any API host', () => {
         '2026-06-10T23:59:00Z',
       ]) {
         expect(
-          isReportOccurrenceDue(new Date(iso), keyForNow(), TZ),
+          isReportOccurrenceDue(new Date(iso), keyForNow(), TZ, SAVED_LONG_AGO),
           `last run at ${iso}`,
         ).toBe(expectedVerdict(iso));
       }
     });
   });
 
-  it('never ran is always due', () => {
-    expect(isReportOccurrenceDue(null, keyForNow(), TZ)).toBe(true);
+  it('never ran, saved before the occurrence, is due', () => {
+    expect(isReportOccurrenceDue(null, keyForNow(), TZ, SAVED_LONG_AGO)).toBe(true);
   });
 });
 

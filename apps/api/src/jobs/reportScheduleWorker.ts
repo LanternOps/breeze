@@ -164,7 +164,7 @@ export function isReportOccurrenceDue(
   lastGeneratedAt: Date | null,
   occurrenceKey: number,
   timeZone: string,
-  createdAt: Date | null = null,
+  createdAt: Date,
 ): boolean {
   return isDue(lastGeneratedAt ?? createdAt, occurrenceKey, timeZone);
 }

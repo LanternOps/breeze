@@ -130,7 +130,7 @@ describe('report generators honour the configured reporting window (#9562)', () 
     await generateAlertSummaryReport(ORG, { dateRange: { preset: 'last_7_days' } }, AUTHORITY);
     const alertWheres = wheresOn('"alerts"."triggered_at" >= $');
     // Both statements (rows + severity summary) share the bounded predicate.
-    expect(alertWheres.length).toBeGreaterThanOrEqual(1);
+    expect(alertWheres).toHaveLength(2);
     for (const q of alertWheres) expect(q.params).toContain(iso(NOW.getTime() - 7 * DAY));
     expect(wheresOn('"alerts"').every((q) => q.sql.includes('"alerts"."triggered_at" >= $'))).toBe(true);
   });

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { resolveReportDateRange, reportDateRangePresetDays } from './reportDateRange';
 
 const NOW = new Date('2026-10-21T12:00:00.000Z');
@@ -37,6 +37,27 @@ describe('resolveReportDateRange (#9562)', () => {
     ['a non-object', 'last_30_days'],
   ])('leaves the window open for %s', (_label, raw) => {
     expect(resolveReportDateRange(raw, NOW)).toEqual({ start: null, end: null });
+  });
+
+  it.each([
+    ['start', { start: 'not-a-date' }],
+    ['end', { preset: 'custom', start: '2026-09-01', end: '2026-13-45' }],
+  ])('refuses an unparseable explicit %s instead of guessing a window', (bound, raw) => {
+    expect(() => resolveReportDateRange(raw, NOW)).toThrow(`Invalid report date range: ${bound}`);
+  });
+
+  it('warns when an unknown preset leaves the window open, so an all-time report is never silent', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolveReportDateRange({ preset: 'last_decade' }, NOW)).toEqual({ start: null, end: null });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('last_decade'));
+      warn.mockClear();
+      resolveReportDateRange({ preset: 'custom' }, NOW);
+      resolveReportDateRange(undefined, NOW);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('exposes preset lengths for generators with their own date semantics', () => {
