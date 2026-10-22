@@ -257,8 +257,39 @@ describe('patchSchedulerWorker.scanAndCreateJobs — DB context boundaries (#189
     expect(captureException).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      { patch_scheduler_stage: 'closest_wins_resolve_failed', config_policy_id: 'cp-1' },
+      { patch_scheduler_stage: 'closest_wins_resolve_failed' },
+      { fingerprint: ['patch-scheduler', 'closest-wins-resolve-failed'] },
     );
+  });
+
+  it('spends the retries once per tick: a second due policy tries the failing lookup once, without waiting (#9632)', async () => {
+    selectResults = [
+      [
+        { configPolicyId: 'cp-1', policyName: 'Broad', policyOrgId: 'org-1', featureLinkId: 'fl-1' },
+        { configPolicyId: 'cp-2', policyName: 'Other', policyOrgId: 'org-2', featureLinkId: 'fl-2' },
+      ],
+      // cp-1: assignments, expansion, scheduling contexts, occurrence check
+      [{ level: 'organization', targetId: 'org-1' }],
+      [{ id: 'dev-1', deviceRole: 'workstation', osType: 'windows' }],
+      [{ deviceId: 'dev-1', orgId: 'org-1', siteTimezone: 'UTC', orgSettings: null, partnerTimezone: null, partnerSettings: null }],
+      [],
+      // cp-2: the same for its own device
+      [{ level: 'organization', targetId: 'org-2' }],
+      [{ id: 'dev-2', deviceRole: 'workstation', osType: 'windows' }],
+      [{ deviceId: 'dev-2', orgId: 'org-2', siteTimezone: 'UTC', orgSettings: null, partnerTimezone: null, partnerSettings: null }],
+      [],
+    ];
+    for (let i = 0; i < 4; i += 1) {
+      resolvePatchPolicyWinnersForDevices.mockRejectedValueOnce(new Error('remaining connection slots'));
+    }
+
+    const pending = scanAndCreateJobs();
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(resolvePatchPolicyWinnersForDevices).toHaveBeenCalledTimes(4); // 3 for cp-1, then 1 for cp-2
+    expect(result.created).toBe(0);
+    expect(captureException).toHaveBeenCalledTimes(2);
   });
 
   it('leaves the device out and reports to Sentry when the closer winner cannot be scheduled (#9632, #8678)', async () => {
@@ -282,7 +313,7 @@ describe('patchSchedulerWorker.scanAndCreateJobs — DB context boundaries (#189
     expect(captureException).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      { patch_scheduler_stage: 'closest_wins_winner_unschedulable', config_policy_id: 'cp-pilot' },
+      { patch_scheduler_stage: 'closest_wins_winner_unschedulable' },
       { fingerprint: ['patch-scheduler', 'closest-wins-winner-unschedulable'] },
     );
   });

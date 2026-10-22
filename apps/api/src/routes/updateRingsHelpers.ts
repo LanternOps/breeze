@@ -202,8 +202,7 @@ export async function resolveRingDeviceCountsWithWarnings(
       console.error(`Failed to resolve device count for ring ${ringId}:`, err instanceof Error ? err.message : err);
       captureException(err instanceof Error ? err : new Error(`Failed to resolve device count for ring ${ringId}`), undefined, {
         update_ring_stage: 'device_count_failed',
-        ring_id: ringId,
-      });
+      }, { fingerprint: ['update-ring', 'device-count-failed'] });
       deviceCountMap.set(ringId, { count: 0, warnings: [] });
     }
   }
