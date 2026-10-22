@@ -1908,10 +1908,27 @@
       "status": "Status",
       "approval": "Approval",
       "requested": "Requested",
-      "completed": "Completed"
+      "completed": "Completed",
+      "decision": "Decision"
     },
     "loading": "Loading remediations...",
-    "empty": "No remediations found."
+    "empty": "No remediations found.",
+    "decision": {
+      "approve": "Approve",
+      "reject": "Reject",
+      "approveTitle": "Approve remediation?",
+      "rejectTitle": "Reject remediation?",
+      "approveMessage": "This queues CIS check {{checkId}} to run on {{device}}. The agent will change the device's configuration.",
+      "rejectMessage": "This cancels the pending remediation for CIS check {{checkId}} on {{device}}. Nothing will run on the device.",
+      "noteLabel": "Note (optional)",
+      "approved": "Remediation for {{checkId}} approved and queued.",
+      "rejected": "Remediation for {{checkId}} rejected.",
+      "approveFailed": "Failed to approve remediation",
+      "rejectFailed": "Failed to reject remediation",
+      "queueFailed": "The approval was recorded but the remediation could not be queued. It is back to pending approval; try again.",
+      "mfaRequired": "Approving or rejecting a remediation requires a session signed in with multi-factor authentication. Sign out and sign in again with MFA.",
+      "ownRequest": "You requested this remediation, so another user must approve it."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Audit Baselines",

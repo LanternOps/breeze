@@ -1908,10 +1908,27 @@
       "status": "Statut",
       "approval": "Approbation",
       "requested": "Demandé",
-      "completed": "Terminée le"
+      "completed": "Terminée le",
+      "decision": "Décision"
     },
     "loading": "Chargement des réparations...",
-    "empty": "Aucune réparation trouvée."
+    "empty": "Aucune réparation trouvée.",
+    "decision": {
+      "approve": "Approuver",
+      "reject": "Refuser",
+      "approveTitle": "Approuver la correction ?",
+      "rejectTitle": "Refuser la correction ?",
+      "approveMessage": "Cela met en file le contrôle CIS {{checkId}} pour exécution sur {{device}}. L'agent modifiera la configuration de l'appareil.",
+      "rejectMessage": "Cela annule la correction en attente du contrôle CIS {{checkId}} sur {{device}}. Rien ne sera exécuté sur l'appareil.",
+      "noteLabel": "Note (facultative)",
+      "approved": "Correction de {{checkId}} approuvée et mise en file.",
+      "rejected": "Correction de {{checkId}} refusée.",
+      "approveFailed": "Échec de l'approbation de la correction",
+      "rejectFailed": "Échec du refus de la correction",
+      "queueFailed": "L'approbation a été enregistrée, mais la correction n'a pas pu être mise en file. Elle est de nouveau en attente d'approbation ; réessayez.",
+      "mfaRequired": "Approuver ou refuser une correction nécessite une session ouverte avec l'authentification multifacteur. Déconnectez-vous puis reconnectez-vous avec la MFA.",
+      "ownRequest": "Vous avez demandé cette correction : un autre utilisateur doit l'approuver."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Références d’audit",

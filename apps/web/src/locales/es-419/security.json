@@ -1908,10 +1908,27 @@
       "status": "Estado",
       "approval": "Aprobación",
       "requested": "Solicitado",
-      "completed": "Terminado"
+      "completed": "Terminado",
+      "decision": "Decisión"
     },
     "loading": "Cargando soluciones...",
-    "empty": "No se encontraron soluciones."
+    "empty": "No se encontraron soluciones.",
+    "decision": {
+      "approve": "Aprobar",
+      "reject": "Rechazar",
+      "approveTitle": "¿Aprobar la corrección?",
+      "rejectTitle": "¿Rechazar la corrección?",
+      "approveMessage": "Esto pone en cola el control CIS {{checkId}} para ejecutarse en {{device}}. El agente cambiará la configuración del dispositivo.",
+      "rejectMessage": "Esto cancela la corrección pendiente del control CIS {{checkId}} en {{device}}. No se ejecutará nada en el dispositivo.",
+      "noteLabel": "Nota (opcional)",
+      "approved": "Corrección de {{checkId}} aprobada y en cola.",
+      "rejected": "Corrección de {{checkId}} rechazada.",
+      "approveFailed": "No se pudo aprobar la corrección",
+      "rejectFailed": "No se pudo rechazar la corrección",
+      "queueFailed": "La aprobación se registró, pero la corrección no se pudo poner en cola. Volvió a estar pendiente de aprobación; inténtalo de nuevo.",
+      "mfaRequired": "Aprobar o rechazar una corrección requiere una sesión iniciada con autenticación multifactor. Cierra sesión y vuelve a iniciarla con MFA.",
+      "ownRequest": "Tú solicitaste esta corrección, así que otro usuario debe aprobarla."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Líneas base de auditoría",

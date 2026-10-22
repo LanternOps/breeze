@@ -143,7 +143,7 @@ export default function CisHardeningPage() {
 
           {activeTab === 'compliance' && <CisComplianceTab refreshKey={refreshKey} />}
           {activeTab === 'baselines' && <CisBaselinesTab refreshKey={refreshKey} onMutate={handleRefresh} />}
-          {activeTab === 'remediations' && <CisRemediationsTab refreshKey={refreshKey} />}
+          {activeTab === 'remediations' && <CisRemediationsTab refreshKey={refreshKey} onMutate={handleRefresh} />}
         </>
       )}
     </div>

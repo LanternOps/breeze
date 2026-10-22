@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { Loader2 } from 'lucide-react';
+import { Check, Loader2, X } from 'lucide-react';
 import { cn, friendlyFetchError, formatRelativeTime } from '@/lib/utils';
 import { FilterSelect } from '../shared/FilterSelect';
-import { fetchWithAuth } from '@/stores/auth';
+import { fetchWithAuth, useAuthStore } from '@/stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { usePermissions } from '@/lib/permissions';
+import { runAction, ActionError } from '@/lib/runAction';
 import HelpTooltip from '../shared/HelpTooltip';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
 
 type Remediation = {
   id: string;
@@ -16,6 +20,7 @@ type Remediation = {
   action: string;
   status: string;
   approvalStatus: string;
+  requestedBy: string | null;
   createdAt: string;
   executedAt: string | null;
   deviceHostname: string;
@@ -39,11 +44,34 @@ const approvalBadge: Record<string, string> = {
 
 interface CisRemediationsTabProps {
   refreshKey: number;
+  /** Called after an approve/reject so the page can refresh its pending-count card. */
+  onMutate?: () => void;
 }
 
-export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabProps) {
+type Decision = { remediation: Remediation; approved: boolean };
+
+/** `POST /cis/remediate/approve` success bodies (approve and reject branches). */
+type DecisionResult = {
+  approved: boolean;
+  queued?: number;
+  rejected?: number;
+  failedActionIds?: string[];
+};
+
+const isDecidable = (rem: Remediation) =>
+  rem.status === 'pending_approval' && rem.approvalStatus === 'pending';
+
+export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediationsTabProps) {
   const { t } = useTranslation('security');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  // Mirrors the route's `requireCisExecute` (devices:execute). UX only — the
+  // API re-checks it, plus MFA, site scope and maker/checker.
+  const { can } = usePermissions();
+  const canDecide = can('devices', 'execute');
+  const [decision, setDecision] = useState<Decision | null>(null);
+  const [decisionNote, setDecisionNote] = useState('');
+  const [deciding, setDeciding] = useState(false);
   const [remediations, setRemediations] = useState<Remediation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -84,6 +112,69 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
     fetchData();
     return () => abortRef.current?.abort();
   }, [fetchData, refreshKey]);
+
+  const openDecision = (remediation: Remediation, approved: boolean) => {
+    setDecisionNote('');
+    setDecision({ remediation, approved });
+  };
+
+  const closeDecision = () => {
+    if (deciding) return;
+    setDecision(null);
+  };
+
+  const handleDecide = async () => {
+    if (!decision) return;
+    const { remediation, approved } = decision;
+    const errorFallback = approved
+      ? t('cisHardeningCisRemediationsTab.decision.approveFailed')
+      : t('cisHardeningCisRemediationsTab.decision.rejectFailed');
+    const note = decisionNote.trim();
+    setDeciding(true);
+    try {
+      const result = await runAction<DecisionResult>({
+        request: () => fetchWithAuth('/cis/remediate/approve', {
+          method: 'POST',
+          body: JSON.stringify({
+            actionIds: [remediation.id],
+            approved,
+            ...(note ? { note } : {}),
+          }),
+        }),
+        errorFallback,
+        friendly: (code) =>
+          code === 'MFA_REQUIRED' ? t('cisHardeningCisRemediationsTab.decision.mfaRequired') : undefined,
+      });
+      // The route answers 200 even when the approval was recorded but the job
+      // could not be queued — it reverts those rows to pending and lists them in
+      // `failedActionIds`. A success toast there would claim a fix is on its way
+      // when nothing was dispatched.
+      if (approved && (result?.failedActionIds?.length ?? 0) > 0) {
+        showToast({ type: 'warning', message: t('cisHardeningCisRemediationsTab.decision.queueFailed') });
+      } else {
+        showToast({
+          type: 'success',
+          message: approved
+            ? t('cisHardeningCisRemediationsTab.decision.approved', { checkId: remediation.checkId })
+            : t('cisHardeningCisRemediationsTab.decision.rejected', { checkId: remediation.checkId }),
+        });
+      }
+      setDecision(null);
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: errorFallback });
+      // Keep the dialog open on failure so the note survives a retry (e.g.
+      // after re-authenticating with MFA). The row may also have been decided
+      // by someone else meanwhile, so refetch either way.
+    } finally {
+      setDeciding(false);
+    }
+    // The page's refresh bumps `refreshKey`, which refetches this table too.
+    if (onMutate) onMutate();
+    else fetchData();
+  };
+
+  const columnCount = canDecide ? 9 : 8;
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -126,12 +217,15 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
               <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.approval')}</th>
               <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.requested')}</th>
               <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.completed')}</th>
+              {canDecide && (
+                <th className="px-4 py-3 text-right">{t('cisHardeningCisRemediationsTab.table.decision')}</th>
+              )}
             </tr>
           </thead>
           <tbody className="divide-y">
             {loading ? (
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={columnCount} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   <span className="inline-flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     {t('cisHardeningCisRemediationsTab.loading')}
@@ -140,7 +234,7 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
               </tr>
             ) : remediations.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={columnCount} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   {t('cisHardeningCisRemediationsTab.empty')}
                 </td>
               </tr>
@@ -185,12 +279,84 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
                   <td className="px-4 py-3 text-xs text-muted-foreground">
                     {rem.executedAt ? formatRelativeTime(new Date(rem.executedAt)) : '-'}
                   </td>
+                  {canDecide && (
+                    <td className="px-4 py-3 text-right">
+                      {isDecidable(rem) && (() => {
+                        // Maker/checker: the route refuses to let the requester
+                        // approve their own action (rejecting it is allowed).
+                        const ownRequest = !!currentUserId && rem.requestedBy === currentUserId;
+                        return (
+                          <div className="inline-flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openDecision(rem, true)}
+                              disabled={ownRequest}
+                              title={ownRequest ? t('cisHardeningCisRemediationsTab.decision.ownRequest') : undefined}
+                              data-testid={`cis-remediation-approve-${rem.id}`}
+                              className="inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                              {t('cisHardeningCisRemediationsTab.decision.approve')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openDecision(rem, false)}
+                              data-testid={`cis-remediation-reject-${rem.id}`}
+                              className="inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+                            >
+                              <X className="h-3.5 w-3.5" aria-hidden="true" />
+                              {t('cisHardeningCisRemediationsTab.decision.reject')}
+                            </button>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                  )}
                 </tr>
               ))
             )}
           </tbody>
         </table>
       </div>
+
+      <ConfirmDialog
+        open={decision !== null}
+        onClose={closeDecision}
+        onConfirm={() => void handleDecide()}
+        variant={decision?.approved ? 'warning' : 'destructive'}
+        isLoading={deciding}
+        confirmTestId="cis-remediation-decision-confirm"
+        title={decision?.approved
+          ? t('cisHardeningCisRemediationsTab.decision.approveTitle')
+          : t('cisHardeningCisRemediationsTab.decision.rejectTitle')}
+        message={!decision
+          ? ''
+          : decision.approved
+            ? t('cisHardeningCisRemediationsTab.decision.approveMessage', {
+                checkId: decision.remediation.checkId,
+                device: decision.remediation.deviceHostname,
+              })
+            : t('cisHardeningCisRemediationsTab.decision.rejectMessage', {
+                checkId: decision.remediation.checkId,
+                device: decision.remediation.deviceHostname,
+              })}
+        confirmLabel={decision?.approved
+          ? t('cisHardeningCisRemediationsTab.decision.approve')
+          : t('cisHardeningCisRemediationsTab.decision.reject')}
+      >
+        <label className="block text-sm font-medium" htmlFor="cis-remediation-decision-note">
+          {t('cisHardeningCisRemediationsTab.decision.noteLabel')}
+        </label>
+        <textarea
+          id="cis-remediation-decision-note"
+          data-testid="cis-remediation-decision-note"
+          value={decisionNote}
+          onChange={(e) => setDecisionNote(e.target.value)}
+          maxLength={1000}
+          rows={3}
+          className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+        />
+      </ConfirmDialog>
     </div>
   );
 }
