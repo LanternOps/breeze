@@ -67,6 +67,7 @@ export const contractLines = pgTable('contract_lines', {
   // catalog_item_id + site_id FKs created in SQL (ON DELETE SET NULL) to dodge import cycles.
   catalogItemId: uuid('catalog_item_id'),
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
+  // #9664: NOT NULL on a manual line — contract_lines_manual_quantity_chk (SQL-only).
   manualQuantity: numeric('manual_quantity', { precision: 12, scale: 2 }),
   siteId: uuid('site_id'),
   // #4693: the site's name at write time. Survives the FK's ON DELETE SET NULL

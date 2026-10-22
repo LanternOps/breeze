@@ -692,6 +692,10 @@ type DeviceCache = Map<string, OrgSnapshotEntry>; // key orgId
 type SeatCache = Map<string, number>;              // key orgId
 type ContractLineRow = typeof contractLines.$inferSelect;
 
+/** Why a line has no resolvable quantity: its group or site was deleted, or
+ *  (#9664) it is a manual line with no quantity. */
+export type UnresolvedLineReason = 'group_deleted' | 'site_deleted' | 'manual_quantity_missing';
+
 /** A wave-2 group line whose group is gone: all-zero, no allowance, so the
  *  estimate never shows a number the invoice cannot carry (generation refuses
  *  with GROUP_DELETED). #3205 W04 decision 7. */
@@ -851,12 +855,16 @@ function assertSpecDeviceSetLine(line: {
  */
 async function resolveLineQty(
   orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
-): Promise<ResolvedQuantity & { live: boolean; unresolved?: 'group_deleted' | 'site_deleted' }> {
+): Promise<ResolvedQuantity & { live: boolean; unresolved?: UnresolvedLineReason }> {
   switch (line.lineType) {
     case 'flat':
       return { ...applyAllowance(1, line, 'included_units'), live: false };
     case 'manual':
-      return { ...applyAllowance(Number(line.manualQuantity ?? '0'), line, 'included_units'), live: false };
+      // #9664: NULL is a MISSING quantity, never 0. Billing it as 0 put a
+      // silent $0 line on the invoice; it is unresolved like a deleted
+      // site/group (generation refuses with MANUAL_QUANTITY_MISSING).
+      if (line.manualQuantity === null) return { ...UNRESOLVED_QTY, live: false, unresolved: 'manual_quantity_missing' };
+      return { ...applyAllowance(Number(line.manualQuantity), line, 'included_units'), live: false };
     case 'per_device':
     case 'per_device_role': {
       // #4693: site_id NULL with a stamped name means the site was DELETED.
@@ -1034,7 +1042,7 @@ export interface ContractEstimate {
     overageMode: 'bill' | 'flag' | null;
     /** multiplyToCurrency(overage, overageUnitPrice), or the currency's zero. NEVER folded into `value`. */
     overageValue: string;
-    unresolved?: 'group_deleted' | 'site_deleted';
+    unresolved?: UnresolvedLineReason;
   }>;
   /** Devices no device-counted line bills (#3205). null when the contract has
    *  no per_device / per_device_role / per_device_group line, so the UI can tell "n/a" from "0". */
@@ -1284,7 +1292,7 @@ export async function summarizeActiveContractMrrByOrg(
 
   for (const c of rows) {
     let cents = 0;
-    let siteDeleted = false;
+    let unbillable = false;
     try {
       const lines = byContract.get(c.id) ?? [];
       const groupIds = groupIdsOf(lines);
@@ -1306,7 +1314,13 @@ export async function summarizeActiveContractMrrByOrg(
             l.id,
             l.siteName,
           );
-          siteDeleted = true;
+          unbillable = true;
+          break;
+        }
+        // #9664: generation refuses this contract, so it contributes no MRR.
+        if (r.unresolved === 'manual_quantity_missing') {
+          console.warn('[contracts] MRR rollup skipped contract %s: manual line %s has no quantity', c.id, l.id);
+          unbillable = true;
           break;
         }
         const unitPrice = l.catalogItemId
@@ -1323,7 +1337,7 @@ export async function summarizeActiveContractMrrByOrg(
       }
       throw err;
     }
-    if (siteDeleted) continue;
+    if (unbillable) continue;
     addMonthly(c, cents);
   }
 
@@ -1815,6 +1829,11 @@ export async function addContractLineToContract(contractId: string, input: Contr
     await requireWholeContractSiteAccess(actor, contractId, tx);
     assertEditable(c);
     assertSpecDeviceSetLine(input);
+    // #9664: never fabricate a quantity. The route validator requires one; a
+    // caller that skips it must get an error, not a manual line billing 0.
+    if (input.lineType === 'manual' && input.manualQuantity == null) {
+      throw new ContractServiceError('manual line requires manualQuantity', 400, 'MANUAL_QUANTITY_MISSING');
+    }
     // A restricted actor may only create a line inside its sites; a non-site-scopable
     // (org-level, siteId null) line is denied, as a null-site invoice/quote is.
     // Checked BEFORE pricing so the answer is the authorization one, not a 400.
@@ -1883,7 +1902,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
       const [row] = await tx.insert(contractLines).values({
         contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
         catalogItemId: input.catalogItemId ?? null, unitPrice,
-        manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+        manualQuantity: input.lineType === 'manual' ? input.manualQuantity! : null,
         siteId: site?.id ?? null,
         siteName: site?.name ?? null,
         // #3205: roles only on per_device_role (CHECK-enforced); the validator
@@ -2449,6 +2468,15 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         409, 'SITE_DELETED', { contractLineId: l.id, siteName: l.siteName },
       );
     }
+    // #9664: a manual line with no quantity must never bill as 0 (a silent $0
+    // line). contract_lines_manual_quantity_chk forbids it for new writes; a
+    // row that predates the CHECK (NOT VALID) is refused here, before any write.
+    if (l.lineType === 'manual' && l.manualQuantity === null) {
+      throw new ContractServiceError(
+        `Contract line "${l.description}" is a manual line with no quantity`,
+        409, 'MANUAL_QUANTITY_MISSING', { contractLineId: l.id },
+      );
+    }
   }
 
   const hasDeviceLine = lines.some(isDeviceLine);
@@ -2494,7 +2522,8 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         quantity = '1';
         break;
       case 'manual':
-        quantity = l.manualQuantity ?? '0';
+        // Non-null: refused above (#9664).
+        quantity = l.manualQuantity!;
         break;
       case 'per_device':
       case 'per_device_role':
@@ -2709,7 +2738,8 @@ export async function createContractWithLinesDetailed(
         description: l.description,
         catalogItemId: l.catalogItemId ?? null,
         unitPrice: l.unitPrice,
-        manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
+        // Non-null on a manual line: contractLineInvariantIssues (create) above rejects it otherwise.
+        manualQuantity: l.lineType === 'manual' ? l.manualQuantity! : null,
         siteId: site?.id ?? null,
         // #4693: acceptance passes the string the customer SIGNED. Prefer it
         // over a fresh read; every other caller falls back to the live name.
