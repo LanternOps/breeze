@@ -191,7 +191,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
 
 function brandingBlock(
   inv: { documentTheme: string | null; documentPageSize: string | null },
-  partner: { name: string; billingEmail: string | null; documentTheme: string | null; documentPageSize: string | null; settings?: unknown } | undefined,
+  partner: { name: string; billingEmail: string | null; documentTheme: string | null; documentPageSize: string | null; settings: unknown } | undefined,
   brand: { logoUrl: string | null; primaryColor: string | null } | undefined,
 ) {
   // #9676: org portal_branding wins; the partner's Branding settings fill the rest.
