@@ -1789,7 +1789,8 @@
     "deviceGroup": {
       "title": "Grupo de dispositivos predeterminado",
       "description": "Los dispositivos recién inscritos se agregan a este grupo automáticamente.",
-      "none": "Ninguno"
+      "none": "Ninguno",
+      "unavailable": "Grupo seleccionado (no disponible)"
     },
     "autoEnrollment": {
       "title": "Inscripción automática",

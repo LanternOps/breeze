@@ -1789,7 +1789,8 @@
     "deviceGroup": {
       "title": "Varsayılan cihaz grubu",
       "description": "Yeni kaydedilen cihazlar bu gruba otomatik olarak eklenir.",
-      "none": "Yok"
+      "none": "Yok",
+      "unavailable": "Seçilen grup (kullanılamıyor)"
     },
     "autoEnrollment": {
       "title": "Otomatik kayıt",

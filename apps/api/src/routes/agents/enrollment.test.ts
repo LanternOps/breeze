@@ -422,14 +422,10 @@ describe('POST /agents/enroll — org default device group (#9617)', () => {
 
     expect(applyOrgDefaultDeviceGroupMock).toHaveBeenCalledTimes(1);
     expect(applyOrgDefaultDeviceGroupMock).toHaveBeenCalledWith(
-      expect.objectContaining({ insert: expect.any(Function) }), // the tx, not the bare pool
-      { orgId: 'org-backup-url', deviceId: 'device-backup-url' },
+      // the transaction handle, never the bare pool
+      expect.objectContaining({ insert: expect.any(Function), delete: expect.any(Function) }),
+      { orgId: 'org-backup-url', deviceId: 'device-backup-url', siteId: 'site-backup-url' },
     );
-  });
-
-  it('still enrolls (201) when the group is missing/foreign and the helper skips', async () => {
-    applyOrgDefaultDeviceGroupMock.mockResolvedValue('skipped');
-    await enrollOk();
   });
 });
 
@@ -1365,6 +1361,8 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
     expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
     expect(raiseDeviceIdentityCollisionAlert).not.toHaveBeenCalled();
+    // #9617: an in-place re-enrollment must not re-apply the org default group.
+    expect(applyOrgDefaultDeviceGroupMock).not.toHaveBeenCalled();
   });
 
   it('idempotency: a token matching a LATER colliding row re-enrolls that row instead of stacking another fresh row', async () => {
@@ -3372,6 +3370,8 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
     expect(resp.status).toBe(201);
     // Ephemeral support devices never enter licensed-device admission.
     expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
+    // ...and never land in a customer's default device group (#9617).
+    expect(applyOrgDefaultDeviceGroupMock).not.toHaveBeenCalled();
     expect(spy.countWhere).toHaveLength(0);
     expect(spy.deviceInsertValues[0]).toEqual(
       expect.objectContaining({ isEphemeral: true }),

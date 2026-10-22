@@ -1789,7 +1789,8 @@
     "deviceGroup": {
       "title": "Standardgerätegruppe",
       "description": "Neu registrierte Geräte werden dieser Gruppe automatisch hinzugefügt.",
-      "none": "Keine"
+      "none": "Keine",
+      "unavailable": "Ausgewählte Gruppe (nicht verfügbar)"
     },
     "autoEnrollment": {
       "title": "Automatische Registrierung",

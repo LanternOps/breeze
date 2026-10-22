@@ -64,6 +64,18 @@ describe('OrgDefaultsEditor — default device group picker (#9617)', () => {
     expect(onSave.mock.calls[0][0].deviceGroup).toBeUndefined();
   });
 
+  it('shows a stored id missing from the list as unavailable, not as None, and keeps it on save', async () => {
+    fetchWithAuthMock.mockResolvedValue(groupsResponse);
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const GONE = '44444444-4444-4444-8444-444444444444';
+    render(<OrgDefaultsEditor organizationName={ORG} organizationId="org-1" defaults={{ deviceGroup: GONE }} onSave={onSave} />);
+    await screen.findByRole('option', { name: 'Servers' });
+    expect((screen.getByTestId('default-device-group') as HTMLSelectElement).value).toBe(GONE);
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0].deviceGroup).toBe(GONE);
+  });
+
   it('pre-selects a stored group id and no longer renders alert-threshold or send-welcome controls', async () => {
     fetchWithAuthMock.mockResolvedValue(groupsResponse);
     render(<OrgDefaultsEditor organizationName={ORG} organizationId="org-1" defaults={{ deviceGroup: G1 }} />);

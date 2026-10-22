@@ -387,6 +387,12 @@ export default function OrgDefaultsEditor({
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
             <option value="">{t('orgDefaultsEditor.deviceGroup.none')}</option>
+            {/* A stored id that isn't in the list (still loading, fetch failed,
+                group deleted/dynamic) must not masquerade as "None" while save
+                would still persist it. */}
+            {deviceGroup && !staticGroups.some(g => g.id === deviceGroup) && (
+              <option value={deviceGroup}>{t('orgDefaultsEditor.deviceGroup.unavailable')}</option>
+            )}
             {staticGroups.map(group => (
               <option key={group.id} value={group.id}>{group.name}</option>
             ))}

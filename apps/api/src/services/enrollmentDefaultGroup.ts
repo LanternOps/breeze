@@ -26,23 +26,23 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 export async function applyOrgDefaultDeviceGroup(
   tx: Tx,
-  input: { orgId: string; deviceId: string },
+  input: { orgId: string; deviceId: string; siteId?: string | null },
 ): Promise<DefaultGroupOutcome> {
-  const { orgId, deviceId } = input;
+  const { orgId, deviceId, siteId } = input;
   try {
-    const [org] = await tx
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-
-    const defaults = (org?.settings as { defaults?: { deviceGroup?: unknown } } | null)?.defaults;
-    const configured = defaults?.deviceGroup;
-    if (typeof configured !== 'string' || !UUID_RE.test(configured)) return 'none';
-
     return await tx.transaction(async (sp) => {
+      const [org] = await sp
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+
+      const defaults = (org?.settings as { defaults?: { deviceGroup?: unknown } } | null)?.defaults;
+      const configured = defaults?.deviceGroup;
+      if (typeof configured !== 'string' || !UUID_RE.test(configured)) return 'none' as const;
+
       const [group] = await sp
-        .select({ id: deviceGroups.id })
+        .select({ id: deviceGroups.id, siteId: deviceGroups.siteId })
         .from(deviceGroups)
         .where(
           and(
@@ -55,6 +55,13 @@ export async function applyOrgDefaultDeviceGroup(
 
       if (!group) {
         console.warn(`[enroll] org ${orgId}: default device group ${configured} not found/eligible; skipping`);
+        return 'skipped' as const;
+      }
+
+      // A site-scoped group only takes devices from its own site (same rule as
+      // the manual add path in routes/groups.ts).
+      if (group.siteId && group.siteId !== siteId) {
+        console.warn(`[enroll] org ${orgId}: default device group ${configured} is scoped to another site; skipping`);
         return 'skipped' as const;
       }
 

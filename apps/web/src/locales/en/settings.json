@@ -1789,7 +1789,8 @@
     "deviceGroup": {
       "title": "Default device group",
       "description": "Newly enrolled devices are added to this group automatically.",
-      "none": "None"
+      "none": "None",
+      "unavailable": "Selected group (unavailable)"
     },
     "autoEnrollment": {
       "title": "Auto-enrollment",

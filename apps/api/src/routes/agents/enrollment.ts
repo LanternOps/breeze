@@ -912,7 +912,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       // re-enrollment keeps whatever groups the device already has). Never
       // throws; runs in a savepoint so it cannot abort this transaction.
       if (insertFreshRow && !isSupportEnrollment) {
-        await applyOrgDefaultDeviceGroup(tx, { orgId: dev.orgId, deviceId: dev.id });
+        await applyOrgDefaultDeviceGroup(tx, { orgId: dev.orgId, deviceId: dev.id, siteId: dev.siteId });
       }
 
       // Quick Support: bind the session to the device it just enrolled. Inside

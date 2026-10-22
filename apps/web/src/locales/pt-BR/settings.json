@@ -1789,7 +1789,8 @@
     "deviceGroup": {
       "title": "Grupo de dispositivos padrão",
       "description": "Dispositivos recém-cadastrados são adicionados automaticamente a este grupo.",
-      "none": "Nenhum"
+      "none": "Nenhum",
+      "unavailable": "Grupo selecionado (indisponível)"
     },
     "autoEnrollment": {
       "title": "Cadastro automático",
