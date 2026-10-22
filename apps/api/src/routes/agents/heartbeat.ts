@@ -19,7 +19,7 @@ import {
   onedriveDeviceState,
   bareMetalRecoveries,
 } from '../../db/schema';
-import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
@@ -83,7 +83,7 @@ import { enqueueDeviceReliabilityComputation } from '../../jobs/reliabilityWorke
 import { createReliabilityBaseline } from '../../services/reliabilityBaselines';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
-import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../../middleware/agentAuth';
+import { DRAIN_CLAIM_TYPE_ALLOWLIST, staleAgentCredentialRejection } from '../../middleware/agentAuth';
 import { computeCredentialMaintenance } from './heartbeatCredentialMaintenance';
 import { respondParkedHeartbeat } from './heartbeatParked';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
@@ -779,9 +779,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     captureException(err);
   }
 
+  // #8318 §6.4: what the scoped block hands back when this beat turns out to
+  // be a stale caller (see `ownDeviceRowChangedHands` below). The rejection is
+  // thrown after the block, so the beat's transaction ends exactly as a
+  // terminal-status 0-row beat's does and agent auth's own error rendering
+  // answers it.
+  const STALE_CALLER = { staleCaller: true } as const;
+
   const scoped = await withDbAccessContext(
     dbContext,
-    async (): Promise<Response | { deviceOrgId: string; deviceSiteId: string; deviceOwnershipEpoch: number; deviceId: string; mainResponse: Record<string, unknown>; remoteManagement: RemoteManagementDecision }> => {
+    async (): Promise<Response | typeof STALE_CALLER | { deviceOrgId: string; deviceSiteId: string; deviceOwnershipEpoch: number; deviceId: string; mainResponse: Record<string, unknown>; remoteManagement: RemoteManagementDecision }> => {
 
   const [device] = await db
     .select()
@@ -844,12 +851,25 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       watchdogUpdates.mainAgentSilentSince = now;
     }
 
+    let watchdogRowsUpdated: number | null = null;
     try {
       // #8318 §6.4: bound to the authenticated id + agent_id, so a watchdog
       // beat of a superseded install matches 0 rows after a reattach confirm.
-      await updateOwnDeviceRow(db, agent, watchdogUpdates);
+      watchdogRowsUpdated = (await updateOwnDeviceRow(db, agent, watchdogUpdates)).length;
     } catch (err) {
       console.error('Failed to update watchdog status:', err);
+    }
+    // #8318 §6.4: the row changed hands after this beat authenticated (the
+    // watchdog write has no status guard, so a 0-row write is that or a
+    // vanished row). Same as the main beat below: no silence event, log row,
+    // command claim or upgrade target for the retired install — the
+    // stale-credential 401.
+    if (watchdogRowsUpdated === 0 && (await ownDeviceRowChangedHands(db, agent))) {
+      console.warn('[heartbeat] stale watchdog beat: the device row changed hands after auth; refusing it', {
+        deviceId: agent.deviceId,
+        agentId,
+      });
+      return STALE_CALLER;
     }
 
     // Emit only on the silence→silent transition so subscribers (alerts,
@@ -1576,6 +1596,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   const updatedRows = await updateOwnDeviceRow(db, agent, deviceUpdates, {
     where: notInArray(devices.status, ['decommissioned', 'quarantined']),
   });
+
+  // #8318 §6.4: a 0-row write is either the terminal-status guard (the row
+  // still carries this caller's agent_id: carry on exactly as before) or a
+  // stale caller — a reattach confirm or an in-place re-enroll gave the row to
+  // another install after this beat authenticated. Nothing after this point
+  // belongs to a stale caller: no metrics, IP history, child syncs or audit on
+  // the new install's row, and no configuration, upgrade or rotation
+  // instructions for the retired one. It gets the stale-credential 401 agent
+  // auth gives a token that no longer matches.
+  if (updatedRows.length === 0 && (await ownDeviceRowChangedHands(db, agent))) {
+    console.warn('[heartbeat] stale beat: the device row changed hands after auth; refusing it', {
+      deviceId: agent.deviceId,
+      agentId,
+    });
+    return STALE_CALLER;
+  }
 
   // Durable audit of security-relevant device state transitions (finding #10).
   // The heartbeat mutates several security-relevant fields but previously left
@@ -2342,6 +2378,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // 404 / 401 / watchdog branches returned a Response directly from the scoped
   // block — pass it through.
   if (scoped instanceof Response) return scoped;
+  if ('staleCaller' in scoped) throw staleAgentCredentialRejection();
 
   // Caller verification readiness (#6354 W02), keyed by the authenticated
   // device's org — never a body-supplied identity. Replaced on every main

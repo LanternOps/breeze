@@ -3,7 +3,7 @@ import { eq, notInArray } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { devices } from '../db/schema';
-import { ownDeviceRowCondition, updateOwnDeviceRow } from './agentOwnDeviceRow';
+import { ownDeviceRowChangedHands, ownDeviceRowCondition, updateOwnDeviceRow } from './agentOwnDeviceRow';
 
 const DEVICE = '11111111-1111-4111-8111-111111111111';
 const AGENT = 'agent-abc';
@@ -60,5 +60,34 @@ describe('updateOwnDeviceRow (#8318 §6.4)', () => {
     expect(params).toEqual([DEVICE, AGENT]);
     // Sanity: the same shape a caller would otherwise hand-write.
     expect(new PgDialect().sqlToQuery(eq(devices.id, DEVICE)).params).toEqual([DEVICE]);
+  });
+});
+
+describe('ownDeviceRowChangedHands (#8318 §6.4)', () => {
+  function reader(rows: unknown[]) {
+    const limit = vi.fn().mockResolvedValue(rows);
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    return { exec: { select } as never, select, from, where, limit };
+  }
+
+  it('re-reads the row by id once, on the caller\'s executor', async () => {
+    const { exec, select, from, where, limit } = reader([{ agentId: AGENT }]);
+    await ownDeviceRowChangedHands(exec, { deviceId: DEVICE, agentId: AGENT });
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(select).toHaveBeenCalledWith({ agentId: devices.agentId });
+    expect(from).toHaveBeenCalledWith(devices);
+    const { params } = new PgDialect().sqlToQuery((where.mock.calls[0] as unknown[])[0] as SQL);
+    expect(params).toEqual([DEVICE]);
+    expect(limit).toHaveBeenCalledWith(1);
+  });
+
+  it('is true only when the row now carries another agent_id', async () => {
+    expect(await ownDeviceRowChangedHands(reader([{ agentId: 'agent-new-install' }]).exec, { deviceId: DEVICE, agentId: AGENT })).toBe(true);
+    // Same agent_id: the site's own predicate (e.g. the terminal-status guard) refused the write.
+    expect(await ownDeviceRowChangedHands(reader([{ agentId: AGENT }]).exec, { deviceId: DEVICE, agentId: AGENT })).toBe(false);
+    // Not visible to the caller: no proof of a hand-over, the caller keeps its 0-row handling.
+    expect(await ownDeviceRowChangedHands(reader([]).exec, { deviceId: DEVICE, agentId: AGENT })).toBe(false);
   });
 });

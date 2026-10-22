@@ -46,6 +46,9 @@ export interface OwnDeviceRowIdentity {
 /** `db` or a transaction handle: anything that can start a `devices` update. */
 export type OwnDeviceRowExecutor = Pick<typeof db, 'update'>;
 
+/** `db` or a transaction handle: anything that can read `devices`. */
+export type OwnDeviceRowReader = Pick<typeof db, 'select'>;
+
 export type OwnDeviceRowUpdateSet = PgUpdateSetSource<typeof devices>;
 
 export interface UpdateOwnDeviceRowOptions {
@@ -96,4 +99,35 @@ export async function updateOwnDeviceRow(
     .set(set)
     .where(and(ownDeviceRowCondition(agent), opts.where))
     .returning(returning);
+}
+
+/**
+ * After an own-row update matched 0 rows: does the row now belong to a
+ * DIFFERENT install? True when the row, re-read once by `id`, carries an
+ * `agent_id` other than the one the caller authenticated with — a reattach
+ * confirm or an in-place F3 re-enroll committed after this request
+ * authenticated (#8318 §6.4). False when the row still carries the caller's
+ * `agent_id` (the site's own predicate refused the write, e.g. the beat's
+ * terminal-status guard), and false when the row is not visible to `exec`,
+ * so a caller keeps its existing 0-row handling unless the hand-over is
+ * proven.
+ *
+ * Read on the caller's own connection and scope, deliberately: the beats run
+ * inside an org-scoped transaction, and a system read there would take a
+ * second pooled connection while holding the first (#1105). Both identity
+ * changes leave the row in the caller's authenticated org (the confirm
+ * re-checks `target.org_id`, the re-enroll never moves it), so the row is
+ * visible to the caller exactly when the question matters. Only call it on
+ * the 0-row path: it is one extra read.
+ */
+export async function ownDeviceRowChangedHands(
+  exec: OwnDeviceRowReader,
+  agent: OwnDeviceRowIdentity,
+): Promise<boolean> {
+  const [row] = await exec
+    .select({ agentId: devices.agentId })
+    .from(devices)
+    .where(eq(devices.id, agent.deviceId))
+    .limit(1);
+  return row !== undefined && row.agentId !== agent.agentId;
 }

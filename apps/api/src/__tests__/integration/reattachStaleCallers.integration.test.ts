@@ -10,10 +10,14 @@
  * prove that:
  *
  *  - every own-row `devices` update matches 0 rows (main beat, watchdog beat,
- *    parked beat, one plain REST route);
+ *    parked beat, one plain REST route), and a beat whose 0-row write found
+ *    the row in another install's hands stops there with the stale-credential
+ *    401 (no metrics or IP history written); a terminal-status 0-row beat is
+ *    answered as before;
  *  - a claim by a caller authenticated under incarnation n never takes a row
  *    stamped n+1, and a result from it is refused on both transports;
- *  - the server push addresses the agent_id read IN the claim;
+ *  - the server push addresses the agent_id read IN the claim, and its flip
+ *    re-checks that agent_id (an in-place re-enroll in between: no flip);
  *  - the WS lease re-check reports `identity_changed` (a 4040 reconnect, not
  *    the 4001 credential denial) for a socket whose device moved org or site;
  *  - F3 re-enroll revokes every hash of the row and refuses (no fresh row)
@@ -25,10 +29,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import postgres from 'postgres';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { auditLogs, deviceCommands, devices, enrollmentKeys } from '../../db/schema';
+import { auditLogs, deviceCommands, deviceIpHistory, deviceMetrics, devices, enrollmentKeys } from '../../db/schema';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { createAgentWsHandlers, isAgentDeviceStillAuthorized } from '../../routes/agentWs';
 import { commandsRoutes } from '../../routes/agents/commands';
@@ -41,6 +45,21 @@ import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { getRedis } from '../../services/redis';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
+
+// A seam between the push claim's candidate read and its flip: claim-time
+// eligibility runs exactly there. Off unless a test sets it.
+const claimSeam = vi.hoisted(() => ({ afterEligibility: null as null | (() => Promise<void>) }));
+vi.mock('../../services/commandClaimEligibility', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/commandClaimEligibility')>();
+  return {
+    ...actual,
+    partitionClaimable: async (...args: Parameters<typeof actual.partitionClaimable>) => {
+      const out = await actual.partitionClaimable(...args);
+      if (claimSeam.afterEligibility) await claimSeam.afterEligibility();
+      return out;
+    },
+  };
+});
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
@@ -182,60 +201,108 @@ describe('own-row devices updates by a stale credential match 0 rows (#8318 §6.
     return frozenAt;
   }
 
-  runDb('the main beat: liveness and inventory columns stay as they were; the new identity still writes them', async () => {
+  // A beat carrying what the full beat ingests after its device write.
+  const INGESTING_BEAT = {
+    ...AGENT_BEAT,
+    metricsAvailable: true,
+    metrics: { cpuPercent: 12.5, ramPercent: 40, ramUsedMb: 2048, diskPercent: 30, diskUsedGb: 50, processCount: 120 },
+    ipHistoryUpdate: {
+      currentIPs: [{ interfaceName: 'eth0', ipAddress: '10.20.30.40', ipType: 'ipv4', assignmentType: 'dhcp' }],
+      detectedAt: '2026-10-22T00:00:00.000Z',
+    },
+  };
+
+  async function ingestedRows(deviceId: string) {
+    const metrics = await getTestDb().select({ deviceId: deviceMetrics.deviceId }).from(deviceMetrics)
+      .where(eq(deviceMetrics.deviceId, deviceId));
+    const ips = await getTestDb().select({ id: deviceIpHistory.id }).from(deviceIpHistory)
+      .where(eq(deviceIpHistory.deviceId, deviceId));
+    return { metrics: metrics.length, ipHistory: ips.length };
+  }
+
+  function beat(ctx: AgentAuthContext, pathAgentId: string, body: unknown) {
+    return agentApp(ctx).request(`/agents/${pathAgentId}/heartbeat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+  }
+
+  runDb('the main beat: 401 stale credential, the row untouched and nothing ingested; the new identity still writes and ingests', async () => {
     const org = await seedOrg('main-beat');
     const device = await enrollDevice(org, 'main-beat');
     const frozenAt = await freeze(device.deviceId);
     const staleCtx = agentContext(device); // the identity the OLD install authenticated with
     const { agentId: newAgentId } = await reattachTarget(device.deviceId);
 
-    const stale = await agentApp(staleCtx).request(`/agents/${device.agentId}/heartbeat`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(AGENT_BEAT),
-    });
-    expect(stale.status).toBe(200);
+    const stale = await beat(staleCtx, device.agentId, INGESTING_BEAT);
+    // The opaque 401 agent auth gives a token that no longer matches.
+    expect(stale.status).toBe(401);
+    expect(await stale.text()).toBe('Invalid agent credentials');
     const afterStale = await deviceRow(device.deviceId);
     expect(afterStale.status).toBe('offline');
     expect(afterStale.lastSeenAt?.toISOString()).toBe(frozenAt.toISOString());
     expect(afterStale.agentVersion).toBe('0.0.1-frozen');
+    expect(await ingestedRows(device.deviceId)).toEqual({ metrics: 0, ipHistory: 0 });
 
-    // Control: the install that now owns the row (its identity + incarnation) is written.
-    const fresh = await agentApp(agentContext(device, { agentId: newAgentId, installIncarnation: 2 }))
-      .request(`/agents/${newAgentId}/heartbeat`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(AGENT_BEAT),
-      });
+    // Control: the install that now owns the row (its identity + incarnation) is written and ingested.
+    const fresh = await beat(agentContext(device, { agentId: newAgentId, installIncarnation: 2 }), newAgentId, INGESTING_BEAT);
     expect(fresh.status).toBe(200);
     const afterFresh = await deviceRow(device.deviceId);
     expect(afterFresh.status).toBe('online');
     expect(afterFresh.agentVersion).toBe('1.0.0-test');
     expect(afterFresh.lastSeenAt!.getTime()).toBeGreaterThan(frozenAt.getTime());
+    const ingested = await ingestedRows(device.deviceId);
+    expect(ingested.metrics).toBe(1);
+    expect(ingested.ipHistory).toBeGreaterThan(0);
   });
 
-  runDb('the watchdog beat: the watchdog columns stay untouched', async () => {
+  runDb('the main beat after an in-place re-enroll (agent_id changed, incarnation not): 401 stale credential', async () => {
+    const org = await seedOrg('main-beat-reenroll');
+    const device = await enrollDevice(org, 'main-beat-reenroll');
+    await freeze(device.deviceId);
+    await getTestDb().update(devices).set({ agentId: `reenrolled-${randomUUID()}` }).where(eq(devices.id, device.deviceId));
+
+    const stale = await beat(agentContext(device), device.agentId, INGESTING_BEAT);
+    expect(stale.status).toBe(401);
+    expect((await deviceRow(device.deviceId)).status).toBe('offline');
+    expect(await ingestedRows(device.deviceId)).toEqual({ metrics: 0, ipHistory: 0 });
+  });
+
+  runDb('a terminal-status 0-row main beat (same agent_id) is answered exactly as before', async () => {
+    const org = await seedOrg('main-beat-terminal');
+    const device = await enrollDevice(org, 'main-beat-terminal');
+    // A decommission landing between auth and the beat's write (#2230): the
+    // guard refuses the write, and the row still carries the caller's agent_id.
+    await getTestDb().update(devices).set({ status: 'decommissioned' }).where(eq(devices.id, device.deviceId));
+
+    const response = await beat(agentContext(device), device.agentId, INGESTING_BEAT);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toHaveProperty('commands');
+    expect((await deviceRow(device.deviceId)).status).toBe('decommissioned');
+    // Unchanged: the rest of the beat still runs after a terminal-status 0-row write.
+    expect((await ingestedRows(device.deviceId)).metrics).toBe(1);
+  });
+
+  runDb('the watchdog beat: 401 stale credential and the watchdog columns stay untouched', async () => {
     const org = await seedOrg('wd-beat');
     const device = await enrollDevice(org, 'wd-beat');
     await freeze(device.deviceId);
     const staleCtx = agentContext(device, { role: 'watchdog', authTokenHash: digest(device.watchdogAuthToken) });
     const { agentId: newAgentId } = await reattachTarget(device.deviceId);
 
-    const stale = await agentApp(staleCtx).request(`/agents/${device.agentId}/heartbeat`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(WATCHDOG_BEAT),
-    });
-    expect(stale.status).toBe(200);
+    const stale = await beat(staleCtx, device.agentId, WATCHDOG_BEAT);
+    expect(stale.status).toBe(401);
     const afterStale = await deviceRow(device.deviceId);
     expect(afterStale.watchdogLastSeen).toBeNull();
     expect(afterStale.watchdogStatus).toBeNull();
 
-    const fresh = await agentApp(agentContext(device, { role: 'watchdog', agentId: newAgentId, installIncarnation: 2 }))
-      .request(`/agents/${newAgentId}/heartbeat`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(WATCHDOG_BEAT),
-      });
+    const fresh = await beat(agentContext(device, { role: 'watchdog', agentId: newAgentId, installIncarnation: 2 }), newAgentId, WATCHDOG_BEAT);
     expect(fresh.status).toBe(200);
     const afterFresh = await deviceRow(device.deviceId);
     expect(afterFresh.watchdogLastSeen).not.toBeNull();
     expect(afterFresh.watchdogStatus).toBe('connected');
   });
 
-  runDb('the parked beat: liveness stays as it was', async () => {
+  runDb('the parked beat: 401 stale credential and liveness stays as it was', async () => {
     const org = await seedOrg('parked-beat');
     const device = await enrollDevice(org, 'parked-beat');
     const frozenAt = await freeze(device.deviceId);
@@ -243,20 +310,28 @@ describe('own-row devices updates by a stale credential match 0 rows (#8318 §6.
     const staleCtx = agentContext(device, parked);
     const { agentId: newAgentId } = await reattachTarget(device.deviceId);
 
-    const stale = await agentApp(staleCtx).request(`/agents/${device.agentId}/heartbeat`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(AGENT_BEAT),
-    });
-    expect(stale.status).toBe(200);
+    const stale = await beat(staleCtx, device.agentId, AGENT_BEAT);
+    expect(stale.status).toBe(401);
+    expect(await stale.text()).toBe('Invalid agent credentials');
     const afterStale = await deviceRow(device.deviceId);
     expect(afterStale.status).toBe('offline');
     expect(afterStale.lastSeenAt?.toISOString()).toBe(frozenAt.toISOString());
 
-    const fresh = await agentApp(agentContext(device, { ...parked, agentId: newAgentId, installIncarnation: 2 }))
-      .request(`/agents/${newAgentId}/heartbeat`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(AGENT_BEAT),
-      });
+    const fresh = await beat(agentContext(device, { ...parked, agentId: newAgentId, installIncarnation: 2 }), newAgentId, AGENT_BEAT);
     expect(fresh.status).toBe(200);
     expect((await deviceRow(device.deviceId)).status).toBe('online');
+  });
+
+  runDb('a terminal-status 0-row parked beat (same agent_id) is answered exactly as before', async () => {
+    const org = await seedOrg('parked-beat-terminal');
+    const device = await enrollDevice(org, 'parked-beat-terminal');
+    await getTestDb().update(devices).set({ status: 'quarantined' }).where(eq(devices.id, device.deviceId));
+    const parked = { isPreAssignment: true, claimTypeAllowlist: DRAIN_CLAIM_TYPE_ALLOWLIST } as const;
+
+    const response = await beat(agentContext(device, parked), device.agentId, AGENT_BEAT);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toHaveProperty('commands');
+    expect((await deviceRow(device.deviceId)).status).toBe('quarantined');
   });
 
   runDb('a plain REST route (uninstall-intent): the stamp is not written', async () => {
@@ -367,6 +442,32 @@ describe('a caller authenticated under incarnation n after the device moved to n
     const current = await insertCommand(device.deviceId);
     const claimed = await claimPendingCommandForDelivery(current);
     expect(claimed).toMatchObject({ status: 'claimed', id: current, agentId: newAgentId });
+  });
+
+  runDb('the push flip re-checks the agent_id read with the candidate: an in-place re-enroll in between leaves the row pending', async () => {
+    const device = await fixture();
+    const commandId = await insertCommand(device.deviceId);
+    const reenrolledAgentId = `reenrolled-${randomUUID()}`;
+    // Between the candidate read and the flip, an F3 re-enroll commits: a new
+    // agent_id, the SAME incarnation (so the incarnation re-check cannot see it).
+    claimSeam.afterEligibility = async () => {
+      claimSeam.afterEligibility = null;
+      await getTestDb().update(devices).set({ agentId: reenrolledAgentId }).where(eq(devices.id, device.deviceId));
+    };
+    try {
+      expect(await claimPendingCommandForDelivery(commandId)).toEqual({ status: 'not_claimable', id: commandId });
+    } finally {
+      claimSeam.afterEligibility = null;
+    }
+    const row = await commandRow(commandId);
+    expect(row.status).toBe('pending');
+    expect(row.executedAt).toBeNull();
+    expect((await deviceRow(device.deviceId)).installIncarnation).toBe(1);
+
+    // The next push claims it for the install that now owns the row.
+    expect(await claimPendingCommandForDelivery(commandId)).toMatchObject({
+      status: 'claimed', id: commandId, agentId: reenrolledAgentId,
+    });
   });
 });
 

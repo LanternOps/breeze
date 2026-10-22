@@ -2,8 +2,12 @@ import type { Context } from 'hono';
 import { eq, notInArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
-import { DRAIN_CLAIM_TYPE_ALLOWLIST, type AgentAuthContext } from '../../middleware/agentAuth';
-import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import {
+  DRAIN_CLAIM_TYPE_ALLOWLIST,
+  staleAgentCredentialRejection,
+  type AgentAuthContext,
+} from '../../middleware/agentAuth';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { ERROR_CODES } from '@breeze/shared';
@@ -82,7 +86,9 @@ export async function respondParkedHeartbeat(
       accessiblePartnerIds: [],
       currentPartnerId: null,
     },
-    async (): Promise<{ found: false } | { found: true; maintenance: CredentialMaintenance }> => {
+    async (): Promise<
+      { found: false } | { found: true; staleCaller: true } | { found: true; staleCaller?: false; maintenance: CredentialMaintenance }
+    > => {
       const [device] = await db
         .select({
           id: devices.id,
@@ -117,9 +123,19 @@ export async function respondParkedHeartbeat(
           };
       // #8318 §6.4: bound to the authenticated id + agent_id (a stale beat
       // after a reattach confirm matches 0 rows), plus the terminal guard.
-      await updateOwnDeviceRow(db, agent, liveness, {
+      const updated = await updateOwnDeviceRow(db, agent, liveness, {
         where: notInArray(devices.status, TERMINAL_DEVICE_STATUSES),
       });
+      // A 0-row write whose row now carries another agent_id is a stale
+      // caller (as on the full beat): no rotation, no claim — the
+      // stale-credential 401. A terminal-status 0-row write carries on.
+      if (updated.length === 0 && (await ownDeviceRowChangedHands(db, agent))) {
+        console.warn('[heartbeat] stale parked beat: the device row changed hands after auth; refusing it', {
+          deviceId: agent.deviceId,
+          agentId: agent.agentId,
+        });
+        return { found: true, staleCaller: true };
+      }
 
       if (isWatchdog) return { found: true, maintenance: {} };
 
@@ -138,6 +154,7 @@ export async function respondParkedHeartbeat(
   if (!scoped.found) {
     return c.json({ error: 'Device not found' }, 404);
   }
+  if (scoped.staleCaller) throw staleAgentCredentialRejection();
 
   const commands = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {

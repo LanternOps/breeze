@@ -598,6 +598,20 @@ function terminalAgentAuthRejection(kind: AgentAuthTerminalRejection): HTTPExcep
 }
 
 /**
+ * #8318 §6.4: the answer for a request whose credential stopped matching its
+ * device row while the request ran — a reattach confirm or an in-place
+ * re-enroll changed the row's `agent_id` after this middleware authenticated
+ * it (see services/agentOwnDeviceRow.ts `ownDeviceRowChangedHands`). It is
+ * exactly the opaque 401 this middleware gives a token that no longer matches,
+ * so the agent takes the same path it takes for that rejection (#2773: keep
+ * the credential, retry; the next request re-authenticates against the row).
+ * Not remembered in the negative cache: the next request answers for itself.
+ */
+export function staleAgentCredentialRejection(): HTTPException {
+  return terminalAgentAuthRejection('token_mismatch');
+}
+
+/**
  * Middleware to authenticate agent requests via Bearer token.
  * Hashes the token and compares against the stored agentTokenHash.
  * Enforces per-agent rate limiting via Redis.
