@@ -458,6 +458,8 @@ import {
   AGENT_CREDENTIAL_RECHECK_GRACE_MS,
   AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS,
   AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS,
+  AGENT_IDENTITY_CHANGED_CLOSE_CODE,
+  AGENT_IDENTITY_CHANGED_CLOSE_REASON,
 } from './agentWs';
 import { metricsRegistry } from '../services/metricsRegistry';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
@@ -4920,6 +4922,58 @@ describe('#8838 — indeterminate credential re-check keeps the socket inside a 
     expect(await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'denied' })).toBe(deniedBefore + 1);
   });
 
+  // #8318 §6.4 (F5): the device moved org/site under the socket. The
+  // credential still holds, so it is a reconnect (4040, the agent's plain
+  // reconnect code), never the 4001 credential denial with its abnormal
+  // backoff, and it is counted under its own label.
+  it('an identity change closes with 4040 reconnect required, not the credential denial, under its own metric label', async () => {
+    const agentId = 'agent-identity-moved';
+    const { handlers, ws } = await openSocket(agentId);
+    const closedIdentityBefore = await counterValue('breeze_agent_ws_closed_total', { reason: 'identity_changed' });
+    const closedDeniedBefore = await counterValue('breeze_agent_ws_closed_total', { reason: 'denied' });
+    const recheckIdentityBefore = await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'identity_changed' });
+    const recheckDeniedBefore = await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'denied' });
+
+    // Same credential generation; the row now sits in another org and site.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([generationRow({
+      id: `device-${agentId}`, orgId: 'org-moved', siteId: 'site-moved', partnerId: `partner-${agentId}`,
+    })]) as any);
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(AGENT_IDENTITY_CHANGED_CLOSE_CODE).toBe(4040);
+    expect(ws.close).toHaveBeenCalledWith(4040, AGENT_IDENTITY_CHANGED_CLOSE_REASON);
+    expect(ws.close).not.toHaveBeenCalledWith(4001, expect.anything());
+    expect(refreshAgentPresence).not.toHaveBeenCalled();
+    expect(await counterValue('breeze_agent_ws_closed_total', { reason: 'identity_changed' })).toBe(closedIdentityBefore + 1);
+    expect(await counterValue('breeze_agent_ws_closed_total', { reason: 'denied' })).toBe(closedDeniedBefore);
+    expect(await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'identity_changed' })).toBe(recheckIdentityBefore + 1);
+    expect(await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'denied' })).toBe(recheckDeniedBefore);
+
+    // Latched like a denial: a queued frame neither re-queries nor processes,
+    // and closes the same way.
+    const selectsAtClose = vi.mocked(db.select).mock.calls.length;
+    await handlers.onMessage(pong(), ws as any);
+    expect(vi.mocked(db.select).mock.calls.length).toBe(selectsAtClose);
+    expect(refreshAgentPresence).not.toHaveBeenCalled();
+    expect(ws.close).toHaveBeenLastCalledWith(4040, AGENT_IDENTITY_CHANGED_CLOSE_REASON);
+    expect(ws.close).not.toHaveBeenCalledWith(4001, expect.anything());
+  });
+
+  it('a credential denial on a socket whose identity also changed is still the 4001 denial', async () => {
+    const agentId = 'agent-identity-and-denied';
+    const { handlers, ws } = await openSocket(agentId);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([generationRow({
+      status: 'decommissioned',
+      id: `device-${agentId}`, orgId: 'org-moved', siteId: 'site-test', partnerId: `partner-${agentId}`,
+    })]) as any);
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, DENIED);
+    expect(ws.close).not.toHaveBeenCalledWith(4040, expect.anything());
+  });
+
   it('the Redis revocation fast path still closes with its own reason, grace or not', async () => {
     const { handlers, ws } = await openSocket('agent-revoked-in-grace');
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -5163,6 +5217,40 @@ describe('#8838 — isAgentDeviceStillAuthorized is tri-state', () => {
   it('denies a replaced credential generation', async () => {
     queueRows([{ ...row, agentTokenHash: createHash('sha256').update('replacement').digest('hex') }]);
     await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash)).resolves.toBe('denied');
+  });
+
+  describe('#8318 §6.4 (F5): the identity comparison is its own outcome', () => {
+    const identity = { deviceId: 'dev-1', orgId: 'org-1', siteId: 'site-1', partnerId: 'partner-1' };
+    const located = { id: 'dev-1', orgId: 'org-1', siteId: 'site-1', partnerId: 'partner-1' };
+
+    it('authorizes a row that still matches the cached identity', async () => {
+      queueRows([{ ...row, ...located }]);
+      await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash, identity)).resolves.toBe('authorized');
+    });
+
+    it.each([
+      ['org', { orgId: 'org-2' }],
+      ['site', { siteId: 'site-2' }],
+      ['partner', { partnerId: 'partner-2' }],
+      ['device id', { id: 'dev-2' }],
+    ] as const)('reports identity_changed, not denied, when the %s differs', async (_label, overrides) => {
+      queueRows([{ ...row, ...located, ...overrides }]);
+      await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash, identity)).resolves.toBe('identity_changed');
+    });
+
+    it('a credential or lifecycle denial outranks an identity change', async () => {
+      queueRows([{ ...row, ...located, orgId: 'org-2', status: 'decommissioned' }]);
+      await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash, identity)).resolves.toBe('denied');
+      queueRows([{ ...row, ...located, orgId: 'org-2', agentTokenHash: createHash('sha256').update('replacement').digest('hex') }]);
+      await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash, identity)).resolves.toBe('denied');
+    });
+
+    it('never reports identity_changed without a cached identity (hash-less and lifecycle-only callers)', async () => {
+      queueRows([{ ...row, ...located, orgId: 'org-2' }]);
+      await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash)).resolves.toBe('authorized');
+      queueRows([{ ...row, ...located, orgId: 'org-2' }]);
+      await expect(isAgentDeviceStillAuthorized('agent-t')).resolves.toBe('authorized');
+    });
   });
 
   it('denies a hash that matches only the watchdog role', async () => {

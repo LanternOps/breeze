@@ -326,6 +326,19 @@ const AGENT_CREDENTIAL_DENIED_CLOSE_REASON = 'Device no longer authorized';
  * by an infrastructure failure is recognisable in agent logs (#8838).
  */
 const AGENT_CREDENTIAL_UNVERIFIED_CLOSE_REASON = 'Device authorization could not be verified';
+/**
+ * #8318 §6.4 (F5): the device row no longer matches the identity the socket
+ * cached at its handshake (it moved org or site, or the partner changed). The
+ * credential itself still holds, so this is not a denial: the socket closes
+ * with 4040, the code the Go agent treats as a plain reconnect
+ * (agent/internal/websocket/reconnect_backoff.go `closeReconnectRequired`), as
+ * an org move or a pool assignment does, and the agent re-authenticates and
+ * caches the row's current identity.
+ */
+export const AGENT_IDENTITY_CHANGED_CLOSE_CODE = 4040;
+export const AGENT_IDENTITY_CHANGED_CLOSE_REASON = 'Device identity changed, reconnect required';
+/** Close code for a definitive credential/lifecycle denial (abnormal backoff on the agent). */
+const AGENT_CREDENTIAL_DENIED_CLOSE_CODE = 4001;
 const AGENT_CREDENTIAL_UNKNOWN_WARN_INTERVAL_MS = 60_000;
 /**
  * After an indeterminate re-check, the socket waits this long before asking
@@ -337,9 +350,12 @@ export const AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS = 5_000;
 /**
  * Outcome of a live lifecycle/credential re-check. `unknown` means the check
  * could not be answered (query error, pool-acquire timeout); it is never a
- * denial on its own.
+ * denial on its own (#8838). `identity_changed` (#8318 §6.4, F5) is only ever
+ * returned when the caller passes the socket's cached identity: the credential
+ * still holds but the row's id/org/site/partner differs from it, which closes
+ * the socket for a reconnect (4040), not as a credential denial (4001).
  */
-export type AgentDeviceAuthorization = 'authorized' | 'denied' | 'unknown';
+export type AgentDeviceAuthorization = 'authorized' | 'denied' | 'identity_changed' | 'unknown';
 export const AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS = 1_000;
 
 type AgentCredentialRevocation = {
@@ -1066,9 +1082,11 @@ const WS_AUDIT_REQUEST = requestLikeFromSnapshot({});
  *
  * #8318 §6.4 "Live sockets" (F5): with `identity`, the row's `id`, `org_id`,
  * `site_id` and the org's `partner_id` are compared against the socket's
- * cached context, and any difference is `denied` — so a socket cached under
- * either side of a reattach, or under a device that has since moved org or
- * site, closes at its next re-check. The compatibility seam for handler unit
+ * cached context, and any difference is `identity_changed` — so a socket
+ * cached under a device that has since moved org or site closes at its next
+ * re-check and reconnects with the row's current identity. Every credential
+ * and lifecycle check runs first, so a socket that is also denied (a
+ * reattach retired its agent_id, its hash was revoked) reads `denied`. The compatibility seam for handler unit
  * tests: a mocked row that reports none of those columns (all `undefined`;
  * production rows never do, the columns are NOT NULL) skips the comparison,
  * exactly as the absent-hash branch skips the generation check.
@@ -1131,7 +1149,7 @@ export async function isAgentDeviceStillAuthorized(
       });
       if (!match || match.role !== 'agent') return 'denied';
     }
-    if (identity && !agentSocketIdentityMatches(row, identity)) return 'denied';
+    if (identity && !agentSocketIdentityMatches(row, identity)) return 'identity_changed';
     return 'authorized';
   } catch (err) {
     // A failed lookup says nothing about the credential. During a pool stall
@@ -2995,8 +3013,9 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
   // Earliest time to retry after an indeterminate answer.
   let credentialRetryNotBefore = 0;
   // Terminal for this socket once set: every later frame closes with the same
-  // reason and never re-queries.
+  // code and reason and never re-queries.
   let credentialCloseReason: string | null = null;
+  let credentialCloseCode = AGENT_CREDENTIAL_DENIED_CLOSE_CODE;
 
   const failCredential = (
     ws: WSContext,
@@ -3005,13 +3024,27 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
   ): void => {
     if (credentialCloseReason === null) {
       credentialCloseReason = reason;
+      credentialCloseCode = AGENT_CREDENTIAL_DENIED_CLOSE_CODE;
       if (metricReason) recordAgentWsCredentialClose(metricReason);
     }
     // Close this exact socket. An old orphan must never be able to make the
     // agentId registry close a newer, valid connection.
     const active = activeConnections.get(agentId);
     if (active?.ws === ws) active.credentialRevoked = true;
-    ws.close(4001, credentialCloseReason);
+    ws.close(credentialCloseCode, credentialCloseReason);
+  };
+
+  // #8318 §6.4 (F5): the row no longer matches this socket's cached identity.
+  // Not a credential failure: no `credentialRevoked`, its own close label, and
+  // 4040 so the agent reconnects at once instead of backing off as abnormal.
+  // Latched like a denial, so every later frame on this socket closes the same way.
+  const closeForIdentityChange = (ws: WSContext): void => {
+    if (credentialCloseReason === null) {
+      credentialCloseReason = AGENT_IDENTITY_CHANGED_CLOSE_REASON;
+      credentialCloseCode = AGENT_IDENTITY_CHANGED_CLOSE_CODE;
+      recordAgentWsCredentialClose('identity_changed');
+    }
+    ws.close(credentialCloseCode, credentialCloseReason);
   };
 
   const startCredentialRecheck = (ws: WSContext): void => {
@@ -3030,12 +3063,14 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
           credentialRetryNotBefore = Date.now() + AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS;
         } else if (credentialCloseReason === null) {
           // Also applies an answer that arrives after its bounded wait expired:
-          // a late definitive denial still closes the socket. The latch is set
-          // before ws.close, so a throwing close cannot reopen the socket.
+          // a late definitive denial (or identity change) still closes the
+          // socket. The latch is set before ws.close, so a throwing close
+          // cannot reopen the socket.
           try {
-            failCredential(ws, AGENT_CREDENTIAL_DENIED_CLOSE_REASON, 'denied');
+            if (decision === 'identity_changed') closeForIdentityChange(ws);
+            else failCredential(ws, AGENT_CREDENTIAL_DENIED_CLOSE_REASON, 'denied');
           } catch (err) {
-            console.error(`[AgentWs] credential denial close failed for ${agentId}:`, err);
+            console.error(`[AgentWs] credential ${decision} close failed for ${agentId}:`, err);
           }
         }
         return decision;
@@ -3056,7 +3091,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
   const reauthorizeCredentialGeneration = async (ws: WSContext): Promise<boolean> => {
     if (agentDb.credentialTokenHash === undefined) return true;
     if (credentialCloseReason !== null) {
-      ws.close(4001, credentialCloseReason);
+      ws.close(credentialCloseCode, credentialCloseReason);
       return false;
     }
     // Redis revocation fast path. The close itself is counted where the
@@ -3075,10 +3110,11 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
     const decision: AgentDeviceAuthorization = credentialBoundedWait
       ? await credentialBoundedWait
       : 'unknown';
-    // A denial (applied by the query itself) or a concurrent revocation.
+    // A denial or identity change (applied by the query itself) or a
+    // concurrent revocation.
     if (credentialCloseReason !== null) return false;
     if (decision === 'authorized') return true;
-    if (decision === 'denied') return false;
+    if (decision === 'denied' || decision === 'identity_changed') return false;
 
     // Indeterminate: keep the last confirmed authorization for a bounded
     // window and retry on a later frame. A DB outage must not, by itself,

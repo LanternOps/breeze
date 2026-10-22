@@ -14,7 +14,8 @@
  *  - a claim by a caller authenticated under incarnation n never takes a row
  *    stamped n+1, and a result from it is refused on both transports;
  *  - the server push addresses the agent_id read IN the claim;
- *  - the WS lease re-check denies a socket whose device moved org or site;
+ *  - the WS lease re-check reports `identity_changed` (a 4040 reconnect, not
+ *    the 4001 credential denial) for a socket whose device moved org or site;
  *  - F3 re-enroll revokes every hash of the row and refuses (no fresh row)
  *    when the matched row's agent_id changed under it.
  */
@@ -372,7 +373,7 @@ describe('a caller authenticated under incarnation n after the device moved to n
 // ─── 3. WS lease identity comparison (F5) ──────────────────────────────────
 
 describe('the WS lease re-check compares the row identity with the socket (#8318 §6.4 "Live sockets", F5)', () => {
-  runDb('denies a socket whose device moved site or org, or whose cached partner differs', async () => {
+  runDb('reports identity_changed for a socket whose device moved site or org, or whose cached partner differs', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const site = await createSite({ orgId: org.id });
@@ -390,7 +391,7 @@ describe('the WS lease re-check compares the row identity with the socket (#8318
     // Site moved under the socket.
     const otherSite = await createSite({ orgId: org.id });
     await getTestDb().update(devices).set({ siteId: otherSite.id }).where(eq(devices.id, row!.id));
-    expect(await isAgentDeviceStillAuthorized(agentId, tokenHash, cached)).toBe('denied');
+    expect(await isAgentDeviceStillAuthorized(agentId, tokenHash, cached)).toBe('identity_changed');
     await getTestDb().update(devices).set({ siteId: site.id }).where(eq(devices.id, row!.id));
     expect(await isAgentDeviceStillAuthorized(agentId, tokenHash, cached)).toBe('authorized');
 
@@ -398,14 +399,16 @@ describe('the WS lease re-check compares the row identity with the socket (#8318
     const otherOrg = await createOrganization({ partnerId: partner.id });
     const otherOrgSite = await createSite({ orgId: otherOrg.id });
     await getTestDb().update(devices).set({ orgId: otherOrg.id, siteId: otherOrgSite.id }).where(eq(devices.id, row!.id));
-    expect(await isAgentDeviceStillAuthorized(agentId, tokenHash, cached)).toBe('denied');
+    expect(await isAgentDeviceStillAuthorized(agentId, tokenHash, cached)).toBe('identity_changed');
     // A socket that cached the NEW identity is fine.
     expect(await isAgentDeviceStillAuthorized(agentId, tokenHash, { ...cached, orgId: otherOrg.id, siteId: otherOrgSite.id })).toBe('authorized');
     // ...unless its cached partner is not the org's.
-    expect(await isAgentDeviceStillAuthorized(agentId, tokenHash, { ...cached, orgId: otherOrg.id, siteId: otherOrgSite.id, partnerId: randomUUID() })).toBe('denied');
+    expect(await isAgentDeviceStillAuthorized(agentId, tokenHash, { ...cached, orgId: otherOrg.id, siteId: otherOrgSite.id, partnerId: randomUUID() })).toBe('identity_changed');
 
     // Without an identity the lifecycle/credential re-check still answers on its own (the #8838 seam).
     expect(await isAgentDeviceStillAuthorized(agentId, tokenHash)).toBe('authorized');
+    // A credential denial outranks the identity change.
+    expect(await isAgentDeviceStillAuthorized(agentId, digest('brz_ws_identity_replaced'), cached)).toBe('denied');
   });
 });
 

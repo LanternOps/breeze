@@ -1,8 +1,12 @@
 /**
  * #8318 §6.4 "Live sockets" (F5): the lease re-check compares the row's
  * identity (id, org, site, partner) with the socket's cached context.
- * The pure comparison is unit-tested here; the real-PostgreSQL proof is in
- * __tests__/integration/reattachStaleCallers.integration.test.ts.
+ * The pure comparison is unit-tested here. A mismatch is the re-check's
+ * `identity_changed` outcome (a 4040 reconnect, not the 4001 credential
+ * denial): see the "#8838" describes in agentWs.test.ts for the outcome and
+ * the socket close, and
+ * __tests__/integration/reattachStaleCallers.integration.test.ts for the
+ * real-PostgreSQL proof.
  */
 import { describe, expect, it } from 'vitest';
 import { agentSocketIdentityMatches } from './agentWs';
@@ -21,7 +25,7 @@ describe('agentSocketIdentityMatches', () => {
     ['site (the device moved site)', { ...row, siteId: 'site-2' }],
     ['partner (the org changed hands)', { ...row, partnerId: 'partner-2' }],
     ['a NULL partner', { ...row, partnerId: null }],
-  ])('denies when the %s differs', (_label, changed) => {
+  ])('reports a mismatch when the %s differs', (_label, changed) => {
     expect(agentSocketIdentityMatches(changed, identity)).toBe(false);
   });
 
