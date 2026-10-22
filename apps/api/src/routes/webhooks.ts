@@ -142,29 +142,28 @@ type WebhookAuthType = 'bearer' | 'hmac' | 'none';
 
 const UNSUPPORTED_AUTH_FIELD_MESSAGE =
   'Not supported: set bearer authentication as an `Authorization: Bearer <token>` entry in `headers`';
-const AUTH_REQUIRED_MESSAGE = 'A webhook needs a signing secret or an Authorization header';
+const AUTH_REQUIRED_MESSAGE =
+  'A webhook needs a signing secret or an `Authorization: Bearer <token>` header';
 
 function isAuthorizationKey(key: string): boolean {
   return key.trim().toLowerCase() === 'authorization';
 }
 
-// True when a header list carries a non-empty Authorization value. Works on
-// stored (encrypted) headers, since it only checks that a value is present.
-function hasAuthorizationHeader(headers: unknown): boolean {
-  return normalizeHeaders(headers).some(
-    (header) => isAuthorizationKey(header.key) && typeof header.value === 'string' && header.value.length > 0
-  );
-}
-
-function hasBearerAuthorizationHeader(webhook: typeof webhooksTable.$inferSelect): boolean {
-  let headers: WebhookHeaders;
+// True when a header list holds an `Authorization: Bearer <token>` value.
+// Takes request (plaintext) or stored (encrypted) headers: plaintext values
+// pass through decryption unchanged. Only a bearer value counts, so every
+// webhook the API accepts without a signing secret is one the form can show
+// and edit (its two choices are HMAC and Bearer). Headers that cannot be
+// decrypted count as absent: the row still lists, without claiming bearer.
+function hasBearerAuthorizationHeader(headers: unknown, webhookId?: string): boolean {
+  let normalized: WebhookHeaders;
   try {
-    headers = normalizeHeaders(decryptWebhookHeaders(webhook.headers));
+    normalized = normalizeHeaders(decryptWebhookHeaders(headers));
   } catch (error) {
-    console.error(`[webhooks] Failed to decrypt headers for webhook ${webhook.id}:`, error);
+    console.error(`[webhooks] Failed to decrypt headers for webhook ${webhookId ?? '(new)'}:`, error);
     return false;
   }
-  return headers.some(
+  return normalized.some(
     (header) => isAuthorizationKey(header.key)
       && typeof header.value === 'string'
       && /^bearer\s+\S/i.test(header.value)
@@ -175,7 +174,7 @@ function hasBearerAuthorizationHeader(webhook: typeof webhooksTable.$inferSelect
 // shows one authentication choice, and a receiver configured for bearer auth
 // ignores the extra signature headers.
 function webhookAuthType(webhook: typeof webhooksTable.$inferSelect): WebhookAuthType {
-  if (hasBearerAuthorizationHeader(webhook)) return 'bearer';
+  if (hasBearerAuthorizationHeader(webhook.headers, webhook.id)) return 'bearer';
   return webhook.secret ? 'hmac' : 'none';
 }
 
@@ -366,8 +365,8 @@ const createWebhookSchema = z.object({
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   url: z.string().url(),
-  // Optional when `headers` carries an Authorization header (bearer auth);
-  // the handler requires one or the other.
+  // Optional when `headers` carries an `Authorization: Bearer` header; the
+  // handler requires one or the other.
   secret: z.string().min(1).max(255).optional(),
   events: z.array(z.string().min(1)).min(1),
   headers: customHeadersSchema.optional().default([]),
@@ -525,8 +524,7 @@ webhookRoutes.post(
     // canAccessOrg is true for system scope: the holding org is never a target.
     if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
-    const encryptedHeaders = encryptWebhookHeaders(data.headers ?? []);
-    if (!data.secret && !hasAuthorizationHeader(encryptedHeaders)) {
+    if (!data.secret && !hasBearerAuthorizationHeader(data.headers)) {
       return c.json({ error: AUTH_REQUIRED_MESSAGE }, 400);
     }
 
@@ -543,7 +541,7 @@ webhookRoutes.post(
         url: encryptSecret(data.url) ?? data.url,
         secret: data.secret ? encryptSecret(data.secret) : null,
         events: data.events,
-        headers: encryptedHeaders,
+        headers: encryptWebhookHeaders(data.headers ?? []),
         status: mapApiStatusToDb(data.status ?? 'active'),
         createdBy: auth.user.id,
         createdAt: new Date(),
@@ -677,12 +675,12 @@ webhookRoutes.patch(
     if (data.status !== undefined) updatePayload.status = mapApiStatusToDb(data.status);
 
     // `secret: null` is how an edit switches to bearer auth, so it must leave
-    // an Authorization header in place; otherwise the switch would silently
-    // drop all authentication. Clearing headers alone stays allowed (the
-    // origin-change flow asks for exactly that).
+    // a bearer Authorization header in place; otherwise the switch would
+    // silently drop all authentication. Clearing headers alone stays allowed
+    // (the origin-change flow asks for exactly that).
     if (data.secret === null) {
       const resultingHeaders = 'headers' in updatePayload ? updatePayload.headers : webhook.headers;
-      if (!hasAuthorizationHeader(resultingHeaders)) {
+      if (!hasBearerAuthorizationHeader(resultingHeaders, webhook.id)) {
         return c.json({ error: AUTH_REQUIRED_MESSAGE }, 400);
       }
     }

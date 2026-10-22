@@ -228,8 +228,40 @@ describe('webhook bearer-token authentication (#9652)', () => {
         headers: [{ key: 'X-Trace', value: 'abc' }],
       });
       expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/signing secret or an Authorization header/);
+      expect((await res.json()).error).toMatch(/signing secret or an `Authorization: Bearer/);
       expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a non-bearer scheme', 'Basic dXNlcjpwYXNz'],
+      ['a bare token with no scheme', TOKEN],
+      ['a scheme with no token', 'Bearer '],
+      ['the masked marker with nothing stored', '********'],
+    ])('rejects an Authorization header with %s when there is no signing secret', async (_case, value) => {
+      const res = await post({
+        name: 'Weak auth',
+        url: 'https://hooks.example.com/in',
+        events: ['device.online'],
+        headers: [{ key: 'Authorization', value }],
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/signing secret or an `Authorization: Bearer/);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a lowercase key', 'authorization', `Bearer ${TOKEN}`],
+      ['a lowercase scheme', 'Authorization', `bearer ${TOKEN}`],
+    ])('accepts a bearer header with %s', async (_case, key, value) => {
+      mockInsertEcho();
+      const res = await post({
+        name: 'Bearer hook',
+        url: 'https://hooks.example.com/in',
+        events: ['device.online'],
+        headers: [{ key, value }],
+      });
+      expect(res.status).toBe(201);
+      expect((await res.json()).authType).toBe('bearer');
     });
 
     it.each([
@@ -269,6 +301,39 @@ describe('webhook bearer-token authentication (#9652)', () => {
       const res = await app.request('/webhooks');
       const body = await res.json();
       expect(body.data[0].authType).toBe('hmac');
+    });
+
+    it('reports bearer when a webhook holds both a bearer header and a signing secret', async () => {
+      mockList([bearerRow({ secret: encryptSecret('s') })]);
+      const body = await (await app.request('/webhooks')).json();
+      expect(body.data[0].authType).toBe('bearer');
+      expect(body.data[0].hasSecret).toBe(true);
+    });
+
+    it('reads a bearer token from legacy record-shaped headers', async () => {
+      mockList([storedRow({ headers: { Authorization: encryptSecret(`Bearer ${TOKEN}`) } })]);
+      const body = await (await app.request('/webhooks')).json();
+      expect(body.data[0].authType).toBe('bearer');
+      expect(JSON.stringify(body)).not.toContain(TOKEN);
+    });
+
+    it('still lists a webhook whose headers cannot be decrypted, without claiming bearer', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        mockList([
+          storedRow({ secret: encryptSecret('s'), headers: [{ key: 'Authorization', value: 'enc:v1:not-a-real-ciphertext' }] }),
+          bearerRow({ id: '33333333-3333-3333-3333-333333333333' }),
+        ]);
+        const res = await app.request('/webhooks');
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(2);
+        expect(body.data[0].authType).toBe('hmac');
+        expect(body.data[1].authType).toBe('bearer');
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(WEBHOOK_ID), expect.anything());
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
 
     it('hands the delivery worker the decrypted Authorization header and no signing secret', () => {
@@ -316,6 +381,40 @@ describe('webhook bearer-token authentication (#9652)', () => {
       expect((await res.json()).authType).toBe('bearer');
     });
 
+    it('keeps a masked bearer token stored in legacy record-shaped headers', async () => {
+      const storedValue = encryptSecret(`Bearer ${TOKEN}`) as string;
+      const stored = storedRow({ secret: encryptSecret('s'), headers: { Authorization: storedValue } });
+      mockSelectOne(stored);
+      const set = mockUpdateEcho(stored);
+
+      const res = await patch({ secret: null, headers: [{ key: 'Authorization', value: '********' }] });
+
+      expect(res.status).toBe(200);
+      const payload = (set.mock.calls as any[])[0][0];
+      expect(payload.secret).toBeNull();
+      expect(payload.headers).toEqual([{ key: 'Authorization', value: storedValue }]);
+      expect((await res.json()).authType).toBe('bearer');
+    });
+
+    it('switches to bearer by clearing the secret when the bearer header is already stored', async () => {
+      const stored = bearerRow({ secret: encryptSecret('s') });
+      mockSelectOne(stored);
+      const set = mockUpdateEcho(stored);
+      const res = await patch({ secret: null });
+      expect(res.status).toBe(200);
+      expect((set.mock.calls as any[])[0][0].secret).toBeNull();
+    });
+
+    it('rejects clearing the secret when the only Authorization header is not a bearer token', async () => {
+      mockSelectOne(storedRow({
+        secret: encryptSecret('s'),
+        headers: encryptWebhookHeaders([{ key: 'Authorization', value: 'Basic dXNlcjpwYXNz' }]),
+      }));
+      const res = await patch({ secret: null });
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('switches a bearer webhook back to HMAC by dropping the header and setting a secret', async () => {
       const stored = bearerRow();
       mockSelectOne(stored);
@@ -336,7 +435,7 @@ describe('webhook bearer-token authentication (#9652)', () => {
       mockSelectOne(storedRow({ secret: encryptSecret('old-signing-secret') }));
       const res = await patch({ secret: null });
       expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/signing secret or an Authorization header/);
+      expect((await res.json()).error).toMatch(/signing secret or an `Authorization: Bearer/);
       expect(db.update).not.toHaveBeenCalled();
     });
 
@@ -345,7 +444,7 @@ describe('webhook bearer-token authentication (#9652)', () => {
       mockSelectOne(stored);
       const res = await patch({ secret: null, headers: [{ key: 'X-Trace', value: 'abc' }] });
       expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/signing secret or an Authorization header/);
+      expect((await res.json()).error).toMatch(/signing secret or an `Authorization: Bearer/);
       expect(db.update).not.toHaveBeenCalled();
     });
 

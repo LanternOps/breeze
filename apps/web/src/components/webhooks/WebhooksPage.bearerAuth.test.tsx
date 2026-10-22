@@ -141,6 +141,41 @@ describe('WebhooksPage — bearer token authentication (#9652)', () => {
     expect(body).not.toHaveProperty('bearerToken');
   });
 
+  it('sends the masked token back under the stored key spelling so the API matches it', async () => {
+    // The API resolves a masked value by exact key, then by position. Sending
+    // `Authorization` for a stored `authorization` header would miss the key
+    // and fall back to whatever header now sits at that index.
+    await openEdit(webhook({
+      hasSecret: false,
+      authType: 'bearer',
+      headers: [
+        { key: 'authorization', value: redacted },
+        { key: 'X-Api-Key', value: redacted },
+      ],
+    }));
+    expect(screen.getByRole('radio', { name: /Bearer token/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    const body = await sentBody('PATCH');
+    expect(body.headers).toEqual([
+      { key: 'X-Api-Key', value: '********' },
+      { key: 'authorization', value: '********' },
+    ]);
+  });
+
+  it('rotates the token on a bearer webhook without touching the signing secret', async () => {
+    await openEdit(bearerWebhook());
+    fireEvent.change(tokenInput()!, { target: { value: 'tok-rotated' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    const body = await sentBody('PATCH');
+    expect(body.headers).toEqual([
+      { key: 'X-Trace', value: 'abc' },
+      { key: 'Authorization', value: 'Bearer tok-rotated' },
+    ]);
+    expect(body).not.toHaveProperty('secret');
+  });
+
   it('switches an HMAC webhook to bearer: sends the header and clears the secret', async () => {
     await openEdit(webhook());
     fireEvent.click(screen.getByRole('radio', { name: /Bearer token/ }));
@@ -170,5 +205,15 @@ describe('WebhooksPage — bearer token authentication (#9652)', () => {
     const card = label.parentElement as HTMLElement;
     expect(within(card).getByText('Bearer token')).toBeInTheDocument();
     expect(within(card).queryByText('HMAC signature')).not.toBeInTheDocument();
+    expect(within(card).getByText(/Authorization: Bearer \*\*\*/)).toBeInTheDocument();
+  });
+
+  it('shows the real signature header name on the details card for an HMAC webhook', async () => {
+    serve([webhook()]);
+    render(<WebhooksPage />);
+    const label = await screen.findByText('Authentication');
+    const card = label.parentElement as HTMLElement;
+    expect(within(card).getByText('HMAC signature')).toBeInTheDocument();
+    expect(within(card).getByText(/X-Breeze-Signature: sha256=\*\*\*/)).toBeInTheDocument();
   });
 });

@@ -253,9 +253,16 @@ function WebhooksPageContent() {
     let secret: { secret?: string | null } = { secret: values.secret };
     if (values.authType === 'bearer') {
       // A masked token means "keep the stored one": the API resolves a masked
-      // header value against the stored header with the same key.
+      // value by exact key, then by position, so send the stored header's own
+      // key spelling back or it may resolve to a different header.
+      const storedKey = current && webhookFormAuthType(current) === 'bearer'
+        ? current.headers?.find(header => isAuthorizationHeader(header.key))?.key
+        : undefined;
       const token = (values.bearerToken ?? '').trim().replace(/^bearer\s+/i, '');
-      headers.push({ key: 'Authorization', value: isMaskedSecret(token) ? MASKED_SECRET : `Bearer ${token}` });
+      headers.push({
+        key: storedKey ?? 'Authorization',
+        value: isMaskedSecret(token) ? MASKED_SECRET : `Bearer ${token}`,
+      });
       // Switching an HMAC webhook to bearer clears its signing secret.
       secret = current && webhookFormAuthType(current) !== 'bearer' ? { secret: null } : {};
     }

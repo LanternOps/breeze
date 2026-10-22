@@ -314,7 +314,7 @@ If your endpoint expects a static token rather than a signature, authenticate wi
 }
 ```
 
-The token is stored encrypted with the other custom headers and is never returned: GET responses show the header with a redacted value and report `"authType": "bearer"` (`"hmac"` for a signing secret, `"none"` for neither). A webhook needs either a `secret` or an `Authorization` header. To switch an existing webhook from HMAC to bearer, send `"secret": null` together with the `Authorization` header in the same `PATCH`. To keep a stored token while you edit other headers, send its value back as `********`.
+The token is stored encrypted with the other custom headers and is never returned: GET responses show the header with a redacted value and report `"authType": "bearer"` (`"hmac"` for a signing secret, `"none"` for neither). A webhook needs either a `secret` or an `Authorization: Bearer <token>` header; other `Authorization` schemes (such as `Basic`) can be added as custom headers alongside a signing secret. To switch an existing webhook from HMAC to bearer, send `"secret": null` together with the `Authorization` header in the same `PATCH`. To keep a stored token while you edit other headers, send its value back as `********`.
 
 ---
 
