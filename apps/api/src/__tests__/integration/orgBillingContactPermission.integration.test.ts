@@ -29,6 +29,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 const INVOICES_WRITE = { resource: PERMISSIONS.INVOICES_WRITE.resource, action: PERMISSIONS.INVOICES_WRITE.action };
 const BILLING_MANAGE = { resource: PERMISSIONS.BILLING_MANAGE.resource, action: PERMISSIONS.BILLING_MANAGE.action };
+const PROFILES_WRITE = { resource: PERMISSIONS.BILLING_PROFILES_WRITE.resource, action: PERMISSIONS.BILLING_PROFILES_WRITE.action };
 
 const BILLING_EMAIL = 'billing@customer.example';
 
@@ -70,7 +71,7 @@ async function seed(rolePermissions: Array<{ resource: string; action: string }>
 
   return {
     orgId,
-    patch: (body) => app.request(`/orgs/${orgId}/billing-settings`, {
+    patch: async (body) => app.request(`/orgs/${orgId}/billing-settings`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -120,6 +121,14 @@ describe('billing contact changes on PATCH /orgs/:orgId/billing-settings require
     const after = await readBlob(orgId);
     expect(after.taxId).toBeNull();
     expect(after.billingContact).toMatchObject({ email: BILLING_EMAIL });
+  });
+
+  runDb('billing profile permission does not stand in for billing:manage on a contact change', async () => {
+    const { orgId, patch } = await seed([INVOICES_WRITE, PROFILES_WRITE]);
+
+    const res = await patch({ billingProfileId: null, billingContactEmail: 'someone-else@example.test' });
+    expect(res.status).toBe(403);
+    expect((await readBlob(orgId)).billingContact).toMatchObject({ email: BILLING_EMAIL });
   });
 
   runDb('an invoices:write-only user can still save the non-contact billing settings', async () => {

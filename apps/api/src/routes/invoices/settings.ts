@@ -29,7 +29,8 @@ const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISS
 const agreementsSendPerm = requirePermission(PERMISSIONS.AGREEMENTS_SEND.resource, PERMISSIONS.AGREEMENTS_SEND.action);
 // The billing contact receives the org's invoices, quotes and autopay notices,
 // so changing it (including clearing it) is billing administration, not
-// invoice editing. Every other org billing-settings field stays on writePerm.
+// invoice editing. Tax, terms, address and currency fields stay on writePerm;
+// billingProfileId also needs profileWritePerm.
 const billingManagePerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
 const BILLING_CONTACT_FIELDS = ['billingContactEmail', 'billingContactName'] as const;
 const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {

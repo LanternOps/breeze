@@ -54,7 +54,7 @@ vi.mock('../../middleware/auth', () => ({
     permChecks.push(`${resource}:${action}`);
     if (resource === 'billing_profiles' && authState.value.profileWriteDenied) return c.json({ error: 'Permission denied' }, 403);
     if (resource === 'agreements' && authState.value.agreementsSendDenied) return c.json({ error: 'Permission denied' }, 403);
-    if (resource === 'billing' && authState.value.billingManageDenied) return c.json({ error: 'Permission denied' }, 403);
+    if (resource === 'billing' && action === 'manage' && authState.value.billingManageDenied) return c.json({ error: 'Permission denied' }, 403);
     await next();
   },
   requireMfa: () => async (c: any, next: any) => {
@@ -403,6 +403,7 @@ describe('billing settings routes', () => {
     [{ billingContactEmail: 'ap@customer.example' }],
     [{ billingContactEmail: null }],
     [{ billingContactName: 'Accounts Payable' }],
+    [{ billingContactName: null }],
     [{ taxExempt: true, billingContactEmail: 'ap@customer.example' }],
   ])('requires billing manage permission when changing the billing contact (%o)', async body => {
     authState.value.billingManageDenied = true;
