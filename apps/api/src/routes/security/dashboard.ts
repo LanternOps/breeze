@@ -189,9 +189,13 @@ dashboardRoutes.get(
   '/score-breakdown',
   requireScope('organization', 'partner', 'system'),
   requirePermission('devices', 'read'),
+  zValidator('query', dashboardQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const scope = resolveScopedOrgIds(auth);
+    // ?orgId= is the header org switcher's selection (#9639); it can only
+    // narrow within the caller's accessible orgs (403 otherwise).
+    const { orgId } = c.req.valid('query');
+    const scope = resolveScopedOrgIds(auth, orgId);
     if (scope.error) {
       return c.json({ error: scope.error.message }, scope.error.status);
     }
