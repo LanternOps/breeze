@@ -426,6 +426,7 @@ export default function EnrollmentKeyManager() {
   const handleDownloadInstaller = async (keyId: string, platform: InstallerPlatform, count: number) => {
     if (downloading) return;
     setDownloading(true);
+    setError(undefined);
     try {
       const params = new URLSearchParams({ count: String(count) });
       const response = await fetchWithAuth(`/enrollment-keys/${keyId}/installer/${platform}?${params.toString()}`);
@@ -453,6 +454,9 @@ export default function EnrollmentKeyManager() {
       setError(t('enrollmentKeys.installerFailed', { message }));
     } finally {
       setDownloading(false);
+      // The dialog stays open (showing "Downloading...") until the request
+      // settles; any failure then surfaces in the page's error banner.
+      setInstallerTarget(null);
     }
   };
 
@@ -1059,7 +1063,6 @@ export default function EnrollmentKeyManager() {
         downloading={downloading}
         onCancel={() => setInstallerTarget(null)}
         onConfirm={(target, count) => {
-          setInstallerTarget(null);
           void handleDownloadInstaller(target.keyId, target.platform, count);
         }}
       />
