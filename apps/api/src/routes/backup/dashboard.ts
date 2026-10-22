@@ -26,6 +26,7 @@ import {
   getProviderCoverageForDevices,
 } from '../../services/backupHealthReadModel';
 import { getStorageByProvider } from '../../services/backupStorageByProvider';
+import { storedSnapshotBytesByProviderSince, sumStoredSnapshotBytes } from '../../services/backupStoredBytes';
 
 export const dashboardRoutes = new Hono();
 
@@ -252,38 +253,34 @@ dashboardRoutes.get(
     startDate.setUTCHours(0, 0, 0, 0);
     startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
 
-    // Get snapshots with their config's provider
-    const snapshots = await db
-      .select({
-        size: backupSnapshots.size,
-        timestamp: backupSnapshots.timestamp,
-        provider: backupConfigs.provider,
-      })
-      .from(backupSnapshots)
-      .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
-      .where(
-        and(
-          eq(backupSnapshots.orgId, orgId),
-          gte(backupSnapshots.timestamp, startDate)
-        )
-      );
+    // Stored bytes (#9631), not each snapshot's logical size. Snapshots
+    // captured before the window form the starting level, so the series
+    // ends at the same figure as Storage Used.
+    const usageRows = await storedSnapshotBytesByProviderSince(
+      eq(backupSnapshots.orgId, orgId),
+      startDate
+    );
 
     const providers = new Set<string>();
+    const baselineByProvider = new Map<string, number>();
     const dailyIncrements = new Map<string, Map<string, number>>();
 
-    for (const snap of snapshots) {
-      const provider = snap.provider ?? 'unknown';
+    for (const row of usageRows) {
+      const provider = row.provider ?? 'unknown';
       providers.add(provider);
-      const dayKey = snap.timestamp.toISOString().slice(0, 10);
-      const dayMap = dailyIncrements.get(dayKey) ?? new Map<string, number>();
-      dayMap.set(provider, (dayMap.get(provider) ?? 0) + (snap.size ?? 0));
-      dailyIncrements.set(dayKey, dayMap);
+      if (row.day === null) {
+        baselineByProvider.set(provider, (baselineByProvider.get(provider) ?? 0) + row.bytes);
+        continue;
+      }
+      const dayMap = dailyIncrements.get(row.day) ?? new Map<string, number>();
+      dayMap.set(provider, (dayMap.get(provider) ?? 0) + row.bytes);
+      dailyIncrements.set(row.day, dayMap);
     }
 
     const providerList = Array.from(providers);
     if (providerList.length === 0) providerList.push('local');
     const runningByProvider = new Map(
-      providerList.map((p) => [p, 0])
+      providerList.map((p) => [p, baselineByProvider.get(p) ?? 0])
     );
     const points: Array<{
       timestamp: string;
@@ -392,14 +389,10 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
           )
         )
         .then((r) => r[0] ?? { completed: 0, completedWithErrors: 0, failed: 0, partial: 0, running: 0, pending: 0 }),
-      noSiteAllowedDevices ? Promise.resolve({ totalBytes: 0, count: 0 }) : db
-        .select({
-          totalBytes: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)::bigint`,
-          count: sql<number>`count(*)::int`,
-        })
-        .from(backupSnapshots)
-        .where(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope))
-        .then((r) => r[0] ?? { totalBytes: 0, count: 0 }),
+      // Stored bytes, not the sum of logical snapshot sizes (#9631).
+      noSiteAllowedDevices
+        ? Promise.resolve({ totalBytes: 0, count: 0 })
+        : sumStoredSnapshotBytes(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope)),
       resolveAllBackupAssignedDevices(orgId).catch((err) => {
         console.error(`[BackupDashboard] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
         return [];

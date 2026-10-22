@@ -112,6 +112,14 @@ vi.mock('../../services/backupStorageByProvider', () => ({
   getStorageByProvider: (...a: unknown[]) => getStorageByProviderMock(...(a as [])),
 }));
 
+const sumStoredSnapshotBytesMock = vi.fn(async (..._args: unknown[]) => ({ totalBytes: 0, count: 0 }));
+const storedSnapshotBytesByProviderSinceMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+
+vi.mock('../../services/backupStoredBytes', () => ({
+  sumStoredSnapshotBytes: (...a: unknown[]) => sumStoredSnapshotBytesMock(...(a as [])),
+  storedSnapshotBytesByProviderSince: (...a: unknown[]) => storedSnapshotBytesByProviderSinceMock(...(a as [])),
+}));
+
 describe('backup dashboard routes', () => {
   let app: Hono;
 
@@ -154,7 +162,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 1 }]))
       .mockReturnValueOnce(chainMock([{ count: 1 }]))
       .mockReturnValueOnce(chainMock([{ completed: 1, failed: 0, running: 0, pending: 0 }]))
-      .mockReturnValueOnce(chainMock([{ totalBytes: 1024, count: 1 }]))
       .mockReturnValueOnce(chainMock([
         makeRecentJob({ deviceId: DEVICE_ID, deviceName: 'Allowed Device' }),
         makeRecentJob({ id: 'job-out', deviceId: OTHER_DEVICE_ID, deviceName: 'Other Device' }),
@@ -197,6 +204,65 @@ describe('backup dashboard routes', () => {
     expect(getStorageByProviderMock).toHaveBeenCalledWith(ORG_ID, [DEVICE_ID]);
   });
 
+  it('reports Storage Used as stored bytes from the stored-bytes service (#9631)', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    sumStoredSnapshotBytesMock.mockResolvedValueOnce({ totalBytes: 669, count: 5 });
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.storage).toEqual({ totalBytes: 669, snapshots: 5 });
+    expect(sumStoredSnapshotBytesMock).toHaveBeenCalledWith({
+      op: 'and',
+      conditions: [{ op: 'eq', column: 'backup_snapshots.org_id', value: ORG_ID }, undefined],
+    });
+  });
+
+  it('narrows Storage Used to the site-scoped device list (#9631)', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock.mockReturnValueOnce(chainMock([
+      { id: DEVICE_ID, siteId: SITE_A },
+      { id: OTHER_DEVICE_ID, siteId: SITE_B },
+    ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    expect(sumStoredSnapshotBytesMock).toHaveBeenCalledWith({
+      op: 'and',
+      conditions: [
+        { op: 'eq', column: 'backup_snapshots.org_id', value: ORG_ID },
+        { op: 'inArray', column: 'backup_snapshots.device_id', values: [DEVICE_ID] },
+      ],
+    });
+  });
+
+  it('starts the storage trend at the stored bytes captured before the window (#9631)', async () => {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const dayKey = today.toISOString().slice(0, 10);
+    storedSnapshotBytesByProviderSinceMock.mockResolvedValueOnce([
+      { provider: 's3', day: null, bytes: 100 },
+      { provider: 's3', day: dayKey, bytes: 19 },
+    ]);
+
+    const res = await app.request('/backup/usage-history?days=3');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const totals = body.data.points.map((point: { totalBytes: number }) => point.totalBytes);
+    // Two earlier days hold the pre-window level; today adds the new uploads.
+    expect(totals).toEqual([100, 100, 119]);
+    expect(body.data.providers).toEqual(['s3']);
+    const [where, since] = storedSnapshotBytesByProviderSinceMock.mock.calls[0]!;
+    expect(where).toEqual({ op: 'eq', column: 'backup_snapshots.org_id', value: ORG_ID });
+    expect((since as Date).toISOString().slice(0, 10)).toBe(
+      new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    );
+  });
+
   it('keeps unrestricted dashboard behavior unchanged', async () => {
     resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
       { deviceId: DEVICE_ID, configId: 'config-1', featureLinkId: 'feature-1' },
@@ -207,7 +273,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 2 }]))
       .mockReturnValueOnce(chainMock([{ count: 2 }]))
       .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }]))
-      .mockReturnValueOnce(chainMock([{ totalBytes: 2048, count: 2 }]))
       .mockReturnValueOnce(chainMock([
         makeRecentJob({ deviceId: DEVICE_ID, deviceName: 'Allowed Device' }),
         makeRecentJob({ id: 'job-out', deviceId: OTHER_DEVICE_ID, deviceName: 'Other Device' }),
@@ -219,9 +284,10 @@ describe('backup dashboard routes', () => {
     const body = await res.json();
     expect(body.data.totals.policies).toBe(2);
     expect(body.data.latestJobs).toHaveLength(2);
-    // 6 base aggregation queries + 2 for the attention-items ranked-jobs lookup
-    // (subquery build + the awaited select over it).
-    expect(selectMock).toHaveBeenCalledTimes(8);
+    // 5 base aggregation queries + 2 for the attention-items ranked-jobs lookup
+    // (subquery build + the awaited select over it). Storage Used comes from
+    // the stored-bytes service (#9631), mocked here.
+    expect(selectMock).toHaveBeenCalledTimes(7);
     expect(body.data.attentionItems).toEqual([]);
   });
 
@@ -232,7 +298,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 2 }])) // jobCount
       .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
       .mockReturnValueOnce(chainMock([{ completed: 0, failed: 2, running: 0, pending: 0 }])) // last24hStats
-      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
       .mockReturnValueOnce(chainMock([])) // recentJobsRaw
       .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
       .mockReturnValueOnce(chainMock([
@@ -284,7 +349,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
       .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
       .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 1, running: 0, pending: 0 }])) // last24hStats
-      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
       .mockReturnValueOnce(chainMock([])) // recentJobsRaw
       .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
       .mockReturnValueOnce(chainMock([
@@ -329,7 +393,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
       .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
       .mockReturnValueOnce(chainMock([{ completed: 0, completedWithErrors: 1, failed: 1, partial: 0, running: 0, pending: 0 }])) // last24hStats
-      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
       .mockReturnValueOnce(chainMock([])) // recentJobsRaw
       .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
       .mockReturnValueOnce(chainMock([
@@ -389,7 +452,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 2 }]))
       .mockReturnValueOnce(chainMock([{ count: 0 }]))
       .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 2, running: 0, pending: 0 }]))
-      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }]))
       .mockReturnValueOnce(chainMock([]))
       .mockReturnValueOnce(chainMock([]))
       .mockReturnValueOnce(chainMock([partialRow(1, '14'), partialRow(2, '13')]));
@@ -411,7 +473,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
       .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
       .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }])) // last24hStats
-      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
       .mockReturnValueOnce(chainMock([])) // recentJobsRaw
       .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
       .mockReturnValueOnce(chainMock([
@@ -456,7 +517,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
       .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
       .mockReturnValueOnce(chainMock([{ completed: 0, failed: 1, running: 0, pending: 0 }])) // last24hStats
-      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
       .mockReturnValueOnce(chainMock([])) // recentJobsRaw
       .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
       .mockReturnValueOnce(failingRankedRows); // awaited ranked-jobs select rejects
@@ -481,7 +541,6 @@ describe('backup dashboard routes', () => {
       .mockReturnValueOnce(chainMock([{ count: 2 }])) // jobCount
       .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
       .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }])) // last24hStats
-      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
       .mockReturnValueOnce(chainMock([])) // recentJobsRaw
       .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
       .mockReturnValueOnce(chainMock([
