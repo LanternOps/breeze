@@ -1086,7 +1086,8 @@ const WS_AUDIT_REQUEST = requestLikeFromSnapshot({});
  * cached under a device that has since moved org or site closes at its next
  * re-check and reconnects with the row's current identity. Every credential
  * and lifecycle check runs first, so a socket that is also denied (a
- * reattach retired its agent_id, its hash was revoked) reads `denied`. The compatibility seam for handler unit
+ * reattach retired its agent_id, its hash was revoked) reads `denied`. The
+ * compatibility seam for handler unit
  * tests: a mocked row that reports none of those columns (all `undefined`;
  * production rows never do, the columns are NOT NULL) skips the comparison,
  * exactly as the absent-hash branch skips the generation check.

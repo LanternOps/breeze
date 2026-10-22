@@ -781,9 +781,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   // #8318 §6.4: what the scoped block hands back when this beat turns out to
   // be a stale caller (see `ownDeviceRowChangedHands` below). The rejection is
-  // thrown after the block, so the beat's transaction ends exactly as a
-  // terminal-status 0-row beat's does and agent auth's own error rendering
-  // answers it.
+  // thrown after the block: the beat's transaction commits what ran before the
+  // device write, as today, and agent auth's own error rendering answers it.
   const STALE_CALLER = { staleCaller: true } as const;
 
   const scoped = await withDbAccessContext(
