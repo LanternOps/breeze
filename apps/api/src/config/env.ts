@@ -120,6 +120,34 @@ export function mcpTier3IntentsEnabled(): boolean {
   return envFlag('MCP_TIER3_INTENTS_ENABLED', false);
 }
 
+// positiveIntEnv treats 0 as invalid (falls back), so the wait knobs have a
+// floor of 1 rather than 0; "no wait" is not expressible through the env.
+
+/** Max live approval intents per MCP credential, across orgs (default 20). Read per call. */
+export function mcpIntentMaxLivePerPrincipal(): number {
+  return positiveIntEnv('MCP_INTENT_MAX_LIVE_PER_PRINCIPAL', 20, 1, 1_000);
+}
+
+/** Intent creations per MCP credential per hour (default 60). Read per call. */
+export function mcpIntentCreatesPerHour(): number {
+  return positiveIntEnv('MCP_INTENT_CREATES_PER_HOUR', 60, 1, 10_000);
+}
+
+/** Intent creations per requesting human per hour, across all their credentials (default 60). Read per call. */
+export function mcpIntentCreatesPerUserPerHour(): number {
+  return positiveIntEnv('MCP_INTENT_CREATES_PER_USER_PER_HOUR', 60, 1, 10_000);
+}
+
+/** Bounded wait (ms) for an approval outcome on a URL-elicitation retry (default 20000). Read per call. */
+export function mcpApprovalWaitMs(): number {
+  return positiveIntEnv('MCP_APPROVAL_WAIT_MS', 20_000, 1, 120_000);
+}
+
+/** Concurrent bounded approval waits per MCP credential (default 2). Read per call. */
+export function mcpApprovalWaitsPerPrincipal(): number {
+  return positiveIntEnv('MCP_APPROVAL_WAITS_PER_PRINCIPAL', 2, 1, 50);
+}
+
 export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }

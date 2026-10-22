@@ -1,0 +1,181 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
+
+const mocks = vi.hoisted(() => ({
+  createActionIntent: vi.fn(),
+  validateToolInput: vi.fn(),
+  rateLimiter: vi.fn(),
+  loadRow: vi.fn(),
+}));
+
+vi.mock('./actionIntents/intentService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./actionIntents/intentService')>();
+  return { ...actual, createActionIntent: mocks.createActionIntent };
+});
+vi.mock('./aiToolSchemas', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiToolSchemas')>()), validateToolInput: mocks.validateToolInput,
+}));
+vi.mock('./rate-limit', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rate-limit')>()), rateLimiter: mocks.rateLimiter,
+}));
+vi.mock('./redis', () => ({ getRedis: () => ({}) }));
+vi.mock('../db', () => ({
+  db: {
+    select: () => ({ from: () => ({ where: () => ({ limit: () => mocks.loadRow() }) }) }),
+  },
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+}));
+
+import { createMcpActionIntent, type CreateMcpActionIntentInput } from './mcpIntentCreation';
+import { ActionIntentError } from './actionIntents/intentService';
+
+const USER = '22222222-2222-4222-8222-222222222222';
+const ORG = '33333333-3333-4333-8333-333333333333';
+const REQ = '6f2b7c1e-1d2a-4c3b-9e8f-0a1b2c3d4e5f';
+const INTENT = '77777777-7777-4777-8777-777777777777';
+
+function input(over: Partial<CreateMcpActionIntentInput> = {}): CreateMcpActionIntentInput {
+  return {
+    auth: { principal: { kind: 'api_key', apiKeyId: 'key-A' }, user: { id: USER } } as never,
+    apiKey: { id: 'key-A', orgId: ORG, name: 'ci key', mcpDomains: null } as never,
+    toolName: 'execute_command',
+    toolInput: { deviceId: 'd1', command: 'whoami' },
+    executionOrgId: ORG,
+    correlationRequestId: REQ,
+    clientLabel: 'MCP · ci key',
+    appBaseUrl: 'https://app.example.com',
+    ...over,
+  };
+}
+
+const row = (over: Record<string, unknown> = {}) => ({
+  id: INTENT, status: 'pending_approval', actionName: 'execute_command', approvalScope: 'four_eyes',
+  expiresAt: new Date('2027-01-01T00:00:00Z'), result: null, errorCode: null, executedAt: null, ...over,
+});
+
+let counters: Map<string, number>;
+beforeEach(() => {
+  vi.clearAllMocks();
+  counters = new Map();
+  mocks.validateToolInput.mockReturnValue({ success: true });
+  mocks.rateLimiter.mockImplementation(async (_r: unknown, key: string, limit: number) => {
+    const n = (counters.get(key) ?? 0) + 1;
+    counters.set(key, n);
+    return { allowed: n <= limit, remaining: Math.max(0, limit - n), resetAt: new Date() };
+  });
+  // Default: a new row; invoke the churn charge the way createActionIntent does.
+  mocks.createActionIntent.mockImplementation(async (_auth: unknown, i: { beforeInsert?: () => Promise<void> }) => {
+    await i.beforeInsert?.();
+    return { id: INTENT, status: 'pending_approval' };
+  });
+  mocks.loadRow.mockResolvedValue([row()]);
+});
+
+describe('createMcpActionIntent', () => {
+  it('invalid tool input is refused before insert', async () => {
+    mocks.validateToolInput.mockReturnValue({ success: false, error: 'command is required' });
+    const out = await createMcpActionIntent(input());
+    expect(out).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+    expect(mocks.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('org service-principal key → principal_not_supported', async () => {
+    const out = await createMcpActionIntent(input({ apiKey: { id: 'key-A', orgId: ORG, principalType: 'service', mcpDomains: null } as never }));
+    expect(out).toMatchObject({ kind: 'refused', code: 'principal_not_supported' });
+    expect(mocks.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('partner service principal → principal_not_supported', async () => {
+    const out = await createMcpActionIntent(input({
+      auth: { principal: { kind: 'api_key', apiKeyId: 'k', partnerServicePrincipalId: 'sp' }, user: { id: USER } } as never,
+    }));
+    expect(out).toMatchObject({ kind: 'refused', code: 'principal_not_supported' });
+  });
+
+  it('passes executionOrgId, source mcp_api, the mcp:v1 idempotency key, correlationId and the label', async () => {
+    const out = await createMcpActionIntent(input());
+    expect(out).toMatchObject({ kind: 'pending', isNew: true, status: { actionId: INTENT, status: 'pending_approval' } });
+    const [, args] = mocks.createActionIntent.mock.calls[0]!;
+    expect(args).toMatchObject({
+      toolName: 'execute_command', source: 'mcp_api', orgId: ORG, correlationId: REQ,
+      requestingClientLabel: 'MCP · ci key', maxLiveForOrigin: 20,
+    });
+    expect(args.idempotencyKey).toMatch(/^mcp:v1:[0-9a-f]{64}$/);
+    expect(args.input).toEqual({ deviceId: 'd1', command: 'whoami' });
+  });
+
+  it('the argument digest equals the stored argument_digest (same canonicalisation)', async () => {
+    const { mcpIntentIdempotencyKey } = await import('./mcpIntentEligibility');
+    await createMcpActionIntent(input());
+    const [, args] = mocks.createActionIntent.mock.calls[0]!;
+    const digest = computeArgumentDigest(canonicalizeArguments({ deviceId: 'd1', command: 'whoami' }));
+    expect(args.idempotencyKey).toBe(mcpIntentIdempotencyKey('api_key:key-A', 'execute_command', digest));
+  });
+
+  it('same user, different credential: separate idempotency keys', async () => {
+    await createMcpActionIntent(input());
+    await createMcpActionIntent(input({
+      auth: { principal: { kind: 'api_key', apiKeyId: 'key-B' }, user: { id: USER } } as never,
+      apiKey: { id: 'key-B', orgId: ORG, name: 'other', mcpDomains: null } as never,
+    }));
+    const keys = mocks.createActionIntent.mock.calls.map((c) => c[1].idempotencyKey);
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it('churn guard: the 61st creation in an hour → rate_limited', async () => {
+    for (let i = 0; i < 60; i++) {
+      expect((await createMcpActionIntent(input())).kind).toBe('pending');
+    }
+    expect(await createMcpActionIntent(input())).toMatchObject({ kind: 'refused', code: 'rate_limited' });
+  });
+
+  it('a replay of a live intent is not charged', async () => {
+    mocks.createActionIntent.mockResolvedValue({ id: INTENT, status: 'pending_approval' }); // never calls beforeInsert
+    for (let i = 0; i < 65; i++) await createMcpActionIntent(input());
+    expect(mocks.rateLimiter).not.toHaveBeenCalled();
+  });
+
+  it('per-user guard: one human across two credentials hits rate_limited at 61 creations/hour', async () => {
+    const keyB = input({
+      auth: { principal: { kind: 'api_key', apiKeyId: 'key-B' }, user: { id: USER } } as never,
+      apiKey: { id: 'key-B', orgId: ORG, name: 'other', mcpDomains: null } as never,
+    });
+    for (let i = 0; i < 30; i++) await createMcpActionIntent(input());
+    for (let i = 0; i < 30; i++) await createMcpActionIntent(keyB);
+    expect(await createMcpActionIntent(keyB)).toMatchObject({ kind: 'refused', code: 'rate_limited' });
+  });
+
+  it.each(['no_eligible_approvers', 'no_eligible_approvers_site_ceiling'])(
+    '%s maps to a refusal, not a pending result, and stays charged',
+    async (code) => {
+      mocks.loadRow.mockResolvedValue([row({ status: 'cancelled', errorCode: code })]);
+      mocks.createActionIntent.mockImplementation(async (_a: unknown, i: { beforeInsert?: () => Promise<void> }) => {
+        await i.beforeInsert?.();
+        return { id: INTENT, status: 'cancelled', errorCode: code };
+      });
+      expect(await createMcpActionIntent(input())).toMatchObject({ kind: 'refused', code });
+      expect(mocks.rateLimiter).toHaveBeenCalled();
+    },
+  );
+
+  it('too_many_pending_actions and principal_not_supported from createActionIntent map to refusals', async () => {
+    mocks.createActionIntent.mockRejectedValueOnce(new ActionIntentError('cap', 'too_many_pending_actions'));
+    expect(await createMcpActionIntent(input())).toMatchObject({ kind: 'refused', code: 'too_many_pending_actions' });
+    mocks.createActionIntent.mockRejectedValueOnce(new ActionIntentError('sp', 'principal_not_supported'));
+    expect(await createMcpActionIntent(input())).toMatchObject({ kind: 'refused', code: 'principal_not_supported' });
+  });
+
+  it('a replayed live intent returns pending with isNew false', async () => {
+    mocks.createActionIntent.mockResolvedValue({ id: INTENT, status: 'approved', replayed: true });
+    mocks.loadRow.mockResolvedValue([row({ status: 'approved' })]);
+    expect(await createMcpActionIntent(input())).toMatchObject({
+      kind: 'pending', isNew: false, status: { status: 'in_progress', approvalUrl: `https://app.example.com/approvals#intent-${INTENT}` },
+    });
+  });
+
+  it('caps the client label at 255 characters', async () => {
+    await createMcpActionIntent(input({ clientLabel: `MCP · ${'x'.repeat(400)}` }));
+    expect(mocks.createActionIntent.mock.calls[0]![1].requestingClientLabel).toHaveLength(255);
+  });
+});

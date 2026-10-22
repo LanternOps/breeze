@@ -359,6 +359,12 @@ export interface CreateActionIntentInput {
 export type ActionIntentSnapshot = {
   id: string;
   status: ActionIntentStatus;
+  /**
+   * B-W04 (#6158): true when this call converged on an existing LIVE intent
+   * (idempotent replay) instead of inserting one. Set only by
+   * createActionIntent; absent elsewhere.
+   */
+  replayed?: boolean;
   actionName: string;
   argumentDigest: string;
   source: ActionIntentSource;
@@ -2939,7 +2945,10 @@ export async function createActionIntent(
     });
   }
 
-  return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds);
+  return {
+    ...toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds),
+    replayed: !creation.isNew,
+  };
 }
 
 // ---------------------------------------------------------------------------

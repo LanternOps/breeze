@@ -3528,6 +3528,42 @@ describe('MCP_STATELESS_ENABLED boolean guard', () => {
   });
 });
 
+describe('MCP Tier-3 intent env guards (B-W04 #6158)', () => {
+  const intKnobs = [
+    'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
+    'MCP_INTENT_CREATES_PER_HOUR',
+    'MCP_INTENT_CREATES_PER_USER_PER_HOUR',
+    'MCP_APPROVAL_WAIT_MS',
+    'MCP_APPROVAL_WAITS_PER_PRINCIPAL',
+  ];
+  it('declares every key in the schema', () => {
+    for (const k of ['MCP_TIER3_INTENTS_ENABLED', ...intKnobs]) expect(ENV_SCHEMA_KEYS).toContain(k);
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_TIER3_INTENTS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0'])('accepts MCP_TIER3_INTENTS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_TIER3_INTENTS_ENABLED).toBe(value);
+    });
+  });
+  it.each(intKnobs)('%s accepts a positive integer', (knob) => {
+    withEnv({ ...validEnv, [knob]: '15' }, () => {
+      expect(validateConfig()[knob as 'MCP_APPROVAL_WAIT_MS']).toBe('15');
+    });
+  });
+  it.each(intKnobs.flatMap((k) => ['abc', '1.5', '-3', '0'].map((v) => [k, v] as const)))(
+    '%s refuses boot on %s',
+    (knob, value) => {
+      withEnv({ ...validEnv, [knob]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(knob));
+      });
+    },
+  );
+});
+
 describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {
   it('accepts an explicit false', () => {
     withEnv({ ...validEnv, AGENT_AUTO_PROMOTE: 'false' }, () => {
