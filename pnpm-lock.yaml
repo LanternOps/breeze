@@ -21,7 +21,7 @@ overrides:
   brace-expansion@5.0.8: 5.0.11
   devalue@<5.6.4: '>=5.6.4'
   devalue@>=5.6.4 <=5.8.0: '>=5.8.1'
-  dompurify@<3.4.13: '>=3.4.13'
+  dompurify@<3.4.17: '>=3.4.17'
   '@babel/core@<7.29.6': '>=7.29.6 <8.0.0'
   '@opentelemetry/core@<2.8.0': '>=2.8.0'
   form-data@<4.0.6: '>=4.0.6'
@@ -1469,8 +1469,8 @@ importers:
         specifier: ^5.18.0
         version: 5.18.0
       dompurify:
-        specifier: ^3.4.13
-        version: 3.4.15
+        specifier: ^3.4.17
+        version: 3.4.17
       marked:
         specifier: ^18.0.14
         version: 18.0.14
@@ -5098,7 +5098,7 @@ packages:
   '@tailwindcss/vite@4.3.3':
     resolution: {integrity: sha512-yYU8cogLeSh/ms2jh8Fj7jaba/EWa7Ja6GoUqYZaraEuCI5YS6ms6ObZgjjedm+jm6XZjdNRWBpPP6Z86oOxcw==}
     peerDependencies:
-      vite: '>=6.4.2'
+      vite: '>=8.3.3'
 
   '@tanstack/query-core@5.104.3':
     resolution: {integrity: sha512-DZY9TuJAOgU3UyHUhXb4CcTYEHNZszlwkPg4VViIwTxOKzLprPUU+rbaPZQd3srqkGOtpaDdKpW972UV/LKlcg==}
@@ -7106,8 +7106,8 @@ packages:
     resolution: {integrity: sha512-gYzvtM72ZtxQO0T048kd6HWSbbGCNOUwcnfQ01cqIJ4X2IYKFFHZ5mKvrQETcFXxsRObZulDaKmy//R7TPtsBg==}
     engines: {node: '>=20.19.0'}
 
-  dompurify@3.4.15:
-    resolution: {integrity: sha512-EUBjM+B+lkDE41iE82DDSCfkoPGfXx8IxFxPMjNzm/Uk4xDet77rTN9wqlxlVg71kK7XGuUMv6wUxJUwwv+Xyw==}
+  dompurify@3.4.17:
+    resolution: {integrity: sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==}
 
   domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
@@ -11536,7 +11536,7 @@ packages:
       '@vitest/ui': 4.1.11
       happy-dom: '*'
       jsdom: '*'
-      vite: '>=6.4.2'
+      vite: '>=8.3.3'
     peerDependenciesMeta:
       '@edge-runtime/vm':
         optional: true
@@ -18399,7 +18399,7 @@ snapshots:
     dependencies:
       domelementtype: 3.0.0
 
-  dompurify@3.4.15:
+  dompurify@3.4.17:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
@@ -20196,7 +20196,7 @@ snapshots:
     optionalDependencies:
       canvg: 3.0.11
       core-js: 3.49.0
-      dompurify: 3.4.15
+      dompurify: 3.4.17
       html2canvas: 1.4.1
 
   jszip@3.10.1:
@@ -21396,7 +21396,7 @@ snapshots:
 
   monaco-editor@0.57.0:
     dependencies:
-      dompurify: 3.4.15
+      dompurify: 3.4.17
       marked: 14.0.0
 
   mrmime@2.0.1: {}
