@@ -2,10 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 
 const mocks = vi.hoisted(() => ({
+  revokeApiKey: vi.fn(async () => ({ revoked: true })),
+  revokeGrantsDurably: vi.fn(async () => undefined),
+  writeMarker: vi.fn(async () => ({ status: 'written' })),
+  createNotification: vi.fn(async () => 'n-1'),
+  captureException: vi.fn(),
   createActionIntent: vi.fn(),
   validateToolInput: vi.fn(),
   rateLimiter: vi.fn(),
   loadRow: vi.fn(),
+  approverRows: [] as Array<{ userId: string }>,
 }));
 
 vi.mock('./actionIntents/intentService', async (importOriginal) => {
@@ -19,15 +25,21 @@ vi.mock('./rate-limit', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./rate-limit')>()), rateLimiter: mocks.rateLimiter,
 }));
 vi.mock('./redis', () => ({ getRedis: () => ({}) }));
+vi.mock('./apiKeyRevocation', () => ({ revokeApiKey: mocks.revokeApiKey }));
+vi.mock('../oauth/grantStatus', () => ({ revokeGrantsDurablyInCurrentDbContext: mocks.revokeGrantsDurably }));
+vi.mock('../oauth/revocationRetry', () => ({ writeOAuthRevocationMarkerDurably: mocks.writeMarker }));
+vi.mock('../oauth/provider', () => ({ ACCESS_TOKEN_TTL_SECONDS: 600 }));
+vi.mock('./userNotifications', () => ({ createNotification: mocks.createNotification }));
+vi.mock('./sentry', () => ({ captureException: mocks.captureException }));
 vi.mock('../db', () => ({
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: () => mocks.loadRow() }) }) }),
+    select: () => ({ from: () => ({ where: () => Object.assign(Promise.resolve(mocks.approverRows), { limit: () => mocks.loadRow() }) }) }),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-import { createMcpActionIntent, type CreateMcpActionIntentInput } from './mcpIntentCreation';
+import { createMcpActionIntent, reportSuspiciousMcpOrigin, type CreateMcpActionIntentInput } from './mcpIntentCreation';
 import { ActionIntentError } from './actionIntents/intentService';
 
 const USER = '22222222-2222-4222-8222-222222222222';
@@ -177,5 +189,59 @@ describe('createMcpActionIntent', () => {
   it('caps the client label at 255 characters', async () => {
     await createMcpActionIntent(input({ clientLabel: `MCP · ${'x'.repeat(400)}` }));
     expect(mocks.createActionIntent.mock.calls[0]![1].requestingClientLabel).toHaveLength(255);
+  });
+});
+
+describe('reportSuspiciousMcpOrigin (B-W04 D-B35)', () => {
+  const mcpRow = (o: Record<string, unknown> = {}) => ({
+    id: INTENT, orgId: ORG, source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-A',
+    requestedByUserId: USER, requestingClientLabel: 'MCP · ci key', actionName: 'execute_command', ...o,
+  });
+  const OTHER = '99999999-9999-4999-8999-999999999999';
+
+  it('non-MCP intents return null (today\'s behaviour)', async () => {
+    mocks.loadRow.mockResolvedValue([mcpRow({ source: 'chat', originPrincipalKind: 'user_session', originPrincipalId: null })]);
+    expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toBeNull();
+    mocks.loadRow.mockResolvedValue([mcpRow({ originPrincipalKind: 'user_session', originPrincipalId: null })]);
+    expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toBeNull();
+  });
+
+  it('api-key intent reported by its requester revokes the key', async () => {
+    mocks.loadRow.mockResolvedValue([mcpRow()]);
+    expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toEqual({ credentialRevoked: true });
+    expect(mocks.revokeApiKey).toHaveBeenCalledWith('key-A', USER, expect.any(String), expect.objectContaining({ includeReasonInAudit: true }));
+  });
+
+  it('oauth intent reported by its requester revokes that grant (marker + durable, refresh tokens cascaded)', async () => {
+    mocks.loadRow.mockResolvedValue([mcpRow({ originPrincipalKind: 'oauth_grant', originPrincipalId: 'grant-1' })]);
+    expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toEqual({ credentialRevoked: true });
+    expect(mocks.writeMarker).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ markerType: 'grant', markerId: 'grant-1', userId: USER }));
+    expect(mocks.revokeGrantsDurably).toHaveBeenCalledWith(expect.objectContaining({
+      grantIds: ['grant-1'], revokedByUserId: USER, cascadeRefreshTokens: true,
+    }));
+  });
+
+  it('reported by a non-owner approver → no revocation; owner and approvers notified', async () => {
+    mocks.loadRow.mockResolvedValue([mcpRow()]);
+    mocks.approverRows = [{ userId: OTHER }, { userId: USER }];
+    expect(await reportSuspiciousMcpOrigin(INTENT, OTHER)).toEqual({ credentialRevoked: false });
+    expect(mocks.revokeApiKey).not.toHaveBeenCalled();
+    const notified = mocks.createNotification.mock.calls.map((c) => (c[0] as { userId: string }).userId).sort();
+    expect(notified).toEqual([OTHER, USER].sort());
+    expect(mocks.createNotification.mock.calls[0]![0]).toMatchObject({ type: 'security', message: expect.stringContaining('MCP · ci key') });
+  });
+
+  it('revocation failure → captureException and credentialRevoked false with revocationError', async () => {
+    mocks.loadRow.mockResolvedValue([mcpRow()]);
+    mocks.revokeApiKey.mockRejectedValueOnce(new Error('db down'));
+    expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toEqual({ credentialRevoked: false, revocationError: 'revocation_failed' });
+    expect(mocks.captureException).toHaveBeenCalled();
+  });
+
+  it('a grant marker queued for retry still counts as revoked only once the durable stamp lands', async () => {
+    mocks.loadRow.mockResolvedValue([mcpRow({ originPrincipalKind: 'oauth_grant', originPrincipalId: 'grant-1' })]);
+    mocks.writeMarker.mockResolvedValueOnce({ status: 'retry_queued', errorCode: 'redis_unavailable' } as never);
+    expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toEqual({ credentialRevoked: true });
+    expect(mocks.revokeGrantsDurably).toHaveBeenCalled();
   });
 });

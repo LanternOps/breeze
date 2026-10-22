@@ -11,12 +11,14 @@
  * call from the same credential while its intent is live converges on that
  * intent, and a second credential of the same human never does.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import type { AuthContext } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { actionIntents } from '../db/schema/actionIntents';
-import { ActionIntentError, createActionIntent } from './actionIntents/intentService';
+import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
+import { oauthClients } from '../db/schema/oauth';
+import { withAuthDbAccessContext } from '../middleware/auth';
+import { ActionIntentError, cancelActionIntent, createActionIntent } from './actionIntents/intentService';
 import { validateToolInput } from './aiToolSchemas';
 import { rateLimiter } from './rate-limit';
 import { getRedis } from './redis';
@@ -25,7 +27,14 @@ import {
   mcpIntentCreatesPerUserPerHour,
   mcpIntentMaxLivePerPrincipal,
 } from './mcpIntentConfig';
-import { mcpIntentIdempotencyKey, mcpOriginRef } from './mcpIntentEligibility';
+import { isMcpOriginIntent, mcpIntentIdempotencyKey, mcpOriginRef } from './mcpIntentEligibility';
+import { approvalRequests } from '../db/schema/approvals';
+import { revokeApiKey } from './apiKeyRevocation';
+import { revokeGrantsDurablyInCurrentDbContext } from '../oauth/grantStatus';
+import { writeOAuthRevocationMarkerDurably } from '../oauth/revocationRetry';
+import { ACCESS_TOKEN_TTL_SECONDS } from '../oauth/provider';
+import { createNotification } from './userNotifications';
+import { captureException } from './sentry';
 import { toMcpActionStatus, type McpActionStatus } from './mcpActionStatus';
 import type { McpApiKeyContext } from './mcpPrincipalAuth';
 
@@ -155,4 +164,177 @@ export async function createMcpActionIntent(input: CreateMcpActionIntentInput): 
     return { kind: 'pending', status, isNew: snapshot.replayed !== true };
   }
   return { kind: 'terminal_replay', status };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * "MCP · <key name | OAuth client name>" for the approval card and push
+ * (requesting_client_label, <= 255). OAuth bearers carry the synthetic name
+ * 'OAuth bearer', so the registered client name is looked up. Never throws.
+ */
+export async function resolveMcpClientLabel(apiKey: McpApiKeyContext & { name?: string }): Promise<string> {
+  let name = typeof apiKey.name === 'string' && apiKey.name.length > 0 ? apiKey.name : 'API key';
+  if (apiKey.oauthClientId) {
+    name = 'OAuth client';
+    try {
+      const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+        .select({ clientName: sql<string | null>`${oauthClients.metadata}->>'client_name'` })
+        .from(oauthClients)
+        .where(eq(oauthClients.id, apiKey.oauthClientId!))
+        .limit(1)));
+      if (row?.clientName) name = row.clientName;
+    } catch (err) {
+      console.error('[MCP] Failed to resolve OAuth client name for the approval label:', err);
+    }
+  }
+  return `MCP · ${name}`.slice(0, 255);
+}
+
+/**
+ * The caller's own MCP-origin intent, or null. Ownership = source mcp_api AND
+ * the stored origin (kind, id) equals the caller's credential, read under the
+ * caller's DB access context. Unknown id, another credential's intent (even
+ * the same human's other key), another org's or a chat intent all return
+ * null, so callers answer them identically (no existence oracle).
+ */
+export async function loadOwnedMcpIntent(auth: AuthContext, actionId: unknown): Promise<ActionIntent | null> {
+  const ref = mcpOriginRef(auth.principal);
+  if (!ref || typeof actionId !== 'string' || !UUID_RE.test(actionId)) return null;
+  const sep = ref.indexOf(':');
+  const kind = ref.slice(0, sep) as 'api_key' | 'oauth_grant';
+  const originId = ref.slice(sep + 1);
+  const [row] = await withAuthDbAccessContext(auth, () => db
+    .select()
+    .from(actionIntents)
+    .where(and(
+      eq(actionIntents.id, actionId.toLowerCase()),
+      eq(actionIntents.source, 'mcp_api'),
+      eq(actionIntents.originPrincipalKind, kind),
+      eq(actionIntents.originPrincipalId, originId),
+    ))
+    .limit(1));
+  return row ?? null;
+}
+
+export type CancelOwnedMcpIntentOutcome =
+  | { kind: 'not_found' }
+  | { kind: 'cancelled'; status: McpActionStatus }
+  | { kind: 'not_cancellable'; status: McpActionStatus };
+
+/**
+ * cancel_action: the actual CAS outcome of cancelActionIntent (pending /
+ * approved → cancelled), or not_cancellable with the current mapped status
+ * when it had already moved on (or lost the race to the worker).
+ */
+export async function cancelOwnedMcpIntent(
+  auth: AuthContext,
+  actionId: unknown,
+  appBaseUrl: string,
+): Promise<CancelOwnedMcpIntentOutcome> {
+  const intent = await loadOwnedMcpIntent(auth, actionId);
+  if (!intent) return { kind: 'not_found' };
+  const result = await cancelActionIntent(auth, intent.id);
+  const current = (await loadOwnedMcpIntent(auth, intent.id)) ?? { ...intent, status: result.status };
+  const status = toMcpActionStatus(current, appBaseUrl);
+  return result.ok ? { kind: 'cancelled', status } : { kind: 'not_cancellable', status };
+}
+
+export type McpOriginReportOutcome = { credentialRevoked: boolean; revocationError?: 'revocation_failed' };
+
+const REPORT_REASON = 'reported suspicious from an approval request';
+
+/**
+ * B-W04 (#6158, D-B35, Gate B answer 5): report-suspicious on an approval of
+ * an MCP-origin intent targets the ORIGIN credential — within the reporter's
+ * authority. The reporter must own it (`requested_by_user_id === reporter`):
+ * then the API key is revoked (`revokeApiKey`, `api_key.revoke` audit) or the
+ * OAuth grant is revoked (Redis marker + durable stamp, refresh tokens
+ * cascaded). Otherwise nothing is revoked and the credential owner plus the
+ * intent's fanned-out approvers get a `security` notification naming it.
+ *
+ * Returns null for any other intent (today's behaviour applies). A revocation
+ * failure is captured and reported (`credentialRevoked: false`), never silent.
+ */
+export async function reportSuspiciousMcpOrigin(
+  intentId: string,
+  reporterUserId: string,
+): Promise<McpOriginReportOutcome | null> {
+  const [intent] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({
+      id: actionIntents.id,
+      orgId: actionIntents.orgId,
+      source: actionIntents.source,
+      originPrincipalKind: actionIntents.originPrincipalKind,
+      originPrincipalId: actionIntents.originPrincipalId,
+      requestedByUserId: actionIntents.requestedByUserId,
+      requestingClientLabel: actionIntents.requestingClientLabel,
+      actionName: actionIntents.actionName,
+    })
+    .from(actionIntents)
+    .where(eq(actionIntents.id, intentId))
+    .limit(1)));
+  if (!intent || !isMcpOriginIntent(intent) || !intent.originPrincipalId) return null;
+  const originId = intent.originPrincipalId;
+
+  if (intent.requestedByUserId === reporterUserId) {
+    try {
+      await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        if (intent.originPrincipalKind === 'api_key') {
+          await revokeApiKey(originId, reporterUserId, REPORT_REASON, { includeReasonInAudit: true });
+          return;
+        }
+        // Same order as oauth/grantRevocation.ts: the eager marker first
+        // (queued for retry inside this transaction if Redis is down), then
+        // the durable stamp, which is what activeGrantCondition reads.
+        await writeOAuthRevocationMarkerDurably(db, {
+          userId: reporterUserId,
+          markerType: 'grant',
+          markerId: originId,
+          expiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000),
+        });
+        await revokeGrantsDurablyInCurrentDbContext({
+          grantIds: [originId],
+          reason: REPORT_REASON,
+          revokedByUserId: reporterUserId,
+          cascadeRefreshTokens: true,
+        });
+      }));
+      return { credentialRevoked: true };
+    } catch (err) {
+      console.error('[MCP] report-suspicious: origin credential revocation failed for intent', intentId, err);
+      captureException(err);
+      return { credentialRevoked: false, revocationError: 'revocation_failed' };
+    }
+  }
+
+  // Not the owner: no revocation authority. Tell the owner and the people who
+  // could approve it, naming the credential.
+  try {
+    const approvers = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .select({ userId: approvalRequests.userId })
+      .from(approvalRequests)
+      .where(eq(approvalRequests.intentId, intentId))));
+    const recipients = new Set<string>(approvers.map((r) => r.userId));
+    if (intent.requestedByUserId) recipients.add(intent.requestedByUserId);
+    const label = intent.requestingClientLabel ?? `MCP ${intent.originPrincipalKind}`;
+    for (const userId of recipients) {
+      await runOutsideDbContext(() => withSystemDbAccessContext(() => createNotification({
+        userId,
+        orgId: intent.orgId,
+        type: 'security',
+        priority: 'high',
+        title: 'MCP connection reported as suspicious',
+        message: `An approval request from ${label} (${intent.actionName}) was reported as suspicious and rejected. `
+          + 'Only its owner can revoke the connection; review it under API keys or Connected apps.',
+        link: `/approvals#intent-${intentId}`,
+        metadata: { intentId, originPrincipalKind: intent.originPrincipalKind, reportedBy: reporterUserId },
+        dedupeKey: `mcp-origin-report:${intentId}`,
+      })));
+    }
+  } catch (err) {
+    console.error('[MCP] report-suspicious: owner/approver notification failed for intent', intentId, err);
+    captureException(err);
+  }
+  return { credentialRevoked: false };
 }
