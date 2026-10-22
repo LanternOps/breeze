@@ -44,6 +44,10 @@ function shouldWrite(deviceId: string, nowMs: number): boolean {
       if (oldest !== undefined) recentWrites.delete(oldest);
     }
   }
+  // Delete before set: `Map.set` on an existing key keeps its insertion slot,
+  // and the cap eviction above takes the FIRST key, so a refreshed device must
+  // move to the tail or it would be evicted ahead of entries written after it.
+  recentWrites.delete(deviceId);
   recentWrites.set(deviceId, nowMs);
   return true;
 }
@@ -89,9 +93,12 @@ export async function readAgentCredentialUse(deviceId: string): Promise<AgentCre
   if (!redis) return { unavailable: true };
   try {
     const raw = await redis.get(agentCredentialUseKey(deviceId));
-    if (raw === null || raw === undefined) return { at: null };
+    if (raw === null || raw === undefined || raw.trim() === '') return { at: null };
+    // Only a positive epoch-ms is a use time. `Number('')` and `Number('0')`
+    // are 0, a 1970 "use"; anything that is not a positive epoch-ms reads as
+    // no marker, exactly like a missing key.
     const ms = Number(raw);
-    if (!Number.isFinite(ms)) return { at: null };
+    if (!Number.isFinite(ms) || ms <= 0) return { at: null };
     return { at: new Date(ms) };
   } catch {
     return { unavailable: true };

@@ -62,13 +62,15 @@ export interface CommandCallerIncarnation {
   installIncarnation: number;
 }
 
-/** In-memory twin of {@link commandStampMatchesCallerCondition}. */
-export function commandStampMatchesCaller(
+/**
+ * In-memory twin of {@link commandStampMatchesCallerCondition}: the same
+ * comparison as {@link commandStampIsCurrent}, against the caller's
+ * incarnation instead of the device's, so the NULL-stamp rule lives in one place.
+ */
+export const commandStampMatchesCaller: (
   stamp: number | null | undefined,
   callerInstallIncarnation: number,
-): boolean {
-  return commandStampIncarnation(stamp) === callerInstallIncarnation;
-}
+) => boolean = commandStampIsCurrent;
 
 /**
  * SQL predicate over `device_commands`: the row's stamp (NULL = 1) equals the

@@ -74,6 +74,32 @@ describe('recordAgentCredentialUse (#8318 §6.5)', () => {
     for (let i = 0; i < 10_050; i++) recordAgentCredentialUse(`dev-${i}`, new Date(t0 + i));
     expect(agentCredentialUseThrottleSizeForTests()).toBeLessThanOrEqual(10_000);
   });
+
+  it('above the cap evicts the least recently written device, never one it just refreshed', async () => {
+    const t0 = new Date('2026-10-21T10:00:00.000Z').getTime();
+    const window = AGENT_CREDENTIAL_USE_WRITE_INTERVAL_MS;
+    // dev-0 is written first, then 9,998 others, then dev-0 is refreshed once
+    // its window has passed. Every entry is still inside the window at the
+    // end, so the time sweep frees nothing and the cap evicts by order alone.
+    recordAgentCredentialUse('dev-0', new Date(t0));
+    for (let i = 1; i < 9_999; i++) recordAgentCredentialUse(`dev-${i}`, new Date(t0 + 1_000));
+    recordAgentCredentialUse('dev-0', new Date(t0 + window));
+    recordAgentCredentialUse('dev-9999', new Date(t0 + window));
+    expect(agentCredentialUseThrottleSizeForTests()).toBe(10_000);
+    recordAgentCredentialUse('dev-10000', new Date(t0 + window)); // at the cap: one eviction
+    expect(agentCredentialUseThrottleSizeForTests()).toBe(10_000);
+    await flush();
+    vi.mocked(redis.set).mockClear();
+
+    // dev-0 was refreshed most recently of the old entries: still throttled.
+    recordAgentCredentialUse('dev-0', new Date(t0 + window + 1));
+    await flush();
+    expect(redis.set).not.toHaveBeenCalled();
+    // dev-1, written before that refresh, is the one that went.
+    recordAgentCredentialUse('dev-1', new Date(t0 + window + 1));
+    await flush();
+    expect(redis.set).toHaveBeenCalledWith('agent-cred-use:dev-1', String(t0 + window + 1), 'EX', AGENT_CREDENTIAL_USE_TTL_SECONDS);
+  });
 });
 
 describe('readAgentCredentialUse (#8318 §6.5)', () => {
@@ -89,6 +115,15 @@ describe('readAgentCredentialUse (#8318 §6.5)', () => {
     expect(await readAgentCredentialUse('dev-1')).toEqual({ at: null });
     vi.mocked(redis.get).mockResolvedValueOnce('not-a-number');
     expect(await readAgentCredentialUse('dev-1')).toEqual({ at: null });
+  });
+
+  it('reads an empty, zero, negative or non-finite marker as no marker, never as a 1970 use', async () => {
+    for (const raw of ['', '   ', '0', '-5', 'NaN', 'Infinity']) {
+      vi.mocked(redis.get).mockResolvedValueOnce(raw);
+      expect(await readAgentCredentialUse('dev-1'), JSON.stringify(raw)).toEqual({ at: null });
+    }
+    vi.mocked(redis.get).mockResolvedValueOnce('1');
+    expect(await readAgentCredentialUse('dev-1')).toEqual({ at: new Date(1) });
   });
 
   it('reports `unavailable` (never "silent") when Redis is down or missing', async () => {
