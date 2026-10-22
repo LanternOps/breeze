@@ -2597,7 +2597,13 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
       candidateIdx: periodIdx + 1,
       latestClaimedStart: await latestClaimedPeriodStart(db, contractId),
     });
-    await db.update(contracts).set({ nextBillingAt: healedAt, updatedAt: asOf }).where(eq(contracts.id, contractId));
+    const healed = await db.update(contracts).set({ nextBillingAt: healedAt, updatedAt: asOf })
+      .where(eq(contracts.id, contractId)).returning({ id: contracts.id });
+    if (healed.length === 0) {
+      // The row is locked above, so 0 rows means a missing RLS scope. Fail loudly
+      // instead of reporting a move that never happened and staying stuck.
+      throw new ContractServiceError(`contract ${contractId} billing pointer could not be moved past claimed period ${period.periodStart}`, 500, 'INVALID_STATE');
+    }
     console.warn(
       '[contract-billing] already billed: contract %s period %s was already claimed; moved next_billing_at %s -> %s',
       contractId, period.periodStart, c.nextBillingAt, healedAt,

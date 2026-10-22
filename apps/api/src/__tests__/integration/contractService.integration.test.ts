@@ -512,6 +512,32 @@ describe('contractService generation', () => {
     expect(await claimedStarts(c.id)).toEqual(['2026-07-01', '2026-08-01']);
   });
 
+  it('#9509 ARREARS: a pointer parked on a claimed period heals to the next period END, and the next run bills that period', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'ArrearsHeal', billingTiming: 'arrears', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'flat', description: 'Managed', unitPrice: '500.00', taxable: false
+    }, actor));
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01T08:00:00Z')));
+    const july = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-08-01T08:00:00Z')));
+    expect(july.generated).toBe(true);
+    // Park the arrears pointer back on July's END (July is claimed).
+    await withSystemDbAccessContext(() =>
+      db.update(contracts).set({ nextBillingAt: '2026-08-01' }).where(eq(contracts.id, c.id)));
+
+    const stuck = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-09-02T08:00:00Z')));
+    expect(stuck.skipped).toBe('already_billed');
+    const [after] = await withSystemDbAccessContext(() =>
+      db.select({ nextBillingAt: contracts.nextBillingAt }).from(contracts).where(eq(contracts.id, c.id)).limit(1));
+    expect(after!.nextBillingAt).toBe('2026-09-01');
+
+    const aug = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-09-02T09:00:00Z')));
+    expect(aug.generated).toBe(true);
+    expect(await claimedStarts(c.id)).toEqual(['2026-07-01', '2026-08-01']);
+  });
+
   it('generates successfully when the contract has createdBy = null (FK cliff fix)', async () => {
     // System-seeded / imported contracts have createdBy NULL. Before the fix, the
     // zero-uuid sentinel triggered a 23503 FK violation on invoices.created_by.
