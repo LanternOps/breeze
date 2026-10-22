@@ -39,7 +39,7 @@
     },
     "confirm": {
       "title": "Conferma approvazione patch",
-      "selectedRing": "l'anello selezionato",
+      "selectedRing": "(senza nome)",
       "messageRingOne": "Approvare la patch su {{count}} dispositivo in tutte le organizzazioni nell'anello {{ring}}?",
       "messageRingMany": "Approvare la patch su {{count}} dispositivi in tutte le organizzazioni nell'anello {{ring}}?",
       "messagePartnerWide": "Approvare la patch per tutte le organizzazioni del tuo partner?"

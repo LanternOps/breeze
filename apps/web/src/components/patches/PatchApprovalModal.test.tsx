@@ -328,6 +328,14 @@ describe('PatchApprovalModal', () => {
       expect(screen.queryByText(/Acme/)).toBeNull();
     });
 
+    it('ring selected but ring name unknown: falls back to generic ring wording (#9634)', async () => {
+      render(
+        <PatchApprovalModal open patch={PATCH} ringId="ring-1" ringName={null} ringDeviceCount={5} onClose={() => {}} />
+      );
+      await openConfirm();
+      expect(screen.getByText('Approve patch on 5 devices across all organizations in ring (unnamed)?')).toBeTruthy();
+    });
+
     it('ring selected, 1 device: singular wording (#9634)', async () => {
       render(
         <PatchApprovalModal open patch={PATCH} ringId="ring-1" ringName="Pilot" ringDeviceCount={1} onClose={() => {}} />

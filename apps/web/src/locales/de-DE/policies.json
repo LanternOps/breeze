@@ -750,7 +750,7 @@
         "pauseScriptExecutionDuringWindow": "Skriptausführung während des Fensters anhalten.",
         "suppressScripts2": "suppressScripts",
         "rebootIfARebootIsPending": "Starten Sie neu, wenn ein Neustart ansteht",
-        "duringTheWindowRebootDevicesThatHave": "Starte während des Fensters Geräte mit ausstehendem Neustart neu. Die Vorwarnzeit stammt aus der Neustartverzögerung der Patch-Richtlinie des Geräts. macOS wird nicht unterstützt.",
+        "duringTheWindowRebootDevicesThatHave": "Starten Sie während des Fensters Geräte mit ausstehendem Neustart neu. Die Vorwarnzeit stammt aus der Neustartverzögerung der Patch-Richtlinie des Geräts. macOS wird nicht unterstützt.",
         "rebootIfPending": "rebootIfPending",
         "notifyOnStart": "Beim Start benachrichtigen",
         "sendNotificationWhenWindowOpens": "Benachrichtigung senden, wenn das Fenster geöffnet wird.",

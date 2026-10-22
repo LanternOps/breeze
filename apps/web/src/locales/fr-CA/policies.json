@@ -750,7 +750,7 @@
         "pauseScriptExecutionDuringWindow": "Mettez en pause l’exécution du script pendant la fenêtre.",
         "suppressScripts2": "suppressScripts",
         "rebootIfARebootIsPending": "Redémarrer si un redémarrage est en attente",
-        "duringTheWindowRebootDevicesThatHave": "Pendant la fenêtre, redémarre les appareils ayant un redémarrage en attente. Le délai d’avertissement provient du délai de redémarrage de la politique de correctifs de l’appareil. macOS n’est pas pris en charge.",
+        "duringTheWindowRebootDevicesThatHave": "Pendant la fenêtre, redémarrez les appareils ayant un redémarrage en attente. Le délai d’avertissement provient du délai de redémarrage de la politique de correctifs de l’appareil. macOS n’est pas pris en charge.",
         "rebootIfPending": "rebootIfPending",
         "notifyOnStart": "Prévenez dès le départ",
         "sendNotificationWhenWindowOpens": "Envoyez une notification lorsque la fenêtre s’ouvre.",

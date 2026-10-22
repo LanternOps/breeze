@@ -39,7 +39,7 @@
     },
     "confirm": {
       "title": "Confirm patch approval",
-      "selectedRing": "the selected ring",
+      "selectedRing": "(unnamed)",
       "messageRingOne": "Approve patch on {{count}} device across all organizations in ring {{ring}}?",
       "messageRingMany": "Approve patch on {{count}} devices across all organizations in ring {{ring}}?",
       "messagePartnerWide": "Approve patch for all organizations under your partner?"

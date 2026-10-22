@@ -750,7 +750,7 @@
         "pauseScriptExecutionDuringWindow": "Pausar la ejecución del script durante la ventana.",
         "suppressScripts2": "suppressScripts",
         "rebootIfARebootIsPending": "Reinicie si hay un reinicio pendiente",
-        "duringTheWindowRebootDevicesThatHave": "Durante la ventana, reinicia los dispositivos con un reinicio pendiente. El período de aviso proviene del retraso de reinicio de la política de parches del dispositivo. macOS no es compatible.",
+        "duringTheWindowRebootDevicesThatHave": "Durante la ventana, reinicie los dispositivos con un reinicio pendiente. El período de aviso proviene del retraso de reinicio de la política de parches del dispositivo. macOS no es compatible.",
         "rebootIfPending": "rebootIfPending",
         "notifyOnStart": "Notificar al inicio",
         "sendNotificationWhenWindowOpens": "Enviar notificación cuando se abra la ventana.",

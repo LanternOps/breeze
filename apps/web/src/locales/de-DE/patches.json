@@ -39,7 +39,7 @@
     },
     "confirm": {
       "title": "Patch-Freigabe bestätigen",
-      "selectedRing": "der ausgewählte Ring",
+      "selectedRing": "(unbenannt)",
       "messageRingOne": "Patch auf {{count}} Gerät in allen Organisationen im Ring {{ring}} freigeben?",
       "messageRingMany": "Patch auf {{count}} Geräten in allen Organisationen im Ring {{ring}} freigeben?",
       "messagePartnerWide": "Patch für alle Organisationen Ihres Partners freigeben?"

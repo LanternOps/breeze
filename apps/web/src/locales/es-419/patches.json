@@ -39,7 +39,7 @@
     },
     "confirm": {
       "title": "Confirmar la aprobación del parche",
-      "selectedRing": "el anillo seleccionado",
+      "selectedRing": "(sin nombre)",
       "messageRingOne": "¿Aprobar el parche en {{count}} dispositivo de todas las organizaciones en el anillo {{ring}}?",
       "messageRingMany": "¿Aprobar el parche en {{count}} dispositivos de todas las organizaciones en el anillo {{ring}}?",
       "messagePartnerWide": "¿Aprobar el parche para todas las organizaciones de su partner?"
