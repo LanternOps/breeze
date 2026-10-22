@@ -6,16 +6,16 @@
 
 ## 1. Why
 
-A side-by-side run on one Windows lab machine compared Breeze against RoboShadow, a commercial scanner. Both read the same installed-programs list.
+A side-by-side run on one Windows lab machine compared Breeze against a commercial vulnerability scanner. Both read the same installed-programs list.
 
 | | Open CVEs | Overlap |
 |---|---|---|
-| RoboShadow | 221 | 1 |
+| Commercial scanner | 221 | 1 |
 | Breeze | 9 | 1 |
 
-RoboShadow's findings came from ImageMagick (158), VS Code per-user install (20), Python 3.13 (16), Autodesk Fusion (8), Cursor per-user install (5), MongoDB (4), Node.js (4) and a few Microsoft apps. Breeze found none of these. Three of Breeze's own 9 findings are false positives from 2011 and 2015.
+The scanner's findings came from ImageMagick (158), VS Code per-user install (20), Python 3.13 (16), Autodesk Fusion (8), Cursor per-user install (5), MongoDB (4), Node.js (4) and a few Microsoft apps. Breeze found none of these. Three of Breeze's own 9 findings are false positives from 2011 and 2015.
 
-The gap is not detection method. RoboShadow does no file-level scanning here. The causes are in Breeze's matching pipeline, all verified in code on main:
+The gap is not detection method. The scanner did no file-level scanning here. The causes are in Breeze's matching pipeline, all verified in code on main:
 
 1. **The catalog never grows.** `syncNvd()` in `apps/api/src/jobs/vulnerabilityJobs.ts` stores every changed CVE, but writes product match facts only for CPE vendor:product pairs already present in `software_products.cpe`. The NVD-usable rows come from `apps/api/src/services/__fixtures__/cpe-map.json`: 8 names, 7 products (Chrome, Firefox, Acrobat Reader, 7-Zip, Notepad++, Zoom, VLC). The MSRC sync also writes CPE values for Microsoft products, but in a form the NVD lookup does not key on. The July resolver design assumed the catalog "grows at runtime as NVD/MSRC feeds ingest". Nothing implements that. The curated name dictionary (`cpe-translations.json`) still holds its 15 starter entries. Node.js is in it, but resolves to nothing because no Node.js catalog row exists.
 2. **Pinned and N/A versions become "all versions".** `cpePrefix()` in `apps/api/src/services/nvdClient.ts` keeps only `part:vendor:product`. A criteria of `cpe:2.3:a:mozilla:firefox:38.0:...` or `cpe:2.3:a:google:chrome:-:...` with no range fields becomes an unbounded range. That is how CVE-2011-3389 (BEAST) and CVE-2015-1239 land on current Chrome.
