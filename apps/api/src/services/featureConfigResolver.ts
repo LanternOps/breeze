@@ -1056,9 +1056,16 @@ export async function resolvePeripheralControlPolicyForDevice(
  * link rather than its own targeting (see PeripheralConfigLinkResolution). #9619.
  */
 export async function loadLinkedPeripheralPolicyIds(
+  deviceId: string,
   policyIds: readonly string[]
 ): Promise<Set<string>> {
   if (policyIds.length === 0) return new Set();
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return new Set();
+  // Tenancy: only config policies the device's own org (or its partner, for
+  // partner-wide ones) owns can govern a peripheral policy for this device. A
+  // partner-owned peripheral policy linked from ANOTHER org's config policy
+  // must keep its standalone targeting here.
   const rows = await db
     .selectDistinct({ featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId })
     .from(configPolicyEffectiveFeatureLinks)
@@ -1066,7 +1073,8 @@ export async function loadLinkedPeripheralPolicyIds(
       configurationPolicies,
       and(
         eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy)
       )
     )
     .where(and(

@@ -21,7 +21,7 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./featureConfigResolver', () => ({ resolveAssignmentDeviceIds: assignmentDevicesMock }));
 vi.mock('../jobs/peripheralJobs', () => ({
-  resolvePeripheralPolicyDeviceIds: standaloneDevicesMock,
+  resolvePeripheralPolicyStandaloneDeviceIds: standaloneDevicesMock,
   schedulePeripheralPolicyDevices: vi.fn(),
 }));
 

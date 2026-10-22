@@ -87,6 +87,36 @@ async function assignmentsOfHolders(configPolicyId: string): Promise<PeripheralL
     .where(inArray(configPolicyAssignments.configPolicyId, holders));
 }
 
+/**
+ * Devices a linked peripheral policy is governed onto: the assignments of every
+ * ACTIVE config policy that links it (inherited links included). A superset of
+ * the devices it actually wins on; reconcile is idempotent.
+ */
+export async function resolveLinkGovernedDeviceIds(peripheralPolicyId: string): Promise<string[]> {
+  const rows = await db
+    .select({ level: configPolicyAssignments.level, targetId: configPolicyAssignments.targetId })
+    .from(configPolicyEffectiveFeatureLinks)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+      ),
+    )
+    .innerJoin(configPolicyAssignments, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .where(and(
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'peripheral_control'),
+      eq(configPolicyEffectiveFeatureLinks.featurePolicyId, peripheralPolicyId),
+    ));
+  if (rows.length === 0) return [];
+  const { resolveAssignmentDeviceIds } = await import('./featureConfigResolver');
+  const deviceIds = new Set<string>();
+  for (const row of rows) {
+    for (const id of await resolveAssignmentDeviceIds(row.level, row.targetId)) deviceIds.add(id);
+  }
+  return [...deviceIds].sort();
+}
+
 export async function resolvePeripheralLinkAffectedDeviceIds(
   scope: PeripheralLinkReconcileScope,
 ): Promise<string[]> {
@@ -107,7 +137,7 @@ export async function resolvePeripheralLinkAffectedDeviceIds(
   }
 
   if (scope.standalone) {
-    const { resolvePeripheralPolicyDeviceIds } = await import('../jobs/peripheralJobs');
+    const { resolvePeripheralPolicyStandaloneDeviceIds } = await import('../jobs/peripheralJobs');
     const policies = await db
       .select({
         orgId: peripheralPolicies.orgId,
@@ -119,7 +149,7 @@ export async function resolvePeripheralLinkAffectedDeviceIds(
       .from(peripheralPolicies)
       .where(inArray(peripheralPolicies.id, [...policyIds]));
     for (const policy of policies) {
-      for (const id of await resolvePeripheralPolicyDeviceIds(policy)) deviceIds.add(id);
+      for (const id of await resolvePeripheralPolicyStandaloneDeviceIds(policy)) deviceIds.add(id);
     }
   }
   return [...deviceIds].sort();
@@ -135,14 +165,26 @@ export function schedulePeripheralLinkReconcile(scope: PeripheralLinkReconcileSc
   try {
     runAfterDbContextCommit(`peripheralLinkReconcile.${trigger}`, async () => {
       try {
-        const { schedulePeripheralPolicyDevices } = await import('../jobs/peripheralJobs');
+        const { schedulePeripheralPolicyDevice } = await import('../jobs/peripheralJobs');
         const deviceIds = await runOutsideDbContext(() =>
           withSystemDbAccessContext(() => resolvePeripheralLinkAffectedDeviceIds(scope)));
         if (deviceIds.length === 0) return;
-        await schedulePeripheralPolicyDevices(deviceIds, `config_policy_${trigger.replace(/-/g, '_')}`);
+        const reason = `config_policy_${trigger.replace(/-/g, '_')}`;
+        const results = await Promise.allSettled(
+          deviceIds.map((deviceId) => schedulePeripheralPolicyDevice(deviceId, reason)),
+        );
+        const failed = results.filter((r) => r.status === 'rejected');
+        if (failed.length > 0) {
+          console.error(
+            `[peripheralLinkReconcile] ${failed.length}/${deviceIds.length} device enqueue(s) failed after ${trigger} `
+              + `(configPolicy=${scope.configPolicyId ?? 'n/a'}); the periodic sweep will converge:`,
+            (failed[0] as PromiseRejectedResult).reason,
+          );
+        }
       } catch (error) {
         console.error(
-          `[peripheralLinkReconcile] could not reconcile after ${trigger}; the periodic sweep will converge:`,
+          `[peripheralLinkReconcile] could not reconcile after ${trigger} `
+            + `(configPolicy=${scope.configPolicyId ?? 'n/a'}); the periodic sweep will converge:`,
           error,
         );
       }

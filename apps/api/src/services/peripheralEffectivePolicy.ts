@@ -297,7 +297,7 @@ export async function loadAndResolveEffectivePeripheralPolicySetInCurrentDbConte
 
   // Config-policy link governance (#9619): see PeripheralConfigLinkResolution.
   const [linkedPolicyIds, winningPolicyId] = await Promise.all([
-    loadLinkedPeripheralPolicyIds(policyRows.map((row) => row.id)),
+    loadLinkedPeripheralPolicyIds(device.id, policyRows.map((row) => row.id)),
     resolvePeripheralControlPolicyForDevice(device.id),
   ]);
 
