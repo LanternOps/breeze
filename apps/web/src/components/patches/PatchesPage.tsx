@@ -6,6 +6,7 @@ import PatchList, {
   type Patch,
   type PatchApprovalStatus,
 } from './PatchList';
+import PatchDetailsDrawer from './PatchDetailsDrawer';
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
 import PatchComplianceView from './PatchComplianceView';
 import PatchJobsList from './PatchJobsList';
@@ -26,6 +27,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
 import { runAction, ActionError } from '@/lib/runAction';
 import { asList } from '@/lib/asList';
+import { useHashState } from '@/lib/useHashState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -42,10 +44,19 @@ const validTabs: TabKey[] = ['rings', 'patches', 'compliance', 'jobs'];
 // on a permission — this page is the only one that does, which is what made the
 // #4010 ordering bug possible here and nowhere else. The default `compliance`
 // tab keeps the hash empty so the URL stays clean.
+//
+// `#patches/<patchId>` deep-links the read-only patch details drawer (#9544): the
+// tab is the segment before the first `/`, the drawer's patch id the rest.
 function getTabFromHash(): TabKey {
   if (typeof window === 'undefined') return 'compliance';
-  const hash = window.location.hash.replace(/^#/, '');
-  return validTabs.includes(hash as TabKey) ? (hash as TabKey) : 'compliance';
+  const tab = window.location.hash.replace(/^#/, '').split('/')[0];
+  return validTabs.includes(tab as TabKey) ? (tab as TabKey) : 'compliance';
+}
+
+function parsePatchIdFromHash(hash: string): string | null {
+  const [tab, ...rest] = hash.split('/');
+  const id = rest.join('/');
+  return tab === 'patches' && id ? decodeURIComponent(id) : null;
 }
 
 function setTabInHash(tab: TabKey) {
@@ -183,6 +194,16 @@ export default function PatchesPage() {
   }, [ringAccess, setActiveTab]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
+  // Read-only details drawer (#9544): the patch id lives in the hash.
+  const [detailsPatchId, setDetailsPatchId] = useHashState<string | null>(null, parsePatchIdFromHash);
+  const openPatchDetails = useCallback((patch: Patch) => {
+    setDetailsPatchId(patch.id);
+    window.location.hash = `patches/${encodeURIComponent(patch.id)}`;
+  }, [setDetailsPatchId]);
+  const closePatchDetails = useCallback(() => {
+    setDetailsPatchId(null);
+    window.location.hash = 'patches';
+  }, [setDetailsPatchId]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   // Which tab the approval modal opens on: 'approve' from Review (the default,
@@ -984,6 +1005,7 @@ export default function PatchesPage() {
             error={patchesError}
             onRetry={fetchPatches}
             onReview={handleReview}
+            onView={openPatchDetails}
             onDeploy={handleDeploy}
             onUnapprove={handleUnapprove}
             onBulkApprove={handleBulkApprove}
@@ -1000,6 +1022,15 @@ export default function PatchesPage() {
       {/* Jobs tab — read-only list of patch_jobs (policy/ring/AI/API-created), #2606 */}
       {activeTab === 'jobs' && <PatchJobsList onSelectJob={setSelectedJobId} />}
       {selectedJobId && <PatchJobDetail jobId={selectedJobId} onClose={() => setSelectedJobId(null)} />}
+
+      {/* Read-only patch details (#9544) */}
+      {activeTab === 'patches' && (
+        <PatchDetailsDrawer
+          patch={detailsPatchId ? patches.find((p) => p.id === detailsPatchId) ?? null : null}
+          rings={rings}
+          onClose={closePatchDetails}
+        />
+      )}
 
       {/* Approval modal — passes ringId and org context for confirmation */}
       <PatchApprovalModal

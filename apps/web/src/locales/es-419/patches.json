@@ -614,5 +614,24 @@
     "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
     "removeRuleFor": "Eliminar regla para {{application}}",
     "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo."
+  },
+  "patchDetails": {
+    "unknown": "Desconocido",
+    "source": "Origen",
+    "packageId": "KB / ID de paquete",
+    "severity": "Gravedad",
+    "releaseDate": "Fecha de lanzamiento",
+    "firstSeen": "Visto por primera vez en el catálogo",
+    "rings": {
+      "title": "Anillos de actualización",
+      "note": "Cuándo aprueba automáticamente cada anillo este parche (regla a nivel de anillo; no se muestran las excepciones por categoría).",
+      "none": "No hay anillos de actualización configurados.",
+      "manual": "Sin aprobación automática — requiere aprobación manual",
+      "immediate": "Se aprueba automáticamente de inmediato",
+      "needsDate": "Retenido — sin fecha de lanzamiento para iniciar la ventana de {{count}} días",
+      "autoApproves": "Se aprueba automáticamente el {{date}}",
+      "hold_one": "Retraso de {{count}} día",
+      "hold_other": "Retraso de {{count}} días"
+    }
   }
 }

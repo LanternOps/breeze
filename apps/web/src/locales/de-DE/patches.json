@@ -614,5 +614,24 @@
     "orEnterAPackageIDManually": "Oder geben Sie manuell eine Paket-ID ein",
     "removeRuleFor": "Regel für {{application}} entfernen",
     "scopeNote": "Diese Regeln gelten für jedes Gerät, dessen Konfigurationsrichtlinie mit diesem Ring verknüpft ist."
+  },
+  "patchDetails": {
+    "unknown": "Unbekannt",
+    "source": "Quelle",
+    "packageId": "KB-/Paket-ID",
+    "severity": "Schweregrad",
+    "releaseDate": "Veröffentlichungsdatum",
+    "firstSeen": "Erstmals im Katalog gesehen",
+    "rings": {
+      "title": "Update-Ringe",
+      "note": "Wann jeder Ring diesen Patch automatisch genehmigt (Regel auf Ringebene; Kategorie-Überschreibungen werden nicht angezeigt).",
+      "none": "Keine Update-Ringe konfiguriert.",
+      "manual": "Nicht automatisch genehmigt — manuelle Genehmigung erforderlich",
+      "immediate": "Wird sofort automatisch genehmigt",
+      "needsDate": "Zurückgehalten — kein Veröffentlichungsdatum, um das {{count}}-Tage-Fenster zu starten",
+      "autoApproves": "Wird am {{date}} automatisch genehmigt",
+      "hold_one": "{{count}} Tag Verzögerung",
+      "hold_other": "{{count}} Tage Verzögerung"
+    }
   }
 }

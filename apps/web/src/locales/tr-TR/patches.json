@@ -614,5 +614,24 @@
     "orEnterAPackageIDManually": "Veya manuel olarak bir paket kimliği girin",
     "removeRuleFor": "{{application}} kuralını kaldır",
     "scopeNote": "Bu kurallar, yapılandırma ilkesi bu halkaya bağlı olan her cihaz için geçerlidir."
+  },
+  "patchDetails": {
+    "unknown": "Bilinmiyor",
+    "source": "Kaynak",
+    "packageId": "KB / paket kimliği",
+    "severity": "Önem derecesi",
+    "releaseDate": "Yayın tarihi",
+    "firstSeen": "Katalogda ilk görülme",
+    "rings": {
+      "title": "Güncelleme halkaları",
+      "note": "Her halkanın bu yamayı ne zaman otomatik onayladığı (halka düzeyinde kural; kategori geçersiz kılmaları gösterilmez).",
+      "none": "Yapılandırılmış güncelleme halkası yok.",
+      "manual": "Otomatik onaylanmaz — elle onay gerekir",
+      "immediate": "Hemen otomatik onaylanır",
+      "needsDate": "Bekletiliyor — {{count}} günlük pencereyi başlatacak yayın tarihi yok",
+      "autoApproves": "{{date}} tarihinde otomatik onaylanır",
+      "hold_one": "{{count}} gün erteleme",
+      "hold_other": "{{count}} gün erteleme"
+    }
   }
 }
