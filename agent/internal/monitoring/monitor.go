@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"encoding/json"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -26,7 +27,23 @@ type Monitor struct {
 	// afterCheck, when set by a test, runs after each watch's check and before
 	// its state is updated, so a test can stop the monitor mid-pass.
 	afterCheck func()
+
+	// First-run jitter (W09, #8148): the first Start of a Monitor in this
+	// process waits U(0, min(interval, 60 s)) before its immediate check, so
+	// a fleet restarted together (deploy, outage recovery) does not fire every
+	// device's first watch pass in the same second. firstRunDone is consumed by
+	// that first Start; a later Stop/Start (config refresh) runs at once.
+	firstRunJitter bool
+	firstRunDone   bool
+	rnd            func() float64
+	after          func(time.Duration) <-chan time.Time
+	loopExited     func() // test hook: called when the loop goroutine returns
 }
+
+// defaultFirstRunJitter is what New() gives a Monitor. On in production;
+// monitor_firstrun_test.go's TestMain turns it off for the legacy lifecycle
+// tests that expect an immediate first check.
+var defaultFirstRunJitter = true
 
 type watchState struct {
 	consecutiveFailures int
@@ -37,8 +54,11 @@ type watchState struct {
 // New creates a new Monitor with the given results callback.
 func New(sendResults SendResultsFunc) *Monitor {
 	return &Monitor{
-		states:      make(map[string]*watchState),
-		sendResults: sendResults,
+		states:         make(map[string]*watchState),
+		sendResults:    sendResults,
+		firstRunJitter: defaultFirstRunJitter,
+		rnd:            rand.Float64,
+		after:          time.After,
 	}
 }
 
@@ -110,7 +130,21 @@ func (m *Monitor) Start() {
 	// reassigned by a subsequent Start after Stop).
 	stopCh := m.stopCh
 	ticker := m.ticker
-	go m.loop(stopCh, ticker)
+
+	// Only the first Start of this Monitor in the process draws a delay. The
+	// flag is consumed here, under the lock, so a Stop during the wait followed
+	// by a Start still counts as "already started once".
+	var firstRunDelay time.Duration
+	if m.firstRunJitter && !m.firstRunDone && m.rnd != nil && m.after != nil {
+		spread := time.Duration(interval) * time.Second
+		if spread > maxFirstRunJitter {
+			spread = maxFirstRunJitter
+		}
+		firstRunDelay = time.Duration(m.rnd() * float64(spread))
+	}
+	m.firstRunDone = true
+
+	go m.loop(stopCh, ticker, firstRunDelay)
 	log.Info("monitoring started", "intervalSeconds", interval)
 }
 
@@ -129,7 +163,31 @@ func (m *Monitor) Stop() {
 	log.Info("monitoring stopped")
 }
 
-func (m *Monitor) loop(stopCh <-chan struct{}, ticker *time.Ticker) {
+// maxFirstRunJitter caps the first-run spread so a long check interval does
+// not leave a freshly started agent unmonitored for minutes.
+const maxFirstRunJitter = 60 * time.Second
+
+func (m *Monitor) loop(stopCh <-chan struct{}, ticker *time.Ticker, firstRunDelay time.Duration) {
+	if m.loopExited != nil {
+		defer m.loopExited()
+	}
+
+	if firstRunDelay > 0 {
+		log.Info("monitoring first run delayed", "delay", firstRunDelay.String())
+		select {
+		case <-stopCh:
+			return
+		case <-m.after(firstRunDelay):
+		}
+		// The ticker started counting at Start; with a short interval it can
+		// have a tick buffered by now, which would run a second pass straight
+		// after the first. Drop it.
+		select {
+		case <-ticker.C:
+		default:
+		}
+	}
+
 	// Run an immediate check on start
 	m.runChecksUntil(stopCh)
 

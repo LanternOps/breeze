@@ -74,7 +74,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
    Either path pulls the new API, web, and binaries images and restarts all services.
    Database migrations run automatically on API startup when `AUTO_MIGRATE=true` (the default).
 
-   **Expected downtime**: Typically **5--15 seconds** while containers restart. If the new version includes database migrations, the API container will take additional time to apply them before accepting traffic -- usually under 60 seconds for routine schema changes, but potentially several minutes for large data migrations. Agents continue running independently during this window and reconnect automatically.
+   **Expected downtime**: Typically **5--15 seconds** while containers restart. If the new version includes database migrations, the API container will take additional time to apply them before accepting traffic -- usually under 60 seconds for routine schema changes, but potentially several minutes for large data migrations. Agents continue running independently during this window and reconnect automatically. From the next agent release, agents spread that reconnect over up to 30 seconds (was 1–5 seconds), so a device can show offline up to about 30 seconds longer after an API restart. An API that is shedding load answers with `503` and a `Retry-After` delay, which agents honour; see [Agent reconnect settings](#agent-reconnect-settings).
 
 5. **Verify**
 
@@ -98,6 +98,24 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 <Aside type="tip">
   The `binaries-init` container uses `pull_policy: always`, so `docker compose up -d` automatically pulls the latest binaries image and refreshes the volume — no manual steps needed.
 </Aside>
+
+## Agent reconnect settings
+
+From the next agent release, agents pace their own traffic after an API restart or overload:
+
+- **Spread reconnect.** After a stable connection drops, an agent waits a random 1–30 seconds before it redials, instead of 1–5 seconds. The first connection after the agent process starts waits a random 0–10 seconds, also after a self-update.
+- **Drain hint.** An API instance that is shutting down can tell its agents `{"type":"drain","reconnectWithinMs":N}` before it closes their sockets. Agents then spread their reconnect over that window, at least 5 seconds. No Breeze API sends this yet; it is ready for rolling deploys.
+- **Server delays honoured across cycles.** When the API answers a periodic upload (inventory, monitoring results, process samples, logs, UniFi telemetry) with `503` or `429` and a `Retry-After`, the agent skips that upload until the delay has passed, up to 300 seconds, instead of retrying on its next cycle. Heartbeats and command results are never delayed.
+- **Spread startup uploads.** The full inventory, hardware and patch uploads after an agent starts each wait a random 0–120 seconds, and the first service-monitoring pass waits up to one check interval (at most 60 seconds).
+
+Two `agent.yaml` keys restore the earlier behaviour on a device, without a new release:
+
+| Key | Default | Effect |
+|---|---|---|
+| `ws_first_reconnect_window_seconds` | `30` | Upper bound of the reconnect spread after a stable connection, 0–300 seconds. `0`–`5` restores the 1–5 second spread of earlier agents. |
+| `loop_retry_after` | `true` | `false` restores per-request handling: the agent waits out a `Retry-After` only inside the request it was given, and retries on its next cycle. |
+
+The agent reads both at start; restart the agent service after changing them.
 
 ## Check what an upgrade retires
 

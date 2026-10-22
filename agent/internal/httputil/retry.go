@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"time"
 
@@ -50,8 +49,13 @@ func isRetryableStatus(code int) bool {
 //
 // When the server returns a retryable status (especially 429 or 503) with a
 // Retry-After header, the parsed value (clamped to ≤300s) is honored for the
-// next sleep instead of the internal exponential delay. This prevents fleets
-// of agents from steamrolling server-side rate limits.
+// next sleep instead of the internal exponential delay, with positive jitter.
+// This prevents fleets of agents from steamrolling server-side rate limits.
+//
+// W09 (#8148): when that jittered delay will not fit in ctx's deadline, Do
+// returns at once with the *RetryableStatusError, whose RetryAt (set while
+// loop-level Retry-After is on, see SetLoopRetryAfter) tells the caller's
+// loop when to call the route again.
 func Do(ctx context.Context, client *http.Client, method, url string, body []byte, headers http.Header, cfg RetryConfig) (*http.Response, error) {
 	var lastErr error
 	delay := cfg.InitialDelay
@@ -67,22 +71,12 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 		if attempt > 0 {
 			var sleepFor time.Duration
 			if nextSleepOverride > 0 {
-				// Honor server-provided Retry-After. ParseRetryAfter already
-				// caps at 300s defensively.
-				//
-				// Issue #2728: jitter this too. A server-side rate limit is
-				// usually tripped by the WHOLE fleet at once, so every agent
-				// receives the same Retry-After (the per-org limiter sends a
-				// flat "60") at the same instant. Sleeping exactly that long
-				// re-synchronizes the fleet and guarantees the retry lands as
-				// another simultaneous burst — the limiter then rejects it
-				// again, and the agents stay in lockstep. The jitter is
-				// strictly ADDITIVE so we never retry earlier than the server
-				// asked; it only smears the herd forward over a window.
-				sleepFor = applyPositiveJitter(nextSleepOverride, cfg.JitterFrac)
+				// Honor server-provided Retry-After, already jittered once
+				// where the answer was read (see below), so the wait here and
+				// the RetryAt carried on the error are the same instant.
+				sleepFor = nextSleepOverride
 				log.Debug("honoring Retry-After from server",
 					"attempt", attempt,
-					"retryAfter", nextSleepOverride,
 					"delay", sleepFor,
 					"url", url,
 				)
@@ -98,7 +92,7 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 			select {
 			case <-ctx.Done():
 				return nil, withServerAnswer(ctx.Err(), lastAnswer)
-			case <-time.After(sleepFor):
+			case <-afterFn(sleepFor):
 			}
 
 			// Exponential backoff for next attempt (used if server doesn't
@@ -135,12 +129,40 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 		}
 
 		// Retryable status — check for Retry-After before discarding response.
-		if ra := ParseRetryAfter(resp.Header, time.Now()); ra > 0 {
-			nextSleepOverride = ra
+		answer := &RetryableStatusError{StatusCode: resp.StatusCode, URL: url}
+		if ra := ParseRetryAfter(resp.Header, nowFn()); ra > 0 {
+			// Issue #2728: jitter the server's delay. A server-side limit is
+			// usually tripped by the WHOLE fleet at once, so every agent
+			// receives the same Retry-After at the same instant; waiting
+			// exactly that long re-synchronizes the fleet. The jitter is
+			// strictly ADDITIVE (never sooner than asked) and drawn once, so
+			// the in-request wait and RetryAt agree.
+			wait := applyPositiveJitter(ra, cfg.JitterFrac)
+			nextSleepOverride = wait
+			if LoopRetryAfterEnabled() {
+				answer.RetryAt = nowFn().Add(wait)
+			}
 		}
 		resp.Body.Close()
-		lastAnswer = &RetryableStatusError{StatusCode: resp.StatusCode, URL: url}
+		lastAnswer = answer
 		lastErr = lastAnswer
+
+		// W09 (#8148, D5): a Retry-After that will not fit in the caller's
+		// context used to be slept into the deadline and then lost. Return
+		// the answer now; its RetryAt lets the caller's loop skip its next
+		// cycle until then. Remaining real time is compared with the wait, so
+		// a faked nowFn is never compared with the context's real clock.
+		if !answer.RetryAt.IsZero() && attempt < cfg.MaxRetries {
+			if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < nextSleepOverride {
+				log.Debug("retry-after exceeds caller deadline; returning RetryAt",
+					"url", url,
+					"status", answer.StatusCode,
+					"wait", nextSleepOverride,
+					"retryAt", answer.RetryAt,
+				)
+				return nil, answer
+			}
+		}
 	}
 	lastErr = withServerAnswer(lastErr, lastAnswer)
 
@@ -174,6 +196,22 @@ func withServerAnswer(err error, answer *RetryableStatusError) error {
 type RetryableStatusError struct {
 	StatusCode int
 	URL        string
+	// RetryAt is when the server allows the next call to this route: now plus
+	// its Retry-After with positive jitter (ParseRetryAfter caps the header at
+	// 300 s, and the jitter is clamped back to it). Zero when the
+	// answer carried no usable Retry-After, or loop-level Retry-After is off
+	// (SetLoopRetryAfter). W09, #8148.
+	RetryAt time.Time
+}
+
+// RetryAtFrom returns the RetryAt carried anywhere in err's chain, and whether
+// there was one.
+func RetryAtFrom(err error) (time.Time, bool) {
+	var rse *RetryableStatusError
+	if errors.As(err, &rse) && !rse.RetryAt.IsZero() {
+		return rse.RetryAt, true
+	}
+	return time.Time{}, false
 }
 
 func (e *RetryableStatusError) Error() string {
@@ -190,7 +228,7 @@ func applyPositiveJitter(d time.Duration, frac float64) time.Duration {
 	if frac <= 0 || d <= 0 {
 		return d
 	}
-	result := time.Duration(float64(d) * (1 + frac*rand.Float64()))
+	result := time.Duration(float64(d) * (1 + frac*randFloat()))
 	if result > retryAfterMaxCap {
 		return retryAfterMaxCap
 	}
@@ -202,7 +240,7 @@ func applyJitter(d time.Duration, frac float64) time.Duration {
 	if frac <= 0 {
 		return d
 	}
-	jitter := float64(d) * frac * (2*rand.Float64() - 1)
+	jitter := float64(d) * frac * (2*randFloat() - 1)
 	result := time.Duration(float64(d) + jitter)
 	if result < 0 {
 		return 0
