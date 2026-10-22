@@ -1349,6 +1349,17 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   const { skipOrgIdInjection, skipUnauthorizedRetry, orgIdOverride, ...init } = options;
 
   // Auto-inject orgId from the org store so partner/system users always scope API calls
+  // Astro islands hydrate independently: a page island can reach this before the
+  // header island has imported orgStore (which registers the provider). Load it
+  // lazily here (dynamic import, so no auth<->orgStore cycle) so the first
+  // request is scoped to the persisted org instead of the whole book (#9642).
+  if (!_getOrgId && !skipOrgIdInjection && !orgIdOverride && typeof window !== 'undefined') {
+    try {
+      await import('./orgStore');
+    } catch (err) {
+      console.error('[auth] could not load org store for org scoping:', err);
+    }
+  }
   const url = applyOrgId(rawUrl, { skipOrgIdInjection, orgIdOverride, ambient: _getOrgId?.() ?? null });
 
   const { tokens: initialTokens, isAuthenticated, setTokens } = useAuthStore.getState();
