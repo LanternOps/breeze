@@ -76,6 +76,18 @@ describe('oauth_grant token-reuse incident UX (#9594)', () => {
     expect(out[2]!.displayName).toBe('Claude Code (breeze) (sam@example.com, 2026-10-10)');
   });
 
+  it('3b: the 80 code-point cap holds after disambiguation, even for long names and emails', () => {
+    const long = { client_name: 'n'.repeat(500), owner_email: `${'e'.repeat(120)}@example.com` };
+    const out = disambiguateDisplayNames([
+      toObservation(row({ ...long, client_id: 'client-aaaa1111' }), NOW),
+      toObservation(row({ ...long, client_id: 'client-bbbb2222' }), NOW),
+    ]);
+    for (const o of out) {
+      expect(Array.from(o.displayName).length).toBeLessThanOrEqual(80);
+      expect(o.displayName).toMatch(/^n{8,}.*, 2026-10-10\) · (aaaa1111|bbbb2222)$/);
+    }
+  });
+
   it('4: a later active grant of the same client_name under a NEW client id retires the incident', () => {
     expect(toObservation(row(), NOW).state).toBe('broken');
     expect(toObservation(row({ has_later_by_name: true, has_active_by_name: true }), NOW).state).toBe('healthy');

@@ -37,21 +37,32 @@ const isoDay = (d: Date | string | null): string | null => {
   return Number.isNaN(t.getTime()) ? null : t.toISOString().slice(0, 10);
 };
 
+const DISPLAY_NAME_CAP = 80;
+const MIN_NAME_CODE_POINTS = 24; // name is protected up to this length; the owner email yields first
+const DISAMBIGUATOR_LEN = 11; // " · " + last 8 chars of the client id
+
+const clip = (v: string, n: number): string => Array.from(v).slice(0, Math.max(0, n)).join('');
+
 /**
- * "<name> (<owner email>, <created date>)". The name is trimmed toward 80 code
- * points total but keeps at least 8, so a very long email can exceed that; the
- * ledger column allows 120 (incl. the 11-char client suffix added later).
+ * "<name> (<owner email>, <created date>)", at most 80 code points INCLUDING the
+ * 11-char client-id suffix `disambiguateDisplayNames` may add afterwards (that
+ * budget is reserved here, so the cap holds after disambiguation). The name is
+ * kept up to 24 code points; the owner email is clipped to fit what is left.
  * Same-name matching (has_*_by_name) is deliberately scoped to one account +
  * partner; two same-named apps of one account can retire each other's incident.
  */
 function reuseDisplayName(r: PairRow): string {
   const base = cleanDisplayName(r.client_name, r.client_id);
-  const parts = [typeof r.owner_email === 'string' ? cleanDisplayName(r.owner_email, '') : '', isoDay(r.grant_created_at) ?? '']
-    .filter(Boolean);
-  if (parts.length === 0) return base;
-  const suffix = ` (${parts.join(', ')})`;
-  const room = Math.max(8, 80 - Array.from(suffix).length);
-  return Array.from(base).slice(0, room).join('') + suffix;
+  const email = typeof r.owner_email === 'string' ? cleanDisplayName(r.owner_email, '') : '';
+  const day = isoDay(r.grant_created_at) ?? '';
+  const budget = DISPLAY_NAME_CAP - DISAMBIGUATOR_LEN;
+  const dayPart = day ? (email ? `, ${day}` : day) : '';
+  // " (" + ")" overhead is 3 code points.
+  const emailPart = clip(email, budget - Math.min(Array.from(base).length, MIN_NAME_CODE_POINTS) - 3 - dayPart.length);
+  const inner = `${emailPart}${dayPart}`;
+  if (!inner) return clip(base, budget);
+  const suffix = ` (${inner})`;
+  return clip(base, budget - Array.from(suffix).length) + suffix;
 }
 
 /** Rows that are still identical after owner + date get the client id's last 8 characters. */
