@@ -1,6 +1,6 @@
 # Vulnerability catalog coverage: design
 
-**Status:** draft for Todd's review · **Date:** 2026-10-21
+**Status:** approved by Todd 2026-10-22 · **Date:** 2026-10-21
 **Builds on:** `docs/superpowers/specs/vuln-patch/2026-07-08-vuln-displayname-cpe-resolver-design.md` (#2290)
 **Related:** #2484 (degraded sync status), #7071 (remediation target version)
 
@@ -30,12 +30,12 @@ Todd's framing: this needs to keep itself current, not be a one-off cleanup.
 2. NVD version semantics are respected: pinned versions match exactly, N/A versions do not match, and vendor version formats compare correctly.
 3. Coverage is visible. Operators can see which installed program names resolve to nothing, ranked by how many devices have them.
 4. Coverage maintains itself. New products enter the catalog from fleet demand. The curated dictionary refreshes on a schedule.
-5. Per-user installs on Windows are inventoried.
-6. Accuracy is measured against a reference on every release, so regressions are caught.
+5. Accuracy is measured against a reference on every release, so regressions are caught.
 
 ## 3. Non-goals
 
 - **macOS application matching** (builder's call, open to Todd's override). The macOS collector reports vendor as "Identified Developer", "Mac App Store" or "Apple" (`agent/internal/collectors/software_darwin.go`). The resolver requires vendor agreement, so macOS apps would need new agent data, such as the bundle or team ID, before matching can work. That is a follow-up.
+- **Per-user Windows inventory** (Todd, 2026-10-22). It needs a server ingest redesign plus agent work, so it moves to its own follow-up spec. The notes in §5.6 are input for that spec, not part of this build.
 - **File-level or on-disk binary scanning.** Todd's call: a vulnerable file that isn't an installed, runnable product is mostly noise.
 - **Linux distro packages.** Backport-aware matching against distro advisories (OSV distro ecosystems) is separate work.
 - **Unauthenticated network scanning** of printers, firewalls and other unmanaged devices.
@@ -78,7 +78,7 @@ The catalog grows from what the fleet actually has installed, not from all of NV
 - Fact de-duplication includes the start bounds. Today two facts that differ only in their start version collapse into one.
 - Existing facts cannot be fixed from stored data. `raw_payload` holds the already-parsed record, with the version already dropped. Fixing them needs an NVD refetch of the affected products' CVEs, which shares the backfill path in §5.1.
 - Facts are insert-only today. Re-deriving a product's facts must replace its old facts, not add to them.
-- Existing findings that no longer match must leave the open list without being recorded as `patched`, because nothing was patched. Today the correlation pass would mark them `patched` and emit `vulnerability.remediated` (`vulnerabilityCorrelation.ts`). That changes before the version fix ships. The closure treatment is an open question in §8.
+- Existing findings that no longer match must leave the open list without being recorded as `patched`, because nothing was patched. Today the correlation pass would mark them `patched` and emit `vulnerability.remediated` (`vulnerabilityCorrelation.ts`). That changes before the version fix ships. They close as "withdrawn" (§8).
 
 ### 5.3 Version normalization
 
@@ -98,7 +98,9 @@ The catalog grows from what the fleet actually has installed, not from all of NV
 - A scheduled GitHub Action runs `apps/api/scripts/regen-cpe-data.ts` weekly and opens a PR when FleetDM's translation list has changed. A human reviews and merges it. Self-hosters get the update with the next release.
 - Curated entries added by hand survive regeneration. The script already unions them.
 
-### 5.6 Per-user installs on Windows (agent)
+### 5.6 Per-user installs on Windows: input for the follow-up spec
+
+Not built here (see §3). Kept so the follow-up starts from what the reviews found.
 
 - The collector enumerates the Uninstall key in every **already-loaded** user hive under `HKEY_USERS`. It skips the built-in service SIDs and `_Classes` hives. It never calls `RegLoadKey`.
 - Each per-user item records which user it belongs to.
@@ -117,12 +119,11 @@ The catalog grows from what the fleet actually has installed, not from all of NV
 
 ## 6. Rollout
 
-1. Version semantics and normalization (§5.2, §5.3) ship first. They only remove noise.
+1. The "withdrawn" status (§8), then version semantics and normalization (§5.2, §5.3), ship first. They only remove noise.
 2. The coverage report (§5.4) ships next, so the gap is visible before it closes.
 3. Catalog growth (§5.1) ships behind an environment flag, off by default. It is enabled per region after the harness passes.
 4. **Alert handling for backfill.** Every product promotion backfills years of history against software that is already installed, so this is not a one-time burst. Findings created by a backfill or a fact re-derivation do not emit per-finding `vulnerability.critical_detected` events. Each backfill run emits one summary event per organization instead, naming the product and the finding count. Webhooks, PSA tickets and automations that hang off the per-finding event are therefore quiet too. The builder confirms which consumers subscribe to that event. Findings from new CVEs in the daily delta keep per-finding events.
-5. Per-user inventory (§5.6) ships through the normal agent lab and promote path.
-6. The harness (§5.7) and the dictionary refresh Action (§5.5) can land at any point.
+5. The harness (§5.7) and the dictionary refresh Action (§5.5) can land at any point.
 
 ## 7. Constraints
 
@@ -132,21 +133,13 @@ The catalog grows from what the fleet actually has installed, not from all of NV
 - The resolver stays pure: no database or network access in `cpeResolver.ts`.
 - Self-hosted instances without an NVD key still work, just more slowly.
 
-## 8. Open questions for Todd
+## 8. Decisions (Todd, 2026-10-22)
 
-1. **How should findings that no longer match be closed?** Rolling out the version fix would otherwise mark the old 2011 and 2015 false positives as `patched`.
-   - **New terminal status, such as "withdrawn":** honest and auditable, kept out of remediation and SLA metrics. It touches the status enum, reports, filters and events.
-   - **Delete the rows:** simplest, but the audit trail is lost and any linked tickets point at nothing.
-   - **Reuse `mitigated` with a system note:** no schema change, but it overstates what anyone did.
-   - **Recommend the new status.** It is the only option that is both truthful and keeps history.
-2. **Should per-user Windows inventory (§5.6) stay in this spec or become its own?** The builder check found it needs a server ingest redesign, not just agent work. The catalog fix covers most of the lab machine's gap: ImageMagick, Python, MongoDB, Node.js and Fusion are machine-wide installs. VS Code and Cursor are the per-user ones.
-   - **Recommend splitting it out** as a follow-up spec, so the catalog work isn't held up by an agent lab cycle.
-3. **Who sees the coverage report (§5.4)?** The resolution data is global, so a list of unmatched names spans every tenant.
-   - **Platform and self-host instance admins only:** simple and safe. Partners don't see it.
-   - **Also a per-partner view of their own fleet:** more useful to MSPs, but needs a tenant-scoped query and UI.
-   - **Recommend admins only for now.** It is a tool for whoever maintains the dictionary.
+1. **Findings that no longer match close with a new terminal status, "withdrawn".** It is auditable and stays out of remediation, SLA and patch metrics. It must not emit `vulnerability.remediated`. Status enum, filters, reports and events are updated to match. This lands before or together with the version fix in §5.2.
+2. **Per-user Windows inventory becomes its own follow-up spec** (§3, §5.6).
+3. **The coverage report (§5.4) is visible to platform and self-host instance admins only.** No per-partner view for now.
 
-## 9. Calls made without Todd
+## 9. Calls made by the author, accepted by Todd
 
 - macOS matching is a non-goal for now (§3), because its vendor data can't support matching.
 - The candidate dictionary mirrors all of NVD's application products, not only those with CVEs (§5.1), following the independent Codex review.
