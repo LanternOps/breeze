@@ -641,18 +641,42 @@ See [Playbooks](/features/playbooks/) for playbook definitions and step types.
 
 ## Ticketing & Billing AI Tools
 
-Breeze also provides AI tools for the PSA side of the platform — tickets, invoices, the product catalog, contracts, and quotes:
+Breeze also provides AI tools for the PSA side of the platform — tickets, invoices, the billing catalog, contracts, and quotes:
 
 | Tool | Description |
 |------|-------------|
-| `manage_tickets` | Full ticket lifecycle: create, comment, assign, update status and fields, link/unlink alerts, create a ticket from an alert, edit/delete comments, track time, and move a ticket between organizations |
 | `list_invoices` / `get_invoice` / `manage_invoices` | Browse invoices and manage the invoice lifecycle — drafts, lines, assembling a draft from an organization's billable period or a ticket, issuing, voiding, payments, and Stripe pay links |
-| `search_catalog` / `get_catalog_item` / `manage_catalog` | Search and maintain the partner product catalog, including per-organization price overrides and bundles |
+| `search_catalog` / `get_catalog_item` | Search the partner billing catalog, including per-organization price overrides and bundles |
 | `lookup_distributor_product` | Look up live TD SYNNEX price and availability for a distributor SKU that isn't in your catalog yet — handy when pricing a quote line for a product you don't stock. Reseller cost is hidden for organization-scoped callers |
 | `list_contracts` / `get_contract` / `manage_contracts` | Browse recurring contracts and manage drafts, lines, and lifecycle (activate, pause, resume, cancel) |
-| `manage_quotes` | Build and manage quotes/proposals — drafts, content blocks, lines, sending, declining, and pay links |
 
-This list is exposed to external AI clients through the [MCP Server](/features/mcp-server/#ticketing-tools); as of #6755 it is stale for the assistant chat itself — `list_invoices`, `get_invoice`, `manage_invoices`, `search_catalog`, `get_catalog_item`, `list_contracts`, `get_contract`, and `manage_contracts` are tiered and reach chat today, while `manage_catalog`, `manage_quotes`, and `manage_tickets` remain untiered (MCP-only) until a later wave. Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, and moving a ticket to another organization — are classified Tier 3, so they are gated behind the execute scope and production allowlist rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
+The ticket, quote, billing-catalog, and PSA admin write tools are tiered per action:
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_tickets (list/get/list_work_types/list_links)` | 1 | Search and read tickets, work types, and ticket links |
+| `manage_tickets (create/assign/link_alert/unlink_alert/create_from_alert/link_device/draft/link_ticket/unlink_ticket)` | 2 | Open and assign tickets, link alerts, devices, and related tickets, and store a draft reply for human review |
+| `manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)` | 2 | Track time against tickets |
+| `manage_tickets (comment/update_status/update_fields)` | 2 | Internal notes and ticket updates. A public comment (`isPublic: true`), resolving a ticket or setting a custom status, and changing the requester need approval (Tier 3) |
+| `manage_tickets (edit_comment/delete_comment)` | 3 | Edit or delete a comment — customer-visible text with no restore |
+| `manage_tickets (move_org)` | 3 | Move a ticket to a different organization (four-eyes) |
+| `manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)` | 2 | Draft a quote: header, content blocks, and lines on a quote that has not been sent |
+| `manage_quotes (decline/create_pay_link)` | 3 | Record a customer's decline, or create a payment link |
+| `manage_quotes (send)` | 3 | Send a quote to the customer (four-eyes) |
+| `manage_billing_catalog (create_item)` | 2 | Add a billing catalog item (inert until a quote, invoice, or contract uses it) |
+| `manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)` | 3 | Change items, price-book prices, organization price overrides, and bundles — contract renewals bill the live price |
+| `manage_saved_filters (list/get)` | 1 | List and view saved device filters |
+| `manage_saved_filters (create/delete)` | 2 | Create or delete a saved device filter |
+| `manage_tags (list)` | 1 | List device tags |
+| `manage_tags (add/remove)` | 2 | Add or remove device tags. AI agents can never change tags, because tags can change which devices an agent is scoped to |
+| `manage_notification_channels (list)` | 1 | List notification channels |
+| `manage_notification_channels (test)` | 2 | Check a channel's configuration (sends nothing) |
+| `manage_notification_channels (create/update/delete)` | 3 | Create, repoint, or delete a channel; the approver sees the destination host. Delete is four-eyes |
+| `test_webhook` | 3 | Send a real test delivery to a webhook |
+
+These tools are now available in the assistant chat and to AI agents, not just over MCP. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
+
+Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
 
 ---
 
