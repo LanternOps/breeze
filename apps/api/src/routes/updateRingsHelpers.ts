@@ -14,6 +14,7 @@ import {
   resolveAssignmentDevices,
   type AssignmentToExpand,
 } from '../services/configPolicyAssignmentDevices';
+import { resolvePatchPolicyWinnersForDevices } from '../services/featureConfigResolver';
 
 /**
  * One config-policy assignment as this module needs it: the assignment's own
@@ -48,11 +49,18 @@ export interface RingAssignment extends AssignmentToExpand {
  *     fields) are EXCLUDED and reported as warnings, rather than resolved
  *     the way the protective scheduler resolves them.
  *
+ * Closest level wins (#9632), as in the scheduler: a device stays in this
+ * ring only when its winning patch policy links to this ring, or when no
+ * policy wins it (see keepDevicesThisPolicyWins in the scheduler). A pilot
+ * device that a device-group override moves to another ring is no longer
+ * counted under the broad ring as well.
+ *
  * Each assignment is resolved with its own query. Batching by level is not
  * possible once each assignment can carry a different filter, and a ring has a
  * handful of assignments.
  */
 async function resolveRingAssignedDeviceIds(
+  ringId: string,
   assignments: RingAssignment[],
   /** The ring's own partner. Every resolved device must sit under it. */
   ringPartnerId: string
@@ -73,6 +81,14 @@ async function resolveRingAssignedDeviceIds(
     );
     for (const id of expanded.deviceIds) deviceIds.add(id);
     for (const group of expanded.refusedGroups) refusedGroups.set(group.id, group);
+  }
+
+  if (deviceIds.size > 0) {
+    const winners = await resolvePatchPolicyWinnersForDevices([...deviceIds]);
+    for (const id of [...deviceIds]) {
+      const winner = winners.get(id) ?? null;
+      if (winner && winner.featurePolicyId !== ringId) deviceIds.delete(id);
+    }
   }
 
   return { deviceIds, refusedGroups: [...refusedGroups.values()] };
@@ -113,7 +129,7 @@ export async function resolveRingDeviceIdsWithWarnings(
   const ringPartnerId = linkedAssignments[0]?.ringPartnerId;
   if (!ringPartnerId) return { deviceIds: [], warnings: [] };
 
-  const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(linkedAssignments, ringPartnerId);
+  const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(ringId, linkedAssignments, ringPartnerId);
   return { deviceIds: Array.from(deviceIds), warnings: warningsForRefusedExecutionGroups(refusedGroups) };
 }
 
@@ -169,7 +185,7 @@ export async function resolveRingDeviceCountsWithWarnings(
   // Resolve each ring's device count (isolated per ring — one failure doesn't block others)
   for (const [ringId, { partnerId, assignments }] of ringAssignments) {
     try {
-      const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(assignments, partnerId);
+      const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(ringId, assignments, partnerId);
       deviceCountMap.set(ringId, { count: deviceIds.size, warnings: warningsForRefusedExecutionGroups(refusedGroups) });
     } catch (err) {
       console.error(`Failed to resolve device count for ring ${ringId}:`, err instanceof Error ? err.message : err);

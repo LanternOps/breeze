@@ -92,10 +92,18 @@ const checkDeviceMaintenanceWindow = vi.fn(async () => {
   maintenanceDepths.push(contextDepth);
   return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false };
 });
+const winnerDepths: number[] = [];
+type Winner = { configPolicyId: string; featurePolicyId: string | null; assignmentLevel: string } | null;
+let winnerFor: (deviceId: string) => Winner = () => null;
+const resolvePatchPolicyWinnersForDevices = vi.fn(async (deviceIds: readonly string[]) => {
+  winnerDepths.push(contextDepth);
+  return new Map(deviceIds.map((id) => [id, winnerFor(id)] as const));
+});
 vi.mock('../services/featureConfigResolver', async (importActual) => ({
   // The real role/OS predicate (pure) is used by the shared assignment resolver.
   matchesRoleOsFilter: (await importActual<typeof import('../services/featureConfigResolver')>()).matchesRoleOsFilter,
   checkDeviceMaintenanceWindow,
+  resolvePatchPolicyWinnersForDevices,
 }));
 
 const loadPolicyLocalPatchConfig = vi.fn(async () => ({
@@ -145,6 +153,8 @@ describe('patchSchedulerWorker.scanAndCreateJobs — DB context boundaries (#189
     maxDepth = 0;
     dbCallDepths.length = 0;
     maintenanceDepths.length = 0;
+    winnerDepths.length = 0;
+    winnerFor = () => null;
     selectResults = [];
   });
 
@@ -175,12 +185,60 @@ describe('patchSchedulerWorker.scanAndCreateJobs — DB context boundaries (#189
     // Every DB read/write ran inside a context...
     expect(dbCallDepths.length).toBeGreaterThan(0);
     for (const depth of dbCallDepths) expect(depth).toBe(1);
-    // ...including the per-device maintenance lookup.
+    // ...including the per-device maintenance lookup and the #9632 winner lookup.
     expect(maintenanceDepths).toEqual([1]);
+    expect(resolvePatchPolicyWinnersForDevices).toHaveBeenCalledWith(['dev-1']);
+    expect(winnerDepths).toEqual([1]);
     // No nesting: depth never exceeded 1 (i.e. no big outer wrapper around the scan).
     expect(maxDepth).toBe(1);
     // Many SEPARATE short contexts were opened — not one spanning the whole scan.
     expect(contextOpenCount).toBeGreaterThanOrEqual(5);
+  });
+
+  // #9632: closest level wins. The due-path fixture above, with the device's
+  // winning patch policy set per case.
+  function dueOnePolicyOneDevice() {
+    return [
+      [{ configPolicyId: 'cp-1', policyName: 'Broad', policyOrgId: 'org-1', featureLinkId: 'fl-1' }],
+      [{ level: 'organization', targetId: 'org-1' }],
+      [{ id: 'dev-1', deviceRole: 'workstation', osType: 'windows' }],
+      [{ deviceId: 'dev-1', orgId: 'org-1', siteTimezone: 'UTC', orgSettings: null, partnerTimezone: null, partnerSettings: null }],
+      [],
+    ];
+  }
+
+  it('does not schedule a device whose patch settings are won by a different (closer) policy (#9632)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    winnerFor = () => ({ configPolicyId: 'cp-pilot', featurePolicyId: 'ring-pilot', assignmentLevel: 'device_group' });
+
+    const result = await scanAndCreateJobs();
+
+    expect(result.created).toBe(0);
+    // Dropped before the per-device maintenance lookup and the insert.
+    expect(checkDeviceMaintenanceWindow).not.toHaveBeenCalled();
+  });
+
+  it('schedules the device when this policy is its winner (#9632)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    winnerFor = () => ({ configPolicyId: 'cp-1', featurePolicyId: 'ring-1', assignmentLevel: 'organization' });
+
+    const result = await scanAndCreateJobs();
+
+    expect(result.created).toBe(1);
+  });
+
+  it('fails closed and reports to Sentry when the winner lookup fails (#9632)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    resolvePatchPolicyWinnersForDevices.mockRejectedValueOnce(new Error('remaining connection slots'));
+
+    const result = await scanAndCreateJobs();
+
+    expect(result.created).toBe(0);
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { patch_scheduler_stage: 'closest_wins_resolve_failed' },
+    );
   });
 
   // BREEZE-1A. A failed orphan-recovery read yields an EMPTY stale-jobs list,

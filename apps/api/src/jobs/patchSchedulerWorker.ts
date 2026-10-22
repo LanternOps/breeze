@@ -23,7 +23,11 @@ import { and, eq, gte, inArray, ne } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
-import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
+import {
+  checkDeviceMaintenanceWindow,
+  resolvePatchPolicyWinnersForDevices,
+  type PatchPolicyWinner,
+} from '../services/featureConfigResolver';
 import {
   enqueuePatchJob,
   selectStaleScheduledJobIds,
@@ -427,6 +431,51 @@ async function resolveDeviceIdsForAssignment(
   return deviceIds;
 }
 
+/**
+ * #9632: the devices of `deviceIds` this config policy should schedule — those
+ * whose winning patch policy (resolvePatchPolicyWinnersForDevices, the batched
+ * resolvePatchConfigPolicyForDevice) is this one. A device with NO winner is
+ * kept: the per-device resolver needs a normalized patch settings row, so a
+ * policy still running on the inline fallback would otherwise patch nothing.
+ * Only a device that a DIFFERENT policy demonstrably wins is dropped, and that
+ * policy schedules it. `winners` caches lookups across the policies of a tick.
+ * A lookup failure throws: patching later beats rebooting outside a window.
+ */
+async function keepDevicesThisPolicyWins(
+  configPolicyId: string,
+  deviceIds: string[],
+  winners: Map<string, PatchPolicyWinner | null>,
+): Promise<{ kept: string[]; skippedByWinner: Map<string, number> }> {
+  const missing = deviceIds.filter((id) => !winners.has(id));
+  if (missing.length > 0) {
+    let resolved: Map<string, PatchPolicyWinner | null>;
+    try {
+      resolved = await runWithSystemDbAccess(() => resolvePatchPolicyWinnersForDevices(missing));
+    } catch (err) {
+      // The caller's per-policy catch only logs to the console; a scheduled
+      // occurrence skipped for this reason must reach Sentry.
+      const message = `[PatchScheduler] Failed to resolve winning patch policies for config policy ${configPolicyId}`;
+      captureException(err instanceof Error ? err : new Error(message), undefined, {
+        patch_scheduler_stage: 'closest_wins_resolve_failed',
+      });
+      throw err;
+    }
+    for (const id of missing) winners.set(id, resolved.get(id) ?? null);
+  }
+
+  const kept: string[] = [];
+  const skippedByWinner = new Map<string, number>();
+  for (const id of deviceIds) {
+    const winner = winners.get(id) ?? null;
+    if (!winner || winner.configPolicyId === configPolicyId) {
+      kept.push(id);
+    } else {
+      skippedByWinner.set(winner.configPolicyId, (skippedByWinner.get(winner.configPolicyId) ?? 0) + 1);
+    }
+  }
+  return { kept, skippedByWinner };
+}
+
 async function loadDeviceSchedulingContexts(deviceIds: string[]): Promise<DeviceSchedulingContext[]> {
   if (deviceIds.length === 0) return [];
 
@@ -528,6 +577,9 @@ async function scanAndCreateJobs(): Promise<{
   // context pinned the pooled connection idle-in-transaction across Redis
   // round-trips, a contributor to the #1105 pool-poisoning pattern.
   const enqueueJobIds: string[] = [];
+  // #9632: each device's winning patch policy, resolved once per tick and
+  // shared by every policy that reaches the device.
+  const patchWinners = new Map<string, PatchPolicyWinner | null>();
 
   const patchPoliciesWithSchedules = await runWithSystemDbAccess(() =>
     db
@@ -634,11 +686,32 @@ async function scanAndCreateJobs(): Promise<{
           continue;
         }
 
+        // #9632: closest level wins. A device reached by several patch policies
+        // belongs to the one its effective configuration shows. Without this
+        // each policy scheduled its own job for it, so a broader policy's ring
+        // and reboot policy (e.g. "If required") applied to a device a closer
+        // override had moved to a maintenance-window reboot.
+        const { kept: closestDeviceIds, skippedByWinner } = await keepDevicesThisPolicyWins(
+          row.configPolicyId,
+          group.deviceIds,
+          patchWinners,
+        );
+        if (skippedByWinner.size > 0) {
+          const winners = Array.from(skippedByWinner, ([policyId, count]) => `${policyId} (${count})`).join(', ');
+          console.log(
+            `[PatchScheduler] Config policy ${row.configPolicyId}: skipped ${group.deviceIds.length - closestDeviceIds.length} ` +
+              `device(s) in ${group.orgId} whose patch settings come from a closer policy: ${winners}`
+          );
+        }
+        if (closestDeviceIds.length === 0) {
+          continue;
+        }
+
         // Per-device maintenance check: each lookup is its OWN short context so
         // this loop never holds one pooled connection across the whole device
         // set (#1105/#1896 conn-hold). checkDeviceMaintenanceWindow is DB-backed.
         const eligibleDeviceIds: string[] = [];
-        for (const deviceId of group.deviceIds) {
+        for (const deviceId of closestDeviceIds) {
           const maintenance = await runWithSystemDbAccess(() => checkDeviceMaintenanceWindow(deviceId));
           if (!maintenance.active || !maintenance.suppressPatching) {
             eligibleDeviceIds.push(deviceId);
