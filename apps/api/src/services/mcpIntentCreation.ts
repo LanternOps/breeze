@@ -24,7 +24,7 @@ import {
   mcpIntentCreatesPerHour,
   mcpIntentCreatesPerUserPerHour,
   mcpIntentMaxLivePerPrincipal,
-} from '../config/env';
+} from './mcpIntentConfig';
 import { mcpIntentIdempotencyKey, mcpOriginRef } from './mcpIntentEligibility';
 import { toMcpActionStatus, type McpActionStatus } from './mcpActionStatus';
 import type { McpApiKeyContext } from './mcpPrincipalAuth';

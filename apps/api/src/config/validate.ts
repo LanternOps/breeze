@@ -699,7 +699,7 @@ const envObjectSchema = z
     MCP_STATELESS_ENABLED: z.string().optional(),
 
     // Tier-3 over MCP via action intents (B-W04 #6158). Kill switch is boolean
-    // (mcpTier3IntentsEnabled()); the knobs are read per call through
+    // (services/mcpIntentConfig.ts mcpTier3IntentsEnabled()); the knobs are read per call through
     // positiveIntEnv in config/env.ts. Validated here for format only.
     MCP_TIER3_INTENTS_ENABLED: z.string().optional(),
     MCP_INTENT_MAX_LIVE_PER_PRINCIPAL: z.string().optional(),

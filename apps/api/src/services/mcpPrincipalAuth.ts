@@ -17,7 +17,7 @@ import { resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getUserPermissions } from './permissions';
 import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from './apiKeyAuthorization';
 import { getActiveOrgTenant } from './tenantStatus';
-import { envFlag, mcpTier3IntentsEnabled } from '../config/env';
+import { mcpTier3IntentsEnabled } from './mcpIntentConfig';
 import { db, withSystemDbAccessContext } from '../db';
 import { apiKeys } from '../db/schema/apiKeys';
 import { users } from '../db/schema/users';
@@ -37,6 +37,13 @@ import { resolveTenantMutationTargetOrgId } from './actionIntents/actorContext';
 function parseCsvSet(raw: string | undefined): Set<string> {
   if (!raw) return new Set();
   return new Set(raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0));
+}
+
+function envFlag(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
 const mcpExecuteToolAllowlist = parseCsvSet(process.env.MCP_EXECUTE_TOOL_ALLOWLIST);
