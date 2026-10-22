@@ -10,6 +10,7 @@ import { complianceRoutes } from './compliance';
 import { recommendationsRoutes } from './recommendations';
 import { recoveryKeysRoutes } from './recoveryKeys';
 import { yaraRoutes } from './yara';
+import { yaraIocImportRoutes } from './yaraIocImport';
 
 export const securityRoutes = new Hono();
 
@@ -25,4 +26,5 @@ securityRoutes.route('/', complianceRoutes);
 securityRoutes.route('/', recoveryKeysRoutes);
 securityRoutes.route('/', recommendationsRoutes);
 securityRoutes.route('/', yaraRoutes);
+securityRoutes.route('/', yaraIocImportRoutes);
 

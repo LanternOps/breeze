@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import {
+  YARA_IOC_KINDS,
+  YARA_IOC_LABEL_MAX,
+  YARA_IOC_MAX_PER_BATCH,
+  YARA_IOC_VALUE_MAX_CHARS,
   YARA_MAX_RULE_SOURCE_BYTES,
   YARA_RULE_NAME_PATTERN,
   YARA_RULE_SEVERITIES,
@@ -51,3 +55,23 @@ export const createYaraRuleSchema = z.object({
 });
 
 export const updateYaraRuleSchema = createYaraRuleSchema.partial();
+
+/**
+ * IOC import (#6263 W04-1). Structured IOCs only — `.strict()` at both levels
+ * so a client can never send rule text through this route; the server
+ * re-generates the rules with the shared generator.
+ */
+export const yaraIocImportSchema = z
+  .object({
+    label: z.string().trim().min(1).max(YARA_IOC_LABEL_MAX),
+    severity: z.enum(YARA_RULE_SEVERITIES).optional(),
+    iocs: z
+      .array(
+        z
+          .object({ kind: z.enum(YARA_IOC_KINDS), value: z.string().max(YARA_IOC_VALUE_MAX_CHARS) })
+          .strict(),
+      )
+      .min(1)
+      .max(YARA_IOC_MAX_PER_BATCH),
+  })
+  .strict();
