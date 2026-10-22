@@ -237,6 +237,29 @@ describe('UserRiskPage', () => {
     expect(screen.getAllByText('Alice Admin')).toHaveLength(2);
   });
 
+  it('keeps the list on screen and toasts when the post-save refresh fails (#9684)', async () => {
+    routeFetch({ save: 'ok' });
+    const routed = fetchWithAuthMock.getMockImplementation()!;
+    let scoreCalls = 0;
+    fetchWithAuthMock.mockImplementation((url: string, ...rest: unknown[]) => {
+      if (typeof url === 'string' && url.includes('/user-risk/scores')) {
+        scoreCalls += 1;
+        if (scoreCalls >= 2) return Promise.resolve(response({ error: 'down' }, false, 500));
+      }
+      return (routed as (...a: unknown[]) => Promise<Response>)(url, ...rest);
+    });
+
+    render(<UserRiskPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /true positive/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(screen.getByTestId('user-risk-page')).toBeTruthy();
+    expect(screen.getAllByText('Alice Admin')).toHaveLength(2);
+  });
+
   it('names each risk driver with a label and description, never the raw key (#9684)', async () => {
     routeFetch();
 

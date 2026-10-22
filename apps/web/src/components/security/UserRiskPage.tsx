@@ -17,6 +17,7 @@ import {
   type LoadErrorKind,
 } from "../../lib/httpError";
 import AccessDenied from "../shared/AccessDenied";
+import { showToast } from "../shared/Toast";
 import { fetchWithAuth } from "../../stores/auth";
 import { useMlFeatureFlags } from "../../hooks/useMlFeatureFlags";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -193,6 +194,18 @@ export default function UserRiskPage() {
       // artifact anywhere to debug from. (#2429)
       console.error("[UserRiskPage] failed to load user risk scores:", err);
       const kind = errorKindOf(err);
+      // A failed background refresh must not discard the data already on screen;
+      // surface it as a toast instead of the full-page error panel (#9684).
+      if (background && kind === "other") {
+        showToast({
+          type: "error",
+          message:
+            err instanceof Error
+              ? err.message
+              : t("securityUserRiskPage.failedToLoadUserRisk"),
+        });
+        return;
+      }
       setErrorKind(kind);
       // 'denied' renders AccessDenied, which supplies its own copy.
       if (kind === "other")

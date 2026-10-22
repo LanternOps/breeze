@@ -826,7 +826,7 @@
     "factors": {
       "mfaRisk": {
         "label": "Çok faktörlü kimlik doğrulama eksikleri",
-        "description": "MFA’sı olmayan veya daha zayıf MFA yöntemleri kullanan hesaplar."
+        "description": "MFA’sı etkin olmayan hesaplar."
       },
       "authFailureRisk": {
         "label": "Başarısız oturum açma denemeleri",

@@ -826,7 +826,7 @@
     "factors": {
       "mfaRisk": {
         "label": "Lücken bei der Multi-Faktor-Authentifizierung",
-        "description": "Konten ohne MFA oder mit schwächeren MFA-Methoden."
+        "description": "Konten, für die MFA nicht aktiviert ist."
       },
       "authFailureRisk": {
         "label": "Fehlgeschlagene Anmeldeversuche",

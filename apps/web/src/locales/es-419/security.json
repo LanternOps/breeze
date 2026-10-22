@@ -826,7 +826,7 @@
     "factors": {
       "mfaRisk": {
         "label": "Brechas de autenticación multifactor",
-        "description": "Cuentas sin MFA o que usan métodos de MFA más débiles."
+        "description": "Cuentas que no tienen MFA habilitada."
       },
       "authFailureRisk": {
         "label": "Intentos de inicio de sesión fallidos",

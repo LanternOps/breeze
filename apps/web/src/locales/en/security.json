@@ -826,7 +826,7 @@
     "factors": {
       "mfaRisk": {
         "label": "Multi-factor authentication gaps",
-        "description": "Accounts without MFA, or relying on weaker MFA methods."
+        "description": "Accounts that do not have MFA enabled."
       },
       "authFailureRisk": {
         "label": "Failed sign-in attempts",

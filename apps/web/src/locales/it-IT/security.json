@@ -826,7 +826,7 @@
     "factors": {
       "mfaRisk": {
         "label": "Lacune nell’autenticazione a più fattori",
-        "description": "Account senza MFA o che usano metodi MFA più deboli."
+        "description": "Account per cui la MFA non è abilitata."
       },
       "authFailureRisk": {
         "label": "Tentativi di accesso falliti",

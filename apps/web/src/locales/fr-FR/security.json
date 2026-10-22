@@ -826,7 +826,7 @@
     "factors": {
       "mfaRisk": {
         "label": "Lacunes d’authentification multifacteur",
-        "description": "Comptes sans MFA ou utilisant des méthodes MFA plus faibles."
+        "description": "Comptes pour lesquels la MFA n’est pas activée."
       },
       "authFailureRisk": {
         "label": "Échecs de connexion",
