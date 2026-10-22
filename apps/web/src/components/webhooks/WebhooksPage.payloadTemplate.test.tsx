@@ -33,6 +33,10 @@ const row = {
   headers: [],
   status: 'active',
   hasSecret: true,
+  // A stray template on the row: before the fix the page pre-filled it into
+  // the form and echoed it back on save and on test, so the "not sent"
+  // assertions below fail if the template plumbing comes back.
+  payloadTemplate: '{"text":"{{type}}"}',
 };
 
 function mockApi() {
@@ -76,5 +80,15 @@ describe('WebhooksPage — payload template is not offered (#9653)', () => {
       expect(fetchWithAuth.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true)
     );
     expect(sentBody('PATCH')).not.toHaveProperty('payloadTemplate');
+  });
+
+  it('does not send payloadTemplate with a test delivery', async () => {
+    render(<WebhooksPage />);
+    await screen.findByText('Authentication');
+    fireEvent.click(screen.getByText('Test webhook', { selector: 'button' }));
+    await waitFor(() =>
+      expect(fetchWithAuth.mock.calls.some(([url]) => String(url).endsWith('/test'))).toBe(true)
+    );
+    expect(sentBody('POST')).not.toHaveProperty('payloadTemplate');
   });
 });

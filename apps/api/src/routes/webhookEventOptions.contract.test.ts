@@ -16,7 +16,13 @@ function formEventValues(): string[] {
   const end = source.indexOf('\n];', start);
   expect(start, `webhookEventOptions not found in ${FORM}`).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
-  return [...source.slice(start, end).matchAll(/\{\s*value:\s*'([^']+)'/g)].map((m) => m[1]!);
+  const block = source.slice(start, end);
+  const values = [...block.matchAll(/\{\s*value:\s*'([^']+)'/g)].map((m) => m[1]!);
+  // Every option carries a labelKey; if an option is written in a shape the
+  // value regex misses, the counts diverge and this fails instead of skipping it.
+  const optionCount = (block.match(/\blabelKey:/g) ?? []).length;
+  expect(values.length, 'an option in webhookEventOptions was not parsed').toBe(optionCount);
+  return values;
 }
 
 describe('webhook form event options', () => {
