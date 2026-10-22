@@ -41,6 +41,7 @@ vi.mock('./helpers', async () => {
 vi.mock('../../services/securityPosture', () => ({ getSecurityPostureTrend: vi.fn(async () => []) }));
 
 import { db } from '../../db';
+import { getSecurityPostureTrend } from '../../services/securityPosture';
 import { complianceRoutes } from './compliance';
 
 const DEV_ESCROWED = '11111111-1111-4111-8111-111111111111';
@@ -61,13 +62,14 @@ function statusRow(overrides: Record<string, unknown>) {
   };
 }
 
-function buildApp() {
+function buildApp(authOverrides: Record<string, unknown> = {}) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
       scope: 'organization', orgId: null, partnerId: null,
       accessibleOrgIds: [], user: { id: 'u' },
       orgCondition: () => undefined, canAccessOrg: () => true,
+      ...authOverrides,
     } as any);
     await next();
   });
@@ -171,5 +173,49 @@ describe('GET /firewall — unknown firewall state (#8252)', () => {
     const res = await buildApp().request('/firewall?status=disabled');
     const json = await res.json();
     expect(json.data.map((d: any) => d.deviceName)).toEqual(['off']);
+  });
+});
+
+// #9639: the header org switcher sends ?orgId=<selected org>. Trends must
+// narrow to it (within the caller's accessible orgs), not aggregate the book.
+describe('GET /trends — selected organization (#9639)', () => {
+  const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const ORG_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const ORG_OTHER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const partnerAuth = {
+    scope: 'partner',
+    orgId: null,
+    accessibleOrgIds: [ORG_A, ORG_B],
+    canAccessOrg: (id: string) => id === ORG_A || id === ORG_B,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  it('narrows the trend to the selected org', async () => {
+    const res = await buildApp(partnerAuth).request(`/trends?period=7d&orgId=${ORG_A}`);
+
+    expect(res.status).toBe(200);
+    expect(getSecurityPostureTrend).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getSecurityPostureTrend).mock.calls[0]![0]).toMatchObject({ orgIds: [ORG_A], days: 7 });
+  });
+
+  it('returns 403 for an org outside the caller\'s access and reads nothing', async () => {
+    const res = await buildApp(partnerAuth).request(`/trends?orgId=${ORG_OTHER}`);
+
+    expect(res.status).toBe(403);
+    expect(getSecurityPostureTrend).not.toHaveBeenCalled();
+  });
+
+  it('keeps every accessible org when no org is selected', async () => {
+    const res = await buildApp(partnerAuth).request('/trends');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getSecurityPostureTrend).mock.calls[0]![0]).toMatchObject({ orgIds: [ORG_A, ORG_B], days: 30 });
   });
 });

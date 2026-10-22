@@ -17,6 +17,7 @@ import {
 import {
   getPagination,
   paginate,
+  resolveScopedOrgIds,
   listStatusRows,
   toStatusResponse,
   normalizeEncryption,
@@ -35,14 +36,25 @@ complianceRoutes.get(
   zValidator('query', trendsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { period } = c.req.valid('query');
+    const { period, orgId } = c.req.valid('query');
     const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
 
-    const orgIds = auth.orgId
-      ? [auth.orgId]
-      : auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0
-        ? auth.accessibleOrgIds
-        : undefined;
+    // ?orgId= is the header org switcher's selection (#9639); it can only
+    // narrow within the caller's accessible orgs (403 otherwise).
+    let orgIds: string[] | undefined;
+    if (orgId) {
+      const scope = resolveScopedOrgIds(auth, orgId);
+      if (scope.error) {
+        return c.json({ error: scope.error.message }, scope.error.status);
+      }
+      orgIds = scope.orgIds;
+    } else {
+      orgIds = auth.orgId
+        ? [auth.orgId]
+        : auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0
+          ? auth.accessibleOrgIds
+          : undefined;
+    }
 
     const dataPoints = await getSecurityPostureTrend({
       orgIds,
