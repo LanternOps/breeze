@@ -1439,6 +1439,8 @@
       "error": "Hata",
       "deploymentComplete": "Dağıtım tamamlandı",
       "inProgress": "Devam ediyor",
+      "completedWithErrors": "Hatalarla tamamlandı",
+      "scheduledFor": "Zamanlandı: {{time}}",
       "autoRefreshing": "Her 5 saniyede bir otomatik olarak yenilenir",
       "queuedOffline": "Sıraya alındı — cihaz çevrimdışı",
       "cancelled": "İptal edildi",

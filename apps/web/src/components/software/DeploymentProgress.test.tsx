@@ -219,6 +219,33 @@ describe("DeploymentProgress", () => {
     expect(detailCalls).toBe(3);
   });
 
+  describe("header status label (#9637)", () => {
+    const cases: Array<[string, string, string, Record<string, unknown>]> = [
+      ["completed", "Deployment complete", "completed", { completed: 2, total: 2 }],
+      ["completed_with_errors", "Completed with errors", "completed_with_errors", { completed: 1, failed: 1, total: 2 }],
+      ["failed", "Failed", "failed", { failed: 2, total: 2 }],
+      ["cancelled", "Cancelled", "cancelled", { cancelled: 2, total: 2 }],
+      ["in_progress", "In progress", "in_progress", { inProgress: 1, total: 1 }],
+      ["pending (immediate)", "In progress", "pending", { pending: 1, total: 1 }],
+    ];
+    it.each(cases)("%s", async (_n, label, status, counts) => {
+      routeFetch({ detail: detailPayload(status, counts) });
+      render(<DeploymentProgress deploymentId={DEP_ID} />);
+      const pct = await screen.findByTestId("deployment-percent");
+      expect(pct.nextElementSibling?.textContent).toBe(label);
+    });
+
+    it("shows Scheduled with the time for a future scheduled deployment", async () => {
+      const payload = detailPayload("pending", { pending: 1, total: 1 });
+      payload.data.scheduleType = "scheduled";
+      (payload.data as Record<string, unknown>).scheduledAt = "2999-01-01T10:00:00Z";
+      routeFetch({ detail: payload });
+      render(<DeploymentProgress deploymentId={DEP_ID} />);
+      const pct = await screen.findByTestId("deployment-percent");
+      expect(pct.nextElementSibling?.textContent).toMatch(/^Scheduled for .*2999/);
+    });
+  });
+
   it("does not poll once the aggregate status is terminal", async () => {
     vi.useFakeTimers();
     let detailCalls = 0;

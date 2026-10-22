@@ -1439,6 +1439,8 @@
       "error": "Errore",
       "deploymentComplete": "Distribuzione completata",
       "inProgress": "In corso",
+      "completedWithErrors": "Completato con errori",
+      "scheduledFor": "Pianificato per {{time}}",
       "autoRefreshing": "Aggiornamento automatico ogni 5 secondi",
       "queuedOffline": "In coda — dispositivo offline",
       "cancelled": "Annullata",
