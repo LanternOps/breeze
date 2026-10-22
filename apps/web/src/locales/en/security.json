@@ -443,6 +443,7 @@
     "invalidResponseFromServer": "Invalid response from server",
     "low": "Low",
     "markComplete": "Mark Complete",
+    "reopen": "Reopen",
     "medium": "Medium",
     "next": "Next",
     "noRecommendationsMatchYourFilters": "No recommendations match your filters.",

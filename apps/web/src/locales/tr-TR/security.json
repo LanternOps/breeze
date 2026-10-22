@@ -443,6 +443,7 @@
     "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
     "low": "Düşük",
     "markComplete": "Tamamlandı Olarak İşaretle",
+    "reopen": "Yeniden aç",
     "medium": "Orta",
     "next": "Sonraki",
     "noRecommendationsMatchYourFilters": "Filtrelerinizle eşleşen öneri yok.",

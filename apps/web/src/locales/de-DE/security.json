@@ -443,6 +443,7 @@
     "invalidResponseFromServer": "Ungültige Antwort vom Server",
     "low": "Niedrig",
     "markComplete": "Als abgeschlossen markieren",
+    "reopen": "Wieder öffnen",
     "medium": "Mittel",
     "next": "Als nächstes",
     "noRecommendationsMatchYourFilters": "Keine Empfehlungen entsprechen Ihren Filtern.",

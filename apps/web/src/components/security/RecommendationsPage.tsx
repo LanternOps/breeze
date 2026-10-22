@@ -137,7 +137,7 @@ export default function RecommendationsPage() {
     fetchData();
     return () => abortRef.current?.abort();
   }, [fetchData]);
-  const handleAction = async (id: string, action: "complete" | "dismiss") => {
+  const handleAction = async (id: string, action: "complete" | "dismiss" | "reopen") => {
     setActionError(undefined);
     try {
       const res = await fetchWithAuth(
@@ -411,6 +411,18 @@ export default function RecommendationsPage() {
                         ))}
                       </ol>
                     )}
+                  </div>
+                )}
+
+                {rec.status !== "open" && (
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleAction(rec.id, "reopen")}
+                      className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+                    >
+                      {t("securityRecommendationsPage.reopen")}
+                    </button>
                   </div>
                 )}
 
