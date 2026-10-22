@@ -271,7 +271,13 @@ const createApiKeySchema = z.object({
   orgId: z.string().guid(),
   name: z.string().min(1).max(255),
   scopes: z.array(z.string()).default([]),
-  expiresAt: z.string().datetime().nullable().optional(),
+  // A real ISO timestamp (a bare YYYY-MM-DD is rejected; the web form
+  // normalises its date picker to end-of-day local time, #9654) that is still
+  // in the future — minting an already-expired credential is always a mistake.
+  expiresAt: z.string().datetime()
+    .refine((v) => new Date(v).getTime() > Date.now(), { message: 'expiresAt must be in the future' })
+    .nullable()
+    .optional(),
   rateLimit: z.number().int().min(1).max(100000).nullable().optional().transform(v => v ?? 1000),
   mcpDomains: mcpDomainsInputSchema.optional()
 });

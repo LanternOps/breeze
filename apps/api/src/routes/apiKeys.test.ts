@@ -904,5 +904,44 @@ describe('api keys routes', () => {
       const call = vi.mocked(createAuditLogAsync).mock.calls.find((c) => c[0].action === 'api_key.create');
       expect(call?.[0].details).toMatchObject({ mcpDomains: ['tickets'] });
     });
+
+    // Reuses the create helpers above; not mcpDomains-specific.
+    describe('expiresAt on create (#9654)', () => {
+      it('accepts a future ISO datetime and stores it as that instant', async () => {
+        const captured = mockCreate();
+        const expiresAt = '2099-06-30T23:59:59.999Z';
+        const res = await createWith({ expiresAt });
+        expect(res.status).toBe(201);
+        expect(captured.values?.expiresAt).toEqual(new Date(expiresAt));
+      });
+
+      it('stores null for a never-expiring key', async () => {
+        const captured = mockCreate();
+        const res = await createWith({ expiresAt: null });
+        expect(res.status).toBe(201);
+        expect(captured.values?.expiresAt).toBeNull();
+      });
+
+      it('rejects a bare date — the server takes a real timestamp, the client normalises', async () => {
+        asFullAccess();
+        const res = await createWith({ expiresAt: '2099-06-30' });
+        expect(res.status).toBe(400);
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('rejects an expiry that is already in the past', async () => {
+        asFullAccess();
+        const res = await createWith({ expiresAt: '2020-01-01T00:00:00.000Z' });
+        expect(res.status).toBe(400);
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('rejects a non-date string', async () => {
+        asFullAccess();
+        const res = await createWith({ expiresAt: 'tomorrow' });
+        expect(res.status).toBe(400);
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+    });
   });
 });
