@@ -117,7 +117,7 @@ Jobs are triggered either **automatically** by a policy schedule, **manually** v
 
 ## Storage Usage History
 
-Track storage growth over time from the **Overview** tab's storage section. The usage chart shows cumulative stored bytes by provider over the past 14 days, starting from what was already stored before the window, so its last point matches **Storage Used** (configurable from 3 to 90 days via the API).
+Track storage growth over time from the **Overview** tab's storage section. The usage chart shows cumulative stored bytes by provider over the past 14 days, starting from what was already stored before the window, so its last point matches **Storage Used**. The series reflects the restore points retained now: when the oldest one expires, the next one takes over its full size, so earlier days can shift after retention runs (configurable from 3 to 90 days via the API).
 
 If storage is growing faster than expected, check whether large datasets were recently added to backup scope. Expired restore points are removed from Breeze immediately and their storage is reclaimed by the periodic reclamation sweep (see the [storage page](/backup/storage/) for timing and safety windows) — allow for the grace period and the next scheduled sweep before usage reflects the drop.
 

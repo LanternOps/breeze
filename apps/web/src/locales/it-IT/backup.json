@@ -494,6 +494,7 @@
     "deviceOption_other": "{{device}} ({{count}} snapshot)",
     "unknownDevice": "Dispositivo sconosciuto",
     "reviewDevice": "Dispositivo: {{device}}",
+    "carriedSnapshotUnavailable": "Lo snapshot con cui hai aperto la procedura guidata non è più disponibile. Scegli un dispositivo e uno dei suoi snapshot.",
     "selectRestoreType": "Seleziona tipo di ripristino",
     "fullRestoresEverythingSelectiveRestoresSpecificFiles": "Il ripristino completo ripristina tutto; il ripristino selettivo ripristina file specifici.",
     "fullRestore": "Ripristino completo",

@@ -494,6 +494,7 @@
     "deviceOption_other": "{{device}} ({{count}} anlık görüntü)",
     "unknownDevice": "Bilinmeyen cihaz",
     "reviewDevice": "Cihaz: {{device}}",
+    "carriedSnapshotUnavailable": "Sihirbazı açtığınız anlık görüntü artık mevcut değil. Bir cihaz ve onun anlık görüntülerinden birini seçin.",
     "selectRestoreType": "Geri yükleme türünü seçin",
     "fullRestoresEverythingSelectiveRestoresSpecificFiles": "Tam her şeyi geri yükler, seçici belirli dosyaları geri yükler.",
     "fullRestore": "Tam geri yükleme",

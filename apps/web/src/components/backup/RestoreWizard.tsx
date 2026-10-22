@@ -253,11 +253,17 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   // implied by the carried snapshot (its own device) or by an org that has
   // exactly one device with snapshots. Derived, not set from an effect, so
   // the first render after the list loads is already scoped.
+  // A carried id that is no longer listed (expired, deleted) implies no
+  // device at all — not even a single-device org's — or that device's newest
+  // snapshot would be silently substituted for the one the link named.
+  const carriedSnapshotMissing = Boolean(initialSnapshotId)
+    && !loading
+    && !snapshots.some((snap) => snap.id === initialSnapshotId);
   const impliedDeviceKey = useMemo(() => {
-    const carried = initialSnapshotId
-      ? snapshots.find((snap) => snap.id === initialSnapshotId)
-      : undefined;
-    if (carried) return snapshotDeviceKey(carried);
+    if (initialSnapshotId) {
+      const carried = snapshots.find((snap) => snap.id === initialSnapshotId);
+      return carried ? snapshotDeviceKey(carried) : null;
+    }
     return deviceGroups.length === 1 ? deviceGroups[0].key : null;
   }, [deviceGroups, initialSnapshotId, snapshots]);
   const deviceKey = chosenDeviceKey ?? impliedDeviceKey;
@@ -553,6 +559,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
               snapshotId={snapshotId}
               onSnapshotChange={setPickedSnapshotId}
               formatBytes={formatBytes}
+              carriedSnapshotMissing={carriedSnapshotMissing && chosenDeviceKey === null}
             />
           )}
 

@@ -494,6 +494,7 @@
     "deviceOption_other": "{{device}} ({{count}} Snapshots)",
     "unknownDevice": "Unbekanntes Gerät",
     "reviewDevice": "Gerät: {{device}}",
+    "carriedSnapshotUnavailable": "Der Snapshot, mit dem Sie den Assistenten geöffnet haben, ist nicht mehr verfügbar. Wählen Sie ein Gerät und einen seiner Snapshots.",
     "selectRestoreType": "Wählen Sie den Wiederherstellungstyp aus",
     "fullRestoresEverythingSelectiveRestoresSpecificFiles": "Vollständig stellt alles wieder her, selektiv stellt bestimmte Dateien wieder her.",
     "fullRestore": "Vollständige Wiederherstellung",

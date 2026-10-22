@@ -61,6 +61,8 @@ type RestoreSnapshotStepProps = {
   snapshotId: string;
   onSnapshotChange: (id: string) => void;
   formatBytes: (bytes?: number | null) => string;
+  /** The snapshot the wizard was opened with is no longer in the list. */
+  carriedSnapshotMissing?: boolean;
 };
 
 /**
@@ -76,6 +78,7 @@ export default function RestoreSnapshotStep({
   snapshotId,
   onSnapshotChange,
   formatBytes,
+  carriedSnapshotMissing = false,
 }: RestoreSnapshotStepProps) {
   const { t } = useTranslation('backup');
   const deviceLabel = (group: SnapshotDeviceGroup) => group.deviceName || t('restoreWizard.unknownDevice');
@@ -88,6 +91,15 @@ export default function RestoreSnapshotStep({
         <p className="text-sm text-muted-foreground">
           {t('restoreWizard.chooseTheRecoveryPointYouWantToRestore')} </p>
       </div>
+      {carriedSnapshotMissing ? (
+        <div
+          data-testid="restore-carried-snapshot-missing"
+          role="status"
+          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+        >
+          {t('restoreWizard.carriedSnapshotUnavailable')}
+        </div>
+      ) : null}
       {groups.length === 0 ? (
         <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
           {t('restoreWizard.noSnapshotsAvailable')} </div>

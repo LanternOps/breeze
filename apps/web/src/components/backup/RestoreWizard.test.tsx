@@ -1068,6 +1068,93 @@ describe('RestoreWizard', () => {
       expect(screen.getByRole('button', { name: /FS older/i }).className).not.toContain('border-primary');
     });
 
+    it('does not swap a carried snapshot that is no longer listed for another one', async () => {
+      // Single-device org: without the guard, the device would be implied and
+      // its newest snapshot silently substituted for the one the link named.
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') return makeJsonResponse({ data: multiDeviceSnapshots.filter((snap) => snap.deviceId === 'dev-b') });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({ data: [] });
+      });
+      render(<RestoreWizard initialSnapshotId="snap-gone" initialSelectedPaths={['/a.txt']} />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('');
+      expect(screen.getByTestId('restore-carried-snapshot-missing')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /FS newest/i })).toBeNull();
+      expect((screen.getByRole('button', { name: /Continue/i }) as HTMLButtonElement).disabled).toBe(true);
+
+      // An explicit device choice then works as usual.
+      fireEvent.change(select, { target: { value: 'dev-b' } });
+      expect(screen.getByRole('button', { name: /FS newest/i }).className).toContain('border-primary');
+    });
+
+    it('restores the chosen device\'s snapshot after a switch, not the earlier pick', async () => {
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') return makeJsonResponse({ data: multiDeviceSnapshots });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        if (url === '/backup/restore' && init?.method === 'POST') {
+          return makeJsonResponse({ data: { id: 'restore-1', snapshotId: 'snap-a1', deviceId: 'dev-a', restoreType: 'full', status: 'pending', createdAt: '2026-10-21T10:00:00.000Z', updatedAt: '2026-10-21T10:00:00.000Z' } });
+        }
+        return makeJsonResponse({ data: [] });
+      });
+      render(<RestoreWizard />);
+      const select = await screen.findByTestId('restore-device-select');
+      fireEvent.change(select, { target: { value: 'dev-b' } });
+      fireEvent.click(screen.getByRole('button', { name: /FS older/i }));
+      fireEvent.change(select, { target: { value: 'dev-a' } });
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      }
+      expect(screen.getByTestId('restore-review-device').textContent).toContain('DC01');
+      fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+
+      await waitFor(() => {
+        const post = fetchMock.mock.calls.find(([url, init]) => String(url) === '/backup/restore' && init?.method === 'POST');
+        expect(post).toBeTruthy();
+        expect(JSON.parse(String(post![1]!.body)).snapshotId).toBe('snap-a1');
+      });
+    });
+
+    it('selects nothing for a carried snapshot no longer listed in a multi-device org', async () => {
+      render(<RestoreWizard initialSnapshotId="snap-gone" />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('');
+      expect(screen.getByTestId('restore-carried-snapshot-missing')).toBeTruthy();
+      expect((screen.getByRole('button', { name: /Continue/i }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('scopes a single-device org to that device and its newest snapshot without a click', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') return makeJsonResponse({ data: multiDeviceSnapshots.filter((snap) => snap.deviceId === 'dev-b') });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({ data: [] });
+      });
+      render(<RestoreWizard />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('dev-b');
+      expect(screen.getByRole('button', { name: /FS newest/i }).className).toContain('border-primary');
+      expect(screen.queryByTestId('restore-carried-snapshot-missing')).toBeNull();
+    });
+
+    it('clears carried selective paths when the operator switches to another device', async () => {
+      render(<RestoreWizard initialSnapshotId="snap-b1" initialSelectedPaths={['/Documents/report.txt']} />);
+      const select = await screen.findByTestId('restore-device-select');
+      fireEvent.change(select, { target: { value: 'dev-a' } });
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      }
+      expect(screen.getByText('0 files selected')).toBeTruthy();
+      expect((screen.getByRole('button', { name: /Start restore/i }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
     it('scopes to the device of a snapshot carried in from SnapshotBrowser', async () => {
       render(<RestoreWizard initialSnapshotId="snap-b1" />);
       const select = await screen.findByTestId('restore-device-select');

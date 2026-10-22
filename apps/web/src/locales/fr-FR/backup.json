@@ -494,6 +494,7 @@
     "deviceOption_other": "{{device}} ({{count}} instantanés)",
     "unknownDevice": "Appareil inconnu",
     "reviewDevice": "Appareil : {{device}}",
+    "carriedSnapshotUnavailable": "L’instantané avec lequel vous avez ouvert l’assistant n’est plus disponible. Choisissez un appareil et l’un de ses instantanés.",
     "selectRestoreType": "Sélectionner le type de restauration",
     "fullRestoresEverythingSelectiveRestoresSpecificFiles": "Restaure tout en complet, la sélective restaure des fichiers spécifiques.",
     "fullRestore": "Restauration complète",

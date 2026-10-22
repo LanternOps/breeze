@@ -24,6 +24,7 @@ import { getStorageByProvider } from '../../services/backupStorageByProvider';
 import {
   storedSnapshotBytesByProviderSince,
   sumStoredSnapshotBytes,
+  sumStoredSnapshotBytesByProvider,
 } from '../../services/backupStoredBytes';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -58,7 +59,9 @@ type SnapSeed = {
   orgId: string;
   configId: string;
   deviceId: string;
-  storageIdentity: string;
+  storageIdentity: string | null;
+  /** backup_snapshots.config_id when it differs from the job's (null = config deleted). */
+  snapshotConfigId?: string | null;
   size: number;
   /** backup_jobs.referenced_size; null = the run reported no dedup (a full). */
   referencedSize: number | null;
@@ -86,7 +89,7 @@ async function seedSnapshot(seed: SnapSeed) {
       orgId: seed.orgId,
       jobId: job!.id,
       deviceId: seed.deviceId,
-      configId: seed.configId,
+      configId: seed.snapshotConfigId === undefined ? seed.configId : seed.snapshotConfigId,
       snapshotId: `snap-${randomUUID()}`,
       label: 'test snapshot',
       size: seed.size,
@@ -173,5 +176,42 @@ describe('backup stored bytes (#9631)', () => {
     expect(baseline).toBe(100);
     expect(baseline + added).toBe(669);
     expect(rows.find((row) => row.day === at(1).toISOString().slice(0, 10))?.bytes).toBe(15 + 500 + 50);
+  });
+
+  it('chains a legacy NULL-identity snapshot by its config, one full-size base per config', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const device = await seedDevice(org.id, site.id);
+    const cfgA = await seedConfig(org.id, 's3');
+    const cfgB = await seedConfig(org.id, 's3');
+    const t0 = Date.now() - 5 * DAY;
+    const seed = (configId: string, size: number, referencedSize: number | null, day: number) =>
+      seedSnapshot({ orgId: org.id, configId, deviceId: device.id, storageIdentity: null, size, referencedSize, timestamp: new Date(t0 + day * DAY) });
+    await seed(cfgA.id, 100, null, 0);
+    await seed(cfgA.id, 105, 98, 1);
+    // A second destination's own oldest snapshot is an incremental by its job
+    // row, but nothing older is left in its chain, so it counts in full.
+    await seed(cfgB.id, 80, 70, 2);
+    await seed(cfgB.id, 82, 80, 3);
+
+    const total = await asOrg(org.id, () => sumStoredSnapshotBytes(eq(backupSnapshots.orgId, org.id)));
+    // cfgA: 100 + 7; cfgB: 80 + 2.
+    expect(total).toEqual({ totalBytes: 189, count: 4 });
+  });
+
+  it('keeps a snapshot whose config was deleted, under a null provider', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const device = await seedDevice(org.id, site.id);
+    const cfg = await seedConfig(org.id, 's3');
+    await seedSnapshot({ orgId: org.id, configId: cfg.id, snapshotConfigId: null, deviceId: device.id, storageIdentity: 'ident-gone', size: 40, referencedSize: null, timestamp: new Date(Date.now() - DAY) });
+
+    const rows = await asOrg(org.id, () => sumStoredSnapshotBytesByProvider(eq(backupSnapshots.orgId, org.id)));
+    expect(rows).toEqual([{ provider: null, bytes: 40, snapshots: 1 }]);
+    // Storage by Provider still shows it, so its rows sum to Storage Used.
+    const providers = await asOrg(org.id, () => getStorageByProvider(org.id, null));
+    expect(providers.find((row) => row.id === 'unknown')?.usedBytes).toBe(40);
   });
 });
