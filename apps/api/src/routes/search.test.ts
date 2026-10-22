@@ -49,7 +49,12 @@ vi.mock('../db/schema', () => ({
     deviceId: 'alerts.deviceId',
     title: 'alerts.title',
     message: 'alerts.message',
-    severity: 'alerts.severity'
+    severity: 'alerts.severity',
+    triggeredAt: 'alerts.triggeredAt'
+  },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId'
   }
 }));
 
@@ -115,27 +120,27 @@ describe('search routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([
               { id: 'dev-1', title: 'Workstation 01', hostname: 'ws-01', status: 'online', lastUser: null }
-            ])
+            ]) })
           })
         })
       } as never)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([
               { id: 'script-1', title: 'Patch Audit', description: 'Audit patch state' }
-            ])
+            ]) })
           })
         })
       } as never)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([
               { id: 'alert-1', title: 'CPU high', message: 'CPU above threshold', severity: 'high' }
-            ])
+            ]) })
           })
         })
       } as never);
@@ -155,7 +160,7 @@ describe('search routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([
               {
                 id: 'dev-1',
                 title: 'Alek 2019 MBP',
@@ -163,21 +168,21 @@ describe('search routes', () => {
                 status: 'online',
                 lastUser: 'admitriev'
               }
-            ])
+            ]) })
           })
         })
       } as never)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
           })
         })
       } as never)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
           })
         })
       } as never);
@@ -199,23 +204,23 @@ describe('search routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([
               { id: 'dev-1', title: null, hostname: 'host-16', status: 'online', lastUser: null }
-            ])
+            ]) })
           })
         })
       } as never)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
           })
         })
       } as never)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
           })
         })
       } as never);
@@ -236,7 +241,7 @@ describe('search routes', () => {
     it('returns no settings rows: the web palette serves them from its settings catalogue', async () => {
       const empty = {
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
         }),
       };
       vi.mocked(db.select).mockReturnValue(empty as never);
@@ -270,16 +275,16 @@ describe('search routes', () => {
         scope: 'organization',
       } as any);
 
-      const alertWhere = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) });
+      const alertWhere = vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) });
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
           }),
         } as never)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
           }),
         } as never)
         .mockReturnValueOnce({
@@ -317,14 +322,14 @@ describe('search routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
             })
           })
         } as never)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
             })
           })
         } as never)
@@ -332,7 +337,7 @@ describe('search routes', () => {
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
               where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([])
+                orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
               })
             })
           })
@@ -368,19 +373,19 @@ describe('search routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockImplementation((condition: unknown) => {
               capturedDeviceWhere = condition;
-              return { limit: vi.fn().mockResolvedValue([]) };
+              return { orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) };
             })
           })
         } as never)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
           })
         } as never)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+              where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
             })
           })
         } as never);
@@ -401,20 +406,20 @@ describe('search routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([
                 { id: 'dev-1', title: 'Workstation', hostname: 'ws-01', status: 'online', lastUser: null }
-              ])
+              ]) })
             })
           })
         } as never)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
           })
         } as never)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
           })
         } as never);
 
@@ -432,9 +437,9 @@ describe('search routes', () => {
     function stubThreeSelects() {
       const empty = () => ({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
           leftJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
           }),
         }),
       });
@@ -482,6 +487,145 @@ describe('search routes', () => {
 
       expect(res.status).toBe(200);
       expect(vi.mocked(eq)).not.toHaveBeenCalledWith('scripts.partnerId', expect.anything());
+    });
+  });
+
+  // #9612: Cmd+K sent ?orgId=<selected> but the route ignored it, so a client's
+  // search listed other clients' devices; every category was also an
+  // unordered LIMIT 5, so the selected org's exact match could be cut.
+  describe('selected-org narrowing and ordering (#9612)', () => {
+    const ORG_A = '11111111-1111-4111-8111-111111111111';
+    const ORG_B = '22222222-2222-4222-8222-222222222222';
+    const FOREIGN = '33333333-3333-4333-8333-333333333333';
+
+    type Captured = { where: unknown[]; orderBy: unknown[][] };
+    function stubCapturingSelects(): Captured {
+      const captured: Captured = { where: [], orderBy: [] };
+      const chain = () => {
+        const where = vi.fn((condition: unknown) => {
+          captured.where.push(condition);
+          return {
+            orderBy: vi.fn((...args: unknown[]) => {
+              captured.orderBy.push(args);
+              return { limit: vi.fn().mockResolvedValue([]) };
+            }),
+          };
+        });
+        return { from: vi.fn().mockReturnValue({ where, leftJoin: vi.fn().mockReturnValue({ where }) }) };
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chain() as never)
+        .mockReturnValueOnce(chain() as never)
+        .mockReturnValueOnce(chain() as never);
+      return captured;
+    }
+
+    const text = (value: unknown) =>
+      JSON.stringify(value, (_k, v) => (typeof v === 'function' ? '[function]' : v));
+
+    function partnerCaller() {
+      authState.current = {
+        user: { id: 'user-1', email: 'p@example.com', name: 'Partner User' },
+        scope: 'partner',
+        orgId: null,
+        partnerId: 'partner-9',
+        accessibleOrgIds: [ORG_A, ORG_B],
+        canAccessOrg: (id: string) => id === ORG_A || id === ORG_B,
+        orgCondition: (col: unknown) => inArray(col as never, [ORG_A, ORG_B] as never),
+      };
+    }
+
+    it('narrows every category to the selected org while keeping the access condition', async () => {
+      partnerCaller();
+      const captured = stubCapturingSelects();
+
+      const res = await app.request(`/search?q=srv-02&orgId=${ORG_A}`);
+
+      expect(res.status).toBe(200);
+      expect(captured.where).toHaveLength(3);
+      for (const column of ['devices.orgId', 'scripts.orgId', 'alerts.orgId']) {
+        expect(vi.mocked(eq)).toHaveBeenCalledWith(column, ORG_A);
+      }
+      const [deviceWhere, scriptWhere, alertWhere] = captured.where.map(text);
+      // Narrowing is an AND on top of the caller's access list, never a replacement.
+      for (const where of [deviceWhere, alertWhere]) {
+        expect(where).toContain(ORG_A);
+        expect(where).toContain(ORG_B); // the inArray access condition is still there
+      }
+      // Partner-wide scripts stay visible inside a selected org.
+      expect(vi.mocked(eq)).toHaveBeenCalledWith('scripts.partnerId', 'partner-9');
+      expect(scriptWhere).toContain(ORG_A);
+    });
+
+    it('does not narrow when no org is selected', async () => {
+      partnerCaller();
+      stubCapturingSelects();
+
+      const res = await app.request('/search?q=srv-02');
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(eq)).not.toHaveBeenCalledWith('devices.orgId', expect.anything());
+    });
+
+    it('rejects an orgId outside the caller access list with 403 and runs no query', async () => {
+      partnerCaller();
+
+      const res = await app.request(`/search?q=srv-02&orgId=${FOREIGN}`);
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed orgId with 400', async () => {
+      partnerCaller();
+
+      const res = await app.request('/search?q=srv-02&orgId=not-a-uuid');
+
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('narrows a system-scope caller and keeps that org partner-wide scripts', async () => {
+      authState.current = {
+        user: { id: 'user-1', email: 's@example.com', name: 'System User' },
+        scope: 'system',
+        orgId: null,
+        partnerId: null,
+        accessibleOrgIds: null,
+        canAccessOrg: () => true,
+        orgCondition: () => undefined,
+      };
+      const captured = stubCapturingSelects();
+
+      const res = await app.request(`/search?q=srv-02&orgId=${ORG_A}`);
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(eq)).toHaveBeenCalledWith('devices.orgId', ORG_A);
+      expect(vi.mocked(eq)).toHaveBeenCalledWith('alerts.orgId', ORG_A);
+      const scriptWhere = text(captured.where[1]);
+      expect(scriptWhere).toContain('scripts.partnerId');
+      expect(scriptWhere).toContain('organizations.partnerId');
+      expect(scriptWhere).toContain(ORG_A);
+    });
+
+    it('orders every category before limiting: relevance then name for devices and scripts, recency for alerts', async () => {
+      const captured = stubCapturingSelects();
+
+      const res = await app.request('/search?q=srv-02');
+
+      expect(res.status).toBe(200);
+      expect(captured.orderBy).toHaveLength(3);
+      const [deviceOrder, scriptOrder, alertOrder] = captured.orderBy.map(text);
+      // Exact match ranks above prefix above substring.
+      expect(deviceOrder).toMatch(/CASE WHEN/);
+      expect(deviceOrder).toContain('devices.hostname');
+      expect(deviceOrder).toContain('devices.displayName');
+      expect(deviceOrder).toContain('srv-02');
+      expect(deviceOrder).toContain('devices.id'); // stable tiebreak
+      expect(scriptOrder).toContain('scripts.name');
+      expect(scriptOrder).toContain('scripts.id');
+      expect(alertOrder).toContain('alerts.triggeredAt');
+      expect(alertOrder).toContain('desc');
     });
   });
 

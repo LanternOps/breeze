@@ -231,6 +231,11 @@ export default function CommandPalette() {
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const permissions = useAuthStore((s) => s.user?.permissions);
   const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
+  // The palette is a global overlay: server results follow the org switcher
+  // on every page, including catalog routes where fetchWithAuth injects no
+  // ambient orgId. null = All organizations (the server returns every
+  // accessible org). The API narrows only within the caller's access (#9612).
+  const selectedOrgId = useOrgStore((s) => s.currentOrgId);
   // Read-only: the palette mounts on every page, so it must not trigger the
   // /config or autopay fetches the gate hooks fire. An unknown gate hides the
   // entry (the nav's own default), and the sidebar loads /config anyway.
@@ -280,7 +285,9 @@ export default function CommandPalette() {
 
     const performSearch = async () => {
       try {
-        const response = await fetchWithAuth(`/search?q=${encodeURIComponent(debouncedQuery)}`);
+        const response = await fetchWithAuth(`/search?q=${encodeURIComponent(debouncedQuery)}`, {
+          orgIdOverride: selectedOrgId ?? null,
+        });
         if (!isActive) return;
 
         if (!response.ok) {
@@ -312,7 +319,7 @@ export default function CommandPalette() {
     return () => {
       isActive = false;
     };
-  }, [debouncedQuery, open]);
+  }, [debouncedQuery, open, selectedOrgId]);
 
   useEffect(() => {
     if (open) return;
