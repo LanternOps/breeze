@@ -309,7 +309,7 @@ describe('buildPortalPreview — per-section staff permission (#9350)', () => {
     expect(dash).not.toHaveProperty('reason');
     expect(dash.data).toHaveProperty('securityScore');
     expect(dash.data).not.toHaveProperty('support');
-    expect(dash.note).toMatch(/tickets:read/);
+    expect(dash.missingPermissions).toEqual(['tickets:read']);
   });
 
   // The dashboard DTO embeds tiles sourced from other domains; each needs the
@@ -331,7 +331,7 @@ describe('buildPortalPreview — per-section staff permission (#9350)', () => {
     expect(dash).not.toHaveProperty('reason');
     expect(dash.data).not.toHaveProperty(tile);
     expect(dash.data).toHaveProperty('securityScore');
-    expect(dash.note).toContain(denied[0]);
+    expect(dash.missingPermissions).toEqual([denied[0]]);
     for (const other of ['backup', 'support', 'service', 'awaitingYou'].filter((k) => k !== tile)) {
       expect(dash.data, other).toHaveProperty(other);
     }
@@ -343,6 +343,7 @@ describe('buildPortalPreview — per-section staff permission (#9350)', () => {
     const dash = out.sections.find((s) => s.key === 'dashboard')!;
     for (const k of Object.keys(FULL_DASH)) expect(dash.data).toHaveProperty(k);
     expect(dash.note).toBeUndefined();
+    expect(dash).not.toHaveProperty('missingPermissions');
   });
 
   it('dashboard with tickets:read keeps the support tile', async () => {
