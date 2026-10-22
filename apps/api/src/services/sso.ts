@@ -1344,7 +1344,8 @@ export const SAML_PROVIDER_PRESETS: Record<string, SAMLProviderPreset> = {
 };
 
 // Combined presets for UI
-export const ALL_SSO_PRESETS = {
+// String-keyed on purpose: a lookup by arbitrary preset id (OIDC or SAML).
+export const ALL_SSO_PRESETS: Record<string, ProviderPreset | SAMLProviderPreset> = {
   ...PROVIDER_PRESETS,
   ...SAML_PROVIDER_PRESETS
 };
