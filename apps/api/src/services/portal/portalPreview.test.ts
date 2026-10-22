@@ -337,6 +337,22 @@ describe('buildPortalPreview — per-section staff permission (#9350)', () => {
     }
   });
 
+  it('dashboard fails closed: a tile that is neither a device tile nor permission-mapped is dropped, even for a wildcard-less caller', async () => {
+    m.dashboardForOrg.mockResolvedValue({ ...FULL_DASH, newCrossDomainTile: { secret: 1 } });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: ALLOW_ALL });
+    const dash = out.sections.find((s) => s.key === 'dashboard')!;
+    expect(dash.data).not.toHaveProperty('newCrossDomainTile');
+    expect(dash.data).toHaveProperty('securityScore');
+  });
+
+  it('dashboard lists every missing tile permission once', async () => {
+    m.dashboardForOrg.mockResolvedValue({ ...FULL_DASH });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: (r, a) => `${r}:${a}` === 'devices:read' });
+    const dash = out.sections.find((s) => s.key === 'dashboard')!;
+    expect([...dash.missingPermissions!].sort()).toEqual(['backup:read', 'contracts:read', 'invoices:read', 'quotes:read', 'tickets:read']);
+    expect(Object.keys(dash.data as object).sort()).toEqual(['actionItems', 'devicesProtected', 'patchesApplied', 'securityScore']);
+  });
+
   it('dashboard with every permission keeps every tile and has no note', async () => {
     m.dashboardForOrg.mockResolvedValue({ ...FULL_DASH });
     const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: ALLOW_ALL });

@@ -1,9 +1,11 @@
 import { eq, sql, type SQL } from 'drizzle-orm';
+import { PERMISSION_GRANTS } from '@breeze/shared';
 import { db } from '../../db';
 import { portalBranding } from '../../db/schema';
 import {
   PORTAL_SECTION_GATES,
   portalSectionEffectiveFlags,
+  type StaffGrant,
   type PortalSectionGateRow,
   type PortalSectionKey,
 } from '../../routes/portal/featureFlags';
@@ -89,12 +91,17 @@ export type StaffCan = (resource: string, action: string) => boolean;
  * dashboard stays) when the caller lacks any. securityScore / devicesProtected /
  * patchesApplied / actionItems are device data, covered by the row's devices:read.
  */
-const DASHBOARD_TILE_PERMISSIONS: Record<string, readonly string[]> = {
-  backup: ['backup:read'],
-  support: ['tickets:read'],
-  service: ['contracts:read'],
-  awaitingYou: ['invoices:read', 'quotes:read'],
+const DASHBOARD_TILE_PERMISSIONS: Record<string, readonly StaffGrant[]> = {
+  backup: [PERMISSION_GRANTS.BACKUP_READ],
+  support: [PERMISSION_GRANTS.TICKETS_READ],
+  service: [PERMISSION_GRANTS.CONTRACTS_READ],
+  awaitingYou: [PERMISSION_GRANTS.INVOICES_READ, PERMISSION_GRANTS.QUOTES_READ],
 };
+
+/** Keys covered by the dashboard row's devices:read. ALLOWLIST: any dashboard key
+ *  not here and not in DASHBOARD_TILE_PERMISSIONS is dropped, so a future tile
+ *  added to DashboardDto fails closed instead of leaking to devices:read holders. */
+const DASHBOARD_DEVICE_KEYS = ['asOf', 'timezone', 'securityScore', 'devicesProtected', 'patchesApplied', 'actionItems'] as const;
 
 const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
   dashboard: async ({ orgId, timezone, now, portalUser, can }) => {
@@ -102,17 +109,17 @@ const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
     // and the support tile it feeds is dropped rather than shown as a bogus 0.
     const ownership: SQL = portalUser ? portalTicketOwnership(portalUser) : sql`false`;
     const dto = await dashboardForOrg(orgId, { timezone, now }, ownership);
-    const data: Record<string, unknown> = { ...(dto as unknown as Record<string, unknown>) };
+    const full = dto as unknown as Record<string, unknown>;
+    const data: Record<string, unknown> = {};
+    for (const k of DASHBOARD_DEVICE_KEYS) if (k in full) data[k] = full[k];
     const notes: string[] = [];
     const missing = new Set<string>();
     for (const [tile, perms] of Object.entries(DASHBOARD_TILE_PERMISSIONS)) {
-      const lacking = perms.filter((p) => {
-        const [r, a] = p.split(':');
-        return !can(r!, a!);
-      });
+      const lacking = perms.filter((p) => !can(p.resource, p.action));
       if (lacking.length > 0) {
-        delete data[tile];
-        lacking.forEach((p) => missing.add(p));
+        lacking.forEach((p) => missing.add(`${p.resource}:${p.action}`));
+      } else if (tile in full) {
+        data[tile] = full[tile];
       }
     }
     if (!portalUser) {
