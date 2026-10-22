@@ -403,6 +403,16 @@ describe('DeviceScriptHistory queued copy follows the device status (#9563)', ()
     expect(screen.queryByText(/device offline/i)).toBeNull();
   });
 
+  it('the default per-script latest view badge follows the device status too', async () => {
+    window.location.hash = '#scripts';
+    const { unmount } = render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="offline" />);
+    expect((await screen.findByTestId('device-script-latest-status-script-1')).textContent).toBe('Queued — device offline');
+    unmount();
+
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="online" />);
+    expect((await screen.findByTestId('device-script-latest-status-script-1')).textContent).toBe('Queued — awaiting pickup');
+  });
+
   it('an offline device keeps the device-offline copy', async () => {
     render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="offline" highlightExecutionId="exec-1" />);
 
