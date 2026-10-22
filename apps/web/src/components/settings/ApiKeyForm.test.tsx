@@ -1,8 +1,8 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '../../lib/i18n';
-import { describe, it, expect, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
-import ApiKeyForm, { endOfLocalDayIso } from './ApiKeyForm';
+import ApiKeyForm from './ApiKeyForm';
 
 const noop = () => {};
 
@@ -136,17 +136,38 @@ describe('ApiKeyForm — MCP tool domains (#6156)', () => {
 });
 
 describe('ApiKeyForm — expiration date (#9654)', () => {
-  // The API validates expiresAt with z.string().datetime(); a bare
-  // "YYYY-MM-DD" from <input type="date"> fails it, so every dated key used to
-  // be rejected. Parse with the same schema the route uses.
+  // The API validates expiresAt with z.string().datetime() (mirrored here; the
+  // route schema lives in apps/api). A bare "YYYY-MM-DD" from
+  // <input type="date"> fails it, so every dated key used to be rejected.
   const apiExpiresAt = z.string().datetime();
 
-  const localDate = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // A zone west of UTC, so local-day and UTC-day arithmetic disagree (a UTC
+  // runner cannot tell them apart). "Now" is 22:30 MDT on 2026-10-18, which is
+  // already 2026-10-19 in UTC.
+  const originalTz = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = 'America/Denver';
+    // Fail loudly rather than silently run in the runner's zone.
+    expect(new Date(Date.UTC(2026, 0, 15)).getTimezoneOffset()).toBe(420);
+  });
+  afterAll(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-19T04:30:00Z'));
+  });
+  afterEach(() => vi.useRealTimers());
 
   function pickExpiry(value: string) {
     fireEvent.click(screen.getByLabelText('Never expires'));
     fireEvent.change(screen.getByTestId('api-key-expires-at'), { target: { value } });
+  }
+
+  async function submittedExpiry(onSubmit: ReturnType<typeof vi.fn>) {
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    return onSubmit.mock.calls[0][0].expiresAt as string | null;
   }
 
   it('submits the picked date as an ISO datetime at the end of that day in the user timezone', async () => {
@@ -156,35 +177,32 @@ describe('ApiKeyForm — expiration date (#9654)', () => {
     pickExpiry('2099-06-30');
     fireEvent.click(screen.getByText('Create Key'));
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    const sent = onSubmit.mock.calls[0][0].expiresAt as string;
+    const sent = await submittedExpiry(onSubmit);
     expect(apiExpiresAt.safeParse(sent).success).toBe(true);
-    expect(sent).toBe(new Date(2099, 5, 30, 23, 59, 59, 999).toISOString());
-    // Still the picked calendar day for the user, not the day before/after.
-    expect(localDate(new Date(sent))).toBe('2099-06-30');
+    // 23:59:59.999 MDT (UTC-6) on the 30th.
+    expect(sent).toBe('2099-07-01T05:59:59.999Z');
   });
 
-  it("accepts today's date (the key lives until the end of today)", async () => {
+  it("uses the user's local today for the picker min and accepts it (key lives to end of today)", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(<ApiKeyForm isOpen onSubmit={onSubmit} onCancel={noop} />);
     fillNameAndScopes();
-    pickExpiry(localDate(new Date()));
+    pickExpiry('2026-10-18');
+    // Local day, not the UTC day (2026-10-19).
+    expect((screen.getByTestId('api-key-expires-at') as HTMLInputElement).min).toBe('2026-10-18');
     fireEvent.click(screen.getByText('Create Key'));
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    const sent = new Date(onSubmit.mock.calls[0][0].expiresAt as string);
-    expect(sent.getTime()).toBeGreaterThan(Date.now());
+    expect(await submittedExpiry(onSubmit)).toBe('2026-10-19T05:59:59.999Z');
   });
 
   it('blocks a date in the past instead of posting an already-expired key', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(<ApiKeyForm isOpen onSubmit={onSubmit} onCancel={noop} />);
     fillNameAndScopes();
-    pickExpiry('2020-01-01');
+    pickExpiry('2026-10-17');
     const input = screen.getByTestId('api-key-expires-at') as HTMLInputElement;
-    // The picker's native `min` is today, so the browser already refuses the
-    // submit (jsdom too: rangeUnderflow) ...
-    expect(input.min).toBe(localDate(new Date()));
+    // The picker's native `min` already refuses the submit (jsdom too:
+    // rangeUnderflow) ...
     expect(input.validity.rangeUnderflow).toBe(true);
     // ... and validate() is the backstop when native validation is bypassed.
     fireEvent.submit(input.form!);
@@ -195,21 +213,23 @@ describe('ApiKeyForm — expiration date (#9654)', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it('endOfLocalDayIso rejects malformed and non-existent dates', () => {
-    expect(endOfLocalDayIso('2026-02-31')).toBeNull();
-    expect(endOfLocalDayIso('2026-13-01')).toBeNull();
-    expect(endOfLocalDayIso('31/12/2026')).toBeNull();
-    expect(endOfLocalDayIso('')).toBeNull();
-    expect(endOfLocalDayIso('2028-02-29')).toBe(new Date(2028, 1, 29, 23, 59, 59, 999).toISOString());
-  });
-
   it('still submits null when "Never expires" stays checked', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(<ApiKeyForm isOpen onSubmit={onSubmit} onCancel={noop} />);
     fillNameAndScopes();
     fireEvent.click(screen.getByText('Create Key'));
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0][0]).toMatchObject({ expiresAt: null });
+    expect(await submittedExpiry(onSubmit)).toBeNull();
+  });
+
+  it('submits null when a date was picked and "Never expires" is re-checked', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<ApiKeyForm isOpen onSubmit={onSubmit} onCancel={noop} />);
+    fillNameAndScopes();
+    pickExpiry('2099-06-30');
+    fireEvent.click(screen.getByLabelText('Never expires'));
+    fireEvent.click(screen.getByText('Create Key'));
+
+    expect(await submittedExpiry(onSubmit)).toBeNull();
   });
 });

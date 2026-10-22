@@ -2,34 +2,9 @@ import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
+import { endOfLocalDayIso, localDateInputValue } from '@/lib/localDate';
 import type { McpGrantableDomain } from '@breeze/shared';
 import McpDomainPicker, { isMcpDomainSelectionValid } from '../shared/McpDomainPicker';
-
-/** Today's calendar date in the user's timezone, as `YYYY-MM-DD` (the value
- *  format of `<input type="date">`). */
-function todayLocalDate(now: Date = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
-/**
- * Converts a `YYYY-MM-DD` value from `<input type="date">` into the ISO
- * datetime the API requires (#9654): the last millisecond of that day in the
- * user's local timezone, so a key "expiring on the 30th" works through the
- * whole of the 30th where the user is. Returns null for anything that is not a
- * real calendar date.
- */
-export function endOfLocalDayIso(date: string): string | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  if (!match) return null;
-  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  const end = new Date(year, month - 1, day, 23, 59, 59, 999);
-  // Reject rollovers such as 2026-02-31 → March 3.
-  if (end.getFullYear() !== year || end.getMonth() !== month - 1 || end.getDate() !== day) {
-    return null;
-  }
-  return end.toISOString();
-}
 
 export type ApiKeyScope = {
   id: string;
@@ -254,6 +229,7 @@ export default function ApiKeyForm({
       if (!expiresAt) {
         newErrors.expiresAt = 'Expiration date is required when not set to never expire';
       } else {
+        // Sent as the end of the picked day in the user's timezone (#9654).
         const iso = endOfLocalDayIso(expiresAt);
         if (!iso) {
           newErrors.expiresAt = 'Enter a valid expiration date';
@@ -372,7 +348,7 @@ export default function ApiKeyForm({
                 type="date"
                 value={expiresAt}
                 onChange={e => setExpiresAt(e.target.value)}
-                min={todayLocalDate()}
+                min={localDateInputValue()}
                 className={cn(
                   'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
                   errors.expiresAt && 'border-destructive focus:ring-destructive'
