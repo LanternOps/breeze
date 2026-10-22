@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 const h = vi.hoisted(() => ({
   authRef: { current: null as any },
-  permsRef: { current: { allowedSiteIds: null as string[] | null } },
+  permsRef: { current: { allowedSiteIds: null as string[] | null, permissions: [{ resource: '*', action: '*' }] } },
   selectQueue: vi.fn(),
   wheres: [] as unknown[],
   insert: vi.fn(),
@@ -107,7 +107,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.wheres.length = 0;
   auth();
-  h.permsRef.current = { allowedSiteIds: null };
+  h.permsRef.current = { allowedSiteIds: null, permissions: [{ resource: '*', action: '*' }] };
   h.resolveOrgTimezone.mockResolvedValue('UTC');
   h.dashboardForOrg.mockResolvedValue({ securityScore: { status: 'ok' }, support: { openTickets: 2 } });
   h.serviceOverview.mockResolvedValue({ groups: [] });
@@ -119,7 +119,7 @@ beforeEach(() => {
 
 describe('GET /organizations/:id/portal-preview — access (#9350)', () => {
   it('site-restricted caller → 403 and nothing is read', async () => {
-    h.permsRef.current = { allowedSiteIds: ['site-1'] };
+    h.permsRef.current = { allowedSiteIds: ['site-1'], permissions: [{ resource: '*', action: '*' }] };
     const res = await get();
     expect(res.status).toBe(403);
     expect(h.selectQueue).not.toHaveBeenCalled();

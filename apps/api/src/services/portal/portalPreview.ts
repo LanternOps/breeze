@@ -43,6 +43,10 @@ export type PreviewSection = {
   note?: string;
   /** Set when the section is on but its read model threw. */
   error?: 'load_failed';
+  /** Set when the caller lacks the staff permission(s) that gate this data (never read). */
+  reason?: 'permission';
+  /** The staff permissions the caller is missing, for the "you need X" message. */
+  missingPermissions?: string[];
 };
 
 export type ReadinessCode =
@@ -67,19 +71,31 @@ export type PortalPreview = {
   readiness: ReadinessCheck[];
 };
 
-type RunnerCtx = { orgId: string; timezone: string; now: Date; portalUser: PreviewPortalUser | null };
+type RunnerCtx = { orgId: string; timezone: string; now: Date; portalUser: PreviewPortalUser | null; canViewTickets: boolean };
 type Runner = (ctx: RunnerCtx) => Promise<{ data: unknown; note?: string }>;
 
 // Which dashboard keys depend on WHO is looking (ticket ownership).
 const NO_USER_NOTE =
   'Ticket-scoped data (open tickets) is omitted: pick a portal user to see what that person sees.';
 
+const NO_TICKETS_PERMISSION_NOTE =
+  'The open-tickets tile is not shown: you need tickets:read to preview it.';
+
+/** Does the caller hold a staff permission? (resource, action) -> boolean. */
+export type StaffCan = (resource: string, action: string) => boolean;
+
 const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
-  dashboard: async ({ orgId, timezone, now, portalUser }) => {
+  dashboard: async ({ orgId, timezone, now, portalUser, canViewTickets }) => {
     // Without a user there is no ownership predicate; `false` matches nothing,
     // and the support tile it feeds is dropped rather than shown as a bogus 0.
     const ownership: SQL = portalUser ? portalTicketOwnership(portalUser) : sql`false`;
     const dto = await dashboardForOrg(orgId, { timezone, now }, ownership);
+    if (!canViewTickets) {
+      // Staff without tickets:read must not see ticket counts (staff routes gate
+      // them on tickets:read): drop only the support tile.
+      const { support: _omitted, ...rest } = dto as unknown as Record<string, unknown>;
+      return { data: rest, note: NO_TICKETS_PERMISSION_NOTE };
+    }
     if (portalUser) return { data: dto };
     const { support: _omitted, ...rest } = dto as unknown as Record<string, unknown>;
     return { data: rest, note: NO_USER_NOTE };
@@ -184,6 +200,8 @@ export function computeReadiness(args: {
 export async function buildPortalPreview(args: {
   orgId: string;
   portalUser: PreviewPortalUser | null;
+  /** The staff caller's permission check. Each section is withheld (and its read model never called) unless the caller holds the row's staffPermissions. */
+  can: StaffCan;
   now?: Date;
 }): Promise<PortalPreview> {
   const now = args.now ?? new Date();
@@ -199,7 +217,13 @@ export async function buildPortalPreview(args: {
     .limit(1)) as Array<Record<string, unknown>>;
 
   const timezone = await resolveOrgTimezone(args.orgId);
-  const ctx: RunnerCtx = { orgId: args.orgId, timezone, now, portalUser: args.portalUser };
+  const ctx: RunnerCtx = {
+    orgId: args.orgId,
+    timezone,
+    now,
+    portalUser: args.portalUser,
+    canViewTickets: args.can('tickets', 'read'),
+  };
 
   // Same rule as createPortalFeatureGateStrict: every flag must be an explicit
   // true; a missing row is fail-closed.
@@ -208,6 +232,20 @@ export async function buildPortalPreview(args: {
     const key = gate.key as PortalSectionKey;
     const enabled = portalSectionEffectiveFlags(gate).every((f) => row?.[f] === true);
     const runner = RUNNERS[key];
+    // Permission gate BEFORE anything else: organizations:read (the route gate)
+    // is not enough to see data the staff routes gate on a stronger permission.
+    const missing = gate.staffPermissions.filter((p) => !args.can(p.resource, p.action));
+    if (missing.length > 0) {
+      sections.push({
+        key,
+        enabled,
+        previewAvailable: false,
+        data: null,
+        reason: 'permission',
+        missingPermissions: missing.map((p) => `${p.resource}:${p.action}`),
+      });
+      continue;
+    }
     if (!enabled) {
       sections.push({ key, enabled: false, previewAvailable: Boolean(runner), data: null });
       continue;

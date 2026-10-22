@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from 'hono';
 import { eq } from 'drizzle-orm';
+import { PERMISSION_GRANTS } from '@breeze/shared';
 import { db } from '../../db';
 import { portalBranding } from '../../db/schema';
 import type { PortalVisibilityFlag } from '../../services/portal/portalFlags';
@@ -231,6 +232,8 @@ export function createPortalFeatureGateAny(
  * are still gated through `portalSectionGate(key)` but are mounted by hand in
  * index.ts because their position relative to other middleware matters.
  */
+export type StaffGrant = { readonly resource: string; readonly action: string };
+
 export type PortalSectionGateRow = {
   key: string;
   /** Path prefix under /api/v1/portal, no trailing slash or wildcard. */
@@ -246,32 +249,51 @@ export type PortalSectionGateRow = {
   parent?: string;
   /** index.ts mounts this row by hand (see portalSectionGate). */
   customMount?: boolean;
+  /** Staff permission(s), ALL required, gating this section's data on the staff side (#9350). organizations:read is never enough. */
+  staffPermissions: readonly [StaffGrant, ...StaffGrant[]];
 };
 
 export const PORTAL_SECTION_GATES = [
-  { key: 'dashboard', pathPrefix: '/dashboard', flags: ['enableDashboard'], routeFile: 'dashboard.ts' },
-  { key: 'security', pathPrefix: '/security', flags: ['enableSecurity'], routeFile: 'security.ts' },
-  { key: 'backups', pathPrefix: '/backups', flags: ['enableBackups'], routeFile: 'backups.ts' },
-  { key: 'reports', pathPrefix: '/reports', flags: ['enableReports'], routeFile: 'reports.ts' },
+  // staffPermissions: the staff-side permission(s) that gate the SAME data in the
+  // staff API (#9350 review). Derivation = staff route file -> requirePermission.
+  // The preview route itself only requires organizations:read, so each section
+  // re-checks these before its read model runs.
+  // dashboard: aggregates device security posture -> routes/security/dashboard.ts (devices:read). The ticket-scoped support tile additionally needs tickets:read (routes/tickets/tickets.ts), enforced in portalPreview.ts.
+  { key: 'dashboard', pathPrefix: '/dashboard', flags: ['enableDashboard'], routeFile: 'dashboard.ts', staffPermissions: [PERMISSION_GRANTS.DEVICES_READ] },
+  // security: routes/security/dashboard.ts, readAuthorization.ts (devices:read)
+  { key: 'security', pathPrefix: '/security', flags: ['enableSecurity'], routeFile: 'security.ts', staffPermissions: [PERMISSION_GRANTS.DEVICES_READ] },
+  // backups: routes/backup/{snapshots,configs,health,restore}.ts (backup:read). backup/dashboard.ts uses organizations:read, but job/snapshot data is backup:read -> strictest.
+  { key: 'backups', pathPrefix: '/backups', flags: ['enableBackups'], routeFile: 'backups.ts', staffPermissions: [PERMISSION_GRANTS.BACKUP_READ] },
+  // reports: routes/reports/{core,runs,series}.ts (reports:read)
+  { key: 'reports', pathPrefix: '/reports', flags: ['enableReports'], routeFile: 'reports.ts', staffPermissions: [PERMISSION_GRANTS.REPORTS_READ] },
   // Narrower second gate: /reports/lifecycle/* needs enableReports (above,
   // registered first) AND enableLifecycle.
-  { key: 'lifecycleReports', pathPrefix: '/reports/lifecycle', flags: ['enableLifecycle'], routeFile: 'reports.ts', inheritsAuth: true, parent: 'reports' },
-  { key: 'service', pathPrefix: '/service', flags: ['enableService'], routeFile: 'service.ts' },
-  { key: 'hardwareHealth', pathPrefix: '/hardware-health', flags: ['enableHardwareHealth'], routeFile: 'hardwareHealth.ts' },
-  { key: 'hardwareInventory', pathPrefix: '/hardware-inventory', flags: ['enableHardwareInventory'], routeFile: 'hardwareInventory.ts' },
-  { key: 'performance', pathPrefix: '/performance', flags: ['enablePerformanceMetrics'], routeFile: 'performance.ts' },
-  { key: 'software', pathPrefix: '/software', flags: ['enableSoftwareInventory'], routeFile: 'software.ts' },
-  { key: 'patches', pathPrefix: '/patches', flags: ['enablePatchDetail'], routeFile: 'patches.ts' },
-  { key: 'vulnerabilities', pathPrefix: '/vulnerabilities', flags: ['enableVulnerabilityDetail'], routeFile: 'vulnerabilities.ts' },
+  // lifecycleReports: no staff-side equivalent (routes/lifecycle.ts is user-offboarding, users:write); device lifecycle report data -> strictest neighbours reports:read + devices:read.
+  { key: 'lifecycleReports', pathPrefix: '/reports/lifecycle', flags: ['enableLifecycle'], routeFile: 'reports.ts', inheritsAuth: true, parent: 'reports', staffPermissions: [PERMISSION_GRANTS.REPORTS_READ, PERMISSION_GRANTS.DEVICES_READ] },
+  // service: routes/serviceDeliverables.ts list/read routes (contracts:read)
+  { key: 'service', pathPrefix: '/service', flags: ['enableService'], routeFile: 'service.ts', staffPermissions: [PERMISSION_GRANTS.CONTRACTS_READ] },
+  // hardwareHealth / hardwareInventory / performance: device telemetry -> routes/metrics.ts, routes/monitoringAssetMetrics.ts (devices:read)
+  { key: 'hardwareHealth', pathPrefix: '/hardware-health', flags: ['enableHardwareHealth'], routeFile: 'hardwareHealth.ts', staffPermissions: [PERMISSION_GRANTS.DEVICES_READ] },
+  { key: 'hardwareInventory', pathPrefix: '/hardware-inventory', flags: ['enableHardwareInventory'], routeFile: 'hardwareInventory.ts', staffPermissions: [PERMISSION_GRANTS.DEVICES_READ] },
+  { key: 'performance', pathPrefix: '/performance', flags: ['enablePerformanceMetrics'], routeFile: 'performance.ts', staffPermissions: [PERMISSION_GRANTS.DEVICES_READ] },
+  // software: routes/softwareInventory.ts, routes/software.ts (devices:read)
+  { key: 'software', pathPrefix: '/software', flags: ['enableSoftwareInventory'], routeFile: 'software.ts', staffPermissions: [PERMISSION_GRANTS.DEVICES_READ] },
+  // patches: routes/patches/list.ts (devices:read)
+  { key: 'patches', pathPrefix: '/patches', flags: ['enablePatchDetail'], routeFile: 'patches.ts', staffPermissions: [PERMISSION_GRANTS.DEVICES_READ] },
+  // vulnerabilities: routes/vulnerabilities.ts reads (devices:read)
+  { key: 'vulnerabilities', pathPrefix: '/vulnerabilities', flags: ['enableVulnerabilityDetail'], routeFile: 'vulnerabilities.ts', staffPermissions: [PERMISSION_GRANTS.DEVICES_READ] },
   // Block hours W04: the "Support hours" card lives inside Support usage, so
   // its endpoint needs BOTH fail-closed flags. A separate prefix on purpose:
   // nesting under /tickets/* would inherit the enable_tickets gate.
-  { key: 'supportUsage', pathPrefix: '/support-usage', flags: ['enableSupportUsage', 'enableHourBlock'], routeFile: 'hourBlock.ts' },
+  // supportUsage: ticket usage (routes/tickets/tickets.ts, tickets:read) + prepaid-hours balance from contract lines (contracts:read).
+  { key: 'supportUsage', pathPrefix: '/support-usage', flags: ['enableSupportUsage', 'enableHourBlock'], routeFile: 'hourBlock.ts', staffPermissions: [PERMISSION_GRANTS.TICKETS_READ, PERMISSION_GRANTS.CONTRACTS_READ] },
   // Library listing only; the CONTENT path also opens under enableService
   // (documentBytesGate in index.ts). Mounted by hand next to that wrapper.
-  { key: 'documents', pathPrefix: '/documents', flags: ['enableDocuments'], routeFile: 'documents.ts', customMount: true },
+  // documents: routes/orgDocuments.ts list/read (documents:read)
+  { key: 'documents', pathPrefix: '/documents', flags: ['enableDocuments'], routeFile: 'documents.ts', customMount: true, staffPermissions: [PERMISSION_GRANTS.DOCUMENTS_READ] },
   // Exact-path wrapper that must run before the generic /tickets/* middleware.
-  { key: 'ticketUsage', pathPrefix: '/tickets/usage', flags: ['enableSupportUsage'], routeFile: 'tickets.ts', exact: true, customMount: true },
+  // ticketUsage: routes/tickets/tickets.ts (tickets:read)
+  { key: 'ticketUsage', pathPrefix: '/tickets/usage', flags: ['enableSupportUsage'], routeFile: 'tickets.ts', exact: true, customMount: true, staffPermissions: [PERMISSION_GRANTS.TICKETS_READ] },
 ] as const satisfies readonly PortalSectionGateRow[];
 
 /** Every flag a request to this section must pass: its parent chain's flags, then its own. */

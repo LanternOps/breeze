@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { PERMISSION_GRANTS } from '@breeze/shared';
 import { PORTAL_SECTION_GATES } from './featureFlags';
 
 const dir = __dirname;
@@ -36,6 +37,47 @@ describe('portal section gate table (#9350)', () => {
 
   it('exemptions do not shadow table rows', () => {
     for (const g of PORTAL_SECTION_GATES) expect(NOT_A_GATED_SECTION).not.toHaveProperty(g.routeFile);
+  });
+
+  it('every row declares the staff permission(s) gating the same data on the staff side, each a real grant', () => {
+    const real = new Set(Object.values(PERMISSION_GRANTS).map((g) => `${g.resource}:${g.action}`));
+    for (const g of PORTAL_SECTION_GATES as readonly { key: string; staffPermissions?: readonly { resource: string; action: string }[] }[]) {
+      expect(g.staffPermissions?.length ?? 0, `${g.key} has no staffPermissions`).toBeGreaterThan(0);
+      for (const p of g.staffPermissions!) {
+        const k = `${p.resource}:${p.action}`;
+        expect(real.has(k), `${g.key}: ${k}`).toBe(true);
+        // organizations:read is the route-level gate, never a sufficient per-section gate
+        expect(k, g.key).not.toBe('organizations:read');
+      }
+    }
+  });
+
+  // Pinned (not derived from the table) so that weakening a row's permission
+  // fails here; update deliberately, with the staff route that justifies it.
+  const EXPECTED_STAFF_PERMISSIONS: Record<string, string[]> = {
+    dashboard: ['devices:read'],
+    security: ['devices:read'],
+    backups: ['backup:read'],
+    reports: ['reports:read'],
+    lifecycleReports: ['reports:read', 'devices:read'],
+    service: ['contracts:read'],
+    hardwareHealth: ['devices:read'],
+    hardwareInventory: ['devices:read'],
+    performance: ['devices:read'],
+    software: ['devices:read'],
+    patches: ['devices:read'],
+    vulnerabilities: ['devices:read'],
+    supportUsage: ['tickets:read', 'contracts:read'],
+    documents: ['documents:read'],
+    ticketUsage: ['tickets:read'],
+  };
+
+  it('staffPermissions match the pinned staff-route derivation for every section', () => {
+    const actual = Object.fromEntries(
+      (PORTAL_SECTION_GATES as readonly { key: string; staffPermissions: readonly { resource: string; action: string }[] }[])
+        .map((g) => [g.key, g.staffPermissions.map((p) => `${p.resource}:${p.action}`)]),
+    );
+    expect(actual).toEqual(EXPECTED_STAFF_PERMISSIONS);
   });
 
   it('keys and path prefixes are unique and every row names at least one flag', () => {
