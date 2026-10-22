@@ -43,6 +43,10 @@ export type PreviewSection = {
   note?: string;
   /** Set when the section is on but its read model threw. */
   error?: 'load_failed';
+  /** Set when the caller lacks the staff permission(s) that gate this data (never read). */
+  reason?: 'permission';
+  /** The staff permissions the caller is missing, for the "you need X" message. */
+  missingPermissions?: string[];
 };
 
 export type ReadinessCode =
@@ -67,22 +71,56 @@ export type PortalPreview = {
   readiness: ReadinessCheck[];
 };
 
-type RunnerCtx = { orgId: string; timezone: string; now: Date; portalUser: PreviewPortalUser | null };
+type RunnerCtx = { orgId: string; timezone: string; now: Date; portalUser: PreviewPortalUser | null; can: StaffCan };
 type Runner = (ctx: RunnerCtx) => Promise<{ data: unknown; note?: string }>;
 
 // Which dashboard keys depend on WHO is looking (ticket ownership).
 const NO_USER_NOTE =
   'Ticket-scoped data (open tickets) is omitted: pick a portal user to see what that person sees.';
 
+/** Does the caller hold a staff permission? (resource, action) -> boolean. */
+export type StaffCan = (resource: string, action: string) => boolean;
+
+/**
+ * Dashboard tiles sourced from OTHER domains, and the staff permission(s) that
+ * gate that domain on the staff side. A tile is dropped (the rest of the
+ * dashboard stays) when the caller lacks any. securityScore / devicesProtected /
+ * patchesApplied / actionItems are device data, covered by the row's devices:read.
+ */
+const DASHBOARD_TILE_PERMISSIONS: Record<string, readonly string[]> = {
+  backup: ['backup:read'],
+  support: ['tickets:read'],
+  service: ['contracts:read'],
+  awaitingYou: ['invoices:read', 'quotes:read'],
+};
+
 const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
-  dashboard: async ({ orgId, timezone, now, portalUser }) => {
+  dashboard: async ({ orgId, timezone, now, portalUser, can }) => {
     // Without a user there is no ownership predicate; `false` matches nothing,
     // and the support tile it feeds is dropped rather than shown as a bogus 0.
     const ownership: SQL = portalUser ? portalTicketOwnership(portalUser) : sql`false`;
     const dto = await dashboardForOrg(orgId, { timezone, now }, ownership);
-    if (portalUser) return { data: dto };
-    const { support: _omitted, ...rest } = dto as unknown as Record<string, unknown>;
-    return { data: rest, note: NO_USER_NOTE };
+    const data: Record<string, unknown> = { ...(dto as unknown as Record<string, unknown>) };
+    const notes: string[] = [];
+    const missing = new Set<string>();
+    for (const [tile, perms] of Object.entries(DASHBOARD_TILE_PERMISSIONS)) {
+      const lacking = perms.filter((p) => {
+        const [r, a] = p.split(':');
+        return !can(r!, a!);
+      });
+      if (lacking.length > 0) {
+        delete data[tile];
+        lacking.forEach((p) => missing.add(p));
+      }
+    }
+    if (missing.size > 0) {
+      notes.push(`Some tiles are not shown: you need ${[...missing].join(', ')} to preview them.`);
+    }
+    if (!portalUser) {
+      delete data.support;
+      notes.push(NO_USER_NOTE);
+    }
+    return notes.length > 0 ? { data, note: notes.join(' ') } : { data };
   },
   security: async ({ orgId, timezone, now }) => ({
     data: await securityOverview(orgId, { days: 30, timezone, now }),
@@ -184,6 +222,8 @@ export function computeReadiness(args: {
 export async function buildPortalPreview(args: {
   orgId: string;
   portalUser: PreviewPortalUser | null;
+  /** The staff caller's permission check. Each section is withheld (and its read model never called) unless the caller holds the row's staffPermissions. */
+  can: StaffCan;
   now?: Date;
 }): Promise<PortalPreview> {
   const now = args.now ?? new Date();
@@ -199,7 +239,13 @@ export async function buildPortalPreview(args: {
     .limit(1)) as Array<Record<string, unknown>>;
 
   const timezone = await resolveOrgTimezone(args.orgId);
-  const ctx: RunnerCtx = { orgId: args.orgId, timezone, now, portalUser: args.portalUser };
+  const ctx: RunnerCtx = {
+    orgId: args.orgId,
+    timezone,
+    now,
+    portalUser: args.portalUser,
+    can: args.can,
+  };
 
   // Same rule as createPortalFeatureGateStrict: every flag must be an explicit
   // true; a missing row is fail-closed.
@@ -208,6 +254,20 @@ export async function buildPortalPreview(args: {
     const key = gate.key as PortalSectionKey;
     const enabled = portalSectionEffectiveFlags(gate).every((f) => row?.[f] === true);
     const runner = RUNNERS[key];
+    // Permission gate BEFORE anything else: organizations:read (the route gate)
+    // is not enough to see data the staff routes gate on a stronger permission.
+    const missing = gate.staffPermissions.filter((p) => !args.can(p.resource, p.action));
+    if (missing.length > 0) {
+      sections.push({
+        key,
+        enabled,
+        previewAvailable: false,
+        data: null,
+        reason: 'permission',
+        missingPermissions: missing.map((p) => `${p.resource}:${p.action}`),
+      });
+      continue;
+    }
     if (!enabled) {
       sections.push({ key, enabled: false, previewAvailable: Boolean(runner), data: null });
       continue;

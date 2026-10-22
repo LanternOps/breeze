@@ -53,6 +53,7 @@ const allOn = Object.fromEntries(Object.keys(ALL_OFF).map((f) => [f, true]));
 const section = (key: string, data: unknown, enabled = true): PreviewSection =>
   ({ key, enabled, data, previewAvailable: true }) as PreviewSection;
 
+const ALLOW_ALL = () => true;
 const BRANDED = { logoUrl: 'x', primaryColor: null, welcomeMessage: null, supportEmail: null, supportPhone: null };
 
 describe('computeReadiness (#9350)', () => {
@@ -150,7 +151,7 @@ describe('buildPortalPreview (#9350)', () => {
   });
 
   it('with every flag off: enabled:false, data:null, and no read model is called', async () => {
-    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     expect(out.sections.map((s) => s.key)).toEqual(PORTAL_SECTION_GATES.map((g) => g.key));
     for (const s of out.sections) {
       expect(s.enabled).toBe(false);
@@ -165,7 +166,7 @@ describe('buildPortalPreview (#9350)', () => {
     'section %s stays disabled and runs no query when only the unrelated flags are on but %s is off',
     async (key, flag) => {
       m.brandingRow.mockResolvedValue([{ ...allOn, [flag]: false, ...BRANDED }]);
-      const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+      const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
       const s = out.sections.find((x) => x.key === key)!;
       expect(s.enabled).toBe(false);
       expect(s.data).toBeNull();
@@ -174,14 +175,14 @@ describe('buildPortalPreview (#9350)', () => {
 
   it('a missing portal_branding row is fail-closed (everything disabled) and flags branding_unset', async () => {
     m.brandingRow.mockResolvedValue([]);
-    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     expect(out.sections.every((s) => !s.enabled)).toBe(true);
     expect(out.readiness.map((r) => r.code)).toContain('branding_unset');
   });
 
   it('runs each enabled read model with the org timezone and portal-user-independent args', async () => {
     m.brandingRow.mockResolvedValue([{ ...allOn, ...BRANDED }]);
-    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     expect(m.serviceOverview).toHaveBeenCalledWith(ORG, expect.objectContaining({ timezone: 'America/Chicago' }));
     expect(m.documentsForOrg).toHaveBeenCalledWith(ORG, expect.objectContaining({ timezone: 'America/Chicago' }));
     expect(m.securityOverview).toHaveBeenCalledWith(ORG, expect.objectContaining({ days: 30, timezone: 'America/Chicago' }));
@@ -192,7 +193,7 @@ describe('buildPortalPreview (#9350)', () => {
 
   it('without portalUser the dashboard support tile is omitted with a note', async () => {
     m.brandingRow.mockResolvedValue([{ ...allOn, ...BRANDED }]);
-    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     const dash = out.sections.find((s) => s.key === 'dashboard')!;
     expect(dash.data).not.toHaveProperty('support');
     expect(dash.note).toMatch(/portal user/i);
@@ -200,7 +201,7 @@ describe('buildPortalPreview (#9350)', () => {
 
   it('with a portalUser the dashboard is built with that user\'s ticket ownership and keeps support', async () => {
     m.brandingRow.mockResolvedValue([{ ...allOn, ...BRANDED }]);
-    const out = await buildPortalPreview({ orgId: ORG, portalUser: { id: 'pu-1', contactId: 'c-1', name: 'Pat', email: 'p@x.example' } });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: { id: 'pu-1', contactId: 'c-1', name: 'Pat', email: 'p@x.example' }, can: ALLOW_ALL });
     expect(m.dashboardForOrg.mock.calls[0]![2]).toEqual({ ownership: 'pu-1' });
     const dash = out.sections.find((s) => s.key === 'dashboard')!;
     expect(dash.data).toHaveProperty('support', { openTickets: 3 });
@@ -209,10 +210,10 @@ describe('buildPortalPreview (#9350)', () => {
 
   it('lifecycleReports needs Reports too (parent gate), exactly like the portal router', async () => {
     m.brandingRow.mockResolvedValue([{ ...ALL_OFF, enableLifecycle: true, ...BRANDED }]);
-    const off = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const off = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     expect(off.sections.find((s) => s.key === 'lifecycleReports')!.enabled).toBe(false);
     m.brandingRow.mockResolvedValue([{ ...ALL_OFF, enableLifecycle: true, enableReports: true, ...BRANDED }]);
-    const on = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const on = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     expect(on.sections.find((s) => s.key === 'lifecycleReports')!.enabled).toBe(true);
   });
 
@@ -220,7 +221,7 @@ describe('buildPortalPreview (#9350)', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     m.brandingRow.mockResolvedValue([{ ...ALL_OFF, enableDocuments: true, enableService: true, ...BRANDED }]);
     m.documentsForOrg.mockRejectedValue(new Error('boom'));
-    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     expect(out.sections.find((s) => s.key === 'documents')).toMatchObject({ enabled: true, data: null, error: 'load_failed' });
     expect(out.sections.find((s) => s.key === 'service')!.data).toEqual({ groups: [] });
     expect(out.readiness.map((r) => r.code)).not.toContain('documents_empty');
@@ -231,16 +232,128 @@ describe('buildPortalPreview (#9350)', () => {
   it('builder: Documents on with no documents yields exactly documents_empty; an all-null branding row yields branding_unset', async () => {
     m.brandingRow.mockResolvedValue([{ ...ALL_OFF, enableDocuments: true, logoUrl: null, primaryColor: null, welcomeMessage: null, supportEmail: null, supportPhone: null }]);
     m.documentsForOrg.mockResolvedValue({ groups: [] });
-    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     expect(out.readiness.map((r) => r.code).sort()).toEqual(['branding_unset', 'documents_empty']);
   });
 
   it('sections without a preview runner report their flag but data:null', async () => {
     m.brandingRow.mockResolvedValue([{ ...allOn, ...BRANDED }]);
-    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     const hw = out.sections.find((s) => s.key === 'hardwareHealth')!;
     expect(hw.enabled).toBe(true);
     expect(hw.previewAvailable).toBe(false);
     expect(hw.data).toBeNull();
+  });
+});
+
+// ── Per-section staff permission gating (#9350 review: authz) ───────────────
+// Holding organizations:read alone must NOT reveal data the staff-side routes
+// gate on devices:read / reports:read / tickets:read / ...
+type Grant = { resource: string; action: string };
+const grantKey = (g: Grant) => `${g.resource}:${g.action}`;
+const ORGS_READ_ONLY = (r: string, a: string) => r === 'organizations' && a === 'read';
+const allExcept = (denied: string) => (r: string, a: string) => `${r}:${a}` !== denied;
+const READ_MODELS = () => [m.dashboardForOrg, m.serviceOverview, m.documentsForOrg, m.securityOverview, m.backupOverview, m.listPortalRuns];
+const RUNNER_FN: Record<string, () => ReturnType<typeof vi.fn>> = {
+  dashboard: () => m.dashboardForOrg, security: () => m.securityOverview, backups: () => m.backupOverview,
+  reports: () => m.listPortalRuns, service: () => m.serviceOverview, documents: () => m.documentsForOrg,
+};
+const PU = { id: 'pu-1', contactId: 'c-1', name: 'Pat', email: 'p@x.example' };
+
+describe('buildPortalPreview — per-section staff permission (#9350)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    m.brandingRow.mockResolvedValue([{ ...allOn, ...BRANDED }]);
+    m.resolveOrgTimezone.mockResolvedValue('UTC');
+    m.dashboardForOrg.mockResolvedValue({ securityScore: { status: 'ok' }, support: { openTickets: 3 } });
+    m.serviceOverview.mockResolvedValue({ groups: [] });
+    m.documentsForOrg.mockResolvedValue({ groups: [] });
+    m.securityOverview.mockResolvedValue({ dataStatus: 'ok' });
+    m.backupOverview.mockResolvedValue({ dataStatus: 'ok' });
+    m.listPortalRuns.mockResolvedValue({ data: [], pagination: { page: 1, limit: 20, total: 0 } });
+  });
+
+  it('organizations:read only: every section withheld (reason permission), no read model runs, no section-derived readiness', async () => {
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ORGS_READ_ONLY });
+    expect(out.sections.map((s) => s.key)).toEqual(PORTAL_SECTION_GATES.map((g) => g.key));
+    for (const s of out.sections) {
+      expect(s, s.key).toMatchObject({ enabled: true, data: null, previewAvailable: false, reason: 'permission' });
+    }
+    for (const fn of READ_MODELS()) expect(fn).not.toHaveBeenCalled();
+    expect(out.readiness.map((r) => r.code)).toEqual([]);
+  });
+
+  it.each(PORTAL_SECTION_GATES.flatMap((g) => g.staffPermissions.map((p) => [g.key, grantKey(p)] as const)))(
+    'section %s is withheld when the caller lacks %s (holds everything else)',
+    async (key, denied) => {
+      const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: allExcept(denied) });
+      const s = out.sections.find((x) => x.key === key)!;
+      expect(s).toMatchObject({ data: null, previewAvailable: false, reason: 'permission' });
+      if (RUNNER_FN[key]) expect(RUNNER_FN[key]()).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(PORTAL_PREVIEW_SECTION_KEYS)('section %s renders when the caller holds exactly its permissions', async (key) => {
+    const row = PORTAL_SECTION_GATES.find((g) => g.key === key)!;
+    const held = new Set<string>(['organizations:read', ...row.staffPermissions.map(grantKey)]);
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: (r, a) => held.has(`${r}:${a}`) });
+    const s = out.sections.find((x) => x.key === key)!;
+    expect(s).not.toHaveProperty('reason');
+    expect(s.previewAvailable).toBe(true);
+    expect(RUNNER_FN[key]!()).toHaveBeenCalledTimes(1);
+  });
+
+  it('dashboard without tickets:read omits only the support tile (portal user picked)', async () => {
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: allExcept('tickets:read') });
+    const dash = out.sections.find((s) => s.key === 'dashboard')!;
+    expect(dash).not.toHaveProperty('reason');
+    expect(dash.data).toHaveProperty('securityScore');
+    expect(dash.data).not.toHaveProperty('support');
+    expect(dash.note).toMatch(/tickets:read/);
+  });
+
+  // The dashboard DTO embeds tiles sourced from other domains; each needs the
+  // permission that gates that domain on the staff side (security-review finding).
+  const FULL_DASH = {
+    securityScore: { status: 'ok' }, devicesProtected: {}, patchesApplied: {}, actionItems: {},
+    backup: { x: 1 }, support: { openTickets: 3 }, awaitingYou: { y: 1 }, service: { z: 1 },
+  };
+  it.each([
+    ['backup', ['backup:read']],
+    ['support', ['tickets:read']],
+    ['service', ['contracts:read']],
+    ['awaitingYou', ['invoices:read']],
+    ['awaitingYou', ['quotes:read']],
+  ] as const)('dashboard omits the %s tile when the caller lacks any of %j (others kept)', async (tile, denied) => {
+    m.dashboardForOrg.mockResolvedValue({ ...FULL_DASH });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: allExcept(denied[0]) });
+    const dash = out.sections.find((s) => s.key === 'dashboard')!;
+    expect(dash).not.toHaveProperty('reason');
+    expect(dash.data).not.toHaveProperty(tile);
+    expect(dash.data).toHaveProperty('securityScore');
+    expect(dash.note).toContain(denied[0]);
+    for (const other of ['backup', 'support', 'service', 'awaitingYou'].filter((k) => k !== tile)) {
+      expect(dash.data, other).toHaveProperty(other);
+    }
+  });
+
+  it('dashboard with every permission keeps every tile and has no note', async () => {
+    m.dashboardForOrg.mockResolvedValue({ ...FULL_DASH });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: ALLOW_ALL });
+    const dash = out.sections.find((s) => s.key === 'dashboard')!;
+    for (const k of Object.keys(FULL_DASH)) expect(dash.data).toHaveProperty(k);
+    expect(dash.note).toBeUndefined();
+  });
+
+  it('dashboard with tickets:read keeps the support tile', async () => {
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: ALLOW_ALL });
+    expect(out.sections.find((s) => s.key === 'dashboard')!.data).toHaveProperty('support');
+  });
+
+  it('a withheld section does not feed readiness (documents_empty) while a permitted one does', async () => {
+    const withheld = await buildPortalPreview({ orgId: ORG, portalUser: null, can: allExcept('documents:read') });
+    expect(withheld.readiness.map((r) => r.code)).not.toContain('documents_empty');
+    const permitted = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
+    expect(permitted.readiness.map((r) => r.code)).toContain('documents_empty');
   });
 });

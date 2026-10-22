@@ -5,7 +5,7 @@ import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import { portalUsers } from '../db/schema';
 import { requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { ERROR_CODES } from '@breeze/shared';
 import { buildPortalPreview, type PreviewPortalUser } from '../services/portal/portalPreview';
@@ -67,7 +67,13 @@ export function registerOrgPortalPreviewRoutes(orgRoutes: Hono) {
         portalUser = row;
       }
 
-      const data = await buildPortalPreview({ orgId: org.id, portalUser });
+      // ORGS_READ only opens the door: each section re-checks the staff
+      // permission that gates the same data on the staff side (PORTAL_SECTION_GATES.staffPermissions).
+      const data = await buildPortalPreview({
+        orgId: org.id,
+        portalUser,
+        can: (resource, action) => hasPermission(perms, resource, action),
+      });
 
       writeRouteAudit(c, {
         orgId: org.id,
