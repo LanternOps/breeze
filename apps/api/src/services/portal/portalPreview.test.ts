@@ -312,6 +312,39 @@ describe('buildPortalPreview — per-section staff permission (#9350)', () => {
     expect(dash.note).toMatch(/tickets:read/);
   });
 
+  // The dashboard DTO embeds tiles sourced from other domains; each needs the
+  // permission that gates that domain on the staff side (security-review finding).
+  const FULL_DASH = {
+    securityScore: { status: 'ok' }, devicesProtected: {}, patchesApplied: {}, actionItems: {},
+    backup: { x: 1 }, support: { openTickets: 3 }, awaitingYou: { y: 1 }, service: { z: 1 },
+  };
+  it.each([
+    ['backup', ['backup:read']],
+    ['support', ['tickets:read']],
+    ['service', ['contracts:read']],
+    ['awaitingYou', ['invoices:read']],
+    ['awaitingYou', ['quotes:read']],
+  ] as const)('dashboard omits the %s tile when the caller lacks any of %j (others kept)', async (tile, denied) => {
+    m.dashboardForOrg.mockResolvedValue({ ...FULL_DASH });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: allExcept(denied[0]) });
+    const dash = out.sections.find((s) => s.key === 'dashboard')!;
+    expect(dash).not.toHaveProperty('reason');
+    expect(dash.data).not.toHaveProperty(tile);
+    expect(dash.data).toHaveProperty('securityScore');
+    expect(dash.note).toContain(denied[0]);
+    for (const other of ['backup', 'support', 'service', 'awaitingYou'].filter((k) => k !== tile)) {
+      expect(dash.data, other).toHaveProperty(other);
+    }
+  });
+
+  it('dashboard with every permission keeps every tile and has no note', async () => {
+    m.dashboardForOrg.mockResolvedValue({ ...FULL_DASH });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: ALLOW_ALL });
+    const dash = out.sections.find((s) => s.key === 'dashboard')!;
+    for (const k of Object.keys(FULL_DASH)) expect(dash.data).toHaveProperty(k);
+    expect(dash.note).toBeUndefined();
+  });
+
   it('dashboard with tickets:read keeps the support tile', async () => {
     const out = await buildPortalPreview({ orgId: ORG, portalUser: PU, can: ALLOW_ALL });
     expect(out.sections.find((s) => s.key === 'dashboard')!.data).toHaveProperty('support');
