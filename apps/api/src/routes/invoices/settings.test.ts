@@ -54,6 +54,7 @@ vi.mock('../../middleware/auth', () => ({
     permChecks.push(`${resource}:${action}`);
     if (resource === 'billing_profiles' && authState.value.profileWriteDenied) return c.json({ error: 'Permission denied' }, 403);
     if (resource === 'agreements' && authState.value.agreementsSendDenied) return c.json({ error: 'Permission denied' }, 403);
+    if (resource === 'billing' && authState.value.billingManageDenied) return c.json({ error: 'Permission denied' }, 403);
     await next();
   },
   requireMfa: () => async (c: any, next: any) => {
@@ -396,6 +397,41 @@ describe('billing settings routes', () => {
     vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID } as any);
     const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ taxExempt: true }));
     expect(res.status).toBe(200);
+  });
+
+  it.each([
+    [{ billingContactEmail: 'ap@customer.example' }],
+    [{ billingContactEmail: null }],
+    [{ billingContactName: 'Accounts Payable' }],
+    [{ taxExempt: true, billingContactEmail: 'ap@customer.example' }],
+  ])('requires billing manage permission when changing the billing contact (%o)', async body => {
+    authState.value.billingManageDenied = true;
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody(body));
+    expect(res.status).toBe(403);
+    expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
+  });
+
+  it('keeps non-contact patches available without billing manage permission', async () => {
+    authState.value.billingManageDenied = true;
+    vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID } as any);
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({
+      taxExempt: true, invoiceTermsDays: 30, billingAddressLine1: '1 High St',
+    }));
+    expect(res.status).toBe(200);
+  });
+
+  it('requires both permissions when a patch changes the assignment and the billing contact', async () => {
+    vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID } as any);
+    const body = { billingProfileId: null, billingContactEmail: 'ap@customer.example' };
+
+    authState.value = { ...PARTNER_ACTOR, billingManageDenied: true };
+    expect((await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody(body))).status).toBe(403);
+    authState.value = { ...PARTNER_ACTOR, profileWriteDenied: true };
+    expect((await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody(body))).status).toBe(403);
+    expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
+
+    authState.value = { ...PARTNER_ACTOR };
+    expect((await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody(body))).status).toBe(200);
   });
 
   it.each([
