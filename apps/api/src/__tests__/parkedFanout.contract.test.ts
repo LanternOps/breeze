@@ -149,6 +149,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/aiToolsCompliance.ts': 'compliance report joins; device-targeted actions go through the central device gate',
   'services/aiToolsDns.ts': 'joins devices only to show hostname on org-scoped DNS event/policy listings',
   'services/aiToolsHuntress.ts': 'joins devices only for hostname display on org-scoped incident/agent listings',
+  'services/aiToolsVulnerability.ts': 'joins devices only to apply the caller\'s site axis to the CVE/software labels of finding ids the caller named or a device-gated read returned (#9532); selects no targets',
   'services/alertCorrelationRca.ts': 'human-facing root-cause read model for the alert correlation route',
   'services/automationReadProjection.ts': 'projects automation run history to a viewer\'s allowed sites',
   'services/drReadAuthorization.ts': 'request-path read filtering of DR plans/executions by site/device authority for a human caller',
