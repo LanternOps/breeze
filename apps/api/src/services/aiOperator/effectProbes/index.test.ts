@@ -80,3 +80,53 @@ describe('effect probe registry', () => {
     expect(r.detail.length).toBeLessThanOrEqual(1000);
   });
 });
+
+// ---- R1a-0 Task 1c: the `alwaysUnknown` marker and recipe rule 2 ----
+import * as probeRegistry from './index';
+import { RECIPES } from '../recipes';
+import { registerGoogleEffectProbes } from './google';
+import { registerM365EffectProbes } from './m365';
+
+describe('structurally unobservable probes (R1a-0 Task 1c)', () => {
+  const isStructurallyUnobservable = (tool: string) =>
+    (probeRegistry as unknown as { isStructurallyUnobservable: (t: string) => boolean }).isStructurallyUnobservable(tool);
+  const always = async () => ({ state: 'unknown' as const, observedAt: new Date(), detail: 'never observable' });
+
+  it('only a probe registered with { alwaysUnknown: true } is structurally unobservable', () => {
+    (registerEffectProbe as unknown as (t: string, p: unknown, o?: unknown) => void)('tool_marked', always, { alwaysUnknown: true });
+    registerEffectProbe('tool_plain', always);
+    expect(isStructurallyUnobservable('tool_marked')).toBe(true);
+    expect(isStructurallyUnobservable('tool_plain')).toBe(false);
+    expect(isStructurallyUnobservable('tool_unregistered')).toBe(false);
+    __resetEffectProbesForTest();
+    expect(isStructurallyUnobservable('tool_marked')).toBe(false);
+  });
+
+  it('of every shipped probe, google_signout is the only structurally unobservable one', () => {
+    registerGoogleEffectProbes();
+    registerM365EffectProbes();
+    expect(listProbedTools().filter(isStructurallyUnobservable)).toEqual(['google_signout']);
+  });
+
+  /** Rule 2: every declared unobservable tool is structurally unobservable; every subsumer is probed. */
+  const rule2Problems = (recipe: { key: string; unobservableEffects?: Readonly<Record<string, string>> }) => {
+    const probed = new Set(listProbedTools());
+    const out: string[] = [];
+    for (const [tool, subsumer] of Object.entries(recipe.unobservableEffects ?? {})) {
+      if (!isStructurallyUnobservable(tool)) out.push(`${recipe.key}: '${tool}' is not structurally unobservable`);
+      if (!probed.has(subsumer)) out.push(`${recipe.key}: subsumer '${subsumer}' has no registered probe`);
+    }
+    return out;
+  };
+
+  it('rule 2 holds for every registered recipe, and catches a fixture that breaks it', () => {
+    registerGoogleEffectProbes();
+    registerM365EffectProbes();
+    for (const recipe of Object.values(RECIPES)) expect(rule2Problems(recipe as never)).toEqual([]);
+    expect(rule2Problems({ key: 'fixture', unobservableEffects: { google_signout: 'google_suspend_user' } })).toEqual([]);
+    expect(rule2Problems({ key: 'fixture', unobservableEffects: { google_suspend_user: 'not_a_tool' } })).toEqual([
+      "fixture: 'google_suspend_user' is not structurally unobservable",
+      "fixture: subsumer 'not_a_tool' has no registered probe",
+    ]);
+  });
+});

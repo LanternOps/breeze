@@ -179,7 +179,7 @@ export interface PlannedEffect {
   ordinal: number;
   toolName: string;
   provider: EffectProvider;
-  /** Device id / contact id. Null only for an effect with no Breeze-side target. */
+  /** `ai_operator_task_targets.id` of the target this effect acts on. Null only for an effect with no Breeze-side target. */
   targetId: string | null;
   /** Entra object id / Google user id. Null for a non-provider effect. */
   accountExternalId: string | null;
@@ -258,6 +258,23 @@ export interface RecipeDefinition<Input = unknown> {
     inputs: Record<string, unknown>,
     frozenInput: Input,
   ): CrossCheckResult;
+  /**
+   * Step whose row's `checkpoint.planningSnapshot` envelope supplies
+   * `buildPlan`'s facts (R1a-0). Absent → facts are `{}` (today). When
+   * present, a missing or unverifiable snapshot fails closed; the plan is
+   * never rebuilt with `{}`.
+   */
+  planningSnapshotStepKey?: string;
+  /**
+   * Effect tool → the tool whose verified success subsumes it (spec §6.6,
+   * R1a-0). Absent → every `unknown` post-probe hands off (today). Honoured
+   * only for a tool whose probe is structurally unobservable
+   * (`isStructurallyUnobservable`), and subsumption requires the same
+   * non-null `accountExternalId`.
+   */
+  unobservableEffects?: Readonly<Record<string, string>>;
+  /** The step a newly admitted task starts at (R1a-0). Absent → 'investigate' (today's literal, taskService.ts). */
+  entryStepKey?: string;
 }
 
 /** The registry's value type: a recipe whose Input is not statically known. */
