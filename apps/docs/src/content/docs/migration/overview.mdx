@@ -116,7 +116,7 @@ Seven phases take you from decision to decommission. The custom-field backfill i
    | Organization | Yes | Rows sharing a name become one organization with many sites |
    | Site | No | |
    | External ID | No | The incumbent's own ID for the customer |
-   | External system | No | Which incumbent it came from, for example `datto_rmm` |
+   | External system | No | Which incumbent it came from, for example `datto_rmm`; defaults to `csv` when blank |
    | Timezone | No | IANA name, for example `America/Chicago` |
 
    **Preview** annotates every row before anything is written. Rows are matched to existing organizations on your partner plus the external system and external ID pair:
@@ -129,9 +129,9 @@ Seven phases take you from decision to decommission. The custom-field backfill i
    | Deleted org match | Matches a deleted organization; selecting it reactivates it |
    | Conflict | The row can't be imported; the reason is shown on the row |
 
-   Only New and Already linked rows are selected by default. An **Existing organizations** setting chooses whether already-linked organizations are skipped or updated from the file. The import is safe to re-run: rows that now match by external ID are recognized instead of duplicated, so you can fix the CSV and import again. Fill in the external system and external ID columns so later runs match reliably.
+   Only New and Already linked rows are selected by default. After you preview, an **Existing organizations** setting chooses whether already-linked organizations are skipped or updated from the file. The import is safe to re-run: rows that now match by external ID are recognized instead of duplicated, so you can fix the CSV and import again. Rows without an external ID can only match by name, so fill in the external ID (and external system) columns to make re-runs match reliably.
 
-   For very large trees, or to automate the load, the same preview and import steps are available over the API (`POST /orgs/import/preview` and `POST /orgs/import`), and the [Migration Toolkit](/migration/toolkit/) has a ready-to-run script that reads a CSV and builds the whole tree. Each per-vendor page has the export query that produces that CSV. Contacts have their own importer (Settings → Organizations → Contacts → Import CSV, see Recipe 1c).
+   For very large trees, or to automate the load, the same preview and import steps are available over the API (`POST /orgs/import/preview` and `POST /orgs/import`, up to 1,000 rows per request — the UI sends the whole file in one request, so split larger files), and the [Migration Toolkit](/migration/toolkit/) has a ready-to-run script that reads a CSV and builds the whole tree. Each per-vendor page has the export query that produces that CSV. Contacts have their own importer: open an organization and use its **Contacts** tab → **Import CSV** (see Recipe 1c).
 
 4. ### Phase 3 — Deploy the Breeze agent from the incumbent
 
