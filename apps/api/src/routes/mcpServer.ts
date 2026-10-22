@@ -44,7 +44,6 @@ import { resolveServerUrl } from '../services/recoveryBootstrap';
 import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToolsSiteScope';
 import { alertSiteScopeByDeviceIds } from './alerts/helpers';
 import { writeAuditEvent } from '../services/auditEvents';
-import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
 import { redactToolOutputFields } from '../services/logRedaction';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
@@ -74,12 +73,9 @@ import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsL
 import { classifyMcpRequest, validateJsonRpcEnvelope, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
 import { buildDiscoverResult, decorateModernResult, recordMcpEraRejection, resolveMcpHttpStatus } from '../services/mcpModernResult';
 import { buildMcpRequestCorrelation, correlationAuditDetails, type McpRequestCorrelation } from '../services/mcpRequestCorrelation';
+import { requestAuditSink, runMcpTier3Lifecycle, writeMcpToolAuditEvent, type McpTier3ExecutionOutcome } from '../services/mcpTier3Lifecycle';
 import { checkMcpOrigin } from '../services/corsPolicy';
-import {
-  beginMcpToolExecutionLedger,
-  completeMcpToolExecutionLedger,
-  type McpToolExecutionLedgerHandle,
-} from '../services/mcpToolExecutionLedger';
+import { type McpToolExecutionLedgerHandle } from '../services/mcpToolExecutionLedger';
 import { McpExecutionOrgError, resolveMcpExecutionContext, resolveMcpExecutionOrgId } from './mcpExecutionOrg';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
@@ -2057,12 +2053,11 @@ async function handleToolsCall(
     }
   };
 
-  return runTier3ToolLifecycle(
+  return runMcpTier3Lifecycle(
     {
-      id,
-      c,
+      audit: requestAuditSink(c),
       auth,
-      apiKey,
+      principal: apiKey,
       correlation,
       orgId: executionOrgId,
       toolName,
@@ -2072,6 +2067,7 @@ async function handleToolsCall(
       approvalBypassPrincipal,
     },
     execute,
+    tier3LifecycleResponses(id),
   );
 }
 
@@ -2250,8 +2246,8 @@ async function handleTenantToolCall(
     actor: apiKey ? { kind: 'api_key', id: apiKey.id } : undefined,
   });
 
-  writeMcpToolAuditEvent(c, {
-    apiKey,
+  writeMcpToolAuditEvent(requestAuditSink(c), {
+    principal: apiKey,
     auth,
     correlation,
     orgId: executionOrgId,
@@ -2304,224 +2300,14 @@ export const __dispatchBootstrapAuthToolForTests = dispatchBootstrapAuthTool;
  */
 export const __handleJsonRpcForTests = handleJsonRpc;
 
-function writeMcpToolAuditEvent(
-  c: Context | undefined,
-  event: {
-    apiKey?: McpApiKeyContext;
-    auth: AuthContext;
-    correlation: McpRequestCorrelation;
-    orgId?: string | null;
-    toolName: string;
-    /** Deprecated alias the client sent, when it differed from `toolName`. */
-    requestedToolName?: string;
-    tier: number;
-    toolInput: Record<string, unknown>;
-    durationMs: number;
-    status: 'success' | 'failure';
-    result?: string;
-    error?: unknown;
-    /** See Tier3LifecycleContext.approvalBypassPrincipal. */
-    approvalBypassPrincipal?: string | null;
-  },
-): void {
-  if (!c || !event.apiKey) return;
+type Tier3ExecutionOutcome = McpTier3ExecutionOutcome<JsonRpcResponse>;
 
-  const error = event.error instanceof Error ? event.error : undefined;
-  // event.orgId is the authoritative execution org (resolveMcpExecutionContext).
-  // NEVER fall back to a raw client-supplied toolInput.orgId here — doing so
-  // would let a partner-scoped caller forge cross-tenant audit_logs attribution
-  // (audit rows are written under the RLS-bypassed system context).
-  const orgId = event.orgId ?? event.apiKey.orgId ?? event.auth.orgId ?? null;
-  writeAuditEvent(c, {
-    orgId,
-    actorType: 'api_key',
-    actorId: event.apiKey.id,
-    action: `mcp.tool.${event.toolName}`.slice(0, 100),
-    resourceType: 'mcp_tool_execution',
-    // B-W03 (#6157, D-B19): the server-minted request id, shared with the
-    // request audit row and both ledger representations.
-    resourceId: event.correlation.requestId,
-    result: event.status === 'success' ? 'success' : 'failure',
-    errorMessage: error ? redactAiToolOutputText(error.message).slice(0, 1000) : undefined,
-    details: {
-      sessionId: event.correlation.sessionId,
-      approvalId: null,
-      ...(event.approvalBypassPrincipal
-        ? { approvalBypass: 'unattended_principal', approvalBypassPrincipal: event.approvalBypassPrincipal }
-        : {}),
-      oauthGrantId: event.apiKey.oauthGrantId ?? null,
-      ...(event.apiKey.partnerServicePrincipalId
-        ? { principalType: 'partner_service_principal', partnerServicePrincipalId: event.apiKey.partnerServicePrincipalId }
-        : {}),
-      partnerId: event.auth.partnerId ?? event.apiKey.partnerId ?? null,
-      orgId: orgId ?? null,
-      toolName: event.toolName,
-      ...(event.requestedToolName && event.requestedToolName !== event.toolName
-        ? { requestedToolName: event.requestedToolName, deprecatedToolAlias: true }
-        : {}),
-      tier: event.tier,
-      target: summarizePayload(event.toolInput, { maxStringLength: 512 }),
-      arguments: sanitizeAuditPayload(event.toolInput, { maxStringLength: 2048 }),
-      durationMs: event.durationMs,
-      ...(event.result ? { result: summarizeToolResult(event.result, { maxStringLength: 500 }) } : {}),
-      ...(error ? { errorClass: error.name } : {}),
-      ...correlationAuditDetails(event.correlation),
-    },
-  });
-}
-
-// ============================================
-// Shared Tier 3 execution lifecycle (MCP-OAUTH-12)
-// ============================================
-
-interface Tier3LifecycleContext {
-  id: string | number;
-  c: Context | undefined;
-  auth: AuthContext;
-  apiKey: McpApiKeyContext | undefined;
-  correlation: McpRequestCorrelation;
-  /** Authoritative execution org (resolveMcpExecutionContext / bootstrap default). */
-  orgId: string | null;
-  toolName: string;
-  /**
-   * The name the CLIENT actually sent, when it was a deprecated alias that
-   * resolved to a different `toolName` (see services/aiToolAliases.ts). Audit
-   * records it so "is anyone still calling the old name?" is a query rather
-   * than a grep of ephemeral console output — that is the signal the alias is
-   * safe to delete. Undefined on the overwhelmingly common non-aliased call.
-   */
-  requestedToolName?: string;
-  tier: number;
-  toolInput: Record<string, unknown>;
-  /**
-   * Set only when the interactive-approval gate was lifted for this call by
-   * MCP_UNATTENDED_TIER3_PRINCIPALS: the principal ref that matched.
-   */
-  approvalBypassPrincipal?: string | null;
-}
-
-interface Tier3ExecutionOutcome {
-  status: 'success' | 'failure';
-  /**
-   * Summarized result string recorded on the ledger + uniform audit on SUCCESS.
-   * Mirrors the ordinary path, which records `result` on success and `error`
-   * (not result) on failure.
-   */
-  ledgerResult?: string;
-  /** On failure: an Error (thrown or a partial-failure marker) for errorClass/message. */
-  error?: unknown;
-  response: JsonRpcResponse;
-}
-
-/**
- * Shared Tier 3 begin/execute/complete/audit lifecycle (MCP-OAUTH-12). Used by
- * BOTH the ordinary tools/call path and the bootstrap authTool dispatch so the
- * fail-closed ledger and uniform `mcp.tool.<name>` audit are identical for every
- * Tier 3 mutation.
- *
- * Ordering (preserves Task 6's resolution → ledger → handler → complete+audit):
- *   1. create the execution ledger BEFORE the mutation; fail CLOSED if creation
- *      fails (the handler never runs without a durable ledger row);
- *   2. run the `execute` callback (which owns path-specific response construction
- *      AND classifies its own success/partial-failure/thrown-failure outcome);
- *   3. complete the ledger with the outcome status + duration; and
- *   4. write the uniform `mcp.tool.<name>` audit for BOTH outcomes.
- *
- * Tiers below 3 skip the ledger (as the ordinary path always has) but still emit
- * the uniform audit. The wrapper NEVER skips the ledger for a Tier 3 tool because
- * the principal is inconvenient — OAuth bearers already carry a synthetic
- * `apiKey` context (`oauth:<jti>`), exactly like ordinary Tier 3 bearer calls.
- */
-async function runTier3ToolLifecycle(
-  ctx: Tier3LifecycleContext,
-  execute: (ledger: McpToolExecutionLedgerHandle | null) => Promise<Tier3ExecutionOutcome>,
-): Promise<JsonRpcResponse> {
-  let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
-  if (ctx.tier >= 3) {
-    if (!ctx.apiKey || !ctx.orgId) {
-      return jsonRpcError(ctx.id, -32000, 'Unable to create MCP tool execution ledger');
-    }
-    try {
-      ledgerHandle = await beginMcpToolExecutionLedger({
-        orgId: ctx.orgId,
-        accessibleOrgIds: ctx.auth.accessibleOrgIds,
-        toolName: ctx.toolName,
-        tier: ctx.tier,
-        toolInput: ctx.toolInput,
-        transportSessionId: ctx.correlation.sessionId,
-        transportRequestId: ctx.correlation.requestId,
-        era: ctx.correlation.era,
-        principal: {
-          apiKeyId: ctx.apiKey.id,
-          oauthGrantId: ctx.apiKey.oauthGrantId ?? null,
-          partnerId: ctx.auth.partnerId ?? ctx.apiKey.partnerId ?? null,
-          // A partner service principal's `user` is its owner, borrowed for
-          // RBAC; the ledger records the principal and owns no user session.
-          partnerServicePrincipalId: ctx.apiKey.partnerServicePrincipalId ?? null,
-          actorUserId: ctx.apiKey.partnerServicePrincipalId ? null : ctx.auth.user.id,
-        },
-      });
-    } catch (err) {
-      console.error('[MCP] Failed to create tool execution ledger:', ctx.toolName, err);
-      return jsonRpcError(ctx.id, -32000, 'Unable to create MCP tool execution ledger');
-    }
-  }
-
-  const startedAt = Date.now();
-  let outcome: Tier3ExecutionOutcome;
-  try {
-    outcome = await execute(ledgerHandle);
-  } catch (err) {
-    // The execute callback is expected to classify its own outcome and never
-    // throw. This defensive net STILL completes the ledger + audit (never skip
-    // them) before surfacing a generic error.
-    console.error('[MCP] Unexpected throw from Tier 3 execute callback:', ctx.toolName, err);
-    const failureResponse = jsonRpcError(ctx.id, -32000, 'Tool execution failed');
-    await finalizeTier3ToolLifecycle(
-      ctx,
-      ledgerHandle,
-      { status: 'failure', error: err, response: failureResponse },
-      Date.now() - startedAt,
-    );
-    return failureResponse;
-  }
-
-  await finalizeTier3ToolLifecycle(ctx, ledgerHandle, outcome, Date.now() - startedAt);
-  return outcome.response;
-}
-
-async function finalizeTier3ToolLifecycle(
-  ctx: Tier3LifecycleContext,
-  ledgerHandle: McpToolExecutionLedgerHandle | null,
-  outcome: Tier3ExecutionOutcome,
-  durationMs: number,
-): Promise<void> {
-  if (ledgerHandle) {
-    await completeMcpToolExecutionLedger({
-      handle: ledgerHandle,
-      status: outcome.status,
-      durationMs,
-      result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
-      error: outcome.status === 'failure' ? outcome.error : undefined,
-    }).catch((err) => {
-      console.error('[MCP] Failed to complete tool execution ledger:', ctx.toolName, err);
-    });
-  }
-  writeMcpToolAuditEvent(ctx.c, {
-    apiKey: ctx.apiKey,
-    auth: ctx.auth,
-    correlation: ctx.correlation,
-    orgId: ctx.orgId,
-    toolName: ctx.toolName,
-    requestedToolName: ctx.requestedToolName,
-    tier: ctx.tier,
-    toolInput: ctx.toolInput,
-    approvalBypassPrincipal: ctx.approvalBypassPrincipal ?? null,
-    durationMs,
-    status: outcome.status,
-    result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
-    error: outcome.status === 'failure' ? outcome.error : undefined,
-  });
+/** The JSON-RPC bodies the shared lifecycle returns when it cannot dispatch. */
+function tier3LifecycleResponses(id: string | number) {
+  return {
+    ledgerUnavailable: () => jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger'),
+    unexpectedThrow: () => jsonRpcError(id, -32000, 'Tool execution failed'),
+  };
 }
 
 /**
@@ -2734,12 +2520,11 @@ async function dispatchBootstrapAuthTool(
     }
   };
 
-  return runTier3ToolLifecycle(
+  return runMcpTier3Lifecycle(
     {
-      id,
-      c,
+      audit: requestAuditSink(c),
       auth,
-      apiKey,
+      principal: apiKey,
       correlation,
       orgId: resolvedOrgId,
       toolName: tool.definition.name,
@@ -2747,6 +2532,7 @@ async function dispatchBootstrapAuthTool(
       toolInput,
     },
     execute,
+    tier3LifecycleResponses(id),
   );
 }
 
