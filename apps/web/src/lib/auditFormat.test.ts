@@ -100,6 +100,47 @@ describe('formatAuditAction', () => {
     );
   });
 
+  // #9534: every AI tool call writes `ai.tool.<toolName>`; the Audit Trail
+  // rendered "Ai tool remediate vulnerability" (lower-case i, raw tool name).
+  it('labels ai.tool.<name> rows as an AI tool call with a readable tool name', () => {
+    expect(formatAuditAction('ai.tool.remediate_vulnerability')).toBe('AI tool: Remediate vulnerability');
+    expect(formatAuditAction('ai.tool.query_devices')).toBe('AI tool: Query devices');
+    // A namespaced MCP tool id never leaks its server prefix.
+    expect(formatAuditAction('ai.tool.mcp__breeze__manage_services')).toBe('AI tool: Manage services');
+  });
+
+  it('uses the translated ai.tool template when supplied', () => {
+    expect(
+      formatAuditAction('ai.tool.query_devices', { 'ai.tool.*': 'KI-Werkzeug: {tool}' }),
+    ).toBe('KI-Werkzeug: Query devices');
+  });
+
+  it('ships a {tool} template for ai.tool rows in every locale', () => {
+    for (const locale of ['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR']) {
+      expect(auditActions(locale)['ai.tool.*'], locale).toContain('{tool}');
+    }
+  });
+
+  it('never renders an unmapped ai.* or mcp.* code with a lower-case acronym', () => {
+    expect(formatAuditAction('ai.script_lane.reset')).toBe('AI script lane reset');
+    expect(formatAuditAction('ai.some_future.thing')).toBe('AI some future thing');
+    expect(formatAuditAction('mcp.prompts.list')).toBe('MCP prompts list');
+  });
+
+  it('labels the common AI session and security events', () => {
+    for (const code of [
+      'ai.session.create',
+      'ai.session.close',
+      'ai.command.executed',
+      'ai.script.executed',
+      'ai.external_tool.call',
+      'ai.security.prompt_injection_detected',
+      'ai.plan_approval.update',
+    ]) {
+      expect(auditActions('en')[code], code).toBeTruthy();
+    }
+  });
+
   it('returns an empty string for a missing action', () => {
     expect(formatAuditAction(null)).toBe('');
     expect(formatAuditAction(undefined)).toBe('');

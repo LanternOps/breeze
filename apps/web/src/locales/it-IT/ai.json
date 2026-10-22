@@ -24,6 +24,7 @@
     "selfApproveTitle": "È richiesta la tua approvazione",
     "approveVerify": "Verifica e approva",
     "verifying": "In attesa di verifica…",
+    "approving": "Approvazione in corso…",
     "deny": "Rifiuta",
     "verificationFailed": "Verifica non riuscita. Riprova.",
     "alreadyDecided": "Questa richiesta è già stata decisa.",

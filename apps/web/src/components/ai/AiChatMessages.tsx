@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef } from "react";
 import { shouldAutoScroll } from "./aiChatScroll";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -103,6 +103,55 @@ export function scriptProposalHref(
   return typeof id === "string" && UUID_RE.test(id) ? `/approvals#proposal-${id.toLowerCase()}` : null;
 }
 
+/**
+ * #9534: one tool call is ONE card. Pairs each tool_result row with the
+ * tool_use row it completes so the result renders in the tool_use row's place
+ * (same React key, so the pending card is replaced in place) and the result
+ * row itself renders nothing. Before, the tool_use row kept its own card next
+ * to the result's, so a 4-tool run showed 8 rows.
+ *
+ * Pairing is by `toolUseId` first. A replayed history row with no id falls
+ * back to adjacency — a tool_use immediately followed by an id-less result of
+ * the same tool — and never borrows a result already paired by id (a parallel
+ * sibling's), which used to stop that sibling's spinner early.
+ *
+ * Returns tool_use index → its result row, and the set of result indexes so
+ * consumed.
+ */
+export function pairToolResults<M extends { role: string; toolUseId?: string; toolName?: string }>(
+  messages: readonly M[],
+): { resultForUse: Map<number, M>; pairedResults: Set<number> } {
+  const resultForUse = new Map<number, M>();
+  const pairedResults = new Set<number>();
+  const useIndexById = new Map<string, number>();
+  messages.forEach((m, i) => {
+    if (m.role === "tool_use" && m.toolUseId && !useIndexById.has(m.toolUseId)) {
+      useIndexById.set(m.toolUseId, i);
+    }
+  });
+  messages.forEach((m, i) => {
+    if (m.role !== "tool_result" || !m.toolUseId) return;
+    const useIdx = useIndexById.get(m.toolUseId);
+    if (useIdx === undefined || useIdx > i || resultForUse.has(useIdx)) return;
+    resultForUse.set(useIdx, m);
+    pairedResults.add(i);
+  });
+  messages.forEach((m, i) => {
+    if (m.role !== "tool_use" || resultForUse.has(i)) return;
+    const next = messages[i + 1];
+    if (
+      next?.role === "tool_result" &&
+      (!next.toolUseId || !m.toolUseId) &&
+      !pairedResults.has(i + 1) &&
+      (!next.toolName || next.toolName === m.toolName)
+    ) {
+      resultForUse.set(i, next);
+      pairedResults.add(i + 1);
+    }
+  });
+  return { resultForUse, pairedResults };
+}
+
 export default function AiChatMessages({
   messages,
   pendingApproval,
@@ -152,6 +201,7 @@ export default function AiChatMessages({
       dotColor: "bg-primary",
     },
   ];
+  const { resultForUse, pairedResults } = useMemo(() => pairToolResults(messages), [messages]);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Whether the viewport is currently pinned near the bottom. Seeded `true` so
   // the first render (and a freshly opened panel) auto-scrolls. We only flip it
@@ -200,6 +250,96 @@ export default function AiChatMessages({
     pinnedToBottomRef.current = shouldAutoScroll(distanceFromBottom);
   };
 
+  /**
+   * The card for a finished tool call. `key` is the tool_use row's id when the
+   * result renders in that row's place (#9534), so React reconciles it with
+   * the pending card; `input` is that row's toolInput (sweep E6: the label
+   * needs `input.action` to tell a read from a write, and the result row
+   * carries no input of its own).
+   */
+  const renderToolResult = (
+    msg: Message,
+    key: string,
+    input: Record<string, unknown> | undefined,
+  ) => {
+    // Execution plane W05 (spec §5.5): the launch tool's result is a run
+    // id, not content, so it renders as a run card rather than a
+    // tool-output panel. `toolName` is present on a replayed history row
+    // and on the live event alike.
+    //
+    // `workspace_launch_analysis` is fully deregistered (#6086) — no
+    // tool declaration, no handler — so this branch is DEAD for any
+    // session started after that change: nothing can produce a
+    // `tool_result` with this name going forward. It is retained
+    // specifically to replay chat history from sessions recorded before
+    // #6086 shipped, which still contain rows with this toolName.
+    if (msg.toolName === "workspace_launch_analysis") {
+      const output = msg.toolOutput as { runId?: string; status?: string } | undefined;
+      if (output?.runId) {
+        return (
+          <AiRunCard
+            key={key}
+            runId={output.runId}
+            initialStatus={(output.status as "queued" | "running") ?? "queued"}
+            run={chatRuns[output.runId]}
+          />
+        );
+      }
+    }
+    // #5612 W05: a script released by the unattended lane never had an
+    // approval card, so rendering it through AiToolCallCard's generic
+    // tool-output chrome would misdescribe it as an executed tool call.
+    // A small inline note instead — just enough to say what happened.
+    if (msg.toolName === "unattended_release") {
+      return (
+        <p
+          key={key}
+          className="text-xs italic text-muted-foreground"
+          data-testid="ai-unattended-release-note"
+        >
+          {t("aiChatMessages.unattendedRelease")}
+        </p>
+      );
+    }
+    const proposalHref = scriptProposalHref(msg.toolName, input, msg.toolOutput ?? msg.content);
+    // Tool Catalog W3 (#5218): a saved draft_flow / get_flow result gets a
+    // Flow card; failures and anything unparsable fall through to the
+    // default card below so errors stay visible.
+    const flowResult = parseFlowToolResult(msg.toolName, msg.toolOutput ?? msg.content);
+    if (flowResult) {
+      return (
+        <Fragment key={key}>
+          <FlowDraftCard flow={flowResult.flow} validation={flowResult.validation} />
+        </Fragment>
+      );
+    }
+    return (
+      <Fragment key={key}>
+        <AiToolCallCard
+          toolName={msg.toolName ?? t("aiChatMessages.toolResult")}
+          input={input}
+          output={msg.toolOutput ?? msg.content}
+          isError={msg.isError}
+          handoff={msg.handoff}
+        />
+        {/* #6354: a tool refused for caller verification offers an
+            inline verification workflow (never a retry). Renders
+            nothing unless the error carries the structured payload
+            and the feature is enabled. */}
+        <CallerVerificationRefusal output={msg.toolOutput ?? msg.content} isError={msg.isError} />
+        {proposalHref && (
+          <a
+            href={proposalHref}
+            className="text-xs text-primary underline-offset-2 hover:underline"
+            data-testid="ai-script-proposal-link"
+          >
+            {t("aiChatMessages.openScriptProposal")}
+          </a>
+        )}
+      </Fragment>
+    );
+  };
+
   if (messages.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-6">
@@ -240,7 +380,7 @@ export default function AiChatMessages({
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto p-3 space-y-3"
     >
-      {messages.map((msg) => {
+      {messages.map((msg, idx) => {
         if (msg.role === "user") {
           return (
             <div key={msg.id} className="flex gap-2">
@@ -317,117 +457,28 @@ export default function AiChatMessages({
         }
 
         if (msg.role === "tool_use") {
-          // Find matching tool_result by toolUseId, or fall back to the immediately following tool_result
-          const idx = messages.indexOf(msg);
-          const nextMsg =
-            idx >= 0 && idx + 1 < messages.length
-              ? messages[idx + 1]
-              : undefined;
-          const hasResult =
-            messages.some(
-              (m) =>
-                m.role === "tool_result" &&
-                m.toolUseId &&
-                m.toolUseId === msg.toolUseId,
-            ) || nextMsg?.role === "tool_result";
+          // #9534: once its result exists, the completed card takes this row's
+          // place under this row's key, so the pending card is replaced in
+          // place instead of staying beside a second, completed card.
+          const result = resultForUse.get(idx);
+          // The Fragment matches renderToolResult's wrapper, so the card
+          // instance (and its expanded state) survives the swap.
+          if (result) return renderToolResult(result, msg.id, msg.toolInput);
           return (
-            <AiToolCallCard
-              key={msg.id}
-              toolName={msg.toolName ?? t("aiChatMessages.unknownTool")}
-              input={msg.toolInput}
-              isExecuting={!hasResult}
-            />
+            <Fragment key={msg.id}>
+              <AiToolCallCard
+                toolName={msg.toolName ?? t("aiChatMessages.unknownTool")}
+                input={msg.toolInput}
+                isExecuting
+              />
+            </Fragment>
           );
         }
 
         if (msg.role === "tool_result") {
-          // Execution plane W05 (spec §5.5): the launch tool's result is a run
-          // id, not content, so it renders as a run card rather than a
-          // tool-output panel. `toolName` is present on a replayed history row
-          // and on the live event alike.
-          //
-          // `workspace_launch_analysis` is fully deregistered (#6086) — no
-          // tool declaration, no handler — so this branch is DEAD for any
-          // session started after that change: nothing can produce a
-          // `tool_result` with this name going forward. It is retained
-          // specifically to replay chat history from sessions recorded before
-          // #6086 shipped, which still contain rows with this toolName.
-          if (msg.toolName === "workspace_launch_analysis") {
-            const output = msg.toolOutput as { runId?: string; status?: string } | undefined;
-            if (output?.runId) {
-              return (
-                <AiRunCard
-                  key={msg.id}
-                  runId={output.runId}
-                  initialStatus={(output.status as "queued" | "running") ?? "queued"}
-                  run={chatRuns[output.runId]}
-                />
-              );
-            }
-          }
-          // #5612 W05: a script released by the unattended lane never had an
-          // approval card, so rendering it through AiToolCallCard's generic
-          // tool-output chrome would misdescribe it as an executed tool call.
-          // A small inline note instead — just enough to say what happened.
-          if (msg.toolName === "unattended_release") {
-            return (
-              <p
-                key={msg.id}
-                className="text-xs italic text-muted-foreground"
-                data-testid="ai-unattended-release-note"
-              >
-                {t("aiChatMessages.unattendedRelease")}
-              </p>
-            );
-          }
-          // sweep E6: the completed card renders through the SAME
-          // aiToolLabel() as its tool_use sibling and as history replay, but
-          // that needs `input` (specifically `input.action`) to tell a read
-          // from a write — pull it from the matching tool_use row rather
-          // than leaving it undefined, which always fell back to the tool
-          // name's own verb ("Updated alerts" for a read-only lookup).
-          const matchingToolUse = messages.find(
-            (m) => m.role === "tool_use" && m.toolUseId === msg.toolUseId,
-          );
-          const proposalHref = scriptProposalHref(
-            msg.toolName, matchingToolUse?.toolInput, msg.toolOutput ?? msg.content,
-          );
-          // Tool Catalog W3 (#5218): a saved draft_flow / get_flow result gets a
-          // Flow card; failures and anything unparsable fall through to the
-          // default card below so errors stay visible.
-          const flowResult = parseFlowToolResult(msg.toolName, msg.toolOutput ?? msg.content);
-          if (flowResult) {
-            return (
-              <Fragment key={msg.id}>
-                <FlowDraftCard flow={flowResult.flow} validation={flowResult.validation} />
-              </Fragment>
-            );
-          }
-          return (
-            <Fragment key={msg.id}>
-              <AiToolCallCard
-                toolName={msg.toolName ?? t("aiChatMessages.toolResult")}
-                input={matchingToolUse?.toolInput}
-                output={msg.toolOutput ?? msg.content}
-                isError={msg.isError}
-                handoff={msg.handoff}
-              />
-              {/* #6354: a tool refused for caller verification offers an
-                  inline verification workflow (never a retry). Renders
-                  nothing unless the error carries the structured payload
-                  and the feature is enabled. */}
-              <CallerVerificationRefusal output={msg.toolOutput ?? msg.content} isError={msg.isError} />
-              {proposalHref && (
-                <a
-                  href={proposalHref}
-                  className="text-xs text-primary underline-offset-2 hover:underline"
-                  data-testid="ai-script-proposal-link"
-                >
-                  {t("aiChatMessages.openScriptProposal")}
-                </a>
-              )}
-            </Fragment>
-          );
+          // Already rendered in its tool_use row's place (#9534).
+          if (pairedResults.has(idx)) return null;
+          return renderToolResult(msg, msg.id, undefined);
         }
 
         return null;

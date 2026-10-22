@@ -92,6 +92,22 @@ const ACTION_DISPLAY: Record<string, string> = {
   // AI / MCP
   'ai.message.send': 'Sent AI message',
   'ai.tool_approval.update': 'Updated AI tool approval',
+  // Template for the per-tool rows (`ai.tool.<toolName>`, #9534); `{tool}` is
+  // the humanized tool name — see `formatAiToolAction`. `*` keeps the key from
+  // ever colliding with a real tool name.
+  'ai.tool.*': 'AI tool: {tool}',
+  'ai.session.create': 'Started AI chat',
+  'ai.session.close': 'Closed AI chat',
+  'ai.session.flag': 'Flagged AI chat',
+  'ai.session.unflag': 'Unflagged AI chat',
+  'ai.message.interrupt': 'Stopped AI response',
+  'ai.command.executed': 'AI ran a command',
+  'ai.script.executed': 'AI ran a script',
+  'ai.external_tool.call': 'AI called an external tool',
+  'ai.plan_approval.update': 'Updated AI plan approval',
+  'ai.plan.abort': 'Aborted AI plan',
+  'ai.security.prompt_injection_detected': 'AI: prompt injection detected',
+  'ai.budget.update': 'Updated AI budget',
   'mcp.initialize': 'MCP: initialize',
   'mcp.notifications.initialized': 'MCP: initialized notifications',
   'mcp.tools.list': 'MCP: list tools',
@@ -141,6 +157,27 @@ function formatFallbackAction(
   return template.replace('{target}', target);
 }
 
+// Every AI tool call is audited as `ai.tool.<toolName>` (aiAgentSdk.ts), one
+// code per tool — far too many to catalog. Render it as "AI tool: <Tool name>"
+// rather than prettifying it to "Ai tool remediate vulnerability" (#9534).
+const AI_TOOL_ACTION_RE = /^ai\.tool\.(.+)$/;
+
+function formatAiToolAction(
+  action: string,
+  labels?: Record<string, string>,
+): string | null {
+  const match = AI_TOOL_ACTION_RE.exec(action);
+  if (!match) return null;
+  // A namespaced MCP id (`mcp__<server>__<tool>`) shows only the tool.
+  const words = match[1].replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '').replace(/[_.]+/g, ' ').trim();
+  const template = labels?.['ai.tool.*'] ?? ACTION_DISPLAY['ai.tool.*'];
+  if (!words || !template) return null;
+  return template.replace('{tool}', words.charAt(0).toUpperCase() + words.slice(1));
+}
+
+// Acronyms the prettifier must not render as ordinary words ("Ai session close").
+const PRETTIFY_ACRONYMS: Readonly<Record<string, string>> = { ai: 'AI', mcp: 'MCP' };
+
 // Generic prettifier for codes that aren't in the map.
 // Examples:
 //   "foo.bar_baz.update" -> "Foo bar baz update"
@@ -151,7 +188,8 @@ function prettify(action: string): string {
     .trim()
     .toLowerCase();
   if (!cleaned) return action;
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  const words = cleaned.split(/\s+/).map((word) => PRETTIFY_ACRONYMS[word] ?? word).join(' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /**
@@ -172,6 +210,7 @@ export function formatAuditAction(
     labels?.[action] ??
     ACTION_DISPLAY[action] ??
     formatFallbackAction(action, labels) ??
+    formatAiToolAction(action, labels) ??
     prettify(action)
   );
 }

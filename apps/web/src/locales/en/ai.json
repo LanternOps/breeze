@@ -24,6 +24,7 @@
     "reject": "Reject",
     "approveVerify": "Verify & Approve",
     "verifying": "Waiting for verification…",
+    "approving": "Approving…",
     "deny": "Deny",
     "verificationFailed": "Verification failed. Try again.",
     "alreadyDecided": "This request was already decided.",

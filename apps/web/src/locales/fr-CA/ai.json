@@ -24,6 +24,7 @@
     "selfApproveTitle": "Votre approbation est requise",
     "approveVerify": "Vérifier et approuver",
     "verifying": "En attente de vérification…",
+    "approving": "Approbation en cours…",
     "deny": "Refuser",
     "verificationFailed": "Échec de la vérification. Réessayez.",
     "alreadyDecided": "Cette demande a déjà été traitée.",

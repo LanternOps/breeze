@@ -24,6 +24,7 @@
     "reject": "Rechazar",
     "approveVerify": "Verificar y aprobar",
     "verifying": "Esperando la verificación…",
+    "approving": "Aprobando…",
     "deny": "Denegar",
     "verificationFailed": "La verificación falló. Inténtalo de nuevo.",
     "alreadyDecided": "Esta solicitud ya fue decidida.",

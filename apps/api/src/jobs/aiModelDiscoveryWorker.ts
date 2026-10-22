@@ -16,7 +16,6 @@ import { db, withSystemDbAccessContext } from '../db';
 import { partnerAiConnections } from '../db/schema';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { getBullMQConnection } from '../services/redis';
-import { captureException } from '../services/sentry';
 import {
   syncConnectionModels,
   syncPlatformModels,
@@ -25,7 +24,7 @@ import {
 } from '../services/aiModels/discovery';
 import { verifyConnectionOffering, type OfferingVerificationState } from '../services/aiModels/offeringVerification';
 import { jobSchedule } from './scheduleRegistry';
-import { attachWorkerObservability } from './workerObservability';
+import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
 
 export const AI_MODEL_DISCOVERY_QUEUE = 'ai-model-discovery';
 export const SYNC_PLATFORM_JOB = 'sync-platform';
@@ -54,11 +53,48 @@ export type AiModelDiscoveryJobData =
  * retries it with a delay. The failed record is already stored; this is not
  * an incident (logged, not captured).
  */
+/**
+ * #9534: the failures below are expected outcomes the processor raises to ask
+ * BullMQ for a retry, not faults. Their stack only ever points at this file
+ * (the provider's own error is already reduced to the message), so it is
+ * collapsed to one line: attachWorkerObservability logs `err` once per
+ * attempt, and a multi-line stack per boot attempt was pure noise.
+ */
+function oneLineStack(err: Error): void {
+  err.stack = `${err.name}: ${err.message}`;
+}
+
 export class OfferingVerificationRetry extends Error {
   constructor(offeringId: string) {
     super(`Offering ${offeringId} failed verification; the queue will retry it`);
     this.name = 'OfferingVerificationRetry';
+    oneLineStack(this);
   }
+}
+
+/** The platform model listing failed (e.g. the provider rejected the platform key). Retried with backoff. */
+export class PlatformModelSyncFailed extends Error {
+  constructor(providerError: string) {
+    super(`Platform model sync failed: ${providerError}`);
+    this.name = 'PlatformModelSyncFailed';
+    oneLineStack(this);
+  }
+}
+
+/**
+ * The ONE place this worker's failures are logged and reported (via
+ * attachWorkerObservability). A platform sync failure retries with backoff, so
+ * it reaches Sentry once, when the retries are spent; a verification retry is
+ * a stored verdict retried by design. Anything else keeps the default report.
+ */
+export function classifyAiModelDiscoveryFailure(_job: Job | undefined, err: Error): WorkerFailureClassification | null {
+  if (err instanceof PlatformModelSyncFailed) {
+    return { level: 'error', reason: 'ai_platform_model_sync_failed', reportOnlyWhenExhausted: true };
+  }
+  if (err instanceof OfferingVerificationRetry) {
+    return { level: 'warning', reason: 'ai_offering_verification_retry', reportOnlyWhenExhausted: true };
+  }
+  return null;
 }
 
 let queue: Queue<AiModelDiscoveryJobData> | null = null;
@@ -150,7 +186,7 @@ export async function processAiModelDiscoveryJob(
     case 'sync-platform': {
       const report = await syncPlatformModels();
       // A failed listing changed nothing (spec §6). Throwing lets BullMQ retry with backoff.
-      if (report.status === 'failed') throw new Error(`Platform model sync failed: ${report.error}`);
+      if (report.status === 'failed') throw new PlatformModelSyncFailed(report.error);
       if (report.status === 'skipped') console.info(`[aiModelDiscovery] platform sync skipped: ${report.reason}`);
       return report;
     }
@@ -230,20 +266,9 @@ export async function initializeAiModelDiscoveryWorker(): Promise<void> {
     connection: getBullMQConnection(),
     concurrency: 1,
   });
-  attachWorkerObservability(worker, 'aiModelDiscoveryWorker');
-  worker.on('error', (error) => {
-    console.error('[aiModelDiscovery] worker error:', error);
-    captureException(error);
-  });
-  worker.on('failed', (job, error) => {
-    if (error instanceof OfferingVerificationRetry) {
-      // A stored verdict, retried by design: not an incident.
-      console.warn(`[aiModelDiscovery] job ${job?.id ?? '?'}: ${error.message}`);
-      return;
-    }
-    console.error(`[aiModelDiscovery] job ${job?.id ?? '?'} failed:`, error);
-    captureException(error);
-  });
+  // #9534: no own 'error'/'failed' handlers — attachWorkerObservability already
+  // logs and reports both, and a second pair logged every failure twice.
+  attachWorkerObservability(worker, 'aiModelDiscoveryWorker', { classifyFailure: classifyAiModelDiscoveryFailure });
   await scheduleAiModelDiscoveryJobs();
   await enqueuePlatformModelSync('boot');
 }

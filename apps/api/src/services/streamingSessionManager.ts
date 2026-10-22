@@ -29,6 +29,7 @@ import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
 import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
+import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
 import {
   newSdkTurnObservation,
@@ -1752,7 +1753,21 @@ export class StreamingSessionManager {
             // #5106: joined with the SAME "\n\n" separator the stream emits
             // at each non-first text content_block_start, so persisted
             // history is byte-for-byte identical to what streamed clients saw.
-            const assistantContent = message.message.content
+            //
+            // #9534: a synthetic API-error message (it carries `error`) is the
+            // CLI's own text, not model output — for a 401 it reads "Invalid
+            // API key · Fix external API key", a Claude Code CTA that points a
+            // hosted user at a BYO-key page. Persist the same fixed,
+            // client-safe text the live turn's error event carries instead, so
+            // a reload explains the empty turn without leaking provider text.
+            const syntheticErrorText = typeof message.error === 'string'
+              ? providerFailureMessage(
+                classifySdkAssistantError(message.error, null),
+                session.refusalObservation.sawOutput,
+                { platformKey: session.turnBinding.connectionKind === 'platform' },
+              )
+              : null;
+            const assistantContent = syntheticErrorText ?? message.message.content
               .filter((b: { type: string }) => b.type === 'text')
               .map((b: { type: string; text?: string }) => b.text ?? '')
               .join('\n\n');
@@ -1769,11 +1784,13 @@ export class StreamingSessionManager {
                     // raw `input`, so redact those here too — otherwise the same
                     // plaintext secret persisted below in `tool_input` would still
                     // land here in cleartext.
-                    contentBlocks: message.message.content.map((b) =>
-                      b.type === 'tool_use'
-                        ? { ...b, input: redactSensitiveToolInput(b.input as Record<string, unknown>) }
-                        : b,
-                    ) as unknown as Record<string, unknown>[],
+                    contentBlocks: (syntheticErrorText !== null
+                      ? [{ type: 'text', text: syntheticErrorText }]
+                      : message.message.content.map((b) =>
+                        b.type === 'tool_use'
+                          ? { ...b, input: redactSensitiveToolInput(b.input as Record<string, unknown>) }
+                          : b,
+                      )) as unknown as Record<string, unknown>[],
                     inputTokens: message.message.usage?.input_tokens ?? 0,
                     outputTokens: message.message.usage?.output_tokens ?? 0,
                   })
@@ -1906,7 +1923,9 @@ export class StreamingSessionManager {
             // text only (providerFailureMessage); the CLI's synthetic assistant
             // text is raw provider output and is never shown.
             const { providerFailure, sawOutput } = session.refusalObservation;
-            const providerMessage = providerFailure?.terminal ? providerFailureMessage(providerFailure.cause, sawOutput) : null;
+            const providerMessage = providerFailure?.terminal
+              ? providerFailureMessage(providerFailure.cause, sawOutput, { platformKey: turnBinding.connectionKind === 'platform' })
+              : null;
             let isErrorSuccessMessage: string | null = null;
 
             if (resultMsg.subtype !== 'success') {

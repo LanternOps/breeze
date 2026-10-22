@@ -24,6 +24,7 @@
     "reject": "Reddet",
     "approveVerify": "Doğrula ve Onayla",
     "verifying": "Doğrulama bekleniyor…",
+    "approving": "Onaylanıyor…",
     "deny": "Reddet",
     "verificationFailed": "Doğrulama başarısız oldu. Tekrar deneyin.",
     "alreadyDecided": "Bu talebe zaten karar verildi.",

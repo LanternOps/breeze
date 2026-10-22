@@ -12,13 +12,21 @@ vi.mock('remark-gfm', () => ({ default: () => {} }));
 // Records the props each AiToolCallCard instance receives (sweep E6): what
 // this file owns is the wiring from a message row to the card's `input`
 // prop, not the card's own rendering, which has its own test suite.
-const toolCallCards = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }));
-vi.mock('./AiToolCallCard', () => ({
-  default: (props: Record<string, unknown>) => {
-    toolCallCards.props.push(props);
-    return null;
-  },
-}));
+const toolCallCards = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>>, mounts: 0 }));
+vi.mock('./AiToolCallCard', async () => {
+  const { useEffect } = await import('react');
+  return {
+    default: (props: Record<string, unknown>) => {
+      toolCallCards.props.push(props);
+      // Counts MOUNTS (#9534): a completed card must replace its pending card
+      // in place, i.e. reuse the same instance rather than mount a second one.
+      useEffect(() => {
+        toolCallCards.mounts += 1;
+      }, []);
+      return null;
+    },
+  };
+});
 
 // Records the props AiChatMessages forwards to the approval card. The real
 // dialog is heavy (WebAuthn + i18n), and what this file owns is the wiring:
@@ -476,8 +484,8 @@ describe('flow card for draft_flow / get_flow results (#5218)', () => {
     expect(getByTestId('flow-draft-card')).toBeTruthy();
     expect(getAllByTestId(/^flow-step-[abc]$/)).toHaveLength(3);
     expect(getByTestId('flow-draft-review').getAttribute('href')).toBe(`/flows/${FLOW_ID}`);
-    // The tool_use row still shows its (running) card; the RESULT row must not
-    // add a second default card next to the Flow card.
+    // The Flow card takes the tool_use row's place (#9534); no default tool
+    // card renders beside it.
     expect(toolCallCards.props.some((p) => p.output !== undefined)).toBe(false);
   });
 
@@ -506,5 +514,57 @@ describe('flow card for draft_flow / get_flow results (#5218)', () => {
     const { queryByTestId } = renderWithMessages(result('draft_flow', '{not json') as never);
     expect(queryByTestId('flow-draft-card')).toBeNull();
     expect(toolCallCards.props.at(-1)?.toolName).toBe('draft_flow');
+  });
+});
+
+// #9534: a 4-tool run showed 8 rows — the pending card ("Searched devices",
+// wrench) stayed after the completed card arrived. One tool call is one card:
+// the completed card replaces the pending one in place, keyed by tool_use id.
+describe('one card per tool call (#9534)', () => {
+  beforeEach(() => {
+    toolCallCards.props.length = 0;
+    toolCallCards.mounts = 0;
+  });
+
+  const use = (id: string, toolUseId?: string, toolName = 'query_devices') =>
+    ({ id, role: 'tool_use', content: '', toolName, toolUseId, toolInput: { status: 'online' } }) as never;
+  const result = (id: string, toolUseId?: string, toolName = 'query_devices') =>
+    ({ id, role: 'tool_result', content: '[]', toolName, toolUseId, toolOutput: [] }) as never;
+
+  it('renders a completed tool call as ONE card, not a pending card plus a result card', () => {
+    renderWithMessages([use('tool-a', 'a'), result('result-a', 'a')]);
+    expect(toolCallCards.props).toHaveLength(1);
+    expect(toolCallCards.props[0]).toMatchObject({ output: [], input: { status: 'online' } });
+    expect(toolCallCards.props[0].isExecuting).toBeFalsy();
+  });
+
+  it('replaces the pending card in place when the result arrives (same instance, no second mount)', () => {
+    const { rerender } = renderWithMessages([use('tool-a', 'a')]);
+    expect(toolCallCards.props.at(-1)?.isExecuting).toBe(true);
+    expect(toolCallCards.mounts).toBe(1);
+
+    rerender(<AiChatMessages {...baseProps} messages={[use('tool-a', 'a'), result('result-a', 'a')] as never} />);
+    expect(toolCallCards.mounts).toBe(1);
+    expect(toolCallCards.props.at(-1)).toMatchObject({ output: [] });
+  });
+
+  it('keeps each parallel call in its own place; only the finished one completes', () => {
+    renderWithMessages([use('tool-a', 'a'), use('tool-b', 'b'), result('result-a', 'a')]);
+    expect(toolCallCards.props).toHaveLength(2);
+    expect(toolCallCards.props[0]).toMatchObject({ output: [] });
+    // b's neighbour is a's result: it must not borrow it and stop spinning.
+    expect(toolCallCards.props[1]).toMatchObject({ isExecuting: true });
+    expect(toolCallCards.props[1].output).toBeUndefined();
+  });
+
+  it('pairs replayed history rows that carry no tool_use id by adjacency', () => {
+    renderWithMessages([use('u1', undefined), result('r1', undefined)]);
+    expect(toolCallCards.props).toHaveLength(1);
+    expect(toolCallCards.props[0]).toMatchObject({ output: [] });
+  });
+
+  it('still renders an orphan result (no tool_use row) as its own card', () => {
+    renderWithMessages([result('r1', 'gone')]);
+    expect(toolCallCards.props).toHaveLength(1);
   });
 });
