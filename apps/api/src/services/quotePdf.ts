@@ -4,10 +4,11 @@
 // pdfkit (no headless browser in the API path). The novel part here is that a
 // quote is BLOCK-based — the customer document is an ordered list of content
 // blocks (heading / rich_text / image / line_items) rather than a single fixed
-// table. renderQuotePdf walks the blocks in sortOrder and draws each; pricing
-// tables (line_items blocks + any orphan lines) reuse the invoice table styling,
-// and the document closes with a recurring-summary footer (one-time / monthly /
-// annual / first-invoice total) drawn from the quote header buckets.
+// table. renderQuotePdf walks the blocks in sortOrder and draws each. Pricing
+// tables (line_items blocks + any orphan lines) and the totals box are drawn by
+// the shared documentPdfTable.ts module from the same view model the screens
+// render (buildQuoteDocumentModel, #9414 W3b); the cover page, contents list,
+// rich text, tables, callouts and agreements keep their own PDF renderers.
 //
 // renderQuotePdf is intentionally pure (image bytes arrive via the injected
 // `loadImage`, branding via `branding`) so it is unit-testable without a DB; the
@@ -15,9 +16,12 @@
 
 import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
-import { DEVICE_ROLE_NOUNS, toCents, fromCents, formatMoney as sharedFormatMoney, type BillableDeviceRole, type CoverPage } from '@breeze/shared';
-import { formatMoneyForPdf } from './pdfMoney';
-import { fitFontSize } from './pdfFitText';
+import { formatMoney as sharedFormatMoney, type CoverPage } from '@breeze/shared';
+import { buildQuoteDocumentModel, documentLabelsFor, type CustomerQuoteDocument, type CustomerQuoteLineDto, type DocumentLineTableModel } from '@breeze/shared/documents';
+import {
+  documentColumnsFor, documentTableLeadHeight, drawDocumentLineTable, drawDocumentTotals,
+  type DocumentPdfColumns, type DocumentPdfStyle,
+} from './documentPdfTable';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
 import { renderRichTextIntoPdf, measureRichTextLead, parseRichText, WEB_TYPOGRAPHY } from './richTextPdf';
@@ -46,50 +50,6 @@ export function formatDate(value: string | Date | null | undefined): string {
   const d = typeof value === 'string' ? new Date(value + (value.length === 10 ? 'T00:00:00Z' : '')) : value;
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit', timeZone: 'UTC' });
-}
-
-/** Suffix shown next to a recurring line's amount in the pricing table. */
-function recurrenceSuffix(recurrence: string | null | undefined): string {
-  if (recurrence === 'monthly') return '/mo';
-  if (recurrence === 'annual') return '/yr';
-  return '';
-}
-
-type DeviceSetLine = Pick<QuoteLine, 'contractLineType' | 'deviceRoles' | 'deviceGroupId' | 'deviceGroupName' | 'siteId' | 'siteName' | 'includedQuantity' | 'overageMode' | 'overageUnitPrice'>;
-
-function deviceSetCustomerText(line: DeviceSetLine, currency: string, locale: string): string[] {
-  if (!line.contractLineType || !['per_device', 'per_device_role', 'per_device_group', 'per_seat'].includes(line.contractLineType)) return [];
-  let set = 'devices';
-  if (line.contractLineType === 'per_device_role') {
-    set = (line.deviceRoles ?? []).map((r) => DEVICE_ROLE_NOUNS[r as BillableDeviceRole] ?? r).join(', ') || 'devices';
-  } else if (line.contractLineType === 'per_device_group') {
-    // deviceGroupName is kept even after a retarget clears deviceGroupId (it
-    // feeds the internal "re-select for this organization" drift chip) — only
-    // print the stamped name on the customer document while the id it
-    // describes still resolves in the current org.
-    set = line.deviceGroupId ? `devices in “${line.deviceGroupName ?? ''}”` : 'devices';
-  } else if (line.contractLineType === 'per_seat') {
-    set = 'seats';
-  }
-  if (line.siteId && line.siteName) set = `${set} at ${line.siteName}`;
-  const result = [`Estimated quantity — billed at the actual number of ${set} each billing period.`];
-  if (line.includedQuantity != null && line.overageMode === 'bill' && line.overageUnitPrice != null) {
-    result.push(`Includes ${Number(line.includedQuantity)}; additional units billed at ${formatMoneyForPdf(line.overageUnitPrice, currency, locale)} each.`);
-  } else if (line.includedQuantity != null && line.overageMode === 'flag') {
-    result.push(`Includes ${Number(line.includedQuantity)}; additional units are reported for review, not billed automatically.`);
-  }
-  return result;
-}
-
-/** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
- *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
- *  as '—'). The summary Tax stays quote.tax_total (authoritative), so the summed
- *  column can differ by a rounding cent on many-line quotes. */
-function lineTax(lineTotal: string | number | null | undefined, taxable: boolean, rate: number): number | null {
-  if (!taxable || !(rate > 0)) return null;
-  const cents = Math.round(Number(lineTotal ?? 0) * 100);
-  if (!Number.isFinite(cents)) return null;
-  return Math.round(cents * rate) / 100;
 }
 
 function hexToColor(value: string | null | undefined, fallback: string): string {
@@ -249,7 +209,7 @@ export interface QuotePdfBranding {
   pageSize?: DocumentPageSize;
 }
 
-interface QuoteHeader {
+export interface QuoteHeader {
   id: string;
   quoteNumber?: string | null;
   title?: string | null;
@@ -295,7 +255,7 @@ interface QuoteHeader {
   coverPage?: unknown;
 }
 
-interface QuoteBlock {
+export interface QuoteBlock {
   id: string;
   blockType: 'heading' | 'rich_text' | 'image' | 'line_items' | string;
   // jsonb column → typed `unknown` by Drizzle; the per-type casts below narrow it.
@@ -303,7 +263,7 @@ interface QuoteBlock {
   sortOrder: number;
 }
 
-interface QuoteLine {
+export interface QuoteLine {
   id: string;
   blockId?: string | null;
   catalogItemId?: string | null;
@@ -355,71 +315,6 @@ export function contractUploadedMarker(templateName: string): string {
   return `${templateName} — attached below`;
 }
 
-// ---------------------------------------------------------------------------
-// Layout constants (shared between the line table + summary so columns align).
-// Computed once we have the document margins.
-// ---------------------------------------------------------------------------
-
-export interface QuotePdfColumns {
-  left: number; right: number; contentWidth: number;
-  colQtyX: number; colQtyW: number; colDescX: number; colDescW: number;
-  colUnitX: number; colTaxX: number; colNumW: number; colAmtX: number; colAmtW: number;
-  colSummaryAmtX: number; colSummaryNumW: number;
-  showTax: boolean;
-}
-
-// When showTax is set the table carries a fifth column (qty | description | unit
-// | tax | total) with 15.5%-wide money cells; the four-column layout gives each
-// money cell 16%. TOTAL gets its own wider box (19%) because it is the one cell
-// that renders money PLUS a recurrence suffix ("$12,000.00/mo") — sized to
-// colNumW it character-wraps, and the wrapped second line overprints the next
-// row (row height is measured from the description column only). The summary
-// gets a 24% amount box for its 14pt emphasis figure; both it and TOTAL share
-// the table's right edge so the amounts stay visually aligned.
-//
-// Boxes are sized for prefix-code currencies (#3777): the shared Intl
-// formatter emits "CHF 888’888.88" (code + space + groupers) rather than a
-// one-glyph "$", and money cells draw with lineBreak: false, so an undersized
-// box overprints instead of wrapping. Measured at Helvetica 10 / Helvetica-Bold
-// 14 on A4 (the narrower page) in quotePdf.test.ts; the taxed description
-// column shrinks to 42% to pay for it.
-export function columnsFor(doc: PDFKit.PDFDocument, showTax = false): QuotePdfColumns {
-  const left = doc.page.margins.left;
-  const right = doc.page.width - doc.page.margins.right;
-  const contentWidth = right - left;
-  const colDescX = left + contentWidth * 0.08;
-  if (showTax) {
-    return {
-      left, right, contentWidth, showTax,
-      colQtyX: left,
-      colQtyW: contentWidth * 0.07,
-      colDescX,
-      colDescW: contentWidth * 0.42,
-      colUnitX: left + contentWidth * 0.50,
-      colTaxX: left + contentWidth * 0.655,
-      colAmtX: left + contentWidth * 0.81,
-      colNumW: contentWidth * 0.155,
-      colAmtW: contentWidth * 0.19,
-      colSummaryAmtX: left + contentWidth * 0.76,
-      colSummaryNumW: contentWidth * 0.24,
-    };
-  }
-  return {
-    left, right, contentWidth, showTax,
-    colQtyX: left,
-    colQtyW: contentWidth * 0.07,
-    colDescX,
-    colDescW: contentWidth * 0.57,
-    colUnitX: left + contentWidth * 0.65,
-    colTaxX: left + contentWidth * 0.70, // unused when !showTax
-    colAmtX: left + contentWidth * 0.81,
-    colNumW: contentWidth * 0.16,
-    colAmtW: contentWidth * 0.19,
-    colSummaryAmtX: left + contentWidth * 0.76,
-    colSummaryNumW: contentWidth * 0.24,
-  };
-}
-
 /** CSS px → PDF pt. The web proposal sizes images (and everything else) in
  *  CSS px; a PDF point is 1/72in and a CSS px 1/96in. */
 const PX_TO_PT = 0.75;
@@ -456,11 +351,6 @@ const BLOCK_GAP = 18;
 const TOC_LABEL_HEIGHT = 18;
 const TOC_ROW_GAP = 5;
 const TOC_PAGE_COL = 36;
-
-/** Pricing table: header band height (labels + hairline + gap) and the space
- *  between rows, which holds the row hairline. */
-const LINE_HEADER_HEIGHT = 22;
-const LINE_ROW_GAP = 10;
 
 /** Add a page if `y` is within the bottom margin band; returns the (possibly reset) y. */
 function ensureSpace(doc: PDFKit.PDFDocument, y: number, needed = 40): number {
@@ -512,79 +402,146 @@ export function imageIntrinsicSize(buf: Buffer): { width: number; height: number
 }
 
 // ---------------------------------------------------------------------------
-// Line table: qty | description | unit | total. Right-aligned money columns,
-// matching invoicePdf's table styling (uppercase grey headers, 1px rule).
-// Returns the y position below the table.
+// Customer document projection (W3b, #9421). The PDF draws the SAME view model
+// the screens render: `buildQuoteDocumentModel` over the customer quote DTO, in
+// the document's locale. renderQuotePdf stays row-based and DB-free (its
+// callers already loaded and authorised the rows), so the DTO is projected here
+// from those rows with the customer rules the assembler applies: a hidden line
+// never leaves, a missing line total is quantity × unit price, an unknown
+// recurrence is one-time. Only `line_items` blocks are projected — the model
+// needs nothing else from the block list, and a legacy malformed table block
+// must never make the builder throw for a PDF that tolerates it.
 // ---------------------------------------------------------------------------
 
-const LINE_THUMB = 44;
+const decimal = (v: string | number | null | undefined, fallback = '0.00'): string => {
+  if (v === null || v === undefined || v === '') return fallback;
+  return Number.isFinite(Number(v)) ? String(v) : fallback;
+};
+const calendarDate = (v: string | Date | null | undefined): string | null => {
+  if (!v) return null;
+  return v instanceof Date ? v.toISOString().slice(0, 10) : v;
+};
 
-/** Height a pricing-table row needs: bold-10 title, regular-8.5 blurb and any
- *  device-set lines, at least a thumbnail tall when the row has one. Measures
- *  each fragment at the SAME font/size it is drawn with — the blurb used to be
- *  measured while the font was still 10pt, over-reserving ~1.5pt per wrapped
- *  line (a visible gap below tall spec-list rows). */
-function measureLineRow(doc: PDFKit.PDFDocument, l: QuoteLine, descW: number, fonts: PdfThemeFonts, currency: string, locale: string, hasImage: boolean) {
-  // Title falls back to description for legacy lines that predate the name/description split.
-  const title = (l.name ?? l.description ?? '').trim() || '—';
-  const blurb = l.name ? (l.description ?? '').trim() : '';
-  doc.font(fonts.body.bold).fontSize(10);
-  const titleHeight = doc.heightOfString(title, { width: descW });
-  doc.font(fonts.body.regular).fontSize(8.5);
-  const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
-  const deviceSetText = deviceSetCustomerText(l, currency, locale);
-  const deviceSetHeight = deviceSetText.length
-    ? deviceSetText.reduce((h, text) => h + doc.heightOfString(text, { width: descW, lineGap: 1 }) + 2, 0)
-    : 0;
-  return { title, blurb, titleHeight, blurbHeight, deviceSetText, rowHeight: Math.max(titleHeight + blurbHeight + deviceSetHeight, hasImage ? LINE_THUMB : 12) };
+export function quotePdfDocument(quote: QuoteHeader, blocks: QuoteBlock[], lines: QuoteLine[], branding: QuotePdfBranding): CustomerQuoteDocument {
+  const locale = quote.documentLocale ?? branding.locale ?? 'en';
+  const oneTime = decimal(quote.oneTimeTotal);
+  const depositDue = quote.depositDueTotal ?? quote.depositAmount;
+  const hasDeposit = !!quote.depositType && quote.depositType !== 'none' && depositDue != null;
+  // A header with no stored subtotal (a hand-built row) prints the sum of the visible lines, never a false $0.00.
+  const visibleLines = lines.filter((l) => l.customerVisible !== false);
+  const lineSubtotal = (visibleLines.reduce(
+    (sum, l) => sum + (Math.round(Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice)) * 100) || 0), 0,
+  ) / 100).toFixed(2);
+  const header = {
+    id: quote.id,
+    quoteNumber: quote.quoteNumber ?? null,
+    title: quote.title ?? null,
+    status: (quote.status as CustomerQuoteDocument['quote']['status'] | null | undefined) ?? 'sent',
+    displayStatus: null,
+    currencyCode: quote.currencyCode ?? branding.currencyCode ?? 'USD',
+    issueDate: calendarDate(quote.issueDate),
+    expiryDate: calendarDate(quote.expiryDate),
+    subtotal: quote.subtotal == null ? lineSubtotal : decimal(quote.subtotal),
+    taxRate: quote.taxRate === null || quote.taxRate === undefined ? null : String(quote.taxRate),
+    taxTotal: decimal(quote.taxTotal),
+    total: decimal(quote.total),
+    oneTimeTotal: oneTime,
+    monthlyRecurringTotal: decimal(quote.monthlyRecurringTotal),
+    annualRecurringTotal: decimal(quote.annualRecurringTotal),
+    depositType: (hasDeposit ? quote.depositType : 'none') as CustomerQuoteDocument['quote']['depositType'],
+    depositAmount: quote.depositAmount ?? null,
+    dueOnAcceptanceTotal: decimal(quote.dueOnAcceptanceTotal, oneTime),
+    depositDueTotal: hasDeposit ? decimal(depositDue) : null,
+    categoryBreakdown: quote.categoryBreakdown ?? [],
+    billToName: quote.billToName ?? null,
+    introNotes: quote.introNotes ?? null,
+    terms: quote.terms ?? null,
+    sellerSnapshot: (quote.sellerSnapshot ?? null) as CustomerQuoteDocument['quote']['sellerSnapshot'],
+    coverPage: (quote.coverPage ?? null) as CustomerQuoteDocument['quote']['coverPage'],
+    termsAndConditions: quote.termsAndConditions ?? null,
+  } satisfies CustomerQuoteDocument['quote'];
+
+  const customerLines: CustomerQuoteLineDto[] = visibleLines
+    .map((l) => ({
+      id: l.id,
+      quoteId: quote.id,
+      blockId: l.blockId ?? null,
+      orgId: '',
+      sourceType: 'manual',
+      parentLineId: null,
+      name: l.name ?? null,
+      description: l.description ?? null,
+      quantity: String(l.quantity),
+      unitPrice: String(l.unitPrice),
+      taxable: !!l.taxable,
+      customerVisible: true,
+      lineTotal: l.lineTotal != null && Number.isFinite(Number(l.lineTotal)) ? String(l.lineTotal) : (Number(l.quantity) * Number(l.unitPrice)).toFixed(2),
+      recurrence: l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time',
+      termMonths: null,
+      billingFrequency: null,
+      depositEligible: false,
+      itemType: l.itemType ?? null,
+      sku: null,
+      partNumber: null,
+      sortOrder: 0,
+      createdAt: '',
+      contractLineType: (l.contractLineType ?? null) as CustomerQuoteLineDto['contractLineType'],
+      deviceRoles: l.deviceRoles ?? null,
+      // deviceGroupName is kept even after a retarget clears deviceGroupId (it feeds
+      // the internal "re-select for this organization" drift chip) — only print the
+      // stamped name on the customer document while the id it describes still resolves.
+      deviceGroupName: l.deviceGroupId ? l.deviceGroupName ?? null : null,
+      siteName: l.siteId ? l.siteName ?? null : null,
+      includedQuantity: l.includedQuantity == null ? null : String(l.includedQuantity),
+      overageMode: l.overageMode ?? null,
+      overageUnitPrice: l.overageUnitPrice == null ? null : String(l.overageUnitPrice),
+      // The PDF resolves the bytes itself; the model only needs to know a thumbnail may exist.
+      imageUrl: l.imageId || l.catalogItemId ? 'pdf' : null,
+    }));
+
+  const lineItemBlocks = blocks
+    .filter((b) => b.blockType === 'line_items')
+    .map((b) => ({ id: b.id, quoteId: quote.id, orgId: '', sortOrder: b.sortOrder, createdAt: '', blockType: 'line_items', content: b.content ?? {} }));
+
+  return {
+    quote: header,
+    blocks: lineItemBlocks as unknown as CustomerQuoteDocument['blocks'],
+    lines: customerLines,
+    branding: {
+      partnerName: branding.partnerName ?? null,
+      logoUrl: branding.logoUrl ?? null,
+      primaryColor: branding.primaryColor ?? null,
+      secondaryColor: branding.secondaryColor ?? null,
+      supportEmail: null,
+      supportPhone: null,
+      theme: branding.theme ?? 'classic',
+      pageSize: branding.pageSize ?? 'a4',
+    },
+    documentLocale: locale,
+  };
 }
 
-/** The label, column header and first row of a pricing table, which are
- *  reserved as one unit (capped at a page) — by the table itself and by a
- *  heading above it. `imageLines` holds the lines that will draw a thumbnail;
- *  any thumbnail narrows every row's description column. */
-function lineTableLeadHeight(doc: PDFKit.PDFDocument, lines: QuoteLine[], label: string, fonts: PdfThemeFonts, currency: string, locale: string, showTax: boolean, imageLines: (l: QuoteLine) => boolean): number {
-  const c = columnsFor(doc, showTax);
-  const descW = c.colDescW - (lines.some(imageLines) ? LINE_THUMB + 8 : 0);
-  const labelHeight = label ? (doc.font(fonts.heading.bold).fontSize(11).heightOfString(label, { width: c.contentWidth }) + 6) : 0;
-  const first = lines[0];
-  const firstRowHeight = first ? measureLineRow(doc, first, descW, fonts, currency, locale, imageLines(first)).rowHeight + LINE_ROW_GAP : 0;
-  const usable = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
-  return Math.min(labelHeight + LINE_HEADER_HEIGHT + firstRowHeight, usable);
-}
-
-async function renderLineTable(
-  doc: PDFKit.PDFDocument,
+/**
+ * Pre-load product images for a pricing table's lines (DB I/O): a per-line
+ * uploaded image wins, else the catalog item's image. A failed load degrades to
+ * "no thumbnail" — never aborts the document. Keyed by line id (= the model
+ * row's key).
+ */
+async function loadLineThumbnails(
   lines: QuoteLine[],
-  currency: string,
-  locale: string,
-  startY: number,
   loadCatalogImage: LoadCatalogImage,
   loadQuoteImage: (imageId: string) => Promise<{ data: Buffer } | null>,
-  fonts: PdfThemeFonts,
-  taxRate = 0,
-  showTax = false,
-  showSubtotal = false,
-  label = '',
-): Promise<number> {
-  const c = columnsFor(doc, showTax);
-  let y = startY;
-
-  // Pre-load product images (DB I/O): a per-line uploaded image wins, else the
-  // catalog item's image. A failed load degrades to "no thumbnail" — never
-  // aborts the document. 44pt: large enough to recognize the product, small
-  // enough that rows stay table-like.
-  const THUMB = LINE_THUMB;
-  const imageByLine = new Map<string, Buffer>();
+): Promise<Map<string, Buffer>> {
+  const byLine = new Map<string, Buffer>();
   for (const l of lines) {
     try {
       if (l.imageId) {
         const img = drawableOrNull(await loadQuoteImage(l.imageId), `line image ${l.imageId}`);
-        if (img?.data) { imageByLine.set(l.id, img.data); continue; }
+        if (img?.data) { byLine.set(l.id, img.data); continue; }
       }
       if (l.catalogItemId) {
         const img = drawableOrNull(await loadCatalogImage(l.catalogItemId), `catalog image ${l.catalogItemId}`);
-        if (img?.data) imageByLine.set(l.id, img.data);
+        if (img?.data) byLine.set(l.id, img.data);
       }
     } catch (e) {
       // Degrade to "no thumbnail" (never abort the customer document), but report
@@ -594,344 +551,10 @@ async function renderLineTable(
       captureException(e instanceof Error ? e : new Error(String(e)));
     }
   }
-  // Reserve a thumbnail gutter only when at least one line has an image, so the
-  // description column stays aligned across rows.
-  const gutter = imageByLine.size > 0 ? THUMB + 8 : 0;
-  const descW = c.colDescW - gutter;
-
-  // Header row: muted uppercase labels over a hairline (web parity — the
-  // portal's line table header has no fill, text-xs uppercase muted with a
-  // bottom border). Extracted so it re-draws at the top of every page the
-  // table spills onto — a continuation page without column headers forces the
-  // reader to flip back to relearn the columns.
-  const drawTableHeader = (headerY: number): number => {
-    doc.fillColor('#6b7280').fontSize(8).font(fonts.heading.bold);
-    const opts = { characterSpacing: 0.5 } as const;
-    doc.text('QTY', c.colQtyX, headerY, { width: c.colQtyW, align: 'left', ...opts });
-    doc.text('DESCRIPTION', c.colDescX, headerY, { width: c.colDescW, align: 'left', ...opts });
-    doc.text('UNIT', c.colUnitX, headerY, { width: c.colNumW, align: 'right', ...opts });
-    if (showTax) doc.text('TAX', c.colTaxX, headerY, { width: c.colNumW, align: 'right', ...opts });
-    doc.text('TOTAL', c.colAmtX, headerY, { width: c.colAmtW, align: 'right', ...opts });
-    doc.moveTo(c.left, headerY + 13).lineTo(c.right, headerY + 13).lineWidth(0.75).strokeColor('#e5e7eb').stroke();
-    return headerY + LINE_HEADER_HEIGHT;
-  };
-  // Page-break helper that re-draws the column header on the fresh page (unlike
-  // the generic ensureSpace, which just resets y).
-  const ensureRowSpace = (rowY: number, needed: number): number => {
-    if (rowY > doc.page.height - doc.page.margins.bottom - needed) {
-      doc.addPage();
-      return drawTableHeader(doc.page.margins.top);
-    }
-    return rowY;
-  };
-
-  const measureRow = (l: QuoteLine) => {
-    const row = measureLineRow(doc, l, descW, fonts, currency, locale, imageByLine.has(l.id));
-    return { ...row, img: imageByLine.get(l.id) };
-  };
-
-  // Keep the section label, the column header and the FIRST row together as one
-  // unit. Reserving a flat minimum row (the old 52pt at the call site) breaks
-  // whenever the first row is a tall spec list: the label + header fit the guess,
-  // got drawn at the foot of the page, then the row-level break moved the row to
-  // the next page and stranded them. Reserve the first row's real measured height
-  // — with the same row gap the row loop asks for — capped to a page so a
-  // taller-than-a-page row can't force a blank one.
-  y = ensureSpace(doc, y, lineTableLeadHeight(doc, lines, label, fonts, currency, locale, showTax, (l) => imageByLine.has(l.id)));
-  if (label) {
-    doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(label, c.left, y, { width: c.contentWidth });
-    y = doc.y + 6;
-  }
-
-  y = drawTableHeader(y);
-
-  const descX = c.colDescX;
-  for (const [rowIndex, l] of lines.entries()) {
-    const { title, blurb, titleHeight, blurbHeight, deviceSetText, img, rowHeight } = measureRow(l);
-    // Keep the whole row together: if it won't fit in the remaining page, break to
-    // a fresh page (re-drawing the column header) rather than letting a long
-    // description overflow into the footer band. (Old reserve was a flat 30/52pt,
-    // so tall rows spilled past the bottom margin.)
-    const rowY = ensureRowSpace(y, rowHeight + LINE_ROW_GAP);
-    // Hairline between rows (web: row borders) — not above the first row, nor
-    // at the top of a continuation page, where the column header sits.
-    if (rowIndex > 0 && rowY === y) {
-      doc.moveTo(c.left, y - LINE_ROW_GAP / 2).lineTo(c.right, y - LINE_ROW_GAP / 2).lineWidth(0.5).strokeColor('#f1f5f9').stroke();
-    }
-    y = rowY;
-    doc.fillColor('#1f2937').font(fonts.body.regular).fontSize(10);
-    doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.colQtyW, align: 'left' });
-    if (img) {
-      // A buffer that loaded but pdfkit can't decode: skip the thumbnail (never
-      // abort the document) but REPORT it — the pre-load loop above logs byte-level
-      // failures, so a decode-at-draw failure must not be the one silent gap.
-      try {
-        doc.image(img, descX, y, { fit: [THUMB, THUMB] });
-      } catch (e) {
-        console.error('[quotePdf] doc.image (line thumbnail) failed', l.id, e instanceof Error ? e.message : e);
-        captureException(e instanceof Error ? e : new Error(String(e)));
-      }
-    }
-    doc.fillColor('#1f2937').font(fonts.body.bold).fontSize(10).text(title, descX + gutter, y, { width: descW });
-    if (blurb) {
-      doc.fillColor('#6b7280').fontSize(8.5).font(fonts.body.regular).text(blurb, descX + gutter, y + titleHeight + 2, { width: descW, lineGap: 1 });
-      doc.fillColor('#1f2937').fontSize(10);
-    }
-    if (deviceSetText.length) {
-      let textY = y + titleHeight + blurbHeight + 2;
-      for (const text of deviceSetText) {
-        doc.fillColor('#6b7280').fontSize(8.5).font(fonts.body.regular).text(text, descX + gutter, textY, { width: descW, lineGap: 1 });
-        textY = doc.y + 2;
-      }
-      doc.fillColor('#1f2937').fontSize(10);
-    }
-    // lineBreak: false on every money cell — row height is measured from the
-    // description column only, so a wrapped amount would overprint the next
-    // row. pdfkit TRUNCATES an over-wide single-line string (not a clip into
-    // the gutter — "CHF 9'999'999'99" is a different number), and the boxes are
-    // sized for ~1M while numeric(12,2) permits 9'999'999'999.99, so every
-    // money cell shrinks its font to fit its box (#3777 review F10).
-    const unitText = formatMoneyForPdf(l.unitPrice, currency, locale);
-    doc.font(fonts.body.regular);
-    fitFontSize(doc, unitText, c.colNumW, 10);
-    // Unit price is secondary to the amount (web: muted).
-    doc.fillColor('#6b7280').text(unitText, c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
-    doc.fillColor('#1f2937');
-    if (showTax) {
-      const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
-      const taxText = t === null ? '—' : formatMoneyForPdf(t, currency, locale);
-      fitFontSize(doc, taxText, c.colNumW, 10);
-      doc.fillColor('#6b7280').text(taxText, c.colTaxX, y, { width: c.colNumW, align: 'right', lineBreak: false });
-      doc.fillColor('#1f2937');
-    }
-    const suffix = recurrenceSuffix(l.recurrence);
-    const totalText = `${formatMoneyForPdf(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency, locale)}${suffix}`;
-    fitFontSize(doc, totalText, c.colAmtW, 10);
-    doc.text(totalText, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
-    doc.fontSize(10);
-    y += rowHeight + LINE_ROW_GAP;
-  }
-
-  // Opt-in per-table subtotal: sum THIS table's lines split by recurrence, shown
-  // as non-zero parts joined with " + " (matches the document footer style).
-  if (showSubtotal) {
-    const sums = { one_time: 0, monthly: 0, annual: 0 };
-    for (const l of lines) {
-      // Fold any unrecognized recurrence (e.g. a future re-enabled 'quarterly')
-      // into one_time so the printed Subtotal always covers every rendered row —
-      // never silently omit a bucket the parts list below doesn't know about.
-      const key = l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time';
-      sums[key] += Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice));
-    }
-    const parts: string[] = [];
-    if (lines.some((l) => l.recurrence !== 'monthly' && l.recurrence !== 'annual')) parts.push(formatMoneyForPdf(sums.one_time, currency, locale));
-    if (lines.some((l) => l.recurrence === 'monthly')) parts.push(`${formatMoneyForPdf(sums.monthly, currency, locale)}/mo`);
-    if (lines.some((l) => l.recurrence === 'annual')) parts.push(`${formatMoneyForPdf(sums.annual, currency, locale)}/yr`);
-    if (parts.length) {
-      const subtotalText = parts.join('  +  ');
-      doc.font(fonts.body.bold).fontSize(9.5);
-      const subtotalWidth = c.right - c.colUnitX;
-      const labelWidth = doc.widthOfString('Subtotal');
-      const inlineAmountWidth = subtotalWidth - labelWidth - 10;
-      const stackAmount = doc.widthOfString(subtotalText) > inlineAmountWidth;
-      const amountHeight = doc.heightOfString(subtotalText, { width: subtotalWidth, align: 'right' });
-      const subtotalHeight = 6 + (stackAmount ? 14 + amountHeight + 6 : Math.max(12, amountHeight) + 6);
-      y = ensureRowSpace(y, subtotalHeight);
-      doc.moveTo(c.colUnitX, y).lineTo(c.right, y).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
-      y += 6;
-      doc.font(fonts.body.bold).fontSize(9.5).fillColor('#374151').text('Subtotal', c.colUnitX, y, { width: c.contentWidth * 0.2, align: 'left' });
-      if (stackAmount) {
-        y += 14;
-        doc.fillColor('#111827').text(subtotalText, c.colUnitX, y, { width: subtotalWidth, align: 'right' });
-        y += amountHeight + 6;
-      } else {
-        const amountX = c.colUnitX + labelWidth + 10;
-        doc.fillColor('#111827').text(subtotalText, amountX, y, { width: c.right - amountX, align: 'right' });
-        y += Math.max(12, amountHeight) + 6;
-      }
-    }
-  }
-  return y;
+  return byLine;
 }
 
-// ---------------------------------------------------------------------------
-// Recurring summary footer: One-time / Monthly / Annual / due-on-acceptance,
-// drawn from the quote header buckets. The bold "Due on acceptance" figure is
-// what accept actually invoices (one-time charges + tax on the one-time lines —
-// quote.dueOnAcceptanceTotal); recurring lines bill later via the contract, so
-// they are NOT in that figure. When there is recurring revenue we also show the
-// `total` as a secondary "first-period total (incl. recurring)" line so the
-// recurring-inclusive number is still visible but not presented as the invoiced
-// amount.
-// ---------------------------------------------------------------------------
 
-/** Web parity (PublicQuoteView / QuoteDetailView): acceptance invoices the
- *  one-time charges only; recurring lines bill later through the contract. */
-const FIRST_PERIOD_NOTE = 'Accepting this proposal bills only the one-time charges now. Recurring lines bill on their own schedule.';
-
-function renderRecurringSummary(
-  doc: PDFKit.PDFDocument,
-  quote: QuoteHeader,
-  currency: string,
-  locale: string,
-  primary: string,
-  startY: number,
-  fonts: PdfThemeFonts,
-  showTax = false,
-  recurringLines: { monthly: boolean; annual: boolean } = { monthly: false, annual: false },
-  lines: QuoteLine[] = [],
-): number {
-  const c = columnsFor(doc, showTax);
-  // Hoisted above ensureSpace so the page-break reservation can size itself to
-  // the actual content drawn below.
-  const breakdown = quote.categoryBreakdown ?? [];
-  const depositDue = quote.depositDueTotal ?? quote.depositAmount;
-  const hasDeposit = quote.depositType && quote.depositType !== 'none' && depositDue != null;
-  const showMonthly = recurringLines.monthly;
-  const showAnnual = recurringLines.annual;
-  const showTaxRow = quote.taxTotal != null && Number(quote.taxTotal) > 0;
-  const hasRecurring = recurringLines.monthly || recurringLines.annual;
-  // 0.33, not 0.40: the label box ends at colSummaryAmtX (0.76 — widened for
-  // prefix-code currencies, #3777), and the widest label — "Remaining balance
-  // (due per terms)" at bold 12pt, ~200pt — needs the extra room. Rows advance
-  // by the fixed constants below, so a wrapped label overprints the next row
-  // exactly like a wrapped amount would.
-  const sumX = c.left + c.contentWidth * 0.33;
-  const labelX = sumX;
-  const labelW = c.colSummaryAmtX - sumX - 8;
-  const categoryAmountX = c.colSummaryAmtX - 60;
-  const categoryAmountW = c.right - categoryAmountX;
-  doc.font(fonts.body.regular).fontSize(9);
-  const breakdownRows = breakdown.length > 1 ? breakdown.map((b) => {
-    const label = b.category === 'other' ? 'Other' : b.category[0]!.toUpperCase() + b.category.slice(1);
-    const parts: string[] = [];
-    const categoryLines = lines.filter((l) => (l.itemType ?? 'other') === b.category && l.customerVisible !== false);
-    const cadenceLines = categoryLines;
-    if (cadenceLines.some((l) => l.recurrence !== 'monthly' && l.recurrence !== 'annual')) parts.push(formatMoneyForPdf(b.oneTimeTotal, currency, locale));
-    if (cadenceLines.some((l) => l.recurrence === 'monthly')) parts.push(`${formatMoneyForPdf(b.monthlyTotal, currency, locale)}/mo`);
-    if (cadenceLines.some((l) => l.recurrence === 'annual')) parts.push(`${formatMoneyForPdf(b.annualTotal, currency, locale)}/yr`);
-    const amount = parts.join(' + ');
-    const stacked = doc.widthOfString(amount) > categoryAmountW;
-    const amountHeight = stacked ? doc.heightOfString(amount, { width: c.right - sumX, align: 'right' }) : 0;
-    return { label, amount, stacked, amountHeight, height: stacked ? 12 + amountHeight + 5 : 14 };
-  }) : [];
-
-  // These advances are shared by the reservation and drawing code below. Keep
-  // the arithmetic literal and exact: explicit-coordinate pdfkit text does not
-  // auto-paginate, so under-reserving even one row can push the footer into the
-  // bottom margin.
-  const TOP_RULE_ADVANCE = 10;
-  const BREAKDOWN_GAP = 5;
-  const REGULAR_ROW_ADVANCE = 16;
-  const BOLD_ROW_ADVANCE = 20;
-  // Web parity: the amount due is text-2xl (24px → 18pt) under an accent rule.
-  const EMPHASIS_ROW_ADVANCE = 26;
-  const EMPHASIS_RULE_ADVANCE = 13;
-  const NOTE_GAP = 2;
-  // The first-period total and its note sit in a tinted box (web: rounded bg-muted p-3; padded a little tighter here).
-  const PERIOD_BOX_PAD = 6;
-  const PERIOD_BOX_GAP = 6;
-  const rollupRows = 1 + Number(showMonthly) + Number(showAnnual) + Number(showTaxRow);
-  const breakdownHeight = breakdownRows.length ? breakdownRows.reduce((total, row) => total + row.height, 0) + BREAKDOWN_GAP : 0;
-  const emphasisHeight = hasDeposit
-    ? BOLD_ROW_ADVANCE + EMPHASIS_ROW_ADVANCE + BOLD_ROW_ADVANCE
-    : EMPHASIS_ROW_ADVANCE;
-  // Under the first-period total: the same sentence the web views print, so
-  // the PDF never implies the recurring amount is charged on acceptance.
-  doc.font(fonts.body.regular).fontSize(8);
-  const noteHeight = hasRecurring ? doc.heightOfString(FIRST_PERIOD_NOTE, { width: c.right - sumX }) + NOTE_GAP : 0;
-  const periodBoxHeight = hasRecurring ? 2 * PERIOD_BOX_PAD + REGULAR_ROW_ADVANCE + noteHeight : 0;
-  const needed = TOP_RULE_ADVANCE + breakdownHeight + rollupRows * REGULAR_ROW_ADVANCE +
-    EMPHASIS_RULE_ADVANCE + emphasisHeight + (hasRecurring ? PERIOD_BOX_GAP + periodBoxHeight : 0);
-  let y = ensureSpace(doc, startY + 6, needed);
-
-  // Wider label column than the line table's so the emphasised "Due on
-  // acceptance" figure (14pt) and the recurring labels never wrap/overlap.
-  doc.moveTo(sumX, y).lineTo(c.right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
-  y += TOP_RULE_ADVANCE;
-
-  // Per-category subtotals (muted), including a lone zero-valued recurring
-  // category. Drawn above the One-time/Monthly/Annual roll-up.
-  if (breakdownRows.length) {
-    for (const row of breakdownRows) {
-      doc.font(fonts.body.regular).fontSize(9).fillColor('#9ca3af');
-      doc.text(row.label, labelX, y, { width: labelW, align: 'left' });
-      if (row.stacked) {
-        y += 12;
-        doc.text(row.amount, sumX, y, { width: c.right - sumX, align: 'right' });
-        y += row.amountHeight + 5;
-      } else {
-        doc.text(row.amount, categoryAmountX, y, { width: categoryAmountW, align: 'right' });
-        y += row.height;
-      }
-    }
-    y += BREAKDOWN_GAP;
-  }
-  const drawRow = (
-    label: string,
-    amount: string | number | null | undefined,
-    suffix: string,
-    opts: { bold?: boolean; emphasis?: boolean } = {},
-  ) => {
-    const { bold = false, emphasis = false } = opts;
-    const strong = bold || emphasis;
-    const size = emphasis ? 18 : strong ? 12 : 10;
-    // The emphasised label stays at 12pt beside the 18pt figure (the web uses
-    // text-sm; 12pt holds up better next to the larger amount), dropped to sit
-    // on the figure's baseline.
-    const labelSize = emphasis ? 12 : size;
-    doc.font(strong ? fonts.body.bold : fonts.body.regular).fontSize(labelSize).fillColor(strong ? '#111827' : '#6b7280');
-    doc.text(label, labelX, emphasis ? y + 4 : y, { width: labelW, align: 'left' });
-    doc.fontSize(size);
-    // lineBreak: false — the y advances below are fixed constants shared with
-    // the page-break reservation; a wrapped amount would silently break both.
-    // Shrink-to-fit so a schema-maximum figure is never truncated by pdfkit.
-    const amountText = `${formatMoneyForPdf(amount, currency, locale)}${suffix}`;
-    fitFontSize(doc, amountText, c.colSummaryNumW, size);
-    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(amountText, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right', lineBreak: false });
-    y += emphasis ? EMPHASIS_ROW_ADVANCE : strong ? BOLD_ROW_ADVANCE : REGULAR_ROW_ADVANCE;
-  };
-
-  drawRow('One-time', quote.oneTimeTotal, '');
-  if (showMonthly) drawRow('Monthly', quote.monthlyRecurringTotal, '/mo');
-  if (showAnnual) drawRow('Annual', quote.annualRecurringTotal, '/yr');
-  if (showTaxRow) {
-    drawRow(`Tax${quote.taxRate ? ` (${(Number(quote.taxRate) * 100).toFixed(2)}%)` : ''}`, quote.taxTotal, '');
-  }
-  // Separate the roll-up from the amount the customer pays now. The 4pt top
-  // padding and 9pt bottom padding are included in EMPHASIS_RULE_ADVANCE.
-  y += 4;
-  doc.moveTo(sumX, y).lineTo(c.right, y).lineWidth(0.75).strokeColor(primary).stroke();
-  y += 9;
-  // Accent primary figure = what the customer pays NOW. With a deposit, the
-  // emphasised figure is the deposit due — anchored by an explicit "Due on
-  // acceptance" row above it so the three figures visibly sum (due = deposit +
-  // remaining) instead of asking the reader to infer the relationship. Same
-  // presentation contract as the web preview and both portal views. Falls back
-  // to the one-time total if the derived field is somehow absent.
-  if (hasDeposit) {
-    drawRow('Due on acceptance', quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, '', { bold: true });
-    drawRow('Deposit due now', depositDue, '', { emphasis: true });
-    const remainderCents = toCents(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal) - toCents(depositDue);
-    drawRow('Remaining balance (due per terms)', fromCents(remainderCents), '', { bold: true });
-  } else {
-    drawRow('Due on acceptance', quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, '', { emphasis: true });
-  }
-  if (hasRecurring) {
-    y += PERIOD_BOX_GAP;
-    doc.save();
-    doc.roundedRect(sumX - PERIOD_BOX_PAD, y, c.right - sumX + 2 * PERIOD_BOX_PAD, periodBoxHeight, 4).fill('#f3f4f6');
-    doc.restore();
-    y += PERIOD_BOX_PAD;
-    drawRow('First-period total', quote.total, '');
-    y += NOTE_GAP;
-    doc.font(fonts.body.regular).fontSize(8).fillColor('#6b7280').text(FIRST_PERIOD_NOTE, sumX, y, { width: c.right - sumX });
-    y = doc.y + PERIOD_BOX_PAD;
-  }
-  return y;
-}
-
-// ---------------------------------------------------------------------------
 // Cover page (Task 14): a page-1 frame drawn ahead of every block when
 // `quote.coverPage.enabled` — partner logo or wordmark, a hero cover image (top ~55%
 // of the page), the proposal title (24pt bold), then Prepared-for/Prepared-by
@@ -945,7 +568,7 @@ async function renderCoverPage(
   quote: QuoteHeader,
   branding: QuotePdfBranding,
   loadImage: (imageId: string) => Promise<{ data: Buffer } | null>,
-  c: QuotePdfColumns,
+  c: Pick<DocumentPdfColumns, 'left' | 'right' | 'contentWidth'>,
   fonts: PdfThemeFonts,
   logo: PdfLogo | null = null,
   headingColor: string = DEFAULT_HEADING_COLOR,
@@ -1106,8 +729,17 @@ export async function renderQuotePdf(
   }
   const partnerName = branding.partnerName ?? 'Proposal';
   // Per-line Tax column only when this quote carries tax (mirrors the summary).
-  const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
   const showTax = Number(quote.taxTotal ?? 0) > 0;
+
+  // The PDF draws the view model the screens render (W3b, #9421): customer DTO →
+  // buildQuoteDocumentModel in the document's language. Pricing tables, totals and
+  // the header strings come from it; blocks (rich text, tables, callouts) keep
+  // their own PDF renderers (OD-7).
+  const labels = documentLabelsFor(locale);
+  const docModel = buildQuoteDocumentModel(quotePdfDocument(quote, blocks, lines, branding), labels);
+  const pricingTables = new Map<string, DocumentLineTableModel>();
+  for (const mb of docModel.blocks) if (mb.kind === 'line_items') pricingTables.set(mb.key, mb.table);
+  const linesById = new Map(lines.map((l) => [l.id, l]));
 
   // bufferPages keeps every page addressable until the end so the footer pass
   // can stamp "Page X of Y" — the total isn't known while content is drawn.
@@ -1123,7 +755,8 @@ export async function renderQuotePdf(
     doc.on('error', reject);
   });
 
-  const c = columnsFor(doc);
+  const c = documentColumnsFor(doc, { showTax });
+  const tableStyle: DocumentPdfStyle = { fonts, locale: docModel.locale, accent: primary, categoryLabel: labels.pdf.category };
 
   // ---- Cover page (page 1, when enabled) — always ends with doc.addPage() ---
   await renderCoverPage(doc, quote, branding, loadImage, c, fonts, logo, headingColor);
@@ -1133,8 +766,8 @@ export async function renderQuotePdf(
   if (!headerLogo) {
     doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(partnerName, c.left, 50, { width: c.contentWidth * 0.55 });
   }
-  doc.fillColor(primary).fontSize(10).font(fonts.heading.bold).text('PROPOSAL', c.left, 52, { width: c.contentWidth, align: 'right', characterSpacing: 1.5 });
-  doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(quote.quoteNumber ?? 'Draft', c.left, 66, { width: c.contentWidth, align: 'right' });
+  doc.fillColor(primary).fontSize(10).font(fonts.heading.bold).text(docModel.header.eyebrow.toUpperCase(), c.left, 52, { width: c.contentWidth, align: 'right', characterSpacing: 1.5 });
+  doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(docModel.header.number, c.left, 66, { width: c.contentWidth, align: 'right' });
   doc.moveTo(c.left, 100).lineTo(c.right, 100).lineWidth(2).strokeColor(primary).stroke();
 
   // ---- Quote title (tech-authored, e.g. "Office Network Refresh") -----------
@@ -1149,7 +782,7 @@ export async function renderQuotePdf(
   const rightX = c.left + c.contentWidth * 0.55;
   const rightW = c.contentWidth * 0.45;
 
-  doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('FROM', c.left, y);
+  doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text(labels.pdf.from.toUpperCase(), c.left, y);
   doc.fillColor('#111827').fontSize(12).font(fonts.heading.bold).text(seller?.name ?? partnerName, c.left, y + 12, { width: c.contentWidth * 0.5 });
   let fromY = doc.y + 2;
   doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular);
@@ -1164,7 +797,7 @@ export async function renderQuotePdf(
 
   let billY = y;
   if (quote.billToName) {
-    doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('PREPARED FOR', rightX, billY, { width: rightW });
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text(labels.quote.preparedFor.toUpperCase(), rightX, billY, { width: rightW });
     doc.fillColor('#111827').fontSize(12).font(fonts.heading.bold).text(quote.billToName, rightX, billY + 12, { width: rightW });
     billY = doc.y + 2;
   }
@@ -1173,10 +806,9 @@ export async function renderQuotePdf(
     doc.text(aline, rightX, billY, { width: rightW });
     billY = doc.y + 1.5;
   }
-  if (quote.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(`Tax ID: ${quote.billToTaxId}`, rightX, billY, { width: rightW }); billY = doc.y + 1.5; }
+  if (quote.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(labels.pdf.taxId(quote.billToTaxId), rightX, billY, { width: rightW }); billY = doc.y + 1.5; }
   doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular);
-  if (quote.issueDate) { doc.text(`Issued: ${formatDate(quote.issueDate)}`, rightX, billY, { width: rightW }); billY = doc.y + 2; }
-  if (quote.expiryDate) { doc.text(`Valid until: ${formatDate(quote.expiryDate)}`, rightX, billY, { width: rightW }); billY = doc.y + 2; }
+  for (const d of docModel.header.dates) { doc.text(`${d.label}: ${d.value.text}`, rightX, billY, { width: rightW }); billY = doc.y + 2; }
 
   y = Math.max(fromY, billY) + 28;
   doc.y = y;
@@ -1189,6 +821,18 @@ export async function renderQuotePdf(
     doc.text(quote.introNotes, c.left, y, { width: c.contentWidth, lineGap: introGap });
     y = doc.y + BLOCK_GAP;
   }
+
+  // One pricing table: load its thumbnails (DB I/O, degrades to none), then draw it
+  // through the module — label, column header, rows, pagination and subtotal.
+  const drawPricingTable = async (table: DocumentLineTableModel, startY: number): Promise<number> => {
+    const tableLines: QuoteLine[] = [];
+    for (const g of table.groups) for (const d of g.days) for (const r of d.rows) {
+      const l = linesById.get(r.key);
+      if (l && r.thumbnail) tableLines.push(l);
+    }
+    const thumbnails = await loadLineThumbnails(tableLines, loadCatalogImage, loadImage);
+    return drawDocumentLineTable(doc, table, startY, { cols: c, style: tableStyle, thumbnails });
+  };
 
   // ---- Walk blocks in sortOrder -------------------------------------------
   const sorted = [...blocks].sort((a, z) => a.sortOrder - z.sortOrder);
@@ -1334,11 +978,10 @@ export async function renderQuotePdf(
     }
     if (next.blockType === 'callout') return measureCalloutLead(doc, next.content, c.contentWidth, fonts);
     if (next.blockType === 'line_items') {
-      const label = String((next.content as { label?: string }).label ?? '').trim();
-      const blockLines = lines.filter((l) => l.blockId === next.id);
+      const table = pricingTables.get(next.id);
       // Thumbnails aren't loaded yet; assume one wherever a line could have one
       // (a narrower description column only ever over-reserves).
-      return lineTableLeadHeight(doc, blockLines, label, fonts, currency, locale, showTax, (l) => !!(l.imageId || l.catalogItemId));
+      return table ? documentTableLeadHeight(doc, table, { cols: c, style: tableStyle, maybeThumbnails: true }) : 0;
     }
     return 0;
   };
@@ -1353,7 +996,7 @@ export async function renderQuotePdf(
       return parseRichText(String(content.html ?? '')).some((rb) => rb.kind === 'table' || rb.runs.some((r) => r.text.trim().length > 0));
     }
     if (b.blockType === 'image') return typeof content.imageId === 'string' && !!(await loadBlockImage(content.imageId))?.data;
-    if (b.blockType === 'line_items') return lines.some((l) => l.blockId === b.id);
+    if (b.blockType === 'line_items') return pricingTables.has(b.id);
     return b.blockType === 'table' || b.blockType === 'callout';
   };
   const visible: QuoteBlock[] = [];
@@ -1423,18 +1066,8 @@ export async function renderQuotePdf(
         doc.fillColor('#111827');
       }
     } else if (b.blockType === 'line_items') {
-      const blockLines = lines.filter((l) => l.blockId === b.id);
-      if (blockLines.length) {
-        // Section label above the table (parity with the web document), e.g.
-        // "Recurring services" / "One-time".
-        const label = String((b.content as { label?: string }).label ?? '').trim();
-        // The label is drawn by renderLineTable so it shares one keep-together
-        // reservation with the column header and the first row, sized to that
-        // row's real height. Reserving a flat minimum here instead stranded the
-        // label + header at the foot of a page whenever the first row was tall.
-        const showSubtotal = (b.content as { showSubtotal?: boolean }).showSubtotal === true;
-        y = await renderLineTable(doc, blockLines, currency, locale, y, loadCatalogImage, loadImage, fonts, taxRate, showTax, showSubtotal, label);
-      }
+      const table = pricingTables.get(b.id);
+      if (table) y = await drawPricingTable(table, y);
     } else if (b.blockType === 'table') {
       const model = parseTable(b.content, c.contentWidth);
       if (model) {
@@ -1449,14 +1082,11 @@ export async function renderQuotePdf(
   if (drewBlock) y += BLOCK_GAP;
 
   // ---- Trailing default table for lines with no block ----------------------
-  const orphanLines = lines.filter((l) => !l.blockId);
-  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, locale, y, loadCatalogImage, loadImage, fonts, taxRate, showTax);
+  const defaultTable = pricingTables.get('default-pricing');
+  if (defaultTable) y = await drawPricingTable(defaultTable, y);
 
-  // ---- Recurring summary footer -------------------------------------------
-  y = renderRecurringSummary(doc, quote, currency, locale, primary, y, fonts, showTax, {
-    monthly: lines.some((line) => line.recurrence === 'monthly'),
-    annual: lines.some((line) => line.recurrence === 'annual'),
-  }, lines);
+  // ---- Totals box: the rows the screen prints (module-owned geometry) -------
+  y = drawDocumentTotals(doc, docModel.totals, y, { cols: c, style: tableStyle });
 
   // ---- Closing terms (content, not chrome) ----------------------------------
   // Ends the proposal proper, right under the price — the portal shows it in
@@ -1572,7 +1202,7 @@ export async function renderQuotePdf(
       width: fWidth * 0.68, height: 10, lineBreak: false, ellipsis: true,
     });
     // Right: quote number + page counter.
-    doc.text(`${quote.quoteNumber ?? 'Draft'} · Page ${i + 1} of ${range.count}`, fLeft, ruleY + 7, {
+    doc.text(`${docModel.header.number} · Page ${i + 1} of ${range.count}`, fLeft, ruleY + 7, {
       width: fWidth, align: 'right', lineBreak: false,
     });
     doc.page.margins.bottom = savedBottom;

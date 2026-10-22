@@ -395,6 +395,8 @@ export interface QuoteDetail {
    *  Optional: older payloads/fixtures omit it, which reads as "unknown"
    *  (AcceptOnBehalfDialog shows no email promise). */
   autoEmailInvoiceOnAccept?: boolean;
+  /** #9256: server has an email transport. Omitted (older payload) = unknown. */
+  emailConfigured?: boolean;
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {

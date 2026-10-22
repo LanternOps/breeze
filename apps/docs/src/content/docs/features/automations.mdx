@@ -11,7 +11,7 @@ Automations appear in the left nav as **Jobs**. Older `/automations` links redir
 
 You manage automations from the **Jobs** page in the Breeze dashboard. From there you can create new automations, enable or disable existing ones, run them on demand, and review their execution history.
 
-An automation normally belongs to a single organization, but a partner-scoped user with access to every organization can instead create one **partner-wide** ("All orgs") -- see [Partner-wide Automations](#partner-wide-automations-all-organizations) below.
+An automation normally belongs to a single organization, but a partner-scoped user with access to every organization can instead create one **partner-wide** ("Partner-wide") -- see [Partner-wide Automations](#partner-wide-automations-all-organizations) below.
 
 <Aside>
   Building an `event` automation on `alert.triggered` specifically to respond to a condition you also watch with an Alert Rule? Consider a [Monitor](/features/monitors/) instead -- it bundles the condition, severity, and response actions into one object, deployed through Configuration Policies instead of hand-wiring a rule to a separate automation. Automations you already have under **Jobs** aren't affected -- they keep running exactly as before, as plain event-, schedule-, webhook-, or manually-triggered automations; only a monitor's own generated automation shows up read-only (see [What's read-only, and why](/features/monitors/#whats-read-only-and-why)).
@@ -64,7 +64,7 @@ Instead of recreating the same automation in every customer organization, a part
 - Ownership is chosen at creation time (**This organization only** vs **All organizations (partner-wide automation)**) and can't be changed afterward. To move an automation between an org and partner-wide, delete and recreate it.
 - **Event triggers fan out**: an event (e.g. `device.offline`, `alert.triggered`) occurring in any member organization matches the partner's partner-wide automations, in addition to that org's own automations.
 - Any alert, deployment, or notification an automation's actions create always belongs to the **target device's own organization**, not the partner -- so `create_alert`, `deploy_software`, and `send_notification` actions stay correctly scoped even when the triggering automation is partner-wide.
-- Partner-wide automations show an **All orgs** badge in the automations list. Updating, deleting, or manually triggering one requires the same partner-wide management access as creating it.
+- Partner-wide automations show a **Partner-wide** badge in the automations list. Updating, deleting, or manually triggering one requires the same partner-wide management access as creating it.
 
 ---
 
@@ -82,7 +82,7 @@ An automation can target saved [device groups](/features/device-groups/). In **D
 
 ## Managing Automations
 
-The Automations list page displays all automations in a table with columns for name, trigger type, last run time, status, and an enabled toggle. Partner-wide automations show an **All orgs** badge next to their name.
+The Automations list page displays all automations in a table with columns for name, trigger type, last run time, status, and an enabled toggle. Partner-wide automations show a **Partner-wide** badge next to their name.
 
 - **Search and filter.** Use the search bar to find automations by name or description. Filter by trigger type (Schedule, Event, Webhook, Manual) or by status (Enabled / Disabled).
 - **Enable or disable.** Toggle the switch in the Enabled column. Disabled automations do not fire on schedule or in response to events.

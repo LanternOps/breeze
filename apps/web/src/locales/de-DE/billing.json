@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "Eine Rechnung über {{amount}} wird jetzt erstellt und nummeriert.",
         "consequenceContracts": "Wiederkehrende Positionen werden zu Vertragsentwürfen, die Sie später aktivieren.",
         "consequenceEmail": "Die Rechnung wird per E-Mail an {{recipients}} gesendet.",
+        "consequenceEmailNotConfigured": "Es ist kein E-Mail-Dienst konfiguriert; die Rechnung wird nicht per E-Mail gesendet. Teilen Sie sie über die Rechnungsseite.",
         "consequenceDraft": "Dieses Angebot wurde nie versendet. Der Kunde sieht es zum ersten Mal als Rechnung.",
         "submit": "Annehmen und Rechnung stellen",
         "success": "Angebot angenommen. Rechnung {{number}} erstellt.",
@@ -1576,76 +1577,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Gesch.",
-        "estimate": "Geschätzte Menge — abgerechnet wird die tatsächliche Anzahl {{set}} in jedem Abrechnungszeitraum.",
         "setDevices": "Geräte",
         "setSeats": "Benutzerplätze",
-        "setGroup": "Geräte in „{{name}}“",
-        "atSite": "{{set}} am Standort {{site}}",
-        "allowanceBill": "Enthält {{included}}; weitere Einheiten werden mit je {{price}} berechnet.",
-        "allowanceFlag": "Enthält {{included}}; weitere Einheiten werden zur Prüfung gemeldet, nicht automatisch berechnet."
+        "setGroup": "Geräte in „{{name}}“"
       },
       "additionalItems": "Zusätzliche Artikel",
       "contract": {
-        "download": "Vereinbarung herunterladen",
-        "previewTitle": "Vereinbarung {{name}}",
         "unavailable": "Vereinbarungsdatei nicht verfügbar",
         "versionFooter": "{{name}} — Version {{version}}"
       },
-      "agreements": {
-        "heading": "Vereinbarungen",
-        "termsTitle": "Allgemeine Geschäftsbedingungen",
-        "read": "Lesen",
-        "hide": "Ausblenden",
-        "readTime": "ca. {{minutes}} Min. Lesezeit",
-        "sectionsReadTime_one": "{{count}} Abschnitt · ca. {{minutes}} Min. Lesezeit",
-        "sectionsReadTime_other": "{{count}} Abschnitte · ca. {{minutes}} Min. Lesezeit",
-        "pdfDocument": "PDF-Dokument",
-        "unavailable": "Nicht verfügbar",
-        "untitled": "Vereinbarung"
-      },
-      "draft": "Entwurf",
-      "empty": "Dieser Vorschlag hat noch keinen Inhalt.",
-      "imageUnavailable": "Bild nicht verfügbar",
-      "issued": "Ausgestellt",
-      "preparedFor": "Vorbereitet für",
-      "taxId": "Steuernummer: {{id}}",
-      "imageZoomAria": "Größeres Bild anzeigen",
       "preview": {
         "description": "Das sieht Ihr Kunde auf seinem Angebotslink.",
         "downloadPdf": "Laden Sie PDF herunter",
-        "preparing": "Vorbereiten…"
-      },
-      "pricing": "Preise",
-      "pricingScrollAria": "Preise – scrollen Sie seitwärts für weitere Spalten",
-      "proposal": "Vorschlag",
-      "proposalImageAlt": "Angebotsbild",
-      "recurrence": {
-        "annual": "Jährlich",
-        "monthly": "Monatlich"
-      },
-      "table": {
-        "amount": "Betrag",
-        "description": "Beschreibung",
-        "qty": "Menge",
-        "tax": "Steuer",
-        "unitPrice": "Stückpreis"
-      },
-      "totals": {
-        "annualRecurring": "Jährlich wiederkehrend",
-        "depositDue": "Anzahlung fällig",
-        "depositDueNow": "Anzahlung jetzt fällig",
-        "dueOnAcceptance": "Fällig bei Abnahme",
-        "firstPeriodSubtotal": "Zwischensumme erster Zeitraum",
-        "firstPeriodTotal": "Gesamtsumme erster Zeitraum",
-        "monthlyRecurring": "Monatlich wiederkehrend",
-        "recurringNote": "Wenn Sie diesen Vorschlag annehmen, werden die einmaligen Kosten jetzt in Rechnung gestellt. Wiederkehrende Positionen werden nach ihrem eigenen Zeitplan abgerechnet.",
-        "remainingBalance": "Restbetrag (gemäß Bedingungen)",
-        "subtotal": "Zwischensumme",
-        "tax": "Steuer"
-      },
-      "unsupportedBlock": "Dieser Blocktyp wird in dieser Ansicht noch nicht unterstützt.",
-      "validUntil": "Gültig bis"
+        "preparing": "Vorbereiten…",
+        "loading": "Kundenansicht wird geladen …",
+        "loadError": "Die Kundenansicht dieses Angebots konnte nicht geladen werden.",
+        "retry": "Erneut versuchen",
+        "signatureInert": "Hier unterschreibt Ihr Kunde"
+      }
     },
     "page": {
       "accessDenied": "Sie sind nicht berechtigt, Angebote anzuzeigen.",
@@ -2192,36 +2141,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Bill zu",
-    "documentType": "Rechnung",
-    "due": "Fällig",
-    "empty": "Diese Rechnung enthält noch keine Einzelposten.",
-    "fallbackTitle": "Rechnung",
-    "issued": "Ausgestellt",
-    "laborLine": "Arbeitszeit",
     "preview": {
       "description": "Das sieht Ihr Kunde auf seiner Rechnung.",
       "downloadError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
       "downloadPdf": "Laden Sie PDF herunter",
-      "preparing": "Vorbereiten…"
+      "loadError": "Die Kundenansicht dieser Rechnung konnte nicht geladen werden.",
+      "loading": "Kundenansicht wird geladen …",
+      "preparing": "Vorbereiten…",
+      "retry": "Erneut versuchen"
     },
-    "table": {
-      "amount": "Betrag",
-      "description": "Beschreibung",
-      "qty": "Menge",
-      "tax": "Steuer",
-      "unitPrice": "Stückpreis"
-    },
-    "terms": "Allgemeine Geschäftsbedingungen",
-    "ticketHeader": "Ticket-Nr. {{number}}",
-    "ticketWork": "Ticket-Arbeit",
-    "totals": {
-      "amountDue": "Fälliger Betrag",
-      "paid": "Bezahlt",
-      "subtotal": "Zwischensumme",
-      "tax": "Steuer",
-      "total": "Insgesamt"
-    }
+    "ticketHeader": "Ticket-Nr. {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Rechnungen",
@@ -2508,7 +2437,7 @@
     "documents": "Dokumente",
     "connections": "Verbindungen",
     "rates": "Tarife",
-    "payments": "Payments"
+    "payments": "Zahlungen"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2846,6 +2775,10 @@
       "confirm": "Bestätigen",
       "failed": "Verifizierung fehlgeschlagen. Versuchen Sie es erneut.",
       "unavailable": "Verifizierung konnte nicht gestartet werden"
+    },
+    "notEnabled": {
+      "title": "Automatische Zahlungen sind für Ihr Konto nicht aktiviert",
+      "hint": "Automatische Zahlungen wurden noch nicht aktiviert. Bitten Sie Ihre Breeze-Administration, sie zu aktivieren, und kehren Sie dann zurück, um die Anmeldung bei Ihren Kunden anzufordern."
     }
   },
   "reminders": {

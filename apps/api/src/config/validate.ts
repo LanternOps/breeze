@@ -670,8 +670,10 @@ const envObjectSchema = z
       .string()
       .optional()
       .refine(
-        (v) => !v?.trim() || /^[1-9]\d{0,8}$/.test(v.trim()),
-        'AGENT_ENROLL_RATE_WINDOW_SECONDS must be a positive integer below 1,000,000,000',
+        (v) => !v?.trim() || (/^[1-9]\d{0,8}$/.test(v.trim()) && Number(v.trim()) <= 230),
+        // The window is the /enroll 429 Retry-After; W09 agents cap Retry-After
+        // at 300 s after x1.3 jitter (230 = AGENT_RETRY_AFTER_MAX_SECONDS, #9457).
+        'AGENT_ENROLL_RATE_WINDOW_SECONDS must be a positive integer of at most 230',
       ),
 
     // Controlled agent-fleet rollout (decouple registration from promotion).

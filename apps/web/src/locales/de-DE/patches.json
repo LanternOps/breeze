@@ -41,7 +41,8 @@
       "title": "Patch-Freigabe bestätigen",
       "selectedOrganization": "der ausgewählten Organisation",
       "messageOne": "Patch auf {{count}} Gerät in {{org}} freigeben?",
-      "messageMany": "Patch auf {{count}} Geräten in {{org}} freigeben?"
+      "messageMany": "Patch auf {{count}} Geräten in {{org}} freigeben?",
+      "messagePartnerWide": "Patch für alle Organisationen Ihres Partners freigeben?"
     },
     "checkingAccess": "Zugriff wird geprüft..."
   },
@@ -259,7 +260,9 @@
       "moderate": "Moderat",
       "low": "Niedrig",
       "unrated": "Unbewertet",
-      "unratedNote": "Wird nicht automatisch genehmigt"
+      "unratedNote": "Wird nicht automatisch genehmigt",
+      "derivedNote": "Abgeleitete Bewertung",
+      "derivedTooltip": "Der Hersteller hat für dieses Update keine Bewertung veröffentlicht. Dieser Schweregrad wurde aus Klassifizierung und Titel abgeleitet."
     },
     "approval": {
       "pending": "Ausstehend",
@@ -372,7 +375,8 @@
       "createRing": "Updatering konnte nicht erstellt werden",
       "deleteRing": "Ring konnte nicht gelöscht werden",
       "approveUnknown": "Freigabestatus unbekannt — die Serverantwort konnte nicht gelesen werden. Aktualisieren Sie, um zu prüfen, welche Patches freigegeben wurden.",
-      "approveAbortedWithFailures": "{{message}} ({{count}} Patches wurden zuvor außerdem vom Server abgelehnt.)"
+      "approveAbortedWithFailures": "{{message}} ({{count}} Patches wurden zuvor außerdem vom Server abgelehnt.)",
+      "checkRingLinks": "Richtlinien, die diesen Ring verwenden, konnten nicht geprüft werden – es wurde nichts gelöscht"
     },
     "toast": {
       "ringSaved": "Updatering gespeichert",
@@ -402,7 +406,13 @@
       "createTitle": "Updatering erstellen"
     },
     "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog.",
-    "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen."
+    "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen.",
+    "ringDelete": {
+      "title": "{{name}} löschen?",
+      "messageOne": "1 Richtlinie führt keine geplanten Patches mehr aus, bis Sie einen anderen Ring wählen.",
+      "messageMany": "{{count}} Richtlinien führen keine geplanten Patches mehr aus, bis Sie einen anderen Ring wählen.",
+      "confirm": "Ring löschen"
+    }
   },
   "patchJobsList": {
     "empty": "Noch keine Patch-Jobs. Von Richtlinien, Update-Ringen oder dem KI-Assistenten erstellte Jobs werden hier angezeigt.",

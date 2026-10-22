@@ -59,6 +59,8 @@ The `config.dateRange` object supports preset shortcuts or custom boundaries:
 | `last_90_days` | Data from the past 90 days |
 | `custom` | Use the explicit `start` and `end` ISO date strings |
 
+A preset is a rolling window evaluated when each run generates, so a weekly report with `last_7_days` covers the seven days before that run. Explicit `start`/`end` values take precedence over a preset. In the Executive Summary the window bounds the alert figures (alerts in window, severity counts, resolution rate); the device figures are a snapshot of the fleet at generation time.
+
 ### Filters
 
 The `config.filters` object narrows the data:
@@ -199,6 +201,8 @@ curl -X POST /api/v1/reports \
 ```
 
 Scheduled runs fire in the organization's local time zone (falling back to the partner's time zone, then UTC if neither is configured), pinned to the `schedule.time` / `schedule.day` / `schedule.date` values from `config.schedule` -- see [Schedule Details and Email Recipients](#schedule-details-and-email-recipients) above.
+
+A newly saved recurring report first runs at its first scheduled occurrence **after** it was saved -- a monthly report for the 1st that is saved on the 21st first runs (and emails its recipients) on the next 1st. To get a copy straight away, use **Generate now** on the report (`POST /reports/:id/generate`).
 
 <Aside>
   The `lastGeneratedAt` timestamp on the report record is updated each time a generation run is triggered, regardless of whether the run ultimately succeeds or fails.

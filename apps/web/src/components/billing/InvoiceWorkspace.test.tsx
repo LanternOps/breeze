@@ -15,9 +15,9 @@ vi.mock('../../stores/auth', () => ({
     { getState: () => ({ tokens: null }) },
   ),
 }));
-// The Preview tab's InvoiceDocument reads the org list off orgStore; stub it so
-// the real module (which registers an org-id provider on the auth store at import
-// time) is never pulled into this partially-mocked auth setup.
+// Other workspace children read the org list off orgStore; stub it so the real
+// module (which registers an org-id provider on the auth store at import time)
+// is never pulled into this partially-mocked auth setup.
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: { organizations: { id: string; name: string }[] }) => unknown) =>
     selector({ organizations: [] }),

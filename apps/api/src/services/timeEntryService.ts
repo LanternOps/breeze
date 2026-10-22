@@ -11,9 +11,9 @@ import { computeBillableMinutes, billableMinutesSql, BILLABLE_MINUTES_CHECK_NAME
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { captureException } from './sentry';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
-import { minorUnitScaleSql } from './currencySql';
+import { laborAmountSql, minorUnitScaleSql } from './currencySql';
 import { isMissingRateGap } from './invoiceAssembly';
-import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits, laborAmount, laborHours, billedLaborMinutes } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
 import { emitTicketEvent } from './ticketEvents';
 import {
@@ -2094,8 +2094,7 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
     // summary) and rows are summed as integer minor units, never as floats.
     // Only the minutes source moved to the billed quantity (§3.5). The day-total
     // loop above deliberately keeps ACTUAL minutes — that figure is utilization.
-    const hours = (((entry.billableMinutes ?? entry.durationMinutes) ?? 0) / 60).toFixed(2);
-    const amount = multiplyToCurrency(hours, entry.hourlyRate, entry.currencyCode);
+    const amount = laborAmount(billedLaborMinutes(entry), entry.hourlyRate, entry.currencyCode);
     money.set(entry.currencyCode, (money.get(entry.currencyCode) ?? 0) + toMinorUnits(amount, entry.currencyCode));
   }
   const billableAmounts: CurrencyAmount[] = [...money].map(([currencyCode, minor]) => ({
@@ -2139,7 +2138,7 @@ export async function getTicketBillingSummary(ticketId: string) {
       // Labor rule unchanged: round hours to 2 dp first, then × rate, then ONE
       // round per row at the currency's minor unit (the invoice-line figure)
       // before summing. Only the MINUTES source changed (§3.5).
-      amount: sql<string>`COALESCE(SUM(ROUND(ROUND(COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})::numeric / 60, 2) * ${timeEntries.hourlyRate}, ${minorUnitScaleSql(timeEntries.currencyCode)})), 0)::numeric(12,2)`
+      amount: sql<string>`COALESCE(SUM(${laborAmountSql(sql`COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})`, timeEntries.hourlyRate, minorUnitScaleSql(timeEntries.currencyCode))}), 0)::numeric(12,2)`
     })
     .from(timeEntries)
     .where(and(
@@ -2327,7 +2326,8 @@ export async function listBillables(
   for (const r of timeRows) {
     // Billed quantity (§3.5). NULL billable_minutes = pre-feature row or a row
     // with no card terms — bill the actual duration.
-    const hours = (((r.billableMinutes ?? r.minutes) ?? 0) / 60).toFixed(2);
+    const billed = billedLaborMinutes({ billableMinutes: r.billableMinutes, durationMinutes: r.minutes });
+    const hours = laborHours(billed);
     const rate = toFinite(r.rate);
     // A row with no resolvable rate is a genuine assembly gap (#6461),
     // regardless of billing_status, EXCEPT `contract`/`no_charge` where a
@@ -2352,7 +2352,7 @@ export async function listBillables(
       amount: missingRate
         ? null
         : rate != null
-          ? multiplyToCurrency(hours, rate, r.currencyCode ?? 'USD')
+          ? laborAmount(billed, rate, r.currencyCode ?? 'USD')
           : '0.00',
       missingRate,
       currencyCode: r.currencyCode,

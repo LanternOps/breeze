@@ -117,7 +117,10 @@ export type ClaimPartition = {
  * schedule a restart (with its own delay and user deferral), so it does not
  * need to be serialised against other work.
  */
-export const POWER_STATE_BARRIER_TYPES: ReadonlySet<string> = new Set(['reboot', 'shutdown', 'reboot_safe_mode']);
+// `force_reboot` (#8729) is here on purpose: it force-closes apps, but it still
+// waits its turn behind real in-flight work. Mark failed (#8508) is the way past
+// a stuck command, not a barrier bypass.
+export const POWER_STATE_BARRIER_TYPES: ReadonlySet<string> = new Set(['reboot', 'shutdown', 'reboot_safe_mode', 'force_reboot']);
 
 /**
  * Types the UNINSTALL DRAIN owns. Exempt from EVERY claim-time eligibility

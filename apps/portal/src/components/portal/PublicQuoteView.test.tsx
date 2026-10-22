@@ -83,26 +83,26 @@ describe('PublicQuoteView exact public quote contract', () => {
   it('renders seller, recurring totals, deposit, categories, dates, and terms', () => {
     render(<PublicQuoteView token="public-token" initial={DETAIL} />);
 
-    const document = screen.getByTestId('public-quote');
+    const document = screen.getByTestId('document-root');
     expect(document.textContent).toContain('Lantern IT');
     expect(document.textContent).toContain('sales@example.test');
     expect(document.textContent).toContain('Monthly recurring');
     expect(document.textContent).toContain('$75.00/mo');
     expect(document.textContent).toContain('Annual recurring');
     expect(document.textContent).toContain('$25.00/yr');
-    expect(screen.getByTestId('public-quote-deposit-due').textContent).toContain('$97.20');
-    expect(screen.getByTestId('public-quote-category-breakdown').textContent).toContain('hardware');
+    expect(screen.getByTestId('document-totals-hero').textContent).toContain('$97.20');
+    expect(document.textContent).toContain('Hardware');
     expect(document.textContent).toContain('Issued');
     expect(document.textContent).toContain('Valid until');
     expect(document.textContent).toContain('Net 30');
-    expect(screen.getByTestId('public-quote-terms-conditions').textContent)
+    expect(screen.getByTestId('document-agreement-terms').textContent)
       .toContain('Customer-facing terms and conditions.');
   });
 
   it('collapses Terms & Conditions by default and summarises sections + read time', () => {
     const withSections = { ...DETAIL, quote: { ...DETAIL.quote, termsAndConditions: '1. Payment\nNet 30.\n2. Term\nOne year.' } };
     render(<PublicQuoteView token="public-token" initial={withSections} />);
-    const el = screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement;
+    const el = screen.getByTestId('document-agreement-terms') as HTMLDetailsElement;
     expect(el.tagName).toBe('DETAILS');
     expect(el.open).toBe(false);
     const summary = el.querySelector('summary')!.textContent;
@@ -113,13 +113,13 @@ describe('PublicQuoteView exact public quote contract', () => {
   it('opens the T&C when location.hash is #terms', async () => {
     window.location.hash = '#terms';
     render(<PublicQuoteView token="public-token" initial={DETAIL} />);
-    await waitFor(() => expect((screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement).open).toBe(true));
+    await waitFor(() => expect((screen.getByTestId('document-agreement-terms') as HTMLDetailsElement).open).toBe(true));
     window.location.hash = '';
   });
 
   it('clicking the checkbox T&C link reopens a manually collapsed block', () => {
     render(<PublicQuoteView token="public-token" initial={DETAIL} />);
-    const el = screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement;
+    const el = screen.getByTestId('document-agreement-terms') as HTMLDetailsElement;
     const link = screen.getByTestId('public-quote-agree').closest('label')!.querySelector('a')!;
     fireEvent.click(link);
     expect(el.open).toBe(true);
@@ -132,7 +132,7 @@ describe('PublicQuoteView exact public quote contract', () => {
 
   it('expands the T&C for print and restores after', () => {
     render(<PublicQuoteView token="public-token" initial={DETAIL} />);
-    const el = screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement;
+    const el = screen.getByTestId('document-agreement-terms') as HTMLDetailsElement;
     fireEvent(window, new Event('beforeprint'));
     expect(el.open).toBe(true);
     fireEvent(window, new Event('afterprint'));
@@ -142,7 +142,7 @@ describe('PublicQuoteView exact public quote contract', () => {
   it('renders the sign panel after the totals and before the T&C', () => {
     render(<PublicQuoteView token="public-token" initial={DETAIL} />);
     const sign = screen.getByTestId('public-quote-agree');
-    const terms = screen.getByTestId('public-quote-terms-conditions');
+    const terms = screen.getByTestId('document-agreement-terms');
     expect(sign.compareDocumentPosition(terms) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -164,12 +164,12 @@ describe('PublicQuoteView exact public quote contract', () => {
         initial={{ ...DETAIL, presentation: { theme: 'condensed', pageSize: 'letter' } }}
       />
     );
-    expect(screen.getByTestId('public-quote').getAttribute('data-doc-theme')).toBe('condensed');
+    expect(screen.getByTestId('document-root').getAttribute('data-doc-theme')).toBe('condensed');
   });
 
   it('defaults data-doc-theme to "classic" when the DTO omits presentation', () => {
     render(<PublicQuoteView token="public-token" initial={DETAIL} />);
-    expect(screen.getByTestId('public-quote').getAttribute('data-doc-theme')).toBe('classic');
+    expect(screen.getByTestId('document-root').getAttribute('data-doc-theme')).toBe('classic');
   });
 });
 
@@ -312,7 +312,7 @@ describe('PublicQuoteView — cover page', () => {
         }}
       />,
     );
-    const cover = screen.getByTestId('doc-cover');
+    const cover = screen.getByTestId('document-cover');
     expect(cover).toHaveTextContent('Office Network Refresh Proposal');
     expect(cover).toHaveTextContent('Prepared for');
     expect(cover).toHaveTextContent('Acme Co');
@@ -328,7 +328,7 @@ describe('PublicQuoteView — cover page', () => {
 
   it('renders no cover when the quote has none or it is switched off', () => {
     render(<PublicQuoteView token="public-token" initial={{ ...DETAIL, quote: { ...DETAIL.quote, coverPage: { enabled: false, title: 'x', coverImageId: null, preparedForName: null, showPreparedBy: true } } }} />);
-    expect(screen.queryByTestId('doc-cover')).toBeNull();
+    expect(screen.queryByTestId('document-cover')).toBeNull();
   });
 });
 
@@ -370,10 +370,10 @@ describe('PublicQuoteView — agreements come after the price (#7040)', () => {
   it('renders contract blocks after the totals and the sign panel, then the T&C', () => {
     render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
     const [msa, nda] = screen.getAllByTestId('contract-block');
-    expect(follows(screen.getByTestId('public-quote-due-on-acceptance'), msa!)).toBe(true);
+    expect(follows(screen.getByTestId('document-totals-hero'), msa!)).toBe(true);
     expect(follows(screen.getByTestId('public-quote-agree'), msa!)).toBe(true);
     expect(follows(msa!, nda!)).toBe(true);
-    expect(follows(nda!, screen.getByTestId('public-quote-terms-conditions'))).toBe(true);
+    expect(follows(nda!, screen.getByTestId('document-agreement-terms'))).toBe(true);
   });
 
   it('collapses each agreement by default and summarises it', () => {
@@ -441,7 +441,7 @@ describe('PublicQuoteView — agreements come after the price (#7040)', () => {
     render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
     const rows = [
       ...screen.getAllByTestId('contract-block'),
-      screen.getByTestId('public-quote-terms-conditions'),
+      screen.getByTestId('document-agreement-terms'),
     ] as HTMLDetailsElement[];
     window.dispatchEvent(new Event('beforeprint'));
     expect(rows.map((r) => r.open)).toEqual([true, true, true]);
@@ -451,7 +451,7 @@ describe('PublicQuoteView — agreements come after the price (#7040)', () => {
 
   it('keeps contract blocks out of the proposal body', () => {
     render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
-    const agreements = screen.getByTestId('public-quote-agreements');
+    const agreements = screen.getByTestId('document-agreements');
     for (const row of screen.getAllByTestId('contract-block')) expect(agreements.contains(row)).toBe(true);
   });
 });

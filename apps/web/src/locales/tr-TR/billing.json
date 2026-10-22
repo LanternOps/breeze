@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "{{amount}} tutarında bir fatura şimdi oluşturulup numaralandırılacak.",
         "consequenceContracts": "Yinelenen satırlar, sonradan etkinleştireceğiniz taslak sözleşmelere dönüşür.",
         "consequenceEmail": "Fatura {{recipients}} adresine e-postayla gönderilecek.",
+        "consequenceEmailNotConfigured": "Yapılandırılmış bir e-posta hizmeti yok; fatura e-posta ile gönderilmeyecek. Fatura sayfasından paylaşın.",
         "consequenceDraft": "Bu teklif hiç gönderilmedi. Müşterinin onu ilk görüşü fatura olacak.",
         "submit": "Kabul et ve fatura oluştur",
         "success": "Teklif kabul edildi. {{number}} numaralı fatura oluşturuldu.",
@@ -1576,76 +1577,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Tah.",
-        "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
         "setDevices": "cihazlar",
         "setSeats": "kullanıcılar",
-        "setGroup": "“{{name}}” içindeki cihazlar",
-        "atSite": "{{site}} konumundaki {{set}}",
-        "allowanceBill": "{{included}} dahildir; ek birimler beher {{price}} olarak faturalandırılır.",
-        "allowanceFlag": "{{included}} dahildir; ek birimler otomatik faturalandırılmaz, inceleme için raporlanır."
+        "setGroup": "“{{name}}” içindeki cihazlar"
       },
       "additionalItems": "Ek öğeler",
       "contract": {
-        "download": "Anlaşmayı indirin",
-        "previewTitle": "{{name}} anlaşması",
         "unavailable": "Anlaşma dosyası mevcut değil",
         "versionFooter": "{{name}} — v{{version}}"
       },
-      "agreements": {
-        "heading": "Anlaşmalar",
-        "termsTitle": "Şartlar ve Koşullar",
-        "read": "Oku",
-        "hide": "Gizle",
-        "readTime": "~{{minutes}} dk okuma",
-        "sectionsReadTime_one": "{{count}} bölüm · ~{{minutes}} dk okuma",
-        "sectionsReadTime_other": "{{count}} bölüm · ~{{minutes}} dk okuma",
-        "pdfDocument": "PDF belgesi",
-        "unavailable": "Kullanılamıyor",
-        "untitled": "Anlaşma"
-      },
-      "draft": "Taslak",
-      "empty": "Bu teklifin henüz içeriği yok.",
-      "imageUnavailable": "Resim kullanılamıyor",
-      "issued": "Verildi",
-      "preparedFor": "için hazırlandı",
-      "taxId": "Vergi Numarası: {{id}}",
-      "imageZoomAria": "Daha büyük resmi görüntüle",
       "preview": {
         "description": "Bu, müşterinizin teklif bağlantısında gördüğü şeydir.",
         "downloadPdf": "PDF'yi indir",
-        "preparing": "Hazırlanıyor…"
-      },
-      "pricing": "Fiyatlandırma",
-      "pricingScrollAria": "Fiyatlandırma — daha fazla sütun için yana doğru kaydırın",
-      "proposal": "Teklif",
-      "proposalImageAlt": "Teklif resmi",
-      "recurrence": {
-        "annual": "Yıllık",
-        "monthly": "Aylık"
-      },
-      "table": {
-        "amount": "Tutar",
-        "description": "Açıklama",
-        "qty": "Adet",
-        "tax": "Vergi",
-        "unitPrice": "Birim fiyatı"
-      },
-      "totals": {
-        "annualRecurring": "Yıllık yinelenen",
-        "depositDue": "Depozito ödenmesi gerekiyor",
-        "depositDueNow": "Depozito ödemesinin şimdi yapılması gerekiyor",
-        "dueOnAcceptance": "Kabul sırasında vadesi gelecek",
-        "firstPeriodSubtotal": "İlk dönem ara toplamı",
-        "firstPeriodTotal": "Birinci dönem toplamı",
-        "monthlyRecurring": "Aylık olarak yinelenen",
-        "recurringNote": "Bu teklifi kabul ettiğinizde tek seferlik ücretler artık faturalandırılır. Yinelenen hatlar kendi programlarına göre faturalandırılır.",
-        "remainingBalance": "Kalan bakiye (şartlara göre vadesi gelecek)",
-        "subtotal": "Ara Toplam",
-        "tax": "Vergi"
-      },
-      "unsupportedBlock": "Bu blok türü henüz bu görüntüleyici tarafından desteklenmiyor.",
-      "validUntil": "Geçerlilik tarihi:"
+        "preparing": "Hazırlanıyor…",
+        "loading": "Müşteri görünümü yükleniyor…",
+        "loadError": "Bu teklifin müşteri görünümü yüklenemedi.",
+        "retry": "Yeniden dene",
+        "signatureInert": "Müşteriniz burada imzalar"
+      }
     },
     "page": {
       "accessDenied": "Alıntıları görüntüleme izniniz yok.",
@@ -2192,36 +2141,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Fatura Alıcısı",
-    "documentType": "Fatura",
-    "due": "Vadesi geldi",
-    "empty": "Bu faturada henüz herhangi bir satır öğesi yok.",
-    "fallbackTitle": "Fatura",
-    "issued": "Verildi",
-    "laborLine": "İşçilik",
     "preview": {
       "description": "Müşterinizin faturasında gördüğü şey budur.",
       "downloadError": "Fatura PDF'si indirilemedi.",
       "downloadPdf": "PDF'yi indir",
-      "preparing": "Hazırlanıyor…"
+      "loadError": "Bu faturanın müşteri görünümü yüklenemedi.",
+      "loading": "Müşteri görünümü yükleniyor…",
+      "preparing": "Hazırlanıyor…",
+      "retry": "Yeniden dene"
     },
-    "table": {
-      "amount": "Tutar",
-      "description": "Açıklama",
-      "qty": "Adet",
-      "tax": "Vergi",
-      "unitPrice": "Birim fiyatı"
-    },
-    "terms": "Şartlar ve Koşullar",
-    "ticketHeader": "Talep No. {{number}}",
-    "ticketWork": "Talep çalışması",
-    "totals": {
-      "amountDue": "Ödenecek tutar",
-      "paid": "Ücretli",
-      "subtotal": "Ara Toplam",
-      "tax": "Vergi",
-      "total": "Toplam"
-    }
+    "ticketHeader": "Talep No. {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Faturalar",
@@ -2508,7 +2437,7 @@
     "documents": "Belgeler",
     "connections": "Bağlantılar",
     "rates": "Ücretler",
-    "payments": "Payments"
+    "payments": "Ödemeler"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2846,6 +2775,10 @@
       "confirm": "Onayla",
       "failed": "Doğrulama başarısız oldu. Tekrar deneyin.",
       "unavailable": "Doğrulama başlatılamadı"
+    },
+    "notEnabled": {
+      "title": "Hesabınız için otomatik ödemeler etkin değil",
+      "hint": "Otomatik ödemeler henüz açılmadı. Breeze yöneticinizden etkinleştirmesini isteyin, ardından müşterilerinizden kayıt talep etmek için geri dönün."
     }
   },
   "reminders": {

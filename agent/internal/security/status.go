@@ -697,7 +697,7 @@ func linuxEncryptionDetails(report linuxEncryptionReport) map[string]any {
 func collectEncryptionDetails() (map[string]any, error) {
 	switch runtime.GOOS {
 	case "windows":
-		return collectEncryptionDetailsWindows()
+		return bitLockerDetailsProbe.Refresh()
 	case "darwin":
 		return collectEncryptionDetailsDarwin()
 	case "linux":
@@ -1010,10 +1010,25 @@ func collectPasswordPolicySummaryLinux() (map[string]any, error) {
 	return result, nil
 }
 
+// collectPasswordPolicySummary is a fresh read (CIS checks and remediation
+// depend on it); it also refreshes the cache the security-status tick uses.
 func collectPasswordPolicySummary() (map[string]any, error) {
-	switch runtime.GOOS {
+	return collectPasswordPolicySummaryFor(runtime.GOOS)
+}
+
+// collectPasswordPolicySummaryForStatus is the security-status tick's read:
+// cached on Windows, where the probe is a PowerShell spawn (#9267).
+func collectPasswordPolicySummaryForStatus(goos string) (map[string]any, error) {
+	if goos == "windows" {
+		return collectPasswordPolicySummaryWindowsCached()
+	}
+	return collectPasswordPolicySummaryFor(goos)
+}
+
+func collectPasswordPolicySummaryFor(goos string) (map[string]any, error) {
+	switch goos {
 	case "windows":
-		return collectPasswordPolicySummaryWindows()
+		return passwordPolicyProbe.Refresh()
 	case "darwin":
 		return collectPasswordPolicySummaryDarwin()
 	case "linux":
@@ -1023,7 +1038,17 @@ func collectPasswordPolicySummary() (map[string]any, error) {
 	}
 }
 
-// CollectStatus gathers AV/firewall/encryption posture for this endpoint.
+// CollectStatusFresh is CollectStatus for an explicit, technician-initiated
+// request: it discards the cached slow posture probes first so nothing in the
+// answer is older than the request.
+func CollectStatusFresh(cfg *config.Config) (SecurityStatus, error) {
+	invalidateSlowPostureProbes()
+	return CollectStatus(cfg)
+}
+
+// CollectStatus gathers AV/firewall/encryption posture for this endpoint. It
+// runs on the 5-minute security tick; see slow_probe.go for which Windows
+// probes are cached between ticks (#9267).
 func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	var status SecurityStatus
 	var errs []error
@@ -1077,42 +1102,17 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		}
 	}
 
-	// Defender on macOS (Microsoft Defender for Endpoint via mdatp).
+	// macOS AV sources, in attribution order (#9390):
+	//  1. CylancePROTECT / Aurora Endpoint Defense (app bundle + launch daemon probe).
+	//  2. Microsoft Defender for Endpoint (mdatp). It takes the provider label
+	//     only under the Windows Defender-fallback rule (macDefenderClaimsProvider):
+	//     when nothing was identified, or when it is the only source with active
+	//     real-time protection. Both products are always listed in AVProducts.
 	if runtime.GOOS == "darwin" {
-		macDefenderStatus, macDefenderProduct, macDefenderErr := getMacDefenderStatus()
-		if macDefenderErr != nil {
-			if !errors.Is(macDefenderErr, ErrNotSupported) {
-				errs = append(errs, macDefenderErr)
-				avFailed = true
-			}
-		} else {
-			avCollected = true
-			if !providerIdentified && macDefenderStatus.Enabled {
-				status.Provider = "windows_defender"
-				providerIdentified = true
-			}
-			if macDefenderProduct != nil {
-				status.AVProducts = append(status.AVProducts, *macDefenderProduct)
-			}
-			if status.ProviderVersion == "" {
-				status.ProviderVersion = macDefenderStatus.ProviderVersion
-			}
-			if macDefenderStatus.RealTimeProtection {
-				realTime = true
-			}
-			if status.DefinitionsVersion == "" {
-				status.DefinitionsVersion = macDefenderStatus.DefinitionsVersion
-			}
-			if status.DefinitionsUpdatedAt == "" {
-				status.DefinitionsUpdatedAt = macDefenderStatus.DefinitionsUpdatedAt
-			}
-			status.LastScanAt = latestScanTime(macDefenderStatus)
-			if macDefenderStatus.LastFullScan != "" {
-				status.LastScanType = "full"
-			} else if macDefenderStatus.LastQuickScan != "" {
-				status.LastScanType = "quick"
-			}
-		}
+		tally := avTally{providerIdentified: providerIdentified, realTime: realTime, collected: avCollected, failed: avFailed}
+		applyMacAVSources(&status, &tally, collectMacAVSources())
+		providerIdentified, realTime, avCollected, avFailed = tally.providerIdentified, tally.realTime, tally.collected, tally.failed
+		errs = append(errs, tally.errs...)
 	}
 
 	// Elastic Defend on Linux (#2018): Linux has no security-center registry,
@@ -1195,7 +1195,7 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		status.LocalAdminSummary = localAdmins
 	}
 
-	if passwordPolicy, err := collectPasswordPolicySummary(); err == nil {
+	if passwordPolicy, err := collectPasswordPolicySummaryForStatus(runtime.GOOS); err == nil {
 		status.PasswordPolicySummary = passwordPolicy
 	}
 
@@ -1393,7 +1393,20 @@ func getFirewallStatusLinux() (bool, error) {
 // per-volume details. On Linux both come from a single lsblk evaluation so
 // the headline always matches the "/" volume in the details (#7478).
 func collectEncryptionPosture() (enabled bool, details map[string]any, statusErr error) {
-	if runtime.GOOS == "linux" {
+	return collectEncryptionPostureFor(runtime.GOOS)
+}
+
+// collectEncryptionPostureFor is the security-status tick's encryption read.
+// On Windows both BitLocker probes are cached slow probes (#9267).
+func collectEncryptionPostureFor(goos string) (enabled bool, details map[string]any, statusErr error) {
+	if goos == "windows" {
+		enabled, statusErr = getEncryptionStatusWindowsCached()
+		if d, err := collectEncryptionDetailsWindowsCached(); err == nil {
+			details = d
+		}
+		return enabled, details, statusErr
+	}
+	if goos == "linux" {
 		report, err := collectLinuxEncryption()
 		if err != nil {
 			return false, nil, err
@@ -1407,10 +1420,16 @@ func collectEncryptionPosture() (enabled bool, details map[string]any, statusErr
 	return enabled, details, statusErr
 }
 
+// getEncryptionStatus is a fresh read; on Windows it also refreshes the cache
+// the security-status tick uses.
 func getEncryptionStatus() (bool, error) {
-	switch runtime.GOOS {
+	return getEncryptionStatusFor(runtime.GOOS)
+}
+
+func getEncryptionStatusFor(goos string) (bool, error) {
+	switch goos {
 	case "windows":
-		return getEncryptionStatusWindows()
+		return bitLockerStatusProbe.Refresh()
 	case "darwin":
 		return getEncryptionStatusDarwin()
 	default:

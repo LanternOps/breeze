@@ -235,6 +235,8 @@
     },
     "billedVsWorked": "{{worked}} h lavorate · {{billed}} h fatturate",
     "includedMinutes": "{{hours}} h incluse nel contratto",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Ogni voce fattura i minuti arrotondati in ore (2 decimali) × la sua tariffa.",
     "missingRateCount_one": "1 voce non ha una tariffa oraria — non conteggiata nell'importo sopra",
     "missingRateCount_other": "{{count}} voci non hanno una tariffa oraria — non conteggiate nell'importo sopra",
     "deleteEntry": "Elimina la voce di tempo di {{duration}} di {{tech}}",
@@ -333,6 +335,10 @@
     "selectedCount_other": "{{count}} selezionati",
     "clearSelection": "Cancella",
     "noSelection": "Seleziona un ticket. Usa j/k per spostarti, Invio per espandere.",
+    "movedToClosed": {
+      "message": "{{status}} — ora in {{tab}}",
+      "view": "Visualizza in {{tab}}"
+    },
     "ticketingSettings": "Impostazioni ticketing",
     "assignFailed": "Assegnazione non riuscita. Riprova.",
     "assignedToYou": "Assegnato a te",

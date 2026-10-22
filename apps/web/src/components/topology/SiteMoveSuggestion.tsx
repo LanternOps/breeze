@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PresenceSiteRef, PresenceSuggestion } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { topologyWrite } from './topologyApi';
 import { ActionError, handleActionError, runAction } from '../../lib/runAction';
 import { formatDate } from '../../lib/dateTimeFormat';
 
@@ -35,7 +35,7 @@ const devicePath = (deviceId: string) => `/devices/${encodeURIComponent(deviceId
 
 export function moveDeviceToSuggestedSite(input: { deviceId: string; fromSiteId: string; toSiteId: string; errorFallback: string; successMessage: string; siteChanged: string }) {
   return runAction({
-    request: () => fetchWithAuth(devicePath(input.deviceId), {
+    request: () => topologyWrite(devicePath(input.deviceId), {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ siteId: input.toSiteId, expectedSiteId: input.fromSiteId, siteMoveTrigger: 'topology_suggestion' }),
     }),
@@ -46,7 +46,7 @@ export function moveDeviceToSuggestedSite(input: { deviceId: string; fromSiteId:
 
 export function setSiteAssignmentConfirmation(input: { deviceId: string; confirmed: boolean; errorFallback: string; successMessage: string; siteChanged: string }) {
   return runAction({
-    request: () => fetchWithAuth(`${devicePath(input.deviceId)}/site-assignment-confirmation`, { method: input.confirmed ? 'PUT' : 'DELETE' }),
+    request: () => topologyWrite(`${devicePath(input.deviceId)}/site-assignment-confirmation`, { method: input.confirmed ? 'PUT' : 'DELETE' }),
     errorFallback: input.errorFallback, successMessage: input.successMessage,
     friendly: (code) => (code === 'device_site_changed' ? input.siteChanged : undefined),
   });

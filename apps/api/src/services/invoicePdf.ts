@@ -24,7 +24,7 @@ import PDFDocument from 'pdfkit';
 import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { invoiceAutopaySchedules, billingNoticeOutbox, invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets } from '../db/schema';
-import { isPartnerOnlinePaymentAvailable } from './partnerStripe';
+import { isPartnerOnlinePaymentAvailable, isPartnerOnlinePaymentAvailableOnCallerConnection } from './partnerStripe';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { getEmailService, buildInvoiceTemplate } from './email';
 import { partnerEmailCustomFromSettings } from './emailTemplates/renderPartnerEmail';
@@ -382,6 +382,10 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
   branding: InvoiceBranding;
   /** The partner/branding rows this loader read on the CALLER's connection, for the assembler. */
   preloaded: PreloadedBranding | undefined;
+  /** #9454: whether the partner can take online payment, read on the CALLER's connection —
+   *  `undefined` when it was not read here (a draft, which never prints the pay line, or a
+   *  caller that cannot see the partner row), and renderInvoicePdf must ask partnerStripe. */
+  onlinePaymentAvailable: boolean | undefined;
   appendix: InvoiceDeviceAppendix | null;
   /** #8604 line itemization: a draft previews override ?? partner default;
    *  anything issued reads ONLY its frozen invoices.line_* columns. */
@@ -426,10 +430,21 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
     (invoice as { billToName: string | null }).billToName = resolved.billToName;
     billToEmailFallback = resolved.billToEmail;
   }
+  // #9454: on the caller's connection, like the partner/branding reads above. The PDF render
+  // runs inside an open transaction on the accepted-quote auto-email path, and the
+  // partnerStripe default opens a SECOND connection that can queue behind a pending
+  // ACCESS EXCLUSIVE lock while this one waits on it. Only when the partner row was visible:
+  // stripe_connect_accounts is gated on the same breeze_has_partner_access, so a caller that
+  // can see one sees the other; an org-scoped caller cannot, and keeps the system read.
+  // Issued only: a draft never prints the pay-online line.
+  const onlinePaymentAvailable = partner && invoice.status !== 'draft'
+    ? await isPartnerOnlinePaymentAvailableOnCallerConnection(invoice.partnerId)
+    : undefined;
   return {
     invoice,
     appendix,
     lineDetail,
+    onlinePaymentAvailable,
     // Only when the partner row was visible: an org-scoped caller (the portal) reads 0 partner rows
     // under partner-axis RLS (#1375 class), and then the assembler's own system-context read must run.
     preloaded: partner
@@ -492,8 +507,10 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
   // dead end. 
   // A lookup error propagates: the issued PDF is persisted and frozen, so a
   // transient fault must fail the render (retryable), not bake in a line-less copy.
+  // #9454: the loader's caller-connection answer when it has one; the system-context
+  // read (a second connection) only for a caller that could not see the partner row.
   const payOnline = loaded.invoice.status !== 'draft'
-    && await isPartnerOnlinePaymentAvailable(loaded.invoice.partnerId);
+    && (loaded.onlinePaymentAvailable ?? await isPartnerOnlinePaymentAvailable(loaded.invoice.partnerId));
   if (payOnline) {
     try {
       const link = await getOrMintInvoiceLink({

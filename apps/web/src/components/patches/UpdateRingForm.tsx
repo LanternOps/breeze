@@ -8,6 +8,9 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import RingAppRulesSection, { type RingAppRule } from './RingAppRulesSection';
 
+/** `ringOrder`'s upper bound — shared by the schema and the new-ring default. */
+const MAX_RING_ORDER = 100;
+
 function makeRingSchema(t: TFunction<'patches'>) {
   const categoryRuleSchema = z.object({
     category: z.string().min(1, t('updateRingForm.validation.selectCategory')),
@@ -42,7 +45,7 @@ function makeRingSchema(t: TFunction<'patches'>) {
   return z.object({
     name: z.string().min(1, t('updateRingForm.validation.nameRequired')),
     description: z.string().optional(),
-    ringOrder: z.coerce.number().int().min(0).max(100),
+    ringOrder: z.coerce.number().int().min(0).max(MAX_RING_ORDER),
     // Fallback hold for category overrides that don't set their own. Kept in sync
     // with the default rule's hold on submit (see onSubmit transform below) so it
     // never surfaces as an orphaned "deferral" field in the UI.
@@ -98,7 +101,19 @@ type UpdateRingFormProps = {
   loading?: boolean;
   /** When editing, surfaces the blast radius of a change. */
   usage?: { deviceCount?: number };
+  /**
+   * Rollout orders of the rings that already exist. A new ring (no
+   * `defaultValues.ringOrder`) defaults to one past the highest (#9565).
+   */
+  existingRingOrders?: number[];
 };
+
+/** max(existing order) + 1, clamped to the schema range; 0 with no rings. */
+function nextRingOrder(existingRingOrders: readonly number[] | undefined): number {
+  const orders = (existingRingOrders ?? []).filter((order) => Number.isFinite(order));
+  if (orders.length === 0) return 0;
+  return Math.min(Math.max(...orders) + 1, MAX_RING_ORDER);
+}
 
 type Severity = 'critical' | 'important' | 'moderate' | 'low';
 
@@ -236,6 +251,7 @@ export default function UpdateRingForm({
   submitLabel,
   loading,
   usage,
+  existingRingOrders,
 }: UpdateRingFormProps) {
   const { t } = useTranslation('patches');
   const ringSchema = useMemo(() => makeRingSchema(t), [t]);
@@ -248,7 +264,7 @@ export default function UpdateRingForm({
     const merged = {
       name: '',
       description: '',
-      ringOrder: 0,
+      ringOrder: nextRingOrder(existingRingOrders),
       deferralDays: 0,
       deadlineDays: null,
       gracePeriodHours: 4,
@@ -360,7 +376,7 @@ export default function UpdateRingForm({
         </div>
         <div>
           <label htmlFor="ring-order" className={labelClass}>{t('updateRingForm.fields.rolloutOrder')}</label>
-          <input id="ring-order" type="number" min={0} max={100} {...register('ringOrder')} className={cn(inputClass, 'mt-1.5')} />
+          <input id="ring-order" type="number" min={0} max={MAX_RING_ORDER} {...register('ringOrder')} className={cn(inputClass, 'mt-1.5')} />
           <p className="mt-1 text-xs text-muted-foreground">{t('updateRingForm.help.rolloutOrder')}</p>
         </div>
       </div>

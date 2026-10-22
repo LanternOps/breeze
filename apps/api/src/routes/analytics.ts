@@ -15,8 +15,8 @@ import {
   metricAnomalyEpisodes,
   metricRollups,
   devices,
-  slaDefinitions as slaDefinitionsTable,
-  slaCompliance as slaComplianceTable
+  deviceGroupMemberships,
+  slaDefinitions as slaDefinitionsTable
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -24,6 +24,7 @@ import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { normalizeSiteAllowlist } from '../services/siteAllowlist';
 import { slaDefinitionOutOfScope, slaScopeNarrowed, type SlaTargetShape } from '../services/slaSiteScope';
+import { isDeviceInMaintenance } from '../services/maintenanceService';
 import { METRIC_ANOMALY_V1_SHADOW_VERSION } from '../services/metricAnomalies';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
@@ -37,6 +38,34 @@ const requireAnalyticsWrite = requirePermission(
   PERMISSIONS.ORGS_WRITE.resource,
   PERMISSIONS.ORGS_WRITE.action,
 );
+
+const SLA_MAINTENANCE_CHECK_CAP = 500;
+
+/**
+ * Start of the live SLA measurement window. With `excludeWeekends`, Saturday
+ * and Sunday do not count toward the window's length, so it reaches back far
+ * enough to cover the same number of weekdays.
+ */
+function slaWindowStart(now: Date, window: string, excludeWeekends: boolean): Date {
+  const since = new Date(now);
+  if (window === 'daily') since.setDate(since.getDate() - 1);
+  else if (window === 'weekly') since.setDate(since.getDate() - 7);
+  else since.setMonth(since.getMonth() - 1);
+  if (!excludeWeekends) return since;
+
+  // Count calendar days from the window name, not a ms diff (DST makes a
+  // 7-day window 169h, which would round up to 8).
+  const dayMs = 86_400_000;
+  let remaining =
+    window === 'daily' ? 1 : window === 'weekly' ? 7 : Math.round((now.getTime() - since.getTime()) / dayMs);
+  const cursor = new Date(now);
+  while (remaining > 0) {
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+    const dow = cursor.getUTCDay();
+    if (dow !== 0 && dow !== 6) remaining -= 1;
+  }
+  return cursor;
+}
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -1845,61 +1874,103 @@ analyticsRoutes.get(
     // this caller cannot reach stays hidden (same gate as GET /analytics/sla).
     const compliancePerms = c.get('permissions') as UserPermissions | undefined;
     const visibleSla = await filterSlaDefinitionsForSiteScope(sla.orgId, compliancePerms, [sla]);
-    if (visibleSla.length === 0) {
+    // The shared gate treats `group` as an org aggregate, but a group figure
+    // spans members the caller's allowlist cannot be checked against: fail
+    // closed for narrowed callers.
+    const groupDeniedToNarrowed =
+      (sla.targetType ?? '').toLowerCase() === 'group' && slaScopeNarrowed(slaScopeAuthFor(compliancePerms));
+    if (visibleSla.length === 0 || groupDeniedToNarrowed) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    const history = await db
-      .select()
-      .from(slaComplianceTable)
-      .where(eq(slaComplianceTable.slaId, slaId))
-      .orderBy(desc(slaComplianceTable.periodEnd))
-      .limit(12);
-
     const now = new Date();
     const measurementWindow = sla.measurementWindow ?? 'monthly';
-    const since = new Date(now);
-    if (measurementWindow === 'daily') {
-      since.setDate(since.getDate() - 1);
-    } else if (measurementWindow === 'weekly') {
-      since.setDate(since.getDate() - 7);
-    } else {
-      since.setMonth(since.getMonth() - 1);
+    const excludeWeekends = sla.excludeWeekends === true;
+    const since = slaWindowStart(now, measurementWindow, excludeWeekends);
+
+    // Devices the definition actually targets. Unknown / org-wide target types
+    // fall through to the whole org (the schema default).
+    const targetType = (sla.targetType ?? '').toLowerCase();
+    const targetIds: string[] = sla.targetIds ?? [];
+    const conditions: SQL[] = [
+      eq(devices.orgId, sla.orgId),
+      eq(devices.isEphemeral, false),
+      notParkedDeviceCondition(),
+      ne(devices.status, 'decommissioned')
+    ];
+    if (targetType === 'site' || targetType === 'device' || targetType === 'group') {
+      if (targetIds.length === 0) {
+        // A scoped definition with no targets measures nothing — never the whole org.
+        conditions.push(sql`false`);
+      } else if (targetType === 'site') {
+        conditions.push(inArray(devices.siteId, targetIds));
+      } else if (targetType === 'device') {
+        conditions.push(inArray(devices.id, targetIds));
+      } else {
+        conditions.push(
+          inArray(
+            devices.id,
+            db
+              .select({ id: deviceGroupMemberships.deviceId })
+              .from(deviceGroupMemberships)
+              .where(inArray(deviceGroupMemberships.groupId, targetIds))
+          )
+        );
+      }
     }
 
-    const [onlineCountResult] = await db
-      .select({ count: sql<number>`count(*)` })
+    let targetDevices = await db
+      .select({ id: devices.id, status: devices.status, lastSeenAt: devices.lastSeenAt })
       .from(devices)
-      .where(
-        and(
-          eq(devices.orgId, sla.orgId),
-          eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-          eq(devices.status, 'online'),
-          gte(devices.lastSeenAt, since)
-        )
-      );
+      .where(and(...conditions));
 
-    const [totalCountResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(devices)
-      .where(
-        and(
-          eq(devices.orgId, sla.orgId),
-          eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-          ne(devices.status, 'decommissioned')
-        )
-      );
+    // Maintenance exclusion is a point-in-time check (devices in a window right
+    // now); historical window overlap needs the availability-interval work (#9273).
+    let maintenanceWindows: 'not_requested' | 'applied' | 'skipped_too_many_devices' | 'unavailable' = 'not_requested';
+    let excludedDevices = 0;
+    if (sla.excludeMaintenanceWindows === true) {
+      if (targetDevices.length > SLA_MAINTENANCE_CHECK_CAP) {
+        maintenanceWindows = 'skipped_too_many_devices';
+      } else {
+        maintenanceWindows = 'applied';
+        const inMaintenance = new Set<string>();
+        try {
+          for (let i = 0; i < targetDevices.length; i += 10) {
+            const chunk = targetDevices.slice(i, i + 10);
+            const statuses = await Promise.all(chunk.map((d) => isDeviceInMaintenance(d.id)));
+            statuses.forEach((st, idx) => {
+              if (st.active) inMaintenance.add(chunk[idx]!.id);
+            });
+          }
+        } catch (err) {
+          // Report the exclusion as unavailable rather than failing the read or
+          // silently half-applying it.
+          captureException(err);
+          inMaintenance.clear();
+          maintenanceWindows = 'unavailable';
+        }
+        excludedDevices = inMaintenance.size;
+        targetDevices = targetDevices.filter((d) => !inMaintenance.has(d.id));
+      }
+    }
 
-    const onlineCount = Number(onlineCountResult?.count ?? 0);
-    const totalCount = Number(totalCountResult?.count ?? 0);
+    const totalCount = targetDevices.length;
+    const onlineCount = targetDevices.filter(
+      (d) => d.status === 'online' && d.lastSeenAt && new Date(d.lastSeenAt) >= since
+    ).length;
     const liveUptime = totalCount > 0 ? (onlineCount / totalCount) * 100 : null;
+    const uptimeTarget = sla.uptimeTarget ?? null;
 
     return c.json({
       slaId,
       name: sla.name,
-      uptimeTarget: sla.uptimeTarget,
+      uptimeTarget,
       liveUptime,
-      history
+      meetsTarget: liveUptime !== null && uptimeTarget !== null ? liveUptime >= uptimeTarget : null,
+      exclusions: { weekends: excludeWeekends, maintenanceWindows, excludedDevices },
+      // Nothing writes sla_compliance yet (period-close history is #9273); an
+      // honest empty list beats a query that can never return rows.
+      history: []
     });
   }
 );

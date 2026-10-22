@@ -451,7 +451,9 @@
   }
 
   /*
-   * rich_text quote blocks (quoteBlocks.tsx) render sanitized author HTML via
+   * Sanitized author HTML on the trust pages (TrustFaq, TrustPageView) keeps these
+   * rules; inside a document (`[data-document-root]`) @breeze/document-ui's own
+   * document.css carries the same styling for rich_text quote blocks, which render via
    * dangerouslySetInnerHTML — the API guarantees only richTextSanitize.ts's fixed
    * subset (p/br/strong/em/u/h3/h4/ul/ol/li/a + table/thead/tbody/tfoot/tr/th/td)
    * ever reaches this class. Tailwind's

@@ -37,6 +37,7 @@ import { currencyLabel, currencyOptions } from '../../lib/currencies';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { ACCOUNTING_PROVIDER_NAMES, accountingPath, useActivePushProvider } from '../../lib/accountingProviders';
 import { useCreateIntent } from '../../lib/keyboard/createIntent';
+import { localDateInputValue } from '../../lib/localDate';
 
 interface Organization {
   id: string;
@@ -293,8 +294,8 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
     setAssembleSites([]);
     const today = new Date();
     const monthAgo = new Date(today.getTime() - 30 * 86400000);
-    setAssembleFrom(monthAgo.toISOString().slice(0, 10));
-    setAssembleTo(today.toISOString().slice(0, 10));
+    setAssembleFrom(localDateInputValue(monthAgo));
+    setAssembleTo(localDateInputValue(today));
     setAssembleCurrency('');
     setBlockedGroups([]);
     setAssembleOpen(true);

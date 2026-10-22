@@ -53,6 +53,12 @@ export type Patch = {
   installFailure?: PatchInstallFailure;
   /** Devices in the caller's scope that still need the patch (#8728). */
   outstandingDeviceCount?: number;
+  /**
+   * Where a device-reported severity came from (#9387): 'derived' when the
+   * agent inferred it from the update's classification because the vendor
+   * published no rating. Undefined for the trusted catalog value or unknown.
+   */
+  severitySource?: 'vendor' | 'derived';
 };
 
 type PatchListProps = {
@@ -113,15 +119,13 @@ const DEFAULT_PAGE_SIZE = 25;
 // Semantic ordering for severity / approval so a sort reflects priority rather
 // than raw alphabetical order of the enum value.
 //
-// WARNING (sort divergence): this client-side severity sort uses SEMANTIC
-// priority (critical=0 … low=3), whereas the API sorts severity ALPHABETICALLY
-// (asc(patches.severity) in routes/patches/list.ts). These currently never
-// disagree because the web does 100% client-side sort/paginate over the
-// paged-in catalog and never sends sortBy/sortDir. Whoever later pushes sorting
-// down to the server (via fetchPatches) MUST reconcile the two or severity
-// ordering will silently change. Note also that `os` and `approvalStatus` are
-// SortKeys here with no matching column in the API's PATCH_SORT_COLUMNS — they
-// can't be pushed down without server-side support.
+// Server-side sort: the API's sortBy=severity orders the resolved
+// `patch_severity` enum (routes/patches/list.ts), and Postgres sorts enums in
+// declaration order (critical, important, moderate, low, unknown) — the same
+// priority as this client-side rank. The web still sorts/paginates 100%
+// client-side and never sends sortBy/sortDir. Note that `os` and
+// `approvalStatus` are SortKeys here with no matching column in the API's
+// PATCH_SORT_COLUMNS — they can't be pushed down without server-side support.
 //
 // The "never disagree" claim has one limit: PatchesPage walks at most
 // PATCH_FETCH_MAX_PAGES x 200 = 5,000 patches. Past that the client holds only
@@ -376,6 +380,15 @@ export default function PatchList({
         </span>
         {patch.severity === 'unrated' && (
           <span className="text-[10px] text-muted-foreground">{t('patchList.severity.unratedNote')}</span>
+        )}
+        {patch.severity !== 'unrated' && patch.severitySource === 'derived' && (
+          <span
+            className="w-fit cursor-help text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2"
+            title={t('patchList.severity.derivedTooltip')}
+            data-testid={`patch-row-${patch.id}-severity-derived`}
+          >
+            {t('patchList.severity.derivedNote')}
+          </span>
         )}
       </span>
     );

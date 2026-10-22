@@ -1273,6 +1273,7 @@ export default function DeviceDetails({
           orgId={device.orgId}
           timezone={effectiveTimezone}
           highlightExecutionId={highlightedExecutionId}
+          deviceStatus={device.status}
         />
       )}
 
@@ -1301,7 +1302,7 @@ export default function DeviceDetails({
         />
       )}
 
-      {activeTab === "topology" && <TopologyEntry siteId={device.siteId} deviceId={device.id} />}
+      {activeTab === "topology" && <TopologyEntry siteId={device.siteId} deviceId={device.id} orgId={device.orgId} />}
 
       {activeTab === "monitoring" && (
         <DeviceMonitoringTab

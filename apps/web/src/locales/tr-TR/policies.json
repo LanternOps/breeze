@@ -158,7 +158,9 @@
       "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
       "summary": "{{filtered}} / {{total}} politikaları",
       "inheritsBadge": "Devralıyor",
-      "statusFilterLabel": "Durum"
+      "statusFilterLabel": "Durum",
+      "partnerPolicy": "İş ortağı",
+      "partnerPolicyAppliesOnlyWhereAssigned": "İş ortağı politikası — yalnızca atandığı yerde geçerlidir. İş ortağı çapında olması için tüm kuruluşlara atayın."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",
@@ -756,7 +758,9 @@
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Sonunda bildir",
         "sendNotificationWhenWindowCloses": "Pencere kapatıldığında bildirim gönder.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Haftalık pencereler, seçilen saat diliminde her pazar başlangıç saatinde açılır.",
+        "monthlyOpensOnTheFirst": "Aylık pencereler, seçilen saat diliminde her ayın 1'inde başlangıç saatinde açılır."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Aracı toplama",
@@ -887,7 +891,10 @@
         "noRingManualApprovalHint": "Bağlı halka yok — yamalar yalnızca elle onaydan sonra kurulur.",
         "unavailableRingOption": "Kullanılamayan halka",
         "ringInvalidTitle": "Bağlantılı Güncelleme Halkası artık kullanılamıyor.",
-        "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir."
+        "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir.",
+        "ringDetailsNoHold": "Kullanıma sunma sırası {{order}} · onay öncesi bekleme yok",
+        "ringDetailsWithHold_one": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme",
+        "ringDetailsWithHold_other": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Bağlantı Çevre Birimi Politikası",

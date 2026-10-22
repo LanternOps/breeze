@@ -36,7 +36,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.9'
+  GO_VERSION: '1.26.10'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -2173,6 +2173,26 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # #9253: the YARA-X engine never started under a Windows service because
+      # yaraxwasm hands os.Stderr (an invalid handle without a console) to the
+      # wasm guest. yarac.EnsureEngine swaps an unusable stderr for NUL. These
+      # are the only tests that exercise NUL as the guest's stderr on Windows;
+      # assert all three ran and passed rather than trusting the exit code.
+      - name: Run Windows YARA-X unusable-stderr tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/yarascan/yarac -run '^Test(EngineStartsWithUnusableStderr|EnsureUsableStderrKeepsAWorkingStderr|EnsureUsableStderrReplacesAnUnusableStderr)$' -timeout 8m -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the unusable-stderr tests SKIPPED" }
+          if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # internal/config's Windows owner/DACL code had never run in CI, which is
       # how #7394 shipped: an elevated administrator running
       # `breeze-agent enroll` was refused SYSTEM as the ProgramData owner
@@ -2607,6 +2627,23 @@ jobs:
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: TestWindowsVPNServiceQuery').Count
           if ($passes -ne 1) { throw "TestWindowsVPNServiceQuery did not run - renamed or removed without updating this step" }
+
+      # #9267: link speed is read in-process via GetIfTable2Ex. These are the
+      # only tests that exercise the real Windows getLinkSpeed (it must never
+      # spawn PowerShell again) and the real MIB_IF_TABLE2 read; elsewhere
+      # they only compile.
+      - name: Run Windows link-speed tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^(TestGetLinkSpeedWindowsNeverSpawnsProcess|TestReadIfTable2LinkSpeedsLive)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error

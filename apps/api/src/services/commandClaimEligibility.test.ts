@@ -483,8 +483,20 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.claimable).toHaveLength(1);
   });
 
-  it('reboot, shutdown and reboot_safe_mode are the barrier set', () => {
-    expect([...POWER_STATE_BARRIER_TYPES].sort()).toEqual(['reboot', 'reboot_safe_mode', 'shutdown']);
+  it('reboot, shutdown, reboot_safe_mode and force_reboot are the barrier set', () => {
+    expect([...POWER_STATE_BARRIER_TYPES].sort()).toEqual(['force_reboot', 'reboot', 'reboot_safe_mode', 'shutdown']);
+  });
+
+  // #8729: "Force reboot now" force-closes apps, but it must not cut into real
+  // work. It waits behind in-flight commands exactly like a plain reboot; Mark
+  // failed (#8508) is the way past a stuck one.
+  it('force_reboot is held while a script is in flight, and claimed once nothing is', async () => {
+    const held = await partitionClaimable(tx(), device, [row({ id: 'f', type: 'force_reboot' })], { inFlight: 1 });
+    expect(held.claimable).toEqual([]);
+    expect(held.held).toEqual([{ id: 'f', reason: 'power_state_barrier' }]);
+
+    const claimed = await partitionClaimable(tx(), device, [row({ id: 'f', type: 'force_reboot' })], { inFlight: 0 });
+    expect(claimed.claimable.map((x) => x.id)).toEqual(['f']);
   });
 
   it('cancel writes are CAS-guarded on the id AND status=pending', async () => {

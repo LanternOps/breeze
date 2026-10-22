@@ -177,7 +177,7 @@
     "securityScans": "IOC Taramaları",
     "devicesTime": "Saat eşitleme",
     "adminAiModels": "Yapay zeka modelleri",
-    "billingAutopay": "Automatic payments",
+    "billingAutopay": "Otomatik ödemeler",
     "endpointMessages": "Uç Nokta Mesajları"
   },
   "layout": {

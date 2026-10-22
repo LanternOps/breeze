@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "An invoice for {{amount}} will be issued and numbered now.",
         "consequenceContracts": "Recurring lines become draft contracts you activate later.",
         "consequenceEmail": "The invoice will be emailed to {{recipients}}.",
+        "consequenceEmailNotConfigured": "No email service is configured; the invoice will not be emailed. Share it from the invoice page.",
         "consequenceDraft": "This quote was never sent. The customer's first sight of it will be the invoice.",
         "submit": "Accept and issue invoice",
         "success": "Quote accepted. Invoice {{number}} issued.",
@@ -1576,76 +1577,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.",
-        "estimate": "Estimated quantity — billed at the actual number of {{set}} each billing period.",
         "setDevices": "devices",
         "setSeats": "seats",
-        "setGroup": "devices in “{{name}}”",
-        "atSite": "{{set}} at {{site}}",
-        "allowanceBill": "Includes {{included}}; additional units billed at {{price}} each.",
-        "allowanceFlag": "Includes {{included}}; additional units are reported for review, not billed automatically."
+        "setGroup": "devices in “{{name}}”"
       },
       "additionalItems": "Additional items",
       "contract": {
-        "download": "Download agreement",
-        "previewTitle": "{{name}} agreement",
         "unavailable": "Agreement file unavailable",
         "versionFooter": "{{name}} — v{{version}}"
       },
-      "agreements": {
-        "heading": "Agreements",
-        "termsTitle": "Terms & Conditions",
-        "read": "Read",
-        "hide": "Hide",
-        "readTime": "~{{minutes}} min read",
-        "sectionsReadTime_one": "{{count}} section · ~{{minutes}} min read",
-        "sectionsReadTime_other": "{{count}} sections · ~{{minutes}} min read",
-        "pdfDocument": "PDF document",
-        "unavailable": "Unavailable",
-        "untitled": "Agreement"
-      },
-      "draft": "Draft",
-      "empty": "This proposal doesn’t have any content yet.",
-      "imageUnavailable": "Image unavailable",
-      "issued": "Issued",
-      "preparedFor": "Prepared for",
-      "taxId": "Tax ID: {{id}}",
-      "imageZoomAria": "View larger image",
       "preview": {
         "description": "This is what your customer sees on their proposal link.",
         "downloadPdf": "Download PDF",
-        "preparing": "Preparing…"
-      },
-      "pricing": "Pricing",
-      "pricingScrollAria": "Pricing — scroll sideways for more columns",
-      "proposal": "Proposal",
-      "proposalImageAlt": "Proposal image",
-      "recurrence": {
-        "annual": "Annual",
-        "monthly": "Monthly"
-      },
-      "table": {
-        "amount": "Amount",
-        "description": "Description",
-        "qty": "Qty",
-        "tax": "Tax",
-        "unitPrice": "Unit price"
-      },
-      "totals": {
-        "annualRecurring": "Annual recurring",
-        "depositDue": "Deposit due",
-        "depositDueNow": "Deposit due now",
-        "dueOnAcceptance": "Due on acceptance",
-        "firstPeriodSubtotal": "First period subtotal",
-        "firstPeriodTotal": "First-period total",
-        "monthlyRecurring": "Monthly recurring",
-        "recurringNote": "Accepting this proposal bills the one-time charges now. Recurring lines bill on their own schedule.",
-        "remainingBalance": "Remaining balance (due per terms)",
-        "subtotal": "Subtotal",
-        "tax": "Tax"
-      },
-      "unsupportedBlock": "This block type isn't supported by this viewer yet.",
-      "validUntil": "Valid until"
+        "preparing": "Preparing…",
+        "loading": "Loading the customer view…",
+        "loadError": "Could not load the customer view of this proposal.",
+        "retry": "Try again",
+        "signatureInert": "Your customer signs here"
+      }
     },
     "page": {
       "accessDenied": "You don't have permission to view quotes.",
@@ -2192,36 +2141,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Bill to",
-    "documentType": "Invoice",
-    "due": "Due",
-    "empty": "This invoice doesn’t have any line items yet.",
-    "fallbackTitle": "Invoice",
-    "issued": "Issued",
-    "laborLine": "Labor",
     "preview": {
       "description": "This is what your customer sees on their invoice.",
       "downloadError": "Could not download the invoice PDF.",
       "downloadPdf": "Download PDF",
-      "preparing": "Preparing…"
+      "loadError": "Could not load the customer view of this invoice.",
+      "loading": "Loading the customer view…",
+      "preparing": "Preparing…",
+      "retry": "Try again"
     },
-    "table": {
-      "amount": "Amount",
-      "description": "Description",
-      "qty": "Qty",
-      "tax": "Tax",
-      "unitPrice": "Unit price"
-    },
-    "terms": "Terms & Conditions",
-    "ticketHeader": "Ticket #{{number}}",
-    "ticketWork": "Ticket work",
-    "totals": {
-      "amountDue": "Amount due",
-      "paid": "Paid",
-      "subtotal": "Subtotal",
-      "tax": "Tax",
-      "total": "Total"
-    }
+    "ticketHeader": "Ticket #{{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Invoices",
@@ -2846,6 +2775,10 @@
       "confirm": "Confirm",
       "failed": "Verification failed. Try again.",
       "unavailable": "Unable to start verification"
+    },
+    "notEnabled": {
+      "title": "Automatic payments aren't enabled for your account",
+      "hint": "Automatic payments haven't been turned on yet. Ask your Breeze administrator to enable them, then come back to request enrollment from your clients."
     }
   },
   "reminders": {

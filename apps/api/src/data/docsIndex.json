@@ -69,6 +69,7 @@
       "`reboot` / `shutdown`",
       "`lock`",
       "`reboot_safe_mode`",
+      "`force_reboot`",
       "`set_auto_update`",
       "`refresh_inventory`",
       "File Operations",

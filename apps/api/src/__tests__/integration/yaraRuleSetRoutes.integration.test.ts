@@ -20,8 +20,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
-import { buildYaraBundleJson, YARA_BUILTIN_RULE_SET_ID } from '@breeze/shared';
+import { eq, sql } from 'drizzle-orm';
+import { buildYaraBundleJson, YARA_BUILTIN_RULE_SET_ID, YARA_MAX_RULES_PER_SET } from '@breeze/shared';
 import { securityRoutes } from '../../routes/security';
 import { yaraRuleSets, yaraRules } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
@@ -220,6 +220,60 @@ describe('/security/yara routes (real Postgres)', () => {
     const dup = await call(w.org, 'POST', `/yara/rule-sets/${set.id}/rules`, { name: 'same', source: 'rule same { condition: false }' });
     expect(dup.status).toBe(409);
     expect((await setRow(set.id)).publishedVersion).toBe(1);
+  });
+
+  it('concurrent creates on a set at cap-1: exactly one succeeds, the other hits the cap (#9176)', async () => {
+    const w = await seed();
+    const set = (await (await call(w.org, 'POST', '/yara/rule-sets', { name: 'cap' })).json()).data;
+    const db = getTestDb() as any;
+    await db.insert(yaraRules).values(
+      Array.from({ length: YARA_MAX_RULES_PER_SET - 1 }, (_, i) => ({
+        ruleSetId: set.id, name: `seed_${i}`, source: `rule seed_${i} { condition: true }`,
+      })),
+    );
+
+    // Hold the set row lock from outside so both creates are in flight at the
+    // same time; the pre-fix handler counted (499) before locking, so both
+    // passed the check and inserted once the lock released.
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((r) => { locked = r; });
+    const holder = db.transaction(async (tx: any) => {
+      await tx.select({ id: yaraRuleSets.id }).from(yaraRuleSets).where(eq(yaraRuleSets.id, set.id)).for('update');
+      locked();
+      await held;
+    });
+    await lockTaken;
+
+    const create = (name: string) =>
+      call(w.org, 'POST', `/yara/rule-sets/${set.id}/rules`, { name, source: `rule ${name} { condition: true }` });
+    let responses: Response[];
+    try {
+      const inflight = Promise.all([create('racer_a'), create('racer_b')]);
+      // Release only once both requests are parked on the row lock (not a fixed sleep).
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const waiting = await db.execute(
+          sql`select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()`,
+        );
+        const rows = (waiting.rows ?? waiting) as Array<{ n: number }>;
+        if (Number(rows[0]?.n) >= 2) break;
+        if (Date.now() > deadline) throw new Error('creates never blocked on the set lock');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      release();
+      responses = await inflight;
+    } finally {
+      release();
+      await holder.catch(() => {});
+    }
+
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 400]);
+    const capped = responses.find((r) => r.status === 400)!;
+    expect((await capped.json()).error).toContain(`at most ${YARA_MAX_RULES_PER_SET} rules`);
+    const rows = await db.select().from(yaraRules).where(eq(yaraRules.ruleSetId, set.id));
+    expect(rows).toHaveLength(YARA_MAX_RULES_PER_SET);
   });
 
   it('rule name / size validation is a 400 (mirrors the DB CHECKs)', async () => {

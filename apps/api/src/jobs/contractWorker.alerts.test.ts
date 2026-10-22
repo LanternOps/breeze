@@ -61,7 +61,7 @@ describe('contract billing-sweep job ordering (block hours W04)', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const result = await processorRef.fn!({ name: 'billing-sweep' });
-      expect(result).toEqual({ billed: 0, failed: 0 });
+      expect(result).toEqual({ billed: 0, failed: 0, deferred: 0 });
       expect(captureMock).toHaveBeenCalledTimes(1);
     } finally {
       err.mockRestore();

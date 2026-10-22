@@ -14,6 +14,7 @@ import { eq } from 'drizzle-orm';
 import {
   AI_ASSIGNMENT_WRITE_ROLES,
   CONFIGURABLE_AI_SURFACE_ROLES,
+  CONFIGURABLE_AI_SURFACES,
   envManagementState,
   envStateDtoFields,
   isGatewayConnectionKind,
@@ -246,6 +247,9 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
     const seen = new Set<string>();
     const defaultFor = allRows
       .filter((r) => r.defaultOfferingId === o.id)
+      // Platform-only surfaces (patch_test) have no UI row to manage, and the
+      // resolver reads them with no partner: counting them strands the model (#9455).
+      .filter((r) => (CONFIGURABLE_AI_SURFACES as readonly string[]).includes(r.surface))
       .map((r) => ({ surface: r.surface as AiSurface, level: r.orgId === null ? 'partner' as const : 'org' as const, orgId: r.orgId }))
       .filter((d) => {
         const k = `${d.surface}/${d.level}/${d.orgId ?? ''}`;

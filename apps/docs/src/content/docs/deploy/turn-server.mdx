@@ -277,6 +277,10 @@ The bundled coturn runs with `network_mode: host`, so it needs direct access to 
 - **TCP 5349** — TURN over TLS (`turns:`), only once you have configured a certificate (see below)
 - **TCP+UDP 49152–65535** — relay port range (default, can be tightened in `docker/turnserver.conf`)
 
+:::caution
+The coturn image runs as `nobody` (uid `65534`). If you bind-mount your own `turnserver.conf`, make it world-readable or owned by uid `65534`. When coturn cannot read the file it logs `WARNING: Cannot find config file` and runs on defaults (no auth, empty realm, every interface), so check the startup log for that line.
+:::
+
 ### TURN over TLS (`turns:`)
 
 The bundled coturn is started with `--tls-listening-port=5349`, but coturn
@@ -377,6 +381,12 @@ From v0.118.0, credentials are not issued for sessions that have ended, and each
 - Check `external-ip` in `/etc/turnserver.conf` — it must be the server's actual public IP
 - Verify `static-auth-secret` matches `TURN_SECRET` in Breeze's `.env`
 - Check the `realm` value in your external coturn's own config — Breeze's `TURN_REALM` only configures the bundled coturn container and has no effect on an external one
+
+**Sessions end with only host and srflx candidates (no relay), but `TURN_SECRET` matches**
+- The coturn image runs as `nobody` (uid `65534`). A bind-mounted `turnserver.conf` must be world-readable or owned by uid `65534`; a `0600` file owned by another user cannot be read.
+- If coturn cannot read its config, it logs `WARNING: Cannot find config file` and **starts on built-in defaults**: no authentication, an empty realm, and every interface. Treat that line as "not running your configuration".
+- A server on defaults answers every Allocate with `Allocate Success` and never sends the `401` challenge. Breeze clients only authenticate in response to that challenge, so they never get a relay candidate. This looks the same as a wrong `TURN_SECRET`.
+- At startup the Breeze API sends one unauthenticated Allocate to `TURN_HOST:TURN_PORT` and logs a `[turn-preflight]` warning when it receives success instead of `401`. Platform admins can read the last result at `GET /api/v1/admin/system/connections/turn` and re-run it with `POST /api/v1/admin/system/connections/turn/probe`. A timeout is reported as informational only, because the relay may simply be filtered from the API host.
 
 **High bandwidth usage on the TURN server**
 - TURN relays all media when direct P2P fails. Each desktop session at 5 Mbps = ~2.25 GB/hour

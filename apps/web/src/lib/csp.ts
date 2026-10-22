@@ -72,11 +72,12 @@ function addFrameOrigin(sources: Set<string>, rawUrl: string | undefined): void 
  * same-origin, in-memory blob URLs the app itself creates. It was originally
  * required by the auth-gated quote PDF preview (`QuotePreview`), which fetched
  * the PDF with a Bearer header and framed the resulting `blob:` object URL.
- * That component has been removed — the quote preview now renders the document
- * as HTML (`QuoteDocumentPreview`) and uses no iframe — so nothing currently
- * depends on this. It permits only same-origin app-created blobs (the
- * `frame-ancestors` and `object-src` directives are independent and
- * unaffected); tighten/remove it when the CSP is next revisited.
+ * That component was replaced by the HTML preview (`QuoteDocumentPreview`),
+ * but an uploaded agreement's PDF inside it is framed the same way
+ * (`AgreementFrame` in billing/documentHostComponents.tsx), so `blob:` is
+ * load-bearing again: removing it breaks the agreement viewer. It permits only
+ * same-origin app-created blobs (the `frame-ancestors` and `object-src`
+ * directives are independent and unaffected).
  */
 export function resolveFrameSrcDirective(options: { env?: EnvMap }): string {
   const env = options.env ?? process.env;
@@ -98,6 +99,11 @@ export function resolveConnectSrcDirective(options: {
   addConfiguredOrigin(sources, env.PUBLIC_DOCS_URL);
   addSentryOrigin(sources, env.PUBLIC_SENTRY_DSN_WEB ?? env.SENTRY_DSN_WEB);
   addConfiguredConnectHosts(sources, env.CSP_CONNECT_HOSTS);
+
+  // Cloudflare Web Analytics: the beacon script (allowed in script-src from
+  // static.cloudflareinsights.com) POSTs its RUM payload here. Without this
+  // the runtime-tightened connect-src (SOC 2 header hardening) blocks it.
+  sources.add('https://cloudflareinsights.com');
 
   if (options.isDev) {
     sources.add('http://localhost:3001');

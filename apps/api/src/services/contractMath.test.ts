@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { addMonthsClamped, computePeriod, periodIndexFor, nextBillingDate, isExpired, addDaysISO, duePeriodStartFor, isWithinNoticeWindow, extendTermPastDue, contractInTermForReporting, isPastEndForReporting } from './contractMath';
+import { addMonthsClamped, computePeriod, periodIndexFor, nextBillingDate, isExpired, addDaysISO, duePeriodStartFor, isWithinNoticeWindow, extendTermThrough, billingRunPeriods, isAutoRenewing, contractInTermForReporting, isPastEndForReporting } from './contractMath';
 
 describe('addMonthsClamped', () => {
   it('preserves day-of-month when valid', () => {
@@ -92,20 +92,97 @@ describe('isWithinNoticeWindow', () => {
   });
 });
 
-describe('extendTermPastDue', () => {
-  it('pushes endDate forward by whole terms until the due period no longer expires', () => {
-    // due period starts exactly at endDate ⇒ one 12-month roll
-    expect(extendTermPastDue({ endDate: '2027-07-01', duePeriodStart: '2027-07-01', termMonths: 12 }))
+describe('extendTermThrough (#9243: the term renews ON end_date, never a billing interval early)', () => {
+  it('rolls endDate by one term on the renewal day itself (end_date is exclusive)', () => {
+    expect(extendTermThrough({ endDate: '2027-07-01', asOfISO: '2027-07-01', termMonths: 12 }))
       .toEqual({ newEndDate: '2028-07-01', renewed: true });
   });
-  it('catches up multiple terms when the sweep was down (term < gap)', () => {
-    // due period is 2 months past a 1-month term ⇒ rolls 3 times to clear it
-    expect(extendTermPastDue({ endDate: '2027-07-01', duePeriodStart: '2027-09-01', termMonths: 1 }))
+  it('no-op the day before end_date, even when billing has already invoiced the final period', () => {
+    expect(extendTermThrough({ endDate: '2027-07-01', asOfISO: '2027-06-30', termMonths: 12 }))
+      .toEqual({ newEndDate: '2027-07-01', renewed: false });
+  });
+  it('catches up multiple terms after an outage (term < gap), one term at a time from the old end', () => {
+    expect(extendTermThrough({ endDate: '2027-07-01', asOfISO: '2027-09-01', termMonths: 1 }))
       .toEqual({ newEndDate: '2027-10-01', renewed: true });
   });
-  it('no-op when the due period is still inside the term', () => {
-    expect(extendTermPastDue({ endDate: '2027-07-01', duePeriodStart: '2027-06-01', termMonths: 12 }))
+  it('clamps month-end ends the same way successive single renewals would', () => {
+    // 01-31 + 1 = 02-28; + 1 = 03-28 (addMonthsClamped from the previous end).
+    expect(extendTermThrough({ endDate: '2027-01-31', asOfISO: '2027-03-01', termMonths: 1 }))
+      .toEqual({ newEndDate: '2027-03-28', renewed: true });
+  });
+  it('never renews (and never spins) on a non-positive term', () => {
+    expect(extendTermThrough({ endDate: '2027-07-01', asOfISO: '2027-08-01', termMonths: 0 }))
       .toEqual({ newEndDate: '2027-07-01', renewed: false });
+    expect(extendTermThrough({ endDate: '2027-07-01', asOfISO: '2027-08-01', termMonths: -3 }))
+      .toEqual({ newEndDate: '2027-07-01', renewed: false });
+  });
+});
+
+describe('isAutoRenewing (#9243)', () => {
+  it.each([
+    [{ autoRenew: true, renewalTermMonths: 12 }, true],
+    [{ autoRenew: true, renewalTermMonths: 1 }, true],
+    [{ autoRenew: false, renewalTermMonths: 12 }, false],
+    [{ autoRenew: true, renewalTermMonths: null }, false],
+    [{ autoRenew: true, renewalTermMonths: 0 }, false],
+  ])('%j -> %s', (c, expected) => {
+    expect(isAutoRenewing(c)).toBe(expected);
+  });
+});
+
+describe('billingRunPeriods (#9243: the one due/next period computation generateDueInvoice uses)', () => {
+  const c = (over: Record<string, unknown>) => ({
+    startDate: '2026-01-01', intervalMonths: 1, billingTiming: 'advance', nextBillingAt: '2026-12-01', ...over,
+  }) as Parameters<typeof billingRunPeriods>[0];
+
+  it('advance: bills the period starting at the pointer; next is the one after', () => {
+    expect(billingRunPeriods(c({}))).toEqual({
+      idx: 11,
+      due: { periodStart: '2026-12-01', periodEnd: '2027-01-01' },
+      next: { periodStart: '2027-01-01', periodEnd: '2027-02-01' },
+    });
+  });
+  it('arrears: bills the period ending at the pointer', () => {
+    expect(billingRunPeriods(c({ billingTiming: 'arrears', nextBillingAt: '2027-01-01' }))).toEqual({
+      idx: 11,
+      due: { periodStart: '2026-12-01', periodEnd: '2027-01-01' },
+      next: { periodStart: '2027-01-01', periodEnd: '2027-02-01' },
+    });
+  });
+  it('arrears never goes below period 0', () => {
+    expect(billingRunPeriods(c({ billingTiming: 'arrears', nextBillingAt: '2026-01-01' })).idx).toBe(0);
+  });
+  it('walks month-end periods from the START date (03-31 monthly arrears, pointer 05-31 -> due 04-30)', () => {
+    expect(billingRunPeriods(c({ startDate: '2026-03-31', billingTiming: 'arrears', nextBillingAt: '2026-05-31' })).due)
+      .toEqual({ periodStart: '2026-04-30', periodEnd: '2026-05-31' });
+  });
+});
+
+// The invariant that keeps the two code paths from drifting: once the renewal
+// sweep has run on day D, the period billing is due to bill on D is never past
+// end_date, for every billing shape. So billing's due-check can only meet an
+// un-renewed auto-renew contract when the sweep did not run first.
+describe('renewal sweep ⟹ billing never sees an expired due period (#9243 invariant)', () => {
+  const shapes: { startDate: string; intervalMonths: number; billingTiming: 'advance' | 'arrears'; termMonths: number }[] = [];
+  for (const startDate of ['2026-01-01', '2026-01-31', '2026-03-31', '2026-02-28'])
+    for (const intervalMonths of [1, 3, 12])
+      for (const billingTiming of ['advance', 'arrears'] as const)
+        for (const termMonths of [1, 12])
+          shapes.push({ startDate, intervalMonths, billingTiming, termMonths });
+
+  // end_date on a period boundary, and inside a period (±10 days off it).
+  it.each(shapes.flatMap((s) => [-10, 0, 10].map((offsetDays) => ({ ...s, offsetDays }))))('%j', ({ startDate, intervalMonths, billingTiming, termMonths, offsetDays }) => {
+    const endDate = addDaysISO(addMonthsClamped(startDate, 12), offsetDays);
+    for (let k = 0; k < 30; k++) {
+      // Every pointer billing can produce (a period boundary), on its due day and up to 40 days late.
+      const nextBillingAt = nextBillingDate({ startDate, intervalMonths, billingTiming, periodIndex: k });
+      for (const lateDays of [0, 1, 15, 40]) {
+        const today = addDaysISO(nextBillingAt, lateDays);
+        const { newEndDate } = extendTermThrough({ endDate, asOfISO: today, termMonths });
+        const { due } = billingRunPeriods({ startDate, intervalMonths, billingTiming, nextBillingAt });
+        expect(isExpired({ endDate: newEndDate, periodStart: due.periodStart }), `${nextBillingAt} on ${today}`).toBe(false);
+      }
+    }
   });
 });
 
@@ -211,6 +288,16 @@ describe('contractInTermForReporting (#9220)', () => {
     const ended = { ...pastPointer, nextBillingAt: '2026-08-01' };
     expect(isPastEndForReporting(ended, '2026-07-15')).toBe(true);
     expect(contractInTermForReporting(ended, '2026-07-15', false)).toBeNull();
+  });
+
+  it('counts an ACTIVE auto-renew contract in its billed final period (pointer at end_date, #9243)', () => {
+    // generateDueInvoice no longer expires an auto-renewing contract on its final
+    // invoice: it stays active with the pointer at end_date until the sweep renews it.
+    const finalTerm = { ...annualAdvance, intervalMonths: 1, nextBillingAt: '2027-01-01' };
+    expect(isPastEndForReporting(finalTerm, '2026-12-15')).toBe(true);
+    expect(contractInTermForReporting(finalTerm, '2026-12-15', true)).toBe('billed_final_term');
+    expect(contractInTermForReporting(finalTerm, '2026-12-15', false)).toBeNull();
+    expect(contractInTermForReporting(finalTerm, '2027-01-01', true)).toBeNull();
   });
 
   it('keeps an open-ended active contract in term', () => {

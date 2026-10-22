@@ -177,7 +177,7 @@
     "securityScans": "IOC-Scans",
     "devicesTime": "Zeitsynchronisierung",
     "adminAiModels": "KI-Modelle",
-    "billingAutopay": "Automatic payments",
+    "billingAutopay": "Automatische Zahlungen",
     "endpointMessages": "Endpunkt-Nachrichten"
   },
   "layout": {

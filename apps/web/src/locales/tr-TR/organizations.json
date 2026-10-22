@@ -329,6 +329,7 @@
         },
         "approve": "Onayla",
         "approved": "Talep onaylandı. Talep sahibine e-posta ile bir indirme bağlantısı gönderildi.",
+        "approvedNoEmail": "Erişim onaylandı. Yapılandırılmış bir e-posta hizmeti yok, bu nedenle talep sahibine e-posta gönderilmedi.",
         "approveFailed": "Talep onaylanamadı.",
         "deny": "Reddet",
         "denyTitle": "Bu talep reddedilsin mi?",
@@ -345,6 +346,7 @@
         "revokeFailed": "Erişim iptal edilemedi.",
         "resend": "Bağlantıyı yeniden gönder",
         "resent": "Yeni bir indirme bağlantısı e-posta ile gönderildi. Önceki bağlantı artık çalışmaz.",
+        "resentNoEmail": "Yeni indirme bağlantısı oluşturuldu. Yapılandırılmış bir e-posta hizmeti yok, bu nedenle e-posta ile gönderilmedi. Önceki bağlantı artık çalışmaz.",
         "resendFailed": "Bağlantı yeniden gönderilemedi.",
         "errors": {
           "mfaRequired": "Onaylamak veya yeniden göndermek için çok faktörlü kimlik doğrulama gerekir. Profil güvenlik ayarlarınızdan MFA'yı etkinleştirip tekrar deneyin.",

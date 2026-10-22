@@ -457,9 +457,22 @@ describe('POST /ai/sessions/:id/continue (W05)', () => {
   });
 
   it('a budget denial before reserving → 402, nothing reserved', async () => {
-    vi.mocked(checkBudgetDetailed).mockResolvedValueOnce({ message: 'Out of credits' } as never);
-    expect((await post(app, { model: { offeringId: OFF } })).status).toBe(402);
+    vi.mocked(checkBudgetDetailed).mockResolvedValueOnce({ message: 'Out of credits', reason: 'credits_exhausted', permanent: false } as never);
+    const res = await post(app, { model: { offeringId: OFF } });
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: 'Out of credits', code: 'credits_exhausted' });
     expect(reserveAiBudget).not.toHaveBeenCalled();
+  });
+
+  it('the plan gate → 402 plan_not_eligible; a spend cap → 402 with no code (#9450)', async () => {
+    vi.mocked(checkBudgetDetailed).mockResolvedValueOnce({ message: 'needs plan', reason: 'plan_gate', permanent: true } as never);
+    const plan = await post(app, { model: { offeringId: OFF } });
+    expect(plan.status).toBe(402);
+    expect(await plan.json()).toEqual({ error: 'needs plan', code: 'plan_not_eligible' });
+    vi.mocked(checkBudgetDetailed).mockResolvedValueOnce({ message: 'cap', reason: 'daily_budget', permanent: false } as never);
+    const cap = await post(app, { model: { offeringId: OFF } });
+    expect(cap.status).toBe(402);
+    expect(await cap.json()).toEqual({ error: 'cap' });
   });
 
   it('a denied reservation → 429, nothing sent', async () => {

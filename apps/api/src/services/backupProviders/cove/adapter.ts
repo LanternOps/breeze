@@ -19,9 +19,10 @@ export const COVE_PROVIDER_LABEL = 'Cove Data Protection';
  * The credential blob stored (encrypted, row-bound) in
  * `backup_provider_connections.credentials_encrypted`.
  *
- * Cove has no static API key: this is a real console login. The UI tells the
- * MSP to create a dedicated user with a read-only role, a unique password and
- * NO 2FA, and the password is never returned by any route.
+ * The UI tells the MSP to create a Cove API user (it cannot sign in to the
+ * console, so 2FA does not apply): `username` is its login name and `password`
+ * its API token. A legacy console login still works the same way. The
+ * password is never returned by any route.
  *
  * Identity fields are trimmed (a pasted username reliably picks up a trailing
  * space); the password deliberately is NOT — a password may legitimately end

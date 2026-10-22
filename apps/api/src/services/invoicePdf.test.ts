@@ -5,7 +5,6 @@ import PDFDocument from 'pdfkit';
 import { formatMoney } from '@breeze/shared';
 import { renderInvoicePdfBuffer, buildInvoiceEmailAmounts, resolveDraftBillTo, type InvoiceBranding } from './invoicePdf';
 import { documentColumnsFor } from './documentPdfTable';
-import { columnsFor as quoteColumnsFor } from './quotePdf';
 import { formatMoneyForPdf } from './pdfMoney';
 import { resolveDocumentFooter } from './documentFooter';
 import { invoices, invoiceLines } from '../db/schema';
@@ -225,14 +224,14 @@ describe('unit price column (#7508)', () => {
   });
 });
 
-describe('invoice PDF description column parity with the quote PDF (#9401)', () => {
+describe('invoice PDF column geometry (#9401; shared with the quote PDF since W3b)', () => {
   it.each([
     ['A4', true], ['A4', false], ['LETTER', true], ['LETTER', false],
-  ] as const)('%s showTax=%s: description column matches the quote PDF and money still fits', (size, showTax) => {
+  ] as const)('%s showTax=%s: description column keeps its share and money still fits', (size, showTax) => {
     const doc = new PDFDocument({ size, margin: 50 });
     const inv = documentColumnsFor(doc, { showTax });
-    const quote = quoteColumnsFor(doc, showTax);
-    expect(inv.colDescW).toBeCloseTo(quote.colDescW, 5);
+    // The quote PDF draws through the same module, so there is one geometry to pin.
+    expect(inv.colDescW / inv.contentWidth).toBeCloseTo(showTax ? 0.42 : 0.57, 5);
     doc.font('Helvetica').fontSize(10);
     const w = doc.widthOfString(formatMoneyForPdf('888888.88', 'CHF', 'de-CH'));
     expect(inv.colNumW).toBeGreaterThanOrEqual(w + 2);

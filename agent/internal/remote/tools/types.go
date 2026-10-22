@@ -55,7 +55,12 @@ const (
 	CmdShutdown       = "shutdown"
 	CmdLock           = "lock"
 	CmdRebootSafeMode = "reboot_safe_mode"
-	CmdWakeOnLan      = "wake_on_lan"
+	// CmdForceReboot (#8729) is an immediate reboot that force-closes running
+	// apps (`/f` on Windows). A separate type, not a flag on `reboot`: older
+	// agents keep reading `reboot`'s wire shape, and an agent that predates this
+	// type fails it visibly as "unknown command type" instead of rebooting unforced.
+	CmdForceReboot = "force_reboot"
+	CmdWakeOnLan   = "wake_on_lan"
 	// On-demand re-run of all inventory collectors. Triggers the same set of
 	// send*Inventory submissions the heartbeat fires periodically, so the API
 	// sees fresh hardware/software/network/etc. without waiting for the next

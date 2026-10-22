@@ -250,6 +250,84 @@ describe('updateRings routes', () => {
       expect(body.pagination).toBeDefined();
     });
 
+    // #9387 gap 2: the ring list says where each fallback severity came from,
+    // so the web can mark a derived Windows rating as derived. The provenance
+    // must come from the SAME device row as the severity: same predicate, same
+    // ORDER BY with a unique tiebreaker.
+    it('projects severitySource from the same device row as the fallback severity (#9387)', async () => {
+      const flatten = (node: unknown): string => {
+        if (node === null || node === undefined) return '';
+        if (typeof node === 'string') return node;
+        if (Array.isArray(node)) return node.map(flatten).join('');
+        const n = node as { queryChunks?: unknown[]; value?: unknown };
+        if (Array.isArray(n.queryChunks)) return n.queryChunks.map(flatten).join('');
+        if (Array.isArray(n.value)) return (n.value as unknown[]).map(flatten).join('');
+        return '';
+      };
+      vi.mocked(resolveRingDeviceIdsWithWarnings).mockResolvedValueOnce({ deviceIds: ['d1'], warnings: [] } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([
+                    {
+                      id: PATCH_ID,
+                      title: 'Cumulative Update',
+                      source: 'microsoft',
+                      severity: 'important',
+                      severitySource: 'derived',
+                      osTypes: ['windows'],
+                      createdAt: new Date('2026-01-01')
+                    }
+                  ])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+        } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].severitySource).toBe('derived');
+
+      const projection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown>;
+      expect(projection).toHaveProperty('severitySource');
+      const sourceSql = flatten(projection.severitySource);
+      const severitySql = flatten(projection.severity);
+      expect(sourceSql).toContain('"device_patches"."reported_severity_source"');
+      const orderBy = 'ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST, "device_patches"."id" DESC';
+      expect(severitySql).toContain(orderBy);
+      expect(sourceSql).toContain(orderBy);
+      expect(sourceSql).toContain('"device_patches"."reported_severity" IS NOT NULL');
+      // A trusted shared severity is not a device report: no provenance.
+      expect(sourceSql).toMatch(/CASE\s+WHEN NULLIF\(.*'unknown'\) IS NOT NULL THEN NULL/s);
+    });
+
     it('derives os from source when osTypes is empty (#2215)', async () => {
       vi.mocked(db.select)
         // ring lookup

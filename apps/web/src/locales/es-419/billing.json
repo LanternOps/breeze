@@ -1345,6 +1345,7 @@
         "consequenceInvoice": "Se emitirá y numerará ahora una factura por {{amount}}.",
         "consequenceContracts": "Las líneas recurrentes se convierten en contratos en borrador que activas después.",
         "consequenceEmail": "La factura se enviará por correo electrónico a {{recipients}}.",
+        "consequenceEmailNotConfigured": "No hay un servicio de correo configurado; la factura no se enviará por correo. Compártela desde la página de la factura.",
         "consequenceDraft": "Esta propuesta nunca se envió. Lo primero que el cliente verá de ella será la factura.",
         "submit": "Aceptar y emitir factura",
         "success": "Propuesta aceptada. Factura {{number}} emitida.",
@@ -1576,76 +1577,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.",
-        "estimate": "Cantidad estimada: se factura la cantidad real de {{set}} en cada período de facturación.",
         "setDevices": "dispositivos",
         "setSeats": "licencias",
-        "setGroup": "dispositivos en “{{name}}”",
-        "atSite": "{{set}} en {{site}}",
-        "allowanceBill": "Incluye {{included}}; las unidades adicionales se facturan a {{price}} cada una.",
-        "allowanceFlag": "Incluye {{included}}; las unidades adicionales se informan para revisión y no se facturan automáticamente."
+        "setGroup": "dispositivos en “{{name}}”"
       },
       "additionalItems": "Artículos adicionales",
       "contract": {
-        "download": "Descargar acuerdo",
-        "previewTitle": "Acuerdo {{name}}",
         "unavailable": "Archivo del acuerdo no disponible",
         "versionFooter": "{{name}} — versión {{version}}"
       },
-      "agreements": {
-        "heading": "Acuerdos",
-        "termsTitle": "Términos y condiciones",
-        "read": "Leer",
-        "hide": "Ocultar",
-        "readTime": "~{{minutes}} min de lectura",
-        "sectionsReadTime_one": "{{count}} sección · ~{{minutes}} min de lectura",
-        "sectionsReadTime_other": "{{count}} secciones · ~{{minutes}} min de lectura",
-        "pdfDocument": "Documento PDF",
-        "unavailable": "No disponible",
-        "untitled": "Acuerdo"
-      },
-      "draft": "Borrador",
-      "empty": "Esta propuesta aún no tiene ningún contenido.",
-      "imageUnavailable": "Imagen no disponible",
-      "issued": "Emitido",
-      "preparedFor": "preparado para",
-      "taxId": "ID fiscal: {{id}}",
-      "imageZoomAria": "Ver imagen más grande",
       "preview": {
         "description": "Esto es lo que su cliente ve en el enlace de su propuesta.",
         "downloadPdf": "Descargar PDF",
-        "preparing": "Preparando…"
-      },
-      "pricing": "Precios",
-      "pricingScrollAria": "Precios: desplácese hacia los lados para ver más columnas",
-      "proposal": "Propuesta",
-      "proposalImageAlt": "Imagen de propuesta",
-      "recurrence": {
-        "annual": "Anual",
-        "monthly": "Mensual"
-      },
-      "table": {
-        "amount": "Cantidad",
-        "description": "Descripción",
-        "qty": "Cantidad",
-        "tax": "Impuesto",
-        "unitPrice": "Precio unitario"
-      },
-      "totals": {
-        "annualRecurring": "Recurrente anual",
-        "depositDue": "Depósito adeudado",
-        "depositDueNow": "Depósito a pagar ahora",
-        "dueOnAcceptance": "Vencimiento al momento de la aceptación",
-        "firstPeriodSubtotal": "Subtotal del primer período",
-        "firstPeriodTotal": "Total del primer período",
-        "monthlyRecurring": "Recurrente mensual",
-        "recurringNote": "Al aceptar esta propuesta se facturan los cargos únicos ahora. Las líneas recurrentes facturan según su propio horario.",
-        "remainingBalance": "Saldo restante (según los términos)",
-        "subtotal": "Total parcial",
-        "tax": "Impuesto"
-      },
-      "unsupportedBlock": "Este tipo de bloque aún no es compatible con este visor.",
-      "validUntil": "Válido hasta"
+        "preparing": "Preparando…",
+        "loading": "Cargando la vista del cliente…",
+        "loadError": "No se pudo cargar la vista del cliente de esta propuesta.",
+        "retry": "Reintentar",
+        "signatureInert": "Aquí firma su cliente"
+      }
     },
     "page": {
       "accessDenied": "No tiene permiso para ver cotizaciones.",
@@ -2192,36 +2141,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Cobrar a",
-    "documentType": "Factura",
-    "due": "Pendiente",
-    "empty": "Esta factura aún no tiene ninguna partida.",
-    "fallbackTitle": "Factura",
-    "issued": "Emitido",
-    "laborLine": "Mano de obra",
     "preview": {
       "description": "Esto es lo que su cliente ve en su factura.",
       "downloadError": "No se pudo descargar la factura PDF.",
       "downloadPdf": "Descargar PDF",
-      "preparing": "Preparando…"
+      "loadError": "No se pudo cargar la vista del cliente de esta factura.",
+      "loading": "Cargando la vista del cliente…",
+      "preparing": "Preparando…",
+      "retry": "Reintentar"
     },
-    "table": {
-      "amount": "Cantidad",
-      "description": "Descripción",
-      "qty": "Cantidad",
-      "tax": "Impuesto",
-      "unitPrice": "Precio unitario"
-    },
-    "terms": "Términos y condiciones",
-    "ticketHeader": "Ticket n.º {{number}}",
-    "ticketWork": "Trabajo de ticket",
-    "totals": {
-      "amountDue": "Monto adeudado",
-      "paid": "Pagado",
-      "subtotal": "Total parcial",
-      "tax": "Impuesto",
-      "total": "Total"
-    }
+    "ticketHeader": "Ticket n.º {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Facturas",
@@ -2508,7 +2437,7 @@
     "documents": "Documentos",
     "connections": "Conexiones",
     "rates": "Tarifas",
-    "payments": "Payments"
+    "payments": "Pagos"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2846,6 +2775,10 @@
       "confirm": "Confirmar",
       "failed": "Verificación fallida. Inténtelo de nuevo.",
       "unavailable": "No se pudo iniciar la verificación"
+    },
+    "notEnabled": {
+      "title": "Los pagos automáticos no están habilitados para su cuenta",
+      "hint": "Los pagos automáticos aún no se han activado. Pida a su administrador de Breeze que los habilite y luego vuelva para solicitar la inscripción a sus clientes."
     }
   },
   "reminders": {

@@ -37,12 +37,13 @@ import { z } from 'zod';
 import type { PatchIneligibleReason } from '@breeze/shared';
 import { db } from '../db';
 import {
-  devicePatches, devices, organizations, patchApprovals, patches, patchPolicies,
+  devicePatches, devices, organizations, patches, patchPolicies,
   OUTSTANDING_DEVICE_PATCH_STATUSES,
 } from '../db/schema';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
 import { captureException } from './sentry';
+import { resolveLatestManualDecisions, selectManualDecisionRows } from './patchManualDecisions';
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
 import {
   buildAllowedPatchSources,
@@ -278,29 +279,14 @@ export async function evaluatePatchInstallEligibility(args: {
   // 2. Load manual approvals for this partner (optionally scoped to ring).
   //    partner-wide (ring_id NULL) AND ring-specific rows are both returned.
   const patchIds = finalCandidates.map((p) => p.patchId);
-  const manualApprovals = await db
-    .select({
-      patchId: patchApprovals.patchId,
-      status: patchApprovals.status,
-      ringId: patchApprovals.ringId,
-    })
-    .from(patchApprovals)
-    .where(
-      and(
-        eq(patchApprovals.partnerId, partnerId),
-        inArray(patchApprovals.patchId, patchIds),
-        eq(patchApprovals.status, 'approved')
-      )
-    );
+  const manualApprovals = await selectManualDecisionRows(partnerId, patchIds);
 
-  // Index manual approvals by patchId for fast lookup
-  const manualApprovalSet = new Set<string>();
-  for (const approval of manualApprovals) {
-    // Ring-scoped approval: match if ringId matches, or approval is partner-wide (null ringId)
-    if (approval.ringId === ringConfig.ringId || approval.ringId === null) {
-      manualApprovalSet.add(approval.patchId);
-    }
-  }
+  // A decline ('rejected') is a TERMINAL deny (#9369) — it must beat ring
+  // auto-approve, which never sees it otherwise. Latest decision wins among
+  // this ring's rows and partner-wide (null ringId) rows; see
+  // patchManualDecisions.ts.
+  const { approved: manualApprovalSet, declined: declinedSet } =
+    resolveLatestManualDecisions(manualApprovals, { ringId: ringConfig.ringId });
 
   // 3. Build category rules index
   const categoryRules = Array.isArray(ringConfig.categoryRules) ? ringConfig.categoryRules : [];
@@ -320,7 +306,7 @@ export async function evaluatePatchInstallEligibility(args: {
 
   const now = new Date();
   for (const patch of finalCandidates) {
-    const decision = decidePatchApproval(patch, ringConfig, manualApprovalSet, categoryRuleMap, ringAutoApprove, now);
+    const decision = decidePatchApproval(patch, ringConfig, manualApprovalSet, categoryRuleMap, ringAutoApprove, now, declinedSet);
     if ('approved' in decision) {
       eligible.push({
         patchId: patch.patchId,

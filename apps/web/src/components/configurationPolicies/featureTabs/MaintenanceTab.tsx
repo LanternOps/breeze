@@ -284,6 +284,24 @@ export default function MaintenanceTab({
               </option>
             ))}
           </select>
+          {/* #9565: the scheduler pins the day (featureConfigResolver.ts
+              maintenanceOccurrenceStart) — weekly = Sunday, monthly = the 1st.
+              There is no day picker yet, so say which day the window opens. */}
+          {(settings.recurrence === "weekly" ||
+            settings.recurrence === "monthly") && (
+            <p
+              data-testid="maintenance-recurrence-rule"
+              className="mt-1 text-xs text-muted-foreground"
+            >
+              {settings.recurrence === "weekly"
+                ? i18n.t(
+                    "policies:configurationPolicies.featureTabs.maintenanceTab.weeklyOpensEverySunday",
+                  )
+                : i18n.t(
+                    "policies:configurationPolicies.featureTabs.maintenanceTab.monthlyOpensOnTheFirst",
+                  )}
+            </p>
+          )}
         </div>
 
         {/* Window start — a full date/time for a one-off window, a time of day

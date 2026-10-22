@@ -459,6 +459,16 @@ export interface Asset {
 // components keep importing it from '@/lib/api' unchanged.
 export type { InvoiceStatus, PublicQuoteHeader };
 
+/** Branding on a customer document payload (mirrors `CustomerDocumentBrandingDto`). */
+export interface CustomerDocumentBranding {
+  partnerName: string | null;
+  contactEmail?: string | null;
+  logoUrl: string | null;
+  primaryColor: string | null;
+  theme: DocumentThemeId;
+  pageSize: DocumentPageSize;
+}
+
 export interface InvoiceSummary {
   id: string;
   invoiceNumber: string | null;
@@ -497,6 +507,8 @@ export interface SellerSnapshot {
 }
 
 export interface InvoiceLine {
+  /** The invoice_lines id: an opaque row key (the document's `document-line-*-<id>` test ids). */
+  id: string;
   ticketNumber: string | null;
   ticketCategory?: string | null;
   /** Line title; NULL on legacy lines where `description` holds the title (#3319). */
@@ -561,12 +573,20 @@ export interface InvoiceDetail {
     termsAndConditions?: string | null;
     /** #8604: resolved line grouping; 'day' only when dates are on. */
     lineGrouping?: 'entry' | 'day';
+    /** The status pill the customer sees (never 'draft'); #9414. */
+    displayStatus: Exclude<InvoiceStatus, 'draft'> | null;
+    billToAddress?: SellerSnapshot['address'];
+    billToTaxId?: string | null;
+    /** The short document terms line (invoices.terms). */
+    terms?: string | null;
   };
   lines: InvoiceLine[];
-  /** Partner branding for the document shell, matching QuoteDetail. Optional:
-   *  older API responses and fixtures predate it, in which case the view falls
-   *  back to GET /portal/branding. */
-  branding?: QuoteBranding;
+  /** `invoice.documentLocale ?? partner locale ?? 'en'` — the language the document prints in. */
+  documentLocale: string;
+  /** Partner branding for the document (theme and page size are the invoice's frozen
+   *  presentation, D14). Optional only for API responses that predate it, in which
+   *  case the view falls back to GET /portal/branding. */
+  branding?: CustomerDocumentBranding;
   /** #7509: whether the partner can take online payment. `false` hides the Pay
    *  CTA; absent (older API / fixtures) is treated as available — the pay route
    *  still 409s as the backstop. */
@@ -734,8 +754,10 @@ export interface QuoteDetail {
   lines: QuoteLine[];
   /** Optional for API responses that predate the branding field. */
   branding?: QuoteBranding;
+  /** The document's resolved language (spec §3.7); absent on API responses that predate it. */
+  documentLocale?: string;
   /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
-   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+   *  payloads omit it, which must read as 'classic'. */
   presentation?: QuotePresentation;
 }
 
@@ -744,8 +766,10 @@ export interface PublicQuoteDetail {
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding: QuoteBranding;
+  /** The document's resolved language (spec §3.7); absent on API responses that predate it. */
+  documentLocale?: string;
   /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
-   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+   *  payloads omit it, which must read as 'classic'. */
   presentation?: QuotePresentation;
   /** #8231: signing goes straight on to card checkout (the partner takes online
    *  payment; automatic-payment clients included). The page still
@@ -784,8 +808,15 @@ export interface PublicInvoiceDetail {
     paidAt?: string | null;
     /** #8604: resolved line grouping; 'day' only when dates are on. */
     lineGrouping?: 'entry' | 'day';
+    /** Absent on the void payload (identity fields only). */
+    displayStatus?: Exclude<InvoiceStatus, 'draft'> | null;
+    billToAddress?: SellerSnapshot['address'];
+    billToTaxId?: string | null;
+    terms?: string | null;
   };
   lines: InvoiceLine[];
+  /** Absent on the void payload. */
+  documentLocale?: string;
   chargeNow: { amount: string; isDeposit: boolean } | null;
   payable: boolean;
   /** #7824: an autopay collection is in flight (server reservation).
@@ -854,6 +885,8 @@ export interface BrandingConfig {
   enablePatchDetail?: boolean;
   /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
   enableVulnerabilityDetail?: boolean;
+  /** Environment visibility W1 (#8775): MSP turned sensitive physical placement (rack and room) on for this org. */
+  enablePhysicalPlacement?: boolean;
   /** Trust Center W3d: per-USER capability, not an org flag — true only when the org
    *  turned trust-page editing on AND this portal user is an org-scoped admin
    *  contact. The API re-checks it on every trust-page request. */

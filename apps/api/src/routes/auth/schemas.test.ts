@@ -203,9 +203,22 @@ describe('mfaStepUpSchema operation field', () => {
     ['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'accounts@example.test', mode: 'reauthorize' }],
     ['org_payment_settings_update', { orgId: '00000000-0000-4000-8000-000000000040',
       settings: { autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD', reminderRepeatDays: null } }],
+    ['device_force_reboot', { deviceId: '00000000-0000-4000-8000-000000000050' }],
   ] as const)('accepts %s with its resource binding, unchanged', (operation, resource) => {
     const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation, resource });
     expect(parsed.operation).toBe(operation);
+    expect(parsed.resource).toEqual(resource);
+  });
+
+  // #8729: the force-reboot binding is a bare { deviceId }. It is strict and
+  // last in the union, so a richer device binding never collapses onto it.
+  it('keeps a move-org resource whole now that a { deviceId }-only binding exists', () => {
+    const resource = {
+      deviceId: '00000000-0000-4000-8000-000000000010',
+      targetOrgId: '00000000-0000-4000-8000-000000000020',
+      targetSiteId: '00000000-0000-4000-8000-000000000030',
+    };
+    const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'device_move_org', resource });
     expect(parsed.resource).toEqual(resource);
   });
 

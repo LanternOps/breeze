@@ -8,6 +8,7 @@ type AvailablePatch struct {
 	Description    string
 	Version        string
 	Severity       string // critical, important, moderate, low, unknown
+	SeveritySource string // SeveritySourceVendor, SeveritySourceDerived, or "" (no provenance; #9387)
 	Category       string // security, system, application, driver, definitions, feature
 	KBNumber       string // e.g. "KB5034441"
 	Size           int64  // bytes

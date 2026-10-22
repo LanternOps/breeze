@@ -14,7 +14,8 @@ vi.mock('./sentry', async (importActual) => {
 });
 
 import { captureException } from './sentry';
-import { renderQuotePdf, contractUploadedMarker, columnsFor, imageIntrinsicSize } from './quotePdf';
+import { renderQuotePdf, contractUploadedMarker, imageIntrinsicSize } from './quotePdf';
+import { documentColumnsFor } from './documentPdfTable';
 import { renderRichTextIntoPdf, WEB_TYPOGRAPHY } from './richTextPdf';
 
 // Encode a real, pdfkit-decodable grayscale PNG of the given dimensions. The
@@ -125,59 +126,32 @@ function extractPositionedPdfText(pdf: Buffer): { text: string; x: number; y: nu
 }
 
 describe('renderQuotePdf', () => {
-  it('allocates at least half the table to descriptions while keeping realistic amounts on one line', () => {
+  it('lays the table out description-first and keeps realistic amounts (with the recurrence suffix) on one line', () => {
     const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
-    const taxed = columnsFor(doc, true);
-    const untaxed = columnsFor(doc, false);
-    const fraction = (points: number) => points / taxed.contentWidth;
+    const taxed = documentColumnsFor(doc, { showTax: true });
+    const untaxed = documentColumnsFor(doc, { showTax: false });
+    for (const c of [taxed, untaxed]) {
+      // D3 (#9402): the description column starts at the left edge; QTY follows it.
+      expect(c.colQtyX).toBeGreaterThanOrEqual(c.left + c.colDescW);
+      expect(c.colAmtX + c.colNumW).toBeCloseTo(c.right, 5);
+      expect(c.colSummaryAmtX + c.colSummaryNumW).toBeCloseTo(c.right, 5);
+    }
+    expect(taxed.colDescW / taxed.contentWidth).toBeGreaterThanOrEqual(0.42);
+    expect(untaxed.colDescW / untaxed.contentWidth).toBeGreaterThanOrEqual(0.55);
 
-    expect(fraction(taxed.colDescX - taxed.left)).toBeCloseTo(0.08, 5);
-    // Taxed floor relaxed 0.48 → 0.42 (#3777): prefix-code currencies such as
-    // "CHF 888,888.88" need 0.155/0.155/0.19 money boxes (unit/tax/total), and
-    // 0.08 + 2×0.155 + 0.19 leaves exactly 0.42 for the description.
-    expect(fraction(taxed.colDescW)).toBeGreaterThanOrEqual(0.42);
-    expect(fraction(untaxed.colDescW)).toBeGreaterThanOrEqual(0.55);
-    expect(taxed.colQtyW).toBeCloseTo(taxed.contentWidth * 0.07, 5);
-    expect(taxed.colAmtX + taxed.colAmtW).toBeCloseTo(taxed.right, 5);
-    expect(untaxed.colAmtX + untaxed.colAmtW).toBeCloseTo(untaxed.right, 5);
-
-    // Measure at the row's REAL font (Helvetica regular 10 — see the money
-    // draws in renderLineTable). UNIT/TAX render bare money; TOTAL renders
-    // money + the recurrence suffix, which is why it has its own wider box —
-    // asserting the suffix-less string against colNumW is what let a wrapping
-    // "$12,000.00/mo" TOTAL ship.
+    // OD-11: the suffix now rides on the unit AND the amount cell, both colNumW wide (the
+    // amount box used to be 0.19 wide). Untaxed, a realistic suffixed figure (and the prefix-code
+    // currency's) fits at the row font; in the narrower taxed boxes it shrinks by at most a point
+    // (shrink-to-fit, never a wrap or a truncation).
     doc.font('Helvetica').fontSize(10);
-    const bareAmountWidth = doc.widthOfString('$888,888.88');
-    const suffixedAmountWidth = doc.widthOfString('$888,888.88/mo');
-    expect(taxed.colNumW).toBeGreaterThanOrEqual(bareAmountWidth + 2);
-    expect(untaxed.colNumW).toBeGreaterThanOrEqual(bareAmountWidth + 2);
-    expect(taxed.colAmtW).toBeGreaterThanOrEqual(suffixedAmountWidth + 2);
-    expect(untaxed.colAmtW).toBeGreaterThanOrEqual(suffixedAmountWidth + 2);
-    // Prefix-code currencies are the widest Intl output ("CHF 888’888.88" —
-    // code + space + apostrophe groupers); the boxes must fit them too (#3777).
-    const prefixBareWidth = doc.widthOfString(formatMoney(888888.88, 'CHF', 'de-CH'));
-    const prefixSuffixedWidth = doc.widthOfString(`${formatMoney(888888.88, 'CHF', 'de-CH')}/mo`);
-    expect(taxed.colNumW).toBeGreaterThanOrEqual(prefixBareWidth + 2);
-    expect(untaxed.colNumW).toBeGreaterThanOrEqual(prefixBareWidth + 2);
-    expect(taxed.colAmtW).toBeGreaterThanOrEqual(prefixSuffixedWidth + 2);
-    expect(untaxed.colAmtW).toBeGreaterThanOrEqual(prefixSuffixedWidth + 2);
-
+    expect(doc.widthOfString('$1,234.50/mo')).toBeLessThanOrEqual(untaxed.colNumW);
+    expect(doc.widthOfString(`${formatMoney(1234.5, 'CHF', 'de-CH')}/mo`)).toBeLessThanOrEqual(untaxed.colNumW);
+    doc.fontSize(9);
+    expect(doc.widthOfString('$1,234.50/mo')).toBeLessThanOrEqual(taxed.colNumW);
+    expect(doc.widthOfString(`${formatMoney(1234.5, 'CHF', 'de-CH')}/mo`)).toBeLessThanOrEqual(taxed.colNumW);
+    // The summary's emphasis figure (bold 14) fits its box.
     doc.font('Helvetica-Bold').fontSize(14);
-    const emphasisAmountWidth = doc.widthOfString('$1,000,000.00');
-    const prefixEmphasisWidth = doc.widthOfString(formatMoney(1000000, 'CHF', 'de-CH'));
-    expect(taxed.colSummaryNumW).toBeGreaterThanOrEqual(emphasisAmountWidth + 2);
-    expect(taxed.colSummaryNumW).toBeGreaterThanOrEqual(prefixEmphasisWidth + 2);
-    expect(untaxed.colSummaryNumW).toBeGreaterThanOrEqual(prefixEmphasisWidth + 2);
-    expect(taxed.colSummaryAmtX + taxed.colSummaryNumW).toBeCloseTo(taxed.right, 5);
-    expect(untaxed.colSummaryAmtX + untaxed.colSummaryNumW).toBeCloseTo(untaxed.right, 5);
-
-    // The summary label box must fit its widest static label (bold 12pt) —
-    // rows advance by fixed constants, so a wrapped label overprints the next
-    // row. Mirrors the sumX/labelW arithmetic in renderRecurringSummary.
-    const sumX = taxed.left + taxed.contentWidth * 0.33;
-    const labelW = taxed.colSummaryAmtX - sumX - 8;
-    doc.font('Helvetica-Bold').fontSize(12);
-    expect(labelW).toBeGreaterThanOrEqual(doc.widthOfString('Remaining balance (due per terms)') + 2);
+    expect(taxed.colSummaryNumW).toBeGreaterThanOrEqual(doc.widthOfString(formatMoney(1000000, 'CHF', 'de-CH')) + 2);
     doc.end();
   });
 
@@ -201,11 +175,12 @@ describe('renderQuotePdf', () => {
     ];
     const buf = await renderQuotePdf(quote, blocks, lines, async () => null, { partnerName: 'Acme', locale: 'en' });
     const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
-    const c = columnsFor(doc, showTax);
+    const c = documentColumnsFor(doc, { showTax });
     const fragments = extractPositionedPdfText(buf);
     const money = fragments.filter((f) => /9.999.999.999.99/.test(f.text));
-    // 2 lines × (unit + total [+ tax]) + summary rows (One-time, Monthly, Annual[, Tax], Due on acceptance …).
-    expect(money.length).toBeGreaterThanOrEqual(showTax ? 9 : 7);
+    // 2 lines × (unit + total) — a tax cell prints the computed tax, not MAX — plus the summary rows
+    // (Monthly recurring, Due on acceptance, First-period total[, Tax]).
+    expect(money.length).toBeGreaterThanOrEqual(showTax ? 8 : 7);
     for (const f of money) {
       expect(f.x).toBeGreaterThanOrEqual(Math.min(c.colUnitX, c.colTaxX, c.colAmtX, c.colSummaryAmtX) - 0.5);
     }
@@ -675,7 +650,7 @@ describe('renderQuotePdf', () => {
     expect(text).toContain('Other');
   });
 
-  it('a no-deposit quote still renders the plain Due on acceptance row (no deposit rows)', async () => {
+  it('a no-deposit, no-recurring quote renders a single Total row (no deposit rows)', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-NODEP', oneTimeTotal: '500.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', dueOnAcceptanceTotal: '500.00', total: '500.00', currencyCode: 'USD' },
       [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
@@ -685,58 +660,59 @@ describe('renderQuotePdf', () => {
     );
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     const text = extractPdfText(buf);
-    expect(text).toContain('Due on acceptance');
+    // The totals box follows the screen (W3b): with nothing recurring the amount due IS the Total.
+    expect(text).toContain('Total');
+    expect(text).not.toContain('Due on acceptance');
     expect(text).not.toContain('Deposit due now');
     expect(text).not.toContain('Remaining balance');
   });
 
-  it('page-breaks the summary when deposit + breakdown rows would overflow the bottom margin', async () => {
-    // 21 one-time lines (25 before the web-parity row spacing; 19–22 all land
-    // in the band) leave the cursor in the 90–160px band above the bottom
-    // margin: the legacy 90px reservation would NOT break the page, so the
-    // deposit (extra anchor + remainder rows, 36px) + 4-category breakdown (4×12+4px, ~160px total)
-    // rows would crowd into the bottom margin / footer band (and pdfkit's
-    // auto-page-add on the overflowing last row spawns a stray page). The sized
-    // reservation must instead move the WHOLE summary to page 2 — asserted by
-    // requiring the deposit row to live in a different content stream (page)
-    // from the line rows. A no-deposit, no-breakdown twin of the same quote
-    // stays single-page — proving the extra rows (not the line table) forced
-    // the break.
-    const mkLines = () => Array.from({ length: 21 }, (_, i) => ({
-      id: `l${i}`, blockId: 'b1', description: `Item ${i + 1}`,
-      quantity: '1', unitPrice: '10', lineTotal: '10.00', recurrence: 'one_time' as const,
-    }));
-    const base = {
-      id: 'q1', quoteNumber: 'Q-BRK',
-      oneTimeTotal: '1000.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
-      dueOnAcceptanceTotal: '1000.00', total: '1000.00', currencyCode: 'USD',
-    };
+  it('keeps the deposit + breakdown totals block whole and out of the bottom margin at every line count', async () => {
+    // The module places the totals block whole: when it does not fit below the
+    // table it moves to the next page, so the deposit trio never splits across
+    // pages and no row lands in the bottom margin / footer band. Sweeping the
+    // line count walks the table's end through the whole page, including the
+    // band where the block must move.
     const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
-    const pageCount = (buf: Buffer) => (buf.toString('latin1').match(/\/Type \/Page[^s]/g) ?? []).length;
-
-    const plain = await renderQuotePdf(base, blocks, mkLines(), async () => null, {});
-    expect(pageCount(plain)).toBe(1);
-
-    const withDeposit = await renderQuotePdf(
-      {
-        ...base,
-        depositType: 'percent', depositAmount: '300.00',
-        categoryBreakdown: [
-          { category: 'hardware', oneTimeTotal: '400.00', monthlyTotal: '0.00', annualTotal: '0.00' },
-          { category: 'software', oneTimeTotal: '300.00', monthlyTotal: '0.00', annualTotal: '0.00' },
-          { category: 'service', oneTimeTotal: '200.00', monthlyTotal: '0.00', annualTotal: '0.00' },
-          { category: 'other', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
-        ],
-      },
-      blocks, mkLines(), async () => null, {},
-    );
-    expect(pageCount(withDeposit)).toBe(2);
-    const streams = extractPdfTextByStream(withDeposit);
-    const summaryStream = streams.find((t) => t.includes('Deposit due now'));
-    expect(summaryStream).toBeDefined();
-    expect(summaryStream).toContain('Remaining balance');
-    // The summary page must be its own page — none of the 21 line rows on it.
-    expect(summaryStream).not.toContain('Item ');
+    const PAGE_H = 841.89;
+    let moved = 0;
+    for (let count = 14; count <= 44; count++) {
+      const lines = Array.from({ length: count }, (_, i) => ({
+        id: `l${i}`, blockId: 'b1', description: `Item ${i + 1}`,
+        quantity: '1', unitPrice: '10', lineTotal: '10.00', recurrence: 'one_time' as const,
+      }));
+      const buf = await renderQuotePdf(
+        {
+          id: 'q1', quoteNumber: `Q-BRK-${count}`,
+          oneTimeTotal: '1000.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+          dueOnAcceptanceTotal: '1000.00', total: '1000.00', currencyCode: 'USD',
+          depositType: 'percent', depositAmount: '300.00',
+          categoryBreakdown: [
+            { category: 'hardware', oneTimeTotal: '400.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+            { category: 'software', oneTimeTotal: '300.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+            { category: 'service', oneTimeTotal: '200.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+            { category: 'other', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+          ],
+        } as never,
+        blocks, lines, async () => null, {},
+      );
+      const frags = extractPositionedPdfText(buf).filter((f) => !/Page \d+ of \d+/.test(f.text));
+      const due = frags.find((f) => f.text === 'Due on acceptance')!;
+      const deposit = frags.find((f) => f.text === 'Deposit due now')!;
+      const remaining = frags.find((f) => f.text.startsWith('Remaining balance'))!;
+      expect(due && deposit && remaining, `count=${count}`).toBeTruthy();
+      for (const f of [due, deposit, remaining]) {
+        expect(f.y, `count=${count}: ${f.text} below the bottom margin`).toBeLessThanOrEqual(PAGE_H - 50);
+      }
+      // One block: the trio shares a page (the row y's are on one content stream).
+      const streams = extractPdfTextByStream(buf);
+      const withDue = streams.findIndex((t) => t.includes('Due on acceptance'));
+      expect(streams[withDue], `count=${count}`).toContain('Deposit due now');
+      expect(streams[withDue], `count=${count}`).toContain('Remaining balance');
+      if (!streams[withDue]!.includes('Item ')) moved++;
+    }
+    // The sweep crosses the band where the block is pushed to its own page.
+    expect(moved).toBeGreaterThan(0);
   });
 
   it('never draws the summary into the bottom margin for the no-deposit, suppressed-row shape', async () => {
@@ -747,7 +723,7 @@ describe('renderQuotePdf', () => {
     // someone edits drawRow without them — in which case some line count in
     // this sweep lands the final emphasis row below the bottom margin.
     const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
-    const BOTTOM_MARGIN = 50; // pdf y-coords are bottom-up: content must stay >= margin
+    const BOTTOM_MARGIN = 50; // content must stay above the bottom margin
     for (let count = 20; count <= 32; count++) {
       const lines = Array.from({ length: count }, (_, i) => ({
         id: `l${i}`, blockId: 'b1', description: `Item ${i + 1}`,
@@ -761,10 +737,11 @@ describe('renderQuotePdf', () => {
         } as never,
         blocks, lines, async () => null, {},
       );
-      const due = extractPositionedPdfText(buf).filter((f) => f.text.includes('Due on acceptance'));
+      const due = extractPositionedPdfText(buf).filter((f) => f.text === 'Total');
       expect(due.length).toBeGreaterThan(0);
       for (const f of due) {
-        expect(f.y, `count=${count}: emphasis row overflowed into the bottom margin`).toBeGreaterThanOrEqual(BOTTOM_MARGIN - 5);
+        // Positions are measured from the top of the page.
+        expect(f.y, `count=${count}: emphasis row overflowed into the bottom margin`).toBeLessThanOrEqual(841.89 - BOTTOM_MARGIN);
       }
     }
   });
@@ -811,7 +788,7 @@ describe('renderQuotePdf', () => {
     expect(amount!.y).toBeGreaterThan(label!.y);
   });
 
-  it('moves a long category breakdown amount below its label instead of crowding the next row', async () => {
+  it('stacks a long category breakdown one part per line instead of crowding the next row', async () => {
     const buf = await renderQuotePdf(
       {
         id: 'q1', quoteNumber: 'Q-LONG-CATEGORY', currencyCode: 'USD',
@@ -832,18 +809,20 @@ describe('renderQuotePdf', () => {
       {},
     );
     const positioned = extractPositionedPdfText(buf);
-    const label = positioned.find((fragment) => fragment.text === 'Service');
-    const amount = positioned.find((fragment) => fragment.text.includes('$3,000.00') && fragment.text.includes('$4,800.00/mo'));
-    const oneTime = positioned.find((fragment) => fragment.text === 'One-time');
-    const categoryLastLine = positioned
-      .filter((fragment) => fragment.text.includes('$9,600.00/yr') && oneTime && fragment.y < oneTime.y)
-      .sort((a, b) => b.y - a.y)[0];
+    // The summary column (right of the table's description) — the table also has a "Service" row.
+    const label = positioned.find((f) => f.text === 'Service' && f.x > 250);
     expect(label).toBeDefined();
-    expect(amount).toBeDefined();
-    expect(amount!.y).toBeGreaterThan(label!.y);
-    expect(oneTime).toBeDefined();
-    expect(categoryLastLine).toBeDefined();
-    expect(oneTime!.y - categoryLastLine!.y).toBeGreaterThanOrEqual(10);
+    // Positions are measured from the top: later rows have a larger y.
+    const parts = ['$3,000.00', '$4,800.00/mo', '$9,600.00/yr']
+      .map((text) => positioned.find((f) => f.text === text && f.x > 380 && f.y >= label!.y - 1));
+    expect(parts.every(Boolean)).toBe(true);
+    // One part per line, in order, none joined.
+    expect(parts[1]!.y).toBeGreaterThan(parts[0]!.y);
+    expect(parts[2]!.y).toBeGreaterThan(parts[1]!.y);
+    // The row below starts clear of the last stacked part.
+    const next = positioned.find((f) => f.text === 'Due on acceptance' && f.y > parts[2]!.y);
+    expect(next).toBeDefined();
+    expect(next!.y - parts[2]!.y).toBeGreaterThanOrEqual(10);
   });
 
   it('renderQuotePdf includes the From block and T&C', async () => {
@@ -1009,9 +988,9 @@ describe('renderQuotePdf', () => {
 
       it('ends the proposal with the price and the closing terms, then starts the agreement on its own page', async () => {
         const pages = pagesOf(await render());
-        const pricePage = pageOf(pages, 'Due on acceptance');
+        const pricePage = pageOf(pages, 'Onboarding work');
         expect(pricePage).toBeGreaterThanOrEqual(0);
-        expect(pageOf(pages, 'Onboarding work')).toBe(pricePage);
+        expect(pageOf(pages, 'Total')).toBe(pricePage);
         expect(pageOf(pages, 'Closing note from the MSP.')).toBe(pricePage);
         const agreementPage = pageOf(pages, 'Agreement body clause.');
         expect(agreementPage).toBeGreaterThan(pricePage);
@@ -1025,7 +1004,7 @@ describe('renderQuotePdf', () => {
       it('lists an uploaded agreement on the price page, after the closing terms', async () => {
         const buf = await render();
         const pages = pagesOf(buf);
-        expect(pageOf(pages, 'attached below')).toBe(pageOf(pages, 'Due on acceptance'));
+        expect(pageOf(pages, 'attached below')).toBe(pageOf(pages, 'Onboarding work'));
         const text = extractPdfText(buf);
         expect(text.indexOf('Closing note from the MSP.')).toBeLessThan(text.indexOf('attached below'));
       });
@@ -1044,7 +1023,7 @@ describe('renderQuotePdf', () => {
           async () => null, {}, async () => null, contractRenderData as never,
         );
         const pages = pagesOf(buf);
-        expect(pageOf(pages, 'Standard conditions text.')).toBe(pageOf(pages, 'Due on acceptance'));
+        expect(pageOf(pages, 'Standard conditions text.')).toBe(pageOf(pages, 'Onboarding work'));
       });
 
       it('adds no page break when the only agreement is an uploaded one', async () => {

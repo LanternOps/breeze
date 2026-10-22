@@ -180,7 +180,9 @@ const namespaceDuplicateBaselines = {
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
-    'tickets.json': 15,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 16,
     // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
     // per-locale note where it is not obvious.
     'toolSources.json': 1,
@@ -355,7 +357,9 @@ const namespaceDuplicateBaselines = {
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
-    'tickets.json': 15,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 16,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
     // +1 (grouped overview): grouped.mac 'MAC' is an identical es-419 acronym.
@@ -558,7 +562,9 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +2 (#7900 W3): ticketType.incident and createTicketPage.type — "Incident"/"Type" are identical in French.
-    'tickets.json': 25,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 26,
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-FR cognates.
@@ -760,7 +766,9 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +2 (#7900 W3): ticketType.incident and createTicketPage.type — "Incident"/"Type" are identical in French.
-    'tickets.json': 24,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 25,
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-CA cognates.
@@ -1117,7 +1125,9 @@ const namespaceDuplicateBaselines = {
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
-    'tickets.json': 8,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 9,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
     // +2 (grouped overview): grouped.mac 'MAC' and grouped.gateway 'Gateway' are identical it-IT cognates/acronyms.

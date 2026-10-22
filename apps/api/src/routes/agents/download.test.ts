@@ -1266,6 +1266,88 @@ describe('GET /install.sh — generated installer script', () => {
   });
 });
 
+describe('install.sh — Linux data dir, breeze group and agent version floor (#9566)', () => {
+  async function fetchScript(): Promise<string> {
+    const res = await downloadRoutes.request('/install.sh');
+    return res.text();
+  }
+
+  it('creates /var/lib/breeze and the breeze group before enrolling', async () => {
+    const script = await fetchScript();
+    const mkdirAt = script.indexOf('mkdir -p /var/lib/breeze');
+    const groupAt = script.indexOf('groupadd --system breeze');
+    const enrollAt = script.indexOf('# ----- Enroll agent -----');
+    expect(mkdirAt).toBeGreaterThan(-1);
+    expect(groupAt).toBeGreaterThan(-1);
+    expect(enrollAt).toBeGreaterThan(mkdirAt);
+    expect(enrollAt).toBeGreaterThan(groupAt);
+    expect(script).toContain('command -v groupadd');
+  });
+
+  it('explains version skew instead of leaving the bare cobra arity error', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('MIN_AGENT_VERSION="0.118.0"');
+    expect(script).toContain("older than this server's install flow");
+    expect(script).toContain('Set BREEZE_VERSION on the server');
+    // The check must run before the existing install is replaced.
+    expect(script.indexOf('MIN_AGENT_VERSION="0.118.0"')).toBeLessThan(
+      script.indexOf('# ----- Install binary -----'),
+    );
+  });
+
+  describe('version floor, executed', () => {
+    let tmp: string;
+    beforeEach(() => {
+      tmp = mkdtempSync(join(tmpdir(), 'breeze-minver-'));
+    });
+    afterEach(() => {
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    async function runFloor(versionOutput: string | null): Promise<{ code: number; output: string }> {
+      const script = await fetchScript();
+      const start = script.indexOf('MIN_AGENT_VERSION="0.118.0"');
+      const end = script.indexOf('# ----- Stop existing service');
+      const block = script.slice(start, end);
+      const bin = join(tmp, 'agent');
+      writeFileSync(
+        bin,
+        versionOutput === null ? '#!/bin/sh\nexit 1\n' : `#!/bin/sh\necho '${versionOutput}'\n`,
+        { mode: 0o755 },
+      );
+      const harness = join(tmp, 'harness.sh');
+      writeFileSync(harness, `set -euo pipefail\nfatal() { echo "FATAL: $*"; exit 1; }\nTMPFILE='${bin}'\n${block}\necho PASSED\n`);
+      return new Promise((resolve) => {
+        execFile('bash', [harness], (err, stdout, stderr) => {
+          resolve({ code: err && typeof err.code === 'number' ? err.code : err ? 1 : 0, output: `${stdout}${stderr}` });
+        });
+      });
+    }
+
+    it('fails clearly for an agent older than the floor', async () => {
+      const r = await runFloor('Breeze Agent v0.117.9');
+      expect(r.code).toBe(1);
+      expect(r.output).toContain('FATAL');
+      expect(r.output).toContain('v0.117.9');
+      expect(r.output).toContain('BREEZE_VERSION');
+    });
+
+    it.each(['Breeze Agent v0.118.0', 'Breeze Agent v0.124.0', 'Breeze Agent v1.0.0', 'Breeze Agent v0.200.1', 'Breeze Agent v10.2.3'])(
+      'lets %s through',
+      async (out) => {
+        const r = await runFloor(out);
+        expect(r.code).toBe(0);
+        expect(r.output).toContain('PASSED');
+      },
+    );
+
+    it('lets unparseable or unexecutable versions through (conservative)', async () => {
+      expect((await runFloor('Breeze Agent vdev')).output).toContain('PASSED');
+      expect((await runFloor(null)).output).toContain('PASSED');
+    });
+  });
+});
+
 describe('install.sh — macOS enrolls with the binary the .pkg actually installed (#8778)', () => {
   // The .pkg (agent/installer/macos/install-location.sh) installs to
   // /Library/Breeze/bin when the agent is already there or /usr/local/bin is

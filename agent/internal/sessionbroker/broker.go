@@ -257,6 +257,10 @@ type Broker struct {
 	rateLimiter *ipc.RateLimiter
 	startTime   time.Time // broker creation time, used for watchdog uptime
 
+	// broadcastNotifyUndelivered counts broadcast notifications a helper
+	// answered with Delivered=false (#9266). See BroadcastNotification.
+	broadcastNotifyUndelivered atomic.Uint64
+
 	mu                      timedRWMutex
 	sessions                map[string]*Session   // sessionID -> Session
 	byIdentity              map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
@@ -1414,19 +1418,78 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 // session (#4940): in always-on lifecycle mode the broker spawns a system-role
 // and a user-role helper into the same console session and both hold "notify", so
 // an unfiltered broadcast drew every toast twice. See notifyTargets.
+//
+// Fire-and-forget for the CALLER, not on the wire (#9266). The helper's
+// handleNotify always answers on the envelope id it was given — it has to,
+// RequestNotificationDecision depends on it. This used to send with an empty
+// id, so nothing was pending, and every toast's notify_result reached
+// dispatchHelperMessage and shipped "dropping unsolicited or unauthorized
+// helper message" at WARN. Each send now carries a real id with the reply
+// registered, so the answer is consumed by the pending-response path and used:
+// Debug when delivered, Info plus broadcastNotifyUndelivered when the helper
+// could not show it. The send itself still happens before this returns (only
+// the wait is on a goroutine), so callers that reboot shortly after keep the
+// ordering they had.
 func (b *Broker) BroadcastNotification(title, body, urgency string) {
 	sessions := b.notifyTargets()
 
+	req := &ipc.NotifyRequest{
+		Title:   title,
+		Body:    body,
+		Urgency: urgency,
+	}
+	// Read once, on the caller's goroutine: tests shorten it, and a waiter
+	// goroutine reading the package var could race that write.
+	timeout := broadcastNotifyResultTimeout
 	for _, s := range sessions {
-		if err := s.SendNotify("", ipc.TypeNotify, &ipc.NotifyRequest{
-			Title:   title,
-			Body:    body,
-			Urgency: urgency,
-		}); err != nil {
+		id := fmt.Sprintf("notify-bcast-%s-%d", s.SessionID, notifyDecisionSeq.Add(1))
+		wait, err := s.startCommand(id, ipc.TypeNotify, req)
+		if err != nil {
 			log.Debug("broadcast notification to session failed",
 				"sessionId", s.SessionID, "error", err.Error())
+			continue
+		}
+		go b.awaitBroadcastNotifyResult(s, wait, timeout)
+	}
+}
+
+// broadcastNotifyResultTimeout bounds how long a broadcast waits for the
+// helper's notify_result. Showing a toast is normally quick, but the helper
+// answers only after its PowerShell fallback returns, and that has no timeout
+// of its own. A reply arriving after the wait has given up is dropped as
+// unsolicited at WARN again — the noise #9266 removed — so this is generous:
+// it costs one parked goroutine per helper per broadcast, and broadcasts are
+// rare (the reboot-warning ladder). A var only so tests can shorten it.
+var broadcastNotifyResultTimeout = 5 * time.Minute
+
+// awaitBroadcastNotifyResult consumes the reply a broadcast notification is
+// owed and records its outcome. A missing or unreadable reply is Info, not a
+// warn: the helper may simply have exited, and the reboot ladder never depends
+// on the answer.
+func (b *Broker) awaitBroadcastNotifyResult(s *Session, wait func(time.Duration) (*ipc.Envelope, error), timeout time.Duration) {
+	resp, err := wait(timeout)
+	if err != nil {
+		log.Info("no notify_result for broadcast notification",
+			"sessionId", s.SessionID, "role", s.HelperRole, "error", err.Error())
+		return
+	}
+	var res ipc.NotifyResult
+	if resp.Error == "" {
+		if err := json.Unmarshal(resp.Payload, &res); err != nil {
+			log.Info("undecodable notify_result for broadcast notification",
+				"sessionId", s.SessionID, "role", s.HelperRole, "error", err.Error())
+			return
 		}
 	}
+	if res.Delivered {
+		log.Debug("broadcast notification delivered",
+			"sessionId", s.SessionID, "role", s.HelperRole)
+		return
+	}
+	total := b.broadcastNotifyUndelivered.Add(1)
+	log.Info("broadcast notification not delivered",
+		"sessionId", s.SessionID, "role", s.HelperRole, "helperError", resp.Error,
+		"undeliveredTotal", total)
 }
 
 // notifyDecisionSeq numbers the envelope ids RequestNotificationDecision
@@ -1868,9 +1931,32 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 	return result, nil
 }
 
+// ErrPamTargetedDismissUnsupported is returned, before anything is sent, when
+// the helper did not advertise targeted consent dismissal. It is definite: no
+// helper input can be in flight.
+var ErrPamTargetedDismissUnsupported = errors.New("PAM helper does not support targeted consent dismissal")
+
 // DismissPamConsent asks the SYSTEM PAM helper to dismiss the active Windows
 // consent process and waits for the correlated result.
 func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+	return b.dismissPamConsent(session, id, nil, timeout)
+}
+
+// DismissPamConsentInstance asks the SYSTEM PAM helper to dismiss exactly one
+// consent.exe process and leave every other UAC prompt alone (#8995). It
+// refuses helpers that did not advertise support: an older helper would ignore
+// the target and dismiss whichever prompt it found first.
+func (b *Broker) DismissPamConsentInstance(session *Session, id string, instance ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+	if !instance.Valid() {
+		return ipc.PamDismissConsentResult{}, fmt.Errorf("PAM consent instance requires both a PID and a creation time")
+	}
+	if session != nil && !session.SupportsTargetedPamDismiss {
+		return ipc.PamDismissConsentResult{}, ErrPamTargetedDismissUnsupported
+	}
+	return b.dismissPamConsent(session, id, &instance, timeout)
+}
+
+func (b *Broker) dismissPamConsent(session *Session, id string, instance *ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
 	var zero ipc.PamDismissConsentResult
 	if session == nil {
 		return zero, fmt.Errorf("nil PAM helper session")
@@ -1889,7 +1975,7 @@ func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Dur
 	resp, quiesced, err := session.sendCommandWithQuiescence(
 		id,
 		ipc.TypePamDismissConsent,
-		ipc.PamDismissConsentRequest{DeadlineUnixMs: deadline.UnixMilli()},
+		ipc.PamDismissConsentRequest{DeadlineUnixMs: deadline.UnixMilli(), Instance: instance},
 		timeout,
 	)
 	if err != nil {
@@ -2451,7 +2537,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
-	session.ConsentProtocolVersion = consentProtocolFromAuth(helperRole, authReq)
+	applyAuthAdvertisements(session, helperRole, authReq)
 	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
@@ -2861,6 +2947,20 @@ func consentProtocolFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) int {
 	return v
 }
 
+// applyAuthAdvertisements records the optional protocol features a helper
+// advertised at auth onto its session. Set once, before the session is
+// registered, and never changed afterwards.
+func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.AuthRequest) {
+	session.ConsentProtocolVersion = consentProtocolFromAuth(role, authReq)
+	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(role, authReq)
+}
+
+// targetedPamDismissFromAuth reports whether the agent may send this helper a
+// targeted consent dismissal. Only SYSTEM helpers dismiss consent.exe at all.
+func targetedPamDismissFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) bool {
+	return role == ipc.HelperRoleSystem && authReq.SupportsTargetedPamDismiss
+}
+
 func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
 	peerResolved, err := filepath.EvalSymlinks(peerPath)
 	if err != nil {
@@ -3238,7 +3338,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"screenRecordingState", sanitized.ScreenRecordingState,
 				"accessibility", sanitized.Accessibility,
 				"fullDiskAccess", sanitized.FullDiskAccess,
-				"remoteDesktop", sanitized.RemoteDesktop,
+				"remoteDesktop", boolPtrString(sanitized.RemoteDesktop),
 			)
 		}
 	case ipc.TypeDisconnect:
@@ -3325,6 +3425,10 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		if b.onMessage != nil {
 			b.onMessage(s, env)
 		}
+	case ipc.TypeHelperLog:
+		// Any authenticated helper may relay its own warn+ lines; the record
+		// is sanitized and rate-capped per session (#9266).
+		b.relayHelperLog(s, env)
 	default:
 		log.Warn("unknown message type from helper, ignoring",
 			"type", env.Type, "identity", s.IdentityKey, "sessionId", s.SessionID)
@@ -3574,4 +3678,10 @@ func truncateSessionString(value string, max int) string {
 		return value
 	}
 	return strings.TrimSpace(value[:max]) + "... [truncated]"
+}
+
+// BroadcastNotifyUndeliveredCount returns how many broadcast notifications a
+// helper answered with Delivered=false since the broker started.
+func (b *Broker) BroadcastNotifyUndeliveredCount() uint64 {
+	return b.broadcastNotifyUndelivered.Load()
 }
