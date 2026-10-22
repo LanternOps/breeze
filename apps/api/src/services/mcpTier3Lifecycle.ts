@@ -9,6 +9,10 @@
  * R with explicit ledger-unavailable / unexpected-throw responses.
  */
 import { randomUUID } from 'node:crypto';
+import { and, eq, sql } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { auditLogs } from '../db/schema/audit';
+import type { ActionIntent } from '../db/schema/actionIntents';
 import type { Context } from 'hono';
 import type { AuthContext } from '../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent, type AuditEventInput } from './auditEvents';
@@ -198,6 +202,41 @@ export interface McpTier3ExecutionOutcome<R> {
 }
 
 /**
+ * Ledger begin for a Tier-3 call (fail closed): null when the ledger cannot be
+ * created or the context lacks a principal / org — the caller must then NOT
+ * dispatch.
+ */
+async function beginTier3Ledger(ctx: McpTier3LifecycleContext): Promise<McpToolExecutionLedgerHandle | null> {
+  if (!ctx.principal || !ctx.orgId) return null;
+  const principal = ctx.principal;
+  try {
+    return await beginMcpToolExecutionLedger({
+      orgId: ctx.orgId,
+      accessibleOrgIds: ctx.auth.accessibleOrgIds,
+      toolName: ctx.toolName,
+      tier: ctx.tier,
+      toolInput: ctx.toolInput,
+      transportSessionId: lifecycleSessionId(ctx.correlation),
+      transportRequestId: ctx.correlation.requestId,
+      era: lifecycleEra(ctx.correlation),
+      ...(ctx.intentId ? { intentId: ctx.intentId } : {}),
+      principal: {
+        apiKeyId: principal.id,
+        oauthGrantId: principal.oauthGrantId ?? null,
+        partnerId: ctx.auth.partnerId ?? principal.partnerId ?? null,
+        // A partner service principal's `user` is its owner, borrowed for
+        // RBAC; the ledger records the principal and owns no user session.
+        partnerServicePrincipalId: principal.partnerServicePrincipalId ?? null,
+        actorUserId: principal.partnerServicePrincipalId ? null : ctx.auth.user.id,
+      },
+    });
+  } catch (err) {
+    console.error('[MCP] Failed to create tool execution ledger:', ctx.toolName, err);
+    return null;
+  }
+}
+
+/**
  * Shared Tier 3 begin/execute/complete/audit lifecycle (MCP-OAUTH-12). Used by
  * BOTH the ordinary tools/call path and the bootstrap authTool dispatch so the
  * fail-closed ledger and uniform `mcp.tool.<name>` audit are identical for every
@@ -228,34 +267,8 @@ export async function runMcpTier3Lifecycle<R>(
 ): Promise<R> {
   let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
   if (ctx.tier >= 3) {
-    if (!ctx.principal || !ctx.orgId) {
-      return responses.ledgerUnavailable();
-    }
-    try {
-      ledgerHandle = await beginMcpToolExecutionLedger({
-        orgId: ctx.orgId,
-        accessibleOrgIds: ctx.auth.accessibleOrgIds,
-        toolName: ctx.toolName,
-        tier: ctx.tier,
-        toolInput: ctx.toolInput,
-        transportSessionId: lifecycleSessionId(ctx.correlation),
-        transportRequestId: ctx.correlation.requestId,
-        era: lifecycleEra(ctx.correlation),
-        ...(ctx.intentId ? { intentId: ctx.intentId } : {}),
-        principal: {
-          apiKeyId: ctx.principal.id,
-          oauthGrantId: ctx.principal.oauthGrantId ?? null,
-          partnerId: ctx.auth.partnerId ?? ctx.principal.partnerId ?? null,
-          // A partner service principal's `user` is its owner, borrowed for
-          // RBAC; the ledger records the principal and owns no user session.
-          partnerServicePrincipalId: ctx.principal.partnerServicePrincipalId ?? null,
-          actorUserId: ctx.principal.partnerServicePrincipalId ? null : ctx.auth.user.id,
-        },
-      });
-    } catch (err) {
-      console.error('[MCP] Failed to create tool execution ledger:', ctx.toolName, err);
-      return responses.ledgerUnavailable();
-    }
+    ledgerHandle = await beginTier3Ledger(ctx);
+    if (!ledgerHandle) return responses.ledgerUnavailable();
   }
 
   const startedAt = Date.now();
@@ -313,4 +326,130 @@ async function finalizeTier3ToolLifecycle<R>(
     result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
     error: outcome.status === 'failure' ? outcome.error : undefined,
   });
+}
+
+// ============================================
+// B-W04 (#6158, D-B29): release of an mcp_api action intent
+// ============================================
+
+export type McpReleaseLifecycle = {
+  /** The rebuilt origin auth with the ledger's aiOrigin, as the direct path sets it. */
+  auth: AuthContext;
+  /** Ledger complete + uniform audit. Idempotent; never throws. */
+  finish(outcome: { status: 'success' | 'failure'; ledgerResult?: string; error?: unknown }): Promise<void>;
+};
+
+type ReleaseIntent = Pick<
+  ActionIntent,
+  'id' | 'orgId' | 'actionName' | 'arguments' | 'riskTier' | 'correlationId' | 'originPrincipalKind' | 'originPrincipalId'
+>;
+
+/** The credential the rebuilt auth came from, in the lifecycle's principal shape. */
+function releasePrincipal(intent: ReleaseIntent, auth: AuthContext): McpLifecyclePrincipal {
+  const grantId = auth.principal?.kind === 'oauth_grant' ? auth.principal.grantId ?? null : null;
+  return {
+    id: grantId ? `oauth:grant:${grantId}` : intent.originPrincipalId ?? 'unknown',
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+    oauthGrantId: grantId,
+    partnerServicePrincipalId: null,
+  };
+}
+
+/**
+ * Opens the Tier-3 ledger (ai_tool_executions.intent_id set, era 'release')
+ * for the release of an `mcp_api` intent, before anything is dispatched.
+ * Returns null when the ledger cannot be created: the worker then fails the
+ * intent `mcp_ledger_unavailable` without dispatching.
+ */
+export async function beginMcpReleaseLifecycle(
+  intent: ReleaseIntent,
+  auth: AuthContext,
+): Promise<McpReleaseLifecycle | null> {
+  const ctx: McpTier3LifecycleContext = {
+    audit: systemAuditSink,
+    auth,
+    principal: releasePrincipal(intent, auth),
+    correlation: buildMcpReleaseCorrelation(intent),
+    intentId: intent.id,
+    orgId: intent.orgId,
+    toolName: intent.actionName,
+    tier: Math.max(3, intent.riskTier ?? 3),
+    toolInput: intent.arguments ?? {},
+  };
+  const handle = await beginTier3Ledger(ctx);
+  if (!handle) return null;
+  const startedAt = Date.now();
+  let finished = false;
+  return {
+    auth: { ...auth, aiOrigin: handle.aiOrigin },
+    async finish(outcome) {
+      if (finished) return;
+      finished = true;
+      try {
+        await finalizeTier3ToolLifecycle(ctx, handle, { ...outcome, response: undefined }, Date.now() - startedAt);
+      } catch (err) {
+        console.error('[MCP] Failed to finalize release lifecycle for intent', intent.id, err);
+      }
+    },
+  };
+}
+
+export type McpIntentOutcome = 'rejected' | 'expired' | 'cancelled' | 'release_refused';
+
+/**
+ * The uniform `mcp.tool.<name>` failure audit for an `mcp_api` intent that
+ * never executed: a terminal non-execution (rejected / expired / cancelled)
+ * or a release refused before dispatch. Outbox delivery is at-least-once, so
+ * an existing row for (intent, action, intentOutcome) makes this a no-op.
+ * Never throws.
+ */
+export async function writeMcpIntentOutcomeAudit(
+  intent: ReleaseIntent & { partnerId?: string | null },
+  outcome: McpIntentOutcome,
+  errorCode?: string,
+): Promise<void> {
+  const action = `mcp.tool.${intent.actionName}`.slice(0, 100);
+  try {
+    const existing = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .select({ id: auditLogs.id })
+      .from(auditLogs)
+      .where(and(
+        eq(auditLogs.resourceType, 'action_intent'),
+        eq(auditLogs.resourceId, intent.id),
+        eq(auditLogs.action, action),
+        sql`${auditLogs.details}->>'intentOutcome' = ${outcome}`,
+      ))
+      .limit(1)));
+    if (existing.length > 0) return;
+    const grantId = intent.originPrincipalKind === 'oauth_grant' ? intent.originPrincipalId : null;
+    systemAuditSink({
+      orgId: intent.orgId,
+      actorType: 'api_key',
+      actorId: grantId ? `oauth:grant:${grantId}` : intent.originPrincipalId ?? null,
+      action,
+      resourceType: 'action_intent',
+      resourceId: intent.id,
+      result: 'failure',
+      details: {
+        intentOutcome: outcome,
+        ...(errorCode ? { errorCode } : {}),
+        intentId: intent.id,
+        oauthGrantId: grantId,
+        partnerId: intent.partnerId ?? null,
+        orgId: intent.orgId,
+        toolName: intent.actionName,
+        tier: Math.max(3, intent.riskTier ?? 3),
+        target: summarizePayload(intent.arguments ?? {}, { maxStringLength: 512 }),
+        correlation: {
+          kind: 'intent_outcome',
+          intentId: intent.id,
+          creationRequestId: intent.correlationId,
+          principalKey: `${intent.originPrincipalKind}:${intent.originPrincipalId ?? ''}`,
+        },
+      },
+    });
+  } catch (err) {
+    console.error('[MCP] Failed to write intent outcome audit for', intent.id, err);
+  }
 }

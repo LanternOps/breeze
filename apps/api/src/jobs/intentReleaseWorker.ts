@@ -25,6 +25,7 @@ import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
 import { isMcpOriginIntent } from '../services/mcpIntentEligibility';
+import { beginMcpReleaseLifecycle, writeMcpIntentOutcomeAudit, type McpReleaseLifecycle } from '../services/mcpTier3Lifecycle';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
 import { createIntentFixWatchRow, createSweepFixWatchRow } from '../services/aiAgents/fixWatch';
@@ -53,7 +54,9 @@ import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { aiTools, executeTool, requiresLiveSession, toolManagesDbContext } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
-import { withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
+import { isTopologyAiToolName, withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
+import { compactToolResultForChat } from '../services/aiToolOutput';
+import { isSecretBearingTool } from '../services/actionIntents/secretBearingTools';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
   isHeadlessGoogleTool,
@@ -928,8 +931,14 @@ function userOwnedReleaseKey(intent: ActionIntent): string | null {
 async function failIntent(
   intent: ActionIntent,
   errorCode: string,
-  options: { details?: Record<string, unknown>; executed?: boolean } = {},
+  options: { details?: Record<string, unknown>; executed?: boolean; mcpLifecycleAudited?: boolean } = {},
 ): Promise<void> {
+  // B-W04 (#6158, D-B29): an MCP-origin intent refused before dispatch gets
+  // the uniform `mcp.tool.<name>` failure audit (deduped). An executed failure,
+  // or one the release lifecycle already audited, does not get a second one.
+  if (isMcpOriginIntent(intent) && !options.executed && !options.mcpLifecycleAudited) {
+    await writeMcpIntentOutcomeAudit(intent, 'release_refused', errorCode);
+  }
   // Routed through `terminalizeIntent` so `executed: true` — the ONE
   // attempted-ness discriminator — also writes the `failed` evidence row in
   // the same transaction as the CAS. The non-attempted stops (every
@@ -1380,6 +1389,21 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // the confirmed plaintext leak this change closes.
   const secretAction = GOOGLE_HEADLESS_SECRET_ACTIONS[intent.actionName];
 
+  // B-W04 (#6158, D-B29): an MCP-origin release runs inside the same Tier-3
+  // lifecycle as the direct MCP call — ledger first (fail closed, nothing
+  // dispatched without it), dispatch under the ledger's aiOrigin, then ledger
+  // complete + `mcp.tool.<name>` audit. Wraps every dispatch branch below
+  // (secret-aware Google, Google/M365 headless, external, executeTool).
+  let mcpRelease: McpReleaseLifecycle | null = null;
+  if (isMcpOriginIntent(intent)) {
+    mcpRelease = await beginMcpReleaseLifecycle(intent, auth);
+    if (!mcpRelease) {
+      await failIntent(intent, 'mcp_ledger_unavailable');
+      return;
+    }
+    auth = mcpRelease.auth;
+  }
+
   let carrier: SecretToolResult | null = null;
   let rawResult: string;
   // Tool catalog W01 PR B (#5216): the AUTHORITATIVE failure signal for an
@@ -1460,6 +1484,10 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
           // constant it used to be stamped with.
           () =>
             executeTool(intent.actionName, intent.arguments, auth, {
+              // B-W04: MCP has no session anchor — same binding as the direct path.
+              ...(mcpRelease && isTopologyAiToolName(intent.actionName)
+                ? { topologyBinding: { kind: 'mcp_site_key' as const } }
+                : {}),
               context: {
                 ...verifiedContext,
                 actionIntentId: intent.id,
@@ -1496,6 +1524,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
     }
   } catch (err) {
+    await mcpRelease?.finish({ status: 'failure', error: err });
     // The backend dispatch guard refused right before the outbound mutation:
     // nothing was sent, so this is a clean, non-retried terminal failure that
     // keeps its typed payload (not `executed`, no rethrow).
@@ -1503,6 +1532,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     if (refusal) {
       await failIntent(intent, CALLER_VERIFICATION_REQUIRED_CODE, {
         details: { requiresCallerVerification: refusal.requiresCallerVerification },
+        mcpLifecycleAudited: mcpRelease !== null,
       });
       return;
     }
@@ -1513,6 +1543,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       // was made. Fail closed with a distinct, categorized code.
       await failIntent(intent, 'connection_unavailable', {
         details: { actionName: intent.actionName },
+        mcpLifecycleAudited: mcpRelease !== null,
       });
       return;
     }
@@ -1554,6 +1585,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // truncation guard — see its declaration. A truncated external error body is
   // still a failed release; it just stores `{truncated:true}` as its evidence.
   const returnedToolError = externalIsError ?? (!truncated && isReturnedToolError(rawResult));
+  // B-W04: close the MCP-origin lifecycle with the release's own classification.
+  // A secret-bearing result is never recorded on the ledger or the audit.
+  await mcpRelease?.finish(returnedToolError
+    ? { status: 'failure', error: new Error('tool_returned_error') }
+    : carrier || isSecretBearingTool(intent.actionName)
+      ? { status: 'success' }
+      : { status: 'success', ledgerResult: compactToolResultForChat(intent.actionName, rawResult) });
   if (returnedToolError) {
     try {
       assertNoPlaintextSecret(intent.actionName, storedResult);
@@ -1877,6 +1915,12 @@ async function notifyRequesterOfOutcome(
         requestingClientLabel: actionIntents.requestingClientLabel,
         source: actionIntents.source,
         originPrincipalKind: actionIntents.originPrincipalKind,
+        originPrincipalId: actionIntents.originPrincipalId,
+        actionName: actionIntents.actionName,
+        arguments: actionIntents.arguments,
+        riskTier: actionIntents.riskTier,
+        correlationId: actionIntents.correlationId,
+        partnerId: actionIntents.partnerId,
       })
       .from(actionIntents)
       .where(eq(actionIntents.id, intentId))
@@ -1886,6 +1930,14 @@ async function notifyRequesterOfOutcome(
     // Outboxed and then deleted: a genuine anomaly, not an expected case.
     captureException(new Error(`intent ${intentId} not found for outcome notification`));
     return;
+  }
+
+  // B-W04 (#6158, D-B29): an MCP-origin intent that ended without executing
+  // still gets the uniform `mcp.tool.<name>` failure audit the direct MCP path
+  // would have written. Deduped inside the writer (at-least-once delivery).
+  if (isMcpOriginIntent(intent)
+    && (intent.status === 'rejected' || intent.status === 'expired' || intent.status === 'cancelled')) {
+    await writeMcpIntentOutcomeAudit(intent, intent.status);
   }
   // Agent-originated intent (wave 3b): a headless proposal has NO requester,
   // so "the requester was watching" is false at every approval scope — this
