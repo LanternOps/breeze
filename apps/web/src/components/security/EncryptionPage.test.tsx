@@ -11,6 +11,7 @@ vi.mock('@/stores/auth', () => ({
   }),
 }));
 
+import { fetchWithAuth } from '@/stores/auth';
 import EncryptionPage from './EncryptionPage';
 
 describe('EncryptionPage filter selects accessible name (#7156)', () => {
@@ -19,5 +20,35 @@ describe('EncryptionPage filter selects accessible name (#7156)', () => {
     expect(await screen.findByRole('combobox', { name: 'Status' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Operating system' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Key escrow' })).toBeInTheDocument();
+  });
+});
+
+// #9607: Breeze does not collect TPM state, so the API now sends tpmPresent:
+// null. The page must render that as "not reported", not as "No".
+describe('EncryptionPage TPM column (#9607)', () => {
+  const device = (deviceId: string, tpmPresent: boolean | null) => ({
+    deviceId,
+    deviceName: `dev-${deviceId}`,
+    os: 'windows',
+    encryptionMethod: 'unknown',
+    encryptionStatus: 'encrypted',
+    volumes: [],
+    tpmPresent,
+    recoveryKeyEscrowed: false,
+  });
+
+  it('renders null as an em dash and only shows Yes/No for reported values', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: vi.fn().mockResolvedValue({
+        data: [device('a', null), device('b', true), device('c', false)],
+      }),
+    } as unknown as Response);
+    render(<EncryptionPage />);
+    expect(await screen.findByTestId('encryption-tpm-a')).toHaveTextContent(/^—$/);
+    expect(screen.getByTestId('encryption-tpm-b')).toHaveTextContent(/^Yes$/);
+    expect(screen.getByTestId('encryption-tpm-c')).toHaveTextContent(/^No$/);
   });
 });

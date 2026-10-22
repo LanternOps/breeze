@@ -22,7 +22,8 @@ import {
   normalizeEncryption,
   parsePasswordPolicySummary,
   parseLocalAdminSummary,
-  parseEncryptionVolumes
+  parseEncryptionVolumes,
+  deriveEncryptionMethod
 } from './helpers';
 import { requireSecurityReadAccess } from './readAuthorization';
 
@@ -163,20 +164,18 @@ complianceRoutes.get(
       : [];
     const escrowedDeviceIds = new Set(escrowRows.map((r) => r.deviceId));
 
-    const methodByOs: Record<'windows' | 'macos' | 'linux', string> = {
-      windows: 'bitlocker',
-      macos: 'filevault',
-      linux: 'luks'
-    };
-
     let devicesData = rows.map((row) => {
       const status = toStatusResponse(row);
       const encStatus = status.encryptionStatus;
-      const method = encStatus === 'unencrypted' ? 'none' : methodByOs[status.os];
+      // What the agent reported, never inferred from the OS (#9607).
+      const method = deriveEncryptionMethod(row.encryptionDetails, encStatus);
+      // No per-volume detail reported: synthesize one row for the system
+      // volume. Its method is only what the device-level report supports
+      // ('None' when unencrypted, otherwise 'Unknown').
       const fallbackVolume = {
         drive: status.os === 'windows' ? 'C:' : status.os === 'macos' ? 'Macintosh HD' : '/dev/sda1',
         encrypted: encStatus !== 'unencrypted',
-        method: method === 'bitlocker' ? 'BitLocker' : method === 'filevault' ? 'FileVault' : method === 'luks' ? 'LUKS2' : 'None',
+        method: method === 'none' ? 'None' : 'Unknown',
         status: null as string | null,
         percentEncrypted: null as number | null
       };
@@ -188,7 +187,9 @@ complianceRoutes.get(
         encryptionMethod: method,
         encryptionStatus: encStatus,
         volumes: parseEncryptionVolumes(row.encryptionDetails) ?? [fallbackVolume],
-        tpmPresent: status.os === 'windows',
+        // The agent does not collect TPM state; null renders as "not
+        // reported" rather than a value guessed from the OS (#9607).
+        tpmPresent: null as boolean | null,
         recoveryKeyEscrowed: escrowedDeviceIds.has(status.deviceId)
       };
     });
@@ -227,7 +228,8 @@ complianceRoutes.get(
           bitlocker: devicesData.filter((device) => device.encryptionMethod === 'bitlocker').length,
           filevault: devicesData.filter((device) => device.encryptionMethod === 'filevault').length,
           luks: devicesData.filter((device) => device.encryptionMethod === 'luks').length,
-          none: devicesData.filter((device) => device.encryptionMethod === 'none').length
+          none: devicesData.filter((device) => device.encryptionMethod === 'none').length,
+          unknown: devicesData.filter((device) => device.encryptionMethod === 'unknown').length
         }
       }
     });

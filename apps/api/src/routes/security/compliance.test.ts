@@ -134,6 +134,33 @@ describe('GET /encryption', () => {
     expect(byName['fallback'].volumes[0].status).toBeNull();
     expect(byName['fallback'].volumes[0]).not.toHaveProperty('size');
   });
+
+  // #9607: Breeze does not collect TPM state, and the method must come from
+  // what the agent reported — not from the OS name.
+  it('never fabricates TPM presence or an OS-derived method', async () => {
+    listStatusRowsMock.mockResolvedValue([
+      statusRow({
+        deviceId: DEV_ESCROWED, deviceName: 'win-reported',
+        encryptionDetails: { source: 'bitlocker', volumes: [{ mount: 'C:', method: '6', protected: true, status: '1', percentEncrypted: 100 }] },
+      }),
+      statusRow({ deviceId: DEV_BARE, deviceName: 'win-no-details' }),
+      statusRow({ deviceId: '44444444-4444-4444-8444-444444444444', deviceName: 'mac-unencrypted', os: 'macos', encryptionStatus: 'unencrypted' }),
+    ]);
+    mockEscrowRows([]);
+    const res = await buildApp().request('/encryption');
+    const json = await res.json();
+    const byName = Object.fromEntries(json.data.map((d: any) => [d.deviceName, d]));
+
+    for (const d of json.data) expect(d.tpmPresent).toBeNull();
+
+    expect(byName['win-reported'].encryptionMethod).toBe('bitlocker');
+    expect(byName['win-reported'].volumes[0]).toMatchObject({ method: 'xtsaes128', status: 'FullyEncrypted' });
+    expect(byName['win-no-details'].encryptionMethod).toBe('unknown');
+    expect(byName['win-no-details'].volumes[0].method).toBe('Unknown');
+    expect(byName['mac-unencrypted'].encryptionMethod).toBe('none');
+
+    expect(json.summary.methodCounts).toEqual({ bitlocker: 1, filevault: 0, luks: 0, none: 1, unknown: 1 });
+  });
 });
 
 describe('GET /firewall — unknown firewall state (#8252)', () => {

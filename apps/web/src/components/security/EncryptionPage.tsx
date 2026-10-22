@@ -31,7 +31,8 @@ type EncryptionDevice = {
   encryptionMethod: string;
   encryptionStatus: "encrypted" | "partial" | "unencrypted";
   volumes: Volume[];
-  tpmPresent: boolean;
+  // null when the agent did not report TPM state (#9607).
+  tpmPresent: boolean | null;
   recoveryKeyEscrowed: boolean;
 };
 type Summary = {
@@ -366,10 +367,16 @@ export default function EncryptionPage() {
                             {d.encryptionStatus}
                           </span>
                         </div>
-                        <div className="px-4 py-3 text-sm">
-                          {d.tpmPresent
+                        <div
+                          className="px-4 py-3 text-sm"
+                          data-testid={`encryption-tpm-${d.deviceId}`}
+                        >
+                          {/* null = the agent did not report TPM state (#9607) */}
+                          {d.tpmPresent === true
                             ? t("securityEncryptionPage.yes")
-                            : t("securityEncryptionPage.no")}
+                            : d.tpmPresent === false
+                              ? t("securityEncryptionPage.no")
+                              : "—"}
                         </div>
                         <div className="px-4 py-3 text-sm">
                           {d.recoveryKeyEscrowed ? (

@@ -602,6 +602,68 @@ func floatFromAny(value any) (float64, bool) {
 	return 0, false
 }
 
+// BitLocker enum values as Get-BitLockerVolume reports them. Windows
+// PowerShell 5.1's ConvertTo-Json serialises enums as their integer value
+// (-EnumsAsStrings is PowerShell 6+), so the raw JSON can carry 6 rather than
+// "XtsAes128" (#9608). The numbering matches Win32_EncryptableVolume
+// GetEncryptionMethod / GetConversionStatus / ProtectionStatus.
+var (
+	bitLockerEncryptionMethodNames = map[int]string{
+		0: "None",
+		1: "Aes128Diffuser",
+		2: "Aes256Diffuser",
+		3: "Aes128",
+		4: "Aes256",
+		5: "Hardware",
+		6: "XtsAes128",
+		7: "XtsAes256",
+	}
+	bitLockerVolumeStatusNames = map[int]string{
+		0: "FullyDecrypted",
+		1: "FullyEncrypted",
+		2: "EncryptionInProgress",
+		3: "DecryptionInProgress",
+		4: "EncryptionPaused",
+		5: "DecryptionPaused",
+	}
+	bitLockerProtectionStatusNames = map[int]string{
+		0: "Off",
+		1: "On",
+		2: "Unknown",
+	}
+)
+
+// bitLockerEnumName returns the enum name for a BitLocker field that may
+// arrive as a name, an integer, or a stringified integer. An integer outside
+// the table becomes "Unknown" rather than leaking a bare number into the UI.
+// A JSON bool (some callers coerce ProtectionStatus) maps to On/Off. Empty
+// or absent input returns "".
+func bitLockerEnumName(value any, names map[int]string) string {
+	if b, ok := value.(bool); ok {
+		if b {
+			return "On"
+		}
+		return "Off"
+	}
+	raw, ok := stringFromAny(value)
+	if !ok {
+		return ""
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return raw
+	}
+	if name, known := names[n]; known {
+		return name
+	}
+	return "Unknown"
+}
+
+// bitLockerVolumesPS casts the enum properties to [string] so Windows
+// PowerShell 5.1 emits their names; parseBitLockerVolumes still accepts the
+// integer form (#9608).
+const bitLockerVolumesPS = `Get-BitLockerVolume | Select-Object MountPoint,@{n='ProtectionStatus';e={[string]$_.ProtectionStatus}},@{n='EncryptionMethod';e={[string]$_.EncryptionMethod}},@{n='VolumeStatus';e={[string]$_.VolumeStatus}},EncryptionPercentage | ConvertTo-Json -Compress`
+
 func collectEncryptionDetailsWindows() (map[string]any, error) {
 	output, err := runCommand(
 		10*time.Second,
@@ -609,11 +671,15 @@ func collectEncryptionDetailsWindows() (map[string]any, error) {
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",
-		"Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus,EncryptionMethod,VolumeStatus,EncryptionPercentage | ConvertTo-Json -Compress",
+		bitLockerVolumesPS,
 	)
 	if err != nil {
 		return nil, err
 	}
+	return parseBitLockerVolumes(output)
+}
+
+func parseBitLockerVolumes(output string) (map[string]any, error) {
 	parsed, err := parseJSONValue(output)
 	if err != nil {
 		return nil, err
@@ -623,19 +689,13 @@ func collectEncryptionDetailsWindows() (map[string]any, error) {
 	volumes := make([]map[string]any, 0, len(rawVolumes))
 	for _, item := range rawVolumes {
 		mountPoint, _ := stringFromAny(item["MountPoint"])
-		method, _ := stringFromAny(item["EncryptionMethod"])
+		method := bitLockerEnumName(item["EncryptionMethod"], bitLockerEncryptionMethodNames)
 		if method == "" {
-			method = "bitlocker"
+			method = "unknown"
 		}
-		volumeStatus, _ := stringFromAny(item["VolumeStatus"])
-
-		protected := false
-		if value, ok := boolFromAny(item["ProtectionStatus"]); ok {
-			protected = value
-		} else if value, ok := stringFromAny(item["ProtectionStatus"]); ok {
-			normalized := strings.ToLower(strings.TrimSpace(value))
-			protected = normalized == "on" || normalized == "protected" || normalized == "1"
-		}
+		volumeStatus := bitLockerEnumName(item["VolumeStatus"], bitLockerVolumeStatusNames)
+		protection := strings.ToLower(bitLockerEnumName(item["ProtectionStatus"], bitLockerProtectionStatusNames))
+		protected := protection == "on" || protection == "protected" || protection == "true"
 
 		entry := map[string]any{
 			"mount":     mountPoint,

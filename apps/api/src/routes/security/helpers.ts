@@ -455,25 +455,87 @@ export type EncryptionVolume = {
   percentEncrypted: number | null;
 };
 
+// BitLocker enum values by integer. Agents before #9608 forwarded Windows
+// PowerShell 5.1's ConvertTo-Json output verbatim, which serialises enums as
+// numbers, so stored encryption_details can hold "6" / "1" instead of names.
+// Numbering matches Win32_EncryptableVolume and the agent's own table
+// (agent/internal/security/status.go). Methods are lowercased to match what
+// the agent stores.
+const BITLOCKER_METHOD_NAMES: Record<number, string> = {
+  0: 'none',
+  1: 'aes128diffuser',
+  2: 'aes256diffuser',
+  3: 'aes128',
+  4: 'aes256',
+  5: 'hardware',
+  6: 'xtsaes128',
+  7: 'xtsaes256'
+};
+
+const BITLOCKER_VOLUME_STATUS_NAMES: Record<number, string> = {
+  0: 'FullyDecrypted',
+  1: 'FullyEncrypted',
+  2: 'EncryptionInProgress',
+  3: 'DecryptionInProgress',
+  4: 'EncryptionPaused',
+  5: 'DecryptionPaused'
+};
+
+// A name passes through; an integer (or integer string) maps to its name, or
+// to `unknownName` when outside the table so a bare number never reaches the UI.
+function bitLockerEnumName(value: string | null, names: Record<number, string>, unknownName: string): string | null {
+  if (value === null || !/^\d+$/.test(value)) return value;
+  return names[Number(value)] ?? unknownName;
+}
+
 // Agent-reported per-volume encryption detail (security_status.encryption_details,
 // shape {source, volumes:[{mount, method, protected, status, percentEncrypted}]}).
 // Returns null when absent/malformed so callers can fall back to a synthesized row.
 export function parseEncryptionVolumes(details: unknown): EncryptionVolume[] | null {
   const obj = toObject(details);
   if (!obj || !Array.isArray(obj.volumes)) return null;
+  const isBitLocker = toStringValue(obj.source)?.toLowerCase() === 'bitlocker';
   const volumes: EncryptionVolume[] = [];
   for (const raw of obj.volumes) {
     const vol = toObject(raw);
     if (!vol) continue;
+    let method = toStringValue(vol.method);
+    let status = toStringValue(vol.status);
+    if (isBitLocker) {
+      method = bitLockerEnumName(method, BITLOCKER_METHOD_NAMES, 'unknown');
+      status = bitLockerEnumName(status, BITLOCKER_VOLUME_STATUS_NAMES, 'Unknown');
+    }
     volumes.push({
       drive: toStringValue(vol.mount) ?? '-',
       encrypted: toBoolean(vol.protected) ?? false,
-      method: toStringValue(vol.method) ?? 'unknown',
-      status: toStringValue(vol.status),
+      method: method ?? 'unknown',
+      status,
       percentEncrypted: toNumber(vol.percentEncrypted)
     });
   }
   return volumes.length > 0 ? volumes : null;
+}
+
+// Device-level encryption method from what the agent reported (#9607) — never
+// guessed from the OS. 'none' when the device reports unencrypted; 'unknown'
+// when it reports encryption but no recognisable encryption_details source.
+// Linux (lsblk) reports carry the method per volume (luks, zfs), so the first
+// protected volume's method is used.
+export function deriveEncryptionMethod(details: unknown, encryptionStatus: string): string {
+  if (encryptionStatus === 'unencrypted') return 'none';
+  const obj = toObject(details);
+  if (!obj) return 'unknown';
+  const source = toStringValue(obj.source)?.toLowerCase();
+  if (source === 'bitlocker' || source === 'filevault') return source;
+  if (source === 'lsblk' && Array.isArray(obj.volumes)) {
+    for (const raw of obj.volumes) {
+      const vol = toObject(raw);
+      if (!vol || toBoolean(vol.protected) !== true) continue;
+      const method = toStringValue(vol.method)?.toLowerCase();
+      if (method && method !== 'none') return method;
+    }
+  }
+  return 'unknown';
 }
 
 // ── Analysis utilities ──────────────────────────────────────────────────────

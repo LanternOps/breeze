@@ -422,7 +422,7 @@ Breeze tracks disk-encryption status across your fleet and can **escrow** each d
 
 ### Encryption overview
 
-The **Encryption** page (under **Security**) lists every device with its encryption method (BitLocker, FileVault, LUKS, or None), status (Encrypted, Partial, Unencrypted), TPM presence, and whether a recovery key has been escrowed. Filter by status, operating system, or **escrow state** (**Key escrowed** / **Key missing**) to find machines that are protected but whose recovery key isn't yet on file.
+The **Encryption** page (under **Security**) lists every device with its encryption method as the agent reported it (BitLocker, FileVault, LUKS, or None; **Unknown** when an encrypted device sent no method detail), status (Encrypted, Partial, Unencrypted), and whether a recovery key has been escrowed. The **TPM** column shows a dash: the agent does not collect TPM state yet. Filter by status, operating system, or **escrow state** (**Key escrowed** / **Key missing**) to find machines that are protected but whose recovery key isn't yet on file.
 
 ### Recovery keys on a device
 
