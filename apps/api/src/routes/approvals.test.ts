@@ -159,6 +159,7 @@ vi.mock('../services/permissions', () => ({
   })),
   userCanDecideApprovals: vi.fn(() => true),
   canAccessOrg: vi.fn(() => true),
+  canAccessSite: vi.fn(() => true),
   // Real matching semantics (exact resource/action or a wildcard) so a test
   // that swaps in a narrower permissions array actually drives a denial,
   // rather than a stub that always returns true regardless of what's granted.
@@ -300,6 +301,7 @@ vi.mock('../middleware/auth', () => ({
   }),
   // Same rule as the real helper (middleware/auth.ts): an allowlist of ONE.
   isInteractiveUserSession: (auth: any) => auth?.principal?.kind === 'user_session',
+  hasSatisfiedMfa: vi.fn(() => true),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
@@ -310,13 +312,13 @@ import { approvalRoutes } from './approvals';
 import { approvalRequests } from '../db/schema/approvals';
 import { actionIntents } from '../db/schema/actionIntents';
 import { db } from '../db';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa } from '../middleware/auth';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
-import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
+import { getUserPermissions, userCanDecideApprovals, canAccessOrg, canAccessSite } from '../services/permissions';
 import { resolveIntentApprovers, isAgentIntentDecideAuthorized } from '../services/actionIntents/intentApprovers';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
@@ -1902,18 +1904,24 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     expect(details).not.toHaveProperty('required_assurance_level');
   });
 
-  it('deny mirrors elevation to denied', async () => {
+  it.each([
+    [undefined, 'Denied without reason'],
+    ['', 'Denied without reason'],
+    [' \t\n ', 'Denied without reason'],
+    ['not allowed', 'not allowed'],
+    ['  not allowed  ', 'not allowed'],
+  ])('deny mirrors elevation with reason %j as %j', async (reason, expectedReason) => {
     mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
     const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
 
     const res = await buildApp().request('/approvals/appr-1/deny', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'not allowed' }),
+      body: JSON.stringify({ reason }),
     });
     expect(res.status).toBe(200);
     expect(tx.elevationSet).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'denied', deniedByUserId: TEST_USER.id, denialReason: 'not allowed' }),
+      expect.objectContaining({ status: 'denied', deniedByUserId: TEST_USER.id, denialReason: expectedReason }),
     );
     expect(tx.auditValues).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'denied', actor: 'technician' }),
@@ -2026,7 +2034,7 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       // Call 2 (NEW, §6C): resolve the elevation's orgId to authorize against,
       // BEFORE any assurance ladder / CAS write.
       vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9' }]) }),
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9', flowType: 'uac_intercept', deviceId: 'dev-1' }]) }),
       } as any);
     }
 
@@ -2066,12 +2074,15 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       expect(db.transaction).not.toHaveBeenCalled();
     });
 
-    it('a decider holding pam:approve for the elevation org proceeds to the CAS write', async () => {
+    it('a decider holding pam:approve and devices:execute for the elevation org proceeds to the CAS write', async () => {
       mockPreFetchAndElevationOrgLookup();
       vi.mocked(getUserPermissions).mockResolvedValueOnce({
         scope: 'organization',
         orgId: 'org-9',
-        permissions: [{ resource: 'pam', action: 'approve' }],
+        permissions: [{ resource: 'pam', action: 'approve' }, { resource: 'devices', action: 'execute' }],
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9', siteId: 'site-a' }]) }),
       } as any);
       const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
       const casReturning = vi.fn().mockResolvedValue([{ ...pendingRow, status: 'approved' }]);
@@ -2095,6 +2106,42 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
 
       expect(res.status).toBe(200);
       expect(db.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('UAC approve also requires devices:execute before the CAS write', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'organization', orgId: 'org-9', permissions: [{ resource: 'pam', action: 'approve' }],
+      } as any);
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'devices_execute_required' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('UAC approve requires an MFA-assured session', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(hasSatisfiedMfa).mockReturnValueOnce(false);
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('UAC approve checks the current device site', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'organization', orgId: 'org-9', allowedSiteIds: ['site-a'],
+        permissions: [{ resource: 'pam', action: 'approve' }, { resource: 'devices', action: 'execute' }],
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9', siteId: 'site-b' }]) }),
+      } as any);
+      vi.mocked(canAccessSite).mockReturnValueOnce(false);
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'site_access_denied' });
+      expect(db.transaction).not.toHaveBeenCalled();
     });
 
     // Gap: hasPermission(perms, 'pam', 'approve') alone says nothing about
