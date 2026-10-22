@@ -1377,9 +1377,15 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
  *  row. `partners.timezone` is NOT NULL DEFAULT 'UTC'; the fallback only covers a
  *  row the context cannot see, and an unknown zone string is handled downstream
  *  by `toPartnerLocalDate` (UTC). Never blocks assembly. */
-async function readPartnerTimeZone(partnerId: string): Promise<string> {
-  const [row] = await db.select({ timezone: partners.timezone }).from(partners).where(eq(partners.id, partnerId)).limit(1);
-  return row?.timezone || 'UTC';
+/** The partner settings assembly reads before creating a draft: the zone that
+ *  dates labour (#8603) and the document locale that groups the numbers in
+ *  generated line text (#9669). An invoice has no stamped document_locale until
+ *  issue/send, so a draft uses the partner's language, the same fallback every
+ *  renderer applies to an unstamped invoice. */
+async function readPartnerAssemblyDefaults(partnerId: string): Promise<{ timeZone: string; documentLocale: string }> {
+  const [row] = await db.select({ timezone: partners.timezone, settings: partners.settings })
+    .from(partners).where(eq(partners.id, partnerId)).limit(1);
+  return { timeZone: row?.timezone || 'UTC', documentLocale: resolvePartnerDocumentLocale(row) };
 }
 
 /** One blocked group on an assembly response: unbilled work snapshotted in a
@@ -1463,7 +1469,7 @@ export async function assembleDraftFromOrg(
   requireOrgAccess(actor, input.orgId);
   requireSiteAccess(actor, input.siteId ?? null);
   // Read BEFORE the draft insert so a failed read cannot orphan an empty draft.
-  const timeZone = await readPartnerTimeZone(partnerId);
+  const { timeZone, documentLocale } = await readPartnerAssemblyDefaults(partnerId);
   const from = new Date(input.from + 'T00:00:00Z');
   const to = new Date(input.to + 'T23:59:59Z');
   // Create the draft FIRST so the gathered line totals are rounded in the
@@ -1486,7 +1492,7 @@ export async function assembleDraftFromOrg(
   const gathered = mergeAssembly(
     await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode, new Date(), timeZone),
     await gatherOrgParts(input.orgId, from, to, inv!.currencyCode),
-    await gatherOrgAiUsageCharges(input.orgId, to, inv!.currencyCode)
+    await gatherOrgAiUsageCharges(input.orgId, to, inv!.currencyCode, documentLocale)
   );
   return finishAssembly(inv!, gathered, 'No unbilled billable work in range', actor);
 }
@@ -1500,7 +1506,7 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   // can never see such a row, so deny it up front rather than orphan an invoice.
   requireSiteAccess(actor, null);
   // Read BEFORE the draft insert so a failed read cannot orphan an empty draft.
-  const timeZone = await readPartnerTimeZone(partnerId);
+  const { timeZone } = await readPartnerAssemblyDefaults(partnerId);
   // Draft first: gathered line totals must round in the invoice row's actual
   // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
   // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7),

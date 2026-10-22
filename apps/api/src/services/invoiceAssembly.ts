@@ -322,16 +322,20 @@ export type AiUsageChargeRow = {
  *  (carried-forward) charge says which month the usage was from. Never a $0 or
  *  unpriced line: the gather only reads 'not_billed' charges, and an unpriced
  *  one reaching here is a programming error. */
-export function aiUsageChargeToLineSpec(r: AiUsageChargeRow, currencyCode: string): DraftLineSpec {
+export function aiUsageChargeToLineSpec(r: AiUsageChargeRow, currencyCode: string, locale = 'en'): DraftLineSpec {
   if (r.amount == null) throw new Error(`AI usage charge ${r.id} is unpriced and cannot become an invoice line`);
   const month = r.periodStart.slice(0, 7);
   const usageMonth = r.usagePeriodStart.slice(0, 7);
   const tokens = r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheWriteTokens;
   const late = usageMonth !== month ? ` (usage from ${usageMonth})` : '';
   const unitPrice = roundToCurrency(r.amount, currencyCode);
+  // #9669: the customer reads this text on the invoice, PDF and portal, so the
+  // counts are grouped in the DOCUMENT locale ("23,514,000", "23.514.000").
+  // The string is stored, so this applies to newly assembled lines only.
+  const count = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
   return {
     sourceType: 'ai_usage', sourceId: r.id, catalogItemId: null, ticketId: null,
-    description: `AI usage — ${r.modelLabel} — ${month}${late} · ${r.invocationCount} requests · ${tokens} tokens`,
+    description: `AI usage — ${r.modelLabel} — ${month}${late} · ${count.format(r.invocationCount)} requests · ${count.format(tokens)} tokens`,
     quantity: '1.00', unitPrice, costBasis: null, taxable: AI_USAGE_LINE_TAXABLE, customerVisible: true,
     lineTotal: computeLineTotal('1.00', unitPrice, currencyCode), isUnapprovedTime: false, workedMinutes: null, workDate: null,
   };
@@ -350,7 +354,11 @@ export function aiUsageChargeToLineSpec(r: AiUsageChargeRow, currencyCode: strin
  *  'unpriced' (no client price) and 'billed' never are. Other-currency charges
  *  come back under `blockedByCurrency`, never converted. Runs under the
  *  caller's RLS context. */
-export async function gatherOrgAiUsageCharges(orgId: string, through: Date, headerCurrency: string): Promise<AssemblyResult> {
+export async function gatherOrgAiUsageCharges(
+  orgId: string, through: Date, headerCurrency: string,
+  /** Document locale for the line text's number grouping (#9669). */
+  locale = 'en',
+): Promise<AssemblyResult> {
   const rows = await db.select({
     id: aiUsageCharges.id, servedModel: aiUsageCharges.servedModel, modelLabel: aiUsageCharges.modelLabel,
     periodStart: aiUsageCharges.periodStart, usagePeriodStart: aiUsageCharges.usagePeriodStart,
@@ -362,5 +370,5 @@ export async function gatherOrgAiUsageCharges(orgId: string, through: Date, head
     eq(aiUsageCharges.billingStatus, 'not_billed'),
     lte(aiUsageCharges.periodStart, through.toISOString().slice(0, 10)),
   )).orderBy(aiUsageCharges.periodStart, aiUsageCharges.usagePeriodStart, aiUsageCharges.servedModel, aiUsageCharges.id);
-  return partitionByCurrency(rows, headerCurrency, aiUsageChargeToLineSpec);
+  return partitionByCurrency(rows, headerCurrency, (r, c) => aiUsageChargeToLineSpec(r, c, locale));
 }

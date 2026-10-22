@@ -331,7 +331,7 @@ describe('aiUsageChargeToLineSpec (#7608)', () => {
       sourceType: 'ai_usage', sourceId: 'ch-1', quantity: '1.00', unitPrice: '41.27', lineTotal: '41.27',
       taxable: false, customerVisible: true, ticketId: null, catalogItemId: null, costBasis: null,
       isUnapprovedTime: false, workedMinutes: null, workDate: null,
-      description: 'AI usage — W10 Test — 2026-11 · 1204 requests · 3200000 tokens',
+      description: 'AI usage — W10 Test — 2026-11 · 1,204 requests · 3,200,000 tokens',
     });
   });
   it('AI usage lines are non-taxable by default (decided 2026-10-02, #7598) via one constant', () => {
@@ -340,11 +340,26 @@ describe('aiUsageChargeToLineSpec (#7608)', () => {
   });
   it('labels a late (carried-forward) charge with its usage month', () => {
     expect(aiUsageChargeToLineSpec({ ...row, periodStart: '2026-12-01' }, 'USD').description)
-      .toBe('AI usage — W10 Test — 2026-12 (usage from 2026-11) · 1204 requests · 3200000 tokens');
+      .toBe('AI usage — W10 Test — 2026-12 (usage from 2026-11) · 1,204 requests · 3,200,000 tokens');
   });
   it('counts every token kind in the description', () => {
     expect(aiUsageChargeToLineSpec({ ...row, cacheReadTokens: 50, cacheWriteTokens: 7 }, 'USD').description)
-      .toBe('AI usage — W10 Test — 2026-11 · 1204 requests · 3200057 tokens');
+      .toBe('AI usage — W10 Test — 2026-11 · 1,204 requests · 3,200,057 tokens');
+  });
+  // #9669: the customer reads this line on the invoice, PDF and portal, so the
+  // counts carry the DOCUMENT locale's grouping, never a raw run of digits.
+  it('formats requests and tokens with the document locale (#9669)', () => {
+    const big = { ...row, invocationCount: 1_234_567, inputTokens: 23_000_000, outputTokens: 514_000 };
+    expect(aiUsageChargeToLineSpec(big, 'USD', 'en').description)
+      .toBe('AI usage — W10 Test — 2026-11 · 1,234,567 requests · 23,514,000 tokens');
+    expect(aiUsageChargeToLineSpec(big, 'USD', 'de-DE').description)
+      .toBe('AI usage — W10 Test — 2026-11 · 1.234.567 requests · 23.514.000 tokens');
+    // Small counts get no separator in either locale.
+    expect(aiUsageChargeToLineSpec({ ...row, invocationCount: 12, inputTokens: 900, outputTokens: 0 }, 'USD', 'de-DE').description)
+      .toBe('AI usage — W10 Test — 2026-11 · 12 requests · 900 tokens');
+  });
+  it('defaults to en grouping when no locale is passed (#9669)', () => {
+    expect(aiUsageChargeToLineSpec(row, 'USD').description).toContain('3,200,000 tokens');
   });
   it('a JPY charge is a whole-yen line', () => {
     expect(aiUsageChargeToLineSpec({ ...row, amount: '1234.00', currencyCode: 'JPY' }, 'JPY'))

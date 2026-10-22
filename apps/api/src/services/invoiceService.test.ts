@@ -1792,6 +1792,18 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP', expect.any(Date), 'UTC');
   });
 
+  it('(c\'\'\') org: AI usage lines are worded in the partner document locale (#9669)', async () => {
+    queueResult([{ timezone: 'UTC', settings: { language: 'de-DE' } }]); // partner timezone (#8603) + document locale (#9669)
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([draftRow('USD')]);
+    queueTail('USD');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    (gatherOrgAiUsageCharges as Mock).mockResolvedValue(empty());
+    await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-11-01', to: '2026-11-30' }, actor);
+    expect((gatherOrgAiUsageCharges as Mock).mock.calls[0]![3]).toBe('de-DE');
+  });
+
   it('(c\'\') org: AI usage charges (#7608) are gathered in the header currency through the range end and materialize with the rest', async () => {
     queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
@@ -1807,9 +1819,10 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     // No lower bound: a closed month's charge exists only from the 1st of the
     // next month, so any unbilled charge billed on or before `to` is gathered.
     const aiCall = (gatherOrgAiUsageCharges as Mock).mock.calls[0]!;
-    expect(aiCall).toHaveLength(3);
-    const [, through, header] = aiCall;
-    expect([(through as Date).toISOString(), header]).toEqual(['2026-11-30T23:59:59.000Z', 'USD']);
+    expect(aiCall).toHaveLength(4);
+    const [, through, header, locale] = aiCall;
+    // #9669: no partner language set → the document locale falls back to 'en'.
+    expect([(through as Date).toISOString(), header, locale]).toEqual(['2026-11-30T23:59:59.000Z', 'USD', 'en']);
     const [, from, to] = (gatherOrgTimeEntries as Mock).mock.calls[0]!;
     expect([(from as Date).toISOString(), to]).toEqual(['2026-11-01T00:00:00.000Z', through]);
     const valuesMock = (db as unknown as { values: Mock }).values;
