@@ -184,6 +184,21 @@ export async function propagateCancelledDeviceCommand(params: {
     }
   }
 
+  // #9662 — a cancelled execute_containment leaves its incident action
+  // `in_progress` forever otherwise. DYNAMIC import, like the branches above,
+  // to keep this module a leaf. Not try/caught, for the same reason: a
+  // failure rolls the caller's cancel back with it.
+  if (type === 'execute_containment') {
+    const { finalizeContainmentAction } = await import('./incidentContainmentResults');
+    await finalizeContainmentAction({
+      commandId,
+      payload,
+      outcome: { kind: 'cancelled', error: errorMessage },
+      completedAt,
+      executor,
+    });
+  }
+
   await executor
     .update(deploymentResults)
     .set({ status: 'cancelled', errorMessage, completedAt })

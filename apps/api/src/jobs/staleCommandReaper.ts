@@ -33,6 +33,7 @@ import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
 import { releaseFilesystemScanGenerationForCommand } from '../services/filesystemScanGenerationRelease';
+import { finalizeContainmentAction } from '../services/incidentContainmentResults';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
@@ -337,6 +338,25 @@ export async function propagateTimedOutDeviceCommand(params: {
       );
     } catch (err) {
       console.error(`[StaleCommandReaper] Failed to release filesystem scan generation for timed-out command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // #9662 — an execute_containment command the server stopped waiting for
+  // leaves its incident action `in_progress` forever otherwise; nothing else
+  // ever revisits it. Recorded as a server timeout, which a late real agent
+  // result may still repair. Contained like the blocks above: a failure must
+  // not skip the DR reconcile.
+  if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT) {
+    try {
+      await finalizeContainmentAction({
+        commandId,
+        payload,
+        outcome: { kind: 'timeout', error: errorMsg },
+        completedAt,
+      });
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to finalize the containment action for timed-out command ${commandId}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }

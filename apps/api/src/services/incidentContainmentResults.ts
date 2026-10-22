@@ -1,0 +1,223 @@
+/**
+ * execute_containment command outcomes -> incident_actions + incidents (#9662).
+ *
+ * `execute_containment` (aiToolsIncident.ts) records an `in_progress`
+ * incident_actions row carrying the command id, then queues the command. This
+ * module is the ONLY thing that moves that row to a terminal state, from the
+ * command's real outcome:
+ *
+ * - the agent's result, over either transport (`handleExecuteContainmentResult`,
+ *   registered in `commandResultHandlers` and the HTTP route's
+ *   REGISTRY_DISPATCHED_COMMAND_TYPES);
+ * - a server-side timeout or undelivered expiry (staleCommandReaper's
+ *   `propagateTimedOutDeviceCommand`, also the manual "mark timed out" route);
+ * - cancellation (`propagateCancelledDeviceCommand`).
+ *
+ * Only a COMPLETED agent result contains the incident. A server timeout is
+ * recorded as `failed` with `timedOutBy: 'server'`, which a late real agent
+ * result may still repair — the same contract device_commands has (#3607): the
+ * process may really have been killed after the server stopped waiting.
+ *
+ * Deliberately a LEAF module (db, schema, the incident transition table):
+ * `commandCancelPropagation` calls it from inside the heartbeat claim
+ * transaction and must not gain an edge back into the command-queue graph.
+ * The event bus is imported lazily, after commit.
+ */
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { db, runAfterDbContextCommit } from '../db';
+import { incidentActions, incidents } from '../db/schema';
+import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
+import { ALLOWED_STATUS_TRANSITIONS } from '../routes/incidents.validation';
+import { PG_UUID_REGEX } from '../utils/uuid';
+import type { CommandResultHandler } from './commandResultHandlers';
+
+/** The ambient `db`, or a caller's open transaction handle. */
+type DbExecutor = Pick<typeof db, 'update' | 'select'>;
+
+export type ContainmentOutcome =
+  /** The agent answered. Only `completed` counts as containment. */
+  | { kind: 'agent'; status: 'completed' | 'failed'; error?: string | null; output?: unknown }
+  /** The server stopped waiting (execution timeout or undelivered expiry). */
+  | { kind: 'timeout'; error: string }
+  /** The command was cancelled before or while it was delivered. */
+  | { kind: 'cancelled'; error: string };
+
+type ActionStatus = 'completed' | 'failed' | 'cancelled';
+
+// Agent-supplied text lands on the incident; keep it bounded. The transports
+// have already redacted error text before any handler runs (#2434).
+const MAX_ERROR_CHARS = 2_000;
+const MAX_OUTPUT_CHARS = 8_000;
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function actionStatusFor(outcome: ContainmentOutcome): ActionStatus {
+  if (outcome.kind === 'agent') return outcome.status === 'completed' ? 'completed' : 'failed';
+  return outcome.kind === 'timeout' ? 'failed' : 'cancelled';
+}
+
+const TIMELINE_TYPE: Record<ActionStatus, string> = {
+  completed: 'containment_executed',
+  failed: 'containment_failed',
+  cancelled: 'containment_cancelled',
+};
+
+/** Incident statuses from which a successful containment moves it to `contained`. */
+const CONTAINABLE_FROM = (Object.keys(ALLOWED_STATUS_TRANSITIONS) as Array<keyof typeof ALLOWED_STATUS_TRANSITIONS>)
+  .filter((from) => from !== 'contained' && ALLOWED_STATUS_TRANSITIONS[from].includes('contained'));
+
+/**
+ * Move the incident action owned by `commandId` to its terminal state and
+ * record it on the incident. Returns `no_action` when there is no open action
+ * for this command (not a containment command, a replay, or already terminal).
+ *
+ * Persistence failures PROPAGATE: on the agent-result path that rolls the
+ * result back and parks it reopenable (#3530); on the cancel path it rolls the
+ * caller's cancel back with it.
+ */
+export async function finalizeContainmentAction(params: {
+  commandId: string;
+  /** The server-written command payload; `incidentId` is read from here only. */
+  payload: Record<string, unknown> | null;
+  outcome: ContainmentOutcome;
+  completedAt: Date;
+  executor?: DbExecutor;
+}): Promise<'applied' | 'no_action'> {
+  const { commandId, payload, outcome, completedAt } = params;
+  const executor: DbExecutor = params.executor ?? db;
+
+  const incidentId = typeof payload?.incidentId === 'string' ? payload.incidentId : null;
+  if (!incidentId || !PG_UUID_REGEX.test(incidentId) || !PG_UUID_REGEX.test(commandId)) {
+    return 'no_action';
+  }
+
+  const status = actionStatusFor(outcome);
+  const error = outcome.kind === 'agent' ? outcome.error ?? null : outcome.error;
+  const result: Record<string, unknown> = {
+    commandId,
+    commandStatus: outcome.kind === 'agent' ? outcome.status : outcome.kind,
+    completedAt: completedAt.toISOString(),
+    ...(error ? { error: clip(error, MAX_ERROR_CHARS) } : {}),
+    ...(outcome.kind === 'timeout' ? { timedOutBy: 'server' } : {}),
+    ...(outcome.kind === 'agent' && outcome.output !== undefined ? { output: outcome.output } : {}),
+  };
+
+  const open = inArray(incidentActions.status, ['pending', 'in_progress']);
+  // Only a real agent answer may overwrite a server-side timeout; a timeout or
+  // cancel never overwrites anything already terminal.
+  const reopenable = outcome.kind === 'agent'
+    ? or(open, and(eq(incidentActions.status, 'failed'), sql`${incidentActions.result}->>'timedOutBy' = 'server'`))
+    : open;
+
+  const [action] = await executor
+    .update(incidentActions)
+    .set({ status, result })
+    .where(and(
+      eq(incidentActions.incidentId, incidentId),
+      sql`${incidentActions.result}->>'commandId' = ${commandId}`,
+      reopenable,
+    ))
+    .returning({
+      id: incidentActions.id,
+      orgId: incidentActions.orgId,
+      actionType: incidentActions.actionType,
+      description: incidentActions.description,
+      executedBy: incidentActions.executedBy,
+    });
+
+  if (!action) return 'no_action';
+
+  // Row lock so the timeline append and the status transition cannot lose a
+  // concurrent writer's entry (the REST contain route and incident jobs write
+  // the same array).
+  const [incident] = await executor
+    .select({ id: incidents.id, orgId: incidents.orgId, status: incidents.status, timeline: incidents.timeline })
+    .from(incidents)
+    .where(eq(incidents.id, incidentId))
+    .limit(1)
+    .for('update');
+
+  if (!incident) return 'applied';
+
+  const contains = status === 'completed' && CONTAINABLE_FROM.includes(incident.status);
+  const entry: IncidentTimelineEntry = {
+    at: completedAt.toISOString(),
+    type: TIMELINE_TYPE[status],
+    actor: action.executedBy,
+    summary: `${action.description} (${status})`,
+    metadata: {
+      actionId: action.id,
+      actionType: action.actionType,
+      actionStatus: status,
+      commandId,
+      ...(error ? { error: clip(error, MAX_ERROR_CHARS) } : {}),
+    },
+  };
+  const timeline = Array.isArray(incident.timeline) ? incident.timeline : [];
+
+  await executor
+    .update(incidents)
+    .set({
+      timeline: [...timeline, entry],
+      updatedAt: completedAt,
+      ...(contains ? { status: 'contained' as const, containedAt: completedAt } : {}),
+    })
+    .where(eq(incidents.id, incident.id));
+
+  if (contains) {
+    // A subscriber must never hear about a containment that rolled back.
+    runAfterDbContextCommit('incidentContainment.contained', async () => {
+      try {
+        const { publishEvent } = await import('./eventBus');
+        await publishEvent(
+          'incident.contained',
+          incident.orgId,
+          {
+            incidentId: incident.id,
+            actionId: action.id,
+            actionType: action.actionType,
+            executedBy: action.executedBy,
+            status,
+          },
+          'incident-containment-result',
+        );
+      } catch (err) {
+        console.error('[incidentContainment] Failed to publish incident.contained event:', err);
+      }
+    });
+  }
+
+  return 'applied';
+}
+
+/** The agent's structured result (NewSuccessResult marshals it to stdout JSON). */
+function parseOutput(stdout: string | undefined): unknown {
+  if (!stdout || stdout.length > MAX_OUTPUT_CHARS) return undefined;
+  try {
+    const parsed = JSON.parse(stdout);
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Registry handler: both agent transports authorize the command before calling it. */
+export async function handleExecuteContainmentResult(
+  { command, commandId, result, stdout }: Parameters<CommandResultHandler>[0],
+): Promise<void> {
+  const completed = result.status === 'completed';
+  await finalizeContainmentAction({
+    // The transport-authorized id, never one read off the agent's body.
+    commandId,
+    payload: (command.payload ?? null) as Record<string, unknown> | null,
+    outcome: {
+      kind: 'agent',
+      status: completed ? 'completed' : 'failed',
+      error: completed ? null : (result.error ?? result.stderr ?? `agent reported ${result.status}`),
+      ...(completed ? { output: parseOutput(stdout) } : {}),
+    },
+    completedAt: new Date(),
+  });
+}
