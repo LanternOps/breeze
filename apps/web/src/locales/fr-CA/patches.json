@@ -39,9 +39,9 @@
     },
     "confirm": {
       "title": "Confirmer l’approbation du correctif",
-      "selectedOrganization": "l’organisation sélectionnée",
-      "messageOne": "Approuver le correctif sur {{count}} appareil dans {{org}} ?",
-      "messageMany": "Approuver le correctif sur {{count}} appareils dans {{org}} ?",
+      "selectedRing": "l’anneau sélectionné",
+      "messageRingOne": "Approuver le correctif sur {{count}} appareil dans toutes les organisations de l’anneau {{ring}} ?",
+      "messageRingMany": "Approuver le correctif sur {{count}} appareils dans toutes les organisations de l’anneau {{ring}} ?",
       "messagePartnerWide": "Approuver le correctif pour toutes les organisations de votre partenaire ?"
     },
     "checkingAccess": "Vérification de votre accès..."

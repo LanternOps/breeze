@@ -39,9 +39,9 @@
     },
     "confirm": {
       "title": "Patch-Freigabe bestätigen",
-      "selectedOrganization": "der ausgewählten Organisation",
-      "messageOne": "Patch auf {{count}} Gerät in {{org}} freigeben?",
-      "messageMany": "Patch auf {{count}} Geräten in {{org}} freigeben?",
+      "selectedRing": "der ausgewählte Ring",
+      "messageRingOne": "Patch auf {{count}} Gerät in allen Organisationen im Ring {{ring}} freigeben?",
+      "messageRingMany": "Patch auf {{count}} Geräten in allen Organisationen im Ring {{ring}} freigeben?",
       "messagePartnerWide": "Patch für alle Organisationen Ihres Partners freigeben?"
     },
     "checkingAccess": "Zugriff wird geprüft..."

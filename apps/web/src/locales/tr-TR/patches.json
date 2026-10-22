@@ -39,9 +39,9 @@
     },
     "confirm": {
       "title": "Yama onayını onaylayın",
-      "selectedOrganization": "seçilen kuruluş",
-      "messageOne": "{{count}} cihazındaki yamayı {{org}}'de onaylasın mı?",
-      "messageMany": "{{count}} cihazlarda {{org}} içindeki yama onaylansın mı?",
+      "selectedRing": "seçilen halka",
+      "messageRingOne": "{{ring}} halkasındaki tüm kuruluşlarda {{count}} cihazda yama onaylansın mı?",
+      "messageRingMany": "{{ring}} halkasındaki tüm kuruluşlarda {{count}} cihazda yama onaylansın mı?",
       "messagePartnerWide": "Yama, iş ortağınızın altındaki tüm kuruluşlar için onaylansın mı?"
     },
     "checkingAccess": "Erişiminiz kontrol ediliyor..."

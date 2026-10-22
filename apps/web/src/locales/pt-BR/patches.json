@@ -39,9 +39,9 @@
     },
     "confirm": {
       "title": "Confirmar aprovação do patch",
-      "selectedOrganization": "a organização selecionada",
-      "messageOne": "Aprovar patch em {{count}} dispositivo em {{org}}?",
-      "messageMany": "Aprovar patch em {{count}} dispositivos em {{org}}?",
+      "selectedRing": "o anel selecionado",
+      "messageRingOne": "Aprovar patch em {{count}} dispositivo em todas as organizações no anel {{ring}}?",
+      "messageRingMany": "Aprovar patch em {{count}} dispositivos em todas as organizações no anel {{ring}}?",
       "messagePartnerWide": "Aprovar patch para todas as organizações do seu parceiro?"
     },
     "checkingAccess": "Verificando seu acesso..."

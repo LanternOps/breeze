@@ -1006,7 +1006,7 @@ export default function PatchesPage() {
         open={modalOpen}
         patch={selectedPatch}
         ringId={selectedRingId}
-        orgName={currentOrg?.name ?? null}
+        ringName={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.name ?? null) : null}
         ringDeviceCount={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.deviceCount ?? null) : null}
         initialAction={modalInitialAction}
         onClose={() => {
