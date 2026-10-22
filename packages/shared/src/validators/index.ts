@@ -50,6 +50,7 @@ export * from './aiApprovalSettings';
 export * from './softwareDetection';
 export * from './softwareExitCodes';
 export * from './softwareDownloadPolicy';
+export * from './softwareVersionInstallSpec';
 export * from './systemCleanup';
 export * from './psa';
 export * from './deviceRoles';

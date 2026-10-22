@@ -521,7 +521,7 @@ describe("DeploymentProgress — in-flight installs (#3578)", () => {
     const hint = screen.getByTestId("deployment-result-silent-d");
     expect(hint).toHaveTextContent("No update from the agent for 18 minutes");
     // Quotes the server's timeout so the operator knows what happens next.
-    expect(hint).toHaveTextContent("55 minutes");
+    expect(hint).toHaveTextContent("75 minutes");
   });
 
   it("keeps the queued-offline and terminal rows unchanged", async () => {

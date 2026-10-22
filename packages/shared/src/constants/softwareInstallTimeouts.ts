@@ -25,9 +25,16 @@ export const SOFTWARE_INSTALL_DOWNLOAD_TIMEOUT_MS = 15 * 60 * 1000;
 export const SOFTWARE_INSTALL_INSTALLER_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
+ * Agent kills each pre/post-install script after this long (#6958). An install
+ * may run two scripts (pre and post).
+ */
+export const SOFTWARE_INSTALL_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
  * The server marks a delivered-but-silent install failed once this long has
  * passed since the command was sent (jobs/staleCommandReaper.ts). Deliberately
- * above the agent's own combined ceilings (download + installer = 45 min), so
- * the server only times out after the agent has provably stopped.
+ * above the agent's own combined ceilings, so the server only times out after
+ * the agent has provably stopped. Budget: download 15 + installer 30 + two
+ * scripts 2×10 + settle 1 = 66 min, plus margin = 75 min.
  */
-export const SOFTWARE_INSTALL_SERVER_TIMEOUT_MS = 55 * 60 * 1000;
+export const SOFTWARE_INSTALL_SERVER_TIMEOUT_MS = 75 * 60 * 1000;

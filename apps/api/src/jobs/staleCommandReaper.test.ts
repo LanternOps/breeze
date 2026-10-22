@@ -1404,17 +1404,17 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     return { resultSet, resultReturning, commandSet, commandWhere };
   }
 
-  it('pins the exported timeout constant (55 min install)', () => {
+  it('pins the exported timeout constant (75 min install)', () => {
     // #5128: the old 7-day "queued expiry" constant (SOFTWARE_QUEUED_EXPIRY_MS)
     // is gone from this module entirely — `device_commands.deliver_by` is now
     // the single owner of that deadline (reapStaleDeviceCommands).
-    expect(SOFTWARE_INSTALL_TIMEOUT_MS).toBe(55 * 60 * 1000);
+    expect(SOFTWARE_INSTALL_TIMEOUT_MS).toBe(75 * 60 * 1000);
   });
 
   it('tier 1: reaps delivered-but-silent rows past the timeout, measured from commandExecutedAt (WS-dispatched and queued-then-sent/completed)', async () => {
     selectMock.mockReturnValueOnce(selectChain([
       // WS-dispatched directly — no queued command row, falls back to dispatchedAt.
-      { id: 'res-ws', deviceCommandId: null, dispatchedAt: minutesAgo(60), commandStatus: null, commandExecutedAt: null },
+      { id: 'res-ws', deviceCommandId: null, dispatchedAt: minutesAgo(80), commandStatus: null, commandExecutedAt: null },
       // Offline-queued, agent claimed it (sent) then went silent — measured from claim time.
       { id: 'res-sent', deviceCommandId: 'cmd-sent', dispatchedAt: minutesAgo(90), commandStatus: 'sent', commandExecutedAt: minutesAgo(90) },
       // Command completed but the result POST never landed.
@@ -1442,7 +1442,7 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     }));
   });
 
-  it('tier 1: leaves a delivered row alone before the 55-min timeout', async () => {
+  it('tier 1: leaves a delivered row alone before the 75-min timeout', async () => {
     selectMock.mockReturnValueOnce(selectChain([
       { id: 'res-fresh', deviceCommandId: null, dispatchedAt: minutesAgo(30), commandStatus: null, commandExecutedAt: null },
     ]));
