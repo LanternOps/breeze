@@ -24,7 +24,7 @@ describe('generateDueInvoice with a block of hours (real DB) #8181', () => {
     expect(r.hourBlockCloses).toHaveLength(1);
     expect(r.hourBlockCloses[0]).toMatchObject({ periodStart: '2026-07-01', overageHours: 2 });
     const lines = await linesOf(r.invoiceId!);
-    expect(lines.map((l) => [l.description, l.quantity, l.unitPrice])).toEqual([
+    expect(lines.map((l) => [l.name, l.quantity, l.unitPrice])).toEqual([
       ['Support hours', '1.00', '1000.00'],
       ['Support hours — hours over block, 2026-07-01 – 2026-08-01', '2.00', '150.00'],
     ]);
@@ -39,7 +39,7 @@ describe('generateDueInvoice with a block of hours (real DB) #8181', () => {
     await seedEntry(f, { minutes: 660, endedAt: '2026-07-20T12:00:00Z' });           // 11 h, 1 over
     const r1 = await run(f.contractId, '2026-08-01');
     const lines = await linesOf(r1.invoiceId!);
-    expect(lines.map((l) => l.description)).toEqual([
+    expect(lines.map((l) => l.name)).toEqual([
       'Support hours', 'Support hours — hours over block, 2026-07-01 – 2026-08-01',
     ]);
   });
@@ -74,7 +74,7 @@ describe('generateDueInvoice with a block of hours (real DB) #8181', () => {
     await withSystemDbAccessContext(() => db.update(contractLines).set({ hourBlockRetiredAt: new Date('2026-06-30T00:00:00Z') })
       .where(eq(contractLines.id, f.blockLineId)));
     const r = await run(f.contractId, '2026-08-01');
-    expect((await linesOf(r.invoiceId!)).map((l) => l.description)).toEqual(['Managed services']);
+    expect((await linesOf(r.invoiceId!)).map((l) => l.name)).toEqual(['Managed services']);
   });
 
   it('a contract whose only line is a retired block generates nothing', async () => {

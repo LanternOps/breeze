@@ -425,6 +425,45 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
  * the contract engine — no additional scoping is applied here).
  */
 export type ContractLinePricedFrom = 'org_override' | 'price_book' | 'contract_snapshot';
+
+/** invoice_lines.name is varchar(255). */
+const INVOICE_LINE_NAME_MAX = 255;
+
+/**
+ * #9664: the title + blurb of a contract-sourced invoice line. Every renderer
+ * prints `name` as the title and `description` as the blurb under it (and falls
+ * back to `description` as the title only when `name` is NULL), so a contract
+ * line stored with name NULL showed an empty Name box in the editor.
+ *
+ * The title is the catalog item's name when the line references one, else the
+ * first non-blank line of the contract line's text. `description` then keeps
+ * only what the title does not already say — a blurb that repeats the title
+ * would print twice on the customer's invoice. When the title had to be
+ * capped to the column, the full text stays as the blurb so nothing is lost.
+ */
+function contractInvoiceLineLabel(
+  text: string, catalogName: string | null,
+): { name: string | null; description: string | null } {
+  const capped = (s: string) => s.length <= INVOICE_LINE_NAME_MAX
+    ? { value: s, truncated: false }
+    : { value: `${s.slice(0, INVOICE_LINE_NAME_MAX - 1)}…`, truncated: true };
+  const full = text.trim();
+  const catalogTitle = catalogName?.trim();
+  if (catalogTitle) {
+    const { value } = capped(catalogTitle);
+    return { name: value, description: full && full !== catalogTitle ? full : null };
+  }
+  const [first = '', ...rest] = full.split(/\r?\n/);
+  const firstLine = first.trim();
+  // Unreachable while contract_lines.description is validated non-blank; a
+  // blank text stays a legacy (name NULL) line rather than a '—' title.
+  if (!firstLine) return { name: null, description: full || null };
+  const { value, truncated } = capped(firstLine);
+  if (truncated) return { name: value, description: full };
+  const blurb = rest.join('\n').trim();
+  return { name: value, description: blurb || null };
+}
+
 export async function addContractLine(
   invoiceId: string,
   input: {
@@ -483,6 +522,7 @@ export async function addContractLine(
     let taxable: boolean;
     let costBasis: string | null = null;
     let pricedFrom: ContractLinePricedFrom;
+    let catalogName: string | null = null;
 
     if (input.catalogItemId) {
       // Catalog path: resolve price through the tenant-scoped catalog service in
@@ -512,6 +552,11 @@ export async function addContractLine(
         costBasis = null;
         pricedFrom = 'contract_snapshot';
       }
+      // #9664: the line's title. resolvePrice has already proven the item is
+      // the actor's (it throws before a price-book gap otherwise).
+      const [item] = await tx.select({ name: catalogItems.name }).from(catalogItems)
+        .where(eq(catalogItems.id, input.catalogItemId)).limit(1);
+      catalogName = item?.name ?? null;
     } else {
       // Non-catalog path: normalize like addManualLine/updateLine (Finding 2).
       unitPrice = Number(input.unitPrice).toFixed(2);
@@ -528,7 +573,7 @@ export async function addContractLine(
     const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'contract', sourceId: input.sourceId ?? null, sourceContractId: input.contractId,
       catalogItemId: input.catalogItemId ?? null,
-      parentLineId: null, ticketId: null, description: input.description, quantity,
+      parentLineId: null, ticketId: null, ...contractInvoiceLineLabel(input.description, catalogName), quantity,
       unitPrice, costBasis, taxable, customerVisible: true,
       lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode), isUnapprovedTime: false
     });

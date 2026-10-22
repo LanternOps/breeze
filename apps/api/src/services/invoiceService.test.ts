@@ -1482,6 +1482,7 @@ describe('addContractLine', () => {
     resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '99.00', costBasis: '45.00' }));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
     queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]); // #3778: parent contract locked FOR UPDATE — B2 guard reads its currency
+    queueResult([{ name: 'Managed endpoint' }]); // #9664: catalog item name → line title
     queueInsertAndRecompute({ id: 'l2', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '3', unitPrice: '99.00',
       lineTotal: '297.00', taxable: true, customerVisible: true });
@@ -1516,6 +1517,7 @@ describe('addContractLine', () => {
     resolvePriceMock.mockRejectedValue(new CatalogServiceError('JPY 100.50 not representable', 409, 'PRICE_NOT_REPRESENTABLE'));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
     queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'JPY' }]); // #3778: parent contract locked FOR UPDATE
+    queueResult([{ name: 'Managed endpoint' }]); // #9664: catalog item name → line title
     queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '2', unitPrice: '100.00', lineTotal: '200.00', taxable: true, customerVisible: true });
 
@@ -1534,6 +1536,7 @@ describe('addContractLine', () => {
     resolvePriceMock.mockRejectedValue(new CatalogServiceError('No EUR price', 409, 'NO_PRICE_FOR_CURRENCY'));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'EUR' }]); // #3778: parent contract locked FOR UPDATE — B2 guard: the snapshot is in the invoice currency
+    queueResult([{ name: 'Managed endpoint' }]); // #9664: catalog item name → line title
     queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '2', unitPrice: '80.00', lineTotal: '160.00', taxable: true, customerVisible: true });
 
@@ -1605,6 +1608,92 @@ describe('addContractLine', () => {
     await expect(
       svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false, contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+
+  // #9664: a contract line used to land with name NULL, so the invoice editor's
+  // Name box was empty. The title is the catalog item's name or the contract
+  // line text's first line; `description` keeps only what the title does not
+  // already say, because every renderer prints name + description as title +
+  // blurb and a copied title would print twice on the customer's invoice.
+  describe('line name (#9664)', () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    const lineRow = { id: 'l9', sourceType: 'contract', lineTotal: '500.00', taxable: false, customerVisible: true };
+    const inserted = () => (db as unknown as { values: Mock }).values.mock.calls[0]![0] as { name: unknown; description: unknown };
+    function queueNonCatalog() {
+      queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+      queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]);
+      queueInsertAndRecompute(lineRow);
+    }
+    const nonCatalog = (description: string) => svc.addContractLine('i1', {
+      description, quantity: '1', unitPrice: '500.00', taxable: false, catalogItemId: null, sourceId: 'cl-1', contractId: 'ct1',
+    }, actor);
+
+    it('non-catalog, one-line text: the text is the name and no blurb repeats it', async () => {
+      queueNonCatalog();
+      await nonCatalog('  Managed services (flat)  ');
+      expect(inserted()).toMatchObject({ name: 'Managed services (flat)', description: null });
+    });
+
+    it('non-catalog, multi-line text: the first line is the name, the rest is the blurb', async () => {
+      queueNonCatalog();
+      await nonCatalog('Managed services\n  Includes patching\nand AV  \n');
+      expect(inserted()).toMatchObject({ name: 'Managed services', description: 'Includes patching\nand AV' });
+    });
+
+    it('non-catalog, leading blank lines are skipped for the name', async () => {
+      queueNonCatalog();
+      await nonCatalog('\n\n  Backup  \nNightly');
+      expect(inserted()).toMatchObject({ name: 'Backup', description: 'Nightly' });
+    });
+
+    it('non-catalog, a first line longer than the name column is capped and the full text stays as the blurb', async () => {
+      queueNonCatalog();
+      const long = 'A'.repeat(300);
+      await nonCatalog(long);
+      const row = inserted();
+      expect((row.name as string).length).toBe(255);
+      expect(row.name).toBe('A'.repeat(254) + '…');
+      expect(row.description).toBe(long);
+    });
+
+    it('catalog path: the catalog item name is the title and the contract text stays as the blurb', async () => {
+      resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '99.00', costBasis: '45.00' }));
+      queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+      queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]);
+      queueResult([{ name: 'Endpoint Protection' }]); // catalog item name
+      queueInsertAndRecompute(lineRow);
+      await svc.addContractLine('i1', {
+        description: 'Managed endpoint — Dallas office', quantity: '3', unitPrice: '99.00', taxable: true,
+        catalogItemId: 'cat-1', sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      expect(inserted()).toMatchObject({ name: 'Endpoint Protection', description: 'Managed endpoint — Dallas office' });
+    });
+
+    it('catalog path: contract text identical to the catalog name is not repeated as a blurb', async () => {
+      resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '99.00', costBasis: '45.00' }));
+      queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+      queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]);
+      queueResult([{ name: 'Endpoint Protection' }]);
+      queueInsertAndRecompute(lineRow);
+      await svc.addContractLine('i1', {
+        description: ' Endpoint Protection ', quantity: '3', unitPrice: '99.00', taxable: true,
+        catalogItemId: 'cat-1', sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      expect(inserted()).toMatchObject({ name: 'Endpoint Protection', description: null });
+    });
+
+    it('catalog path on a price-book gap still names the line from the catalog item', async () => {
+      resolvePriceMock.mockRejectedValue(new CatalogServiceError('No EUR price', 409, 'NO_PRICE_FOR_CURRENCY'));
+      queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+      queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'EUR' }]);
+      queueResult([{ name: 'Endpoint Protection' }]);
+      queueInsertAndRecompute(lineRow);
+      await svc.addContractLine('i1', {
+        description: 'Managed endpoint', quantity: '2', unitPrice: '80', taxable: true,
+        catalogItemId: 'cat-1', sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      expect(inserted()).toMatchObject({ name: 'Endpoint Protection', description: 'Managed endpoint' });
+    });
   });
 });
 

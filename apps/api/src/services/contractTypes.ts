@@ -68,6 +68,9 @@ export type ContractServiceErrorCode =
   | 'GROUP_DELETED'
   // #4693: a formerly site-scoped device line whose site was deleted.
   | 'SITE_DELETED'
+  // #9664: a manual line with NULL manual_quantity. Reads show it unresolved;
+  // generation refuses (never bills it as quantity 0).
+  | 'MANUAL_QUANTITY_MISSING'
   | 'CONTRACT_NOT_FOUND'
   | 'PERIOD_NOT_FOUND'
   | 'CONTRACT_CREATE_FAILED'

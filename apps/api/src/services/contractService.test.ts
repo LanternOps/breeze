@@ -2339,3 +2339,71 @@ describe('three-decimal currencies are not supported at all (#3205 W04)', () => 
     expect(isKnownCurrency('USD')).toBe(true);
   });
 });
+
+// #9664: a manual line with NULL manual_quantity used to bill quantity 0 — a
+// silent $0 invoice line. It is UNRESOLVED now, handled exactly like a line
+// whose site was deleted: the estimate shows it unresolved, the MRR rollup
+// skips the contract with a warning, and generation refuses before any write.
+describe('manual line with no quantity (#9664)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const contract = {
+    id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'active', currencyCode: 'USD',
+    startDate: '2026-07-01', intervalMonths: 1, billingTiming: 'advance', nextBillingAt: '2026-07-01',
+    endDate: null, autoIssue: false, createdBy: 'u1', notes: null, terms: null,
+  };
+  const manualLine = (manualQuantity: string | null) => ({
+    id: 'l1', contractId: 'c1', orgId: 'org1', lineType: 'manual', description: 'Licences',
+    unitPrice: '10.00', taxable: false, catalogItemId: null, manualQuantity,
+    siteId: null, siteName: null, deviceRoles: null, deviceGroupId: null, deviceGroupName: null,
+    sortOrder: 0, includedQuantity: null, overageMode: null, overageUnitPrice: null, hourBlockRetiredAt: null,
+  });
+
+  it('the estimate reports it unresolved with no value', async () => {
+    queueResult([contract]);
+    queueResult([manualLine(null)]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines[0]).toMatchObject({ quantity: 0, value: '0.00', live: false, unresolved: 'manual_quantity_missing' });
+  });
+
+  // THE CONTROL: an explicit zero is a real quantity, not a missing one.
+  it('an explicit 0 quantity still resolves (not unresolved)', async () => {
+    queueResult([contract]);
+    queueResult([manualLine('0.00')]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines[0]).toMatchObject({ quantity: 0 });
+    expect(out.lines[0]).not.toHaveProperty('unresolved');
+  });
+
+  it('listContracts withholds the period value', async () => {
+    queueResult([contract]);
+    queueResult([manualLine(null)]);
+    const out = await svc.listContracts({ orgId: 'org1' }, actor);
+    expect(out[0]).toMatchObject({ id: 'c1', estimatedPeriodValue: null });
+  });
+
+  it('the MRR rollup skips the contract and warns', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      queueResult([contract]);
+      queueResult([manualLine(null)]);
+      const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+      expect(out.get('org1')).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        '[contracts] MRR rollup skipped contract %s: manual line %s has no quantity', 'c1', 'l1',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('generation refuses with MANUAL_QUANTITY_MISSING before creating an invoice', async () => {
+    queueResult([contract]);
+    queueResult([manualLine(null)]);
+    await expect(svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z'))).rejects.toMatchObject({
+      status: 409, code: 'MANUAL_QUANTITY_MISSING', details: { contractLineId: 'l1' },
+    });
+    expect(createManualInvoice).not.toHaveBeenCalled();
+    expect(addContractLine).not.toHaveBeenCalled();
+  });
+});
