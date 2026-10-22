@@ -115,6 +115,7 @@ describe('ContractDetail — generate now reports skipped outcomes (#9508)', () 
     ['renewal_pending', /renewal/i],
     ['expired', /expired/i],
     ['some_future_reason', /no invoice was generated/i],
+    [undefined as unknown as string, /no invoice was generated/i], // generated:false, no reason
   ];
   it.each(cases)('skipped=%s → reason toast, no success toast, no navigation', async (skipped, pattern) => {
     vi.mocked(contractsApi.generateContractInvoice).mockResolvedValue(resp({
