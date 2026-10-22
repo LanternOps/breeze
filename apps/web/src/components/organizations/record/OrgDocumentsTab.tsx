@@ -89,6 +89,28 @@ export default function OrgDocumentsTab({ orgId, orgFetch }: { orgId: string; or
 
   useEffect(() => { void load(); }, [load]);
 
+  // #9350: the empty state says documents must be marked Visible in portal to
+  // appear there — but only when portal Documents is actually on. Looked up
+  // lazily (only for an empty, unfiltered library) so a populated tab keeps its
+  // single request, and a failed lookup simply omits the hint.
+  const [portalDocumentsOn, setPortalDocumentsOn] = useState(false);
+  const libraryEmpty = Array.isArray(state) && state.length === 0 && !category;
+  useEffect(() => {
+    if (!libraryEmpty) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await orgFetch(`/orgs/organizations/${orgId}/portal-settings`);
+        if (!res.ok) return;
+        const body = await res.json();
+        if (!cancelled) setPortalDocumentsOn(body?.data?.enableDocuments === true);
+      } catch (err) {
+        console.warn('[OrgDocumentsTab] portal settings lookup failed', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [libraryEmpty, orgFetch, orgId]);
+
   const friendly = useCallback((code: string) => {
     const key = UPLOAD_ERROR_KEYS[code];
     return key ? tr(key) : undefined;
@@ -341,6 +363,11 @@ export default function OrgDocumentsTab({ orgId, orgFetch }: { orgId: string; or
       {Array.isArray(state) && state.length === 0 && (
         <p className="rounded-lg border bg-card p-6 text-sm text-muted-foreground" data-testid="org-documents-empty">
           {category ? tr('emptyFiltered') : tr('empty')}
+          {libraryEmpty && portalDocumentsOn && (
+            <span className="mt-2 block" data-testid="org-documents-empty-portal-hint">
+              {tr('emptyPortalHint')}
+            </span>
+          )}
         </p>
       )}
 

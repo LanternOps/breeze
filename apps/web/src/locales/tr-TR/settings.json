@@ -1952,6 +1952,30 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Müşteri görünümü",
+      "subtitle": "Önizleme: {{who}} neyi görür",
+      "whoOrganization": "müşteriniz",
+      "pickerLabel": "Şu olarak görüntüle",
+      "pickerAll": "Tüm kuruluş",
+      "loading": "Önizleme yükleniyor…",
+      "loadFailed": "Müşteri görünümü yüklenemedi.",
+      "on": "Açık",
+      "off": "Kapalı",
+      "notAvailable": "Bu bölümün ayrıntılı önizlemesi henüz yok.",
+      "noteNoUser": "Talep kapsamındaki veriler gizlendi. Bu kişinin ne gördüğünü görmek için bir portal kullanıcısı seçin.",
+      "readinessTitle": "Hazırlık kontrolleri",
+      "readinessNone": "Sorun bulunamadı.",
+      "fix": "Düzelt",
+      "readiness": {
+        "documents_empty": "Belgeler açık, ancak portalda Görünür olarak işaretlenmiş belge yok; müşteriniz boş bir kitaplık görür.",
+        "reports_empty": "Raporlar açık, ancak henüz rapor çalıştırması yok; müşteriniz boş bir liste görür.",
+        "service_one_time_visible": "Hizmet açık ve tek seferlik öğeler müşteriniz için hâlâ görünür.",
+        "backups_no_data": "Yedeklemeler açık, ancak gösterilecek yedekleme verisi henüz yok.",
+        "dashboard_security_no_data": "Pano açık, ancak güvenlik puanının henüz verisi yok; bu kutucuk müşteriniz için boş görünür.",
+        "branding_unset": "Portal markası hiç ayarlanmadı (logo, renkler, karşılama mesajı veya destek iletişimi)."
+      }
+    },
     "loading": "Portal ayarları yükleniyor…",
     "save": "Portal ayarlarını kaydet",
     "toasts": {

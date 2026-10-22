@@ -1952,6 +1952,30 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Customer view",
+      "subtitle": "Preview: what {{who}} sees",
+      "whoOrganization": "your customer",
+      "pickerLabel": "View as",
+      "pickerAll": "Whole organization",
+      "loading": "Loading preview…",
+      "loadFailed": "The customer view failed to load.",
+      "on": "On",
+      "off": "Off",
+      "notAvailable": "A detailed preview of this section isn't available yet.",
+      "noteNoUser": "Ticket-scoped data is hidden. Pick a portal user to see what that person sees.",
+      "readinessTitle": "Readiness checks",
+      "readinessNone": "No issues found.",
+      "fix": "Fix",
+      "readiness": {
+        "documents_empty": "Documents is on, but no document is marked Visible in portal, so your customer sees an empty library.",
+        "reports_empty": "Reports is on, but there are no report runs yet, so your customer sees an empty list.",
+        "service_one_time_visible": "Service is on and one-time items are still visible to your customer.",
+        "backups_no_data": "Backups is on, but there is no backup data to show yet.",
+        "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
+        "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      }
+    },
     "loading": "Loading portal settings…",
     "save": "Save portal settings",
     "toasts": {

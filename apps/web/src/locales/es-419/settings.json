@@ -1952,6 +1952,30 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vista del cliente",
+      "subtitle": "Vista previa: lo que ve {{who}}",
+      "whoOrganization": "su cliente",
+      "pickerLabel": "Ver como",
+      "pickerAll": "Toda la organización",
+      "loading": "Cargando vista previa…",
+      "loadFailed": "No se pudo cargar la vista del cliente.",
+      "on": "Activado",
+      "off": "Desactivado",
+      "notAvailable": "Aún no hay una vista previa detallada de esta sección.",
+      "noteNoUser": "Los datos de tickets están ocultos. Elija un usuario del portal para ver lo que ve esa persona.",
+      "readinessTitle": "Verificaciones de preparación",
+      "readinessNone": "No se encontraron problemas.",
+      "fix": "Corregir",
+      "readiness": {
+        "documents_empty": "Documentos está activado, pero ningún documento está marcado como Visible en el portal, por lo que su cliente ve una biblioteca vacía.",
+        "reports_empty": "Informes está activado, pero aún no hay ejecuciones de informes, por lo que su cliente ve una lista vacía.",
+        "service_one_time_visible": "Servicio está activado y los elementos únicos siguen visibles para su cliente.",
+        "backups_no_data": "Copias de seguridad está activado, pero aún no hay datos de copias para mostrar.",
+        "dashboard_security_no_data": "Panel está activado, pero la puntuación de seguridad aún no tiene datos, por lo que ese mosaico aparece vacío para su cliente.",
+        "branding_unset": "La marca del portal nunca se ha configurado (logotipo, colores, mensaje de bienvenida o contacto de soporte)."
+      }
+    },
     "loading": "Cargando configuración del portal...",
     "save": "Guardar la configuración del portal",
     "toasts": {

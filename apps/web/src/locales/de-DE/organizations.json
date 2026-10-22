@@ -589,6 +589,7 @@
       "title": "Dokumente",
       "subtitle": "Runbooks, Baselines, Richtlinien und Servicenachweise für diese Organisation.",
       "empty": "Noch keine Dokumente. Laden Sie ein Runbook, eine Baseline oder eine unterschriebene Richtlinie hoch, um die Bibliothek zu starten.",
+      "emptyPortalHint": "Ihr Kunde sieht Dokumente, die als „Im Portal sichtbar“ markiert sind. Ein unterschriebenes Angebot oder eine Vereinbarung und eine Sicherheits-Baseline sind gute erste Dokumente.",
       "emptyFiltered": "Keine Dokumente in dieser Kategorie.",
       "loadFailed": "Dokumente konnten nicht geladen werden.",
       "upload": "Dokument hochladen",

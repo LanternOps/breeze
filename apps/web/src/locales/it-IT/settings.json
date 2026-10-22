@@ -1952,6 +1952,30 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vista cliente",
+      "subtitle": "Anteprima: cosa vede {{who}}",
+      "whoOrganization": "il cliente",
+      "pickerLabel": "Visualizza come",
+      "pickerAll": "Intera organizzazione",
+      "loading": "Caricamento dell’anteprima…",
+      "loadFailed": "Impossibile caricare la vista cliente.",
+      "on": "Attivo",
+      "off": "Disattivato",
+      "notAvailable": "Un’anteprima dettagliata di questa sezione non è ancora disponibile.",
+      "noteNoUser": "I dati dei ticket sono nascosti. Scegli un utente del portale per vedere ciò che vede quella persona.",
+      "readinessTitle": "Controlli di preparazione",
+      "readinessNone": "Nessun problema rilevato.",
+      "fix": "Correggi",
+      "readiness": {
+        "documents_empty": "Documenti è attivo, ma nessun documento è contrassegnato come Visibile nel portale: il cliente vede una libreria vuota.",
+        "reports_empty": "Report è attivo, ma non ci sono ancora esecuzioni di report: il cliente vede un elenco vuoto.",
+        "service_one_time_visible": "Servizio è attivo e gli elementi una tantum sono ancora visibili al cliente.",
+        "backups_no_data": "Backup è attivo, ma non ci sono ancora dati di backup da mostrare.",
+        "dashboard_security_no_data": "Dashboard è attiva, ma il punteggio di sicurezza non ha ancora dati: quel riquadro è vuoto per il cliente.",
+        "branding_unset": "Il branding del portale non è mai stato impostato (logo, colori, messaggio di benvenuto o contatto di supporto)."
+      }
+    },
     "loading": "Caricamento impostazioni portale…",
     "save": "Salva impostazioni portale",
     "toasts": {

@@ -1952,6 +1952,30 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Visão do cliente",
+      "subtitle": "Pré-visualização: o que {{who}} vê",
+      "whoOrganization": "seu cliente",
+      "pickerLabel": "Ver como",
+      "pickerAll": "Organização inteira",
+      "loading": "Carregando pré-visualização…",
+      "loadFailed": "Não foi possível carregar a visão do cliente.",
+      "on": "Ativado",
+      "off": "Desativado",
+      "notAvailable": "Uma pré-visualização detalhada desta seção ainda não está disponível.",
+      "noteNoUser": "Os dados de chamados estão ocultos. Escolha um usuário do portal para ver o que essa pessoa vê.",
+      "readinessTitle": "Verificações de prontidão",
+      "readinessNone": "Nenhum problema encontrado.",
+      "fix": "Corrigir",
+      "readiness": {
+        "documents_empty": "Documentos está ativado, mas nenhum documento está marcado como Visível no portal, então seu cliente vê uma biblioteca vazia.",
+        "reports_empty": "Relatórios está ativado, mas ainda não há execuções de relatório, então seu cliente vê uma lista vazia.",
+        "service_one_time_visible": "Serviço está ativado e itens pontuais ainda estão visíveis para seu cliente.",
+        "backups_no_data": "Backups está ativado, mas ainda não há dados de backup para mostrar.",
+        "dashboard_security_no_data": "O painel está ativado, mas a pontuação de segurança ainda não tem dados, então esse bloco fica vazio para seu cliente.",
+        "branding_unset": "A marca do portal nunca foi definida (logotipo, cores, mensagem de boas-vindas ou contato de suporte)."
+      }
+    },
     "loading": "Carregando configurações do portal…",
     "save": "Salvar configurações do portal",
     "toasts": {
