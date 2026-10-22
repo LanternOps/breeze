@@ -1035,7 +1035,9 @@
       "label": "Genehmigung",
       "byRing": "durch den verknüpften Update-Ring festgelegt",
       "manualOnly": "nur manuelle Genehmigungen (kein Update-Ring verknüpft)"
-    }
+    },
+    "chainResolutionRule": "Zuerst entscheidet die Ebene: Gerät vor Gerätegruppe, dann Standort, Organisation und Partner. Die Priorität (niedrigere Zahl gewinnt) entscheidet nur zwischen Richtlinien auf derselben Ebene. Durchgestrichene Funktionen wurden von einer näheren Richtlinie überschrieben.",
+    "featureOverriddenBy": "Überschrieben von {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Aktivitäten konnten nicht abgerufen werden",

@@ -1035,7 +1035,9 @@
       "label": "aprobación",
       "byRing": "definida por el anillo de actualización vinculado",
       "manualOnly": "solo aprobaciones manuales (sin anillo de actualización vinculado)"
-    }
+    },
+    "chainResolutionRule": "Primero decide el nivel: Dispositivo gana a Grupo de dispositivos, luego Sitio, Organización y Socio. La prioridad (gana el número más bajo) solo desempata entre políticas del mismo nivel. Las funciones tachadas fueron anuladas por una política más cercana.",
+    "featureOverriddenBy": "Anulada por {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "No se pudieron recuperar las actividades",

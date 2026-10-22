@@ -1273,6 +1273,7 @@ export default function DeviceDetails({
           orgId={device.orgId}
           timezone={effectiveTimezone}
           highlightExecutionId={highlightedExecutionId}
+          deviceStatus={device.status}
         />
       )}
 

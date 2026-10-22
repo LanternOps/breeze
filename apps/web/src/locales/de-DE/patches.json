@@ -41,7 +41,8 @@
       "title": "Patch-Freigabe bestätigen",
       "selectedOrganization": "der ausgewählten Organisation",
       "messageOne": "Patch auf {{count}} Gerät in {{org}} freigeben?",
-      "messageMany": "Patch auf {{count}} Geräten in {{org}} freigeben?"
+      "messageMany": "Patch auf {{count}} Geräten in {{org}} freigeben?",
+      "messagePartnerWide": "Patch für alle Organisationen Ihres Partners freigeben?"
     },
     "checkingAccess": "Zugriff wird geprüft..."
   },

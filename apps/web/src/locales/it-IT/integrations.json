@@ -594,7 +594,7 @@
     "hidePassword": "Nascondi la password",
     "portalLabelToggle": "Mostra il nome del provider nel portale clienti",
     "portalLabelHelp": "Disattivato per impostazione predefinita: i clienti vedono \"Backup cloud gestito\" invece del nome del fornitore.",
-    "credentialsHelp": "Crea un utente dedicato della console Cove con ruolo di sola lettura, una password univoca e senza autenticazione a due fattori. Breeze legge solo lo stato e non modifica nulla in Cove.",
+    "credentialsHelp": "Crea un utente API di Cove (Management → Users → API Users) sotto il tuo cliente di primo livello. Inserisci il nome di quel cliente come nome partner, il nome di accesso dell'utente API come nome utente e il suo token come password. Breeze legge solo lo stato e non modifica nulla in Cove.",
     "test": "Prova la connessione",
     "syncNow": "Sincronizza ora",
     "reauthRequired": "Credenziali rifiutate",

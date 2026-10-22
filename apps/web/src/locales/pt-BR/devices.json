@@ -900,7 +900,7 @@
     "alertHistoryForThisDevice": "Histórico de alertas deste dispositivo",
     "anomalies": "Anomalias",
     "metricAnomalySignalsForThisDevice": "Sinais de anomalias de métricas deste dispositivo",
-    "tickets": "Tickets",
+    "tickets": "Chamados",
     "ticketsLinkedToThisDevice": "Tickets vinculados a este dispositivo",
     "eventLog": "Log de eventos",
     "windowsMacosSystemEventLogs": "Logs de eventos do sistema Windows/macOS",
@@ -1035,7 +1035,9 @@
       "label": "aprovação",
       "byRing": "definida pelo anel de atualização vinculado",
       "manualOnly": "somente aprovações manuais (nenhum anel de atualização vinculado)"
-    }
+    },
+    "chainResolutionRule": "O nível decide primeiro: Dispositivo vence Grupo de dispositivos, depois Site, Organização e Parceiro. A prioridade (vence o menor número) só desempata políticas do mesmo nível. Recursos riscados foram substituídos por uma política mais próxima.",
+    "featureOverriddenBy": "Substituído por {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Falha ao buscar as atividades",

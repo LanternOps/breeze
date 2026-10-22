@@ -720,6 +720,8 @@
       "timeout": "A execução do script atingiu o tempo limite",
       "pending": "O script está aguardando execução",
       "queued": "O script está na fila para envio ao dispositivo",
+      "queuedAwaitingPickup": "Nenhuma sessão ativa do agente o retirou ainda. O script será entregue quando o agente do dispositivo fizer o próximo check-in.",
+      "deviceOffline": "O dispositivo está offline. O script será entregue quando ele se reconectar.",
       "cancelling": "Interrupção solicitada — aguardando confirmação do dispositivo.",
       "cancelled": "O script foi interrompido no dispositivo"
     },
@@ -743,7 +745,8 @@
       "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
       "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
       "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo",
-      "queuedOffline": "Na fila — dispositivo offline"
+      "queuedOffline": "Na fila — dispositivo offline",
+      "queuedAwaitingPickup": "Na fila — aguardando o dispositivo retirá-lo"
     }
   },
   "executionHistory": {
@@ -774,7 +777,8 @@
       "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
       "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
       "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo",
-      "queuedOffline": "Na fila — dispositivo offline"
+      "queuedOffline": "Na fila — dispositivo offline",
+      "queuedAwaitingPickup": "Na fila — aguardando retirada"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {

@@ -235,6 +235,8 @@
     },
     "billedVsWorked": "{{worked}} h trabalhadas · {{billed}} h faturadas",
     "includedMinutes": "{{hours}} h incluídas no contrato",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Cada lançamento fatura seus minutos arredondados para horas (2 casas decimais) × sua tarifa.",
     "missingRateCount_one": "1 lançamento não tem tarifa por hora — não incluído no valor acima",
     "missingRateCount_other": "{{count}} lançamentos não têm tarifa por hora — não incluídos no valor acima",
     "deleteEntry": "Excluir a entrada de tempo de {{duration}} de {{tech}}",
@@ -333,6 +335,10 @@
     "selectedCount_other": "{{count}} selecionados",
     "clearSelection": "Limpar",
     "noSelection": "Selecione um chamado. Use j/k para mover, Enter para expandir.",
+    "movedToClosed": {
+      "message": "{{status}} — agora em {{tab}}",
+      "view": "Ver em {{tab}}"
+    },
     "ticketingSettings": "Configurações de chamados",
     "assignFailed": "Falha ao atribuir. Tente novamente.",
     "assignedToYou": "Atribuído a você",

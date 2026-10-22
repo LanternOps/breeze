@@ -567,4 +567,48 @@ describe('TimesheetPage held time', () => {
       message: expect.stringMatching(/written off once its approval request/),
     })));
   });
+
+});
+
+// #9561: every labour figure on the timesheet is explainable — the entry's
+// rounded hours × rate = amount, with the rule beside the week total.
+describe('labour rule visibility (#9561)', () => {
+  const withEntries = (rows: unknown[]) => fetchWithAuth.mockImplementation(async (url: string) => {
+    if (url.startsWith('/time-entries/timesheet')) return jsonRes({ ...week, days: [{ ...week.days[0], entries: rows }, ...week.days.slice(1)] });
+    if (url.startsWith('/users')) return jsonRes([]);
+    return jsonRes({});
+  });
+
+  it.each([
+    [1, '0.02', '$2.70'], [20, '0.33', '$44.55'], [25, '0.42', '$56.70'],
+    [30, '0.50', '$67.50'], [59, '0.98', '$132.30'], [61, '1.02', '$137.70'],
+  ])('%i min at $135.00 → %s h × $135.00 = %s', async (minutes, hours, amount) => {
+    withEntries([{ ...entry, id: 'lab', durationMinutes: minutes, hourlyRate: '135.00', currencyCode: 'USD' }]);
+    render(<TimesheetPage />);
+    expect((await screen.findByTestId('timesheet-labor-lab')).textContent).toBe(`${hours} h × $135.00 = ${amount}`);
+  });
+
+  it('prices the billed quantity in the stamped currency', async () => {
+    withEntries([{ ...entry, id: 'eur', durationMinutes: 5, billableMinutes: 30 }]);
+    render(<TimesheetPage />);
+    expect((await screen.findByTestId('timesheet-labor-eur')).textContent).toBe('0.50 h × €100.00 = €50.00');
+  });
+
+  it('shows no breakdown for a non-billable, unrated or running entry', async () => {
+    withEntries([
+      { ...entry, id: 'nb', isBillable: false },
+      { ...entry, id: 'nr', hourlyRate: null, currencyCode: null },
+      { ...entry, id: 'run', endedAt: null },
+    ]);
+    render(<TimesheetPage />);
+    await screen.findByTestId('timesheet-entry-nb');
+    expect(screen.queryByTestId('timesheet-labor-nb')).toBeNull();
+    expect(screen.queryByTestId('timesheet-labor-nr')).toBeNull();
+    expect(screen.queryByTestId('timesheet-labor-run')).toBeNull();
+  });
+
+  it('states the rule beside the week total when it carries money', async () => {
+    render(<TimesheetPage />);
+    expect((await screen.findByTestId('timesheet-labor-rule')).textContent).toMatch(/rounded to hours \(2 decimals\) × its rate/);
+  });
 });

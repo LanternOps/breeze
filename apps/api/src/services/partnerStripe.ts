@@ -514,13 +514,35 @@ export async function savePartnerStripeKey(input: {
  * scope itself on a short-lived connection (runOutsideDbContext — a bare nested
  * system context would stay inside the caller's scoped transaction), making the
  * answer independent of the caller's context.
+ *
+ * That second connection is a hazard for a caller that is itself inside an open
+ * transaction (#9454): see isPartnerOnlinePaymentAvailableOnCallerConnection.
  */
 export async function isPartnerOnlinePaymentAvailable(partnerId: string): Promise<boolean> {
-  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+  return runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    isPartnerOnlinePaymentAvailableOnCallerConnection(partnerId)));
+}
+
+/**
+ * The same answer as isPartnerOnlinePaymentAvailable, read on the CALLER's
+ * connection (its open transaction, if any) instead of a second one. For a caller
+ * holding a transaction open — the invoice PDF render inside the accepted-quote
+ * auto-email (#9454) — a nested second-connection read queues behind any pending
+ * ACCESS EXCLUSIVE lock request on the table while the outer transaction waits on
+ * it: a lock-queue stall.
+ *
+ * Only correct when the caller can see the partner's partner-axis rows (system
+ * scope, or partner access to `partnerId`): under any narrower scope RLS filters
+ * the row out and this silently answers "not available". The guard callers use is
+ * that the `partners` row itself was visible — both tables are gated on
+ * breeze_has_partner_access.
+ */
+export async function isPartnerOnlinePaymentAvailableOnCallerConnection(partnerId: string): Promise<boolean> {
+  const [row] = await db
     .select({ status: stripeConnectAccounts.status, apiKey: stripeConnectAccounts.apiKey })
     .from(stripeConnectAccounts)
     .where(eq(stripeConnectAccounts.partnerId, partnerId))
-    .limit(1)));
+    .limit(1);
   return row != null && row.status === 'connected' && !!row.apiKey;
 }
 

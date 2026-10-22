@@ -1,4 +1,4 @@
-import { multiplyToCurrency, toMinorUnits } from '@breeze/shared';
+import { laborAmount, toMinorUnits } from '@breeze/shared';
 import type { TicketApprovalEnforcement, TicketApprovalTrigger } from '../../db/schema';
 
 /**
@@ -46,9 +46,9 @@ export type GateResult =
 
 /**
  * The money an entry would put on an invoice, in minor units of `budgetCurrency`.
- * Quantity derivation is invoiceAssembly's `entryHours` (minutes / 60, 2 dp)
- * and the product is `multiplyToCurrency` (one half-up round), so a held
- * figure equals what the invoice would charge. Null = unknown price.
+ * The shared labour rule (`laborAmount`, #9561) — the same helper invoice
+ * assembly uses for the line — so a held figure equals what the invoice would
+ * charge. Null = unknown price.
  */
 export function entryAmountMinor(
   e: Pick<GateEntry, 'minutes' | 'hourlyRate' | 'currencyCode'>,
@@ -56,8 +56,7 @@ export function entryAmountMinor(
 ): number | null {
   if (e.minutes == null || e.hourlyRate == null || e.currencyCode == null) return null;
   if (e.currencyCode !== budgetCurrency) return null;
-  const hours = (e.minutes / 60).toFixed(2);
-  return toMinorUnits(multiplyToCurrency(hours, e.hourlyRate, e.currencyCode), e.currencyCode);
+  return toMinorUnits(laborAmount(e.minutes, e.hourlyRate, e.currencyCode), e.currencyCode);
 }
 
 const PASS: GateResult = { kind: 'pass' };

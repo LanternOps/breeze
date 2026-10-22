@@ -720,6 +720,8 @@
       "timeout": "Zeitüberschreitung bei der Skriptausführung",
       "pending": "Das Skript wartet darauf, ausgeführt zu werden",
       "queued": "Das Skript wartet auf die Übermittlung an das Gerät",
+      "queuedAwaitingPickup": "Noch keine aktive Agent-Sitzung hat dies abgeholt. Das Skript wird zugestellt, sobald sich der Agent des Geräts das nächste Mal meldet.",
+      "deviceOffline": "Das Gerät ist offline. Das Skript wird zugestellt, sobald es wieder verbunden ist.",
       "cancelling": "Abbruch angefordert – warte auf Bestätigung durch das Gerät.",
       "cancelled": "Das Skript wurde auf dem Gerät gestoppt"
     },
@@ -743,7 +745,8 @@
       "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
       "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
       "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
-      "queuedOffline": "In Warteschlange — Gerät offline"
+      "queuedOffline": "In Warteschlange — Gerät offline",
+      "queuedAwaitingPickup": "In Warteschlange — wartet auf Abholung durch das Gerät"
     }
   },
   "executionHistory": {
@@ -774,7 +777,8 @@
       "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
       "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
       "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
-      "queuedOffline": "In Warteschlange — Gerät offline"
+      "queuedOffline": "In Warteschlange — Gerät offline",
+      "queuedAwaitingPickup": "In Warteschlange — wartet auf Abholung"
     },
     "summary": "{{shown}} von {{total}}",
     "headers": {

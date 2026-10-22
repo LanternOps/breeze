@@ -594,7 +594,7 @@
     "hidePassword": "Parolayı gizle",
     "portalLabelToggle": "Sağlayıcı adını müşteri portalında göster",
     "portalLabelHelp": "Varsayılan olarak kapalıdır: müşteriler üretici adı yerine \"Yönetilen bulut yedeklemesi\" ifadesini görür.",
-    "credentialsHelp": "Salt okunur role sahip, benzersiz parolalı ve iki adımlı doğrulaması olmayan ayrı bir Cove konsol kullanıcısı oluşturun. Breeze yalnızca durumu okur, Cove üzerinde hiçbir değişiklik yapmaz.",
+    "credentialsHelp": "Cove'da en üst düzey müşterinizin altında bir API kullanıcısı oluşturun (Management → Users → API Users). Bu müşterinin adını iş ortağı adı, API kullanıcısının oturum açma adını kullanıcı adı ve belirtecini parola olarak girin. Breeze yalnızca durumu okur; Cove'da hiçbir şeyi değiştirmez.",
     "test": "Bağlantıyı sına",
     "syncNow": "Şimdi eşitle",
     "reauthRequired": "Kimlik bilgileri reddedildi",

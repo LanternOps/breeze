@@ -1101,6 +1101,7 @@ export default function PatchesPage() {
           <UpdateRingForm
             key={editingRing?.id ?? 'new'}
             onSubmit={handleRingSubmit}
+            existingRingOrders={rings.map((ring) => ring.ringOrder)}
             onCancel={() => { setRingModalOpen(false); setEditingRing(null); }}
             submitLabel={
               ringSubmitting

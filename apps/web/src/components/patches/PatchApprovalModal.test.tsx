@@ -312,4 +312,29 @@ describe('PatchApprovalModal', () => {
 
     expect(await screen.findByText('Ring access denied')).toBeTruthy();
   });
+
+  describe('approve confirm wording (#9531)', () => {
+    const openConfirm = async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: /Approve/i }).at(-1)!);
+      await screen.findByTestId('confirm-fleet-action');
+    };
+
+    it('ring selected: names the device count and the org', async () => {
+      render(
+        <PatchApprovalModal open patch={PATCH} ringId="ring-1" orgName="Acme" ringDeviceCount={5} onClose={() => {}} />
+      );
+      await openConfirm();
+      expect(screen.getByText('Approve patch on 5 devices in Acme?')).toBeTruthy();
+    });
+
+    it('no ring: says partner-wide, with no "1 device" and no org name', async () => {
+      render(
+        <PatchApprovalModal open patch={PATCH} ringId={null} orgName="Acme" ringDeviceCount={null} onClose={() => {}} />
+      );
+      await openConfirm();
+      expect(screen.getByText('Approve patch for all organizations under your partner?')).toBeTruthy();
+      expect(screen.queryByText(/1 device/)).toBeNull();
+      expect(screen.queryByText(/Acme/)).toBeNull();
+    });
+  });
 });

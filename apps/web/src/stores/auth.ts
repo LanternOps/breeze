@@ -11,6 +11,7 @@ import {
 import { extractApiError } from '@/lib/apiError';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
+import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import {
   parseMfaChallengeResponse,
@@ -216,6 +217,9 @@ export const useAuthStore = create<AuthState>()(
         // currency (lib/useApproximateTotal), so they must not outlive the
         // session either.
         resetApproximateTotalCache();
+        // #8862: the profile page's stashed SSO re-auth grant is bound to this
+        // session; never let the next sign-in on this tab restore it.
+        clearSsoReauthGrant();
         // An evicted session must never come back via a stray throttle-recovery
         // reload — the redirect to /login owns navigation from here.
         cancelThrottleReload();

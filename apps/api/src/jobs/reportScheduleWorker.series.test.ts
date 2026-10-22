@@ -149,8 +149,9 @@ describe('processRunScheduledReport — series gate', () => {
 
   it('a stamped occurrence is no longer due, so no second skip row is written for it', () => {
     const key = 202610010900;
-    expect(isReportOccurrenceDue(null, key, 'UTC')).toBe(true);
-    expect(isReportOccurrenceDue(new Date('2026-10-01T15:00:00Z'), key, 'UTC')).toBe(false);
+    const savedBefore = new Date('2026-09-01T00:00:00Z');
+    expect(isReportOccurrenceDue(null, key, 'UTC', savedBefore)).toBe(true);
+    expect(isReportOccurrenceDue(new Date('2026-10-01T15:00:00Z'), key, 'UTC', savedBefore)).toBe(false);
   });
 
   it("on 'run' the worker re-reads the row and runs the CURRENT definition", async () => {

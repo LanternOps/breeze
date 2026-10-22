@@ -419,6 +419,24 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
     expect(reserveAiBudget).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['credits_exhausted', 'You are out of AI credits. Purchase more credits to continue.'],
+    ['plan_not_eligible', 'AI assistant requires the Community plan.'],
+  ] as const)('a %s preflight denial is a 402 carrying its code (#9450)', async (billingCode, error) => {
+    vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error, status: 402, billingCode });
+    const res = await postWithModel(app);
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error, code: billingCode });
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+  });
+
+  it('a spend-cap preflight denial is still a 402 with no code', async () => {
+    vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'Daily AI budget exceeded ($5.00)', status: 402 });
+    const res = await postWithModel(app);
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: 'Daily AI budget exceeded ($5.00)' });
+  });
+
   it('a model field that is not an offering id is a 400 (never a free-form model)', async () => {
     const res = await postWithModel(app, { model: 'claude-opus-5-5' });
     expect(res.status).toBe(400);
