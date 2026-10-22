@@ -45,7 +45,9 @@ export type PreviewSection = {
   error?: 'load_failed';
   /** Set when the caller lacks the staff permission(s) that gate this data (never read). */
   reason?: 'permission';
-  /** The staff permissions the caller is missing, for the "you need X" message. */
+  /** The staff permissions the caller is missing, for the "you need X" message.
+   *  With reason:'permission' the whole section is withheld; on the dashboard
+   *  it lists the permissions whose TILES were omitted (section still rendered). */
   missingPermissions?: string[];
 };
 
@@ -72,7 +74,7 @@ export type PortalPreview = {
 };
 
 type RunnerCtx = { orgId: string; timezone: string; now: Date; portalUser: PreviewPortalUser | null; can: StaffCan };
-type Runner = (ctx: RunnerCtx) => Promise<{ data: unknown; note?: string }>;
+type Runner = (ctx: RunnerCtx) => Promise<{ data: unknown; note?: string; missingPermissions?: string[] }>;
 
 // Which dashboard keys depend on WHO is looking (ticket ownership).
 const NO_USER_NOTE =
@@ -113,14 +115,15 @@ const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
         lacking.forEach((p) => missing.add(p));
       }
     }
-    if (missing.size > 0) {
-      notes.push(`Some tiles are not shown: you need ${[...missing].join(', ')} to preview them.`);
-    }
     if (!portalUser) {
       delete data.support;
       notes.push(NO_USER_NOTE);
     }
-    return notes.length > 0 ? { data, note: notes.join(' ') } : { data };
+    return {
+      data,
+      ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
+      ...(missing.size > 0 ? { missingPermissions: [...missing] } : {}),
+    };
   },
   security: async ({ orgId, timezone, now }) => ({
     data: await securityOverview(orgId, { days: 30, timezone, now }),
@@ -277,8 +280,12 @@ export async function buildPortalPreview(args: {
       continue;
     }
     try {
-      const { data, note } = await runner(ctx);
-      sections.push({ key, enabled: true, previewAvailable: true, data, ...(note ? { note } : {}) });
+      const { data, note, missingPermissions } = await runner(ctx);
+      sections.push({
+        key, enabled: true, previewAvailable: true, data,
+        ...(note ? { note } : {}),
+        ...(missingPermissions ? { missingPermissions } : {}),
+      });
     } catch (err) {
       // One broken read model must not blank the whole preview, and must not
       // read as "empty": the section reports the failure and feeds no
