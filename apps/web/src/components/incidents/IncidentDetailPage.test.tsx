@@ -46,6 +46,31 @@ describe('IncidentDetailPage actor labels (#9663)', () => {
     expect(screen.queryByText('brain')).toBeNull();
   });
 
+  it('passes unknown actors through and tolerates null actor / executedBy', async () => {
+    mockDetail(
+      [
+        { at: '2026-06-20T01:00:00Z', type: 'a', actor: 'ai-assistant', summary: 'Unknown actor step' },
+        { at: '2026-06-20T02:00:00Z', type: 'b', actor: null, summary: 'No actor step' },
+      ],
+      [{ id: 'a1', actionType: 'x', description: 'X', executedBy: null, status: 'completed', executedAt: '2026-06-20T01:00:00Z' }],
+    );
+    render(<IncidentDetailPage incidentId="inc-1" />);
+    expect(await screen.findByText('ai-assistant')).toBeInTheDocument();
+    expect(screen.getByText('No actor step')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /actions/i }));
+    expect(await screen.findByText('-')).toBeInTheDocument();
+  });
+
+  it('only hides the exact legacy enricher entry', async () => {
+    mockDetail([
+      { at: '2026-06-20T01:00:00Z', type: 'timeline_enriched', actor: 'system', summary: 'Added real context' },
+      { at: '2026-06-20T02:00:00Z', type: 'a', actor: 'user', summary: 'Added baseline timeline context for open incident' },
+    ]);
+    render(<IncidentDetailPage incidentId="inc-1" />);
+    expect(await screen.findByText('Added real context')).toBeInTheDocument();
+    expect(screen.getByText(/baseline timeline context/)).toBeInTheDocument();
+  });
+
   it('hides legacy empty enricher entries', async () => {
     mockDetail([
       { at: '2026-06-20T01:00:00Z', type: 'timeline_enriched', actor: 'system', summary: 'Added baseline timeline context for open incident' },
