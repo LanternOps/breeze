@@ -38,6 +38,7 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     status: 'devices.status',
     partnerId: 'devices.partnerId',
+    agentId: 'devices.agentId',
   },
   users: {
     id: 'users.id',
@@ -139,6 +140,7 @@ const DEFAULT_CANDIDATE = {
   orgType: 'customer',
   deviceIncarnation: 1,
   deviceInstallIncarnation: 1,
+  deviceAgentId: 'agent-1',
 };
 let candidateFor: ReturnType<typeof vi.fn>;
 function stubSingleClaimCandidate(
@@ -185,7 +187,24 @@ describe('command dispatch helpers', () => {
       status: 'claimed',
       id: 'cmd-1',
       executedAt: new Date('2026-03-31T00:00:00Z'),
+      agentId: 'agent-1',
     });
+  });
+
+  // #8318 §6.4: an in-place F3 re-enroll changes the device's agent_id without
+  // advancing its incarnation, so the flip itself re-checks the agent_id the
+  // candidate read returned; a 0-row flip is not a claim and nothing is pushed.
+  it('the single-command flip re-checks the agent_id read with the candidate, in the same statement', async () => {
+    stubSingleClaimCandidate({ deviceAgentId: 'agent-read-in-claim' });
+    const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where }) } as any);
+
+    expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
+      status: 'not_claimable', id: 'cmd-1',
+    });
+    const { sql: text, params } = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+    expect(text).toMatch(/EXISTS \(SELECT 1 FROM .+ WHERE .+ = .+ AND .+ = \$\d+\)/);
+    expect(params).toContain('agent-read-in-claim');
   });
 
   it('returns only commands that were successfully claimed from pending state', async () => {
@@ -643,7 +662,9 @@ describe('command dispatch helpers', () => {
       const set = stubSentUpdate();
 
       const at = new Date('2026-03-31T00:00:00Z');
-      expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({ status: 'claimed', id: 'cmd-1', executedAt: at });
+      expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({
+        status: 'claimed', id: 'cmd-1', executedAt: at, agentId: 'agent-1',
+      });
       expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'sent', executedAt: at }));
     });
 

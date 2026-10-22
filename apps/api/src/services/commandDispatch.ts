@@ -207,6 +207,13 @@ async function claimInSavepoint(commandId: string, executedAt: Date): Promise<Pu
           // goes to the agent_id read with it.
           commandIncarnationIsCurrentCondition(),
           commandStampMatchesCallerCondition({ installIncarnation: candidate.deviceInstallIncarnation }),
+          // #8318 §6.4: the agent_id the push is addressed to, re-checked in
+          // the same statement. The candidate read locks the command row only,
+          // and an in-place F3 re-enroll (routes/agents/enrollment.ts) changes
+          // `agent_id` WITHOUT advancing `install_incarnation`, so the
+          // incarnation re-check above cannot see it. A row whose device
+          // changed hands since the read stays `pending` for the new install.
+          sql`EXISTS (SELECT 1 FROM ${devices} WHERE ${devices.id} = ${deviceCommands.deviceId} AND ${devices.agentId} = ${candidate.deviceAgentId})`,
         ),
       )
       .returning({ id: deviceCommands.id });
