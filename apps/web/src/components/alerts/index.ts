@@ -4,7 +4,7 @@ export type { Alert, AlertSeverity, AlertStatus } from './AlertList';
 
 // Alert Details
 export { default as AlertDetails } from './AlertDetails';
-export type { NotificationHistory, StatusChange } from './AlertDetails';
+export type { NotificationHistory, LinkedAlertTicket } from './AlertDetails';
 
 // Alert conditions are authored as monitors at /alerts/monitors.
 // Retired alert rule and template routes redirect there.

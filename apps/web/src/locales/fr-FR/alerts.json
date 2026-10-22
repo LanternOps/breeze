@@ -112,6 +112,7 @@
     "close": "Fermer",
     "createALinkedTicketPreFilledFrom": "Créez un ticket lié pré-rempli à partir de cette alerte",
     "createTicket": "Créer un ticket",
+    "viewTicket": "Voir le ticket {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Mettez cette alerte en silence — arrête les notifications sans la résoudre",
     "suppress": "Masquer",
     "dismissPermanentlyHidesThisAlertForGood": "Ignorer définitivement — masque définitivement cette alerte (l’expiration de la garantie ne déclenchera pas de nouvelle alerte pour la même date de fin ; les autres conditions peuvent toujours ouvrir une nouvelle alerte si elles se reproduisent)",
