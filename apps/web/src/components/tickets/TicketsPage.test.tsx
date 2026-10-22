@@ -54,6 +54,7 @@ type WorkbenchProps = {
   refreshToken?: number;
   onTicketPatched?: (id: string, patch: Partial<TicketSummary>) => void;
   onChanged?: () => void;
+  onDeleted?: (id: string) => void;
 };
 const capturedWorkbenchProps: WorkbenchProps[] = [];
 const lastWorkbenchProps = () => capturedWorkbenchProps[capturedWorkbenchProps.length - 1];
@@ -1094,6 +1095,26 @@ describe('TicketsPage', () => {
       });
       expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
       expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
+    });
+
+    it('releases the hold when the held ticket is deleted from the workbench', async () => {
+      await resolveSelectedFromOpenView();
+      act(() => {
+        lastWorkbenchProps().onDeleted?.('tk-healthy');
+        lastWorkbenchProps().onChanged?.();
+      });
+      // The deleted ticket must not linger in the pane; auto-select takes over.
+      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
+      expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
+    });
+
+    it('releases the hold after a bulk action', async () => {
+      await resolveSelectedFromOpenView();
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+      await waitFor(() => expect(showToast).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
     });
 
     it('releases the held ticket once the user selects another row', async () => {

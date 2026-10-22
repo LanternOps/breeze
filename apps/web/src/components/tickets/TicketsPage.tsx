@@ -366,6 +366,9 @@ export default function TicketsPage() {
       return base ? { ...base, ...patch } : prev;
     });
   }, [patchTicketRow]);
+  const onWorkbenchDeleted = useCallback((id: string) => {
+    setHeldTicket((prev) => (prev?.id === id ? null : prev));
+  }, []);
 
   // Debounced background reconcile after a mutation: coalesces bursts (rapid
   // status/assignee changes) into one list+stats refresh instead of one per click.
@@ -520,6 +523,8 @@ export default function TicketsPage() {
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       showBulkOutcomeToast(result.data, t('ticketsPage.bulk.updatedPast'), t);
+      // The snapshot may now be stale (or deleted); let the queue re-select.
+      setHeldTicket(null);
       clearBulkSelection();
       setPaneRefresh((t) => t + 1);
       void fetchTickets();
@@ -543,6 +548,7 @@ export default function TicketsPage() {
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       showBulkOutcomeToast(result.data, t('ticketsPage.bulk.deletedPast'), t);
+      setHeldTicket(null);
       clearBulkSelection();
       setPaneRefresh((t) => t + 1);
       void fetchTickets();
@@ -914,7 +920,7 @@ export default function TicketsPage() {
                   </div>
                 )}
                 <div className="min-h-0 flex-1">
-                  <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={onWorkbenchPatched} onChanged={scheduleReconcile} />
+                  <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={onWorkbenchPatched} onDeleted={onWorkbenchDeleted} onChanged={scheduleReconcile} />
                 </div>
               </div>
             ) : (
