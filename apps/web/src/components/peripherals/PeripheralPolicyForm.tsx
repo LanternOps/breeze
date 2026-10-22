@@ -22,12 +22,40 @@ type PeripheralPolicy = {
   action: string;
   isActive: boolean;
   exceptions?: Array<Record<string, unknown>>;
+  targetType?: string;
+  targetIds?: {
+    siteIds?: string[];
+    groupIds?: string[];
+    deviceIds?: string[];
+  } | null;
 };
 
 type PeripheralPolicyFormProps = {
   policy?: PeripheralPolicy | null;
   onClose: (refresh?: boolean) => void;
 };
+
+// The form has no target picker (#9620). On edit it shows the current target
+// read-only and leaves targetType/targetIds out of the body, which the API
+// treats as "unchanged".
+function targetSummary(
+  policy: PeripheralPolicy,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string | null {
+  const ids = policy.targetIds ?? {};
+  switch (policy.targetType) {
+    case "organization":
+      return t("peripheralPolicyForm.targets.organization");
+    case "site":
+      return t("peripheralPolicyForm.targets.site", { total: ids.siteIds?.length ?? 0 });
+    case "group":
+      return t("peripheralPolicyForm.targets.group", { total: ids.groupIds?.length ?? 0 });
+    case "device":
+      return t("peripheralPolicyForm.targets.device", { total: ids.deviceIds?.length ?? 0 });
+    default:
+      return null;
+  }
+}
 
 const emptyException = (): ExceptionRule => ({
   vendor: "",
@@ -76,6 +104,8 @@ export default function PeripheralPolicyForm({
     }));
   });
 
+  const targetLabel = isEdit && policy ? targetSummary(policy, t) : null;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -85,8 +115,6 @@ export default function PeripheralPolicyForm({
       name,
       deviceClass,
       action,
-      targetType: "organization",
-      targetIds: {},
       isActive,
       exceptions: exceptions
         .filter((ex) => ex.vendor || ex.product || ex.serialNumber)
@@ -101,8 +129,14 @@ export default function PeripheralPolicyForm({
     };
 
     if (isEdit) {
+      // Targeting is not editable here: omit it so the API keeps the stored
+      // targetType/targetIds rather than widening the policy to the org (#9620).
       body.id = policy!.id;
-    } else if (isPartnerScope) {
+    } else {
+      body.targetType = "organization";
+      body.targetIds = {};
+    }
+    if (!isEdit && isPartnerScope) {
       // Create-only: updates never move a policy between ownership axes.
       body.ownerScope = ownerScope;
     }
@@ -250,6 +284,23 @@ export default function PeripheralPolicyForm({
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
+
+          {targetLabel && (
+            <div data-testid="peripheral-policy-target-section">
+              <span className="text-sm font-medium">
+                {t("peripheralPolicyForm.appliesTo")}
+              </span>
+              <p
+                className="mt-1 rounded-md border bg-muted/30 px-3 py-2 text-sm"
+                data-testid="peripheral-policy-target"
+              >
+                {targetLabel}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t("peripheralPolicyForm.targetReadOnlyHint")}
+              </p>
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
