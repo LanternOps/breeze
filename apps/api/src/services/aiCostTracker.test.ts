@@ -1480,6 +1480,29 @@ describe('getAggregateUsageSummary (#9667)', () => {
     expect(res.alerts).toEqual({ fired: [] });
   });
 
+  it('treats null columns as zero', async () => {
+    usageRows([{ inputTokens: null, outputTokens: null, totalCostCents: 7, messageCount: null }], []);
+    const res = await getAggregateUsageSummary(['org-a']);
+    expect(res.daily).toEqual({ inputTokens: 0, outputTokens: 0, totalCostCents: 7, messageCount: 0 });
+  });
+
+  it('queries the current UTC daily and monthly period keys', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-22T23:30:00Z'));
+    try {
+      const where = usageRows([], []);
+      await getAggregateUsageSummary(['org-a']);
+      const calls = JSON.stringify(where.mock.calls);
+      expect(where).toHaveBeenCalledTimes(2);
+      expect(calls).toContain('{"_eq":["period","daily"]}');
+      expect(calls).toContain('{"_eq":["periodKey","2026-10-22"]}');
+      expect(calls).toContain('{"_eq":["period","monthly"]}');
+      expect(calls).toContain('{"_eq":["periodKey","2026-10"]}');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('filters to the given org ids', async () => {
     const where = usageRows([], []);
     await getAggregateUsageSummary(['org-a', 'org-b']);
@@ -1489,6 +1512,7 @@ describe('getAggregateUsageSummary (#9667)', () => {
   it('does not filter by org for unrestricted (null) callers', async () => {
     const where = usageRows([], []);
     await getAggregateUsageSummary(null);
+    expect(where).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(where.mock.calls)).not.toContain('_inArray');
   });
 
