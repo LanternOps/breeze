@@ -27,4 +27,9 @@ describe('security Incidents label (#9550)', () => {
     expect(common.longTail.incidents.IncidentsPage.title).toBe(EXPECTED[locale]);
     expect(pages.titles.incidents).toBe(EXPECTED[locale]);
   });
+
+  it.each(LOCALES)('%s: does not collide with the Service Desk Incidents label', (locale) => {
+    const common = read(locale, 'common');
+    expect(common.nav.incidents).not.toBe(common.nav.ticketsIncidents);
+  });
 });
