@@ -1212,7 +1212,7 @@
           "tryAgain": "Tekrar deneyin"
         },
         "delete": {
-          "activeWarning": "Bu bağlantı etkin. Bilet senkronizasyonu hemen durdurulacaktır.",
+          "activeWarning": "Bu bağlantı etkin. Silindiğinde bağlantı hemen kaldırılır.",
           "confirm": "{{name}} silmek istediğinizden emin misiniz?",
           "irreversible": "Bu işlem geri alınamaz.",
           "title": "PSA Bağlantısını Sil",

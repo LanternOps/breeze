@@ -578,6 +578,6 @@ describe('PsaConnectionsPage round-trip contract', () => {
     expect(screen.queryByLabelText(/enable sync/i)).toBeNull();
     expect(screen.queryByLabelText(/sync interval/i)).toBeNull();
     expect(screen.queryByLabelText(/sync direction/i)).toBeNull();
-    expect(screen.getByTestId("psa-ticket-sync-unavailable")).toBeTruthy();
+    expect(screen.getByTestId('psa-ticket-sync-unavailable')).toBeTruthy();
   });
 });

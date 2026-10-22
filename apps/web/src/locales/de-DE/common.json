@@ -1212,7 +1212,7 @@
           "tryAgain": "Erneut versuchen"
         },
         "delete": {
-          "activeWarning": "Diese Verbindung ist aktiv. Die Ticket-Synchronisierung wird sofort beendet.",
+          "activeWarning": "Diese Verbindung ist aktiv. Beim Löschen wird die Verbindung sofort entfernt.",
           "confirm": "Möchten Sie {{name}} wirklich löschen?",
           "irreversible": "Diese Aktion kann nicht rückgängig gemacht werden.",
           "title": "PSA-Verbindung löschen",
