@@ -25,8 +25,9 @@ export const SOFTWARE_INSTALL_DOWNLOAD_TIMEOUT_MS = 15 * 60 * 1000;
 export const SOFTWARE_INSTALL_INSTALLER_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
- * Agent kills each pre/post-install script after this long (#6958). An install
- * may run two scripts (pre and post).
+ * Budget for each pre/post-install script (#6958); an install may run two. The
+ * agent-side enforcement and its Go pin land with the agent PR of #6958 — until
+ * then this value is only consumed by the server timeout budget below.
  */
 export const SOFTWARE_INSTALL_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -35,6 +36,6 @@ export const SOFTWARE_INSTALL_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
  * passed since the command was sent (jobs/staleCommandReaper.ts). Deliberately
  * above the agent's own combined ceilings, so the server only times out after
  * the agent has provably stopped. Budget: download 15 + installer 30 + two
- * scripts 2×10 + settle 1 = 66 min, plus margin = 75 min.
+ * scripts 2×10 + detection settle window 1 = 66 min, plus margin = 75 min.
  */
 export const SOFTWARE_INSTALL_SERVER_TIMEOUT_MS = 75 * 60 * 1000;
