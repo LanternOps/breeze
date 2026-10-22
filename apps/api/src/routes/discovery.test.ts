@@ -968,6 +968,8 @@ describe('discovery routes', () => {
       ['Cisco IOS', 'Cisco IOS'],
       [{ os: 42 }, null],
       [null, null],
+      ['', null],
+      [{ os: '' }, null],
     ])('returns osFingerprint %j as %j (#9645)', async (stored, expected) => {
       const row = buildRow();
       row.asset.osFingerprint = stored as any;
@@ -1484,6 +1486,21 @@ describe('discovery routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data[0].alertSettings).toBeNull();
+    });
+
+    it('skips the last-run lookup when no profile is visible (#9644)', async () => {
+      (db.select as any).mockClear();
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }),
+      });
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(1);
     });
 
     it('returns each profile\'s own newest completed-job time, null when none (#9644)', async () => {

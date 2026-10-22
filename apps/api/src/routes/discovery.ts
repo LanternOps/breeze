@@ -55,10 +55,10 @@ import {
 // The worker stores the agent's OS string as `{ os: '<name>' }` in jsonb;
 // the API contract is a plain string (#9645).
 function normalizeOsFingerprint(value: unknown): string | null {
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return value || null;
   if (value && typeof value === 'object') {
     const os = (value as { os?: unknown }).os;
-    return typeof os === 'string' ? os : null;
+    return typeof os === 'string' && os ? os : null;
   }
   return null;
 }
