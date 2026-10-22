@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} aprobación pendiente",
     "pendingApprovals_other": "{{count}} aprobaciones pendientes",
     "tickets": "Tickets",
-    "incidents": "Incidentes",
+    "incidents": "Incidentes de seguridad",
     "remoteAccess": "Acceso remoto",
     "scripts": "Scripts",
     "patches": "Parches",
@@ -2223,7 +2223,7 @@
         },
         "loading": "Cargando incidencias...",
         "tryAgain": "Intentar otra vez",
-        "title": "Incidentes",
+        "title": "Incidentes de seguridad",
         "description": "Seguimiento de incidentes y hallazgos de EDR en todas sus organizaciones.",
         "filters": {
           "tracked": "Rastreado",

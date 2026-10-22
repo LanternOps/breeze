@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} aprovação pendente",
     "pendingApprovals_other": "{{count}} aprovações pendentes",
     "tickets": "Chamados",
-    "incidents": "Incidentes",
+    "incidents": "Incidentes de segurança",
     "remoteAccess": "Acesso Remoto",
     "scripts": "Scripts",
     "patches": "Correções",
@@ -2223,7 +2223,7 @@
         },
         "loading": "Carregando incidentes...",
         "tryAgain": "Tentar novamente",
-        "title": "Incidentes",
+        "title": "Incidentes de segurança",
         "description": "Incidentes acompanhados e achados de EDR em todas as suas organizações.",
         "filters": {
           "tracked": "Acompanhados",
