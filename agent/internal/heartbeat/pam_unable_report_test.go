@@ -230,8 +230,53 @@ func TestDeliverPamUnableHonorsRetryAfter(t *testing.T) {
 		[]time.Duration{5 * time.Second}, func(d time.Duration) { slept = append(slept, d) }, time.Now); err != nil {
 		t.Fatalf("deliverPamUnable: %v", err)
 	}
-	if len(slept) != 1 || slept[0] != 45*time.Second {
-		t.Fatalf("slept = %v, want [45s] from Retry-After", slept)
+	if len(slept) != 1 || slept[0] > 45*time.Second || slept[0] < 44*time.Second {
+		t.Fatalf("slept = %v, want [~45s] from Retry-After", slept)
+	}
+}
+
+// Time already spent inside the attempt after the server's answer (httputil
+// sleeping toward Retry-After until the attempt timeout) counts toward the
+// wait: the next attempt comes Retry-After after the answer, not after the
+// attempt returned.
+func TestDeliverPamUnableCountsRetryAfterAlreadySpent(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	var offset time.Duration
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		i := n
+		n++
+		mu.Unlock()
+		if i == 0 {
+			// From here on the agent's clock reads 20 s later than the
+			// moment httputil records the answer, as if Do had slept that
+			// long toward the Retry-After before its context ended.
+			mu.Lock()
+			offset = 20 * time.Second
+			mu.Unlock()
+			w.Header().Set("Retry-After", "45")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+	h := unableReportHeartbeat(ts.URL)
+	var slept []time.Duration
+	now := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return time.Now().Add(offset)
+	}
+	sleep := func(d time.Duration) { slept = append(slept, d) }
+
+	if err := h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, 5*time.Minute,
+		[]time.Duration{5 * time.Second}, sleep, now); err != nil {
+		t.Fatalf("deliverPamUnable: %v", err)
+	}
+	if len(slept) != 1 || slept[0] > 25*time.Second || slept[0] < 24*time.Second {
+		t.Fatalf("slept = %v, want [~25s]: 45s Retry-After minus the 20s already spent", slept)
 	}
 }
 

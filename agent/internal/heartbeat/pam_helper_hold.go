@@ -15,8 +15,9 @@ const pamHelperLeaseTTL = 5 * time.Minute
 // pamHelperSpawnWait bounds how long RunPamFlow waits for an on-demand SYSTEM
 // helper to come up, and is the point at which the agent gives up on the
 // request and reports it unable (helper_start_failed). Why 30 s:
-//   - the wait eats into the dialog's share of consent.exe's ~120 s lifetime,
-//     so it stays far below the lifecycle's 90 s helper startup timeout;
+//   - the user is sitting at a UAC prompt PAM is not handling while the agent
+//     waits, so the wait stays well below the lifecycle's 90 s helper startup
+//     timeout rather than matching it;
 //   - once it expires RunPamFlow returns and the user never sees the PAM
 //     dialog for this prompt, so a request left pending could only be approved
 //     for something the user never confirmed;

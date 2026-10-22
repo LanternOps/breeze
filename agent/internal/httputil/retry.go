@@ -140,7 +140,7 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 			nextSleepOverride = ra
 		}
 		resp.Body.Close()
-		lastAnswer = &RetryableStatusError{StatusCode: resp.StatusCode, URL: url, RetryAfter: ra}
+		lastAnswer = &RetryableStatusError{StatusCode: resp.StatusCode, URL: url, RetryAfter: ra, AnsweredAt: time.Now()}
 		lastErr = lastAnswer
 	}
 	lastErr = withServerAnswer(lastErr, lastAnswer)
@@ -178,6 +178,10 @@ type RetryableStatusError struct {
 	// RetryAfter is the server's Retry-After on that answer (0 if absent),
 	// so a caller that retries on its own schedule can still honor it.
 	RetryAfter time.Duration
+	// AnsweredAt is when that answer arrived. Do may already have spent part
+	// of RetryAfter sleeping before its context ended, so a caller waits
+	// RetryAfter minus the time since AnsweredAt, not RetryAfter again.
+	AnsweredAt time.Time
 }
 
 func (e *RetryableStatusError) Error() string {

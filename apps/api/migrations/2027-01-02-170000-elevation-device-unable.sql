@@ -29,8 +29,11 @@ ALTER TABLE elevation_requests ADD COLUMN IF NOT EXISTS device_unable_at timesta
 ALTER TABLE elevation_requests ADD COLUMN IF NOT EXISTS device_unable_reason varchar(64);
 ALTER TABLE elevation_requests ADD COLUMN IF NOT EXISTS device_unable_detail text;
 
-DO $$ BEGIN
-  ALTER TABLE elevation_requests
+-- Drop then re-add rather than swallowing duplicate_object, so a constraint
+-- of the same name with a different definition (a partial or hand-applied
+-- rollout) is replaced with this one instead of being kept.
+ALTER TABLE elevation_requests DROP CONSTRAINT IF EXISTS elevation_requests_device_unable_chk;
+ALTER TABLE elevation_requests
     ADD CONSTRAINT elevation_requests_device_unable_chk
     CHECK (
       (device_unable_at IS NULL AND device_unable_reason IS NULL AND device_unable_detail IS NULL)
@@ -41,10 +44,6 @@ DO $$ BEGIN
         AND (device_unable_detail IS NULL OR char_length(device_unable_detail) <= 1000)
       )
     );
-EXCEPTION
-  WHEN duplicate_object THEN NULL;
-  WHEN duplicate_table THEN NULL;
-END $$;
 
 -- Audit event for the report. ALTER TYPE ... ADD VALUE inside autoMigrate's
 -- per-file transaction is fine on Postgres 12+ because this file never uses
