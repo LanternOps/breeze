@@ -136,7 +136,50 @@ describe('CisRemediationsTab approve/reject (#9605)', () => {
       note: 'ok by me',
     });
     await waitFor(() => expect(onMutate).toHaveBeenCalled());
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: expect.stringMatching(/1\.1\.1.*approved/i) }),
+    );
+    await waitFor(() => expect(screen.queryByTestId('cis-remediation-decision-confirm')).toBeNull());
+  });
+
+  it('refetches the table itself when no onMutate is wired', async () => {
+    mockApi();
+    render(<CisRemediationsTab refreshKey={0} />);
+    await screen.findByText('host-pending');
+    const listCalls = () => fetchWithAuth.mock.calls.filter(([url]) => String(url).startsWith('/cis/remediations')).length;
+    const before = listCalls();
+
+    fireEvent.click(within(row('host-pending')).getByRole('button', { name: /approve/i }));
+    fireEvent.click(await screen.findByTestId('cis-remediation-decision-confirm'));
+
+    await waitFor(() => expect(listCalls()).toBe(before + 1));
+  });
+
+  it('keeps the dialog and note open after a server error so the user can retry', async () => {
+    mockApi(() => json({ error: 'Failed to queue remediation actions, approval rolled back' }, 500));
+    render(<CisRemediationsTab refreshKey={0} />);
+    await screen.findByText('host-pending');
+
+    fireEvent.click(within(row('host-pending')).getByRole('button', { name: /approve/i }));
+    fireEvent.change(await screen.findByTestId('cis-remediation-decision-note'), { target: { value: 'retry me' } });
+    fireEvent.click(screen.getByTestId('cis-remediation-decision-confirm'));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/rolled back/) })),
+    );
+    expect(screen.getByTestId('cis-remediation-decision-note')).toHaveValue('retry me');
+  });
+
+  it('closes the dialog when the row was already decided elsewhere (non-retryable 400)', async () => {
+    mockApi(() => json({ error: 'No pending remediation actions eligible for approval update', skippedIds: [PENDING.id] }, 400));
+    render(<CisRemediationsTab refreshKey={0} />);
+    await screen.findByText('host-pending');
+
+    fireEvent.click(within(row('host-pending')).getByRole('button', { name: /approve/i }));
+    fireEvent.click(await screen.findByTestId('cis-remediation-decision-confirm'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(screen.queryByTestId('cis-remediation-decision-confirm')).toBeNull());
   });
 
   it('rejects with approved:false and omits an empty note', async () => {
@@ -153,6 +196,11 @@ describe('CisRemediationsTab approve/reject (#9605)', () => {
       actionIds: [OWN_PENDING.id],
       approved: false,
     });
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: expect.stringMatching(/2\.2\.2.*rejected/i) }),
+      ),
+    );
   });
 
   it('surfaces the MFA requirement instead of a generic failure', async () => {
@@ -168,6 +216,8 @@ describe('CisRemediationsTab approve/reject (#9605)', () => {
         expect.objectContaining({ type: 'error', message: expect.stringMatching(/multi-factor/i) }),
       ),
     );
+    // Retryable once the user signs in with MFA: the dialog stays open.
+    expect(screen.getByTestId('cis-remediation-decision-confirm')).toBeInTheDocument();
   });
 
   it('warns when the approval was accepted but the action could not be queued', async () => {

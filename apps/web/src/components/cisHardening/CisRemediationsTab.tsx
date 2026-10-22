@@ -58,6 +58,12 @@ type DecisionResult = {
   failedActionIds?: string[];
 };
 
+const isRetryableDecisionError = (err: unknown) =>
+  !(err instanceof ActionError) ||
+  err.status === 0 ||
+  err.status >= 500 ||
+  err.code === 'MFA_REQUIRED';
+
 const isDecidable = (rem: Remediation) =>
   rem.status === 'pending_approval' && rem.approvalStatus === 'pending';
 
@@ -163,9 +169,12 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: errorFallback });
-      // Keep the dialog open on failure so the note survives a retry (e.g.
-      // after re-authenticating with MFA). The row may also have been decided
-      // by someone else meanwhile, so refetch either way.
+      // Keep the dialog (and its note) open only when a retry can succeed:
+      // network failure, a server error, or MFA (after signing in again).
+      // Any other 4xx (already decided by someone else, gone, out of scope,
+      // own request) would fail the same way again, so close it.
+      if (!isRetryableDecisionError(err)) setDecision(null);
+      // The row may have been decided by someone else meanwhile: refetch either way.
     } finally {
       setDeciding(false);
     }
@@ -287,17 +296,23 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
                         const ownRequest = !!currentUserId && rem.requestedBy === currentUserId;
                         return (
                           <div className="inline-flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => openDecision(rem, true)}
-                              disabled={ownRequest}
-                              title={ownRequest ? t('cisHardeningCisRemediationsTab.decision.ownRequest') : undefined}
-                              data-testid={`cis-remediation-approve-${rem.id}`}
-                              className="inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                              {t('cisHardeningCisRemediationsTab.decision.approve')}
-                            </button>
+                            {/* The hint sits on a wrapper (the disabled button passes pointer events
+                                through to it): a disabled button fires none, so its own `title` is unreliable. */}
+                            <span title={ownRequest ? t('cisHardeningCisRemediationsTab.decision.ownRequest') : undefined}>
+                              <button
+                                type="button"
+                                onClick={() => openDecision(rem, true)}
+                                disabled={ownRequest}
+                                aria-label={ownRequest
+                                  ? `${t('cisHardeningCisRemediationsTab.decision.approve')}: ${t('cisHardeningCisRemediationsTab.decision.ownRequest')}`
+                                  : undefined}
+                                data-testid={`cis-remediation-approve-${rem.id}`}
+                                className="inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs font-medium hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+                              >
+                                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                                {t('cisHardeningCisRemediationsTab.decision.approve')}
+                              </button>
+                            </span>
                             <button
                               type="button"
                               onClick={() => openDecision(rem, false)}
