@@ -318,6 +318,7 @@ export const useAuthStore = create<AuthState>()(
 
 // Org-context injection — orgStore registers a provider to avoid circular imports
 let _getOrgId: (() => string | null) | null = null;
+let _orgStoreLoad: Promise<unknown> | null = null;
 export function registerOrgIdProvider(fn: () => string | null) {
   _getOrgId = fn;
 }
@@ -1354,11 +1355,11 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // lazily here (dynamic import, so no auth<->orgStore cycle) so the first
   // request is scoped to the persisted org instead of the whole book (#9642).
   if (!_getOrgId && !skipOrgIdInjection && !orgIdOverride && typeof window !== 'undefined') {
-    try {
-      await import('./orgStore');
-    } catch (err) {
+    _orgStoreLoad ??= import('./orgStore').catch((err) => {
+      _orgStoreLoad = null; // allow a retry on the next call
       console.error('[auth] could not load org store for org scoping:', err);
-    }
+    });
+    await _orgStoreLoad;
   }
   const url = applyOrgId(rawUrl, { skipOrgIdInjection, orgIdOverride, ambient: _getOrgId?.() ?? null });
 

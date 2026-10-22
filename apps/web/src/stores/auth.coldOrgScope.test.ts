@@ -52,4 +52,14 @@ describe('fetchWithAuth cold load (no orgStore imported yet)', () => {
 
     expect(String(fetchSpy.mock.calls[0]?.[0])).not.toContain('orgId=');
   });
+
+  it('sends no orgId on a global-scope (catalog) route even with a persisted org', async () => {
+    window.history.pushState({}, '', '/scripts');
+    const { fetchWithAuth } = await freshAuth();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+
+    await fetchWithAuth('/scripts');
+
+    expect(String(fetchSpy.mock.calls[0]?.[0])).not.toContain('orgId=');
+  });
 });
