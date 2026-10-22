@@ -242,6 +242,8 @@ export type PortalSectionGateRow = {
   exact?: boolean;
   /** Skip portalAuthMiddleware: an ancestor row already applies it. */
   inheritsAuth?: boolean;
+  /** Key of a row whose gate ALSO applies (Hono stacks /reports/* under /reports/lifecycle/*). */
+  parent?: string;
   /** index.ts mounts this row by hand (see portalSectionGate). */
   customMount?: boolean;
 };
@@ -253,7 +255,7 @@ export const PORTAL_SECTION_GATES = [
   { key: 'reports', pathPrefix: '/reports', flags: ['enableReports'], routeFile: 'reports.ts' },
   // Narrower second gate: /reports/lifecycle/* needs enableReports (above,
   // registered first) AND enableLifecycle.
-  { key: 'lifecycleReports', pathPrefix: '/reports/lifecycle', flags: ['enableLifecycle'], routeFile: 'reports.ts', inheritsAuth: true },
+  { key: 'lifecycleReports', pathPrefix: '/reports/lifecycle', flags: ['enableLifecycle'], routeFile: 'reports.ts', inheritsAuth: true, parent: 'reports' },
   { key: 'service', pathPrefix: '/service', flags: ['enableService'], routeFile: 'service.ts' },
   { key: 'hardwareHealth', pathPrefix: '/hardware-health', flags: ['enableHardwareHealth'], routeFile: 'hardwareHealth.ts' },
   { key: 'hardwareInventory', pathPrefix: '/hardware-inventory', flags: ['enableHardwareInventory'], routeFile: 'hardwareInventory.ts' },
@@ -271,6 +273,14 @@ export const PORTAL_SECTION_GATES = [
   // Exact-path wrapper that must run before the generic /tickets/* middleware.
   { key: 'ticketUsage', pathPrefix: '/tickets/usage', flags: ['enableSupportUsage'], routeFile: 'tickets.ts', exact: true, customMount: true },
 ] as const satisfies readonly PortalSectionGateRow[];
+
+/** Every flag a request to this section must pass: its parent chain's flags, then its own. */
+export function portalSectionEffectiveFlags(row: PortalSectionGateRow): readonly StrictPortalGateFlag[] {
+  const parent = row.parent
+    ? (PORTAL_SECTION_GATES as readonly PortalSectionGateRow[]).find((g) => g.key === row.parent)
+    : undefined;
+  return [...(parent ? portalSectionEffectiveFlags(parent) : []), ...row.flags];
+}
 
 export type PortalSectionKey = typeof PORTAL_SECTION_GATES[number]['key'];
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -7,6 +8,7 @@ const h = vi.hoisted(() => ({
   authRef: { current: null as any },
   permsRef: { current: { allowedSiteIds: null as string[] | null } },
   selectQueue: vi.fn(),
+  wheres: [] as unknown[],
   insert: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
@@ -38,7 +40,7 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => h.selectQueue()) })) })),
+      from: vi.fn(() => ({ where: vi.fn((p: unknown) => { h.wheres.push(p); return { limit: vi.fn(() => h.selectQueue()) }; }) })),
     })),
     insert: h.insert,
     update: h.update,
@@ -103,6 +105,7 @@ function queue(...rows: unknown[][]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.wheres.length = 0;
   auth();
   h.permsRef.current = { allowedSiteIds: null };
   h.resolveOrgTimezone.mockResolvedValue('UTC');
@@ -136,6 +139,22 @@ describe('GET /organizations/:id/portal-preview — access (#9350)', () => {
     expect(res.status).toBe(404);
     expect(h.audit).not.toHaveBeenCalled();
     expect(h.dashboardForOrg).not.toHaveBeenCalled();
+  });
+
+  it('the portal-user lookup predicate is scoped to THIS org as well as the user id', async () => {
+    queue([{ id: ORG, partnerId: 'p-1' }], [{ id: PU, contactId: null, name: 'Pat', email: 'p@x.example' }], [flagsRow([])]);
+    await get(`?portalUserId=${PU}`);
+    const compiled = h.wheres.map((w) => new PgDialect().sqlToQuery(w as never));
+    const lookup = compiled.find((q) => q.params.includes(PU));
+    expect(lookup, 'portal user lookup not found').toBeTruthy();
+    expect(lookup!.params).toContain(ORG);
+    expect(lookup!.sql).toMatch(/"portal_users"\."org_id"/);
+    expect(lookup!.sql).toMatch(/"portal_users"\."id"/);
+  });
+
+  it('no resolved permissions fails closed (403)', async () => {
+    h.permsRef.current = undefined as never;
+    expect((await get()).status).toBe(403);
   });
 
   it('malformed portalUserId → 400', async () => {
@@ -272,6 +291,13 @@ describe('preview ↔ portal parity (#9350): same read model, same payload', () 
     const preview = (await (await get(`?portalUserId=${PU}`)).json()).data;
     const portal = await (await portalApp().request(path)).json();
     expect(preview.sections.find((s: any) => s.key === key).data).toEqual(portal);
+    // Same read model called with the same org, timezone and (dashboard) ownership.
+    const fn = ({ dashboard: h.dashboardForOrg, service: h.serviceOverview, documents: h.documentsForOrg } as Record<string, ReturnType<typeof vi.fn>>)[key]!;
+    expect(fn).toHaveBeenCalledTimes(2);
+    const [a, b] = fn.mock.calls as [any[], any[]];
+    expect(a[0]).toBe(b[0]);
+    expect(a[1].timezone).toBe(b[1].timezone);
+    expect(a[2]).toEqual(b[2]);
   });
 
   it("dashboard support count equals the portal dashboard's for that user (same ownership predicate)", async () => {

@@ -207,6 +207,34 @@ describe('buildPortalPreview (#9350)', () => {
     expect(dash.note).toBeUndefined();
   });
 
+  it('lifecycleReports needs Reports too (parent gate), exactly like the portal router', async () => {
+    m.brandingRow.mockResolvedValue([{ ...ALL_OFF, enableLifecycle: true, ...BRANDED }]);
+    const off = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    expect(off.sections.find((s) => s.key === 'lifecycleReports')!.enabled).toBe(false);
+    m.brandingRow.mockResolvedValue([{ ...ALL_OFF, enableLifecycle: true, enableReports: true, ...BRANDED }]);
+    const on = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    expect(on.sections.find((s) => s.key === 'lifecycleReports')!.enabled).toBe(true);
+  });
+
+  it('a throwing read model fails only its own section (logged, not "empty"); others still render', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    m.brandingRow.mockResolvedValue([{ ...ALL_OFF, enableDocuments: true, enableService: true, ...BRANDED }]);
+    m.documentsForOrg.mockRejectedValue(new Error('boom'));
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    expect(out.sections.find((s) => s.key === 'documents')).toMatchObject({ enabled: true, data: null, error: 'load_failed' });
+    expect(out.sections.find((s) => s.key === 'service')!.data).toEqual({ groups: [] });
+    expect(out.readiness.map((r) => r.code)).not.toContain('documents_empty');
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('builder: Documents on with no documents yields exactly documents_empty; an all-null branding row yields branding_unset', async () => {
+    m.brandingRow.mockResolvedValue([{ ...ALL_OFF, enableDocuments: true, logoUrl: null, primaryColor: null, welcomeMessage: null, supportEmail: null, supportPhone: null }]);
+    m.documentsForOrg.mockResolvedValue({ groups: [] });
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null });
+    expect(out.readiness.map((r) => r.code).sort()).toEqual(['branding_unset', 'documents_empty']);
+  });
+
   it('sections without a preview runner report their flag but data:null', async () => {
     m.brandingRow.mockResolvedValue([{ ...allOn, ...BRANDED }]);
     const out = await buildPortalPreview({ orgId: ORG, portalUser: null });

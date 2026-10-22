@@ -35,7 +35,8 @@ export function registerOrgPortalPreviewRoutes(orgRoutes: Hono) {
     zValidator('query', previewQuery),
     async (c) => {
       const perms = c.get('permissions') as UserPermissions | undefined;
-      if (Array.isArray(perms?.allowedSiteIds)) {
+      // Fail closed: no resolved permissions is treated like a site restriction.
+      if (!perms || Array.isArray(perms.allowedSiteIds)) {
         return c.json({
           error: 'Site-restricted users cannot preview the customer portal: its data is organization-wide',
           code: ERROR_CODES.ACCESS_DENIED,

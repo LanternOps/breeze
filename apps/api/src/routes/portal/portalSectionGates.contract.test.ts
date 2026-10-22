@@ -50,5 +50,10 @@ describe('portal section gate table (#9350)', () => {
     const handWritten = indexSrc.match(/portalRoutes\.use\([^)]*createPortalFeatureGateStrict\(/g) ?? [];
     expect(handWritten).toEqual([]);
     expect(indexSrc).toContain('PORTAL_SECTION_GATES');
+    // customMount rows are mounted by hand but must still use the table's gate.
+    for (const g of PORTAL_SECTION_GATES.filter((r) => 'customMount' in r)) {
+      expect(indexSrc, g.key).toContain(`portalSectionGate('${g.key}')`);
+    }
+    expect(indexSrc).not.toMatch(/createPortalFeatureGateStrict/);
   });
 });

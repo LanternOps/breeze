@@ -3,6 +3,7 @@ import { db } from '../../db';
 import { portalBranding } from '../../db/schema';
 import {
   PORTAL_SECTION_GATES,
+  portalSectionEffectiveFlags,
   type PortalSectionGateRow,
   type PortalSectionKey,
 } from '../../routes/portal/featureFlags';
@@ -40,6 +41,8 @@ export type PreviewSection = {
   previewAvailable: boolean;
   data: unknown | null;
   note?: string;
+  /** Set when the section is on but its read model threw. */
+  error?: 'load_failed';
 };
 
 export type ReadinessCode =
@@ -203,7 +206,7 @@ export async function buildPortalPreview(args: {
   const sections: PreviewSection[] = [];
   for (const gate of PORTAL_SECTION_GATES as readonly PortalSectionGateRow[]) {
     const key = gate.key as PortalSectionKey;
-    const enabled = gate.flags.every((f) => row?.[f] === true);
+    const enabled = portalSectionEffectiveFlags(gate).every((f) => row?.[f] === true);
     const runner = RUNNERS[key];
     if (!enabled) {
       sections.push({ key, enabled: false, previewAvailable: Boolean(runner), data: null });
@@ -213,8 +216,16 @@ export async function buildPortalPreview(args: {
       sections.push({ key, enabled: true, previewAvailable: false, data: null });
       continue;
     }
-    const { data, note } = await runner(ctx);
-    sections.push({ key, enabled: true, previewAvailable: true, data, ...(note ? { note } : {}) });
+    try {
+      const { data, note } = await runner(ctx);
+      sections.push({ key, enabled: true, previewAvailable: true, data, ...(note ? { note } : {}) });
+    } catch (err) {
+      // One broken read model must not blank the whole preview, and must not
+      // read as "empty": the section reports the failure and feeds no
+      // readiness check (data stays null).
+      console.error('[portalPreview] section failed', { key, orgId: args.orgId, err });
+      sections.push({ key, enabled: true, previewAvailable: true, data: null, error: 'load_failed' });
+    }
   }
 
   const brandingSet = Boolean(row) && BRANDING_FIELDS.some((f) => {
