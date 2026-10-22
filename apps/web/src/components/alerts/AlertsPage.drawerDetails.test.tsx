@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AlertsPage from './AlertsPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -45,6 +45,18 @@ function route(detail: unknown, tickets: Response | unknown = { data: [] }) {
 }
 
 describe('AlertsPage drawer data (#9623, #9624)', () => {
+  beforeEach(() => { h.mode = 'native'; fetchMock.mockReset(); });
+
+  it.each(['off', 'external'])('does not fetch linked tickets or offer Create ticket in %s mode', async (mode) => {
+    h.mode = mode;
+    route({ id: ID, notifications: [] });
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByText('High CPU on SRV-01'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByTestId('alert-create-ticket-button')).toBeNull();
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === `/alerts/${ID}/tickets`)).toBe(false);
+  });
+
   it('renders Notifications Sent from the GET /alerts/:id `notifications` array', async () => {
     route({
       id: ID,

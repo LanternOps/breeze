@@ -196,14 +196,22 @@ export default function AlertsPage() {
     }
   }, [currentOrgId, hideAiNoise, stableT]);
 
+  // Id of the alert the drawer is currently for. Detail/ticket responses for
+  // any other alert (a superseded click, or a drawer already closed) are
+  // dropped so they can't overwrite the live alert's duplicate-ticket state.
+  const activeDetailIdRef = useRef<string | null>(null);
+
   const fetchLinkedTickets = useCallback(async (alertId: string) => {
     try {
       const res = await fetchWithAuth(`/alerts/${alertId}/tickets`);
       if (!res.ok) throw new Error(`linked tickets: ${res.status}`);
-      setSelectedAlertTickets(asList(await res.json(), 'data') as LinkedAlertTicket[]);
+      const tickets = asList(await res.json(), 'data') as LinkedAlertTicket[];
+      if (activeDetailIdRef.current !== alertId) return;
+      setSelectedAlertTickets(tickets);
       setSelectedAlertTicketsFailed(false);
     } catch (err) {
       console.error('Failed to fetch linked tickets:', err);
+      if (activeDetailIdRef.current !== alertId) return;
       setSelectedAlertTickets([]);
       setSelectedAlertTicketsFailed(true);
     }
@@ -217,7 +225,9 @@ export default function AlertsPage() {
         // GET /alerts/:id returns delivery records under `notifications`
         // (#9623). There is no stored status-history source, so the drawer
         // has no Status History section.
-        setSelectedAlertNotifications(normalizeNotifications(data.notifications));
+        if (activeDetailIdRef.current === alertId) {
+          setSelectedAlertNotifications(normalizeNotifications(data.notifications));
+        }
       }
     } catch (err) {
       console.error('Failed to fetch alert details:', err);
@@ -264,12 +274,17 @@ export default function AlertsPage() {
   };
 
   const handleSelect = async (alert: Alert) => {
+    activeDetailIdRef.current = alert.id;
+    setSelectedAlertNotifications([]);
+    setSelectedAlertTickets([]);
+    setSelectedAlertTicketsFailed(false);
     setSelectedAlert(alert);
     await fetchAlertDetails(alert.id);
-    setDetailOpen(true);
+    if (activeDetailIdRef.current === alert.id) setDetailOpen(true);
   };
 
   const handleCloseDetail = () => {
+    activeDetailIdRef.current = null;
     setDetailOpen(false);
     setSelectedAlert(null);
     setSelectedAlertNotifications([]);
@@ -559,10 +574,7 @@ export default function AlertsPage() {
           alerts={filteredAlerts}
           onSelect={handleSelect}
           onAcknowledge={handleAcknowledge}
-          onResolve={alert => {
-            setSelectedAlert(alert);
-            setDetailOpen(true);
-          }}
+          onResolve={alert => void handleSelect(alert)}
           onSuppress={handleSuppress}
           onDismiss={handleDismiss}
           onBulkAction={handleBulkAction}
