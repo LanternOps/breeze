@@ -480,3 +480,174 @@ describe('planEffectStep — planning snapshot (R1a-0 Task 1d)', () => {
       .resolves.toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// R1a-0 Task 1e — the post-approval not-before gate, and declared unobservable
+// effects. Appended; the cases above are unchanged.
+//
+// The harness above mocks './effectProbes' with `probeEffect` only. The walk
+// now also calls `isStructurallyUnobservable`, so this section re-registers
+// the SAME mock with that one export added (vitest: the last `vi.mock` for a
+// path wins; `probeEffect` is still `h.probeEffect`, so every case above sees
+// an identical module). The mirror answers true for `google_signout` alone —
+// exactly the real registry, which effectProbes/index.test.ts proves.
+// ---------------------------------------------------------------------------
+const u = vi.hoisted(() => ({
+  isStructurallyUnobservable: vi.fn((tool: string) => tool === 'google_signout'),
+}));
+vi.mock('./effectProbes', () => ({ probeEffect: h.probeEffect, isStructurallyUnobservable: u.isStructurallyUnobservable }));
+
+/** The jsonb stamp `recordVerification` merges into an operation's result. */
+const stampOf = (i: number) => {
+  const chunks = (h.updates[i]!.set.result as { queryChunks: unknown[] }).queryChunks;
+  return JSON.parse(chunks.find((c) => typeof c === 'string' && c.includes('"verified"')) as string);
+};
+
+describe('planEffectStep — not-before gate (R1a-0 Task 1e)', () => {
+  const HOUR_AHEAD = '2026-10-12T01:00:00.000Z';
+
+  it('1: an approved plan with dispatchNotBefore ahead and no operations waits maintenance_window; nothing probed or minted', async () => {
+    const out = await run({ recipeInput: {}, dispatchNotBefore: HOUR_AHEAD });
+    expect(out).toMatchObject({ action: 'wait', reason: 'maintenance_window', dependency: null, wakeAfterMs: 60 * 60 * 1000 });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+    expect(h.probeEffect).not.toHaveBeenCalled();
+    expect(h.checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+  });
+
+  it('2: the gate does not hide in-flight work — ordinal 0 pending on a live intent waits on THAT intent', async () => {
+    setOps([op(e0, { resultState: 'pending', intentId: 'c1' })]);
+    setIntents([{ id: 'c1', status: 'executing', errorCode: null }]);
+    await expect(run({ recipeInput: {}, dispatchNotBefore: HOUR_AHEAD }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'execution', dependency: { kind: 'intent', id: 'c1' } });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('2b: a dispatched effect is still post-probed and verified while the gate holds the next one', async () => {
+    setOps([op(e0)]);
+    h.probeEffect.mockResolvedValue(probe('satisfied'));
+    await expect(run({ recipeInput: {}, dispatchNotBefore: HOUR_AHEAD }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'maintenance_window' });
+    expect(h.probeEffect).toHaveBeenCalledTimes(1);
+    expect(h.probeEffect.mock.calls[0]![1]).toMatchObject({ phase: 'post' });
+    expect(h.updates).toHaveLength(1);
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('3: dispatchNotBefore in the past dispatches as today', async () => {
+    h.probeEffect.mockResolvedValue(probe('unsatisfied'));
+    await expect(run({ recipeInput: {}, dispatchNotBefore: '2026-10-11T00:00:00.000Z' }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'execution', dependency: { id: 'child-intent' } });
+    expect(h.createActionIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('the gate only applies once the plan is approved — a pending plan still waits on approval', async () => {
+    h.readPlanApprovalAtRevision.mockResolvedValue(approvalRow({ state: 'pending', approvedByUserId: null }));
+    setIntents([{ id: 'plan-intent', status: 'pending_approval', errorCode: null }]);
+    await expect(run({ recipeInput: {}, dispatchNotBefore: HOUR_AHEAD }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'approval' });
+  });
+});
+
+describe('planEffectStep — declared unobservable effects (R1a-0 Task 1e)', () => {
+  // The identity order: the sign-out precedes the suspend that subsumes it.
+  const s0: PlannedEffect = { ...mkEffect(0, 'google_signout'), accountExternalId: '101' };
+  const s1: PlannedEffect = { ...mkEffect(1, 'google_suspend_user'), accountExternalId: '101' };
+  const unobsRecipe = (
+    plan: PlannedEffect[],
+    declared: Record<string, string> = { google_signout: 'google_suspend_user' },
+  ) => {
+    buildPlan.mockReturnValue(plan);
+    h.readPlanApprovalAtRevision.mockResolvedValue(approvalRow({ effectSetDigest: sealOf(plan) }));
+    return { buildPlan, steps: { after: {} }, unobservableEffects: declared } as never;
+  };
+  const runWith = (r: never, checkpoint: Record<string, unknown> = { recipeInput: {} }) =>
+    planEffectStep({ task, recipe: r, checkpoint: checkpoint as never, now: new Date('2026-10-12T00:00:00Z') });
+  const unobservableRow = (e: PlannedEffect) =>
+    op(e, { result: { verified: { ok: false, unobservable: true, subsumedBy: 'google_suspend_user' } } });
+
+  it('4: a declared, structurally unobservable post-probe unknown is recorded unobservable and the walk dispatches the suspend', async () => {
+    const r = unobsRecipe([s0, s1]);
+    setOps([op(s0)]);
+    h.probeEffect
+      .mockResolvedValueOnce(probe('unknown'))        // signout post-probe
+      .mockResolvedValueOnce(probe('unsatisfied'));   // suspend pre-probe
+    const out = await runWith(r);
+    expect(out).toMatchObject({ action: 'wait', reason: 'execution', dependency: { id: 'child-intent' } });
+    expect(stampOf(0)).toMatchObject({ verified: { ok: false, unobservable: true, subsumedBy: 'google_suspend_user' } });
+    expect(h.createActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'google_suspend_user' });
+    expect(u.isStructurallyUnobservable).toHaveBeenCalledWith('google_signout');
+  });
+
+  it('5: a replay wake does not re-probe or re-record an unobservable effect', async () => {
+    const r = unobsRecipe([s0, s1]);
+    setOps([unobservableRow(s0), op(s1, { resultState: 'pending', intentId: 'c1' })]);
+    setIntents([{ id: 'c1', status: 'executing', errorCode: null }]);
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'wait', reason: 'execution', dependency: { id: 'c1' } });
+    expect(h.probeEffect).not.toHaveBeenCalled();
+    expect(h.updates).toHaveLength(0);
+  });
+
+  it('6: no resume step + suspend verified on the SAME account settles complete/verified_resolved', async () => {
+    const r = unobsRecipe([s0, s1]);
+    setOps([unobservableRow(s0), op(s1, { result: { verified: { ok: true } } })]);
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'complete', outcome: 'verified_resolved' });
+    // a no-op'd subsumer counts too
+    setOps([unobservableRow(s0), op(s1, { result: { noop: true } })]);
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'complete', outcome: 'verified_resolved' });
+  });
+
+  it('6: a different account, or both ids null, is NOT subsumed — partial/unresolved', async () => {
+    const other = { ...s1, accountExternalId: '202' };
+    let r = unobsRecipe([s0, other]);
+    setOps([unobservableRow(s0), op(other, { result: { verified: { ok: true } } })]);
+    const out = await runWith(r) as { handoffSummary?: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'partial', outcome: 'unresolved' });
+    expect(out.handoffSummary).toContain('google_signout');
+
+    const n0 = { ...s0, accountExternalId: null };
+    const n1 = { ...s1, accountExternalId: null };
+    r = unobsRecipe([n0, n1]);
+    setOps([unobservableRow(n0), op(n1, { result: { verified: { ok: true } } })]);
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'partial', outcome: 'unresolved' });
+  });
+
+  it('6: with a resume step the walk moves on and leaves the verdict to that step', async () => {
+    const other = { ...s1, accountExternalId: '202' };
+    const r = unobsRecipe([s0, other]);
+    setOps([unobservableRow(s0), op(other, { result: { verified: { ok: true } } })]);
+    await expect(runWith(r, { recipeInput: {}, resumeStepKey: 'after' })).resolves.toMatchObject({ action: 'move', toStepKey: 'after' });
+  });
+
+  it('6a: a declared tool whose probe is NOT structurally unobservable still hands off unknown_effect', async () => {
+    const only = { ...s1, ordinal: 0 };
+    const r = unobsRecipe([only], { google_suspend_user: 'google_remove_from_group' });
+    setOps([op(only)]);
+    h.probeEffect.mockResolvedValue(probe('unknown'));
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('7: an undeclared unknown still hands off unknown_effect', async () => {
+    const r = unobsRecipe([s0, s1], { google_remove_license: 'google_suspend_user' });
+    setOps([op(s0)]);
+    h.probeEffect.mockResolvedValue(probe('unknown'));
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('planProbeStep: a declared unobservable effect is not unconfirmed when its same-account subsumer is satisfied', async () => {
+    const r = unobsRecipe([s0, s1]);
+    h.probeEffect.mockImplementation(async (e: PlannedEffect) => probe(e.toolName === 'google_signout' ? 'unknown' : 'satisfied'));
+    await expect(planProbeStep({ task, recipe: r, checkpoint: { recipeInput: {} } as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'complete', outcome: 'verified_resolved' });
+
+    const other = { ...s1, accountExternalId: '202' };
+    const r2 = unobsRecipe([s0, other]);
+    await expect(planProbeStep({ task, recipe: r2, checkpoint: { recipeInput: {} } as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', detail: expect.stringContaining('google_signout') });
+
+    h.probeEffect.mockImplementation(async (e: PlannedEffect) => probe(e.toolName === 'google_signout' ? 'unknown' : 'unsatisfied'));
+    await expect(planProbeStep({ task, recipe: r, checkpoint: { recipeInput: {} } as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off' });
+  });
+});
