@@ -95,7 +95,8 @@ describe('addContractLineToContract — hour_block (#4547 W03)', () => {
   });
 
   it('PAUSE -> RESUME on an advance contract: the pointer was reset onto a period claimed before the pause, so the block starts at the first UNCLAIMED one', async () => {
-    // resumeContract points nextBillingAt at the period containing today (June), which was claimed before the pause.
+    // Before #9509, resumeContract pointed nextBillingAt at the period containing today (June), which was claimed
+    // before the pause. A contract stuck that way keeps the pointer until its next billing run heals it.
     expect(await addAndRead({ nextBillingAt: '2026-06-01' }, [{ periodStart: '2026-06-01' }]))
       .toMatchObject({ hourBlockFirstPeriodStart: '2026-07-01' });
     results.length = 0; (db as unknown as Chain).values.mock.calls.length = 0;

@@ -17,7 +17,7 @@ import {
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { computeOpenHourBlockPeriod } from './contractHourBlockEstimate';
-import { periodIndexFor, nextBillingDate, isExpired, todayISO, firstUnclaimedPeriodStart, advancePastClaimed, contractInTermForReporting, billingRunPeriods, isAutoRenewing } from './contractMath';
+import { periodIndexFor, nextBillingDate, isExpired, todayISO, firstUnclaimedPeriodStart, advancePastClaimed, contractInTermForReporting, billingRunPeriods, isAutoRenewing, pointerPastClaimed } from './contractMath';
 import { loadBilledFinalTermValues } from './contractBilledFinalTerm';
 import { emitContractEvent } from './contractEvents';
 import { rebaseUnmaterializedDeliverables } from './serviceDeliverableService';
@@ -306,9 +306,30 @@ export function contractLineAuditDetails(audit: ContractLineAudit) {
   };
 }
 
+/** #9509: the latest claimed period start for a contract (null when nothing is claimed). One
+ *  read on the (contract_id, period_start) unique index; run under the contract row lock. */
+async function latestClaimedPeriodStart(tx: DbExecutor, contractId: string): Promise<string | null> {
+  const [row] = await tx.select({ periodStart: contractBillingPeriods.periodStart }).from(contractBillingPeriods)
+    .where(eq(contractBillingPeriods.contractId, contractId))
+    .orderBy(desc(contractBillingPeriods.periodStart)).limit(1);
+  return row?.periodStart ?? null;
+}
+
+/** #9509: the pointer for a paused -> active transition. The period containing `asOfISO` (no
+ *  back-billing of the paused gap), moved past any period the ledger already claimed: a pause
+ *  and resume inside an already-billed advance period must not park the pointer on it. */
+async function resumedBillingPointer(tx: DbExecutor, c: typeof contracts.$inferSelect, asOfISO: string): Promise<string> {
+  return pointerPastClaimed({
+    startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears',
+    candidateIdx: periodIndexFor(c.startDate, c.intervalMonths, asOfISO),
+    latestClaimedStart: await latestClaimedPeriodStart(tx, c.id),
+  });
+}
+
 /** Index C9: where a block's entitlement starts. Pure candidate from the billing pointer (Task 2),
- *  then walked past periods that are already claimed — a pause -> resume on an advance contract
- *  resets the pointer onto a claimed period. A draft has nothing claimed. Run under the contract lock. */
+ *  then walked past periods that are already claimed. Since #9509 resume no longer parks the
+ *  pointer on a claimed period, but a contract stuck before that fix can still carry one until
+ *  its next billing run heals it. A draft has nothing claimed. Run under the contract lock. */
 async function blockFirstPeriodStart(tx: DbExecutor, c: typeof contracts.$inferSelect): Promise<string> {
   const candidate = firstUnclaimedPeriodStart({
     status: c.status, startDate: c.startDate, intervalMonths: c.intervalMonths,
@@ -2128,8 +2149,14 @@ export async function activateContract(contractId: string, actor: ContractActor,
     if (lineRows.length === 0) {
       throw new ContractServiceError('Contract needs at least one line', 409, 'NO_LINES');
     }
-    const idx = periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf));
-    const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
+    // A draft has claimed nothing. A paused contract re-activated here is a resume
+    // and must skip the periods it already billed (#9509), exactly like resumeContract.
+    const nextAt = c.status === 'paused'
+      ? await resumedBillingPointer(tx, c, todayISO(asOf))
+      : nextBillingDate({
+        startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears',
+        periodIndex: periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf)),
+      });
     // #4547 W03 (index C9): entitlement starts where the fee starts. A draft's block was stamped
     // provisionally at add time (its first period); the period activation will actually claim is
     // duePeriodStartFor over the pointer set below. DRAFTS ONLY: a paused->active resume has
@@ -2182,18 +2209,22 @@ export async function pauseContract(contractId: string, actor: ContractActor) {
 }
 
 export async function resumeContract(contractId: string, actor: ContractActor, asOfISO: string = todayISO()) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  await requireWholeContractSiteAccess(actor, contractId);
-  if (c.status !== 'paused') {
-    throw new ContractServiceError('Only paused contracts can be resumed', 409, 'INVALID_STATE');
-  }
-  const idx = periodIndexFor(c.startDate, c.intervalMonths, asOfISO);
-  const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
-  const [row] = await db.update(contracts)
-    .set({ status: 'active', nextBillingAt: nextAt, updatedAt: new Date() })
-    .where(eq(contracts.id, contractId)).returning();
+  // Contract row lock first, so the ledger read and the pointer write cannot
+  // interleave with a billing run or another lifecycle write.
+  const { row, c } = await db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    await requireWholeContractSiteAccess(actor, contractId, tx);
+    if (c.status !== 'paused') {
+      throw new ContractServiceError('Only paused contracts can be resumed', 409, 'INVALID_STATE');
+    }
+    const nextAt = await resumedBillingPointer(tx, c, asOfISO);
+    const [row] = await tx.update(contracts)
+      .set({ status: 'active', nextBillingAt: nextAt, updatedAt: new Date() })
+      .where(eq(contracts.id, contractId)).returning();
+    return { row: row!, c };
+  });
   await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId ?? undefined });
-  return row!;
+  return row;
 }
 
 export async function cancelContract(contractId: string, actor: ContractActor) {
@@ -2390,7 +2421,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
   // arrears: the just-completed period (whose END == nextBillingAt) → one index back.
-  const { due: period, next: nextPeriod } = billingRunPeriods({
+  const { idx: periodIdx, due: period, next: nextPeriod } = billingRunPeriods({
     startDate: c.startDate, intervalMonths: c.intervalMonths,
     billingTiming: c.billingTiming as 'advance' | 'arrears', nextBillingAt: c.nextBillingAt,
   });
@@ -2556,6 +2587,21 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
   if (claimed.length === 0) {
     await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
+    // #9509: never leave the pointer on a claimed period. Returning without moving
+    // it made every later run land here again, so the contract stopped billing for
+    // good. Move it past the latest claim (one jump, at least one period forward,
+    // idempotent under the contract lock). Expiry of the period it now points at is
+    // decided by the next run's due-check, like any other pointer.
+    const healedAt = pointerPastClaimed({
+      startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears',
+      candidateIdx: periodIdx + 1,
+      latestClaimedStart: await latestClaimedPeriodStart(db, contractId),
+    });
+    await db.update(contracts).set({ nextBillingAt: healedAt, updatedAt: asOf }).where(eq(contracts.id, contractId));
+    console.warn(
+      '[contract-billing] already billed: contract %s period %s was already claimed; moved next_billing_at %s -> %s',
+      contractId, period.periodStart, c.nextBillingAt, healedAt,
+    );
     return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
   }
 
