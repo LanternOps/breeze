@@ -370,3 +370,45 @@ describe('DeviceScriptHistory AI initiator chip (#5022 W02)', () => {
     expect(screen.getAllByTestId('ai-initiator-chip').length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// #9563 — the device page's post-run details read "Queued — device offline"
+// while the header above it said Online. `queued` only means no live agent
+// session took the command; the device's own status decides the copy.
+describe('DeviceScriptHistory queued copy follows the device status (#9563)', () => {
+  beforeEach(() => {
+    window.location.hash = '#scripts/view=all';
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === `/devices/${DEVICE_ID}/scripts`) {
+        return jsonResponse({ data: [{
+          ...executionRow,
+          status: 'queued',
+          exitCode: null,
+          stdout: '',
+          startedAt: null,
+          completedAt: null,
+          createdAt: '2026-02-08T00:00:00.000Z',
+        }] });
+      }
+      return jsonResponse({}, 404);
+    });
+  });
+
+  it('an online device shows awaiting-pickup copy, never "device offline"', async () => {
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="online" highlightExecutionId="exec-1" />);
+
+    expect(await screen.findByText('Queued — waiting for the device to pick it up')).toBeInTheDocument();
+    expect(screen.getByText('Queued — awaiting pickup')).toBeInTheDocument();
+    expect(screen.queryByText(/device offline/i)).toBeNull();
+  });
+
+  it('an offline device keeps the device-offline copy', async () => {
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="offline" highlightExecutionId="exec-1" />);
+
+    expect(await screen.findByText('Execution Details')).toBeInTheDocument();
+    // Row chip and detail banner both say offline.
+    expect(screen.getAllByText('Queued — device offline').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/device is offline/i)).toBeInTheDocument();
+  });
+});

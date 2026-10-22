@@ -21,6 +21,7 @@ import ScriptExecutionModal from '../scripts/ScriptExecutionModal';
 import {
   executionRowStatusConfig,
   executionDetailStatusConfig,
+  resolveExecutionStatusDescription,
   resolveExecutionStatusLabel,
 } from '../scripts/executionStatus';
 import type { Script } from '../scripts/ScriptList';
@@ -79,6 +80,10 @@ type DeviceScriptHistoryProps = {
   // the operator here to watch. Comes from the `#scripts/<executionId>` hash
   // (DeviceDetails.tsx); undefined for an ordinary tab visit.
   highlightExecutionId?: string;
+  // #9563 — the viewed device's own status (devices.status). A `queued` run
+  // says "device offline" only when this is 'offline'; otherwise it is
+  // awaiting agent pickup. Omitted → the neutral awaiting-pickup copy.
+  deviceStatus?: string;
 };
 
 // #5318 — the DB enum has 8 values; this tab used to print the raw lowercase
@@ -245,6 +250,7 @@ function ExecutionStatusBadge({
   status,
   rawStatus,
   cancelState,
+  deviceStatus,
   testId,
 }: {
   executionId: string;
@@ -252,6 +258,7 @@ function ExecutionStatusBadge({
   status: ExecutionStatus | null;
   rawStatus: string;
   cancelState?: CancelState | null;
+  deviceStatus?: string;
 }) {
   const { t } = useTranslation('scripts');
   if (!status) {
@@ -272,12 +279,12 @@ function ExecutionStatusBadge({
       className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium', config.color)}
     >
       <StatusIcon className={cn('h-3 w-3', (status === 'running' || status === 'cancelling') && 'animate-spin')} />
-      {t(/* i18n-dynamic */ `executionHistory.${resolveExecutionStatusLabel(status, cancelState)}`)}
+      {t(/* i18n-dynamic */ `executionHistory.${resolveExecutionStatusLabel(status, cancelState, deviceStatus)}`)}
     </span>
   );
 }
 
-export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlightExecutionId }: DeviceScriptHistoryProps) {
+export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlightExecutionId, deviceStatus }: DeviceScriptHistoryProps) {
   const { t } = useTranslation('devices');
   const { t: tScripts } = useTranslation('scripts');
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
@@ -528,6 +535,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
               status={row.executionStatus}
               rawStatus={row.status}
               cancelState={row.raw.cancelState}
+              deviceStatus={deviceStatus}
             />
           </td>
           <td className="px-4 py-3 text-xs text-muted-foreground">{row.startedAt}</td>
@@ -693,6 +701,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
                               status={group.latest.executionStatus}
                               rawStatus={group.latest.status}
                               cancelState={group.latest.raw.cancelState}
+                              deviceStatus={deviceStatus}
                             />
                           </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground">{group.latest.startedAt}</td>
@@ -789,12 +798,12 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
                   )} />
                   <div>
                     <p className={cn('text-lg font-semibold', config.color)}>
-                      {tScripts(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusLabel(selectedStatus, selectedExecution.cancelState)}`)}
+                      {tScripts(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusLabel(selectedStatus, selectedExecution.cancelState, deviceStatus)}`)}
                     </p>
                     <p className="text-sm text-muted-foreground">
                       {selectedStatus === 'failed' && selectedExecution.errorMessage
                         ? selectedExecution.errorMessage
-                        : tScripts(/* i18n-dynamic */ `executionDetails.statusDescription.${selectedStatus}`)}
+                        : tScripts(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusDescription(selectedStatus, deviceStatus)}`)}
                     </p>
                   </div>
                 </div>
