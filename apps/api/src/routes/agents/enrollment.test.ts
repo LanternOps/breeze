@@ -189,6 +189,7 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
 
 import { db, withSystemDbAccessContext } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
@@ -458,15 +459,30 @@ describe('POST /agents/enroll — device.enrolled event (#9511)', () => {
     expect(publishEventMock).toHaveBeenCalledWith(
       'device.enrolled',
       'org-backup-url',
-      expect.objectContaining({ deviceId: 'device-backup-url', reenrollment: false }),
+      { deviceId: 'device-backup-url', hostname: 'host-1', agentVersion: '0.62.24', reenrollment: false },
       'agent-enrollment',
-      expect.objectContaining({ siteId: 'site-backup-url' }),
+      { siteId: 'site-backup-url' },
     );
   });
 
-  it('a rejected publish never fails an otherwise successful enrollment', async () => {
+  it('a rejected publish is logged + captured and never fails an otherwise successful enrollment', async () => {
     publishEventMock.mockRejectedValue(new Error('redis down'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     await enrollOk();
+    await new Promise((r) => setImmediate(r));
+    expect(errSpy).toHaveBeenCalledWith('[Enrollment] Failed to publish device.enrolled:', 'redis down');
+    expect(captureException).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('does not publish when enrollment is refused', async () => {
+    mockKeyLookup(undefined);
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+    expect(resp.status).toBeGreaterThanOrEqual(400);
+    expect(publishEventMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1368,6 +1384,12 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
     expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
     expect(raiseDeviceIdentityCollisionAlert).not.toHaveBeenCalled();
+    // #9511: same row re-enrolled in place -> reenrollment:true.
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'device.enrolled', 'org-inplace',
+      expect.objectContaining({ deviceId: 'device-inplace', reenrollment: true }),
+      'agent-enrollment', { siteId: expect.anything() },
+    );
   });
 
   it('idempotency: a token matching a LATER colliding row re-enrolls that row instead of stacking another fresh row', async () => {
@@ -1797,6 +1819,12 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     // #914: response carries the FRESH device.id, NOT the prior one.
     expect(body.deviceId).toBe('device-decom-fresh-id');
     expect(body.deviceId).not.toBe('device-decom-existing');
+    // #9511: decom-bypass mints a brand-new row -> a new device, not a re-enrollment.
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'device.enrolled', 'org-decom',
+      expect.objectContaining({ deviceId: 'device-decom-fresh-id', reenrollment: false }),
+      'agent-enrollment', expect.anything(),
+    );
     // Importantly: no 409 audit event was written for hostname_collision
     expect(writeAuditEvent).not.toHaveBeenCalledWith(
       expect.anything(),
