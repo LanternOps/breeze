@@ -86,4 +86,14 @@ describe('CommandPalette — server search follows the selected org (#9612)', ()
     await waitFor(() => expect(searchCalls()).toHaveLength(2));
     expect(searchCalls()[1]![1]).toEqual({ orgIdOverride: ORG_B });
   });
+
+  it('says the selected org is out of reach, not that the session expired, on a 403', async () => {
+    fetchWithAuthMock.mockResolvedValue({ ok: false, status: 403, json: async () => ({ error: 'Access denied to this organization' }) });
+    useOrgStore.setState({ currentOrgId: ORG_A });
+    open();
+    search('srv-02');
+
+    expect(await screen.findByText("You don't have access to the selected organization.")).toBeInTheDocument();
+    expect(screen.queryByText(/session expired/i)).toBeNull();
+  });
 });

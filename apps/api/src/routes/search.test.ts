@@ -608,6 +608,52 @@ describe('search routes', () => {
       expect(scriptWhere).toContain(ORG_A);
     });
 
+    it('passes the token scope to the permission resolver so a platform admin is not empty-handed', async () => {
+      // #5733 class: getUserPermissions takes its platform-admin branch only
+      // when told the scope; without it a system token resolved to null and
+      // every Cmd+K category came back empty.
+      authState.current = {
+        user: { id: 'user-1', email: 's@example.com', name: 'System User' },
+        scope: 'system',
+        orgId: null,
+        partnerId: null,
+        accessibleOrgIds: null,
+        canAccessOrg: () => true,
+        orgCondition: () => undefined,
+      };
+      stubCapturingSelects();
+
+      const res = await app.request('/search?q=srv-02');
+
+      expect(res.status).toBe(200);
+      expect(getUserPermissions).toHaveBeenCalledWith('user-1', expect.objectContaining({ scope: 'system' }));
+    });
+
+    it('keeps the site narrowing when an org is selected', async () => {
+      partnerCaller();
+      vi.mocked(inArray).mockClear();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [
+          { resource: 'devices', action: 'read' },
+          { resource: 'scripts', action: 'read' },
+          { resource: 'alerts', action: 'read' },
+        ],
+        allowedSiteIds: ['site-abc'],
+        partnerId: 'partner-9',
+        orgId: null,
+        roleId: 'role-1',
+        scope: 'partner',
+      } as any);
+      const captured = stubCapturingSelects();
+
+      const res = await app.request(`/search?q=srv-02&orgId=${ORG_A}`);
+
+      expect(res.status).toBe(200);
+      expect(inArray).toHaveBeenCalledWith('devices.siteId', ['site-abc']);
+      expect(text(captured.where[0])).toContain('site-abc');
+      expect(text(captured.where[0])).toContain(ORG_A);
+    });
+
     it('orders every category before limiting: relevance then name for devices and scripts, recency for alerts', async () => {
       const captured = stubCapturingSelects();
 

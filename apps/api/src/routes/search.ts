@@ -73,9 +73,13 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
   }
   const perCategoryLimit = Math.max(1, Math.min(8, Math.ceil(limit / 4)));
   const searchTerm = `%${q}%`;
+  // Pass the token scope, as requirePermission does (#5733): the resolver's
+  // platform-admin branch needs it, and without it a system token resolved to
+  // null and every category below came back empty.
   const userPerms = await getUserPermissions(auth.user.id, {
     partnerId: auth.partnerId || undefined,
     orgId: auth.orgId || undefined,
+    scope: auth.scope,
   });
 
   const canReadDevices = Boolean(

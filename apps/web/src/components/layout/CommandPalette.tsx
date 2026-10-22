@@ -291,6 +291,13 @@ export default function CommandPalette() {
         if (!isActive) return;
 
         if (!response.ok) {
+          // A 403 with an org selected is the server refusing that org (a
+          // stale or revoked selection, #9612), not a dead session.
+          if (response.status === 403 && selectedOrgId) {
+            setResults([]);
+            setErrorMessage("You don't have access to the selected organization.");
+            return;
+          }
           // Auth errors mean an expired/absent session, not "no matches" — say
           // so explicitly instead of rendering the empty-results copy, which
           // would imply the data is gone.
