@@ -8,13 +8,20 @@
 //     compile on device);
 //   - scan:     the lab benchmark harness (drives the agent's own worker-pool
 //     walk);
+//   - match:    the W04 rule test upload (#6267): scans ONE in-memory sample
+//     inside a Landlock + seccomp sandbox (see enterSandbox);
+//   - sandbox-check: applies that sandbox and probes it (operators, tests and
+//     the image proof);
 //   - version:  engine/policy/format identification for diagnostics.
 //
-// Exit codes: 0 ok, 1 rule/bundle errors (JSON on stdout), 2 usage or I/O.
+// Exit codes: 0 ok, 1 rule/bundle errors (JSON on stdout), 2 usage or I/O,
+// 3 sandbox unavailable (match / sandbox-check: nothing was scanned),
+// 4 sandbox-check: the sandbox applied but a probe was not denied.
 package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -32,15 +39,47 @@ import (
 )
 
 const (
-	exitOK    = 0
-	exitRules = 1
-	exitUsage = 2
+	exitOK           = 0
+	exitRules        = 1
+	exitUsage        = 2
+	exitSandbox      = 3
+	exitSandboxLeaky = 4
 )
+
+const (
+	// maxSampleBytes mirrors the API's YARA_TEST_SAMPLE_MAX_BYTES (10 MiB).
+	maxSampleBytes = 10 << 20
+	// matchScanTimeout bounds the engine on one sample (the API kills the
+	// child at 20 s).
+	matchScanTimeout = 15 * time.Second
+	// unsandboxedEnv skips the sandbox for `match`. The API sets it only when
+	// its NODE_ENV is development/test (macOS dev boxes have no Landlock).
+	unsandboxedEnv = "BREEZE_YARA_TEST_UNSANDBOXED"
+)
+
+var errSandboxUnavailable = errors.New("sandbox unavailable")
+
+// sandboxState is what the sandbox applied (reported by sandbox-check).
+type sandboxState struct {
+	Sandboxed   bool `json:"sandboxed"`
+	LandlockABI int  `json:"landlockAbi"`
+	OOMScoreAdj int  `json:"oomScoreAdj"`
+}
+
+type probeResult struct {
+	Name   string `json:"name"`
+	Denied bool   `json:"denied"`
+	Errno  string `json:"errno,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
 
 const usage = `usage:
   breeze-yarac validate < bundle.json
   breeze-yarac compile --out rules.bin bundle.json [bundle.json ...]
   breeze-yarac scan --bundle b.json [--bundle b2.json] [--workers N] [--max-file-mb 50] <path> [<path> ...]
+  breeze-yarac match --filename NAME [--filepath PATH] < frame
+      frame = 4-byte big-endian bundle length, the bundle JSON, then the sample to EOF
+  breeze-yarac sandbox-check [--control]
   breeze-yarac version
 `
 
@@ -58,6 +97,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdCompile(args[1:], stdout, stderr)
 	case "scan":
 		return cmdScan(args[1:], stdout, stderr)
+	case "match":
+		return cmdMatch(args[1:], stdin, stdout, stderr)
+	case "sandbox-check":
+		return cmdSandboxCheck(args[1:], stdout, stderr)
+	case sandboxedSubcommand:
+		return cmdSandboxed(args[1:], stdin, stdout, stderr)
 	case "version":
 		return writeJSON(stdout, stderr, map[string]any{"engine": yarac.EngineVersion(), "policy": yarac.PolicyVersion, "format": yarascan.BundleFormatVersion})
 	case "-h", "--help", "help":
@@ -361,6 +406,162 @@ func cmdScan(args []string, stdout, stderr io.Writer) int {
 	}
 	if scanErr != nil {
 		return exitUsage
+	}
+	return exitOK
+}
+
+// --- match (#6267 W04-2) -----------------------------------------------------
+
+type matchedRule struct {
+	RuleSetID      string                   `json:"ruleSetId"`
+	RuleID         string                   `json:"ruleId"`
+	RuleName       string                   `json:"ruleName"`
+	Severity       string                   `json:"severity"`
+	Tags           []string                 `json:"tags"`
+	MatchedStrings []yarascan.MatchedString `json:"matchedStrings"`
+}
+
+type matchResult struct {
+	OK         bool          `json:"ok"`
+	Matches    []matchedRule `json:"matches"`
+	DurationMs int64         `json:"durationMs"`
+	PeakRssMb  uint64        `json:"peakRssMb"`
+}
+
+type matchOptions struct{ filename, virtualPath string }
+
+func parseMatchFlags(args []string, stderr io.Writer) (matchOptions, int) {
+	fs := flag.NewFlagSet("match", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	filename := fs.String("filename", "", "the sample's file name (sets the filename and extension globals)")
+	virtualPath := fs.String("filepath", "", "the path the file would have on a device (filepath global; default: the filename)")
+	if err := fs.Parse(args); err != nil {
+		return matchOptions{}, exitUsage
+	}
+	if *filename == "" || fs.NArg() != 0 {
+		_, _ = fmt.Fprintf(stderr, "match needs --filename and reads its input from stdin\n%s", usage)
+		return matchOptions{}, exitUsage
+	}
+	return matchOptions{filename: *filename, virtualPath: *virtualPath}, exitOK
+}
+
+// sandboxUnavailable is exit 3: `{"ok":false,"unavailable":"sandbox"}` on
+// stdout (what the API maps to 503 YARA_TEST_SANDBOX_UNAVAILABLE) and the
+// failed step on stderr. Nothing was scanned.
+func sandboxUnavailable(err error, stdout, stderr io.Writer) int {
+	_, _ = fmt.Fprintf(stderr, "%v\n", err)
+	writeJSON(stdout, stderr, map[string]any{"ok": false, "unavailable": "sandbox"})
+	return exitSandbox
+}
+
+// cmdMatch scans one uploaded sample against one bundle, in memory, inside
+// the sandbox (enterSandbox re-executes this binary sandboxed; the sandboxed
+// process reads stdin and scans). The sample is never written to disk.
+func cmdMatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	opts, code := parseMatchFlags(args, stderr)
+	if code != exitOK {
+		return code
+	}
+	if os.Getenv(unsandboxedEnv) == "1" {
+		return runMatch(opts, stdin, stdout, stderr)
+	}
+	// Returns only when a sandbox step failed.
+	return sandboxUnavailable(enterSandbox("match", args), stdout, stderr)
+}
+
+// runMatch reads the frame (4-byte big-endian bundle length, bundle, sample
+// to EOF), then engine init → decode + compile → scan.
+func runMatch(opts matchOptions, stdin io.Reader, stdout, stderr io.Writer) int {
+	var hdr [4]byte
+	if _, err := io.ReadFull(stdin, hdr[:]); err != nil {
+		_, _ = fmt.Fprintf(stderr, "read frame header: %v\n", err)
+		return exitUsage
+	}
+	n := binary.BigEndian.Uint32(hdr[:])
+	if n == 0 || n > yarascan.MaxBundleBytes {
+		_, _ = fmt.Fprintf(stderr, "bundle length %d is outside 1..%d\n", n, yarascan.MaxBundleBytes)
+		return exitUsage
+	}
+	bundle := make([]byte, n)
+	if _, err := io.ReadFull(stdin, bundle); err != nil {
+		_, _ = fmt.Fprintf(stderr, "read bundle: %v\n", err)
+		return exitUsage
+	}
+	sample, err := io.ReadAll(io.LimitReader(stdin, maxSampleBytes+1))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "read sample: %v\n", err)
+		return exitUsage
+	}
+	if len(sample) > maxSampleBytes {
+		_, _ = fmt.Fprintf(stderr, "sample exceeds %d bytes\n", maxSampleBytes)
+		return exitUsage
+	}
+
+	start := time.Now()
+	if err := yarac.EnsureEngine(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "YARA engine failure: %v\n", err)
+		return exitUsage
+	}
+	b, err := yarascan.DecodeBundle(bundle)
+	if err != nil {
+		writeJSON(stdout, stderr, validateResult{Errors: []yarac.RuleError{{Code: yarascan.CodeBundleInvalid, Message: err.Error()}}})
+		return exitRules
+	}
+	entry, code := compileBundles([]*yarascan.Bundle{b}, stdout, stderr)
+	if code != exitOK {
+		return code
+	}
+	matches, err := yarascan.ScanSample(entry, opts.filename, opts.virtualPath, sample, matchScanTimeout)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "scan: %v\n", err)
+		return exitUsage
+	}
+	res := matchResult{OK: true, Matches: make([]matchedRule, 0, len(matches)), DurationMs: time.Since(start).Milliseconds()}
+	for _, m := range matches {
+		r := matchedRule{RuleSetID: m.RuleSetID, RuleID: m.RuleID, RuleName: m.RuleName, Severity: m.Severity,
+			Tags: m.Tags, MatchedStrings: m.Strings}
+		if r.Tags == nil {
+			r.Tags = []string{}
+		}
+		if r.MatchedStrings == nil {
+			r.MatchedStrings = []yarascan.MatchedString{}
+		}
+		res.Matches = append(res.Matches, r)
+	}
+	res.PeakRssMb = peakRSSBytes() >> 20
+	return writeJSON(stdout, stderr, res)
+}
+
+// cmdSandboxCheck applies match's sandbox and reports what a compromised
+// engine could still do (operators, tests, the image proof). `--control`
+// runs the same probes unsandboxed so a test can show the denials are the
+// sandbox's doing. Never honours BREEZE_YARA_TEST_UNSANDBOXED.
+func cmdSandboxCheck(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("sandbox-check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	control := fs.Bool("control", false, "run the probes WITHOUT the sandbox")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return exitUsage
+	}
+	if *control {
+		writeJSON(stdout, stderr, map[string]any{"ok": true, "sandboxed": false, "probes": runProbes(true)})
+		return exitOK
+	}
+	return sandboxUnavailable(enterSandbox("sandbox-check", nil), stdout, stderr)
+}
+
+// reportProbes runs in the sandboxed process: exit 0 only when every probe
+// was denied, 4 when the sandbox applied but something got through.
+func reportProbes(st sandboxState, stdout, stderr io.Writer) int {
+	probes := runProbes(false)
+	ok := len(probes) > 0
+	for _, p := range probes {
+		ok = ok && p.Denied
+	}
+	writeJSON(stdout, stderr, map[string]any{"ok": ok, "sandboxed": st.Sandboxed, "landlockAbi": st.LandlockABI,
+		"oomScoreAdj": st.OOMScoreAdj, "probes": probes})
+	if !ok {
+		return exitSandboxLeaky
 	}
 	return exitOK
 }
