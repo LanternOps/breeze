@@ -895,6 +895,10 @@ describe('sso routes', () => {
       const res = await postPreset('not-a-preset');
 
       expect(res.status).toBe(400);
+      // The caller is told which ids are valid, not a bare "Invalid input".
+      const body = await res.json();
+      expect(body.error).toContain('preset');
+      expect(body.error).toContain('"azure-ad"|"okta"|"google"|"auth0"');
       expect(db.insert).not.toHaveBeenCalled();
     });
 

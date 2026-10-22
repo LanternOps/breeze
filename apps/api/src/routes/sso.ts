@@ -1056,13 +1056,13 @@ ssoRoutes.post(
   // Apply preset if specified
   let config: Partial<typeof ssoProviders.$inferInsert> = {};
   if (body.preset) {
+    // Always defined: body.preset is validated against SSO_OIDC_PRESET_IDS and
+    // PROVIDER_PRESETS is keyed by the same type.
     const preset = PROVIDER_PRESETS[body.preset];
-    if (preset) {
-      config = {
-        scopes: preset.scopes,
-        attributeMapping: preset.attributeMapping as any
-      };
-    }
+    config = {
+      scopes: preset.scopes,
+      attributeMapping: preset.attributeMapping as any
+    };
   }
 
   // If issuer provided, discover endpoints. NOTE: this outbound call runs with

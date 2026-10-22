@@ -61,13 +61,19 @@ export default function OrgAccessFields({
     orgSearchRef.current?.focus();
   };
 
-  const handleSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+  // On the wrapper, so Escape also works while an option button has focus.
+  const handlePickerKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape' && orgDropdownOpen) {
       // Close the list only; keep the enclosing dialog open.
       e.preventDefault();
       e.stopPropagation();
       setOrgDropdownOpen(false);
-    } else if (e.key === 'ArrowDown' && !orgDropdownOpen) {
+      orgSearchRef.current?.focus();
+    }
+  };
+
+  const handleSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown' && !orgDropdownOpen) {
       e.preventDefault();
       setOrgDropdownOpen(true);
     }
@@ -143,7 +149,7 @@ export default function OrgAccessFields({
             </div>
           )}
           {/* Search input + dropdown */}
-          <div ref={orgDropdownRef} className="relative">
+          <div ref={orgDropdownRef} className="relative" onKeyDown={handlePickerKeyDown}>
             <input
               id={`${idPrefix}-org-search`}
               ref={orgSearchRef}

@@ -96,6 +96,22 @@ describe('OrgAccessFields organization picker (#9602)', () => {
     expect(bubbled).toBe(1);
   });
 
+  it('closes the list on Escape from a focused option, without closing the dialog', async () => {
+    const user = userEvent.setup();
+    let bubbled = 0;
+    render(
+      <div onKeyDown={e => { if (e.key === 'Escape') bubbled += 1; }}>
+        <Harness />
+      </div>
+    );
+
+    await user.click(search());
+    screen.getByRole('button', { name: 'Acme Dental' }).focus();
+    await user.keyboard('{Escape}');
+    expect(listOpen()).toBe(false);
+    expect(bubbled).toBe(0);
+  });
+
   it('does not open on a programmatic or tab focus alone', () => {
     render(<Harness />);
     fireEvent.focus(search());
