@@ -4593,6 +4593,32 @@ describe('processIntentReleaseJob', () => {
     expect(notifyMock.createNotification).not.toHaveBeenCalled();
   });
 
+  // B-W04 (#6158, D-B28): an MCP-origin intent has no inline channel and a
+  // 24 h window, so its supervised requester is told the outcome.
+  it('notifies the requester of a SUPERVISED mcp_api (MCP-origin) intent', async () => {
+    dbState.selectActionIntentsResults.push([{
+      ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised',
+      source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1',
+    }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'requester-1', dedupeKey: 'intent-outcome:intent-1:expired' }),
+    );
+  });
+
+  it('stays silent for a SUPERVISED user-session mcp_api intent (agent graduation / AI operator)', async () => {
+    dbState.selectActionIntentsResults.push([{
+      ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised',
+      source: 'mcp_api', originPrincipalKind: 'user_session', originPrincipalId: null,
+    }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+  });
+
   it('stays silent when there is no human requester (API-key sourced)', async () => {
     dbState.selectActionIntentsResults.push([
       { ...FOUR_EYES_INTENT, status: 'rejected', requestedByUserId: null },

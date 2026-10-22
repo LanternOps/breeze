@@ -24,6 +24,7 @@ import { recordActionIntentEvent, recordActionIntentMetric } from '../services/a
 import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
+import { isMcpOriginIntent } from '../services/mcpIntentEligibility';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
 import { createIntentFixWatchRow, createSweepFixWatchRow } from '../services/aiAgents/fixWatch';
@@ -1874,6 +1875,8 @@ async function notifyRequesterOfOutcome(
         approvalScope: actionIntents.approvalScope,
         requestingAgentRunId: actionIntents.requestingAgentRunId,
         requestingClientLabel: actionIntents.requestingClientLabel,
+        source: actionIntents.source,
+        originPrincipalKind: actionIntents.originPrincipalKind,
       })
       .from(actionIntents)
       .where(eq(actionIntents.id, intentId))
@@ -1947,7 +1950,9 @@ async function notifyRequesterOfOutcome(
   // path uses at intentService.ts. Revisit when supervised mcp_api intents
   // exist: those get a 24h window with NO inline channel (computeExpiresAt,
   // intentService.ts), so the "they were watching" rationale won't hold there.
-  if (intent.approvalScope !== 'four_eyes') return;
+  // B-W04 (#6158, D-B28): MCP-origin intents are exactly that case — so a
+  // supervised one notifies its requester too.
+  if (intent.approvalScope !== 'four_eyes' && !isMcpOriginIntent(intent)) return;
 
   // Copy comes from the intent's CURRENT status, not from the event type.
   //
