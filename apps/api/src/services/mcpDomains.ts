@@ -62,6 +62,8 @@ export function isDomainGranted(grant: McpDomainGrant, domain: AiToolDomain | un
 /** Domain of an MCP tool by canonical name. `whoami` is core; unknown names are unclassified. */
 export function mcpToolDomain(toolName: string): AiToolDomain | undefined {
   if (toolName === MCP_WHOAMI_TOOL_NAME) return 'core';
+  // Server-intrinsic action-intent tools (B-W04): never in the registry.
+  if (toolName === 'get_action_status' || toolName === 'cancel_action') return 'core';
   return getToolDomain(toolName);
 }
 
