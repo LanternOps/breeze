@@ -106,6 +106,17 @@ describe('incident background passes pick a winner in the database', () => {
     expect(selectLocks).toEqual([{ mode: 'update', opts: { skipLocked: true } }]);
   });
 
+  it('does not append an empty timeline entry when enriching (#9663)', async () => {
+    updateReturnResults.push([{ id: 'inc-1', status: 'detected', timeline: [] }]);
+
+    await __testOnly.runIncidentTimelineEnrichmentPass();
+
+    // Only the marker claim is written; no per-row timeline rewrite.
+    expect(updateSets).toHaveLength(1);
+    expect(updateSets[0]).toHaveProperty('timelineEnrichedAt');
+    expect(updateSets.some((s) => 'timeline' in s)).toBe(false);
+  });
+
   it('publishes incident.escalated only for the pass that won the swap', async () => {
     selectResults.push([STALE]);
     updateReturnResults.push([{ id: 'inc-1' }]);   // won the CAS

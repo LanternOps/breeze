@@ -432,7 +432,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 106, // +1 W06: lists.separator ", " is punctuation
+    'common.json': 107, // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -635,7 +635,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 108, // +1 W06: lists.separator ", " is punctuation
+    'common.json': 109, // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -852,7 +852,7 @@ const namespaceDuplicateBaselines = {
     // rendered is a control that says which account a script runs under.
     // +1 W01 settings consolidation (#6224): nav.ticketing — "Ticketing" is
     // the standard de-DE loanword (matching partnerSettingsPage.tabs.ticketing).
-    'common.json': 109, // +1 W06: lists.separator ", " is punctuation; +1 system page W02: nav.system "System"
+    'common.json': 111, // +2 #9663: incidents.actors.brain "Breeze AI" (proper noun) + actors.system "System"; // +1 W06: lists.separator ", " is punctuation; +1 system page W02: nav.system "System"
     // +8 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder

@@ -2253,6 +2253,11 @@
         "genericEdrProvider": "EDR sağlayıcısı"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Teknisyen",
+          "system": "Sistem"
+        },
         "errors": {
           "notFound": "Olay bulunamadı",
           "fetchFailed": "Olay getirilemedi"
