@@ -1,4 +1,4 @@
-import { and, eq, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runAfterDbContextExit } from '../db';
 import { deploymentResults, deviceCommands, deviceFilesystemCleanupRuns } from '../db/schema';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
@@ -68,37 +68,50 @@ export async function propagateCancelledDeviceCommands(
  * forever, because the reaper never revisits a terminal command.
  *
  * `where` must already scope to the rows to cancel, including a non-terminal
- * status guard; only rows the UPDATE returns get hooks (a row that lost a race
- * to a concurrent claim is not ours to propagate).
+ * status guard. The rows are read first (FOR UPDATE) and the UPDATE is bounded
+ * to that read set, so a row that appears in between is left for the next
+ * sweep rather than flipped without its payload; only rows the UPDATE returns
+ * get hooks (a row that lost a race to a concurrent claim is not ours).
  *
- * Failure semantics follow the executor. Inside a caller's transaction the
- * hooks join it and a failure propagates, rolling the cancel back (same
- * contract as `propagateCancelledDeviceCommand`; a failed statement would
- * abort that transaction anyway). On the ambient pool the cancel has already
- * committed, so one failing hook is logged with its command id and the rest
- * still run.
+ * Failure semantics (`isolateFailures`):
+ *  - `false` (default inside a caller transaction): a hook failure propagates
+ *    and rolls the cancel back, atomic with the caller (single user cancel,
+ *    device restore).
+ *  - `true` (security-critical or bulk callers, and the default on a bare pool
+ *    with no executor and no DB access context): each hook runs in its own
+ *    savepoint / transaction, so a failing hook is rolled back alone, logged
+ *    with its command id and sent to Sentry, and neither the remaining hooks
+ *    nor the caller's other writes (e.g. an abuse suspension's user disable and
+ *    session revocation) are affected. The owner of a failed hook stays
+ *    unterminalised; that is surfaced via the log + Sentry, not swallowed.
  */
 export async function cancelDeviceCommands(params: {
   where: SQL;
   result: Record<string, unknown>;
   completedAt?: Date;
   executor?: DbExecutor;
+  isolateFailures?: boolean;
   /** Override the per-command hook (tests). */
   propagate?: typeof propagateCancelledDeviceCommand;
 }): Promise<DeviceCommandCancelSubject[]> {
   const executor: DbExecutor = params.executor ?? db;
   const completedAt = params.completedAt ?? new Date();
   const propagate = params.propagate ?? propagateCancelledDeviceCommand;
+  // `db` is an ALS proxy: with a DB access context active it IS the request /
+  // system transaction, so "bare pool" means no executor AND no context.
+  const isolateFailures =
+    params.isolateFailures ??
+    (params.executor === undefined && getCurrentDbAccessContext() === undefined);
 
   // Read type + payload BEFORE the UPDATE: `terminalPayloadErasureSet()` nulls
   // the payload, `returning()` reflects post-update values, and the hooks key on
-  // `payload.executionId` / `batchId` / `runId`. FOR UPDATE pins the rows so the
-  // set we read is the set we flip.
+  // `payload.executionId` / `batchId` / `runId`.
   const before = await executor
     .select({ id: deviceCommands.id, type: deviceCommands.type, payload: deviceCommands.payload })
     .from(deviceCommands)
     .where(params.where)
     .for('update');
+  if (before.length === 0) return [];
   const beforeById = new Map(before.map((row) => [row.id, row]));
 
   const flipped = await executor
@@ -109,10 +122,9 @@ export async function cancelDeviceCommands(params: {
       result: params.result,
       ...terminalPayloadErasureSet(),
     })
-    .where(params.where)
+    .where(and(params.where, inArray(deviceCommands.id, [...beforeById.keys()]))!)
     .returning({ id: deviceCommands.id, type: deviceCommands.type });
 
-  // Only rows this UPDATE actually flipped are ours to propagate.
   const subjects: DeviceCommandCancelSubject[] = flipped.map((row) => {
     const payload = beforeById.get(row.id)?.payload;
     return {
@@ -125,24 +137,34 @@ export async function cancelDeviceCommands(params: {
     };
   });
 
-  const isolateFailures = executor === db;
   for (const subject of subjects) {
-    try {
-      await propagate({
+    const run = (hookExecutor: DbExecutor) =>
+      propagate({
         commandId: subject.id,
         type: subject.type,
         payload: subject.payload,
         completedAt,
-        executor,
+        executor: hookExecutor,
       });
+    if (!isolateFailures) {
+      await run(executor);
+      continue;
+    }
+    try {
+      // Own savepoint (nested) / transaction (pool): a failed statement inside
+      // the hook aborts only that unit, never the caller's transaction.
+      await executor.transaction(async (hookTx) => run(hookTx as unknown as DbExecutor));
     } catch (err) {
-      if (!isolateFailures) throw err;
       console.error('[commandCancelPropagation] cancelDeviceCommands: hook failed for a cancelled command', {
         commandId: subject.id,
         type: subject.type,
         error: err instanceof Error ? err.message : String(err),
       });
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        source: 'cancelDeviceCommands',
+        commandType: subject.type,
+        commandId: subject.id,
+      });
     }
   }
   return subjects;

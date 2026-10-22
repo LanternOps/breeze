@@ -385,7 +385,10 @@ async function queueDrainUninstalls(
     // Shared helper (#9719): UPDATE + per-type cancellation hooks, in this tx.
     const cancelled = await cancelDeviceCommands({
       executor: tx,
-      result: { reason: UNINSTALL_REASON_TENANT_OFFBOARDING },
+      // A hook failure must not roll back the surrounding writes; it is
+      // isolated per command (savepoint), logged and sent to Sentry.
+      isolateFailures: true,
+            result: { reason: UNINSTALL_REASON_TENANT_OFFBOARDING },
       where: and(
         inArray(deviceCommands.deviceId, deviceIds),
         ne(deviceCommands.type, 'self_uninstall'),

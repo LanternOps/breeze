@@ -148,7 +148,10 @@ export async function suspendPartnerForAbuse(
           // patch job / deployment result / incident action is terminalised too.
           await cancelDeviceCommands({
             executor: tx,
-            result: { reason: 'partner_suspended_for_abuse' },
+            // A hook failure must not roll back the surrounding writes; it is
+            // isolated per command (savepoint), logged and sent to Sentry.
+            isolateFailures: true,
+                        result: { reason: 'partner_suspended_for_abuse' },
             where: and(
               inArray(deviceCommands.deviceId, deviceIds),
               ne(deviceCommands.type, 'self_uninstall'),

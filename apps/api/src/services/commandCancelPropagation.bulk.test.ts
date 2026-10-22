@@ -7,13 +7,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * is the one place that does the UPDATE and then runs the per-type hooks.
  */
 
-const { captureExceptionMock } = vi.hoisted(() => ({
+const { captureExceptionMock, contextMock, finalizeMock } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
+  contextMock: vi.fn(),
+  finalizeMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
   db: {} as Record<string, unknown>,
-  getCurrentDbAccessContext: () => undefined,
+  getCurrentDbAccessContext: () => contextMock(),
   runAfterDbContextExit: vi.fn(),
 }));
 vi.mock('../db/schema', () => ({
@@ -23,7 +25,7 @@ vi.mock('../db/schema', () => ({
 }));
 vi.mock('./sensitiveCommandPayload', () => ({ terminalPayloadErasureSet: () => ({ payload: null }) }));
 vi.mock('./scriptExecutionTerminal', () => ({
-  finalizeScriptExecutionTerminal: vi.fn(),
+  finalizeScriptExecutionTerminal: (...a: unknown[]) => finalizeMock(...(a as [])),
   batchIdFromPayload: () => null,
 }));
 vi.mock('./automationActionResults', () => ({ applyAutomationActionTerminal: vi.fn() }));
@@ -38,8 +40,10 @@ type Returned = Array<{ id: string; type: string; payload: Record<string, unknow
 // reflects post-erasure values, so it carries no payload — as in Postgres.
 function fakeExecutor(returned: Returned) {
   const sets: Array<Record<string, unknown>> = [];
-  const handle = {
+  const handle: Record<string, unknown> = {
     select: () => ({ from: () => ({ where: () => ({ for: async () => returned }) }) }),
+    // Nested transaction == savepoint: hands the same handle to the callback.
+    transaction: async (cb: (tx: unknown) => Promise<unknown>) => cb(handle),
     update: () => ({
       set: (vals: Record<string, unknown>) => {
         sets.push(vals);
@@ -55,7 +59,11 @@ function fakeExecutor(returned: Returned) {
 }
 
 describe('cancelDeviceCommands (#9719)', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    contextMock.mockReturnValue(undefined);
+    finalizeMock.mockResolvedValue({ terminalised: true });
+  });
 
   it('updates then runs the per-type hook for every cancelled row, in the caller executor', async () => {
     const { sets, handle } = fakeExecutor([
@@ -107,6 +115,7 @@ describe('cancelDeviceCommands (#9719)', () => {
     (db as unknown as Record<string, unknown>).update = () => ({
       set: () => ({ where: () => ({ returning: async () => returned.map(({ id, type }) => ({ id, type })) }) }),
     });
+    (db as unknown as Record<string, unknown>).transaction = async (cb: (tx: unknown) => Promise<unknown>) => cb(db);
     const propagate = vi.fn(async (p: { commandId: string }) => {
       if (p.commandId === 'c1') throw new Error('boom');
     });
@@ -131,5 +140,81 @@ describe('cancelDeviceCommands (#9719)', () => {
     await expect(
       cancelDeviceCommands({ where: {} as never, result: {}, executor: handle, propagate }),
     ).rejects.toThrow('boom');
+  });
+
+  it('with a DB access context active the ambient db IS a transaction, so a hook failure propagates', async () => {
+    contextMock.mockReturnValue({ scope: 'system' });
+    (db as unknown as Record<string, unknown>).select = () => ({
+      from: () => ({ where: () => ({ for: async () => [{ id: 'c1', type: 'script', payload: null }] }) }),
+    });
+    (db as unknown as Record<string, unknown>).update = () => ({
+      set: () => ({ where: () => ({ returning: async () => [{ id: 'c1', type: 'script' }] }) }),
+    });
+    const propagate = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    await expect(cancelDeviceCommands({ where: {} as never, result: {}, propagate })).rejects.toThrow('boom');
+  });
+
+  it('default wiring: a cancelled script command terminalises its script execution with the pre-erasure payload', async () => {
+    const { handle } = fakeExecutor([{ id: 'c1', type: 'script', payload: { executionId: 'exec-1' } }]);
+    const ex = handle as unknown as { update: () => unknown };
+    // deployment_results / automation tail of the default hook.
+    (ex as { update: unknown }).update = () => ({
+      set: () => ({
+        where: () => Object.assign(Promise.resolve([{ id: 'c1', type: 'script' }]), {
+          returning: async () => [{ id: 'c1', type: 'script' }],
+        }),
+      }),
+    });
+
+    await cancelDeviceCommands({ where: {} as never, result: { reason: 'x' }, executor: handle });
+
+    expect(finalizeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: 'exec-1', outcome: 'cancelled' }),
+    );
+  });
+
+  it('bounds the UPDATE to the rows it read, and skips it when none matched', async () => {
+    const reads: unknown[] = [];
+    const update = vi.fn();
+    const where = { marker: 'p' } as never;
+    const handle = {
+      select: () => ({ from: () => ({ where: (w: unknown) => (reads.push(w), { for: async () => [] }) }) }),
+      update,
+    } as never;
+    expect(await cancelDeviceCommands({ where, result: {}, executor: handle })).toEqual([]);
+    expect(reads).toEqual([where]);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('isolateFailures inside a caller tx: the hook runs in its own savepoint and its failure is contained', async () => {
+    const { handle } = fakeExecutor([
+      { id: 'c1', type: 'script', payload: null },
+      { id: 'c2', type: 'script', payload: null },
+    ]);
+    const hookExecutors: unknown[] = [];
+    const propagate = vi.fn(async (p: { commandId: string; executor?: unknown }) => {
+      hookExecutors.push(p.executor);
+      if (p.commandId === 'c1') throw new Error('boom');
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const rows = await cancelDeviceCommands({
+      where: {} as never,
+      result: {},
+      executor: handle,
+      isolateFailures: true,
+      propagate,
+    });
+
+    expect(rows.map((r) => r.id)).toEqual(['c1', 'c2']); // cancel kept, no rollback
+    expect(propagate).toHaveBeenCalledTimes(2);
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('cancelDeviceCommands'),
+      expect.objectContaining({ commandId: 'c1' }),
+    );
+    expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ commandId: 'c1' }));
+    errSpy.mockRestore();
   });
 });

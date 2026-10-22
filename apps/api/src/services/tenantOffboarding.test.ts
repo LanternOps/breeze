@@ -451,6 +451,7 @@ describe('beginOrganizationOffboarding', () => {
       expect.objectContaining({
         result: { reason: 'tenant_offboarding' },
         executor: expect.anything(),
+        isolateFailures: true,
       }),
     );
   });

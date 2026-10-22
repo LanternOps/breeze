@@ -520,6 +520,8 @@ describe('admin/abuse — suspend mutation behavior', () => {
       expect.objectContaining({
         result: { reason: 'partner_suspended_for_abuse' },
         executor: expect.anything(),
+        // A failing hook must never roll back the suspension itself.
+        isolateFailures: true,
       }),
     );
 
