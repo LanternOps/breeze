@@ -149,7 +149,7 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   // (diagnose_connectivity, get_diagnostic_run, get_link_evidence,
   // get_topology) took it to 5.5 KB (5188 bytes) after the DOMAIN_NOTES prose
   // had already been tightened once.
-  it('stays small: the whole index is under 6.5 KB and every note under 400 chars', () => {
+  it('stays small: the whole index is under 6.75 KB and every note under 400 chars', () => {
     // Ceiling raised to 6.5 KB (#6755): W01 wired 32 more chat-callable tools
     // (measured 119280 -> 140468 registry bytes, see
     // docs/superpowers/specs/ai-mcp/2026-09-17-agent-tool-efficiency-baseline.md
@@ -174,6 +174,13 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // ("Tool Catalog W3 delta"). Both fit under the existing ceiling, so the
     // 6.75 KB raise signed off for W3 was not taken; the flag-on prompt is
     // gated too (below).
+    // Full-control W02 (#6756): 7 PSA/billing write tools (+343 B) paid for in
+    // part by MAX_INLINE_ACTIONS 8 -> 7 (Todd 2026-10-22, option 2; -245 B):
+    // main 6576 / 6625 -> 6674 default / 6723 flag-on, still over 6656. So the
+    // 6.75 KB raise (6912 B) was taken 2026-10-22 for W02 (Todd, option 1);
+    // the W3 sign-off was re-used. Headroom ~238 B default / ~189 B flag-on.
+    // Any further raise needs a prompt-size review, not a bump.
+    expect(INDEX_BUDGET_BYTES).toBe(6912);
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(INDEX_BUDGET_BYTES);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });
@@ -194,7 +201,7 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   });
 });
 
-const INDEX_BUDGET_BYTES = 6.5 * 1024;
+const INDEX_BUDGET_BYTES = 6.75 * 1024;
 
 /** Action tokens are rendered inside parentheses after a tool name; ignore those in the unknown-name check. */
 function isActionToken(text: string, token: string): boolean {
