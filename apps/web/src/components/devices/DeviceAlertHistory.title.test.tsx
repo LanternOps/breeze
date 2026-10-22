@@ -25,7 +25,7 @@ describe('DeviceAlertHistory row title (#9610)', () => {
       {
         id: 'a1',
         title: 'Disk almost full',
-        summary: 'Disk almost full',
+        summary: 'Some other summary',
         message: 'Volume C: has 6.8 GB free of 238 GB. Threshold: 90%.',
         severity: 'high',
         status: 'active',
@@ -34,6 +34,7 @@ describe('DeviceAlertHistory row title (#9610)', () => {
     ]);
     render(<DeviceAlertHistory deviceId="device-1" />);
     expect(await screen.findByText('Disk almost full')).toBeInTheDocument();
+    expect(screen.queryByText('Some other summary')).toBeNull();
     expect(screen.queryByText(/6\.8 GB free/)).toBeNull();
   });
 

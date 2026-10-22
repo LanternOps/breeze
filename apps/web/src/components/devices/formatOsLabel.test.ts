@@ -11,6 +11,11 @@ describe('formatOsBuild (#9610) — shared by header and Details', () => {
     expect(formatOsBuild('windows', '11.0.22631', '')).toBe('22631');
   });
 
+  it('handles OS type case and whitespace-only builds', () => {
+    expect(formatOsBuild('Windows', '10.0.22631', '  ')).toBe('22631');
+    expect(formatOsBuild('windows', '10.0', null)).toBeNull();
+  });
+
   it('returns null when nothing is derivable', () => {
     expect(formatOsBuild('windows', 'Microsoft Windows 11 Pro', null)).toBeNull();
     expect(formatOsBuild('macos', 'darwin 26.5.1', null)).toBeNull();
