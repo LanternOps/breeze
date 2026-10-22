@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { CheckCircle, Settings2, HardDriveDownload } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
-import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
+import AlertDetails, { type NotificationHistory, type LinkedAlertTicket } from './AlertDetails';
 import SuppressAlertDialog from './SuppressAlertDialog';
 import { useAlertActions } from './useAlertActions';
 import AlertsSummary from './AlertsSummary';
@@ -67,6 +67,25 @@ function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: stri
   });
 }
 
+const NOTIFICATION_STATUSES = ['sent', 'failed', 'pending'] as const;
+
+// Maps the `notifications` rows of GET /alerts/:id onto the drawer's shape.
+// sentAt is null until a delivery lands, so fall back to createdAt; the
+// channel columns are null once the channel is deleted.
+function normalizeNotifications(raw: unknown): NotificationHistory[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((n: Record<string, unknown>) => ({
+    id: String(n.id),
+    channelType: (n.channelType ?? 'webhook') as NotificationHistory['channelType'],
+    channelName: (n.channelName as string | null) ?? null,
+    sentAt: String(n.sentAt ?? n.createdAt ?? ''),
+    status: (NOTIFICATION_STATUSES as readonly string[]).includes(n.status as string)
+      ? (n.status as NotificationHistory['status'])
+      : 'pending',
+    errorMessage: (n.errorMessage as string | null) ?? null,
+  }));
+}
+
 export default function AlertsPage() {
   const { t } = useTranslation('alerts');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
@@ -82,8 +101,10 @@ export default function AlertsPage() {
   const [error, setError] = useState<string>();
   const [detailOpen, setDetailOpen] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
-  const [selectedAlertHistory, setSelectedAlertHistory] = useState<StatusChange[]>([]);
   const [selectedAlertNotifications, setSelectedAlertNotifications] = useState<NotificationHistory[]>([]);
+  const [selectedAlertTickets, setSelectedAlertTickets] = useState<LinkedAlertTicket[]>([]);
+  const [selectedAlertTicketsFailed, setSelectedAlertTicketsFailed] = useState(false);
+  const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [severityFilter, setSeverityFilter] = useState<AlertSeverity | null>(null);
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
@@ -175,18 +196,38 @@ export default function AlertsPage() {
     }
   }, [currentOrgId, hideAiNoise, stableT]);
 
+  const fetchLinkedTickets = useCallback(async (alertId: string) => {
+    try {
+      const res = await fetchWithAuth(`/alerts/${alertId}/tickets`);
+      if (!res.ok) throw new Error(`linked tickets: ${res.status}`);
+      setSelectedAlertTickets(asList(await res.json(), 'data') as LinkedAlertTicket[]);
+      setSelectedAlertTicketsFailed(false);
+    } catch (err) {
+      console.error('Failed to fetch linked tickets:', err);
+      setSelectedAlertTickets([]);
+      setSelectedAlertTicketsFailed(true);
+    }
+  }, []);
+
   const fetchAlertDetails = useCallback(async (alertId: string) => {
     try {
       const response = await fetchWithAuth(`/alerts/${alertId}`);
       if (response.ok) {
         const data = await response.json();
-        setSelectedAlertHistory(data.statusHistory ?? []);
-        setSelectedAlertNotifications(data.notificationHistory ?? []);
+        // GET /alerts/:id returns delivery records under `notifications`
+        // (#9623). There is no stored status-history source, so the drawer
+        // has no Status History section.
+        setSelectedAlertNotifications(normalizeNotifications(data.notifications));
       }
     } catch (err) {
       console.error('Failed to fetch alert details:', err);
     }
-  }, []);
+    // Only native Service Management offers the ticket action, so only then
+    // is the duplicate lookup worth a request.
+    if (serviceManagementMode === 'native') {
+      await fetchLinkedTickets(alertId);
+    }
+  }, [fetchLinkedTickets, serviceManagementMode]);
 
   useEffect(() => {
     // fetchAlerts changes identity when currentOrgId changes, so
@@ -231,8 +272,9 @@ export default function AlertsPage() {
   const handleCloseDetail = () => {
     setDetailOpen(false);
     setSelectedAlert(null);
-    setSelectedAlertHistory([]);
     setSelectedAlertNotifications([]);
+    setSelectedAlertTickets([]);
+    setSelectedAlertTicketsFailed(false);
   };
 
   const patchAlert = useCallback((id: string, patch: Record<string, unknown>) => {
@@ -536,8 +578,11 @@ export default function AlertsPage() {
       {detailOpen && selectedAlert && (
         <AlertDetails
           alert={selectedAlert}
-          statusHistory={selectedAlertHistory}
           notificationHistory={selectedAlertNotifications}
+          serviceManagementMode={serviceManagementMode}
+          linkedTickets={selectedAlertTickets}
+          linkedTicketsFailed={selectedAlertTicketsFailed}
+          onTicketCreated={() => void fetchLinkedTickets(selectedAlert.id)}
           isOpen={true}
           onClose={handleCloseDetail}
           onAcknowledge={handleAcknowledge}
