@@ -52,6 +52,17 @@ import {
   subnetChangeWouldRetainSnmpSecrets,
 } from '../services/snmpSecrets';
 
+// The worker stores the agent's OS string as `{ os: '<name>' }` in jsonb;
+// the API contract is a plain string (#9645).
+function normalizeOsFingerprint(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const os = (value as { os?: unknown }).os;
+    return typeof os === 'string' ? os : null;
+  }
+  return null;
+}
+
 export const discoveryRoutes = new Hono();
 const requireDiscoveryRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
@@ -582,21 +593,37 @@ discoveryRoutes.get(
       conditions.push(inArray(discoveryProfiles.siteId, permissions.allowedSiteIds));
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
-    const results = await db.select({
-      profile: discoveryProfiles,
-      lastRunAt: sql<string | null>`(
-        select max(${discoveryJobs.completedAt})
-        from ${discoveryJobs}
-        where ${discoveryJobs.profileId} = ${discoveryProfiles.id}
-          and ${discoveryJobs.status} = 'completed'
-      )`.as('last_run_at')
-    }).from(discoveryProfiles)
+    const allResults = await db.select({ profile: discoveryProfiles })
+      .from(discoveryProfiles)
       .where(where)
       .orderBy(desc(discoveryProfiles.createdAt));
+    const results = allResults.filter((row) => canAccessRecordSite(permissions, row.profile.siteId));
+
+    // Last run = newest completed job per profile. Deliberately a separate
+    // grouped query, not a correlated subquery in the select above: a
+    // single-table drizzle select strips table qualifiers from `sql` chunks,
+    // which made `profile_id = id` bind to discovery_jobs.id and always
+    // yield NULL (#9644). Scoped to the profiles the caller may access.
+    const lastRunByProfile = new Map<string, string | Date | null>();
+    if (results.length > 0) {
+      const lastRuns = await db.select({
+        profileId: discoveryJobs.profileId,
+        lastRunAt: sql<string | null>`max(${discoveryJobs.completedAt})`
+      }).from(discoveryJobs)
+        .where(and(
+          inArray(discoveryJobs.profileId, results.map((row) => row.profile.id)),
+          eq(discoveryJobs.status, 'completed')
+        ))
+        .groupBy(discoveryJobs.profileId);
+      for (const run of lastRuns) {
+        if (run.profileId) lastRunByProfile.set(run.profileId, run.lastRunAt);
+      }
+    }
 
     return c.json({
-      data: results.filter((row) => canAccessRecordSite(permissions, row.profile.siteId)).map((row) => {
+      data: results.map((row) => {
         const p = row.profile;
+        const lastRun = lastRunByProfile.get(p.id);
         return {
           id: p.id,
           orgId: p.orgId,
@@ -613,7 +640,7 @@ discoveryRoutes.get(
           pinnedDeviceId: p.pinnedDeviceId ?? null,
           createdAt: p.createdAt.toISOString(),
           updatedAt: p.updatedAt.toISOString(),
-          lastRunAt: row.lastRunAt ? dateFromSqlValue(row.lastRunAt).toISOString() : null
+          lastRunAt: lastRun ? dateFromSqlValue(lastRun).toISOString() : null
         };
       })
     });
@@ -1562,7 +1589,7 @@ discoveryRoutes.get(
         model: maskOidShapedModel(a.model),
         nicVendor: nicVendorFromMac(a.macAddress),
         openPorts: a.openPorts,
-        osFingerprint: a.osFingerprint,
+        osFingerprint: normalizeOsFingerprint(a.osFingerprint),
         snmpData: a.snmpData,
         responseTimeMs: a.responseTimeMs,
         linkedDeviceId: row.linkedDeviceId ?? null,
