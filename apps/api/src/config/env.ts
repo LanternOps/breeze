@@ -109,6 +109,17 @@ export const AI_AGENTS_ENABLED = envFlag('BREEZE_AI_AGENTS_ENABLED', false);
 // byte-identical to the merged behavior before this wave (Global
 // Constraints, plan header). Read at CALL time, like isHosted()/breezeRole()
 // above, so a test can flip it per-case without vi.resetModules().
+/**
+ * B-W04 (#6158, D-B37): kill switch for Tier-3 over MCP via action intents.
+ * Off (the default in the release that ships it): Tier-3 tools/call keeps
+ * today's MCP_APPROVAL_REQUIRED refusal byte-for-byte, nothing new is listed,
+ * and a queued `mcp_api` intent is refused at release (`mcp_intents_disabled`).
+ * get_action_status / cancel_action keep working either way. Read per call.
+ */
+export function mcpTier3IntentsEnabled(): boolean {
+  return envFlag('MCP_TIER3_INTENTS_ENABLED', false);
+}
+
 export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }

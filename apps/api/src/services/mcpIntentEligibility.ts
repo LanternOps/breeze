@@ -71,3 +71,17 @@ export function isMcpIntentEligible(
   if (i.isProduction && !i.allowedInProd) return no('not_allowlisted');
   return { ok: true };
 }
+
+/**
+ * True for an intent filed by an MCP credential (B-W04). `source` alone is not
+ * enough: agent-run and AI-operator intents are also `mcp_api` (for the 24 h
+ * window) but are requested by a user session. Only the recorded origin
+ * principal says an API key or OAuth grant asked.
+ */
+export function isMcpOriginIntent(intent: {
+  source: string;
+  originPrincipalKind: string;
+}): boolean {
+  return intent.source === 'mcp_api'
+    && (intent.originPrincipalKind === 'api_key' || intent.originPrincipalKind === 'oauth_grant');
+}

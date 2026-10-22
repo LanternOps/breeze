@@ -17,7 +17,22 @@ import { resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getUserPermissions } from './permissions';
 import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from './apiKeyAuthorization';
 import { getActiveOrgTenant } from './tenantStatus';
-import { envFlag } from '../config/env';
+import { envFlag, mcpTier3IntentsEnabled } from '../config/env';
+import { db, withSystemDbAccessContext } from '../db';
+import { apiKeys } from '../db/schema/apiKeys';
+import { users } from '../db/schema/users';
+import { oauthClients, oauthGrants } from '../db/schema/oauth';
+import type { ActionIntent } from '../db/schema/actionIntents';
+import { expandOAuthScopes, filterBlockedOAuthClientOrgIds } from '../middleware/bearerTokenAuth';
+import { isApiKeyCreatorEpochStale } from '../middleware/apiKeyAuth';
+import { activeGrantCondition } from '../oauth/grantStatus';
+import { isGrantRevoked } from '../oauth/revocationCache';
+import { computeEffectiveMcpScopes } from '../oauth/effectiveScopes';
+import { assertActiveTenantContext, TenantInactiveError } from './tenantStatus';
+import { isDomainGranted, mcpToolDomain, parseStoredMcpDomains, type McpDomainGrant } from './mcpDomains';
+import { isMcpOriginIntent } from './mcpIntentEligibility';
+import { isMfaGatedToolAction, mfaGateRefusesCaller } from './aiToolMfaGate';
+import { resolveTenantMutationTargetOrgId } from './actionIntents/actorContext';
 
 function parseCsvSet(raw: string | undefined): Set<string> {
   if (!raw) return new Set();
@@ -239,4 +254,275 @@ export async function buildAuthFromApiKey(apiKey: {
     orgCondition,
     canAccessOrg: (checkOrgId) => accessibleOrgIds.includes(checkOrgId),
   };
+}
+
+// ============================================
+// B-W04 (#6158, D-B26): release under the live origin credential
+// ============================================
+
+/** The credential shape buildAuthFromApiKey consumes. */
+export type McpAuthKeyInput = Parameters<typeof buildAuthFromApiKey>[0];
+
+export type LiveMcpOriginCredential = {
+  kind: 'api_key' | 'oauth_grant';
+  keyInput: McpAuthKeyInput;
+  /** Live, clamped scopes in the ai:* vocabulary (OAuth: mcp:* expanded). */
+  scopes: string[];
+  domainGrant: McpDomainGrant;
+  /** The human behind the credential (key creator / grant account). */
+  humanUserId: string;
+  /** OAuth client id, for the client-block re-check; null for API keys. */
+  oauthClientId: string | null;
+};
+
+export type McpOriginReleaseErrorCode =
+  | 'mcp_origin_revoked'
+  | 'mcp_scope_lost'
+  | 'mcp_domain_lost'
+  | 'mcp_org_out_of_scope'
+  | 'mcp_tool_not_allowed'
+  | 'mcp_mfa_required'
+  | 'mcp_intents_disabled';
+
+const REVOKED = { error: 'mcp_origin_revoked' } as const;
+
+/**
+ * Loads the credential an `mcp_api` intent was filed with and re-proves it is
+ * still live, re-using the request path's own checks rather than re-spelling
+ * them: key status/expiry, creator status + credential/MFA epoch
+ * (`isApiKeyCreatorEpochStale`), the creator re-clamp
+ * (`authorizeHumanApiKeyCreator`), and for OAuth `activeGrantCondition`, the
+ * Redis revocation marker, the strict tenant check, the client kill switch
+ * and the per-org client block. The human behind the credential must still
+ * be the intent's requester.
+ *
+ * `mcp_scope_lost` is returned (rather than `mcp_origin_revoked`) only when
+ * the creator still exists but no longer backs the key's stored scopes.
+ */
+export async function loadLiveMcpOriginCredential(
+  intent: ActionIntent,
+): Promise<LiveMcpOriginCredential | { error: 'mcp_origin_revoked' | 'mcp_scope_lost' }> {
+  if (!isMcpOriginIntent(intent) || !intent.originPrincipalId || !intent.requestedByUserId) return REVOKED;
+  const requester = intent.requestedByUserId;
+  const originId = intent.originPrincipalId;
+  return withSystemDbAccessContext(async () => {
+    if (intent.originPrincipalKind === 'api_key') {
+      return loadLiveApiKey(originId, requester);
+    }
+    return loadLiveOAuthGrant(intent, originId, requester);
+  });
+}
+
+async function loadLiveApiKey(
+  keyId: string,
+  requester: string,
+): Promise<LiveMcpOriginCredential | { error: 'mcp_origin_revoked' | 'mcp_scope_lost' }> {
+  const [key] = await db
+    .select({
+      id: apiKeys.id,
+      orgId: apiKeys.orgId,
+      name: apiKeys.name,
+      scopes: apiKeys.scopes,
+      expiresAt: apiKeys.expiresAt,
+      createdBy: apiKeys.createdBy,
+      status: apiKeys.status,
+      source: apiKeys.source,
+      principalType: apiKeys.principalType,
+      principalId: apiKeys.principalId,
+      creatorAuthEpoch: apiKeys.creatorAuthEpoch,
+      creatorMfaEpoch: apiKeys.creatorMfaEpoch,
+      creatorCredentialEpoch: apiKeys.creatorCredentialEpoch,
+      mcpDomains: apiKeys.mcpDomains,
+    })
+    .from(apiKeys)
+    .where(eq(apiKeys.id, keyId))
+    .limit(1);
+  if (!key || key.status !== 'active') return REVOKED;
+  if (key.expiresAt && new Date(key.expiresAt) < new Date()) return REVOKED;
+  // An org service-principal key can never own an mcp_api intent (refused at
+  // creation); a row that claims otherwise is not released.
+  if (key.principalType === 'service') return REVOKED;
+  if (key.createdBy !== requester) return REVOKED;
+
+  const [creator] = await db
+    .select({
+      status: users.status,
+      authEpoch: users.authEpoch,
+      mfaEpoch: users.mfaEpoch,
+      credentialEpoch: users.credentialEpoch,
+    })
+    .from(users)
+    .where(eq(users.id, key.createdBy))
+    .limit(1);
+  if (!creator || creator.status !== 'active') return REVOKED;
+  if (isApiKeyCreatorEpochStale(key, creator)) return REVOKED;
+
+  const ownerTenant = await getActiveOrgTenant(key.orgId);
+  if (!ownerTenant) return REVOKED;
+
+  // The middleware's re-clamp, so the scopes checked at release are the ones
+  // the request path would serve today.
+  const authz = await authorizeHumanApiKeyCreator({
+    createdBy: key.createdBy,
+    orgId: key.orgId,
+    partnerId: ownerTenant.partnerId,
+    scopes: key.scopes ?? [],
+  });
+  if (!authz.ok) {
+    return authz.reason === 'scope_exceeds_current_permissions' ? { error: 'mcp_scope_lost' } : REVOKED;
+  }
+
+  return {
+    kind: 'api_key',
+    keyInput: {
+      id: key.id,
+      orgId: key.orgId,
+      // apiKeyAuthMiddleware resolves the partner only for MCP-provisioning
+      // keys; mirror it so the rebuilt context is the request-path one.
+      partnerId: key.source === 'mcp_provisioning' ? ownerTenant.partnerId : null,
+      name: key.name,
+      createdBy: key.createdBy,
+      scopes: authz.clampedScopes,
+      principalType: key.principalType,
+      principalId: key.principalId ?? null,
+    },
+    scopes: authz.clampedScopes,
+    domainGrant: parseStoredMcpDomains(key.mcpDomains),
+    humanUserId: key.createdBy,
+    oauthClientId: null,
+  };
+}
+
+/** The scopes the consent wrote for the MCP resource (oidc-provider Grant payload). */
+function grantRequestedScopes(payload: unknown): string[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const p = payload as { resources?: Record<string, unknown>; openid?: { scope?: unknown } };
+  const resource = process.env.OAUTH_RESOURCE_URL;
+  const fromResource = resource && p.resources ? p.resources[resource] : undefined;
+  const raw = typeof fromResource === 'string' ? fromResource : typeof p.openid?.scope === 'string' ? p.openid.scope : '';
+  return raw.split(' ').filter(Boolean);
+}
+
+async function loadLiveOAuthGrant(
+  intent: ActionIntent,
+  grantId: string,
+  requester: string,
+): Promise<LiveMcpOriginCredential | { error: 'mcp_origin_revoked' }> {
+  const [grant] = await db
+    .select({
+      id: oauthGrants.id,
+      accountId: oauthGrants.accountId,
+      clientId: oauthGrants.clientId,
+      partnerId: oauthGrants.partnerId,
+      orgId: oauthGrants.orgId,
+      payload: oauthGrants.payload,
+      mcpDomains: oauthGrants.mcpDomains,
+    })
+    .from(oauthGrants)
+    .where(activeGrantCondition(grantId, new Date()))
+    .limit(1);
+  if (!grant || grant.accountId !== requester || !grant.partnerId) return REVOKED;
+  // Eager revocation signal (fails closed when Redis is missing with OAuth on).
+  if (await isGrantRevoked(grant.id)) return REVOKED;
+
+  const [user] = await db
+    .select({ status: users.status })
+    .from(users)
+    .where(eq(users.id, grant.accountId))
+    .limit(1);
+  if (!user || user.status !== 'active') return REVOKED;
+
+  const [client] = await db
+    .select({ id: oauthClients.id, disabledAt: oauthClients.disabledAt })
+    .from(oauthClients)
+    .where(eq(oauthClients.id, grant.clientId))
+    .limit(1);
+  if (!client || client.disabledAt) return REVOKED;
+
+  try {
+    await assertActiveTenantContext(
+      { scope: grant.orgId ? 'organization' : 'partner', partnerId: grant.partnerId, orgId: grant.orgId ?? null },
+      { strictForOauth: true },
+    );
+  } catch (err) {
+    if (err instanceof TenantInactiveError) return REVOKED;
+    throw err;
+  }
+
+  // The org-wide client block, for the intent's org and any recorded
+  // tenant-mutation target org.
+  const targetOrgId = resolveTenantMutationTargetOrgId(intent);
+  const orgIds = targetOrgId && targetOrgId !== intent.orgId ? [intent.orgId, targetOrgId] : [intent.orgId];
+  const unblocked = await filterBlockedOAuthClientOrgIds(orgIds, grant.clientId);
+  if (unblocked.length !== orgIds.length) return REVOKED;
+
+  const effective = await computeEffectiveMcpScopes({
+    requested: grantRequestedScopes(grant.payload),
+    partnerId: grant.partnerId,
+    hasGrant: true,
+  });
+  const scopes = expandOAuthScopes(effective, grant.clientId);
+
+  return {
+    kind: 'oauth_grant',
+    keyInput: {
+      // Per-grant, not per-token (`oauth:<jti>`): release has no token.
+      id: `oauth:grant:${grant.id}`,
+      orgId: grant.orgId ?? null,
+      partnerId: grant.partnerId,
+      name: 'OAuth bearer',
+      createdBy: grant.accountId,
+      scopes,
+      oauthGrantId: grant.id,
+    },
+    scopes,
+    domainGrant: parseStoredMcpDomains(grant.mcpDomains),
+    humanUserId: grant.accountId,
+    oauthClientId: grant.clientId,
+  };
+}
+
+/**
+ * Rebuilds the caller's AuthContext for a queued `mcp_api` intent with the
+ * SAME function the MCP request path uses, from the live credential — so a
+ * release can never be wider than the call: same org pin, same `token: {}`
+ * (no synthetic MFA), same creator re-authorisation, same site set.
+ */
+export async function rebuildMcpOriginAuthContext(
+  intent: ActionIntent,
+): Promise<{ auth: AuthContext; credential: LiveMcpOriginCredential } | { error: McpOriginReleaseErrorCode }> {
+  const credential = await loadLiveMcpOriginCredential(intent);
+  if ('error' in credential) return { error: credential.error };
+  const auth = await withSystemDbAccessContext(() => buildAuthFromApiKey(credential.keyInput));
+  if (!auth) return REVOKED;
+  return { auth, credential };
+}
+
+/**
+ * Re-runs the creation gates against the live state at release: the kill
+ * switch, `ai:execute` (+ `ai:execute_admin` in production), the production
+ * allowlist, the credential's MCP domain grant, org reach (the intent org and
+ * any recorded tenant-mutation target — an org-pinned key never widens to a
+ * `targetOrgId`), and the MFA gate. RBAC and the governance site ceiling run
+ * afterwards in revalidateApprovedIntentCore, unchanged.
+ */
+export function checkMcpOriginReleaseAuthority(
+  intent: ActionIntent,
+  rebuilt: { auth: AuthContext; credential: LiveMcpOriginCredential },
+): { ok: true } | { ok: false; errorCode: McpOriginReleaseErrorCode } {
+  const no = (errorCode: McpOriginReleaseErrorCode) => ({ ok: false as const, errorCode });
+  const { auth, credential } = rebuilt;
+  if (!mcpTier3IntentsEnabled()) return no('mcp_intents_disabled');
+  if (!credential.scopes.includes('ai:execute')) return no('mcp_scope_lost');
+  if (shouldRequireExecuteAdminInProd() && !credential.scopes.includes('ai:execute_admin')) return no('mcp_scope_lost');
+  if (process.env.NODE_ENV === 'production' && !isExecuteToolAllowedInProd(intent.actionName)) {
+    return no('mcp_tool_not_allowed');
+  }
+  if (!isDomainGranted(credential.domainGrant, mcpToolDomain(intent.actionName))) return no('mcp_domain_lost');
+  if (!auth.canAccessOrg(intent.orgId)) return no('mcp_org_out_of_scope');
+  const targetOrgId = resolveTenantMutationTargetOrgId(intent);
+  if (targetOrgId && !auth.canAccessOrg(targetOrgId)) return no('mcp_org_out_of_scope');
+  const action = typeof intent.arguments?.action === 'string' ? intent.arguments.action : undefined;
+  if (isMfaGatedToolAction(intent.actionName, action) && mfaGateRefusesCaller(auth)) return no('mcp_mfa_required');
+  return { ok: true };
 }
