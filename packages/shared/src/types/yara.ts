@@ -68,3 +68,95 @@ export interface YaraRuleSetError {
 }
 
 export type SecurityScanEngine = 'yara' | 'legacy';
+
+// ---------------------------------------------------------------------------
+// W04 (#6267): IOC import and rule test upload
+// ---------------------------------------------------------------------------
+
+/** IOC kinds the importer understands (W04-1). Anything unclassified is `string`. */
+export const YARA_IOC_KINDS = ['md5', 'sha1', 'sha256', 'filename', 'filepath', 'domain', 'ip', 'string'] as const;
+export type YaraIocKind = (typeof YARA_IOC_KINDS)[number];
+
+export interface YaraIoc {
+  kind: YaraIocKind;
+  value: string;
+}
+
+export type YaraIocErrorCode =
+  | 'empty'
+  | 'unknown_kind'
+  | 'bad_hash'
+  | 'too_short'
+  | 'too_long'
+  | 'bad_path'
+  | 'bad_ip'
+  | 'bad_domain'
+  | 'duplicate';
+
+/** At most this many IOCs per import batch. */
+export const YARA_IOC_MAX_PER_BATCH = 1000;
+/** Pasted IOC text is capped at this many UTF-8 bytes (`parseIocText`). */
+export const YARA_IOC_MAX_TEXT_BYTES = 256 * 1024;
+/** A false-positive floor for string-like IOCs, not YARA's slow-pattern threshold. */
+export const YARA_IOC_STRING_MIN_BYTES = 4;
+export const YARA_IOC_STRING_MAX_BYTES = 256;
+/** filename IOCs: one path component. */
+export const YARA_IOC_FILENAME_MAX_BYTES = 255;
+/** filepath IOCs. */
+export const YARA_IOC_PATH_MAX_BYTES = 512;
+/** Longest accepted IOC value in the import request body, in characters. */
+export const YARA_IOC_VALUE_MAX_CHARS = 512;
+export const YARA_IOC_LABEL_MAX = 64;
+/** Each generated rule's source stays under this (W03's per-rule cap is 64 KiB). */
+export const YARA_IOC_RULE_SOURCE_BUDGET = 60 * 1024;
+
+/**
+ * `name.ext` values whose extension is here classify as `filename`; other
+ * dotted names classify as `domain`. `com` is deliberately absent.
+ */
+export const YARA_IOC_FILE_EXTENSIONS = [
+  'exe', 'dll', 'sys', 'scr', 'bat', 'cmd', 'ps1', 'psm1', 'vbs', 'vbe', 'js', 'jse', 'wsf', 'hta', 'lnk',
+  'msi', 'jar', 'bin', 'sh', 'py', 'elf', 'so', 'dylib', 'docm', 'xlsm', 'pptm', 'iso', 'img', 'zip', 'rar', '7z',
+] as const;
+
+export interface YaraGeneratedRule {
+  name: string;
+  source: string;
+  severity: YaraRuleSeverity;
+  tags: string[];
+  kind: YaraIocKind;
+  iocCount: number;
+}
+
+/** Largest sample `POST /security/yara/rule-sets/:id/test` accepts. */
+export const YARA_TEST_SAMPLE_MAX_BYTES = 10 * 1024 * 1024;
+
+export interface YaraTestMatchedString {
+  id: string;
+  offset: number;
+  data: string;
+}
+
+export interface YaraTestMatch {
+  ruleId: string;
+  ruleName: string;
+  severity: string;
+  tags: string[];
+  matchedStrings: YaraTestMatchedString[];
+}
+
+/** `data` of a 200 from the rule test route. */
+export interface YaraTestResult {
+  sha256: string;
+  size: number;
+  filename: string;
+  filepath: string;
+  durationMs: number;
+  /** The draft that was tested: the set's `current_version` (min 1). */
+  testedVersion: number;
+  /** What devices run now (0 = never published). */
+  publishedVersion: number;
+  /** sha256 of the exact bundle bytes that were tested. */
+  testedDigest: string;
+  matches: YaraTestMatch[];
+}
