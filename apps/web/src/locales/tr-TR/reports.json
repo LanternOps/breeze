@@ -12,6 +12,7 @@
         "low": "Düşük",
         "medium": "Orta"
       },
+      "customRangeIncomplete": "Özel bir aralık uygulamak için bir başlangıç ve bitiş tarihi seçin.",
       "dashboardOptions": {
         "capacity": "Kapasite Planlama",
         "operations": "İşlemlere Genel Bakış",

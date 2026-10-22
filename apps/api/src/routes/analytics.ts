@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, sql, gte, lte, ne, inArray, isNull, or, desc, type SQL } from 'drizzle-orm';
+import { and, eq, sql, gte, lt, lte, ne, inArray, isNull, or, desc, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   analyticsDashboards,
@@ -29,6 +29,7 @@ import { METRIC_ANOMALY_V1_SHADOW_VERSION } from '../services/metricAnomalies';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
+import { resolveAnalyticsDateWindow, resolveAnalyticsOrgScope } from './analyticsQueryScope';
 export const analyticsRoutes = new Hono();
 const requireAnalyticsRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
@@ -314,9 +315,13 @@ function mapWidgetToApi(widget: typeof dashboardWidgets.$inferSelect) {
 }
 
 const capacityQuerySchema = z.object({
+  orgId: z.string().optional(),
   deviceId: z.string().guid().optional(),
   metricType: z.string().min(1).optional().default('disk'),
-  range: z.string().optional().default('30d')
+  range: z.string().optional().default('30d'),
+  // Custom range (#9649): both or neither; validated by resolveAnalyticsDateWindow.
+  startDate: z.string().optional(),
+  endDate: z.string().optional()
 });
 
 const optionalBooleanQuery = z.preprocess((value) => {
@@ -442,6 +447,7 @@ const createSlaSchema = z.object({
 });
 
 const executiveSummarySchema = z.object({
+  orgId: z.string().optional(),
   periodType: z.enum(['daily', 'weekly', 'monthly']).optional(),
   range: z.string().optional(),
   startDate: z.string().optional(),
@@ -1468,25 +1474,36 @@ analyticsRoutes.get(
     const query = c.req.valid('query');
     const metricType = query.metricType.toLowerCase();
 
+    // The org switcher's selection (`?orgId=`) may only narrow the token's
+    // reach (#9648); the custom range must apply or fail loudly (#9649).
+    // Both are resolved before any query runs.
+    const orgScope = resolveAnalyticsOrgScope(auth, query.orgId);
+    if (!orgScope.ok) {
+      return c.json({ error: orgScope.error }, orgScope.status);
+    }
+    const dateWindow = resolveAnalyticsDateWindow(query, (range) => {
+      const normalized = range?.toLowerCase();
+      return normalized === '7d' ? 7 : normalized === '90d' ? 90 : 30;
+    });
+    if (!dateWindow.ok) {
+      return c.json({ error: dateWindow.error }, dateWindow.status);
+    }
+
     // Site-scope gate. RLS defends only the org axis; a site-restricted caller
     // must not drill into per-device capacity/metrics for devices in other
     // sites within the same org. `allowedDeviceIds === null` means unrestricted.
     const perms = c.get('permissions') as UserPermissions | undefined;
     let allowedDeviceIds: string[] | null = null;
-    if (perms?.allowedSiteIds && auth?.orgId) {
-      allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+    const siteScopeOrgId = orgScope.orgId ?? auth?.orgId;
+    if (perms?.allowedSiteIds && siteScopeOrgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(siteScopeOrgId, perms);
       // Explicit per-device drill-down must target an in-scope device.
       if (query.deviceId && !(allowedDeviceIds ?? []).includes(query.deviceId)) {
         return c.json({ error: 'Device not found or access denied' }, 403);
       }
     }
 
-    const predictionOrgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(capacityPredictions.orgId)
-        : auth?.orgId
-          ? eq(capacityPredictions.orgId, auth.orgId)
-          : undefined;
+    const predictionOrgCondition = orgScope.orgCondition(capacityPredictions.orgId);
 
     // When site-restricted and no explicit deviceId, constrain per-device
     // predictions to the in-scope set while keeping org-wide rows (deviceId is
@@ -1521,12 +1538,7 @@ analyticsRoutes.get(
       .orderBy(capacityPredictions.predictionDate);
 
     if (storedPredictions.length > 0) {
-      const thresholdOrgCondition =
-        typeof auth?.orgCondition === 'function'
-          ? auth.orgCondition(capacityThresholds.orgId)
-          : auth?.orgId
-            ? eq(capacityThresholds.orgId, auth.orgId)
-            : undefined;
+      const thresholdOrgCondition = orgScope.orgCondition(capacityThresholds.orgId);
 
       const thresholdWhere = and(
         eq(capacityThresholds.metricType, metricType),
@@ -1565,23 +1577,10 @@ analyticsRoutes.get(
       });
     }
 
-    const normalizedRange = query.range.toLowerCase();
-    const rangeDays = normalizedRange === '7d' ? 7 : normalizedRange === '90d' ? 90 : 30;
-    const rangeStart = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
+    const { since: rangeStart, until: rangeEnd } = dateWindow;
 
-    const metricsOrgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(devices.orgId)
-        : auth?.orgId
-          ? eq(devices.orgId, auth.orgId)
-          : undefined;
-
-    const rollupsOrgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(metricRollups.orgId)
-        : auth?.orgId
-          ? eq(metricRollups.orgId, auth.orgId)
-          : undefined;
+    const metricsOrgCondition = orgScope.orgCondition(devices.orgId);
+    const rollupsOrgCondition = orgScope.orgCondition(metricRollups.orgId);
 
     // device_metrics.deviceId is NOT NULL — constrain the broad (no-deviceId)
     // query to the in-scope device set when site-restricted, and short-circuit
@@ -1595,6 +1594,7 @@ analyticsRoutes.get(
       eq(metricRollups.bucketSeconds, 86400),
       eq(metricRollups.metricName, capacityRollupMetricName(metricType)),
       gte(metricRollups.bucketStart, rangeStart),
+      ...(rangeEnd ? [lt(metricRollups.bucketStart, rangeEnd)] : []),
       sql`${metricRollups.sampleCount} > 0`,
       sql`${metricRollups.avgValue} IS NOT NULL`,
       ...(rollupsOrgCondition ? [rollupsOrgCondition] : []),
@@ -1623,6 +1623,7 @@ analyticsRoutes.get(
 
     const metricsWhere = and(
       gte(deviceMetrics.timestamp, rangeStart),
+      ...(rangeEnd ? [lt(deviceMetrics.timestamp, rangeEnd)] : []),
       ...(metricsOrgCondition ? [metricsOrgCondition] : []),
       ...(query.deviceId ? [eq(deviceMetrics.deviceId, query.deviceId)] : []),
       ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
@@ -1987,12 +1988,12 @@ analyticsRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(devices.orgId)
-        : auth?.orgId
-          ? eq(devices.orgId, auth.orgId)
-          : undefined;
+    // `?orgId=` (the org switcher) may only narrow the token's reach (#9648).
+    const orgScope = resolveAnalyticsOrgScope(auth, query.orgId);
+    if (!orgScope.ok) {
+      return c.json({ error: orgScope.error }, orgScope.status);
+    }
+    const orgCondition = orgScope.orgCondition(devices.orgId);
     // Site is an app-layer axis (RLS defends only the org), so a restricted
     // caller's site list is applied in SQL before anything is counted or
     // grouped. `undefined` = unrestricted; an empty (or malformed) list sees
@@ -2090,12 +2091,12 @@ analyticsRoutes.get(
   requireAnalyticsRead,
   async (c) => {
     const auth = c.get('auth');
-    const orgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(devices.orgId)
-        : auth?.orgId
-          ? eq(devices.orgId, auth.orgId)
-          : undefined;
+    // Same `?orgId=` narrowing as /executive-summary (#9648).
+    const orgScope = resolveAnalyticsOrgScope(auth, c.req.query('orgId'));
+    if (!orgScope.ok) {
+      return c.json({ error: orgScope.error }, orgScope.status);
+    }
+    const orgCondition = orgScope.orgCondition(devices.orgId);
     // Same site narrowing as /executive-summary: applied before grouping, and
     // an empty (or malformed) site list skips the query entirely.
     const perms = c.get('permissions') as UserPermissions | undefined;

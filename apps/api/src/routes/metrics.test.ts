@@ -18,6 +18,10 @@ import { Hono } from 'hono';
 
 const selectMock = vi.hoisted(() => vi.fn());
 
+// Auth context the mocked authMiddleware installs. `null` keeps the default
+// system-scope caller; a test may swap in a partner caller (#9648).
+const authState = vi.hoisted(() => ({ auth: null as Record<string, unknown> | null }));
+
 // Site scope carried by `c.get('permissions')`. `undefined` is unrestricted,
 // `[]` is restricted-to-no-sites; the two must never be conflated.
 const permissionState = vi.hoisted(() => ({
@@ -39,6 +43,7 @@ vi.mock('drizzle-orm', async (importOriginal) => {
     }),
     eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
     gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
+    lt: (column: unknown, value: unknown) => ({ op: 'lt', column, value }),
     inArray: (column: unknown, values: unknown) => ({ op: 'inArray', column, values }),
   };
 });
@@ -75,7 +80,7 @@ vi.mock('../middleware/auth', () => ({
     if (!c.req.header('Authorization')) {
       return c.json({ error: 'Missing authorization header' }, 401);
     }
-    c.set('auth', {
+    c.set('auth', authState.auth ?? {
       user: { id: 'user-123', email: 'test@example.com' },
       scope: 'system',
       orgId: 'org-123'
@@ -144,6 +149,23 @@ function mockRollupTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown
       }),
     }),
   });
+}
+
+function mockCapturingRollupTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown[]): any[] {
+  const captured: any[] = [];
+  selectMock.mockReturnValueOnce({
+    from: () => ({
+      where: (condition: any) => {
+        captured.push(condition);
+        return {
+          groupBy: () => ({
+            orderBy: () => Promise.resolve(rows),
+          }),
+        };
+      },
+    }),
+  });
+  return captured;
 }
 
 function mockRawTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown[]) {
@@ -335,6 +357,7 @@ describe('metrics routes', () => {
       }),
     });
     permissionState.permissions = undefined;
+    authState.auth = null;
     process.env.NODE_ENV = 'test';
     process.env.METRICS_SCRAPE_TOKEN = 'test-scrape-token';
     delete process.env.METRICS_INCLUDE_ORG_ID;
@@ -1697,6 +1720,128 @@ describe('metrics routes', () => {
       expect(await res.json()).toEqual([
         { timestamp: '2026-06-18T00:00:00.000Z', cpu: 20, memory: 70 },
       ]);
+    });
+  });
+
+  // #9648: with a client selected, the page sends `?orgId=`; the KPI strip and
+  // Performance Trend must narrow to it, never widen past the token.
+  describe('selected org scope (#9648)', () => {
+    const ORG_A = '44444444-4444-4444-4444-444444444441';
+    const ORG_B = '44444444-4444-4444-4444-444444444442';
+    const ORG_FOREIGN = '44444444-4444-4444-4444-444444444449';
+
+    beforeEach(() => {
+      authState.auth = {
+        user: { id: 'user-123', email: 'test@example.com' },
+        scope: 'partner',
+        orgId: null,
+        partnerId: 'partner-1',
+        accessibleOrgIds: [ORG_A, ORG_B],
+        canAccessOrg: (orgId: string) => orgId === ORG_A || orgId === ORG_B,
+        orgCondition: (column: unknown) => ({ op: 'inArray', column, values: [ORG_A, ORG_B] }),
+      };
+    });
+
+    it('narrows every current-metric aggregate to the selected org', async () => {
+      const captured = mockCurrentMetricsQueries([], [], []);
+
+      const res = await app.request(`/?orgId=${ORG_A}`, { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(captured).toHaveLength(3);
+      for (const condition of captured) {
+        expect(findCondition(condition, 'eq', devices.orgId)?.value).toBe(ORG_A);
+      }
+    });
+
+    it('narrows the rollup trend query to the selected org', async () => {
+      const { metricRollups } = await import('../db/schema');
+      const captured = mockCapturingRollupTrendRows(selectMock, [
+        { bucket: new Date('2026-06-18T00:00:00.000Z'), metricName: 'cpu_percent', value: 20 },
+      ]);
+
+      const res = await app.request(`/trends?range=7d&orgId=${ORG_A}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(findCondition(captured[0], 'eq', metricRollups.orgId)?.value).toBe(ORG_A);
+    });
+
+    it('keeps the whole accessible book when no org is selected', async () => {
+      const captured = mockCurrentMetricsQueries([], [], []);
+
+      const res = await app.request('/', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      for (const condition of captured) {
+        expect(findCondition(condition, 'eq', devices.orgId)).toBeUndefined();
+        expect(findCondition(condition, 'inArray', devices.orgId)?.values).toEqual([ORG_A, ORG_B]);
+      }
+    });
+
+    it.each([['/'], ['/trends?range=7d']])(
+      'denies an org outside the caller\'s reach on %s without querying',
+      async (path) => {
+        const sep = path.includes('?') ? '&' : '?';
+        const res = await app.request(`${path}${sep}orgId=${ORG_FOREIGN}`, {
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'Access to this organization denied' });
+        expect(selectMock).not.toHaveBeenCalled();
+      }
+    );
+
+    it('denies an organization-scope caller naming a different org', async () => {
+      authState.auth = {
+        user: { id: 'user-123', email: 'test@example.com' },
+        scope: 'organization',
+        orgId: ORG_A,
+        accessibleOrgIds: [ORG_A],
+        canAccessOrg: (orgId: string) => orgId === ORG_A,
+        orgCondition: (column: unknown) => ({ op: 'eq', column, value: ORG_A }),
+      };
+
+      const res = await app.request(`/?orgId=${ORG_B}`, { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(403);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // #9649: "Custom range" sends startDate/endDate and no `range`.
+  describe('GET /trends custom range (#9649)', () => {
+    it('bounds the rollup query by startDate/endDate (end date inclusive)', async () => {
+      const { metricRollups } = await import('../db/schema');
+      const captured = mockCapturingRollupTrendRows(selectMock, [
+        { bucket: new Date('2026-01-10T00:00:00.000Z'), metricName: 'cpu_percent', value: 20 },
+      ]);
+
+      const res = await app.request('/trends?startDate=2026-01-01&endDate=2026-01-31', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(findCondition(captured[0], 'gte', metricRollups.bucketStart)?.value).toEqual(
+        new Date('2026-01-01T00:00:00.000Z')
+      );
+      expect(findCondition(captured[0], 'lt', metricRollups.bucketStart)?.value).toEqual(
+        new Date('2026-02-01T00:00:00.000Z')
+      );
+    });
+
+    it.each([
+      ['an end before the start', 'startDate=2026-02-01&endDate=2026-01-01'],
+      ['only an end date', 'endDate=2026-01-31'],
+      ['an unparseable date', 'startDate=2026-13-45&endDate=2026-01-31'],
+      ['a span over a year', 'startDate=2024-01-01&endDate=2026-01-31'],
+    ])('rejects %s with 400 instead of silently using 30 days', async (_label, qs) => {
+      const res = await app.request(`/trends?${qs}`, { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(400);
+      expect(selectMock).not.toHaveBeenCalled();
     });
   });
 });

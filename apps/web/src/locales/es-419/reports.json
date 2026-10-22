@@ -12,6 +12,7 @@
         "low": "Bajo",
         "medium": "Medio"
       },
+      "customRangeIncomplete": "Elige una fecha de inicio y una de fin para aplicar un rango personalizado.",
       "dashboardOptions": {
         "capacity": "Planificación de capacidad",
         "operations": "Resumen de operaciones",

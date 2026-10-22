@@ -12,6 +12,7 @@
         "low": "Niedrig",
         "medium": "Mittel"
       },
+      "customRangeIncomplete": "Wählen Sie ein Start- und ein Enddatum, um einen benutzerdefinierten Zeitraum anzuwenden.",
       "dashboardOptions": {
         "capacity": "Kapazitätsplanung",
         "operations": "Betriebsübersicht",
