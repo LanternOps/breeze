@@ -12,6 +12,10 @@ import {
   type PeripheralPolicyTargetIds,
   type PeripheralPolicyTargetType,
 } from '../db/schema';
+import {
+  loadLinkedPeripheralPolicyIds,
+  resolvePeripheralControlPolicyForDevice,
+} from './featureConfigResolver';
 
 export type PeripheralPolicyClass = 'storage' | 'all_usb' | 'bluetooth' | 'thunderbolt';
 
@@ -80,15 +84,41 @@ function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/**
+ * Config-policy link governance (#9619).
+ *
+ * Precedence, stated once:
+ *  1. A peripheral policy linked from at least one active configuration policy
+ *     (a `peripheral_control` feature link) is GOVERNED BY THE LINK: it applies
+ *     to a device iff it is that device's winning `peripheral_control` link
+ *     under config-policy assignment (closest level wins). Its own
+ *     `targetType`/`targetIds` are ignored while it is linked.
+ *  2. A peripheral policy with NO such link keeps its standalone behaviour
+ *     (own `targetType`/`targetIds`), so existing customers are unaffected.
+ *
+ * Unlinking ends the link-governed application; the policy then falls back to
+ * rule 2.
+ */
+export interface PeripheralConfigLinkResolution {
+  /** Peripheral policy ids linked from any active configuration policy. */
+  linkedPolicyIds: ReadonlySet<string>;
+  /** The device's winning `peripheral_control` link target, or null. */
+  winningPolicyId: string | null;
+}
+
 export function policyTargetsDevice(
   policy: PeripheralPolicyCandidate,
   identity: PeripheralDeviceIdentity,
+  configLinks?: PeripheralConfigLinkResolution,
 ): boolean {
   if (!policy.isActive) return false;
   const ownerMatches = policy.orgId !== null
     ? policy.orgId === identity.orgId
     : policy.partnerId !== null && policy.partnerId === identity.partnerId;
   if (!ownerMatches) return false;
+  if (configLinks?.linkedPolicyIds.has(policy.id)) {
+    return configLinks.winningPolicyId === policy.id;
+  }
 
   const targets = policy.targetIds ?? {};
   switch (policy.targetType) {
@@ -141,12 +171,13 @@ function candidatesForEffectiveClass(
 export function resolveEffectivePeripheralPolicySet(input: {
   identity: PeripheralDeviceIdentity;
   policies: readonly PeripheralPolicyCandidate[];
+  configLinks?: PeripheralConfigLinkResolution;
 }): PeripheralPolicyV2[] {
   const applicable = input.policies.filter((policy) =>
     Number.isSafeInteger(policy.priority)
     && policy.priority >= 0
     && policy.priority <= 1000
-    && policyTargetsDevice(policy, input.identity));
+    && policyTargetsDevice(policy, input.identity, input.configLinks));
   const effectiveClasses: PeripheralPolicyClass[] = ['storage', 'all_usb', 'bluetooth', 'thunderbolt'];
   const winners: PeripheralPolicyV2[] = [];
 
@@ -264,6 +295,12 @@ export async function loadAndResolveEffectivePeripheralPolicySetInCurrentDbConte
       ),
     ));
 
+  // Config-policy link governance (#9619): see PeripheralConfigLinkResolution.
+  const [linkedPolicyIds, winningPolicyId] = await Promise.all([
+    loadLinkedPeripheralPolicyIds(policyRows.map((row) => row.id)),
+    resolvePeripheralControlPolicyForDevice(device.id),
+  ]);
+
   const identity: PeripheralDeviceIdentity = {
     deviceId: device.id,
     orgId: device.orgId,
@@ -273,6 +310,10 @@ export async function loadAndResolveEffectivePeripheralPolicySetInCurrentDbConte
   };
   return {
     identity,
-    effectivePolicies: resolveEffectivePeripheralPolicySet({ identity, policies: policyRows }),
+    effectivePolicies: resolveEffectivePeripheralPolicySet({
+      identity,
+      policies: policyRows,
+      configLinks: { linkedPolicyIds, winningPolicyId },
+    }),
   };
 }

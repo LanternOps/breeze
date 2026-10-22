@@ -22,7 +22,7 @@ import {
   sites,
   softwarePolicies,
 } from '../db/schema';
-import { and, eq, ne, sql, inArray, asc, SQL, or, isNull } from 'drizzle-orm';
+import { and, eq, ne, sql, inArray, asc, SQL, or, isNull, isNotNull } from 'drizzle-orm';
 import {
   resolveEffectiveTimezone,
   canonicalizeTimezone,
@@ -1000,6 +1000,83 @@ export async function resolveSoftwarePolicyForDevice(
 }
 
 /**
+ * Resolves the winning peripheral policy ID for a device via the config-policy
+ * hierarchy (closest level wins, then assignment priority, then createdAt), or
+ * null when no active config policy assigned to the device carries a
+ * `peripheral_control` link. Partner-wide config policies resolve through the
+ * device org's partner (policyOwnershipCondition). #9619.
+ */
+export async function resolvePeripheralControlPolicyForDevice(
+  deviceId: string
+): Promise<string | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return null;
+
+  const rows = await db
+    .select({
+      featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy)
+      )
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'peripheral_control'),
+        isNotNull(configPolicyEffectiveFeatureLinks.featurePolicyId)
+      )
+    )
+    .where(and(
+      sql`(${sql.join(buildTargetConditions(hierarchy), sql` OR `)})`,
+      ...buildRoleOsFilterConditions(hierarchy)
+    ))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt
+    );
+
+  if (rows.length === 0) return null;
+  return sortByHierarchy(rows)[0]!.featurePolicyId;
+}
+
+/**
+ * Of `policyIds`, the peripheral policies linked (`peripheral_control`) from at
+ * least one ACTIVE configuration policy. A linked policy is governed by its
+ * link rather than its own targeting (see PeripheralConfigLinkResolution). #9619.
+ */
+export async function loadLinkedPeripheralPolicyIds(
+  policyIds: readonly string[]
+): Promise<Set<string>> {
+  if (policyIds.length === 0) return new Set();
+  const rows = await db
+    .selectDistinct({ featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId })
+    .from(configPolicyEffectiveFeatureLinks)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .where(and(
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'peripheral_control'),
+      inArray(configPolicyEffectiveFeatureLinks.featurePolicyId, [...policyIds])
+    ));
+  return new Set(rows.flatMap((r) => (r.featurePolicyId ? [r.featurePolicyId] : [])));
+}
+
+/**
  * Resolve the candidate device IDs for one config-policy assignment row, by
  * level. Extracted from {@link resolveDeviceIdsForSoftwarePolicy}'s switch so
  * {@link resolveAllSecurityScanScheduledDevices} (#6263 W01) doesn't need a
@@ -1008,7 +1085,7 @@ export async function resolveSoftwarePolicyForDevice(
  * session is never a policy target. Explicit `device`-level targets are left
  * as-is.
  */
-async function resolveAssignmentDeviceIds(level: string, targetId: string): Promise<string[]> {
+export async function resolveAssignmentDeviceIds(level: string, targetId: string): Promise<string[]> {
   switch (level) {
     case 'device': {
       return [targetId];
