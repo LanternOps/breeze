@@ -59,6 +59,11 @@ const MANAGE_TOOL_NOUNS: Record<string, string> = {
 export function humanizeToolAction(toolName: string, action?: string | null): string {
   const verb = action ? action.replace(/[_\s]+/g, ' ').trim().toLowerCase() : '';
   const noun = MANAGE_TOOL_NOUNS[toolName];
+  const nounPhrase = verb.endsWith(' payment') ? `${noun} payment` : noun;
+  if (noun && verb.endsWith(' payment')) {
+    const v = verb.replace(/ payment$/, '');
+    return `${v.charAt(0).toUpperCase()}${v.slice(1)} ${nounPhrase}`;
+  }
   if (noun && verb) return `${verb.charAt(0).toUpperCase()}${verb.slice(1)} ${noun}`;
   const head = TOOL_HEADLINES[toolName] ?? titleCaseWords(toolName);
   return verb ? `${head}: ${verb}` : head;

@@ -27,6 +27,8 @@ describe('approval card labels (#9657)', () => {
 
   it('names the specific action for the finance and M365 write tools', () => {
     expect(buildApprovalDescription('manage_invoices', 'void', {})).toBe('Void invoice');
+    expect(buildApprovalDescription('manage_invoices', 'record_payment', {})).toBe('Record invoice payment');
+    expect(buildApprovalDescription('manage_invoices', 'void_payment', {})).toBe('Void invoice payment');
     expect(buildApprovalDescription('manage_quotes', 'send', {})).toBe('Send quote');
     expect(buildApprovalDescription('manage_contracts', 'cancel', {})).toBe('Cancel contract');
     expect(buildApprovalDescription('m365_reset_password', undefined, {})).toBe('Reset Microsoft 365 password');
