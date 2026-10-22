@@ -9,7 +9,11 @@
  * - `check-schedules` repeats every 5 minutes, computes each report's most
  *   recent scheduled occurrence in the org's timezone (org -> partner -> UTC
  *   chain, same resolution the rest of the platform uses), and enqueues a run
- *   when `lastGeneratedAt` predates that occurrence.
+ *   when `lastGeneratedAt` predates that occurrence. A report that has never
+ *   run is measured from its `createdAt` instead (#9562): its first run is
+ *   the first occurrence AFTER it was saved, never the one that already
+ *   passed before it existed. "Generate now" (POST /reports/:id/generate)
+ *   stays the way to get a run immediately.
  * - `run-scheduled-report` mirrors the on-demand POST /reports/:id/generate
  *   path: insert a report_runs row, generateReport, store the snapshot. When
  *   `config.emailRecipients` is set, recipients get an email with the branded
@@ -138,22 +142,31 @@ type DueCandidate = {
   id: string;
   schedule: ScheduleCadence;
   lastGeneratedAt: Date | null;
+  createdAt: Date;
   config: Record<string, unknown>;
   timeZone: string;
 };
 
 /**
- * Whether a schedule's `lastGeneratedAt` is older than the occurrence keyed by
- * `occurrenceKey`. `reports.last_generated_at` is an offsetless `timestamp`;
- * Drizzle decodes it as UTC, so the Date is the stored instant on any host and
- * `isDue` reads its wall-clock parts in the schedule's zone as is.
+ * Whether the occurrence keyed by `occurrenceKey` is still owed: true when the
+ * report's baseline predates it. The baseline is `lastGeneratedAt`, or, for a
+ * report that has never run, its `createdAt` (#9562) — without that fallback a
+ * never-run report is due on the very next tick, so a "monthly on the 1st"
+ * report saved on the 21st emailed its recipients within five minutes.
+ *
+ * `reports.last_generated_at` and `reports.created_at` are both offsetless
+ * `timestamp`s; Drizzle decodes them as UTC, so each Date is the stored instant
+ * on any host and `isDue` reads its wall-clock parts in the schedule's zone as
+ * is. Comparison is at minute precision, so a report created during the
+ * occurrence minute itself waits for the next occurrence.
  */
 export function isReportOccurrenceDue(
   lastGeneratedAt: Date | null,
   occurrenceKey: number,
   timeZone: string,
+  createdAt: Date | null = null,
 ): boolean {
-  return isDue(lastGeneratedAt, occurrenceKey, timeZone);
+  return isDue(lastGeneratedAt ?? createdAt, occurrenceKey, timeZone);
 }
 
 function scheduleConfigOf(config: Record<string, unknown>): ScheduleConfig {
@@ -252,6 +265,7 @@ export async function findDueReports(
       id: reports.id,
       schedule: reports.schedule,
       lastGeneratedAt: reports.lastGeneratedAt,
+      createdAt: reports.createdAt,
       config: reports.config,
       orgSettings: organizations.settings,
       partnerTimezone: partners.timezone,
@@ -283,11 +297,12 @@ export async function findDueReports(
       id: row.id,
       schedule: row.schedule as ScheduleCadence,
       lastGeneratedAt: row.lastGeneratedAt,
+      createdAt: row.createdAt,
       config: (row.config ?? {}) as Record<string, unknown>,
       timeZone: resolveTimezoneFromRows(row.orgSettings, row.partnerTimezone, row.partnerSettings),
     };
     const key = lastOccurrenceKey(now, candidate.schedule, scheduleConfigOf(candidate.config), candidate.timeZone);
-    if (isReportOccurrenceDue(candidate.lastGeneratedAt, key, candidate.timeZone)) {
+    if (isReportOccurrenceDue(candidate.lastGeneratedAt, key, candidate.timeZone, candidate.createdAt)) {
       due.push({ id: candidate.id, occurrenceKey: key, lastGeneratedAt: candidate.lastGeneratedAt });
     }
   }
