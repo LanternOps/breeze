@@ -40,6 +40,7 @@ import {
 } from '../services/sso';
 import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { mintStepUpGrant } from '../services/mfaStepUpGrant';
+import { SSO_OIDC_PRESET_IDS } from '@breeze/shared';
 import {
   bindIssuedUserSession,
   createSession,
@@ -244,12 +245,26 @@ function nullableOptional<T extends z.ZodTypeAny>(schema: T) {
   );
 }
 
+// #9601: the web form sent 'azure' for Azure AD while PROVIDER_PRESETS is keyed
+// 'azure-ad', and the create route silently ignored any key it did not know.
+// Accept the legacy 'azure' value (a web bundle cached from before the fix can
+// still send it; the preset is never persisted, so nothing stored carries it)
+// and reject every other unknown preset with a 400. '' is "Custom
+// configuration" in the web dropdown and means no preset.
+const LEGACY_PRESET_ALIASES: Record<string, (typeof SSO_OIDC_PRESET_IDS)[number]> = {
+  azure: 'azure-ad'
+};
+const presetSchema = z.preprocess(
+  (v) => (typeof v === 'string' && Object.hasOwn(LEGACY_PRESET_ALIASES, v) ? LEGACY_PRESET_ALIASES[v] : v),
+  z.union([z.enum(SSO_OIDC_PRESET_IDS), z.literal('')]).optional()
+);
+
 const createProviderSchema = z.object({
   ownerScope: z.enum(['organization', 'partner']).default('organization'),
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['oidc', 'saml']),
-  preset: z.string().optional(),
+  preset: presetSchema,
   issuer: nullableOptional(z.string().url()),
   clientId: z.string().optional(),
   clientSecret: z.string().optional(),

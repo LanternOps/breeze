@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from 'crypto';
 import { createRemoteJWKSet, jwtVerify, customFetch, errors as joseErrors } from 'jose';
 import { safeFetch, SsrfBlockedError, isPrivateIp, isAlwaysBlockedIp } from './urlSafety';
+import type { SsoOidcPresetId } from '@breeze/shared';
 
 // ============================================
 // Types
@@ -871,7 +872,9 @@ export interface ProviderPreset {
   attributeMapping: AttributeMapping;
 }
 
-export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
+// Keyed by the shared SSO_OIDC_PRESET_IDS tuple (#9601) so this table, the
+// create route's `preset` validation and the web dropdown cannot drift apart.
+export const PROVIDER_PRESETS: Record<SsoOidcPresetId, ProviderPreset> = {
   'azure-ad': {
     name: 'Microsoft Azure AD',
     type: 'oidc',
