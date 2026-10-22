@@ -172,5 +172,27 @@ it('makes delivery reachable without changing prior frozen gaps', () => {
   expect(TOOL_CAPABILITY.manage_delivery).toBe('alerts_monitoring');
   expect(listAgentReachableTools()).toContain('manage_delivery');
   expect(listUnreachableRegisteredTools()).not.toContain('manage_delivery');
-  expect(listUnreachableRegisteredTools()).toContain('manage_notification_channels');
+  // manage_notification_channels was a frozen gap until full-control W02
+  // (#6756) wired it; see the W02 pins below.
+});
+
+// Spec 2026-09-23 W02 (#6756): PSA and billing write tools are agent-reachable.
+// Their tier-3 actions still become proposals for a human (none is
+// policy-decidable), and manage_tags add/remove stay human-only (QV2).
+const W02_AGENT_REACHABLE = [
+  'manage_tickets', 'manage_quotes', 'manage_billing_catalog', 'manage_saved_filters',
+  'manage_tags', 'manage_notification_channels', 'test_webhook',
+] as const;
+
+describe('W02 PSA/billing writes in the agent catalog (#6756)', () => {
+  it.each(W02_AGENT_REACHABLE)('%s is agent-reachable', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(listUnreachableRegisteredTools()).not.toContain(name);
+  });
+
+  it('places the billing catalog under business and tickets under tickets', () => {
+    expect(TOOL_CAPABILITY.manage_billing_catalog).toBe('business');
+    expect(TOOL_CAPABILITY.manage_tickets).toBe('tickets');
+    expect('manage_catalog' in TOOL_CAPABILITY).toBe(false);
+  });
 });
