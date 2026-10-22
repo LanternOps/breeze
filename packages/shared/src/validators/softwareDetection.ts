@@ -107,7 +107,8 @@ export const serviceRunningDetectionRuleSchema = z
       .string()
       .min(1)
       .max(256)
-      .regex(SERVICE_NAME_REGEX, 'No control characters and no leading "-"'),
+      .regex(SERVICE_NAME_REGEX, 'No control characters and no leading "-"')
+      .refine((s) => s.trim().length > 0, 'Must not be blank'),
   })
   .strict();
 

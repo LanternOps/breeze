@@ -193,6 +193,16 @@ describe('service_running clause (#6958)', () => {
     expect(parse(value).success).toBe(false);
   });
 
+  it('rejects a whitespace-only name (could never match a real service)', () => {
+    expect(parse('   ').success).toBe(false);
+    expect(parse('\t').success).toBe(false);
+  });
+
+  it('accepts dashes after the first character', () => {
+    expect(parse('systemd-resolved').success).toBe(true);
+    expect(parse('a-b').success).toBe(true);
+  });
+
   it('accepts exactly 256 chars', () => {
     expect(parse('x'.repeat(256)).success).toBe(true);
   });

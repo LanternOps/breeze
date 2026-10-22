@@ -1444,7 +1444,7 @@ describe('reapStaleSoftwareDeploymentResults', () => {
 
   it('tier 1: leaves a delivered row alone before the 75-min timeout', async () => {
     selectMock.mockReturnValueOnce(selectChain([
-      { id: 'res-fresh', deviceCommandId: null, dispatchedAt: minutesAgo(30), commandStatus: null, commandExecutedAt: null },
+      { id: 'res-fresh', deviceCommandId: null, dispatchedAt: minutesAgo(70), commandStatus: null, commandExecutedAt: null },
     ]));
 
     const reaped = await reapStaleSoftwareDeploymentResults();
