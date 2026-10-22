@@ -101,7 +101,10 @@ export default function OrgDocumentsTab({ orgId, orgFetch }: { orgId: string; or
     (async () => {
       try {
         const res = await orgFetch(`/orgs/organizations/${orgId}/portal-settings`);
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn('[OrgDocumentsTab] portal settings lookup failed', res.status);
+          return;
+        }
         const body = await res.json();
         if (!cancelled) setPortalDocumentsOn(body?.data?.enableDocuments === true);
       } catch (err) {

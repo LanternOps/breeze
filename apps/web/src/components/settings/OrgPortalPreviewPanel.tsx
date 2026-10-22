@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
@@ -18,6 +18,7 @@ type PreviewSection = {
   previewAvailable: boolean;
   data: unknown;
   note?: string;
+  error?: string;
 };
 type ReadinessCheck = { code: string; message: string; fixTab: string };
 type Preview = {
@@ -58,15 +59,15 @@ function summarize(key: string, data: unknown): Row[] {
   if (!isRecord(data)) return [];
   if (key === 'documents') {
     return (Array.isArray(data.groups) ? data.groups : []).flatMap((g: any) =>
-      (g.documents ?? []).map((d: any) => ({ label: String(d.title), value: String(g.category) })));
+      (g.documents ?? []).filter((d: any) => d?.title).map((d: any) => ({ label: String(d.title), value: String(g.category ?? '') })));
   }
   if (key === 'service') {
     return (Array.isArray(data.groups) ? data.groups : []).flatMap((g: any) =>
-      (g.deliverables ?? []).map((d: any) => ({ label: String(d.name), value: String(d.status) })));
+      (g.deliverables ?? []).filter((d: any) => d?.name).map((d: any) => ({ label: String(d.name), value: String(d.status ?? '') })));
   }
   if (key === 'reports') {
-    return (Array.isArray(data.data) ? data.data : []).map((r: any) => ({
-      label: String(r.name), value: String(r.status),
+    return (Array.isArray(data.data) ? data.data : []).filter((r: any) => r?.name).map((r: any) => ({
+      label: String(r.name), value: String(r.status ?? ''),
     }));
   }
   // Generic: top-level scalars, plus one level into tile objects (status/count).
@@ -103,7 +104,11 @@ export default function OrgPortalPreviewPanel({ orgId }: { orgId: string }) {
     (async () => {
       try {
         const res = await fetchWithAuth(`/orgs/organizations/${orgId}/portal-users`);
-        if (!res.ok) return;
+        if (!res.ok) {
+          // The picker is optional; log the status so an empty picker is debuggable.
+          console.warn('[OrgPortalPreviewPanel] portal users request failed', res.status);
+          return;
+        }
         const body = await res.json();
         if (!cancelled && Array.isArray(body?.data)) setUsers(body.data as PortalUserOption[]);
       } catch (err) {
@@ -114,25 +119,40 @@ export default function OrgPortalPreviewPanel({ orgId }: { orgId: string }) {
     return () => { cancelled = true; };
   }, [orgId]);
 
+  // Responses can arrive out of order when the picker changes quickly: only the
+  // latest request may write state.
+  const requestSeq = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
     setLoading(true);
     setFailed(false);
+    // Never show user A's data under a picker already pointing at user B.
+    setPreview(null);
     try {
       const qs = portalUserId ? `?portalUserId=${encodeURIComponent(portalUserId)}` : '';
       const res = await fetchWithAuth(`/orgs/organizations/${orgId}/portal-preview${qs}`);
+      if (seq !== requestSeq.current) return;
+      if (res.status === 404 && portalUserId) {
+        // The selected portal user no longer exists: fall back to the org-wide view.
+        setPortalUserId('');
+        return;
+      }
       if (!res.ok) throw new Error(`portal preview failed: ${res.status}`);
       const data = (await res.json())?.data as Partial<Preview> | undefined;
       if (!data || !Array.isArray(data.sections)) throw new Error('portal preview: unexpected response shape');
+      if (seq !== requestSeq.current) return;
       setPreview({
         portalUser: data.portalUser ?? null,
         sections: data.sections,
         readiness: Array.isArray(data.readiness) ? data.readiness : [],
       });
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       console.warn('[OrgPortalPreviewPanel] load failed', err);
       setFailed(true);
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) setLoading(false);
     }
   }, [orgId, portalUserId]);
 
@@ -231,6 +251,11 @@ export default function OrgPortalPreviewPanel({ orgId }: { orgId: string }) {
                         {s.enabled ? t('orgPortalSettingsEditor.preview.on') : t('orgPortalSettingsEditor.preview.off')}
                       </span>
                     </div>
+                    {s.error && (
+                      <p className="mt-1 text-xs text-destructive" data-testid={`org-portal-preview-section-error-${s.key}`}>
+                        {t('orgPortalSettingsEditor.preview.loadFailed')}
+                      </p>
+                    )}
                     {s.enabled && !s.previewAvailable && (
                       <p className="mt-1 text-xs text-muted-foreground">{t('orgPortalSettingsEditor.preview.notAvailable')}</p>
                     )}

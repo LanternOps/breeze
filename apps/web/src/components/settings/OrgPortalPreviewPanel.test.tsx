@@ -82,6 +82,30 @@ describe('OrgPortalPreviewPanel (#9350)', () => {
     }
   });
 
+  it('marks a section whose read model failed instead of showing it empty', async () => {
+    fetchWithAuth.mockImplementation(async (path: string) =>
+      path.includes('/portal-users')
+        ? json({ data: [] })
+        : json({ data: { portalUser: null, readiness: [], sections: [
+            { key: 'documents', enabled: true, previewAvailable: true, data: null, error: 'load_failed' },
+          ] } }));
+    render(<OrgPortalPreviewPanel orgId="org-1" />);
+    expect(await screen.findByTestId('org-portal-preview-section-error-documents')).toBeInTheDocument();
+  });
+
+  it('falls back to the org-wide view when the selected portal user is gone (404)', async () => {
+    render(<OrgPortalPreviewPanel orgId="org-1" />);
+    await screen.findByTestId('org-portal-preview-section-dashboard');
+    await waitFor(() => expect(screen.getByRole('option', { name: /pat@cust.example/ })).toBeInTheDocument());
+    fetchWithAuth.mockImplementation(async (path: string) => {
+      if (path.includes('/portal-users')) return json({ data: [] });
+      return path.includes('portalUserId=') ? json({ error: 'gone' }, 404) : json(PREVIEW);
+    });
+    await userEvent.selectOptions(screen.getByTestId('org-portal-preview-user'), 'pu-1');
+    await waitFor(() => expect((screen.getByTestId('org-portal-preview-user') as HTMLSelectElement).value).toBe(''));
+    expect(await screen.findByTestId('org-portal-preview-section-dashboard')).toBeInTheDocument();
+  });
+
   it('shows a retry affordance when the preview fails to load', async () => {
     fetchWithAuth.mockImplementation(async (path: string) =>
       path.includes('/portal-users') ? json({ data: [] }) : json({ error: 'boom' }, 500));
