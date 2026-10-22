@@ -333,6 +333,10 @@
     "selectedCount_other": "{{count}} selected",
     "clearSelection": "Clear",
     "noSelection": "Select a ticket. Use j/k to move, Enter to expand.",
+    "movedToClosed": {
+      "message": "{{status}} — now under {{tab}}",
+      "view": "View in {{tab}}"
+    },
     "ticketingSettings": "Ticketing settings",
     "assignFailed": "Assign failed. Retry.",
     "assignedToYou": "Assigned to you",

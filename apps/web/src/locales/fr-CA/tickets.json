@@ -333,6 +333,10 @@
     "selectedCount_other": "{{count}} sélectionnés",
     "clearSelection": "Effacer la sélection",
     "noSelection": "Choisissez un billet. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "movedToClosed": {
+      "message": "{{status}} — maintenant sous {{tab}}",
+      "view": "Voir dans {{tab}}"
+    },
     "ticketingSettings": "Paramètres de billetterie",
     "assignFailed": "Assignation échouée. Réessayez.",
     "assignedToYou": "Vous a été attribué",

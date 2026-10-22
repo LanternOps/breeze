@@ -333,6 +333,10 @@
     "selectedCount_other": "{{count}} selecionados",
     "clearSelection": "Limpar",
     "noSelection": "Selecione um chamado. Use j/k para mover, Enter para expandir.",
+    "movedToClosed": {
+      "message": "{{status}} — agora em {{tab}}",
+      "view": "Ver em {{tab}}"
+    },
     "ticketingSettings": "Configurações de chamados",
     "assignFailed": "Falha ao atribuir. Tente novamente.",
     "assignedToYou": "Atribuído a você",

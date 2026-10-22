@@ -333,6 +333,10 @@
     "selectedCount_other": "{{count}} seçildi",
     "clearSelection": "Temizle",
     "noSelection": "Bir bilet seçin. Taşımak için j/k'yi, genişletmek için Enter'ı kullanın.",
+    "movedToClosed": {
+      "message": "{{status}} — artık {{tab}} altında",
+      "view": "{{tab}} içinde görüntüle"
+    },
     "ticketingSettings": "Biletleme ayarları",
     "assignFailed": "Atama başarısız oldu. Tekrar dene.",
     "assignedToYou": "Size atandı",
