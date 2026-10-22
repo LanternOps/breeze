@@ -129,3 +129,104 @@ describe('coordinator invariants are untouched by E4', () => {
     expect(src).not.toMatch(/recipe\.(dispatch|execute|probe)\(/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R1a-0 Task 1b — checkpoint arms at the coordinator, and the advancer surface.
+// Appended; the cases above are unchanged. `vi.mock` / `import` are hoisted, so
+// placing them here changes nothing for the cases above (none of them resolves
+// a recipe through the registry or reaches the requester gate).
+// ---------------------------------------------------------------------------
+import * as coordinator from './taskCoordinator';
+import { parseTaskCheckpointResult } from './taskService';
+import { requesterAccessLost } from './requesterAccessGate';
+
+vi.mock('./recipes', async (orig) => {
+  const real = await orig<typeof import('./recipes')>();
+  // A test-local, UNREGISTERED non-service_recovery recipe (how E4 shipped
+  // planEffectStep): resolvable only through this seam.
+  const fixture = {
+    key: 'fixture_identity', version: 1, promptVersion: 'fixture-1', gateClass: 'deterministic',
+    targetKinds: ['contact'], requires: [], steps: {
+      offboard: { kind: 'effect', phase: 'execute' },
+      verify_outcome: { kind: 'probe', phase: 'verify' },
+    },
+    permittedNextSteps: {}, bounds: {}, buildPlan: () => [],
+  };
+  return {
+    ...real,
+    getRecipe: (key: string, version: number) =>
+      (key === 'fixture_identity' && version === 1 ? fixture : real.getRecipe(key, version)),
+  };
+});
+vi.mock('./requesterAccessGate', () => ({
+  requesterAccessLost: vi.fn(async () => ({ lost: true, detail: 'gate-reached' })),
+  requesterAccessLostForTargets: vi.fn(async () => ({ lost: true, detail: 'targets-gate-reached' })),
+}));
+
+const SR_DEVICE = '00000000-0000-4000-8000-0000000000d1';
+const srCheckpoint = (over: Record<string, unknown> = {}) => ({
+  version: 1,
+  recipeInput: { deviceId: SR_DEVICE, serviceName: 'Spooler', triggeringAlertId: null, maxRestartAttempts: 1, ...over },
+  criterion: {
+    adapter: 'service_running', adapterVersion: 1, deviceId: SR_DEVICE, serviceName: 'Spooler',
+    freshnessSeconds: 120, alertId: null, resolvableWithoutAlert: false,
+  },
+  findings: [], satisfiedCriteria: [], unsatisfiedCriteria: ['service_running'],
+  mutationAttempts: 0, lastVerification: null, lastOperationKey: null, fixWatchId: null,
+});
+const taskRow = (workflowKey: string, currentStepKey: string) => ({
+  id: 'task-1', orgId: 'org-1', revision: 3, leaseEpoch: 4, attemptOrdinal: 0, state: 'running',
+  workflowKey, workflowVersion: 1, currentStepKey, deadlineAt: null, requesterUserId: 'u-requester',
+  checkpoint: srCheckpoint(),
+});
+
+describe('advanceTask — checkpoint arm must match the recipe (R1a-0 Task 1b)', () => {
+  it('a non-service_recovery recipe holding the service-recovery arm fails unresolved, never dispatches, never reaches a gate', async () => {
+    const out = await coordinator.advanceTask(taskRow('fixture_identity', 'offboard') as never, 4);
+    expect(out).toMatch(/^failed:/);
+    expect(lastPatch()).toMatchObject({
+      state: 'failed', outcome: 'unresolved',
+      outcomeDetail: expect.stringContaining("checkpoint does not match workflow 'fixture_identity'"),
+    });
+    expect(planEffect).not.toHaveBeenCalled();
+    expect(requesterAccessLost).not.toHaveBeenCalled();
+  });
+
+  it('control: a service_recovery task with the service-recovery arm passes the check and reaches its gate', async () => {
+    const out = await coordinator.advanceTask(taskRow('service_recovery', 'execute') as never, 4);
+    expect(out).toMatch(/requester access lost/);
+    expect(requesterAccessLost).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('COORDINATOR_STEP_OPS (R1a-0 Task 1b)', () => {
+  const ops = (coordinator as unknown as Record<string, unknown>).COORDINATOR_STEP_OPS as Record<string, unknown>;
+
+  it('is frozen and exposes exactly the six lease-safe step operations', () => {
+    expect(ops).toBeDefined();
+    expect(Object.isFrozen(ops)).toBe(true);
+    expect(Object.keys(ops).sort()).toEqual(
+      ['admitReasoningRun', 'readLatestTaskRun', 'settle', 'settleStepAndMove', 'writeLeasedStep', 'yieldToWait'],
+    );
+    for (const fn of Object.values(ops)) expect(typeof fn).toBe('function');
+  });
+
+  it('each op is the shipped function itself, not a wrapper', () => {
+    const testOnly = coordinator.__testOnly as Record<string, unknown>;
+    for (const [name, fn] of Object.entries(ops)) {
+      if (name in testOnly) expect(fn).toBe(testOnly[name]);
+    }
+    expect(ops.settle).toBe(testOnly.settle);
+    expect(ops.yieldToWait).toBe(testOnly.yieldToWait);
+    expect(ops.writeLeasedStep).toBe(testOnly.writeLeasedStep);
+    expect(ops.admitReasoningRun).toBe(testOnly.admitReasoningRun);
+  });
+});
+
+describe('parseTaskCheckpointResult over the arm union (R1a-0 Task 1b)', () => {
+  it('a service-recovery row with an empty serviceName still names the path recipeInput.serviceName', () => {
+    const parsed = parseTaskCheckpointResult(srCheckpoint({ serviceName: '' }));
+    expect(parsed.ok).toBe(false);
+    expect((parsed as { detail: string }).detail).toContain('recipeInput.serviceName');
+  });
+});
