@@ -28,6 +28,7 @@ export type ToolCategory =
   | 'Remote Access & Control'
   | 'Integrations'
   | 'Ticketing'
+  | 'Billing'
   | 'AI Governance'
   | 'Other';
 
@@ -286,11 +287,19 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191) — pre-existing gap, manage_tickets had zero
       // entries here before. move_org is listed separately under Tier 3.
-      { name: 'manage_tickets (create/comment/assign/update_status/update_fields/link_alert/unlink_alert/create_from_alert/edit_comment/delete_comment)', description: 'Create and update support tickets', category: 'Ticketing' },
+      // Full-control W02 (#6756): comment/update_status/update_fields are
+      // input-aware. A public comment, resolving (or any custom status), and
+      // changing the requester escalate to Tier 3 supervised; internal notes
+      // and other updates stay here. edit_comment/delete_comment are Tier 3.
+      { name: 'manage_tickets (create/comment/assign/update_status/update_fields/link_alert/unlink_alert/create_from_alert)', description: 'Create tickets, add internal notes, and update tickets (a public comment, resolving, or changing the requester needs approval)', category: 'Ticketing' },
       { name: 'manage_tickets (link_ticket/unlink_ticket)', description: 'Link related tickets in one organization, or remove a link', category: 'Ticketing' },
-      { name: 'manage_tickets (log_time_entry/start_timer/stop_timer)', description: 'Track time against tickets', category: 'Ticketing' },
+      { name: 'manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)', description: 'Track time against tickets', category: 'Ticketing' },
       { name: 'manage_tickets (link_device/draft)', description: 'AI ticket triage: link a device or store a reply/resolution-note draft', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (add_item/update_item/delete_item/reorder/apply_template)', description: 'Edit ticket checklist steps (ticking a step done stays human-only)', category: 'Ticketing' },
+      // Billing (full-control W02, #6756): quote drafting and new catalog
+      // items. 'Billing' because these are the business capability, not tickets.
+      { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
+      { name: 'manage_billing_catalog (create_item)', description: 'Add a billing catalog item (inert until a quote, invoice, or contract uses it)', category: 'Billing' },
     ],
   },
   {
@@ -339,6 +348,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires approval)', category: 'Alerts & Notifications' },
+      { name: 'manage_notification_channels (create/update/delete)', description: 'Create, repoint, or delete a notification channel (the approver sees the destination host)', category: 'Alerts & Notifications' },
       // Monitor definitions (#5289 Task 8): ordinary config-object CRUD
       // (create/update/delete/enable/disable/attach/detach) — supervised, same
       // class as the software/browser/peripheral policy tools.
@@ -365,6 +375,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
+      { name: 'manage_tickets (edit_comment/delete_comment)', description: 'Edit or delete a ticket comment (customer-visible text, no restore)', category: 'Ticketing' },
+      // Billing (full-control W02, #6756)
+      { name: 'manage_quotes (send/decline/create_pay_link)', description: 'Send a quote to the customer, record a decline, or create a payment link', category: 'Billing' },
+      { name: 'manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)', description: 'Change catalog items, prices, organization price overrides, and bundles (contract renewals bill live prices)', category: 'Billing' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
@@ -679,7 +693,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   query_compliance_policies: 'devices.read',
   get_compliance_status: 'devices.read',
   // Notification channels
-  manage_notification_channels: { list: 'alerts.read', test: 'alerts.write' },
+  manage_notification_channels: { list: 'alerts.read', test: 'alerts.write', create: 'alerts.write', update: 'alerts.write', delete: 'alerts.write' },
   // Saved filters
   manage_saved_filters: { list: 'devices.read', get: 'devices.read', create: 'devices.write', delete: 'devices.write' },
   // Fleet tools

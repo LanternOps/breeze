@@ -150,7 +150,6 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'manage_backup_configs',
   'manage_backup_profiles',
   'manage_browser_policy',
-  'manage_billing_catalog',
   'manage_contracts',
   'manage_deliverables',
   'manage_dr_plan',
@@ -162,7 +161,6 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'manage_peripheral_policies',
   'manage_peripheral_policy',
   'manage_policy_feature_link',
-  'manage_quotes',
   'manage_service_monitors',
   'manage_software_policies',
   'manage_update_rings',
@@ -240,6 +238,8 @@ const CATEGORY_CAPABILITY_PAIRS: Record<ToolCategory, AgentCapabilityId[]> = {
   'Remote Access & Control': ['remote_access', 'scripts_commands'],
   Integrations: ['endpoint_agent', 'tenancy'],
   Ticketing: ['tickets'],
+  // W02 (#6756): quotes and the billing price book, TOOL_CAPABILITY 'business'.
+  Billing: ['business'],
   // A-W05 (D13a): read_artifact is TOOL_CAPABILITY 'workspace' (same bucket
   // export_dataset uses — CAPABILITY_DOMAINS.workspace covers the `ai`
   // domain) but displays under 'AI Governance' beside list_ai_agents: it
