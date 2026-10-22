@@ -502,7 +502,22 @@ describe('token-authenticated re-enroll (F3) under #8318 §6.4', () => {
 
       const response = await reenroll;
       expect(response.status).toBe(409);
-      expect(await response.json()).toMatchObject({ code: 'reenrollment_conflict' });
+      expect(await response.json()).toEqual({
+        error: 'The device row changed during re-enrollment; retry the enrollment',
+        code: 'reenrollment_conflict',
+      });
+      // Audited like its sibling refusals (fire-and-forget: wait for it).
+      let denied: { details: unknown } | undefined;
+      for (let attempt = 0; attempt < 500 && !denied; attempt++) {
+        [denied] = await getTestDb().select({ details: auditLogs.details }).from(auditLogs)
+          .where(and(
+            eq(auditLogs.action, 'agent.enroll'),
+            eq(auditLogs.resourceId, device.deviceId),
+            eq(auditLogs.result, 'denied'),
+          )).limit(1);
+        if (!denied) await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(denied?.details).toMatchObject({ reason: 'reenrollment_conflict' });
 
       // Nothing was minted: one row under the hostname, and it belongs to the new install.
       const rows = await getTestDb().select({ id: devices.id, agentId: devices.agentId }).from(devices)

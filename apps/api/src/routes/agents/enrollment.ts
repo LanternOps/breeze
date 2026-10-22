@@ -889,16 +889,27 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           .returning();
         if (!dev) {
           const message = 'The device row changed during re-enrollment; retry the enrollment';
-          // `code` rides on the exception for the app's onError (index.ts),
-          // which builds the JSON body itself; `res` is the body for a Hono
-          // app that uses the default HTTPException rendering.
-          throw Object.assign(
-            new HTTPException(409, {
-              message,
-              res: c.json({ error: message, code: 'reenrollment_conflict' }, 409),
-            }),
-            { code: 'reenrollment_conflict' },
-          );
+          // Same shape as the sibling refusals in this transaction: audit +
+          // metric, and the JSON body encoded in `message`, which the
+          // handler's catch below renders (rolling the transaction back).
+          writeAuditEvent(c, {
+            orgId: key.orgId,
+            actorType: 'system',
+            action: 'agent.enroll',
+            resourceType: 'device',
+            resourceId: existingDevice.id,
+            resourceName: data.hostname,
+            details: {
+              reason: 'reenrollment_conflict',
+              enrollmentKeyId: key.id,
+            },
+            result: 'denied',
+            errorMessage: message,
+          });
+          recordAgentEnrollment('error', enrollmentPartnerId);
+          throw new HTTPException(409, {
+            message: JSON.stringify({ error: message, code: 'reenrollment_conflict' }),
+          });
         }
       } else {
         [dev] = await tx
