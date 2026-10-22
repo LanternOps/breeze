@@ -348,8 +348,22 @@ function ruleHeader(name: string, kind: YaraIocKind, label: string, count: numbe
   );
 }
 
+/**
+ * Hash rules bind the digest once per rule (`with digest = hash.<algo>(…)`):
+ * without it every literal re-enters the hash module per scanned file, which
+ * the W04 benchmark measured at ~1.3 µs per literal per file (the digest
+ * itself is cached per scan either way).
+ */
+function bodyPrefix(kind: YaraIocKind): string {
+  if (PATTERN_KINDS.has(kind)) return '  strings:\n';
+  if (HASH_KINDS.has(kind)) return `  condition:\n    with digest = hash.${kind}(0, filesize) : (\n`;
+  return '  condition:\n';
+}
+
 function ruleFooter(kind: YaraIocKind): string {
-  return PATTERN_KINDS.has(kind) ? '  condition:\n    any of them\n}\n' : '\n}\n';
+  if (PATTERN_KINDS.has(kind)) return '  condition:\n    any of them\n}\n';
+  if (HASH_KINDS.has(kind)) return '\n    )\n}\n';
+  return '\n}\n';
 }
 
 /** The body text one IOC contributes (a strings line, or a condition expression). */
@@ -359,7 +373,7 @@ function itemText(kind: YaraIocKind, value: string, index: number): string {
     case 'md5':
     case 'sha1':
     case 'sha256':
-      return `    hash.${kind}(0, filesize) == "${value}"`;
+      return `      digest == "${value}"`;
     case 'filename':
     case 'filepath':
       return `    ${kind} iequals "${esc}"`;
@@ -378,8 +392,8 @@ function itemText(kind: YaraIocKind, value: string, index: number): string {
 
 function renderRule(name: string, kind: YaraIocKind, label: string, values: readonly string[]): string {
   const items = values.map((v, i) => itemText(kind, v, i));
-  const body = PATTERN_KINDS.has(kind) ? `  strings:\n${items.join('')}` : `  condition:\n${items.join(CONDITION_SEPARATOR)}`;
-  return ruleHeader(name, kind, label, values.length) + body + ruleFooter(kind);
+  const body = items.join(PATTERN_KINDS.has(kind) ? '' : CONDITION_SEPARATOR);
+  return ruleHeader(name, kind, label, values.length) + bodyPrefix(kind) + body + ruleFooter(kind);
 }
 
 /**
@@ -415,8 +429,7 @@ export function generateIocRules(input: {
     const base = `ioc_${slug}_${kind}_`;
     // Upper bound for the fixed part: a 16-hex hash, a `_NNNN` suffix and a
     // 4-digit count (a batch is ≤ 1000 IOCs), so every chunk fits once rendered.
-    const fixed = utf8Length(ruleHeader(`${base}${'0'.repeat(16)}_9999`, kind, label, 9999) + ruleFooter(kind))
-      + (PATTERN_KINDS.has(kind) ? utf8Length('  strings:\n') : utf8Length('  condition:\n'));
+    const fixed = utf8Length(ruleHeader(`${base}${'0'.repeat(16)}_9999`, kind, label, 9999) + bodyPrefix(kind) + ruleFooter(kind));
 
     const chunks: string[][] = [];
     let current: string[] = [];

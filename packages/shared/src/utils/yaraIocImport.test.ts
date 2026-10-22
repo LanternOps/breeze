@@ -166,9 +166,12 @@ describe('generateIocRules', () => {
     }
     const [hash, filename, domain, str] = rules;
     expect(hash!.source.startsWith('import "hash"\n\nrule ')).toBe(true);
+    // The digest is bound once per rule, not re-computed per literal.
     expect(hash!.source).toContain(
-      `    hash.sha256(0, filesize) == "${SHA256_B}" or\n    hash.sha256(0, filesize) == "${SHA256_A}"\n`,
+      '  condition:\n    with digest = hash.sha256(0, filesize) : (\n' +
+        `      digest == "${SHA256_B}" or\n      digest == "${SHA256_A}"\n    )\n}\n`,
     );
+    expect(hash!.source.match(/hash\.sha256\(/g)).toHaveLength(1);
     expect(hash!.iocCount).toBe(2);
     expect(hash!.source).toContain('ioc_count = 2');
     expect(filename!.source).toContain('filename iequals "payload.dll"');
