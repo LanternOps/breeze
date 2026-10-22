@@ -94,7 +94,9 @@ Partner self-registration allows MSPs and IT companies to create their own Breez
 
 7. **JWT tokens issued** -- Access and refresh tokens are created with `scope: partner` and the new partner ID. The refresh token is set as an HTTP-only cookie.
 
-8. **Redirect to dashboard** -- The frontend stores the tokens and redirects the authenticated user. If this is the first-ever user in the system, the setup wizard may appear.
+8. **Forced MFA enrollment** -- New partners are created with **Require MFA** on (`security.requireMfa: true`), so right after email confirmation the new admin is sent to the MFA setup page and must enroll an authenticator (TOTP) before anything else in the dashboard is available. This is settings-driven and applies even when `MFA_FORCE_FOR_PARTNER_ADMIN` is off; that variable only controls the separate role-level force. See [Users & Roles](/reference/users-and-roles/).
+
+9. **Redirect to dashboard** -- Once MFA is enrolled, the frontend redirects the authenticated user. If this is the first-ever user in the system, the setup wizard may appear.
 </Steps>
 
 <Aside type="note">

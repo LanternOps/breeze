@@ -720,6 +720,8 @@
       "timeout": "Komut dosyası yürütme zaman aşımına uğradı",
       "pending": "Komut dosyası çalıştırılmayı bekliyor",
       "queued": "Komut dosyası cihaza gönderilmek üzere sırada",
+      "queuedAwaitingPickup": "Henüz etkin bir ajan oturumu bunu almadı. Betik, cihazın ajanı bir sonraki bağlantısında teslim edilir.",
+      "deviceOffline": "Cihaz çevrimdışı. Betik, cihaz yeniden bağlandığında teslim edilir.",
       "cancelling": "Durdurma istendi — cihazdan onay bekleniyor.",
       "cancelled": "Komut dosyası cihazda durduruldu"
     },
@@ -743,7 +745,8 @@
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
       "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
-      "queuedOffline": "Sırada — cihaz çevrimdışı"
+      "queuedOffline": "Sırada — cihaz çevrimdışı",
+      "queuedAwaitingPickup": "Kuyrukta — cihazın almasını bekliyor"
     }
   },
   "executionHistory": {
@@ -774,7 +777,8 @@
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
       "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
-      "queuedOffline": "Sırada — cihaz çevrimdışı"
+      "queuedOffline": "Sırada — cihaz çevrimdışı",
+      "queuedAwaitingPickup": "Kuyrukta — alınmayı bekliyor"
     },
     "summary": "{{shown}} / {{total}}",
     "headers": {

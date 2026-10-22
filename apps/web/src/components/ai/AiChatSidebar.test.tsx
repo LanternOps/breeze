@@ -16,6 +16,7 @@ vi.mock('@/lib/permissions', () => ({
 
 import AiChatSidebar from './AiChatSidebar';
 import { useAiStore } from '@/stores/aiStore';
+import { useFeaturesStore } from '@/stores/featuresStore';
 
 vi.mock('@/stores/aiStore', () => ({ useAiStore: vi.fn() }));
 // Children pull in streaming/fetch concerns irrelevant to the shell test.
@@ -105,5 +106,34 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
     } finally {
       useAiModelPickerStore.setState({ load: original });
     }
+  });
+
+  describe('credits exhausted banner (#9450)', () => {
+    const exhausted = { ...baseState, isOpen: true, error: 'You are out of AI credits. Purchase more credits to continue.', errorCode: 'credits_exhausted' };
+    const setHosted = (billing: boolean) =>
+      useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, billing }, loaded: true });
+
+    it('offers a Buy credits link to the billing credits page on hosted', () => {
+      setHosted(true);
+      vi.mocked(useAiStore).mockReturnValue(exhausted);
+      render(<AiChatSidebar />);
+      expect(screen.getByText(/out of AI credits/)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Buy credits' })).toHaveAttribute('href', '/billing/credits');
+    });
+
+    it('shows the error but no Buy credits link when billing is not configured (self-hosted)', () => {
+      setHosted(false);
+      vi.mocked(useAiStore).mockReturnValue(exhausted);
+      render(<AiChatSidebar />);
+      expect(screen.getByText(/out of AI credits/)).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
+    });
+
+    it('does not offer Buy credits for other errors', () => {
+      setHosted(true);
+      vi.mocked(useAiStore).mockReturnValue({ ...exhausted, error: 'Rate limit exceeded', errorCode: null });
+      render(<AiChatSidebar />);
+      expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
+    });
   });
 });

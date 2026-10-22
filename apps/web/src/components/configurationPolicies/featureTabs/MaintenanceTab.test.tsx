@@ -302,3 +302,32 @@ describe('MaintenanceTab — timezone picker', () => {
     expect(payload.featurePolicyId).toBeNull();
   });
 });
+
+// #9565: "Weekly" had no day-of-week field and the form never said which day a
+// weekly window opens on. The scheduler pins weekly windows to Sunday and
+// monthly windows to the 1st (featureConfigResolver.ts); until a day picker
+// exists end to end, the form states that rule.
+describe('MaintenanceTab — recurrence day rule (#9565)', () => {
+  const renderTab = () => render(
+    <MaintenanceTab policyId="policy-1" existingLink={undefined} linkedPolicyId={null} onLinkChanged={vi.fn()} />,
+  );
+
+  it('states that a weekly window opens every Sunday', () => {
+    renderTab();
+    expect(screen.getByTestId('maintenance-recurrence-rule')).toHaveTextContent(/every sunday/i);
+  });
+
+  it('states that a monthly window opens on the 1st', () => {
+    renderTab();
+    fireEvent.change(screen.getByTestId('maintenance-recurrence'), { target: { value: 'monthly' } });
+    expect(screen.getByTestId('maintenance-recurrence-rule')).toHaveTextContent(/1st of each month/i);
+  });
+
+  it('shows no day rule for daily or one-off windows', () => {
+    renderTab();
+    fireEvent.change(screen.getByTestId('maintenance-recurrence'), { target: { value: 'daily' } });
+    expect(screen.queryByTestId('maintenance-recurrence-rule')).toBeNull();
+    fireEvent.change(screen.getByTestId('maintenance-recurrence'), { target: { value: 'once' } });
+    expect(screen.queryByTestId('maintenance-recurrence-rule')).toBeNull();
+  });
+});

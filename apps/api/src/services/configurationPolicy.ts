@@ -677,9 +677,31 @@ export async function listConfigPolicies(
     else linksByPolicyId.set(link.configPolicyId, [entry]);
   }
 
+  // #9565: a partner-owned policy (org_id NULL) applies to every organization
+  // only once it has a partner-level assignment; until then it applies to no
+  // organization at all. The list's "Partner-wide" badge keys off this flag.
+  // ADDITIVE and batched like the links read above: one statement per page,
+  // issued only when the page holds a partner-owned row. Tenancy: the
+  // assignment RLS policies are the same EXISTS join back to the parent
+  // policy, so restricting to ids the access-filtered query already returned
+  // adds no visibility.
+  const partnerOwnedIds = rows.filter((row) => row.orgId === null).map((row) => row.id);
+  const partnerWideAssignedIds = new Set<string>();
+  if (partnerOwnedIds.length) {
+    const partnerAssignmentRows = await db
+      .select({ configPolicyId: configPolicyAssignments.configPolicyId })
+      .from(configPolicyAssignments)
+      .where(and(
+        inArray(configPolicyAssignments.configPolicyId, partnerOwnedIds),
+        eq(configPolicyAssignments.level, 'partner'),
+      ));
+    for (const assignment of partnerAssignmentRows) partnerWideAssignedIds.add(assignment.configPolicyId);
+  }
+
   const data = rows.map((row) => ({
     ...row,
     featureLinks: linksByPolicyId.get(row.id) ?? [],
+    hasPartnerWideAssignment: partnerWideAssignedIds.has(row.id),
   }));
 
   return { data, pagination: { page: pagination.page, limit: pagination.limit, total } };

@@ -69,3 +69,31 @@ describe('loadInvoiceForRender preloaded branding (W3a)', () => {
     expect((await loadInvoiceForRender('inv-1'))!.preloaded).toBeUndefined();
   });
 });
+
+// #9454: same reason for the online-payment availability read (stripe_connect_accounts).
+// Read order after the branding row: the stripe_connect row (.limit).
+describe('loadInvoiceForRender online-payment availability (#9454)', () => {
+  it('reads it on the caller connection for an issued invoice whose partner row is visible', async () => {
+    rows.next = [[invoice], [partner], [], [{ status: 'connected', apiKey: 'enc:key' }]];
+    rows.i = 0;
+    expect((await loadInvoiceForRender('inv-1'))!.onlinePaymentAvailable).toBe(true);
+    rows.next = [[invoice], [partner], [], []];
+    rows.i = 0;
+    expect((await loadInvoiceForRender('inv-1'))!.onlinePaymentAvailable).toBe(false);
+  });
+
+  it('leaves it unread for an org-scoped caller (partner row not visible): renderInvoicePdf falls back', async () => {
+    rows.next = [[invoice], [], [], [{ status: 'connected', apiKey: 'enc:key' }]];
+    rows.i = 0;
+    expect((await loadInvoiceForRender('inv-1'))!.onlinePaymentAvailable).toBeUndefined();
+    expect(rows.i).toBe(3);
+  });
+
+  it('leaves it unread for a draft (no pay line on a draft)', async () => {
+    // A draft with a bill-to name skips the org read: invoice, partner, branding.
+    rows.next = [[{ ...invoice, status: 'draft' }], [partner], [], [{ status: 'connected', apiKey: 'enc:key' }]];
+    rows.i = 0;
+    expect((await loadInvoiceForRender('inv-1'))!.onlinePaymentAvailable).toBeUndefined();
+    expect(rows.i).toBe(3);
+  });
+});

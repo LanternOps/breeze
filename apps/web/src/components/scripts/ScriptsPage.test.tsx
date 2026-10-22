@@ -32,14 +32,14 @@ vi.mock('./ScriptList', () => ({
     onRun,
     onDuplicate
   }: {
-    scripts: Array<{ id: string; name: string; lastRun?: string }>;
-    onRun?: (script: { id: string; name: string; lastRun?: string }) => void;
-    onDuplicate?: (script: { id: string; name: string; lastRun?: string }) => void;
+    scripts: Array<{ id: string; name: string; lastRunAt?: string | null }>;
+    onRun?: (script: { id: string; name: string; lastRunAt?: string | null }) => void;
+    onDuplicate?: (script: { id: string; name: string; lastRunAt?: string | null }) => void;
   }) => (
     <div>
       {scripts.map(script => (
         <div key={script.id}>
-          <span data-testid={`last-run-${script.id}`}>{script.lastRun ?? 'Never'}</span>
+          <span data-testid={`last-run-${script.id}`}>{script.lastRunAt ?? 'Never'}</span>
           <button type="button" onClick={() => onRun?.(script)}>
             Run {script.name}
           </button>

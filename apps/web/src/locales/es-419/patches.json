@@ -41,7 +41,8 @@
       "title": "Confirmar la aprobación del parche",
       "selectedOrganization": "la organización seleccionada",
       "messageOne": "¿Aprobar el parche en el dispositivo {{count}} en {{org}}?",
-      "messageMany": "¿Aprobar el parche en dispositivos {{count}} en {{org}}?"
+      "messageMany": "¿Aprobar el parche en dispositivos {{count}} en {{org}}?",
+      "messagePartnerWide": "¿Aprobar el parche para todas las organizaciones de su partner?"
     },
     "checkingAccess": "Verificando tu acceso..."
   },

@@ -65,9 +65,11 @@ vi.mock('./aiTools', () => ({ verifyDeviceAccess: (id: string) => verifyDeviceAc
 
 const readDeviceFindings = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const readCatalog = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
+const readFindingSoftware = vi.fn(async (..._a: unknown[]) => new Map<string, unknown>());
 vi.mock('./aiToolsVulnerability', () => ({
   readDeviceFindings: (...a: unknown[]) => readDeviceFindings(...a),
   readCatalog: (...a: unknown[]) => readCatalog(...a),
+  readFindingSoftware: (...a: unknown[]) => readFindingSoftware(...a),
   normStatus: (v: unknown) => (typeof v === 'string' ? v : 'open'),
 }));
 
@@ -92,6 +94,8 @@ describe('dataset adapters', () => {
     readDeviceFindings.mockResolvedValue([]);
     readCatalog.mockReset();
     readCatalog.mockResolvedValue([]);
+    readFindingSoftware.mockReset();
+    readFindingSoftware.mockResolvedValue(new Map());
   });
 
   it('covers every dataset named in the spec', () => {
@@ -532,6 +536,31 @@ describe('dataset adapters', () => {
     expect(verifyDeviceAccess).toHaveBeenCalledWith('d1');
     expect(page.rows).toEqual([
       expect.objectContaining({ deviceId: 'd1', cveId: 'CVE-2026-1', severity: 'critical', knownExploited: true }),
+    ]);
+  });
+
+  // #9532 — an exported finding names the affected software, flat (one column
+  // each) so an analysis script can group by product without unpacking.
+  it('vulnerabilities rows carry the linked software, null when unlinked', async () => {
+    readDeviceFindings.mockResolvedValue([
+      { id: 'f1', deviceId: 'd1', vulnerabilityId: 'v1', status: 'open', riskScore: '80' },
+      { id: 'f2', deviceId: 'd1', vulnerabilityId: 'v1', status: 'open', riskScore: '70' },
+    ]);
+    readCatalog.mockResolvedValue([
+      { id: 'v1', cveId: 'CVE-2026-1', severity: 'high', cvssScore: '8.8', knownExploited: false, epssScore: null, patchAvailable: true },
+    ]);
+    readFindingSoftware.mockResolvedValue(new Map([
+      ['f1', { vulnerabilityId: 'v1', software: { name: 'Google Chrome', version: '129.0', vendor: 'Google LLC' } }],
+      ['f2', { vulnerabilityId: 'v1', software: null }],
+    ]));
+    const pager = await DATASET_ADAPTERS.vulnerabilities.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
+    });
+    const page = await pager(null);
+    expect(readFindingSoftware).toHaveBeenCalledWith('org-1', ['f1', 'f2'], auth);
+    expect(page.rows).toEqual([
+      expect.objectContaining({ id: 'f1', softwareName: 'Google Chrome', softwareVersion: '129.0', softwareVendor: 'Google LLC' }),
+      expect.objectContaining({ id: 'f2', softwareName: null, softwareVersion: null, softwareVendor: null }),
     ]);
   });
 

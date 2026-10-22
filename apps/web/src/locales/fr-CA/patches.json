@@ -41,7 +41,8 @@
       "title": "Confirmer l’approbation du correctif",
       "selectedOrganization": "l’organisation sélectionnée",
       "messageOne": "Approuver le correctif sur {{count}} appareil dans {{org}} ?",
-      "messageMany": "Approuver le correctif sur {{count}} appareils dans {{org}} ?"
+      "messageMany": "Approuver le correctif sur {{count}} appareils dans {{org}} ?",
+      "messagePartnerWide": "Approuver le correctif pour toutes les organisations de votre partenaire ?"
     },
     "checkingAccess": "Vérification de votre accès..."
   },

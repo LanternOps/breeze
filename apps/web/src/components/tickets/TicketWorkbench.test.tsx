@@ -2991,7 +2991,8 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     authState.permissions = [{ resource: 'tickets', action: 'manage' }];
     mockTicketApi({ 'tk-1': makeTicket() });
     const onChanged = vi.fn();
-    render(<TicketWorkbench ticketId="tk-1" onChanged={onChanged} />);
+    const onDeleted = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onChanged={onChanged} onDeleted={onDeleted} />);
 
     await screen.findByTestId('ticket-workbench');
     fireEvent.click(screen.getByTestId('ticket-delete-button'));
@@ -3009,6 +3010,8 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     await waitFor(() => {
       expect(onChanged).toHaveBeenCalled();
     });
+    // #9564: tells the host which ticket is gone so it drops any hold on it.
+    expect(onDeleted).toHaveBeenCalledWith('tk-1');
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Ticket deleted' }));
     // Split-pane mode: the host handles re-selection, so no navigation here.
     expect(navigateTo).not.toHaveBeenCalled();

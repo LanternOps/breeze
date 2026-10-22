@@ -32,7 +32,8 @@ import { resolveHelperPermissionLevelForDevice } from '../../services/helperPerm
 import { sanitizeUserMessage } from '../../services/aiInputSanitizer';
 import { storeScreenshot, ScreenshotQuotaExceededError, ScreenshotTooLargeError } from '../../services/screenshotStorage';
 import { envInt } from '../../utils/envInt';
-import { checkBudget, checkSystemAiRateLimit } from '../../services/aiCostTracker';
+import { checkBudgetDetailed, checkSystemAiRateLimit } from '../../services/aiCostTracker';
+import { aiDenialClientCode, type AiDenialClientCode } from '../../services/aiDenialCode';
 import { getEffectiveAiBudget } from '../../services/effectiveSettings';
 import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
@@ -132,7 +133,7 @@ async function runHelperPreFlight(
   device: HelperDevice,
 ): Promise<
   | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; permissionLevel: HelperPermissionLevel; clientTools: ClientToolDeclaration[]; model: ResolvedModel }
-  | { ok: false; error: string; status: number; code?: ResolveFailureReason }
+  | { ok: false; error: string; status: number; code?: ResolveFailureReason; billingCode?: AiDenialClientCode }
 > {
   // Fetch session
   const [session] = await db
@@ -204,8 +205,11 @@ async function runHelperPreFlight(
 
   // Budget check
   try {
-    const budgetError = await checkBudget(device.orgId, model.funding);
-    if (budgetError) return { ok: false, error: budgetError, status: 402 };
+    const denial = await checkBudgetDetailed(device.orgId, model.funding);
+    if (denial) {
+      const billingCode = aiDenialClientCode(denial.reason);
+      return { ok: false, error: denial.message, status: 402, ...(billingCode ? { billingCode } : {}) };
+    }
   } catch (err) {
     console.error('[Helper] Budget check failed:', err);
     return { ok: false, error: 'Unable to verify budget.', status: 500 };
@@ -376,6 +380,9 @@ helperRoutes.post(
     if (!preflight.ok) {
       if (preflight.code) {
         return c.json({ error: preflight.error, code: preflight.code, recoverable: true }, preflight.status as 409);
+      }
+      if (preflight.billingCode) {
+        return c.json({ error: preflight.error, code: preflight.billingCode }, 402);
       }
       return c.json({ error: preflight.error }, preflight.status as 400);
     }

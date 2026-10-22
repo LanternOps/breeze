@@ -2703,3 +2703,20 @@ describe('fetchWithAuth — a rejected body password never looks like session de
     );
   });
 });
+
+// #8862: the profile page mirrors its SSO re-auth grant into sessionStorage so
+// a remount can restore it. Signing out must not leave it for the next session
+// on the same tab (the server would reject it, but the page would arm the
+// passkey card with a proof it cannot use).
+describe('logout() and the stashed SSO re-auth grant (#8862)', () => {
+  it('clears the stashed grant', async () => {
+    const { SSO_REAUTH_GRANT_KEY, stashSsoReauthGrant } = await import('@/lib/ssoReauthGrant');
+    sessionStorage.clear();
+    stashSsoReauthGrant('3f2504e0-4f89-41d3-9a0c-0305e82c3301', 'passkey', 'user-1');
+    expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).not.toBeNull();
+
+    useAuthStore.getState().logout();
+
+    expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
+  });
+});

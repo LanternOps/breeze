@@ -596,6 +596,19 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
+        // The credit / plan gate refused the turn before it ran (#9450): drop
+        // the optimistic bubble like the coded 409s and keep the code so the
+        // chat can offer a way forward (Buy credits) instead of bare text.
+        if (res.status === 402 && code) {
+          set((s) => ({
+            messages: s.messages.filter((m) => m.id !== userMsgId),
+            error: extractApiError(data, 'Failed to send message'),
+            errorCode: code,
+            isStreaming: false,
+          }));
+          return;
+        }
+
         if (res.status === 409 && !code) {
           set((s) => ({
             messages: s.messages.filter((m) => m.id !== userMsgId),

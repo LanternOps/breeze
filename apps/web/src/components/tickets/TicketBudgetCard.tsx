@@ -7,11 +7,13 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { approvalFriendly, type ApprovalSummary, type ApprovalTrigger } from '../../lib/ticketApproval';
 import { formatMinutes } from '../../lib/timeFormat';
 import { formatMoney } from '../billing/shared/format';
+import { laborHours } from '@breeze/shared';
 
 const AMOUNT_RE = /^\d+(\.\d{1,2})?$/;
 const MAX_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
-const hoursText = (minutes: number | null) => (minutes == null ? '' : String(+(minutes / 60).toFixed(2)));
+// Hours to 2 dp via the shared labour rule (#9561), trailing zeros dropped ('1.5', not '1.50').
+const hoursText = (minutes: number | null) => (minutes == null ? '' : String(Number(laborHours(minutes))));
 
 interface BarProps {
   testId: string;

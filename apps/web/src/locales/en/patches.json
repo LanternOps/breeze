@@ -41,7 +41,8 @@
       "title": "Confirm patch approval",
       "selectedOrganization": "the selected organization",
       "messageOne": "Approve patch on {{count}} device in {{org}}?",
-      "messageMany": "Approve patch on {{count}} devices in {{org}}?"
+      "messageMany": "Approve patch on {{count}} devices in {{org}}?",
+      "messagePartnerWide": "Approve patch for all organizations under your partner?"
     },
     "checkingAccess": "Checking your access..."
   },

@@ -124,7 +124,8 @@ vi.mock('../db/schema', () => ({
   // file only needs the object to exist.
   scriptExecutions: { cancelState: 'se.cancelState' },
   scriptExecutionBatches: {},
-  devices: {},
+  // #9563 — sentinel for the deviceStatus projection on the execution reads.
+  devices: { status: 'd.status' },
   deviceCommands: {},
   organizations: { id: 'o.id', partnerId: 'o.partnerId' },
   patchPolicies: {},
@@ -282,6 +283,126 @@ describe('scripts routes', () => {
     expect(res.status).toBe(200);
     expect(desc).toHaveBeenNthCalledWith(1, scripts.updatedAt);
     expect(desc).toHaveBeenNthCalledWith(2, scripts.id);
+  });
+
+  // #9563 — the Script Library's LAST RUN column read `lastRun`, which the list
+  // endpoint never returned, so every script showed "Never". The list now
+  // projects the newest execution timestamp per script as a correlated
+  // subquery in the same SELECT (no N+1, pagination untouched), scoped to the
+  // executions the caller could see in GET /scripts/:id/executions.
+  describe('GET /scripts lastRunAt (#9563)', () => {
+    function mockListSelects(rows: Array<Record<string, unknown>>) {
+      const fieldsSeen: Array<Record<string, unknown>> = [];
+      vi.mocked(db.select)
+        .mockImplementationOnce(((fields: Record<string, unknown>) => {
+          fieldsSeen.push(fields);
+          return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: rows.length }]) }) };
+        }) as any)
+        .mockImplementationOnce(((fields: Record<string, unknown>) => {
+          fieldsSeen.push(fields);
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) })
+                })
+              })
+            })
+          };
+        }) as any);
+      return fieldsSeen;
+    }
+
+    function renderLastRunSql(fieldsSeen: Array<Record<string, unknown>>) {
+      const listFields = fieldsSeen[1]!;
+      expect(listFields).toHaveProperty('lastRunAt');
+      return new PgDialect().sqlToQuery(listFields.lastRunAt as any);
+    }
+
+    it('returns lastRunAt for each script and null for a script that never ran', async () => {
+      const ranAt = new Date('2026-10-20T08:30:00.000Z');
+      mockListSelects([
+        { id: SCRIPT_ID_1, name: 'Ran twice', lastRunAt: ranAt },
+        { id: SCRIPT_ID_2, name: 'Never ran', lastRunAt: null }
+      ]);
+
+      const res = await app.request('/scripts?limit=10&page=1', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].lastRunAt).toBe('2026-10-20T08:30:00.000Z');
+      expect(body.data[1].lastRunAt).toBeNull();
+    });
+
+    it('defaults lastRunAt to null when a row lacks the field', async () => {
+      mockListSelects([{ id: SCRIPT_ID_1, name: 'Legacy row' }]);
+      const res = await app.request('/scripts', { method: 'GET', headers: { Authorization: 'Bearer valid-token' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data[0].lastRunAt).toBeNull();
+    });
+
+    it('reads the newest script_executions row for the outer script, scoped to the caller org', async () => {
+      const fieldsSeen = mockListSelects([]);
+      await app.request('/scripts', { method: 'GET', headers: { Authorization: 'Bearer valid-token' } });
+
+      const query = renderLastRunSql(fieldsSeen);
+      expect(query.sql).toContain('script_executions');
+      expect(query.sql).toMatch(/max\(se\.created_at\)/i);
+      expect(query.sql).toContain('se.script_id = "scripts"."id"');
+      expect(query.sql).toContain('se.org_id = $1');
+      expect(query.params).toEqual([ORG_ID]);
+    });
+
+    it('limits lastRunAt to the caller\'s allowed sites when the role is site-restricted', async () => {
+      const fieldsSeen = mockListSelects([]);
+      await app.request('/scripts', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
+      });
+
+      const query = renderLastRunSql(fieldsSeen);
+      expect(query.sql).toMatch(/d\.site_id in \(\$2\)/i);
+      expect(query.params).toEqual([ORG_ID, 'site-allowed']);
+    });
+
+    it('scopes a partner caller without an org filter to its accessible orgs', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123' }, scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'selected',
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (id: string) => [ORG_ID, ORG_ID_2].includes(id)
+        });
+        return next();
+      });
+      const fieldsSeen = mockListSelects([]);
+      await app.request('/scripts', { method: 'GET', headers: { Authorization: 'Bearer valid-token' } });
+
+      const query = renderLastRunSql(fieldsSeen);
+      expect(query.sql).toMatch(/se\.org_id in \(\$1, \$2\)/i);
+      expect(query.params).toEqual([ORG_ID, ORG_ID_2]);
+    });
+
+    it('scopes a partner caller filtering by one org to that org only', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123' }, scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all',
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (id: string) => [ORG_ID, ORG_ID_2].includes(id)
+        });
+        return next();
+      });
+      const fieldsSeen = mockListSelects([]);
+      await app.request(`/scripts?orgId=${ORG_ID_2}`, { method: 'GET', headers: { Authorization: 'Bearer valid-token' } });
+
+      const query = renderLastRunSql(fieldsSeen);
+      expect(query.sql).toContain('se.org_id = $1');
+      expect(query.params).toEqual([ORG_ID_2]);
+    });
   });
 
   it('should get a script by id', async () => {
@@ -1948,6 +2069,9 @@ describe('scripts routes', () => {
       expect(res.status).toBe(200);
       const projection = vi.mocked(db.select).mock.calls[2]?.[0] as Record<string, unknown>;
       expect(projection).toHaveProperty('cancelState', 'se.cancelState');
+      // #9563 — Execution Details needs the device's real status to tell a
+      // queued run on an offline device from one awaiting agent pickup.
+      expect(projection).toHaveProperty('deviceStatus', 'd.status');
       const body = await res.json();
       expect(body.data[0].cancelState).toBe('unconfirmed');
     });
@@ -1981,6 +2105,7 @@ describe('scripts routes', () => {
       expect(res.status).toBe(200);
       const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
       expect(projection).toHaveProperty('cancelState', 'se.cancelState');
+      expect(projection).toHaveProperty('deviceStatus', 'd.status');
       const body = await res.json();
       expect(body.cancelState).toBe('confirmed');
     });
