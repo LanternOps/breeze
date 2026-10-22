@@ -26,7 +26,7 @@ import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
 import { dispatchDeviceCommand } from '../../services/dispatchDeviceCommand';
 import type { QueuedCommand } from '../../services/commandQueue';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
-import { propagateCancelledDeviceCommand } from '../../services/commandCancelPropagation';
+import { cancelDeviceCommands } from '../../services/commandCancelPropagation';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../services/partnerTrust.commands';
 import { trustDenyBody, type TrustDenyCode } from '../../services/partnerTrust';
@@ -1040,35 +1040,20 @@ commandsRoutes.post(
         return { kind: 'not_pending' as const, status: existing.status };
       }
 
-      const completedAt = new Date();
-      const [row] = await tx
-        .update(deviceCommands)
-        .set({
-          status: 'cancelled',
-          completedAt,
-          result: { status: 'cancelled', reason: 'user_cancelled', cancelledBy: auth.user.id },
-          ...terminalPayloadErasureSet(),
-        })
-        .where(
-          and(
-            eq(deviceCommands.id, commandId),
-            eq(deviceCommands.deviceId, deviceId),
-            eq(deviceCommands.status, 'pending'),
-          ),
-        )
-        .returning({ id: deviceCommands.id });
+      // Same helper the bulk paths use (#9719): CAS UPDATE on `pending`, then
+      // the per-type hooks for the rows it flipped, in THIS transaction.
+      const [row] = await cancelDeviceCommands({
+        executor: tx,
+        result: { status: 'cancelled', reason: 'user_cancelled', cancelledBy: auth.user.id },
+        where: and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.status, 'pending'),
+        )!,
+      });
 
       // Lost the CAS race — the agent claimed it between the SELECT and here.
       if (!row) return { kind: 'cas_lost' } as const;
-
-      await propagateCancelledDeviceCommand({
-        commandId: row.id,
-        type: existing.type,
-        payload: existing.payload as Record<string, unknown> | null,
-        completedAt,
-        cancelledBy: auth.user.id,
-        executor: tx,
-      });
 
       return { kind: 'cancelled' as const, id: row.id, type: existing.type };
     });

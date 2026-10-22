@@ -1,6 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runAfterDbContextExit } from '../db';
-import { deploymentResults, deviceFilesystemCleanupRuns } from '../db/schema';
+import { deploymentResults, deviceCommands, deviceFilesystemCleanupRuns } from '../db/schema';
+import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { captureException } from './sentry';
 import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExecutionTerminal';
@@ -56,6 +57,95 @@ export async function propagateCancelledDeviceCommands(
       executor,
     });
   }
+}
+
+/**
+ * The ONE way a bulk path (tenant offboarding, abuse suspension, device
+ * uninstall drain, ...) flips device commands to `cancelled` (#9719): performs
+ * the UPDATE, then runs the per-command-type hook for every row it actually
+ * flipped. A bare `UPDATE ... SET status='cancelled'` strands the owning
+ * script execution / patch job / deployment result / incident action `pending`
+ * forever, because the reaper never revisits a terminal command.
+ *
+ * `where` must already scope to the rows to cancel, including a non-terminal
+ * status guard; only rows the UPDATE returns get hooks (a row that lost a race
+ * to a concurrent claim is not ours to propagate).
+ *
+ * Failure semantics follow the executor. Inside a caller's transaction the
+ * hooks join it and a failure propagates, rolling the cancel back (same
+ * contract as `propagateCancelledDeviceCommand`; a failed statement would
+ * abort that transaction anyway). On the ambient pool the cancel has already
+ * committed, so one failing hook is logged with its command id and the rest
+ * still run.
+ */
+export async function cancelDeviceCommands(params: {
+  where: SQL;
+  result: Record<string, unknown>;
+  completedAt?: Date;
+  executor?: DbExecutor;
+  /** Override the per-command hook (tests). */
+  propagate?: typeof propagateCancelledDeviceCommand;
+}): Promise<DeviceCommandCancelSubject[]> {
+  const executor: DbExecutor = params.executor ?? db;
+  const completedAt = params.completedAt ?? new Date();
+  const propagate = params.propagate ?? propagateCancelledDeviceCommand;
+
+  // Read type + payload BEFORE the UPDATE: `terminalPayloadErasureSet()` nulls
+  // the payload, `returning()` reflects post-update values, and the hooks key on
+  // `payload.executionId` / `batchId` / `runId`. FOR UPDATE pins the rows so the
+  // set we read is the set we flip.
+  const before = await executor
+    .select({ id: deviceCommands.id, type: deviceCommands.type, payload: deviceCommands.payload })
+    .from(deviceCommands)
+    .where(params.where)
+    .for('update');
+  const beforeById = new Map(before.map((row) => [row.id, row]));
+
+  const flipped = await executor
+    .update(deviceCommands)
+    .set({
+      status: 'cancelled',
+      completedAt,
+      result: params.result,
+      ...terminalPayloadErasureSet(),
+    })
+    .where(params.where)
+    .returning({ id: deviceCommands.id, type: deviceCommands.type });
+
+  // Only rows this UPDATE actually flipped are ours to propagate.
+  const subjects: DeviceCommandCancelSubject[] = flipped.map((row) => {
+    const payload = beforeById.get(row.id)?.payload;
+    return {
+      id: row.id,
+      type: row.type,
+      payload:
+        payload && typeof payload === 'object' && !Array.isArray(payload)
+          ? (payload as Record<string, unknown>)
+          : null,
+    };
+  });
+
+  const isolateFailures = executor === db;
+  for (const subject of subjects) {
+    try {
+      await propagate({
+        commandId: subject.id,
+        type: subject.type,
+        payload: subject.payload,
+        completedAt,
+        executor,
+      });
+    } catch (err) {
+      if (!isolateFailures) throw err;
+      console.error('[commandCancelPropagation] cancelDeviceCommands: hook failed for a cancelled command', {
+        commandId: subject.id,
+        type: subject.type,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  return subjects;
 }
 
 export async function propagateCancelledDeviceCommand(params: {

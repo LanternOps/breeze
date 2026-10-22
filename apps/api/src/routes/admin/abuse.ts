@@ -25,7 +25,7 @@ import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
 import type { Database } from '../../db';
 
-import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { cancelDeviceCommands } from '../../services/commandCancelPropagation';
 export const abuseRoutes = new Hono();
 
 // The `users.disabled_reason` marker written by partner suspension. Unsuspend
@@ -144,21 +144,17 @@ export async function suspendPartnerForAbuse(
           );
 
           // Cancel any other pending/sent commands for those devices.
-          await tx
-            .update(deviceCommands)
-            .set({
-              status: 'cancelled',
-              completedAt: new Date(),
-              result: { reason: 'partner_suspended_for_abuse' },
-              ...terminalPayloadErasureSet(),
-            })
-            .where(
-              and(
-                inArray(deviceCommands.deviceId, deviceIds),
-                ne(deviceCommands.type, 'self_uninstall'),
-                inArray(deviceCommands.status, ['pending', 'sent'])
-              )
-            );
+          // Through the shared helper (#9719) so the owning script execution /
+          // patch job / deployment result / incident action is terminalised too.
+          await cancelDeviceCommands({
+            executor: tx,
+            result: { reason: 'partner_suspended_for_abuse' },
+            where: and(
+              inArray(deviceCommands.deviceId, deviceIds),
+              ne(deviceCommands.type, 'self_uninstall'),
+              inArray(deviceCommands.status, ['pending', 'sent'])
+            )!,
+          });
         }
 
         // Collect users for revocation BEFORE deleting sessions.
