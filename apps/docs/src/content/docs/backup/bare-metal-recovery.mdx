@@ -383,6 +383,7 @@ For recovering individual files or databases onto an already-enrolled device, us
 ## Recovery Token Security
 
 - Tokens authenticate recovery agents the same way JWT authenticates regular users — they grant time-limited access to a specific snapshot
+- Generating a recovery token, creating a recovery code and reissuing a code each require both `backup:write` and `devices:execute`, the same execute permission as every other restore. A custom role that holds `backup:write` without `devices:execute` can no longer create them
 - Tokens are hashed (SHA-256) at rest and cannot be retrieved after creation
 - Each token is scoped to a single snapshot and organization
 - Expired tokens are automatically invalidated
