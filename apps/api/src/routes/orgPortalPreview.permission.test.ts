@@ -102,6 +102,8 @@ describe('GET /organizations/:id/portal-preview — per-section staff permission
   it('no organizations:read → 403 before anything is read', async () => {
     as('devices:read', 'reports:read', 'tickets:read');
     expect((await get()).status).toBe(403);
+    expect(h.selectQueue).not.toHaveBeenCalled();
+    expect(h.audit).not.toHaveBeenCalled();
     for (const fn of READ_MODELS()) expect(fn).not.toHaveBeenCalled();
   });
 
