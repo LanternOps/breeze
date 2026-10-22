@@ -429,8 +429,9 @@ const REBOOT_PENDING_RESOLVE_BATCH = 500;
  *
  * Same status rule as the warranty and script-exit-code resolvers: `active`,
  * `acknowledged` and TIMED suppressions resolve; `dismissed` is terminal and an
- * indefinite ("Forever") suppression survives. The rule join walks the
- * partial `alerts_open_rule_device_subject_uidx` index, not the whole table.
+ * indefinite ("Forever") suppression survives. The status filter
+ * matches the predicate of the partial `alerts_open_rule_device_subject_uidx`
+ * index, so the planner can scan open alerts rather than the whole table.
  *
  * Returns how many alerts this call resolved (a concurrent manual resolve
  * loses nothing: `resolveAlert`'s status CAS picks one winner).
@@ -450,12 +451,22 @@ export async function resolveClearedRebootPendingAlerts(): Promise<number> {
         eq(devices.pendingReboot, false),
       ),
     )
+    .orderBy(alerts.createdAt)
     .limit(REBOOT_PENDING_RESOLVE_BATCH);
 
   let resolved = 0;
   for (const row of rows) {
-    if (await resolveAlert(row.id, 'Auto-resolved: the device no longer needs a restart', undefined, false, 'condition_cleared')) {
-      resolved++;
+    // Isolate each row: one bad alert must not strand the rest of the batch.
+    try {
+      if (await resolveAlert(row.id, 'Auto-resolved: the device no longer needs a restart', undefined, false, 'condition_cleared')) {
+        resolved++;
+      }
+    } catch (error) {
+      console.error(`[patchAlerts] failed to resolve cleared reboot pending alert (alert=${row.id}):`, error);
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        errorId: 'reboot-pending-alert-resolve-failed',
+        alertId: row.id,
+      });
     }
   }
   return resolved;

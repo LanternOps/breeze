@@ -23,6 +23,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { alerts, devices } from '../../db/schema';
 import {
   REBOOT_PENDING_ALERT_SOURCE,
+  ensurePatchJobFailureRule,
   ensureRebootPendingRule,
   resolveClearedRebootPendingAlerts,
 } from '../../services/patchAlerts';
@@ -89,7 +90,7 @@ describe('reboot-pending alerts resolve once the device restarts', () => {
     const { orgId, siteId } = await seedOrg();
     const ruleId = await withSystemDbAccessContext(() => ensureRebootPendingRule(orgId));
 
-    // One alert per device: the open-alert unique index allows one per (rule, device).
+    // One alert per device: the open-alert unique index allows one open alert per (rule, device, subject); subject is NULL here.
     const seeded: Record<string, { status: SeedStatus; pending: boolean }> = {};
     const plan: Array<[SeedStatus, boolean]> = [
       ['active', false],
@@ -105,7 +106,8 @@ describe('reboot-pending alerts resolve once the device restarts', () => {
       seeded[alertId] = { status, pending };
     }
 
-    await withSystemDbAccessContext(() => resolveClearedRebootPendingAlerts());
+    const n = await withSystemDbAccessContext(() => resolveClearedRebootPendingAlerts());
+    expect(n).toBeGreaterThanOrEqual(3);
 
     const after = await statuses(Object.keys(seeded));
     for (const [alertId, { status, pending }] of Object.entries(seeded)) {
@@ -118,5 +120,43 @@ describe('reboot-pending alerts resolve once the device restarts', () => {
       });
       if (shouldResolve) expect(row.resolutionReason).toBe('condition_cleared');
     }
+  });
+
+  runDb('only touches reboot-pending alerts and resolves across orgs', async () => {
+    const a = await seedOrg();
+    const b = await seedOrg();
+    const ruleA = await withSystemDbAccessContext(() => ensureRebootPendingRule(a.orgId));
+    const ruleB = await withSystemDbAccessContext(() => ensureRebootPendingRule(b.orgId));
+
+    const clearedA = await seedAlert(a.orgId, ruleA, await seedDevice(a.orgId, a.siteId, false), 'active');
+    const clearedB = await seedAlert(b.orgId, ruleB, await seedDevice(b.orgId, b.siteId, false), 'acknowledged');
+    const pendingB = await seedAlert(b.orgId, ruleB, await seedDevice(b.orgId, b.siteId, true), 'active');
+
+    // Same rule, foreign context.source → must not be touched.
+    const otherDevice = await seedDevice(a.orgId, a.siteId, false);
+    const [foreign] = await withSystemDbAccessContext(() => db
+      .insert(alerts)
+      .values({
+        orgId: a.orgId, ruleId: ruleA, deviceId: otherDevice, status: 'active', severity: 'medium',
+        title: 'Other', message: 'other', context: { source: 'something-else' },
+      })
+      .returning({ id: alerts.id }));
+    // A different rule (patch-job-failure) on a cleared device → must not be touched.
+    const failRule = await withSystemDbAccessContext(() => ensurePatchJobFailureRule(a.orgId));
+    const [otherRule] = await withSystemDbAccessContext(() => db
+      .insert(alerts)
+      .values({
+        orgId: a.orgId, ruleId: failRule, deviceId: otherDevice, status: 'active', severity: 'medium',
+        title: 'Patch fail', message: 'x', context: { source: REBOOT_PENDING_ALERT_SOURCE },
+      })
+      .returning({ id: alerts.id }));
+
+    await withSystemDbAccessContext(() => resolveClearedRebootPendingAlerts());
+    const after = await statuses([clearedA, clearedB, pendingB, foreign!.id, otherRule!.id]);
+    expect(after.get(clearedA)!.status).toBe('resolved');
+    expect(after.get(clearedB)!.status).toBe('resolved');
+    expect(after.get(pendingB)!.status).toBe('active');
+    expect(after.get(foreign!.id)!.status).toBe('active');
+    expect(after.get(otherRule!.id)!.status).toBe('active');
   });
 });
