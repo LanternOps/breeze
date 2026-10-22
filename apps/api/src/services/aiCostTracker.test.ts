@@ -9,6 +9,7 @@ import {
   debitBillingCredits,
   deductBillingCredits,
   getUsageSummary,
+  getAggregateUsageSummary,
   sumInputTokens,
   updateBudget,
 } from './aiCostTracker';
@@ -30,6 +31,7 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args: unknown[]) => ({ _and: args })),
   desc: vi.fn((...args: unknown[]) => ({ _desc: args })),
   isNotNull: vi.fn((...args: unknown[]) => ({ _isNotNull: args })),
+  inArray: vi.fn((...args: unknown[]) => ({ _inArray: args })),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => ({ _sql: strings, values }),
     {},
@@ -1455,5 +1457,46 @@ describe('updateBudget', () => {
 
     expect(mockDb.insert).not.toHaveBeenCalled();
     expect(capture.updateSet?.approvalMode).toBe('action_plan');
+  });
+});
+
+describe('getAggregateUsageSummary (#9667)', () => {
+  function usageRows(daily: Array<Record<string, unknown>>, monthly: Array<Record<string, unknown>>) {
+    const queue = [daily, monthly];
+    const where = vi.fn(() => Promise.resolve(queue.shift() ?? []));
+    mockDb.select.mockImplementation(() => ({ from: vi.fn(() => ({ where })) }));
+    return where;
+  }
+  const row = (cost: number, msgs: number, i = 1, o = 2) =>
+    ({ inputTokens: i, outputTokens: o, totalCostCents: cost, messageCount: msgs });
+
+  it('sums daily and monthly rows across orgs and carries no budget', async () => {
+    usageRows([row(100, 2), row(50, 1)], [row(1000, 20, 10, 20), row(500, 10, 5, 5)]);
+    const res = await getAggregateUsageSummary(['org-a', 'org-b']);
+    expect(res.daily).toEqual({ inputTokens: 2, outputTokens: 4, totalCostCents: 150, messageCount: 3 });
+    expect(res.monthly).toEqual({ inputTokens: 15, outputTokens: 25, totalCostCents: 1500, messageCount: 30 });
+    expect(res.budget).toBeNull();
+    expect(res.credits).toBeNull();
+    expect(res.alerts).toEqual({ fired: [] });
+  });
+
+  it('filters to the given org ids', async () => {
+    const where = usageRows([], []);
+    await getAggregateUsageSummary(['org-a', 'org-b']);
+    expect(JSON.stringify(where.mock.calls)).toContain('"_inArray":["orgId",["org-a","org-b"]]');
+  });
+
+  it('does not filter by org for unrestricted (null) callers', async () => {
+    const where = usageRows([], []);
+    await getAggregateUsageSummary(null);
+    expect(JSON.stringify(where.mock.calls)).not.toContain('_inArray');
+  });
+
+  it('returns zeros without querying when the caller has no accessible orgs', async () => {
+    mockDb.select.mockClear();
+    const res = await getAggregateUsageSummary([]);
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(res.daily.totalCostCents).toBe(0);
+    expect(res.monthly.messageCount).toBe(0);
   });
 });

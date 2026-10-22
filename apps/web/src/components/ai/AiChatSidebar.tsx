@@ -89,10 +89,11 @@ export default function AiChatSidebar() {
   const [searchQuery, setSearchQuery] = useState("");
   const restoredSessionIdRef = useRef<string | null>(null);
 
-  // Keyboard shortcut: Cmd+Shift+A to toggle
+  // Keyboard shortcut: Cmd+Shift+A to toggle. With Shift held, `e.key` is "A"
+  // (capital), so compare case-insensitively (#9613).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "a") {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
         if (canUseAi) toggle();
       }
