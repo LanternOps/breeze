@@ -212,6 +212,23 @@ describe('#9604 — apply_cis_remediation outcome classification', () => {
       wantError: 'agent crashed',
     },
     {
+      name: 'command error wins over the stdout error when both are present',
+      result: {
+        status: 'failed',
+        exitCode: 1,
+        error: 'command-level error',
+        stdout: JSON.stringify({ checkId: '2.3.7', success: false, error: 'stdout-level error' }),
+      },
+      wantStatus: 'failed',
+      wantError: 'command-level error',
+    },
+    {
+      name: 'failed command with no error text and no stdout still gets a reason',
+      result: { status: 'timeout', exitCode: 1 },
+      wantStatus: 'failed',
+      wantError: 'Remediation command timeout',
+    },
+    {
       name: 'applied remediation',
       result: {
         status: 'completed',
@@ -239,6 +256,18 @@ describe('#9604 — apply_cis_remediation outcome classification', () => {
     expect(stored.status).toBe(wantStatus);
     expect(stored.details.error ?? null).toBe(wantError);
     expect(appliedEventCalls()).toHaveLength(wantStatus === 'completed' ? 1 : 0);
+  });
+
+  it('flags an older agent\'s completed-but-not-applied result in details', async () => {
+    const stored = await runWith(makeResult({
+      status: 'completed',
+      exitCode: 0,
+      stdout: JSON.stringify({ checkId: '2.3.7', success: false, error: 'x' }),
+    }));
+
+    expect(stored.status).toBe('failed');
+    expect(stored.details.commandStatus).toBe('completed');
+    expect(stored.details.agentReportedNotApplied).toBe(true);
   });
 
   it('keeps the before-state a failed remediation reported', async () => {

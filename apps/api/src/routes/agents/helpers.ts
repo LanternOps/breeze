@@ -1621,7 +1621,9 @@ export async function handleCisCommandResult(
     ? null
     : readTrimmedString(resultData.error)
       ?? readTrimmedString(resultPayload?.error)
-      ?? (agentReportedNotApplied ? 'Agent reported the remediation was not applied' : null);
+      ?? (agentReportedNotApplied
+        ? 'Agent reported the remediation was not applied'
+        : `Remediation command ${resultData.status}`);
   const resultDetails = resultPayload && isObject(resultPayload.details)
     ? resultPayload.details
     : null;
@@ -1653,6 +1655,9 @@ export async function handleCisCommandResult(
     commandStatus: resultData.status,
     exitCode: resultData.exitCode ?? null,
     error: completed ? (resultData.error ?? null) : failureError,
+    // Older agents send `completed` + `success:false`; this explains why the
+    // action reads failed while commandStatus reads completed.
+    ...(agentReportedNotApplied ? { agentReportedNotApplied: true } : {}),
     stderr: resultData.stderr ?? null,
     completedAt: new Date().toISOString(),
   };
