@@ -76,7 +76,7 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 
 | Event | Description |
 |-------|-------------|
-| `device.enrolled` | A new agent has completed enrollment |
+| `device.enrolled` | An agent has completed enrollment (first enrollment or re-enrollment; payload `reenrollment` distinguishes them) |
 | `device.online` | A device has come online (heartbeat received) |
 | `device.offline` | A device has stopped sending heartbeats |
 | `device.updated` | Device metadata or configuration has changed |

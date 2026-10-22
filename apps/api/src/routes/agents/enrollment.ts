@@ -34,6 +34,7 @@ import {
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
 import { captureException } from '../../services/sentry';
+import { publishEvent } from '../../services/eventBus';
 import {
   disconnectAgentCredentialGeneration,
   publishAgentCredentialRevocation,
@@ -1061,6 +1062,23 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       orgId: key.orgId,
       eventType: 'device.created',
       reason: 'device_enrolled',
+    });
+
+    // #9511 — `device.enrolled` for webhook / automation / event-stream
+    // subscribers. Published only after the enrollment transaction committed
+    // (the catch above returns/throws on every rollback path). Fires for first
+    // enrollment AND re-enrollment (`reenrollment` distinguishes them): the
+    // internal `device.created` group re-evaluation is not an EventType and
+    // reaches no subscribers. Never awaited and never fatal — the device row
+    // is already committed.
+    publishEvent('device.enrolled', key.orgId, {
+      deviceId: device.id,
+      hostname: data.hostname,
+      agentVersion: data.agentVersion,
+      reenrollment: Boolean(existingDevice),
+    }, 'agent-enrollment', { siteId: device.siteId }).catch((err) => {
+      console.error('[Enrollment] Failed to publish device.enrolled:', err instanceof Error ? err.message : err);
+      captureException(err);
     });
 
     const mtlsCert = await issueMtlsCertForDevice(device.id, key.orgId);

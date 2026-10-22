@@ -172,6 +172,13 @@ vi.mock('../../services/partnerTrust', () => ({
   })),
 }));
 
+// #9511 — device.enrolled is published after the enrollment commits.
+const publishEventMock = vi.hoisted(() => vi.fn().mockResolvedValue('evt-1'));
+vi.mock('../../services/eventBus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/eventBus')>()),
+  publishEvent: publishEventMock,
+}));
+
 // #4630 — dynamic device group re-evaluation ENQUEUE on enrollment.
 const requestDeviceGroupReevaluationMock = vi.hoisted(() => vi.fn().mockResolvedValue('job-1'));
 vi.mock('../../jobs/deviceGroupJobs', () => ({
@@ -432,6 +439,34 @@ describe('POST /agents/enroll — dynamic device group re-evaluation enqueue (#4
     await enrollOk();
 
     expect(requestDeviceGroupReevaluationMock).toHaveBeenCalled();
+  });
+});
+
+describe('POST /agents/enroll — device.enrolled event (#9511)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    publishEventMock.mockResolvedValue('evt-1');
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('publishes device.enrolled for the committed device with org + site scope', async () => {
+    await enrollOk();
+
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'device.enrolled',
+      'org-backup-url',
+      expect.objectContaining({ deviceId: 'device-backup-url', reenrollment: false }),
+      'agent-enrollment',
+      expect.objectContaining({ siteId: 'site-backup-url' }),
+    );
+  });
+
+  it('a rejected publish never fails an otherwise successful enrollment', async () => {
+    publishEventMock.mockRejectedValue(new Error('redis down'));
+    await enrollOk();
   });
 });
 
