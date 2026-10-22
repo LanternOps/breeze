@@ -88,7 +88,7 @@ export default function PatchDetailsDrawer({ patch, rings, onClose }: Props) {
           <Fact label={t('patchDetails.source')} testId="patch-details-source">{patch.source}</Fact>
           <Fact label={t('patchDetails.packageId')} testId="patch-details-package-id">{patch.packageId || unknown}</Fact>
           <Fact label={t('patchDetails.severity')} testId="patch-details-severity">
-            {t(/* i18n-dynamic */ SEVERITY_KEYS[patch.severity])}
+            {t(/* i18n-dynamic */ (SEVERITY_KEYS[patch.severity] ?? SEVERITY_KEYS.unrated))}
             {patch.severity !== 'unrated' && patch.severitySource === 'derived' && (
               <span className="ml-2 text-xs text-muted-foreground" data-testid="patch-details-severity-derived">
                 {t('patchList.severity.derivedNote')}

@@ -56,7 +56,12 @@ function getTabFromHash(): TabKey {
 function parsePatchIdFromHash(hash: string): string | null {
   const [tab, ...rest] = hash.split('/');
   const id = rest.join('/');
-  return tab === 'patches' && id ? decodeURIComponent(id) : null;
+  if (tab !== 'patches' || !id) return null;
+  try {
+    return decodeURIComponent(id);
+  } catch {
+    return null; // malformed percent-escape in a hand-edited URL — no drawer
+  }
 }
 
 function setTabInHash(tab: TabKey) {
@@ -200,6 +205,16 @@ export default function PatchesPage() {
     setDetailsPatchId(patch.id);
     window.location.hash = `patches/${encodeURIComponent(patch.id)}`;
   }, [setDetailsPatchId]);
+  // The drawer is gated on the patches tab; drop the id when leaving it so a
+  // return to the tab (tab switches replaceUrl without a hashchange) doesn't
+  // resurrect a drawer the URL no longer names.
+  // Only a patches -> other transition clears: the cold-load default tab is
+  // 'compliance' until the hash syncs, and must not wipe a deep-linked id.
+  const prevTabRef = useRef(activeTab);
+  useEffect(() => {
+    if (prevTabRef.current === 'patches' && activeTab !== 'patches') setDetailsPatchId(null);
+    prevTabRef.current = activeTab;
+  }, [activeTab, setDetailsPatchId]);
   const closePatchDetails = useCallback(() => {
     setDetailsPatchId(null);
     window.location.hash = 'patches';
