@@ -121,6 +121,8 @@ Codex agreed with QA1, QA2 and QA5, and agreed with changes to QA6 and QA7, noti
   - The mail is the partner's own configured consent workflow. Its body is a template; the figures come from the entry.
   - Whether a given write mails anyone depends on DB state that guardrails cannot see. The input-aware alternative, escalating every write with `isBillable !== false` (the default), reverses the 2026-07-20 approval-fatigue decision for all time logging.
   - **Todd decision** in the PR. Flipping it is one arm in `isInputAwareTier3`.
+  - **QV1: Todd kept t2 (2026-10-22).** No `isBillable` arm.
+- **QI — chat tool-index budget (Todd, 2026-10-22).** W02 took the index to 6,919 B (6,968 B flag-on) against the 6,656 B ceiling. Option 2, `MAX_INLINE_ACTIONS` 8 → 7 (renderer only), saved 245 B and still left it over (6,674 / 6,723). Option 1 then raised the ceiling to 6.75 KB (6,912 B), re-using the Tool Catalog W3 sign-off. After the rename: 6,682 / 6,731 B.
 - **QV2 — `manage_tags:remove`. Codex: DISAGREE. Accepted.**
   - Removing a tag can *add* a device to a dynamic group whose rule uses `isEmpty`, `notContains` or a similar negative condition (`filterEngine.ts` array operators).
   - `manage_tags` re-evaluates group membership on every change (`aiToolsDevice.ts` `requestDeviceGroupReevaluationAfterCommit`).
