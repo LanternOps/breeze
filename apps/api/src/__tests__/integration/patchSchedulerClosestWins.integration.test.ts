@@ -24,7 +24,7 @@
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configPolicyAssignments,
@@ -57,8 +57,15 @@ const NOW = new Date('2031-06-17T04:41:20.000Z');
 type Role = 'workstation' | 'server';
 
 /** One device per transaction (see updateRingPartnerDeviceCount's seedDevice note). */
-async function seedDevice(orgId: string, siteId: string, deviceRole: Role = 'workstation'): Promise<string> {
+async function seedDevice(
+  orgId: string,
+  siteId: string,
+  deviceRole: Role = 'workstation',
+  opts: { parked?: boolean } = {},
+): Promise<string> {
   return withSystemDbAccessContext(async () => {
+    // A device lands in a holding (unassigned_pool) org only through enrollment admission.
+    if (opts.parked) await db.execute(sql`SELECT set_config('breeze.parked_device_admission', 'enrollment', true)`);
     const [d] = await db
       .insert(devices)
       .values({
@@ -290,6 +297,86 @@ describe('scheduler: overlapping patch policies — closest level wins (#9632)',
     expect(targetIds(jobs[0]!)).toEqual([device]);
   });
 
+  runDb('a child policy that INHERITS the parent\'s patch link wins its group device by the child\'s id, not the shared link id', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const pilotDevice = await seedDevice(org.id, site.id);
+    const otherDevice = await seedDevice(org.id, site.id);
+    const groupId = await seedGroup(org.id, [pilotDevice]);
+
+    const parent = await seedScheduledPatchPolicy({
+      partnerId: partner.id,
+      orgId: org.id,
+      rebootPolicy: 'if_required',
+      assignment: { level: 'organization', targetId: org.id },
+    });
+    // The child carries no patch link of its own: config_policy_effective_feature_links
+    // hands it the parent's link (same link id, same settings row).
+    const childId = await withSystemDbAccessContext(async () => {
+      const [child] = await db
+        .insert(configurationPolicies)
+        .values({ orgId: org.id, name: `Child ${randomUUID().slice(0, 6)}`, status: 'active', parentPolicyId: parent.policyId })
+        .returning({ id: configurationPolicies.id });
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: child!.id,
+        level: 'device_group',
+        targetId: groupId,
+        priority: 0,
+      });
+      return child!.id;
+    });
+
+    await scanAndCreateJobs();
+
+    const parentJobs = await jobsForPolicy(parent.policyId);
+    expect(parentJobs).toHaveLength(1);
+    expect(targetIds(parentJobs[0]!)).toEqual([otherDevice]);
+    const childJobs = await jobsForPolicy(childId);
+    expect(childJobs).toHaveLength(1);
+    expect(targetIds(childJobs[0]!)).toEqual([pilotDevice]);
+
+    const winners = await withSystemDbAccessContext(() => resolvePatchPolicyWinnersForDevices([pilotDevice, otherDevice]));
+    expect(winners.get(pilotDevice)).toMatchObject({ configPolicyId: childId, featurePolicyId: parent.ringId });
+    expect(winners.get(otherDevice)).toMatchObject({ configPolicyId: parent.policyId, featurePolicyId: parent.ringId });
+
+    // Same ring through inheritance: both devices count under it once.
+    const ids = await withSystemDbAccessContext(() => resolveRingDeviceIds(parent.ringId));
+    expect([...ids].sort()).toEqual([pilotDevice, otherDevice].sort());
+  });
+
+  runDb('a closer policy whose ring is disabled (#8678) still owns its device: the broader policy does not fall back to it', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const pilotDevice = await seedDevice(org.id, site.id);
+    const otherDevice = await seedDevice(org.id, site.id);
+    const groupId = await seedGroup(org.id, [pilotDevice]);
+
+    const broad = await seedScheduledPatchPolicy({
+      partnerId: partner.id,
+      orgId: org.id,
+      rebootPolicy: 'if_required',
+      assignment: { level: 'organization', targetId: org.id },
+    });
+    const pilot = await seedScheduledPatchPolicy({
+      partnerId: partner.id,
+      orgId: org.id,
+      rebootPolicy: 'never',
+      assignment: { level: 'device_group', targetId: groupId },
+    });
+    await withSystemDbAccessContext(() =>
+      db.update(patchPolicies).set({ enabled: false }).where(eq(patchPolicies.id, pilot.ringId))
+    );
+
+    await scanAndCreateJobs();
+
+    const broadJobs = await jobsForPolicy(broad.policyId);
+    expect(broadJobs).toHaveLength(1);
+    expect(targetIds(broadJobs[0]!)).toEqual([otherDevice]);
+    expect(await jobsForPolicy(pilot.policyId)).toEqual([]);
+  });
+
   runDb('a closer policy that does not match the device (role filter) leaves it with the broader policy', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -424,6 +511,21 @@ describe('resolvePatchPolicyWinnersForDevices matches the per-device resolver (#
     expect([levelOf(d1), levelOf(d2), levelOf(d3), levelOf(d4), levelOf(d5), levelOf(d6)]).toEqual([
       'device', 'device_group', 'site', 'organization', 'organization', 'partner',
     ]);
+
+    // A device parked in the partner's holding org: no partner-level policy
+    // reaches it in either resolver; the holding site's own policy does.
+    const holding = await createOrganization({ partnerId: partner.id, type: 'unassigned_pool' });
+    const holdingSite = await createSite({ orgId: holding.id });
+    const parked = await seedDevice(holding.id, holdingSite.id, 'workstation', { parked: true });
+    const parkedOnlyPartner = await withSystemDbAccessContext(() => resolvePatchPolicyWinnersForDevices([parked]));
+    expect(parkedOnlyPartner.get(parked)).toBeNull();
+    expect(await withSystemDbAccessContext(() => resolvePatchConfigPolicyForDevice(parked))).toBeNull();
+    const holdingPolicy = await seedScheduledPatchPolicy({
+      partnerId: partner.id, orgId: holding.id, rebootPolicy: 'never', assignment: { level: 'site', targetId: holdingSite.id },
+    });
+    const parkedWinner = await withSystemDbAccessContext(() => resolvePatchPolicyWinnersForDevices([parked]));
+    expect(parkedWinner.get(parked)?.configPolicyId).toBe(holdingPolicy.policyId);
+    expect((await withSystemDbAccessContext(() => resolvePatchConfigPolicyForDevice(parked)))?.configPolicyId).toBe(holdingPolicy.policyId);
 
     const unknownDevice = randomUUID();
     const withUnknown = await withSystemDbAccessContext(() => resolvePatchPolicyWinnersForDevices([unknownDevice]));

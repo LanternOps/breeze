@@ -227,17 +227,63 @@ describe('patchSchedulerWorker.scanAndCreateJobs — DB context boundaries (#189
     expect(result.created).toBe(1);
   });
 
-  it('fails closed and reports to Sentry when the winner lookup fails (#9632)', async () => {
+  it('retries a transient winner-lookup failure inside the due minute and still schedules (#9632)', async () => {
     selectResults = dueOnePolicyOneDevice();
+    winnerFor = () => ({ configPolicyId: 'cp-1', featurePolicyId: 'ring-1', assignmentLevel: 'organization' });
     resolvePatchPolicyWinnersForDevices.mockRejectedValueOnce(new Error('remaining connection slots'));
+
+    const pending = scanAndCreateJobs();
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(resolvePatchPolicyWinnersForDevices).toHaveBeenCalledTimes(2);
+    expect(result.created).toBe(1);
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('fails closed and reports to Sentry when every winner-lookup attempt fails (#9632)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    for (let i = 0; i < 3; i += 1) {
+      resolvePatchPolicyWinnersForDevices.mockRejectedValueOnce(new Error('remaining connection slots'));
+    }
+
+    const pending = scanAndCreateJobs();
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(resolvePatchPolicyWinnersForDevices).toHaveBeenCalledTimes(3);
+    expect(result.created).toBe(0);
+    expect(checkDeviceMaintenanceWindow).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { patch_scheduler_stage: 'closest_wins_resolve_failed', config_policy_id: 'cp-1' },
+    );
+  });
+
+  it('leaves the device out and reports to Sentry when the closer winner cannot be scheduled (#9632, #8678)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    winnerFor = () => ({ configPolicyId: 'cp-pilot', featurePolicyId: 'ring-gone', assignmentLevel: 'device_group' });
+    // First load: cp-1 in the scan loop (valid). Second: the winner cp-pilot (disabled ring).
+    loadPolicyLocalPatchConfig
+      .mockImplementationOnce(async () => ({
+        ring: { valid: true, ringId: 'ring-1', classification: 'ok' },
+        settings: { scheduleFrequency: 'daily', scheduleTime: '02:00' },
+      }))
+      .mockImplementationOnce(async () => ({
+        ring: { valid: false, ringId: 'ring-gone', classification: 'disabled_ring' },
+        settings: { scheduleFrequency: 'daily', scheduleTime: '02:00' },
+      }));
 
     const result = await scanAndCreateJobs();
 
     expect(result.created).toBe(0);
+    expect(loadPolicyLocalPatchConfig).toHaveBeenCalledWith('cp-pilot');
     expect(captureException).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      { patch_scheduler_stage: 'closest_wins_resolve_failed' },
+      { patch_scheduler_stage: 'closest_wins_winner_unschedulable', config_policy_id: 'cp-pilot' },
+      { fingerprint: ['patch-scheduler', 'closest-wins-winner-unschedulable'] },
     );
   });
 

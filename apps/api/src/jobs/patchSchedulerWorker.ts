@@ -431,48 +431,104 @@ async function resolveDeviceIdsForAssignment(
   return deviceIds;
 }
 
+/** Per-tick #9632 lookups shared by every policy the scan visits. */
+interface ClosestWinsCache {
+  /** Device id -> its winning patch policy (null: no policy wins it). */
+  winners: Map<string, PatchPolicyWinner | null>;
+  /** Config policy id -> whether the scheduler can run it (it loads and its ring is valid). */
+  schedulable: Map<string, boolean>;
+}
+
+/** Waits between winner-lookup attempts. The due window is a single minute (getDueOccurrenceKey). */
+const CLOSEST_WINS_RETRY_DELAYS_MS = [500, 1500];
+
+async function withClosestWinsRetry<T>(configPolicyId: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      const delay = CLOSEST_WINS_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        // The caller's per-policy catch only logs to the console, and the
+        // occurrence's minute passes with it: this must reach Sentry.
+        const message = `[PatchScheduler] Failed to resolve winning patch policies for config policy ${configPolicyId}`;
+        console.error(`${message}:`, err instanceof Error ? err.message : err);
+        captureException(err instanceof Error ? err : new Error(message), undefined, {
+          patch_scheduler_stage: 'closest_wins_resolve_failed',
+          config_policy_id: configPolicyId,
+        });
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 /**
- * #9632: the devices of `deviceIds` this config policy should schedule — those
+ * #9632: the devices of `deviceIds` this config policy should schedule: those
  * whose winning patch policy (resolvePatchPolicyWinnersForDevices, the batched
- * resolvePatchConfigPolicyForDevice) is this one. A device with NO winner is
- * kept: the per-device resolver needs a normalized patch settings row, so a
- * policy still running on the inline fallback would otherwise patch nothing.
- * Only a device that a DIFFERENT policy demonstrably wins is dropped, and that
- * policy schedules it. `winners` caches lookups across the policies of a tick.
- * A lookup failure throws: patching later beats rebooting outside a window.
+ * resolvePatchConfigPolicyForDevice) is this one.
+ *
+ *  - A device with NO winner is kept. The per-device resolver needs a
+ *    normalized patch settings row, so a policy still on the inline fallback
+ *    would otherwise patch nothing.
+ *  - A device a DIFFERENT policy wins is dropped; that policy schedules it.
+ *  - If that winner cannot be scheduled (its ring reference is invalid, e.g. a
+ *    disabled ring, #8678), the device is still dropped: falling back to this
+ *    broader policy would apply the ring and reboot policy the override exists
+ *    to replace, and #8678 already fails a broken ring closed for the devices
+ *    it governs (their Patches tab denies every candidate). It is reported to
+ *    Sentry so the unpatched devices are not silent.
+ *
+ * A lookup that still fails after retries throws, so the policy is skipped for
+ * this tick: a later patch beats a reboot outside the window.
  */
 async function keepDevicesThisPolicyWins(
   configPolicyId: string,
+  orgId: string,
   deviceIds: string[],
-  winners: Map<string, PatchPolicyWinner | null>,
+  cache: ClosestWinsCache,
 ): Promise<{ kept: string[]; skippedByWinner: Map<string, number> }> {
-  const missing = deviceIds.filter((id) => !winners.has(id));
-  if (missing.length > 0) {
-    let resolved: Map<string, PatchPolicyWinner | null>;
-    try {
-      resolved = await runWithSystemDbAccess(() => resolvePatchPolicyWinnersForDevices(missing));
-    } catch (err) {
-      // The caller's per-policy catch only logs to the console; a scheduled
-      // occurrence skipped for this reason must reach Sentry.
-      const message = `[PatchScheduler] Failed to resolve winning patch policies for config policy ${configPolicyId}`;
-      captureException(err instanceof Error ? err : new Error(message), undefined, {
-        patch_scheduler_stage: 'closest_wins_resolve_failed',
-      });
-      throw err;
+  await withClosestWinsRetry(configPolicyId, async () => {
+    const missing = deviceIds.filter((id) => !cache.winners.has(id));
+    if (missing.length > 0) {
+      const resolved = await runWithSystemDbAccess(() => resolvePatchPolicyWinnersForDevices(missing));
+      for (const id of missing) cache.winners.set(id, resolved.get(id) ?? null);
     }
-    for (const id of missing) winners.set(id, resolved.get(id) ?? null);
-  }
+    for (const id of deviceIds) {
+      const winnerId = cache.winners.get(id)?.configPolicyId;
+      if (!winnerId || winnerId === configPolicyId || cache.schedulable.has(winnerId)) continue;
+      const local = await runWithSystemDbAccess(() => loadPolicyLocalPatchConfig(winnerId));
+      cache.schedulable.set(winnerId, !!local && local.ring.valid);
+    }
+  });
 
   const kept: string[] = [];
   const skippedByWinner = new Map<string, number>();
+  const unschedulableWinners = new Map<string, number>();
   for (const id of deviceIds) {
-    const winner = winners.get(id) ?? null;
+    const winner = cache.winners.get(id) ?? null;
     if (!winner || winner.configPolicyId === configPolicyId) {
       kept.push(id);
-    } else {
-      skippedByWinner.set(winner.configPolicyId, (skippedByWinner.get(winner.configPolicyId) ?? 0) + 1);
+      continue;
+    }
+    skippedByWinner.set(winner.configPolicyId, (skippedByWinner.get(winner.configPolicyId) ?? 0) + 1);
+    if (cache.schedulable.get(winner.configPolicyId) === false) {
+      unschedulableWinners.set(winner.configPolicyId, (unschedulableWinners.get(winner.configPolicyId) ?? 0) + 1);
     }
   }
+
+  for (const [winnerId, count] of unschedulableWinners) {
+    const message =
+      `[PatchScheduler] ${count} device(s) in org ${orgId} are not patched: their closest patch policy ${winnerId} ` +
+      `cannot be scheduled (invalid ring reference), so the broader policy ${configPolicyId} leaves them out`;
+    console.error(message);
+    captureException(new Error(message), undefined, {
+      patch_scheduler_stage: 'closest_wins_winner_unschedulable',
+      config_policy_id: winnerId,
+    }, { fingerprint: ['patch-scheduler', 'closest-wins-winner-unschedulable'] });
+  }
+
   return { kept, skippedByWinner };
 }
 
@@ -579,7 +635,7 @@ async function scanAndCreateJobs(): Promise<{
   const enqueueJobIds: string[] = [];
   // #9632: each device's winning patch policy, resolved once per tick and
   // shared by every policy that reaches the device.
-  const patchWinners = new Map<string, PatchPolicyWinner | null>();
+  const closestWins: ClosestWinsCache = { winners: new Map(), schedulable: new Map() };
 
   const patchPoliciesWithSchedules = await runWithSystemDbAccess(() =>
     db
@@ -612,6 +668,7 @@ async function scanAndCreateJobs(): Promise<{
       const policyPartnerId = row.policyPartnerId;
 
       const policyLocal = await runWithSystemDbAccess(() => loadPolicyLocalPatchConfig(row.configPolicyId));
+      closestWins.schedulable.set(row.configPolicyId, !!policyLocal && policyLocal.ring.valid);
       if (!policyLocal) continue;
 
       if (!policyLocal.ring.valid) {
@@ -693,8 +750,9 @@ async function scanAndCreateJobs(): Promise<{
         // override had moved to a maintenance-window reboot.
         const { kept: closestDeviceIds, skippedByWinner } = await keepDevicesThisPolicyWins(
           row.configPolicyId,
+          group.orgId,
           group.deviceIds,
-          patchWinners,
+          closestWins,
         );
         if (skippedByWinner.size > 0) {
           const winners = Array.from(skippedByWinner, ([policyId, count]) => `${policyId} (${count})`).join(', ');

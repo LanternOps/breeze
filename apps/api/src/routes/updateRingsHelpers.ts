@@ -14,7 +14,8 @@ import {
   resolveAssignmentDevices,
   type AssignmentToExpand,
 } from '../services/configPolicyAssignmentDevices';
-import { resolvePatchPolicyWinnersForDevices } from '../services/featureConfigResolver';
+import { resolvePatchPolicyWinnersForDevices, type PatchPolicyWinner } from '../services/featureConfigResolver';
+import { captureException } from '../services/sentry';
 
 /**
  * One config-policy assignment as this module needs it: the assignment's own
@@ -63,7 +64,9 @@ async function resolveRingAssignedDeviceIds(
   ringId: string,
   assignments: RingAssignment[],
   /** The ring's own partner. Every resolved device must sit under it. */
-  ringPartnerId: string
+  ringPartnerId: string,
+  /** Winning patch policy per device, shared across the rings of one request. */
+  winners: Map<string, PatchPolicyWinner | null> = new Map(),
 ): Promise<{ deviceIds: Set<string>; refusedGroups: RefusedExecutionGroup[] }> {
   const deviceIds = new Set<string>();
   const refusedGroups = new Map<string, RefusedExecutionGroup>();
@@ -83,10 +86,16 @@ async function resolveRingAssignedDeviceIds(
     for (const group of expanded.refusedGroups) refusedGroups.set(group.id, group);
   }
 
+  const missing = [...deviceIds].filter((id) => !winners.has(id));
+  if (missing.length > 0) {
+    const resolved = await resolvePatchPolicyWinnersForDevices(missing);
+    for (const id of missing) winners.set(id, resolved.get(id) ?? null);
+  }
   if (deviceIds.size > 0) {
-    const winners = await resolvePatchPolicyWinnersForDevices([...deviceIds]);
     for (const id of [...deviceIds]) {
       const winner = winners.get(id) ?? null;
+      // A winner with no ring (featurePolicyId null) patches the device
+      // outside every ring, so it leaves this ring's count too.
       if (winner && winner.featurePolicyId !== ringId) deviceIds.delete(id);
     }
   }
@@ -183,12 +192,18 @@ export async function resolveRingDeviceCountsWithWarnings(
   }
 
   // Resolve each ring's device count (isolated per ring — one failure doesn't block others)
+  const winners = new Map<string, PatchPolicyWinner | null>();
   for (const [ringId, { partnerId, assignments }] of ringAssignments) {
     try {
-      const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(ringId, assignments, partnerId);
+      const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(ringId, assignments, partnerId, winners);
       deviceCountMap.set(ringId, { count: deviceIds.size, warnings: warningsForRefusedExecutionGroups(refusedGroups) });
     } catch (err) {
+      // A 0 here reads as an empty ring, so the failure has to be visible.
       console.error(`Failed to resolve device count for ring ${ringId}:`, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(`Failed to resolve device count for ring ${ringId}`), undefined, {
+        update_ring_stage: 'device_count_failed',
+        ring_id: ringId,
+      });
       deviceCountMap.set(ringId, { count: 0, warnings: [] });
     }
   }
