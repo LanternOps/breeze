@@ -9,6 +9,8 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
+const HINT = 'Choose a start and end date, start first and at most 366 days apart, to apply a custom range.';
+
 class ResizeObserverStub {
   observe() {}
   unobserve() {}
@@ -82,7 +84,26 @@ describe('AnalyticsPage custom range (#9649)', () => {
 
     fireEvent.change(end, { target: { value: '' } });
 
-    expect(await screen.findByText('Pick a start and end date to apply a custom range.')).toBeInTheDocument();
+    expect(await screen.findByText(HINT)).toBeInTheDocument();
+    expect(queriesFor('/metrics/trends')).toHaveLength(before);
+  });
+
+  it.each([
+    ['an end before the start', '2026-02-01', '2026-01-01'],
+    ['a span over the API cap', '2025-01-01', '2026-01-31']
+  ])('does not send %s', async (_label, start, end) => {
+    render(<AnalyticsPage />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Date range' }), { target: { value: 'custom' } });
+    const endInput = await screen.findByLabelText('End date');
+    await waitFor(() => expect(queriesFor('/metrics/trends').length).toBeGreaterThan(1));
+    const before = queriesFor('/metrics/trends').length;
+
+    // End first: against the seeded start (today - 30) every end below is
+    // already inverted, so no intermediate state is a valid range.
+    fireEvent.change(endInput, { target: { value: end } });
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: start } });
+
+    expect(await screen.findByText(HINT)).toBeInTheDocument();
     expect(queriesFor('/metrics/trends')).toHaveLength(before);
   });
 });

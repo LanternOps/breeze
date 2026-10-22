@@ -12,7 +12,7 @@
         "low": "Düşük",
         "medium": "Orta"
       },
-      "customRangeIncomplete": "Özel bir aralık uygulamak için bir başlangıç ve bitiş tarihi seçin.",
+      "customRangeIncomplete": "Özel bir aralık uygulamak için bir başlangıç ve bitiş tarihi seçin (önce başlangıç, en fazla 366 gün arayla).",
       "dashboardOptions": {
         "capacity": "Kapasite Planlama",
         "operations": "İşlemlere Genel Bakış",

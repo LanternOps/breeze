@@ -452,12 +452,20 @@ const toDateInputValue = (date: Date) => {
   return `${date.getFullYear()}-${month}-${day}`;
 };
 
+/** Mirrors the API's MAX_CUSTOM_RANGE_DAYS (apps/api/src/routes/analyticsQueryScope.ts). */
+const MAX_CUSTOM_RANGE_DAYS = 366;
+
 /**
- * A custom range is applied only when both dates are set and in order
- * (`YYYY-MM-DD` compares correctly as a string). The API rejects anything
- * else, and before #9649 it silently fell back to 30 days.
+ * A custom range is applied only when both dates are set, in order
+ * (`YYYY-MM-DD` compares correctly as a string) and within the API's cap
+ * (end date inclusive). The API rejects anything else with a 400; before
+ * #9649 it silently fell back to 30 days.
  */
-const isCompleteCustomRange = (start: string, end: string) => Boolean(start && end && start <= end);
+const isCompleteCustomRange = (start: string, end: string) => {
+  if (!start || !end || start > end) return false;
+  const spanDays = (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000 + 1;
+  return Number.isFinite(spanDays) && spanDays <= MAX_CUSTOM_RANGE_DAYS;
+};
 
 export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const { t } = useTranslation('reports');
@@ -517,10 +525,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const customRangeComplete = dateRange === 'custom' && isCompleteCustomRange(customStartDate, customEndDate);
 
   const rangeLabel = useMemo(
-    () => customRangeComplete
-      ? `${customStartDate} – ${customEndDate}`
-      : t(/* i18n-dynamic */ dateRanges.find(option => option.value === dateRange)?.labelKey ?? 'analytics.analyticsPage.dateRanges.customRange'),
-    [customRangeComplete, customStartDate, customEndDate, dateRange, t]
+    () => t(/* i18n-dynamic */ dateRanges.find(option => option.value === dateRange)?.labelKey ?? 'analytics.analyticsPage.dateRanges.customRange'),
+    [dateRange, t]
   );
 
   const changeDateRange = useCallback((value: string) => {
@@ -541,6 +547,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     // screen and let the inline hint explain, rather than requesting without
     // a window (which the API used to answer with 30 days).
     if (dateRange === 'custom' && !isCompleteCustomRange(customStartDate, customEndDate)) {
+      setError(undefined);
+      setLoading(false);
       return;
     }
     setError(undefined);

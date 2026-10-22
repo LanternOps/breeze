@@ -1751,7 +1751,38 @@ describe('metrics routes', () => {
       expect(captured).toHaveLength(3);
       for (const condition of captured) {
         expect(findCondition(condition, 'eq', devices.orgId)?.value).toBe(ORG_A);
+        // ANDed onto the token's reach, never substituted for it.
+        expect(findCondition(condition, 'inArray', devices.orgId)?.values).toEqual([ORG_A, ORG_B]);
       }
+    });
+
+    it('narrows the raw device-metrics trend fallback to the selected org and window', async () => {
+      const { deviceMetrics } = await import('../db/schema');
+      mockCapturingRollupTrendRows(selectMock, []); // no rollups
+      const captured: any[] = [];
+      selectMock.mockReturnValueOnce({
+        from: () => ({
+          innerJoin: () => ({
+            where: (condition: any) => {
+              captured.push(condition);
+              return { groupBy: () => ({ orderBy: () => Promise.resolve([]) }) };
+            },
+          }),
+        }),
+      });
+
+      const res = await app.request(`/trends?startDate=2026-01-01&endDate=2026-01-31&orgId=${ORG_A}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(findCondition(captured[0], 'eq', devices.orgId)?.value).toBe(ORG_A);
+      expect(findCondition(captured[0], 'gte', deviceMetrics.timestamp)?.value).toEqual(
+        new Date('2026-01-01T00:00:00.000Z')
+      );
+      expect(findCondition(captured[0], 'lt', deviceMetrics.timestamp)?.value).toEqual(
+        new Date('2026-02-01T00:00:00.000Z')
+      );
     });
 
     it('narrows the rollup trend query to the selected org', async () => {

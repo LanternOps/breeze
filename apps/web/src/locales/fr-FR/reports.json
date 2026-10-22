@@ -12,7 +12,7 @@
         "low": "Faible",
         "medium": "Moyenne"
       },
-      "customRangeIncomplete": "Choisissez une date de début et une date de fin pour appliquer une plage personnalisée.",
+      "customRangeIncomplete": "Choisissez une date de début et une date de fin (le début d'abord, au plus 366 jours d'écart) pour appliquer une plage personnalisée.",
       "dashboardOptions": {
         "capacity": "Planification des capacités",
         "operations": "Aperçu des opérations",

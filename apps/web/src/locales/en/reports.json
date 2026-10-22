@@ -12,7 +12,7 @@
         "low": "Low",
         "medium": "Medium"
       },
-      "customRangeIncomplete": "Pick a start and end date to apply a custom range.",
+      "customRangeIncomplete": "Choose a start and end date, start first and at most 366 days apart, to apply a custom range.",
       "dashboardOptions": {
         "capacity": "Capacity Planning",
         "operations": "Operations Overview",

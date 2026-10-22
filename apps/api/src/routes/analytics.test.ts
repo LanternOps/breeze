@@ -1289,7 +1289,10 @@ describe('analytics routes', () => {
       });
     });
 
-    it('narrows the executive summary to the selected org', async () => {
+    const tokenReach = (column: string) =>
+      JSON.stringify({ type: 'inArray', left: column, right: [ORG_A, ORG_B] });
+
+    it('narrows the executive summary to the selected org without dropping the token reach', async () => {
       mockSelectOnce([{ status: 'online', count: 1 }]);
       mockSelectOnce([]);
 
@@ -1302,8 +1305,73 @@ describe('analytics routes', () => {
       expect(db.select).toHaveBeenCalledTimes(2);
       for (const index of [0, 1]) {
         expect(whereOf(index)).toContain(selectedOrg(ORG_A, 'devices.orgId'));
-        expect(whereOf(index)).not.toContain(selectedOrg(ORG_B, 'devices.orgId'));
+        // The selection is ANDed onto the token condition, never substituted
+        // for it — that is what keeps it from ever widening.
+        expect(whereOf(index)).toContain(tokenReach('devices.orgId'));
       }
+    });
+
+    it('lets a system caller narrow to any org', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          orgId: null,
+          partnerId: null,
+          user: { id: USER_ID, email: 'test@example.com' },
+          accessibleOrgIds: null,
+          canAccessOrg: () => true,
+          orgCondition: vi.fn(() => undefined)
+        });
+        c.set('permissions', undefined);
+        return next();
+      });
+      mockSelectOnce([{ osType: 'windows', osVersion: '11', count: 1 }]);
+
+      const res = await app.request(`/analytics/os-distribution?orgId=${ORG_FOREIGN}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(whereOf(0)).toContain(selectedOrg(ORG_FOREIGN, 'devices.orgId'));
+    });
+
+    describe('site-restricted partner caller with a selected org', () => {
+      const ORG_A_DEVICES = [
+        { id: DEVICE_IN_SCOPE, siteId: SITE_ALLOWED },
+        { id: DEVICE_OUT_OF_SCOPE, siteId: SITE_DENIED }
+      ];
+
+      it('resolves the site allowlist in the selected org and denies an out-of-site device', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_A_DEVICES); // site device resolution
+
+        const res = await app.request(
+          `/analytics/capacity?metricType=disk&orgId=${ORG_A}&deviceId=${DEVICE_OUT_OF_SCOPE}`,
+          { method: 'GET', headers: { Authorization: 'Bearer token' } }
+        );
+
+        expect(res.status).toBe(403);
+        expect(whereOf(0)).toContain(selectedOrg(ORG_A, 'devices.orgId'));
+      });
+
+      it('constrains the fleet rollups to the in-site devices', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_A_DEVICES); // site device resolution
+        mockSelectOnce([]); // no stored predictions
+        mockSelectOnce([{ timestamp: new Date('2026-06-18T00:00:00.000Z'), value: 20 }]); // rollups
+
+        const res = await app.request(`/analytics/capacity?metricType=disk&orgId=${ORG_A}`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        expect(whereOf(2)).toContain(
+          JSON.stringify({ type: 'inArray', left: 'metricRollups.deviceId', right: [DEVICE_IN_SCOPE] })
+        );
+        expect(whereOf(2)).toContain(selectedOrg(ORG_A, 'metricRollups.orgId'));
+      });
     });
 
     it('narrows the OS distribution to the selected org', async () => {
@@ -1348,6 +1416,19 @@ describe('analytics routes', () => {
       });
       expect(live.status).toBe(200);
       expect(whereOf(1)).toContain(selectedOrg(ORG_A, 'metricRollups.orgId'));
+      expect(whereOf(1)).toContain(tokenReach('metricRollups.orgId'));
+
+      vi.mocked(db.select).mockClear();
+      mockSelectOnce([]); // no stored predictions
+      mockSelectOnce([]); // no rollups
+      mockSelectOnce([]); // raw device_metrics fallback
+
+      const raw = await app.request(`/analytics/capacity?metricType=disk&orgId=${ORG_A}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(raw.status).toBe(200);
+      expect(whereOf(2)).toContain(selectedOrg(ORG_A, 'devices.orgId'));
     });
 
     it('keeps the whole accessible book when no org is selected', async () => {
@@ -1440,6 +1521,28 @@ describe('analytics routes', () => {
         left: 'deviceMetrics.timestamp',
         right: new Date('2026-02-01T00:00:00.000Z')
       });
+    });
+
+    it('does not bound stored (forward-looking) predictions by the history window', async () => {
+      mockSelectOnce([
+        {
+          metricName: 'disk_used_percent',
+          currentValue: 50,
+          predictedValue: 55,
+          predictionDate: new Date('2026-12-01T00:00:00.000Z'),
+          growthRate: 1
+        }
+      ]);
+      mockSelectOnce([]); // thresholds
+
+      const res = await app.request(
+        '/analytics/capacity?metricType=disk&startDate=2026-01-01&endDate=2026-01-31',
+        { method: 'GET', headers: { Authorization: 'Bearer token' } }
+      );
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).predictions).toHaveLength(1);
+      expect(JSON.stringify(whereOf(0))).not.toContain('capacityPredictions.predictionDate');
     });
 
     it.each([

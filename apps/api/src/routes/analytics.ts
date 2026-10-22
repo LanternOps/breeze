@@ -1518,6 +1518,9 @@ analyticsRoutes.get(
           )
         : undefined;
 
+    // Stored predictions are forward-looking (prediction dates after the last
+    // observation), so the history window below deliberately does not bound
+    // them; the window applies to the observed series the forecast is fitted on.
     const predictionWhere = and(
       eq(capacityPredictions.metricType, metricType),
       ...(predictionOrgCondition ? [predictionOrgCondition] : []),

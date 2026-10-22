@@ -12,7 +12,7 @@
         "low": "Bassa",
         "medium": "Media"
       },
-      "customRangeIncomplete": "Scegli una data di inizio e una di fine per applicare un intervallo personalizzato.",
+      "customRangeIncomplete": "Scegli una data di inizio e una di fine (prima l'inizio, al massimo 366 giorni di distanza) per applicare un intervallo personalizzato.",
       "dashboardOptions": {
         "capacity": "Pianificazione capacità",
         "operations": "Panoramica operativa",
