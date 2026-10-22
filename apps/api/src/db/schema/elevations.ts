@@ -174,7 +174,7 @@ export const elevationRequests = pgTable(
     // #9517: set when the agent reports it cannot act on this request (no
     // SYSTEM helper in the requester's session, ...). First report wins; a
     // still-pending request is closed as 'expired' in the same write. CHECK
-    // elevation_requests_device_unable_chk (2027-01-02-170000 migration) keeps
+    // elevation_requests_device_unable_chk (2027-01-02-180000 migration) keeps
     // the three together and bounds the code and detail.
     deviceUnableAt: timestamp('device_unable_at', { withTimezone: true }),
     deviceUnableReason: varchar('device_unable_reason', { length: 64 }),
