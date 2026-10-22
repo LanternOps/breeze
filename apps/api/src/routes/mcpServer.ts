@@ -1624,6 +1624,10 @@ async function handleToolsList(
     let description = tool.description ?? '';
     // B-W04: actions this caller can file for approval get the approval
     // wording; anything still ineligible (MFA-gated) keeps today's sentence.
+    // A FLAT Tier-3 tool (base tier >= 3) is approval-gated on every action,
+    // so it gets the one flat suffix below rather than a partial action list.
+    const flatIntentTool = canFileTier3Intent(tool.name) && !canRunTier3Unattended(tool.name)
+      && (getToolTier(tool.name) ?? 0) >= 3;
     const intentActions = canFileTier3Intent(tool.name)
       ? gatedActions.filter((a) => !(callerFailsMfaGate && isMfaGatedToolAction(tool.name, a)))
       : [];
@@ -1631,10 +1635,10 @@ async function handleToolsList(
     if (webAppOnlyActions.length > 0) {
       description += ` (Actions ${quote(webAppOnlyActions)} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`;
     }
-    if (intentActions.length > 0) {
+    if (intentActions.length > 0 && !flatIntentTool) {
       description += ` (Actions ${quote(intentActions)} require approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.)`;
     }
-    if (canFileTier3Intent(tool.name) && !canRunTier3Unattended(tool.name) && (getToolTier(tool.name) ?? 0) >= 3) {
+    if (flatIntentTool) {
       description += MCP_INTENT_FLAT_SUFFIX;
     }
     if (mfaGatedActions.length > 0) {

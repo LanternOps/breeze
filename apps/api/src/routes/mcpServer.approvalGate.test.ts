@@ -876,6 +876,14 @@ describe('B-W04: Tier-3 tools/call files an approval intent (MCP_TIER3_INTENTS_E
     expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
   });
 
+  it('a flat Tier-3 multiplexer gets the flat suffix once, not the per-action sentence too', async () => {
+    useTools([{ name: 'manage_services', tier: 3, description: 'Services.', schema: {
+      type: 'object', properties: { action: { type: 'string', enum: ['list', 'restart', 'stop'] } },
+    } }]);
+    const tool = (await (await listTools()).json()).result.tools.find((t: any) => t.name === 'manage_services');
+    expect(tool.description).toBe('Services. (Requires approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.)');
+  });
+
   it('mixed tool listing uses the per-action approval wording', async () => {
     useTools([{ name: 'registry_operations', tier: 1, schema: REGISTRY_OPERATIONS_SCHEMA, description: 'Registry.' }]);
     const tool = (await (await listTools()).json()).result.tools.find((t: any) => t.name === 'registry_operations');
