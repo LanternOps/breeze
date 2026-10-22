@@ -162,3 +162,23 @@ vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
   hasPermission: () => true,
 }));
+
+describe('AlertDetailPage — resolve request body (#9622)', () => {
+  it('POSTs a JSON body so the API validator does not 400 on an empty body', async () => {
+    mockRaceLostThenRefetch();
+    render(<AlertDetailPage alertId={ALERT_ID} />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /resolve/i }));
+
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        ([url, init]) => typeof url === 'string' && url.endsWith('/resolve')
+          && (init as { method?: string } | undefined)?.method === 'POST'
+      );
+      expect(call).toBeDefined();
+      const body = (call![1] as { body?: unknown }).body;
+      expect(typeof body).toBe('string');
+      expect(JSON.parse(body as string)).toEqual({ note: '' });
+    });
+  });
+});
