@@ -160,5 +160,19 @@
     "orderNote": "Effects run in this order. Sign-in is disabled last, so stopping early never leaves mail unrouted.",
     "empty": "This plan contains no effects.",
     "invalid": "This plan could not be displayed in full. Do not approve it."
+  },
+  "intentStatus": {
+    "title": "Approval status",
+    "waitingForApprovers": "Waiting for approvers",
+    "notFound": "That approval could not be found.",
+    "status": {
+      "pending_approval": "Pending approval",
+      "in_progress": "In progress",
+      "completed": "Completed",
+      "failed": "Failed",
+      "rejected": "Rejected",
+      "expired": "Expired",
+      "cancelled": "Cancelled"
+    }
   }
 }

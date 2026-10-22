@@ -160,5 +160,19 @@
     "orderNote": "Les effets s’exécutent dans cet ordre. L’ouverture de session est désactivée en dernier, de sorte qu’un arrêt anticipé ne laisse jamais de courriels sans acheminement.",
     "empty": "Ce plan ne contient aucun effet.",
     "invalid": "Ce plan n’a pas pu être affiché en entier. Ne l’approuvez pas."
+  },
+  "intentStatus": {
+    "title": "État de l’approbation",
+    "waitingForApprovers": "En attente des approbateurs",
+    "notFound": "Cette approbation est introuvable.",
+    "status": {
+      "pending_approval": "Approbation en attente",
+      "in_progress": "En cours",
+      "completed": "Terminée",
+      "failed": "Échec",
+      "rejected": "Rejetée",
+      "expired": "Expirée",
+      "cancelled": "Annulée"
+    }
   }
 }

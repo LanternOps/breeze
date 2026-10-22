@@ -160,5 +160,19 @@
     "orderNote": "Gli effetti vengono eseguiti in questo ordine. L’accesso viene disattivato per ultimo, quindi un arresto anticipato non lascia mai la posta senza instradamento.",
     "empty": "Questo piano non contiene effetti.",
     "invalid": "Impossibile visualizzare questo piano per intero. Non approvarlo."
+  },
+  "intentStatus": {
+    "title": "Stato dell’approvazione",
+    "waitingForApprovers": "In attesa degli approvatori",
+    "notFound": "Impossibile trovare quell’approvazione.",
+    "status": {
+      "pending_approval": "Approvazione in sospeso",
+      "in_progress": "In corso",
+      "completed": "Completata",
+      "failed": "Non riuscita",
+      "rejected": "Rifiutata",
+      "expired": "Scaduta",
+      "cancelled": "Annullata"
+    }
   }
 }
