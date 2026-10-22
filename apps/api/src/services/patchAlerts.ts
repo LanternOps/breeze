@@ -12,6 +12,8 @@
  *   - `emitRebootPendingAlert` — one alert per device whose reboot has been
  *     pending longer than `REBOOT_PENDING_ALERT_THRESHOLD_DAYS`, raised from
  *     the 10-minute maintenance-reboot sweep (`maintenanceRebootWorker.ts`).
+ *     The same sweep clears it (`resolveClearedRebootPendingAlerts`) once the
+ *     device stops reporting a pending reboot.
  *
  * Both templates are GLOBAL rows (org_id IS NULL AND partner_id IS NULL —
  * legal per `alert_templates_one_owner_chk`, see `db/schema/alerts.ts`), and
@@ -20,10 +22,10 @@
  * copies that shape.
  */
 
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { alertRules, alertTemplates, devices, patchJobResults, patchJobs } from '../db/schema';
-import { createAlert } from './alertService';
+import { alertRules, alertTemplates, alerts, devices, patchJobResults, patchJobs } from '../db/schema';
+import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
 import { insertBuiltInAlertRule, type BuiltInAlertRuleSource } from './builtInAlertRules';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { captureException } from './sentry';
@@ -413,4 +415,48 @@ export async function emitRebootPendingAlert(
     });
     return null;
   }
+}
+
+/** Per-tick cap; the rest are picked up on the next sweep. */
+const REBOOT_PENDING_RESOLVE_BATCH = 500;
+
+/**
+ * Resolves every open reboot-pending alert whose device no longer reports a
+ * pending reboot. The emitter's sweep only visits `pending_reboot = true`
+ * devices, so without this a device that restarted dropped out of the sweep
+ * and its alert stayed open for good (the template is `autoResolve: false`, so
+ * nothing else clears it).
+ *
+ * Same status rule as the warranty and script-exit-code resolvers: `active`,
+ * `acknowledged` and TIMED suppressions resolve; `dismissed` is terminal and an
+ * indefinite ("Forever") suppression survives. The rule join walks the
+ * partial `alerts_open_rule_device_subject_uidx` index, not the whole table.
+ *
+ * Returns how many alerts this call resolved (a concurrent manual resolve
+ * loses nothing: `resolveAlert`'s status CAS picks one winner).
+ */
+export async function resolveClearedRebootPendingAlerts(): Promise<number> {
+  const rows = await db
+    .select({ id: alerts.id })
+    .from(alerts)
+    .innerJoin(alertRules, eq(alertRules.id, alerts.ruleId))
+    .innerJoin(devices, eq(devices.id, alerts.deviceId))
+    .where(
+      and(
+        eq(alertRules.name, REBOOT_PENDING_RULE_NAME),
+        sql`${alerts.context}->>'source' = ${REBOOT_PENDING_ALERT_SOURCE}`,
+        inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES]),
+        or(ne(alerts.status, 'suppressed'), isNotNull(alerts.suppressedUntil)),
+        eq(devices.pendingReboot, false),
+      ),
+    )
+    .limit(REBOOT_PENDING_RESOLVE_BATCH);
+
+  let resolved = 0;
+  for (const row of rows) {
+    if (await resolveAlert(row.id, 'Auto-resolved: the device no longer needs a restart', undefined, false, 'condition_cleared')) {
+      resolved++;
+    }
+  }
+  return resolved;
 }
