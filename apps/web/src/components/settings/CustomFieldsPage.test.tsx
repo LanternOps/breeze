@@ -234,4 +234,42 @@ describe('CustomFieldsPage dropdown choice value auto-fill (#9677)', () => {
     fireEvent.change(label, { target: { value: 'Standard Plus' } });
     expect(value.value).toBe('std');
   });
+
+  it('keeps saved choice Values on Label edit and sends no valueTouched in the PATCH body', async () => {
+    mockedFetchWithAuth.mockResolvedValue(
+      jsonResponse({
+        data: [
+          customField({
+            type: 'dropdown',
+            options: { choices: [{ label: 'Standard', value: 's' }, { label: 'Gold', value: 'gold' }] }
+          })
+        ]
+      })
+    );
+    render(<CustomFieldsPage />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+
+    const labels = screen.getAllByPlaceholderText('Label');
+    const values = screen.getAllByPlaceholderText('Value') as HTMLInputElement[];
+    fireEvent.change(labels[0], { target: { value: 'Standard Plus' } });
+    expect(values[0].value).toBe('s');
+
+    mockedFetchWithAuth.mockResolvedValueOnce(jsonResponse({ data: { id: 'f1' } }));
+    mockedFetchWithAuth.mockResolvedValueOnce(jsonResponse({ data: [] }));
+    fireEvent.click(screen.getByTestId('custom-field-submit'));
+
+    await waitFor(() => {
+      expect(
+        mockedFetchWithAuth.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'PATCH')
+      ).toBeDefined();
+    });
+    const patch = mockedFetchWithAuth.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH'
+    )!;
+    const body = JSON.parse(String((patch[1] as RequestInit).body));
+    expect(body.options.choices).toEqual([
+      { label: 'Standard Plus', value: 's' },
+      { label: 'Gold', value: 'gold' }
+    ]);
+  });
 });
