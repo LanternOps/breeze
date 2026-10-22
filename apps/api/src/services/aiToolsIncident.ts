@@ -24,6 +24,7 @@ import { publishEvent } from './eventBus';
 import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
 import { HIGH_RISK_CONTAINMENT_ACTIONS, listIncidentsSchema } from '../routes/incidents.validation';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { captureException } from './sentry';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -323,6 +324,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         actionId = action?.id;
       } catch (err) {
         console.error('[AiTools] Failed to record containment action:', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
       }
       if (!actionId) {
         return JSON.stringify({ error: 'The containment action could not be recorded, so nothing was sent to the device' });

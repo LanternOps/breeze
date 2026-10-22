@@ -232,6 +232,18 @@ describe('execute_containment action lifecycle (#9662)', () => {
     }));
   });
 
+  it('cancels the recorded action when the dispatch was cancelled at claim time', async () => {
+    const chain = updateChain();
+    vi.mocked(db.update).mockImplementation(() => chain);
+    vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-1', status: 'cancelled' }, error: 'Command cancelled', refusal: 'cancelled',
+    } as any);
+
+    await buildToolMap().get('execute_containment')!.handler(input, makeAuth());
+
+    expect(chain.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
+  });
+
   it('refuses a device outside the incident organization', async () => {
     vi.mocked(verifyDeviceAccess).mockResolvedValue({
       device: { id: OWN_DEVICE_ID, orgId: '77777777-7777-7777-7777-777777777777', hostname: 'h', status: 'online' },

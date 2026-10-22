@@ -30,6 +30,7 @@ import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
 import { ALLOWED_STATUS_TRANSITIONS } from '../routes/incidents.validation';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import type { CommandResultHandler } from './commandResultHandlers';
+import { captureException } from './sentry';
 
 /** The ambient `db`, or a caller's open transaction handle. */
 type DbExecutor = Pick<typeof db, 'update' | 'select'>;
@@ -127,19 +128,31 @@ export async function finalizeContainmentAction(params: {
       executedBy: incidentActions.executedBy,
     });
 
-  if (!action) return 'no_action';
+  if (!action) {
+    // Benign for a duplicate result or a timeout racing a real answer, but it
+    // is also what an incident invisible to this context looks like (RLS), so
+    // leave a trace rather than drop the outcome silently.
+    console.warn('[incidentContainment] no open containment action matched the command outcome', {
+      commandId, incidentId, outcome: outcome.kind, status,
+    });
+    return 'no_action';
+  }
 
-  // Row lock so the timeline append and the status transition cannot lose a
-  // concurrent writer's entry (the REST contain route and incident jobs write
-  // the same array).
+  // Row lock: the status read below decides the transition, and must not be
+  // overtaken by a concurrent locking writer between this read and the update.
   const [incident] = await executor
-    .select({ id: incidents.id, orgId: incidents.orgId, status: incidents.status, timeline: incidents.timeline })
+    .select({ id: incidents.id, orgId: incidents.orgId, status: incidents.status })
     .from(incidents)
     .where(eq(incidents.id, incidentId))
     .limit(1)
     .for('update');
 
-  if (!incident) return 'applied';
+  if (!incident) {
+    console.warn('[incidentContainment] containment action finalized but its incident is not visible; timeline not updated', {
+      commandId, incidentId, actionId: action.id,
+    });
+    return 'applied';
+  }
 
   const contains = status === 'completed' && CONTAINABLE_FROM.includes(incident.status);
   const entry: IncidentTimelineEntry = {
@@ -155,12 +168,13 @@ export async function finalizeContainmentAction(params: {
       ...(error ? { error: clip(error, MAX_ERROR_CHARS) } : {}),
     },
   };
-  const timeline = Array.isArray(incident.timeline) ? incident.timeline : [];
-
   await executor
     .update(incidents)
     .set({
-      timeline: [...timeline, entry],
+      // Appended in SQL, not read-modify-written: a writer that rewrites the
+      // whole array without locking (routes/incidents.ts) must not be able to
+      // make this entry disappear by racing a stale copy over it.
+      timeline: sql`coalesce(${incidents.timeline}, '[]'::jsonb) || ${JSON.stringify([entry])}::jsonb`,
       updatedAt: completedAt,
       ...(contains ? { status: 'contained' as const, containedAt: completedAt } : {}),
     })
@@ -185,6 +199,7 @@ export async function finalizeContainmentAction(params: {
         );
       } catch (err) {
         console.error('[incidentContainment] Failed to publish incident.contained event:', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
       }
     });
   }
@@ -192,15 +207,32 @@ export async function finalizeContainmentAction(params: {
   return 'applied';
 }
 
-/** The agent's structured result (NewSuccessResult marshals it to stdout JSON). */
-function parseOutput(stdout: string | undefined): unknown {
+const MAX_OUTPUT_FIELDS = 16;
+const MAX_OUTPUT_STRING_CHARS = 256;
+
+/**
+ * The agent's structured result (NewSuccessResult marshals it to stdout JSON,
+ * e.g. `{ actionType, pid, name, killed }` for process_kill).
+ *
+ * stdout is NOT redacted by the transports (only error/stderr are, #2434), so
+ * only bounded top-level scalars are kept — enough to say what was contained,
+ * never an arbitrary device-supplied blob. An unreadable stdout keeps none.
+ */
+function parseOutput(stdout: string | undefined): Record<string, string | number | boolean> | undefined {
   if (!stdout || stdout.length > MAX_OUTPUT_CHARS) return undefined;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(stdout);
-    return parsed && typeof parsed === 'object' ? parsed : undefined;
+    parsed = JSON.parse(stdout);
   } catch {
     return undefined;
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const out: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>).slice(0, MAX_OUTPUT_FIELDS)) {
+    if (typeof value === 'string') out[key] = clip(value, MAX_OUTPUT_STRING_CHARS);
+    else if (typeof value === 'number' || typeof value === 'boolean') out[key] = value;
+  }
+  return out;
 }
 
 /** Registry handler: both agent transports authorize the command before calling it. */

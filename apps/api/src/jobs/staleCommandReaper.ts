@@ -3,7 +3,7 @@ import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStale
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { db } from '../db';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import {
   deviceCommands,
   scriptExecutions,
@@ -346,15 +346,18 @@ export async function propagateTimedOutDeviceCommand(params: {
   // leaves its incident action `in_progress` forever otherwise; nothing else
   // ever revisits it. Recorded as a server timeout, which a late real agent
   // result may still repair. Contained like the blocks above: a failure must
-  // not skip the DR reconcile.
+  // not skip the DR reconcile — and, because the manual mark-timed-out route
+  // calls this inside its request transaction, it runs in a real savepoint so
+  // a caught SQL fault does not leave that transaction aborted.
   if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT) {
+    const finalize = () => finalizeContainmentAction({
+      commandId,
+      payload,
+      outcome: { kind: 'timeout', error: errorMsg },
+      completedAt,
+    });
     try {
-      await finalizeContainmentAction({
-        commandId,
-        payload,
-        outcome: { kind: 'timeout', error: errorMsg },
-        completedAt,
-      });
+      await (hasDbAccessContext() ? withDbTransaction(finalize) : finalize());
     } catch (err) {
       console.error(`[StaleCommandReaper] Failed to finalize the containment action for timed-out command ${commandId}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));

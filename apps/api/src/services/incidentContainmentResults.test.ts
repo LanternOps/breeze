@@ -77,6 +77,17 @@ function wireDb() {
 const actionUpdate = () => setCalls.find((c) => c.table === incidentActions)?.fields;
 const incidentUpdate = () => setCalls.find((c) => c.table === incidents)?.fields;
 
+/** The entries the SQL `timeline || $json::jsonb` append carries (the JSON param). */
+function appendedEntries(timeline: unknown): Array<Record<string, unknown>> {
+  const chunks = (timeline as { queryChunks?: unknown[] })?.queryChunks ?? [];
+  for (const chunk of chunks) {
+    const value = typeof chunk === 'string' ? chunk : (chunk as { value?: unknown })?.value;
+    if (typeof value !== 'string' || !value.startsWith('[')) continue;
+    try { return JSON.parse(value); } catch { /* not the param */ }
+  }
+  throw new Error('timeline update carries no appended JSON entry');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   actionRows = [ACTION_ROW];
@@ -102,9 +113,9 @@ describe('finalizeContainmentAction (#9662)', () => {
     const inc = incidentUpdate()!;
     expect(inc.status).toBe('contained');
     expect(inc.containedAt).toEqual(COMPLETED_AT);
-    const timeline = inc.timeline as Array<Record<string, unknown>>;
-    expect(timeline).toHaveLength(2);
-    expect(timeline[1]).toMatchObject({
+    const appended = appendedEntries(inc.timeline);
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
       type: 'containment_executed',
       actor: 'brain',
       metadata: { actionId: ACTION_ID, actionStatus: 'completed', commandId: COMMAND_ID },
@@ -145,8 +156,7 @@ describe('finalizeContainmentAction (#9662)', () => {
     const inc = incidentUpdate()!;
     expect(inc.status).toBeUndefined();
     expect(inc.containedAt).toBeUndefined();
-    const timeline = inc.timeline as Array<Record<string, unknown>>;
-    expect(timeline.at(-1)).toMatchObject({ type: 'containment_failed', metadata: { actionStatus: 'failed' } });
+    expect(appendedEntries(inc.timeline)[0]).toMatchObject({ type: 'containment_failed', metadata: { actionStatus: 'failed' } });
     expect(publishEventMock).not.toHaveBeenCalled();
   });
 
@@ -173,7 +183,7 @@ describe('finalizeContainmentAction (#9662)', () => {
       completedAt: COMPLETED_AT,
     });
     expect(actionUpdate()).toMatchObject({ status: 'cancelled' });
-    expect((incidentUpdate()!.timeline as any[]).at(-1)).toMatchObject({ type: 'containment_cancelled' });
+    expect(appendedEntries(incidentUpdate()!.timeline)[0]).toMatchObject({ type: 'containment_cancelled' });
   });
 
   it('does not touch the incident when no open action matches (already terminal / replay)', async () => {
@@ -261,6 +271,33 @@ describe('handleExecuteContainmentResult (#9662)', () => {
       result: { output: { actionType: 'process_kill', pid: 4242, name: 'evil.exe', killed: true } },
     });
     expect(incidentUpdate()!.status).toBe('contained');
+  });
+
+  it('keeps only bounded top-level scalars from stdout (stdout is not redacted upstream)', async () => {
+    await handleExecuteContainmentResult({
+      agentId: 'agent-1',
+      command,
+      commandId: COMMAND_ID,
+      resolvedDeviceId: 'd-1',
+      result: { status: 'completed' },
+      stdout: JSON.stringify({ pid: 1, name: 'x'.repeat(1000), killed: true, nested: { secret: 's' }, list: [1] }),
+    });
+    const output = (actionUpdate()!.result as Record<string, unknown>).output as Record<string, unknown>;
+    expect(Object.keys(output).sort()).toEqual(['killed', 'name', 'pid']);
+    expect((output.name as string).length).toBeLessThanOrEqual(257);
+  });
+
+  it('drops unreadable stdout instead of failing the result', async () => {
+    await handleExecuteContainmentResult({
+      agentId: 'agent-1',
+      command,
+      commandId: COMMAND_ID,
+      resolvedDeviceId: 'd-1',
+      result: { status: 'completed' },
+      stdout: 'not json',
+    });
+    expect(actionUpdate()).toMatchObject({ status: 'completed' });
+    expect(actionUpdate()!.result).not.toHaveProperty('output');
   });
 
   it.each(['failed', 'timeout'] as const)('maps an agent-reported %s onto a failed action', async (status) => {
