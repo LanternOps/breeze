@@ -476,25 +476,11 @@ type modifierStateResetter interface {
 }
 
 // ReleaseAllOnRequest is the operator's "Release stuck keys": ReleaseAll, then
-// the platform's modifier reset. Only an explicit request resets OS modifier
-// state; ReleaseAll also runs on disconnects, and there it must not release a
+// the platform's modifier reset, in the same worker job so no key can land
+// between the two. Only an explicit request resets OS modifier state;
+// ReleaseAll also runs on disconnects, and there it must not release a
 // modifier the person at the remote machine is holding.
-func (s *SafeInput) ReleaseAllOnRequest() {
-	s.ReleaseAll("viewer_request")
-	r, ok := s.inner.(modifierStateResetter)
-	if !ok {
-		return
-	}
-	err := s.submit(true, s.closeTimeout, func() error {
-		if err := r.ResetModifierState(); err != nil {
-			slog.Warn("Resetting remote modifier state failed", "session", s.label, "error", err.Error())
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, errInputClosed) {
-		slog.Warn("Resetting remote modifier state failed", "session", s.label, "error", err.Error())
-	}
-}
+func (s *SafeInput) ReleaseAllOnRequest() { s.resetWith("viewer_request", false, true, true) }
 
 // ResetGeometry is ReleaseAll plus a new geometry epoch, in one step. The
 // monitor and desktop switches call it before the display offset changes.
@@ -512,6 +498,12 @@ func (s *SafeInput) LeaveSequencedMode() {
 }
 
 func (s *SafeInput) reset(reason string, geometry, announce bool) {
+	s.resetWith(reason, geometry, announce, false)
+}
+
+// resetWith is reset; resetModifiers also runs the platform's
+// modifierStateResetter after the releases.
+func (s *SafeInput) resetWith(reason string, geometry, announce, resetModifiers bool) {
 	s.orderMu.Lock()
 	s.order.agentReset(geometry)
 	epoch, geo := s.order.resetEpoch, s.order.geoEpoch
@@ -530,6 +522,9 @@ func (s *SafeInput) reset(reason string, geometry, announce bool) {
 		}
 		s.takeMove()
 		s.releaseHeld(reason)
+		if resetModifiers {
+			s.resetModifierState()
+		}
 		s.resetsDone.Add(1)
 		return nil
 	})
@@ -552,6 +547,18 @@ func (s *SafeInput) releaseHeld(reason string) {
 	}
 	if len(releases) > 0 {
 		slog.Info("Released held remote input", "session", s.label, "reason", reason, "count", len(releases)-failed, "failed", failed)
+	}
+}
+
+// resetModifierState runs the platform's modifier reset, if it has one.
+// Worker goroutine only.
+func (s *SafeInput) resetModifierState() {
+	r, ok := s.inner.(modifierStateResetter)
+	if !ok {
+		return
+	}
+	if err := r.ResetModifierState(); err != nil {
+		slog.Warn("Resetting remote modifier state failed", "session", s.label, "error", err.Error())
 	}
 }
 

@@ -200,15 +200,12 @@ static void cgMouseScroll(int tap, int axes, int wheel1, int wheel2, int flags, 
     }
 }
 
-// W2c: a modifier key going down or up, with the complete modifier state
-// after the change. Posted as a key down or key up of the modifier's keycode,
-// as CGEventCreateKeyboardEvent documents for modifiers; the system derives the
-// kCGEventFlagsChanged apps see. The release must be a key up: posting it as a
-// key down (retyped to flagsChanged) left Shift held on the remote for the
-// rest of the session (issue #9595).
-static void cgModifierKey(int tap, int keycode, int flags, int down) {
-    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, down != 0);
+// W2c: a modifier key going down or up, posted as kCGEventFlagsChanged with
+// the complete modifier state after the change.
+static void cgFlagsChanged(int tap, int keycode, int flags) {
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, true);
     if (event) {
+        CGEventSetType(event, kCGEventFlagsChanged);
         CGEventSetFlags(event, (CGEventFlags)flags);
         CGEventPost(tapFor(tap), event);
         CFRelease(event);
@@ -504,7 +501,7 @@ func normalizeKeyName(key string) string {
 	return strings.ToLower(strings.TrimSpace(key))
 }
 
-// cgTap is the cgMouse*/cgModifierKey tap argument: 1 for the session tap
+// cgTap is the cgMouse*/cgFlagsChanged tap argument: 1 for the session tap
 // (login window without IOHIDSystem), else 0 for the HID tap.
 func (h *DarwinInputHandler) cgTap() C.int {
 	if h.shouldUseSessionTap() {
@@ -794,7 +791,7 @@ func (h *DarwinInputHandler) handleModifierKey(event InputEvent) (handled bool) 
 	if h.shouldUseHID() {
 		C.hidFlagsChanged(C.int(keycode), flags)
 	} else {
-		C.cgModifierKey(h.cgTap(), C.int(keycode), flags, boolToCInt(event.Type == "key_down"))
+		C.cgFlagsChanged(h.cgTap(), C.int(keycode), flags)
 	}
 	return true
 }
@@ -812,7 +809,7 @@ func (h *DarwinInputHandler) ResetModifierState() error {
 		if h.shouldUseHID() {
 			C.hidFlagsChanged(C.int(kc), flags)
 		} else {
-			C.cgModifierKey(h.cgTap(), C.int(kc), flags, 0)
+			C.cgFlagsChanged(h.cgTap(), C.int(kc), flags)
 		}
 	}
 	return nil

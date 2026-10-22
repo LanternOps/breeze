@@ -1915,14 +1915,22 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // "Release stuck keys" (toolbar and shortcut). releaseAllKeys only covers
   // what this viewer believes is held, and its agent-side reset is sequenced
-  // input only; a key the bookkeeping lost stays down (#9595). So also ask the
-  // agent to release everything it holds and clear OS modifier state.
+  // input only; a key the bookkeeping lost stays down (#9595). An agent that
+  // takes release_held_input releases everything it holds and clears OS
+  // modifier state, so the viewer just forgets its own: key_ups sent on
+  // `input` could land after the release on `control` as stray key-ups.
   const handleReleaseStuckKeys = useCallback(() => {
-    releaseAllKeys();
-    if (viewOnlyRef.current) return;
-    if (!inputCapabilitiesRef.current.snapshot().releaseHeldOnRequest) return;
     const control = transportRef.current === 'webrtc' ? webrtcRef.current?.controlChannel : undefined;
-    if (control && control.readyState === 'open') control.send(JSON.stringify({ type: 'release_held_input' }));
+    if (viewOnlyRef.current || !inputCapabilitiesRef.current.snapshot().releaseHeldOnRequest
+      || !control || control.readyState !== 'open') {
+      releaseAllKeys();
+      return;
+    }
+    pressedKeysRef.current.clear();
+    heldKeyNameByCodeRef.current.clear();
+    heldCodeByKeyRef.current.clear();
+    pressedButtonsRef.current.clear();
+    control.send(JSON.stringify({ type: 'release_held_input' }));
   }, [releaseAllKeys]);
 
   // A new session's channel may open with releases still stranded from the
@@ -2326,12 +2334,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // The prefix modifiers already went down on the remote as key_downs.
       // Release them first, or paste-as-keystrokes would type into a held
       // Ctrl+Alt+Shift and fire shortcuts there.
+      if (shortcut === 'release-keys') {
+        handleReleaseStuckKeys();
+        setInputNotice('Released all keys and mouse buttons on the remote.');
+        return;
+      }
       releaseAllKeys();
       if (shortcut === 'paste-keystrokes') {
         handlePasteAsKeystrokes();
-      } else if (shortcut === 'release-keys') {
-        handleReleaseStuckKeys();
-        setInputNotice('Released all keys and mouse buttons on the remote.');
       } else {
         toggleDocumentFullscreen();
       }

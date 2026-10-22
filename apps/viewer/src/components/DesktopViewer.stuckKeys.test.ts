@@ -17,13 +17,19 @@ describe('stuck modifiers (#9595)', () => {
     expect(forget).toMatch(/modifiersReleasedByKeyPress\(modifiers, inputCapabilitiesRef\.current\.snapshot\(\)\.releasesHeldInput\)/);
   });
 
-  it('"Release stuck keys" also asks the agent to release what it holds, on any input protocol', () => {
+  it('"Release stuck keys" asks the agent to release everything, and falls back to the viewer\'s own releases', () => {
     const release = body('handleReleaseStuckKeys');
-    const own = release.indexOf('releaseAllKeys()');
+    const gate = release.indexOf('releaseHeldOnRequest');
+    const fallback = release.indexOf('releaseAllKeys()');
     const ask = release.indexOf("JSON.stringify({ type: 'release_held_input' })");
-    expect(own).toBeGreaterThan(-1);
-    expect(ask).toBeGreaterThan(own);
-    expect(release.lastIndexOf('releaseHeldOnRequest', ask)).toBeGreaterThan(-1);
+    expect(gate).toBeGreaterThan(-1);
+    expect(fallback).toBeGreaterThan(gate);
+    expect(ask).toBeGreaterThan(fallback);
+    // With the agent releasing, the viewer forgets its own held keys instead of
+    // sending key_ups that could land after the release as stray key-ups.
+    const forget = release.slice(fallback, release.indexOf('control.send(', fallback));
+    expect(forget).toMatch(/pressedKeysRef\.current\.clear\(\)/);
+    expect(forget).not.toMatch(/send\(/);
   });
 
   it('wires the toolbar item and the keyboard shortcut to it', () => {
@@ -31,5 +37,7 @@ describe('stuck modifiers (#9595)', () => {
     const down = body('handleKeyDown');
     const branch = down.slice(down.indexOf("shortcut === 'release-keys'"));
     expect(branch.slice(0, 200)).toMatch(/handleReleaseStuckKeys\(\)/);
+    // The release-keys shortcut must not send its own prefix key_ups first.
+    expect(down.indexOf("shortcut === 'release-keys'")).toBeLessThan(down.indexOf('releaseAllKeys();', down.indexOf('const shortcut = viewerShortcut')));
   });
 });
