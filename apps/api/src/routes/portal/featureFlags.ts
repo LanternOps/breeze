@@ -219,6 +219,81 @@ export function createPortalFeatureGateAny(
   };
 }
 
+/**
+ * THE gate table (#9350): the single source of truth mapping a portal section
+ * to the strict visibility flag(s) that gate it. `routes/portal/index.ts`
+ * mounts every route gate from this list, and the staff "Customer view"
+ * preview (`services/portal/portalPreview.ts`) reads the same rows to decide
+ * which sections are enabled — so the portal and the preview cannot disagree.
+ * `portalSectionGates.contract.test.ts` fails if a section router has no row.
+ *
+ * `flags` are ALL required (fail-closed), checked in order. `customMount` rows
+ * are still gated through `portalSectionGate(key)` but are mounted by hand in
+ * index.ts because their position relative to other middleware matters.
+ */
+export type PortalSectionGateRow = {
+  key: string;
+  /** Path prefix under /api/v1/portal, no trailing slash or wildcard. */
+  pathPrefix: string;
+  flags: readonly [StrictPortalGateFlag, ...StrictPortalGateFlag[]];
+  /** The router file that serves this prefix (relative to routes/portal). */
+  routeFile: string;
+  /** Mount `pathPrefix` itself, not `pathPrefix/*`. */
+  exact?: boolean;
+  /** Skip portalAuthMiddleware: an ancestor row already applies it. */
+  inheritsAuth?: boolean;
+  /** index.ts mounts this row by hand (see portalSectionGate). */
+  customMount?: boolean;
+};
+
+export const PORTAL_SECTION_GATES = [
+  { key: 'dashboard', pathPrefix: '/dashboard', flags: ['enableDashboard'], routeFile: 'dashboard.ts' },
+  { key: 'security', pathPrefix: '/security', flags: ['enableSecurity'], routeFile: 'security.ts' },
+  { key: 'backups', pathPrefix: '/backups', flags: ['enableBackups'], routeFile: 'backups.ts' },
+  { key: 'reports', pathPrefix: '/reports', flags: ['enableReports'], routeFile: 'reports.ts' },
+  // Narrower second gate: /reports/lifecycle/* needs enableReports (above,
+  // registered first) AND enableLifecycle.
+  { key: 'lifecycleReports', pathPrefix: '/reports/lifecycle', flags: ['enableLifecycle'], routeFile: 'reports.ts', inheritsAuth: true },
+  { key: 'service', pathPrefix: '/service', flags: ['enableService'], routeFile: 'service.ts' },
+  { key: 'hardwareHealth', pathPrefix: '/hardware-health', flags: ['enableHardwareHealth'], routeFile: 'hardwareHealth.ts' },
+  { key: 'hardwareInventory', pathPrefix: '/hardware-inventory', flags: ['enableHardwareInventory'], routeFile: 'hardwareInventory.ts' },
+  { key: 'performance', pathPrefix: '/performance', flags: ['enablePerformanceMetrics'], routeFile: 'performance.ts' },
+  { key: 'software', pathPrefix: '/software', flags: ['enableSoftwareInventory'], routeFile: 'software.ts' },
+  { key: 'patches', pathPrefix: '/patches', flags: ['enablePatchDetail'], routeFile: 'patches.ts' },
+  { key: 'vulnerabilities', pathPrefix: '/vulnerabilities', flags: ['enableVulnerabilityDetail'], routeFile: 'vulnerabilities.ts' },
+  // Block hours W04: the "Support hours" card lives inside Support usage, so
+  // its endpoint needs BOTH fail-closed flags. A separate prefix on purpose:
+  // nesting under /tickets/* would inherit the enable_tickets gate.
+  { key: 'supportUsage', pathPrefix: '/support-usage', flags: ['enableSupportUsage', 'enableHourBlock'], routeFile: 'hourBlock.ts' },
+  // Library listing only; the CONTENT path also opens under enableService
+  // (documentBytesGate in index.ts). Mounted by hand next to that wrapper.
+  { key: 'documents', pathPrefix: '/documents', flags: ['enableDocuments'], routeFile: 'documents.ts', customMount: true },
+  // Exact-path wrapper that must run before the generic /tickets/* middleware.
+  { key: 'ticketUsage', pathPrefix: '/tickets/usage', flags: ['enableSupportUsage'], routeFile: 'tickets.ts', exact: true, customMount: true },
+] as const satisfies readonly PortalSectionGateRow[];
+
+export type PortalSectionKey = typeof PORTAL_SECTION_GATES[number]['key'];
+
+/** The gate middleware (all of the row's flags, in order) for one table row. */
+export function portalSectionGate(key: PortalSectionKey): MiddlewareHandler {
+  const row = (PORTAL_SECTION_GATES as readonly PortalSectionGateRow[]).find((g) => g.key === key);
+  if (!row) throw new Error(`Unknown portal section gate: ${key}`);
+  const gates = row.flags.map((flag) => createPortalFeatureGateStrict(flag));
+  return async (c, next) => {
+    const run = async (i: number): Promise<Response | void> => {
+      const gate = gates[i];
+      if (!gate) return next();
+      // A gate that refuses returns its 403; propagate it as the response
+      // (what Hono's own compose does) instead of swallowing it in `next`.
+      return gate(c, async () => {
+        const downstream = await run(i + 1);
+        if (downstream instanceof Response) c.res = downstream;
+      });
+    };
+    return run(0);
+  };
+}
+
 // Trust Center W3d (#8771): a PERMISSION gate, not a visibility gate. Passes
 // only when the org's enable_trust_page_editing flag is on AND the portal user
 // is an active org-scoped admin contact (services/portal/trustPageEditor.ts).
