@@ -19,6 +19,9 @@ type PreviewSection = {
   data: unknown;
   note?: string;
   error?: string;
+  reason?: 'permission';
+  /** reason:permission -> whole section withheld; dashboard -> tiles omitted. */
+  missingPermissions?: string[];
 };
 type ReadinessCheck = { code: string; message: string; fixTab: string };
 type Preview = {
@@ -256,8 +259,18 @@ export default function OrgPortalPreviewPanel({ orgId }: { orgId: string }) {
                         {t('orgPortalSettingsEditor.preview.loadFailed')}
                       </p>
                     )}
-                    {s.enabled && !s.previewAvailable && (
+                    {s.enabled && !s.previewAvailable && s.reason !== 'permission' && (
                       <p className="mt-1 text-xs text-muted-foreground">{t('orgPortalSettingsEditor.preview.notAvailable')}</p>
+                    )}
+                    {s.reason === 'permission' && (
+                      <p className="mt-1 text-xs text-muted-foreground" data-testid={`org-portal-preview-section-permission-${s.key}`}>
+                        {t('orgPortalSettingsEditor.preview.permissionWithheld', { permissions: (s.missingPermissions ?? []).join(', ') })}
+                      </p>
+                    )}
+                    {s.reason !== 'permission' && s.missingPermissions && s.missingPermissions.length > 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground" data-testid={`org-portal-preview-section-tiles-permission-${s.key}`}>
+                        {t('orgPortalSettingsEditor.preview.tilesWithheld', { permissions: s.missingPermissions.join(', ') })}
+                      </p>
                     )}
                     {s.note && (
                       <p className="mt-1 text-xs text-muted-foreground">{t('orgPortalSettingsEditor.preview.noteNoUser')}</p>

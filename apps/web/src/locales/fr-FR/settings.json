@@ -1963,6 +1963,8 @@
       "on": "Activé",
       "off": "Désactivé",
       "notAvailable": "Un aperçu détaillé de cette section n’est pas encore disponible.",
+      "permissionWithheld": "Non affiché : vous avez besoin de {{permissions}} pour prévisualiser ceci.",
+      "tilesWithheld": "Certaines tuiles ne sont pas affichées : vous avez besoin de {{permissions}} pour les prévisualiser.",
       "noteNoUser": "Les données liées aux tickets sont masquées. Choisissez un utilisateur du portail pour voir ce que cette personne voit.",
       "readinessTitle": "Vérifications de préparation",
       "readinessNone": "Aucun problème détecté.",

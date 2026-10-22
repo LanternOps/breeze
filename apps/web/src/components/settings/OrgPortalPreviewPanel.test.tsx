@@ -93,6 +93,37 @@ describe('OrgPortalPreviewPanel (#9350)', () => {
     expect(await screen.findByTestId('org-portal-preview-section-error-documents')).toBeInTheDocument();
   });
 
+  it('renders a permission-withheld section as "not shown" with the needed permission, and no data/on-off/unavailable text', async () => {
+    fetchWithAuth.mockImplementation(async (path: string) =>
+      path.includes('/portal-users')
+        ? json({ data: [] })
+        : json({ data: { portalUser: null, readiness: [], sections: [
+            { key: 'reports', enabled: true, previewAvailable: false, data: null, reason: 'permission', missingPermissions: ['reports:read'] },
+          ] } }));
+    render(<OrgPortalPreviewPanel orgId="org-1" />);
+    const block = await screen.findByTestId('org-portal-preview-section-reports');
+    const msg = await screen.findByTestId('org-portal-preview-section-permission-reports');
+    expect(block).toContainElement(msg);
+    expect(msg.textContent).toContain('orgPortalSettingsEditor.preview.permissionWithheld');
+    expect(msg.textContent).toContain('reports:read');
+    expect(block.textContent).not.toContain('orgPortalSettingsEditor.preview.notAvailable');
+  });
+
+  it('dashboard with omitted tiles shows the tiles-withheld message and keeps the rest', async () => {
+    fetchWithAuth.mockImplementation(async (path: string) =>
+      path.includes('/portal-users')
+        ? json({ data: [] })
+        : json({ data: { portalUser: null, readiness: [], sections: [
+            { key: 'dashboard', enabled: true, previewAvailable: true, missingPermissions: ['backup:read'],
+              data: { securityScore: { status: 'ok', score: 88 } } },
+          ] } }));
+    render(<OrgPortalPreviewPanel orgId="org-1" />);
+    const msg = await screen.findByTestId('org-portal-preview-section-tiles-permission-dashboard');
+    expect(msg.textContent).toContain('orgPortalSettingsEditor.preview.tilesWithheld');
+    expect(msg.textContent).toContain('backup:read');
+    expect(screen.queryByTestId('org-portal-preview-section-permission-dashboard')).toBeNull();
+  });
+
   it('falls back to the org-wide view when the selected portal user is gone (404)', async () => {
     render(<OrgPortalPreviewPanel orgId="org-1" />);
     await screen.findByTestId('org-portal-preview-section-dashboard');

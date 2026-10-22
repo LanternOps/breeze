@@ -1963,6 +1963,8 @@
       "on": "An",
       "off": "Aus",
       "notAvailable": "Eine detaillierte Vorschau dieses Bereichs ist noch nicht verfügbar.",
+      "permissionWithheld": "Nicht angezeigt: Für diese Vorschau benötigen Sie {{permissions}}.",
+      "tilesWithheld": "Einige Kacheln werden nicht angezeigt: Für die Vorschau benötigen Sie {{permissions}}.",
       "noteNoUser": "Ticketbezogene Daten sind ausgeblendet. Wählen Sie einen Portalbenutzer, um zu sehen, was diese Person sieht.",
       "readinessTitle": "Bereitschaftsprüfungen",
       "readinessNone": "Keine Probleme gefunden.",

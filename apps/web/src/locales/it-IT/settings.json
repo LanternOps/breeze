@@ -1963,6 +1963,8 @@
       "on": "Attivo",
       "off": "Disattivato",
       "notAvailable": "Un’anteprima dettagliata di questa sezione non è ancora disponibile.",
+      "permissionWithheld": "Non mostrato: per visualizzare questa anteprima serve {{permissions}}.",
+      "tilesWithheld": "Alcuni riquadri non sono mostrati: per visualizzarli serve {{permissions}}.",
       "noteNoUser": "I dati dei ticket sono nascosti. Scegli un utente del portale per vedere ciò che vede quella persona.",
       "readinessTitle": "Controlli di preparazione",
       "readinessNone": "Nessun problema rilevato.",

@@ -1963,6 +1963,8 @@
       "on": "Activado",
       "off": "Desactivado",
       "notAvailable": "Aún no hay una vista previa detallada de esta sección.",
+      "permissionWithheld": "No se muestra: necesitas {{permissions}} para ver esta vista previa.",
+      "tilesWithheld": "Algunos mosaicos no se muestran: necesitas {{permissions}} para verlos.",
       "noteNoUser": "Los datos de tickets están ocultos. Elija un usuario del portal para ver lo que ve esa persona.",
       "readinessTitle": "Verificaciones de preparación",
       "readinessNone": "No se encontraron problemas.",

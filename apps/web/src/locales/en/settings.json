@@ -1963,6 +1963,8 @@
       "on": "On",
       "off": "Off",
       "notAvailable": "A detailed preview of this section isn't available yet.",
+      "permissionWithheld": "Not shown: you need {{permissions}} to preview this.",
+      "tilesWithheld": "Some tiles are not shown: you need {{permissions}} to preview them.",
       "noteNoUser": "Ticket-scoped data is hidden. Pick a portal user to see what that person sees.",
       "readinessTitle": "Readiness checks",
       "readinessNone": "No issues found.",

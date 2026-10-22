@@ -1963,6 +1963,8 @@
       "on": "Ativado",
       "off": "Desativado",
       "notAvailable": "Uma pré-visualização detalhada desta seção ainda não está disponível.",
+      "permissionWithheld": "Não exibido: você precisa de {{permissions}} para visualizar isto.",
+      "tilesWithheld": "Alguns blocos não são exibidos: você precisa de {{permissions}} para visualizá-los.",
       "noteNoUser": "Os dados de chamados estão ocultos. Escolha um usuário do portal para ver o que essa pessoa vê.",
       "readinessTitle": "Verificações de prontidão",
       "readinessNone": "Nenhum problema encontrado.",

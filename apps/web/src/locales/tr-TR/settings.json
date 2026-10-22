@@ -1963,6 +1963,8 @@
       "on": "Açık",
       "off": "Kapalı",
       "notAvailable": "Bu bölümün ayrıntılı önizlemesi henüz yok.",
+      "permissionWithheld": "Gösterilmiyor: bunu önizlemek için {{permissions}} yetkisi gerekir.",
+      "tilesWithheld": "Bazı kutucuklar gösterilmiyor: bunları önizlemek için {{permissions}} yetkisi gerekir.",
       "noteNoUser": "Talep kapsamındaki veriler gizlendi. Bu kişinin ne gördüğünü görmek için bir portal kullanıcısı seçin.",
       "readinessTitle": "Hazırlık kontrolleri",
       "readinessNone": "Sorun bulunamadı.",
