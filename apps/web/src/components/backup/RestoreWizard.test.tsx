@@ -905,12 +905,15 @@ describe('RestoreWizard', () => {
       });
     };
 
-    it('names the device on each snapshot card', async () => {
+    it('names each device in the picker and on the chosen device\'s snapshot card', async () => {
       mockApi([]);
       render(<RestoreWizard />);
-      await screen.findByText('Restore Wizard');
-      expect(await screen.findByText('FRONT-DESK-01')).toBeTruthy();
-      expect(screen.getByText('ACCOUNTING-02')).toBeTruthy();
+      const select = await screen.findByTestId('restore-device-select');
+      // #9627: devices are picked first; the cards list one device at a time.
+      expect(screen.getByRole('option', { name: 'FRONT-DESK-01 (1 snapshot)' })).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'ACCOUNTING-02 (1 snapshot)' })).toBeTruthy();
+      fireEvent.change(select, { target: { value: 'device-1' } });
+      expect(screen.getByRole('button', { name: /Nightly/i }).textContent).toContain('FRONT-DESK-01');
     });
 
     it('titles history rows with the device, not the restore job UUID', async () => {
@@ -945,7 +948,7 @@ describe('RestoreWizard', () => {
     it('uses the singular for a single selected file on Review', async () => {
       mockApi([], [{ name: 'a.txt', path: '/a.txt', type: 'file', sizeBytes: 1 }]);
       render(<RestoreWizard />);
-      await screen.findByText('Restore Wizard');
+      fireEvent.change(await screen.findByTestId('restore-device-select'), { target: { value: 'device-1' } });
       fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
       fireEvent.click(screen.getByRole('button', { name: /Selective Restore/i }));
       fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
@@ -1005,5 +1008,74 @@ describe('RestoreWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Up' }));
     expect(((await screen.findByRole('checkbox', { name: /root\.txt/i })) as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText(/2 files? selected|2/)).toBeTruthy();
+  });
+  describe('scopes step 1 to one device (#9627)', () => {
+    // Newest-first, as GET /backup/snapshots returns them: the org's newest
+    // snapshot belongs to FILESERVER, not the device the operator came for.
+    const multiDeviceSnapshots = [
+      { id: 'snap-b2', deviceId: 'dev-b', deviceName: 'FILESERVER', label: 'FS newest', createdAt: '2026-10-20T10:00:00.000Z' },
+      { id: 'snap-a1', deviceId: 'dev-a', deviceName: 'DC01', label: 'DC nightly', createdAt: '2026-10-19T10:00:00.000Z' },
+      { id: 'snap-b1', deviceId: 'dev-b', deviceName: 'FILESERVER', label: 'FS older', createdAt: '2026-10-18T10:00:00.000Z' },
+    ];
+
+    beforeEach(() => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') return makeJsonResponse({ data: multiDeviceSnapshots });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({ data: [] });
+      });
+    });
+
+    it('preselects no snapshot and lists none until a device is chosen', async () => {
+      render(<RestoreWizard />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('');
+      expect(screen.queryByRole('button', { name: /FS newest/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /DC nightly/i })).toBeNull();
+      expect((screen.getByRole('button', { name: /Continue/i }) as HTMLButtonElement).disabled).toBe(true);
+      // Nothing reached the browse endpoint: no snapshot is selected.
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/browse'))).toBe(false);
+    });
+
+    it('lists only the chosen device\'s snapshots and names the device on Review', async () => {
+      render(<RestoreWizard />);
+      fireEvent.change(await screen.findByTestId('restore-device-select'), { target: { value: 'dev-a' } });
+
+      const dcCard = screen.getByRole('button', { name: /DC nightly/i });
+      expect(dcCard.className).toContain('border-primary');
+      expect(screen.queryByRole('button', { name: /FS newest/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /FS older/i })).toBeNull();
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      }
+      expect(screen.getByTestId('restore-review-device').textContent).toContain('DC01');
+      expect(screen.getByTestId('restore-review-snapshot').textContent).toContain('DC nightly');
+    });
+
+    it('switching device drops the previous device\'s snapshot', async () => {
+      render(<RestoreWizard />);
+      const select = await screen.findByTestId('restore-device-select');
+      fireEvent.change(select, { target: { value: 'dev-a' } });
+      expect(screen.getByRole('button', { name: /DC nightly/i }).className).toContain('border-primary');
+
+      fireEvent.change(select, { target: { value: 'dev-b' } });
+      expect(screen.queryByRole('button', { name: /DC nightly/i })).toBeNull();
+      // The newest snapshot of the newly chosen device, never the old pick.
+      expect(screen.getByRole('button', { name: /FS newest/i }).className).toContain('border-primary');
+      expect(screen.getByRole('button', { name: /FS older/i }).className).not.toContain('border-primary');
+    });
+
+    it('scopes to the device of a snapshot carried in from SnapshotBrowser', async () => {
+      render(<RestoreWizard initialSnapshotId="snap-b1" />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('dev-b');
+      expect(screen.getByRole('button', { name: /FS older/i }).className).toContain('border-primary');
+      expect(screen.getByRole('button', { name: /FS newest/i }).className).not.toContain('border-primary');
+      expect(screen.queryByRole('button', { name: /DC nightly/i })).toBeNull();
+    });
   });
 });
