@@ -721,7 +721,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     query: z.string().min(1).max(40),
   }),
 
-  manage_catalog: z.object({
+  manage_billing_catalog: z.object({
     action: z.enum([
       'create_item',
       'update_item',

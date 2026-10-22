@@ -530,7 +530,7 @@ export const TOOL_TIERS = {
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
   manage_tickets: 1,
   manage_quotes: 2,
-  manage_catalog: 2,
+  manage_billing_catalog: 2,
   manage_saved_filters: 1,
   manage_tags: 2,
   manage_notification_channels: 1,
@@ -3952,10 +3952,10 @@ export function buildBreezeSdkTools(
       makeHandler('manage_quotes', getAuth, onPreToolUse, onPostToolUse)
     ),
     tool(
-      'manage_catalog',
-      registryDescription('manage_catalog'),
-      inputShape('manage_catalog'),
-      makeHandler('manage_catalog', getAuth, onPreToolUse, onPostToolUse)
+      'manage_billing_catalog',
+      registryDescription('manage_billing_catalog'),
+      inputShape('manage_billing_catalog'),
+      makeHandler('manage_billing_catalog', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

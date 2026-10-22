@@ -377,7 +377,7 @@ describe('W01 read-only wiring (#6755)', () => {
 /** Spec 2026-09-23 W02 (#6756): PSA and billing writes. Pinned so a later
  * wave cannot silently un-wire one. */
 const W02_WRITE_TOOLS = [
-  'manage_tickets', 'manage_quotes', 'manage_catalog', 'manage_saved_filters',
+  'manage_tickets', 'manage_quotes', 'manage_billing_catalog', 'manage_saved_filters',
   'manage_tags', 'manage_notification_channels', 'test_webhook',
 ] as const;
 

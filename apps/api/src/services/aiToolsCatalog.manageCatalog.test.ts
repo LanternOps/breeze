@@ -62,12 +62,12 @@ const actor = { userId: 'u-1', partnerId: 'p-1', accessibleOrgIds: ['org-1'] };
 function getTool(): AiTool {
   const map = new Map<string, AiTool>();
   registerCatalogTools(map);
-  const t = map.get('manage_catalog');
-  if (!t) throw new Error('manage_catalog not registered');
+  const t = map.get('manage_billing_catalog');
+  if (!t) throw new Error('manage_billing_catalog not registered');
   return t;
 }
 
-describe('manage_catalog', () => {
+describe('manage_billing_catalog', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('create_item calls createCatalogItem with item payload and actor built from auth', async () => {
@@ -289,21 +289,21 @@ describe('manage_catalog', () => {
 // chat (Zod rejected the enum value), and every price-affecting action must
 // return the value it replaced so a supervised approval is reversible within a
 // minute (the precondition for supervised rather than four-eyes).
-describe('manage_catalog input surface + previous value (W02, #6756)', () => {
+describe('manage_billing_catalog input surface + previous value (W02, #6756)', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('Zod keeps set_price/remove_price and their currencyCode/price keys', () => {
-    const parsed = toolInputSchemas.manage_catalog!.parse({
+    const parsed = toolInputSchemas.manage_billing_catalog!.parse({
       action: 'set_price', catalogId: '11111111-1111-4111-8111-111111111111', currencyCode: 'EUR', price: { unitPrice: 10 },
     }) as Record<string, unknown>;
     expect(parsed).toMatchObject({ action: 'set_price', currencyCode: 'EUR', price: { unitPrice: 10 } });
-    expect(toolInputSchemas.manage_catalog!.parse({
+    expect(toolInputSchemas.manage_billing_catalog!.parse({
       action: 'remove_price', catalogId: '11111111-1111-4111-8111-111111111111', currencyCode: 'EUR',
     })).toMatchObject({ action: 'remove_price', currencyCode: 'EUR' });
   });
 
   it('Zod keeps allocationCurrency for set_bundle_components', () => {
-    const parsed = toolInputSchemas.manage_catalog!.parse({
+    const parsed = toolInputSchemas.manage_billing_catalog!.parse({
       action: 'set_bundle_components', catalogId: '11111111-1111-4111-8111-111111111111',
       components: [{ componentItemId: '11111111-1111-1111-1111-111111111111', quantity: 1, revenueAllocation: 5 }],
       allocationCurrency: 'USD',

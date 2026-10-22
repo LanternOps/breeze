@@ -466,7 +466,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // invoices. Supervised, not four-eyes, because each handler returns the
   // value it replaced (`previous`), making it reversible within a minute.
   // create_item stays tier 2: a new, unreferenced item changes no document.
-  manage_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
+  manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
   // Notification channels (W02, #6756). update redirects live, already-routed
   // alert data to a new destination; delete silences every linked route and
   // destroys the stored destination; create points at an unverified owner.
@@ -686,7 +686,7 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // W02 (#6756) — see the TIER3_ACTIONS notes for each.
   manage_tickets: ['edit_comment', 'delete_comment'],
   manage_quotes: ['decline', 'create_pay_link'],
-  manage_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
+  manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
   manage_notification_channels: ['create', 'update'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.
@@ -1139,7 +1139,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   search_catalog: { resource: 'catalog', action: 'read' },
   get_catalog_item: { resource: 'catalog', action: 'read' },
   lookup_distributor_product: { resource: 'catalog', action: 'read' },
-  manage_catalog: {
+  manage_billing_catalog: {
     create_item: { resource: 'catalog', action: 'write' },
     update_item: { resource: 'catalog', action: 'write' },
     // Matches POST /catalog/items/:id/archive
@@ -3510,7 +3510,7 @@ function buildApprovalDescription(
       break;
     }
 
-    case 'manage_catalog': {
+    case 'manage_billing_catalog': {
       const itemRef = typeof input.catalogId === 'string' ? `${input.catalogId.slice(0, 8)}...` : 'unknown';
       const orgRef = typeof input.orgId === 'string' ? `${input.orgId.slice(0, 8)}...` : 'unknown';
       const price = input.price && typeof input.price === 'object' ? (input.price as Record<string, unknown>).unitPrice : undefined;

@@ -685,7 +685,7 @@ export async function removeOrgPriceOverride(itemId: string, orgId: string, acto
  * would miss and report ITEM_NOT_FOUND for a row this transaction is holding.
  *
  * The HTTP route is not the exposure — `z.string().guid()` pins it to canonical
- * 8-4-4-4-12. The AI tool is: `manage_catalog` passes `String(input.catalogId)`
+ * 8-4-4-4-12. The AI tool is: `manage_billing_catalog` passes `String(input.catalogId)`
  * with no GUID parse at all (its `setBundleComponentsSchema.parse` covers only
  * `components`/`allocationCurrency`), so a braced or unhyphenated id reaches
  * here intact.

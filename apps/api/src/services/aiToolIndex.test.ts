@@ -178,7 +178,8 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // part by MAX_INLINE_ACTIONS 8 -> 7 (Todd 2026-10-22, option 2; -245 B):
     // main 6576 / 6625 -> 6674 default / 6723 flag-on, still over 6656. So the
     // 6.75 KB raise (6912 B) was taken 2026-10-22 for W02 (Todd, option 1);
-    // the W3 sign-off was re-used. Headroom ~238 B default / ~189 B flag-on.
+    // the W3 sign-off was re-used. Headroom ~238 B default / ~189 B flag-on;
+    // the manage_billing_catalog rename (D3) makes it 6682 / 6731 (~230 / ~181).
     // Any further raise needs a prompt-size review, not a bump.
     expect(INDEX_BUDGET_BYTES).toBe(6912);
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(INDEX_BUDGET_BYTES);

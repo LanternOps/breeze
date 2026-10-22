@@ -150,7 +150,7 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'manage_backup_configs',
   'manage_backup_profiles',
   'manage_browser_policy',
-  'manage_catalog',
+  'manage_billing_catalog',
   'manage_contracts',
   'manage_deliverables',
   'manage_dr_plan',

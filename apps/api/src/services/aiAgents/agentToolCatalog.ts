@@ -370,7 +370,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   list_deliverable_templates: 'business',
   manage_deliverables: 'business',
   manage_key_dates: 'business',
-  manage_catalog: 'business',
+  manage_billing_catalog: 'business',
   search_catalog: 'business',
   lookup_distributor_product: 'business',
   get_catalog_item: 'business',

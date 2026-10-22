@@ -563,7 +563,7 @@ describe('W02 approval descriptions name what leaves the tenant (#6756)', () => 
   it('quote decline and catalog set_price say what they do', () => {
     expect(checkGuardrails('manage_quotes', { action: 'decline', quoteId: '33333333-3333-4333-8333-333333333333', method: 'phone' }).description)
       .toMatch(/DECLINED by the customer \(via phone\)/);
-    expect(checkGuardrails('manage_catalog', { action: 'set_price', catalogId: '44444444-4444-4444-8444-444444444444', currencyCode: 'usd', price: { unitPrice: 65 } }).description)
+    expect(checkGuardrails('manage_billing_catalog', { action: 'set_price', catalogId: '44444444-4444-4444-8444-444444444444', currencyCode: 'usd', price: { unitPrice: 65 } }).description)
       .toMatch(/Set the USD price of catalog item 44444444\.\.\. to 65/);
   });
 });
@@ -586,14 +586,14 @@ describe('W02 static classes (#6756)', () => {
     ['manage_quotes', 'create_draft', 2, undefined],
     ['manage_quotes', 'delete_draft', 2, undefined],
     ['manage_quotes', 'add_catalog_line', 2, undefined],
-    ['manage_catalog', 'create_item', 2, undefined],
-    ['manage_catalog', 'update_item', 3, 'supervised'],
-    ['manage_catalog', 'archive_item', 3, 'supervised'],
-    ['manage_catalog', 'set_price', 3, 'supervised'],
-    ['manage_catalog', 'remove_price', 3, 'supervised'],
-    ['manage_catalog', 'set_org_price', 3, 'supervised'],
-    ['manage_catalog', 'remove_org_price', 3, 'supervised'],
-    ['manage_catalog', 'set_bundle_components', 3, 'supervised'],
+    ['manage_billing_catalog', 'create_item', 2, undefined],
+    ['manage_billing_catalog', 'update_item', 3, 'supervised'],
+    ['manage_billing_catalog', 'archive_item', 3, 'supervised'],
+    ['manage_billing_catalog', 'set_price', 3, 'supervised'],
+    ['manage_billing_catalog', 'remove_price', 3, 'supervised'],
+    ['manage_billing_catalog', 'set_org_price', 3, 'supervised'],
+    ['manage_billing_catalog', 'remove_org_price', 3, 'supervised'],
+    ['manage_billing_catalog', 'set_bundle_components', 3, 'supervised'],
     ['manage_notification_channels', 'create', 3, 'supervised'],
     ['manage_notification_channels', 'update', 3, 'supervised'],
     ['manage_notification_channels', 'delete', 3, 'four_eyes'],

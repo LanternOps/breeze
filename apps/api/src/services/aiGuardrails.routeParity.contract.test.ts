@@ -262,21 +262,21 @@ describe('manage_quotes create_pay_link requires invoices:send (+ quotes:read), 
   });
 });
 
-describe('manage_catalog archive_item requires catalog:delete, like POST /catalog/items/:id/archive', () => {
+describe('manage_billing_catalog archive_item requires catalog:delete, like POST /catalog/items/:id/archive', () => {
   it('catalog:write without catalog:delete loses AI archive', () => {
-    expect(allows(parseGrants(['catalog:write']), 'manage_catalog', { action: 'archive_item' })).toBe(false);
+    expect(allows(parseGrants(['catalog:write']), 'manage_billing_catalog', { action: 'archive_item' })).toBe(false);
   });
   it('catalog:delete is allowed', () => {
-    expect(allows(parseGrants(['catalog:delete']), 'manage_catalog', { action: 'archive_item' })).toBe(true);
+    expect(allows(parseGrants(['catalog:delete']), 'manage_billing_catalog', { action: 'archive_item' })).toBe(true);
   });
 });
 
-describe('manage_catalog set_price/remove_price require catalog:write, like PUT/DELETE /catalog/items/:id/prices/:currencyCode (W02-D5, #6756)', () => {
+describe('manage_billing_catalog set_price/remove_price require catalog:write, like PUT/DELETE /catalog/items/:id/prices/:currencyCode (W02-D5, #6756)', () => {
   it.each(['set_price', 'remove_price'])('%s: catalog:read alone is refused', (action) => {
-    expect(allows(parseGrants(['catalog:read']), 'manage_catalog', { action })).toBe(false);
+    expect(allows(parseGrants(['catalog:read']), 'manage_billing_catalog', { action })).toBe(false);
   });
   it.each(['set_price', 'remove_price'])('%s: catalog:write is allowed (was unmapped: nobody could call it)', (action) => {
-    expect(allows(parseGrants(['catalog:write']), 'manage_catalog', { action })).toBe(true);
+    expect(allows(parseGrants(['catalog:write']), 'manage_billing_catalog', { action })).toBe(true);
   });
 });
 
