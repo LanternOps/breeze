@@ -31,6 +31,7 @@ import { captureException } from './sentry';
 import { invoiceLineTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql } from './invoiceRenderHelpers';
 import { resolveInvoicePresentation } from './invoicePresentation';
 import { resolvePartnerDocumentLocale } from './documentLocale';
+import { resolveDocumentBrand } from './partnerDocumentBrand';
 
 export type { CustomerDocumentMode } from '@breeze/shared/documents';
 export type { InvoiceRow } from './invoiceService';
@@ -208,11 +209,13 @@ export interface PreloadedBranding {
 function composeBranding(
   invoice: InvoiceRow, partner: DocumentPartner | null, brand: PreloadedBranding['brand'],
 ): CustomerDocumentBrandingDto {
+  const docBrand = resolveDocumentBrand(brand ?? undefined, partner?.settings);
   return {
     partnerName: partner?.name ?? null,
     contactEmail: partner?.billingEmail ?? null,
-    logoUrl: brand?.logoUrl ?? null,
-    primaryColor: brand?.primaryColor ?? null,
+    // #9676: org portal_branding wins; the partner's Branding settings fill the rest.
+    logoUrl: docBrand.logoUrl,
+    primaryColor: docBrand.primaryColor,
     // #6227: the invoice's issue-time snapshot; partner live values only for a draft.
     ...resolveInvoicePresentation(invoice, partner),
   };
