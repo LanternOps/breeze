@@ -49,7 +49,7 @@ import { redactToolOutputFields } from '../services/logRedaction';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { callerRefusal } from '../services/callerVerification/refusal';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
-import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
+import { buildMcpServerInstructions, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import { API_VERSION } from '../version';
 import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
 import {
@@ -68,7 +68,19 @@ import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
 import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
-import { isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
+import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
+import { mcpAppBaseUrl, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
+import { isMcpIntentEligible, mcpOriginRef, type McpIntentIneligibleReason } from '../services/mcpIntentEligibility';
+import type * as McpIntentCreation from '../services/mcpIntentCreation';
+import {
+  buildPendingApprovalResult,
+  MCP_CANCEL_ACTION_TOOL_LIST_ENTRY,
+  MCP_CANCEL_ACTION_TOOL_NAME,
+  MCP_GET_ACTION_STATUS_TOOL_LIST_ENTRY,
+  MCP_GET_ACTION_STATUS_TOOL_NAME,
+  toMcpActionStatus,
+  type McpActionStatus,
+} from '../services/mcpActionStatus';
 import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, isModernMcpProtocolVersion, mcpStatelessEnabled, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader, type McpProtocolVersion } from '../services/mcpProtocol';
 import { classifyMcpRequest, validateJsonRpcEnvelope, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
 import { buildDiscoverResult, decorateModernResult, recordMcpEraRejection, resolveMcpHttpStatus } from '../services/mcpModernResult';
@@ -1208,7 +1220,8 @@ export function buildInitializeResult(requestedProtocolVersion?: unknown) {
       title: 'Breeze RMM',
       version: API_VERSION,
     },
-    instructions: MCP_SERVER_INSTRUCTIONS,
+    // B-W04 (#6158, D-B34): the approval rules follow MCP_TIER3_INTENTS_ENABLED.
+    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled()),
   };
 }
 
@@ -1316,6 +1329,37 @@ const MCP_APPROVAL_REQUIRED_ERROR = {
   error: 'This action requires interactive approval and cannot be executed over MCP. Run it from the Breeze web app AI assistant, where it goes through the approval workflow.',
   code: 'MCP_APPROVAL_REQUIRED',
 } as const;
+
+// B-W04 (#6158, D-B34) — Tier-3 over MCP via action intents.
+
+// Lazy for the same reason as liveResolveTenantTools below: the intent
+// service touches the db/schema barrel at module-evaluation time, and a dozen
+// sibling mcpServer.*.test.ts files replace `../db/schema` with a narrow
+// object literal. Loaded only when a Tier-3 call is filed or an action-status
+// tool is called.
+async function liveMcpIntentCreation(): Promise<typeof McpIntentCreation> {
+  return import('../services/mcpIntentCreation');
+}
+
+/** True when this credential can own an `mcp_api` intent (human API key or OAuth grant). */
+function canOwnMcpIntents(auth: AuthContext, apiKey: McpApiKeyContext | undefined): boolean {
+  return mcpOriginRef(auth.principal) !== null
+    && (apiKey as { principalType?: string } | undefined)?.principalType !== 'service'
+    && !apiKey?.partnerServicePrincipalId;
+}
+
+const MCP_INTENT_FLAT_SUFFIX = ' (Requires approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.)';
+
+/** A get_action_status / cancel_action / continuation status body. */
+function mcpActionStatusResult(id: string | number, status: McpActionStatus, extra: Record<string, unknown> = {}): JsonRpcResponse {
+  const structured = { ...status, ...extra };
+  return jsonRpcResult(id, {
+    content: [{ type: 'text', text: JSON.stringify(structured) }],
+    structuredContent: structured,
+  });
+}
+
+const MCP_ACTION_NOT_FOUND = { reason: 'not_found' } as const;
 
 // Bootstrap auth tools are destructive tenant mutations (send invites /
 // configure defaults). They live outside the main aiTools registry, so they
@@ -1521,6 +1565,16 @@ async function handleToolsList(
   // advertise those actions as unavailable, independent of the approval gate
   // (a designated unattended principal still has no MFA claim).
   const callerFailsMfaGate = mfaGateRefusesCaller(auth);
+  // B-W04 (#6158, D-B34): with MCP_TIER3_INTENTS_ENABLED on, a Tier-3 tool this
+  // caller could file for approval is listed (listed ⇒ callable: the call
+  // returns pending_approval). Same scope/admin/allowlist conditions as the
+  // call; approval extras (collect_evidence) are never liftable.
+  const intentsOn = mcpTier3IntentsEnabled();
+  const ownsIntents = canOwnMcpIntents(auth, apiKey);
+  const canFileTier3Intent = (toolName: string) => intentsOn && ownsIntents
+    && MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] !== true
+    && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
+    && (process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(toolName));
 
   // Filter tools based on API key scopes.
   const scopedTools = allTools.filter((tool) => {
@@ -1530,7 +1584,7 @@ async function handleToolsList(
     // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
     // it would be denied by the tools/call gate below, so listing it is
     // exactly the advertised-but-dead pattern this payoff eliminates.
-    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name))) return false;
+    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name) || canFileTier3Intent(tool.name))) return false;
     // Same invariant for the MFA gate: every call would be refused by the handler.
     if (callerFailsMfaGate && isToolWhollyMfaGated(tool.name, extractActionEnum(tool.input_schema))) return false;
 
@@ -1568,8 +1622,20 @@ async function handleToolsList(
       : [];
     const quote = (actions: string[]) => actions.map((a) => `"${a}"`).join(', ');
     let description = tool.description ?? '';
-    if (gatedActions.length > 0) {
-      description += ` (Actions ${quote(gatedActions)} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`;
+    // B-W04: actions this caller can file for approval get the approval
+    // wording; anything still ineligible (MFA-gated) keeps today's sentence.
+    const intentActions = canFileTier3Intent(tool.name)
+      ? gatedActions.filter((a) => !(callerFailsMfaGate && isMfaGatedToolAction(tool.name, a)))
+      : [];
+    const webAppOnlyActions = gatedActions.filter((a) => !intentActions.includes(a));
+    if (webAppOnlyActions.length > 0) {
+      description += ` (Actions ${quote(webAppOnlyActions)} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`;
+    }
+    if (intentActions.length > 0) {
+      description += ` (Actions ${quote(intentActions)} require approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.)`;
+    }
+    if (canFileTier3Intent(tool.name) && !canRunTier3Unattended(tool.name) && (getToolTier(tool.name) ?? 0) >= 3) {
+      description += MCP_INTENT_FLAT_SUFFIX;
     }
     if (mfaGatedActions.length > 0) {
       description += ` (Actions ${quote(mfaGatedActions)} require a multi-factor-authenticated session and are not available over MCP — use the Breeze web app AI assistant, signed in with MFA, for those.)`;
@@ -1587,6 +1653,13 @@ async function handleToolsList(
   // `core` — listed for every principal (including a core-only grant) and
   // sorted with the registry tools below.
   result.push({ ...MCP_WHOAMI_TOOL_LIST_ENTRY });
+  // B-W04 (#6158, D-B31): the two action-status intrinsics, for every
+  // credential that can own an mcp_api intent — also with the flag off, so
+  // queued intents can still be read and cancelled.
+  if (ownsIntents) {
+    result.push({ ...MCP_GET_ACTION_STATUS_TOOL_LIST_ENTRY } as (typeof result)[number]);
+    if (hasWrite) result.push({ ...MCP_CANCEL_ACTION_TOOL_LIST_ENTRY } as (typeof result)[number]);
+  }
 
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
   // outside the main registry and carry a FIXED Tier 3 classification, so
@@ -1768,6 +1841,13 @@ async function handleToolsCall(
   if (toolName === MCP_WHOAMI_TOOL_NAME) {
     return handleWhoamiCall(id, auth, scopes, domainGrant, apiKey);
   }
+  // B-W04 (#6158, D-B31): core, server-intrinsic; ownership-checked inside.
+  if (toolName === MCP_GET_ACTION_STATUS_TOOL_NAME) {
+    return handleActionStatusCall(id, auth, apiKey, toolInput);
+  }
+  if (toolName === MCP_CANCEL_ACTION_TOOL_NAME) {
+    return handleCancelActionCall(id, auth, scopes, apiKey, toolInput);
+  }
 
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
   // outside the main aiTools registry but dispatch through this authed path.
@@ -1864,12 +1944,49 @@ async function handleToolsCall(
   // Only an effective Tier 3 call can be lifted (isMcpApprovalRequired re-checks
   // this too); checking it here keeps the intent readable at the call site.
   const unattendedPrincipal = tier === 3 && isUnattendedTier3PrincipalOverMcp(apiKey);
-  if (isMcpApprovalRequired(toolName, tier, { unattendedPrincipal })) {
+  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal });
+  // B-W04 (#6158, D-B30): with MCP_TIER3_INTENTS_ENABLED OFF this gate is
+  // exactly today's (same position, same body). ON, a call this credential
+  // can file continues through every gate below into the intent branch; any
+  // other gated call keeps the refusal, its JSON gaining `reason`. The scope
+  // and allowlist conditions are left to the gates below, which report them
+  // as they always have.
+  let intentRefusal: McpIntentIneligibleReason | null = null;
+  if (approvalRequired && mcpTier3IntentsEnabled()) {
+    const action = typeof toolInput.action === 'string' ? toolInput.action : undefined;
+    const eligibility = isMcpIntentEligible({
+      flagOn: true,
+      ref: canOwnMcpIntents(auth, apiKey) ? mcpOriginRef(auth.principal) : null,
+      isServiceKey: !canOwnMcpIntents(auth, apiKey),
+      toolName,
+      registryTier: baseTier,
+      effectiveTier: tier,
+      isTenantTool: false,
+      isBootstrapTool: false,
+      isApprovalExtra: MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true,
+      mfaRefused: isMfaGatedToolAction(toolName, action) && mfaGateRefusesCaller(auth),
+      scopes,
+      requireExecuteAdmin: shouldRequireExecuteAdminInProd(),
+      allowedInProd: isExecuteToolAllowedInProd(toolName),
+      isProduction: process.env.NODE_ENV === 'production',
+    });
+    if (!eligibility.ok && eligibility.reason !== 'scope' && eligibility.reason !== 'not_allowlisted') {
+      intentRefusal = eligibility.reason;
+    }
+  }
+  if (approvalRequired && (!mcpTier3IntentsEnabled() || intentRefusal)) {
     return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify(intentRefusal ? { ...MCP_APPROVAL_REQUIRED_ERROR, reason: intentRefusal } : MCP_APPROVAL_REQUIRED_ERROR),
+      }],
       isError: true,
     });
   }
+  // Past the gate with approvalRequired ⇒ the flag is on and this call is
+  // filed for approval below, after scope, allowlist, RBAC, rate limit and
+  // execution-org resolution — never executed here.
+  const fileAsIntent = approvalRequired;
   // Past the gate with an effective Tier 3 call means approval was skipped for
   // a named principal. Carried to the audit row so an unattended run is
   // distinguishable from every other Tier 3 row in an investigation.
@@ -1947,6 +2064,12 @@ async function handleToolsCall(
     }
     console.error('[MCP] Failed to resolve execution org for tool:', toolName, err);
     return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
+  }
+  if (fileAsIntent) {
+    if (!executionOrgId || !apiKey) {
+      return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
+    }
+    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation });
   }
   // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
   // complete + uniform audit. The callback owns executeTool + the MCP response
@@ -2071,6 +2194,92 @@ async function handleToolsCall(
   );
 }
 
+/**
+ * B-W04 (#6158, D-B25/D-B31): files the call as an `mcp_api` action intent
+ * and answers with a NORMAL result (pending_approval). Nothing executes here.
+ */
+async function fileMcpActionIntent(
+  id: string | number,
+  args: {
+    auth: AuthContext;
+    apiKey: McpApiKeyContext;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    executionOrgId: string;
+    correlation: McpRequestCorrelation;
+  },
+): Promise<JsonRpcResponse> {
+  let outcome: Awaited<ReturnType<typeof McpIntentCreation.createMcpActionIntent>>;
+  try {
+    const { createMcpActionIntent, resolveMcpClientLabel } = await liveMcpIntentCreation();
+    outcome = await createMcpActionIntent({
+      auth: args.auth,
+      apiKey: args.apiKey,
+      toolName: args.toolName,
+      toolInput: args.toolInput,
+      executionOrgId: args.executionOrgId,
+      correlationRequestId: args.correlation.requestId,
+      clientLabel: await resolveMcpClientLabel(args.apiKey),
+      appBaseUrl: mcpAppBaseUrl(),
+    });
+  } catch (err) {
+    console.error('[MCP] Failed to file action intent for tool:', args.toolName, err);
+    captureException(err);
+    return jsonRpcError(id, -32000, 'Unable to file the action for approval');
+  }
+  if (outcome.kind === 'refused') {
+    if (outcome.code === 'invalid_params') return jsonRpcError(id, -32602, 'Invalid params');
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify({ error: outcome.message, code: outcome.code }) }],
+      isError: true,
+    });
+  }
+  if (outcome.kind === 'terminal_replay') return mcpActionStatusResult(id, outcome.status);
+  return jsonRpcResult(id, buildPendingApprovalResult(outcome.status));
+}
+
+/** get_action_status — tier 1 (the ai:read preflight already ran). */
+async function handleActionStatusCall(
+  id: string | number,
+  auth: AuthContext,
+  apiKey: McpApiKeyContext | undefined,
+  args: Record<string, unknown>,
+): Promise<JsonRpcResponse> {
+  if (!canOwnMcpIntents(auth, apiKey)) return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+  try {
+    const { loadOwnedMcpIntent } = await liveMcpIntentCreation();
+    const intent = await loadOwnedMcpIntent(auth, args.actionId);
+    if (!intent) return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+    return mcpActionStatusResult(id, toMcpActionStatus(intent, mcpAppBaseUrl()));
+  } catch (err) {
+    console.error('[MCP] get_action_status failed:', err);
+    return jsonRpcError(id, -32000, 'Unable to read the action status');
+  }
+}
+
+/** cancel_action — tier 2 (ai:write); reports the actual CAS outcome. */
+async function handleCancelActionCall(
+  id: string | number,
+  auth: AuthContext,
+  scopes: string[],
+  apiKey: McpApiKeyContext | undefined,
+  args: Record<string, unknown>,
+): Promise<JsonRpcResponse> {
+  if (!scopes.includes('ai:write') && !scopes.includes('ai:execute')) {
+    return jsonRpcError(id, -32603, `Tool "${MCP_CANCEL_ACTION_TOOL_NAME}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
+  }
+  if (!canOwnMcpIntents(auth, apiKey)) return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+  try {
+    const { cancelOwnedMcpIntent } = await liveMcpIntentCreation();
+    const outcome = await cancelOwnedMcpIntent(auth, args.actionId, mcpAppBaseUrl());
+    if (outcome.kind === 'not_found') return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+    return mcpActionStatusResult(id, outcome.status, { outcome: outcome.kind });
+  } catch (err) {
+    console.error('[MCP] cancel_action failed:', err);
+    return jsonRpcError(id, -32000, 'Unable to cancel the action');
+  }
+}
+
 function handleWhoamiCall(
   id: string | number,
   auth: AuthContext,
@@ -2094,7 +2303,14 @@ function handleWhoamiCall(
     },
     scopes: scopes.filter((scope) => scope.startsWith('ai:')),
     domainGrant,
-    approvalGate: { tier3RequiresWebApp: !unattendedPrincipal, unattendedPrincipal },
+    approvalGate: (() => {
+      // B-W04 (#6158, D-B34): tier3RequiresWebApp is kept one release as a
+      // deprecated mirror of tier3 === 'web_app_only'.
+      const tier3 = unattendedPrincipal
+        ? 'unattended' as const
+        : mcpTier3IntentsEnabled() && canOwnMcpIntents(auth, apiKey) ? 'approval_intent' as const : 'web_app_only' as const;
+      return { tier3, tier3RequiresWebApp: tier3 === 'web_app_only', unattendedPrincipal };
+    })(),
     mfaGatedActionsUnavailable: mfaGateRefusesCaller(auth),
   });
   return jsonRpcResult(id, {

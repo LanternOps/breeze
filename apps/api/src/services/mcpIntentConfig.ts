@@ -59,3 +59,11 @@ export function mcpApprovalWaitMs(): number {
 export function mcpApprovalWaitsPerPrincipal(): number {
   return mcpPositiveIntEnv('MCP_APPROVAL_WAITS_PER_PRINCIPAL', 2, 1, 50);
 }
+
+/**
+ * The Breeze web app origin approval links point at (`<APP>/approvals#intent-<id>`).
+ * Same resolution as services/reportDelivery.ts.
+ */
+export function mcpAppBaseUrl(): string {
+  return (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/+$/, '');
+}
