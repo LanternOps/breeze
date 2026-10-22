@@ -1151,27 +1151,10 @@
           "basicInformation": "Temel Bilgiler",
           "connectionDetails": "Bağlantı Detayları",
           "credentials": "Kimlik Bilgileri",
-          "syncSettings": "Senkronizasyon Ayarları"
+          "syncSettings": "Bilet Senkronizasyonu"
         },
         "sync": {
-          "autoClose": "PSA biletlerini otomatik kapatma",
-          "autoCloseHelp": "Breeze uyarıları çözümlendiğinde bağlantılı biletleri kapatın.",
-          "enable": "Senkronizasyonu etkinleştir",
-          "enableHelp": "Biletleri ve uyarı bağlantılarını bir programa göre güncel tutun.",
-          "notes": "Uyarı notlarını senkronize et",
-          "notesHelp": "Breeze yorumlarını ve güncellemelerini PSA destek zaman çizelgesine aktarın."
-        },
-        "syncDirections": {
-          "bidirectional": "Çift Yönlü",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Günlük",
-          "every15Minutes": "Her 15 dakikada bir",
-          "every30Minutes": "Her 30 dakikada bir",
-          "every6Hours": "Her 6 saatte bir",
-          "everyHour": "Her saat"
+          "unavailable": "Bilet senkronizasyonu henüz kullanılamıyor. Bağlantılar test edilebilir ve şirketleri kuruluş olarak içe aktarmak için kullanılabilir; Breeze ile PSA'nız arasında bilet verisi aktarılmaz."
         },
         "testDirtyHint": "Önce kaydet — Test, kaydedilmemiş düzenlemelerinizi değil, depolanan kimlik bilgilerini kontrol eder.",
         "validation": {
@@ -1195,7 +1178,7 @@
         },
         "connectionCount": "{{filtered}} / {{total}} bağlantı",
         "empty": {
-          "noConnections": "Biletleri senkronize etmeye başlamak için bir PSA sağlayıcısına bağlanın.",
+          "noConnections": "Bir PSA sağlayıcısını test etmek ve şirketlerini içe aktarmak için bağlayın.",
           "noMatches": "Aramanızla veya filtrelerinizle eşleşen bağlantı yok.",
           "title": "Yapılandırılmış PSA bağlantısı yok"
         },
@@ -1248,10 +1231,10 @@
         "modal": {
           "addDescription": "Kuruluşunuz için yeni bir PSA bağlantısı kurun.",
           "addTitle": "PSA Bağlantısı Ekle",
-          "editDescription": "PSA bağlantı ayrıntılarını ve senkronizasyon tercihlerini güncelleyin.",
+          "editDescription": "PSA bağlantı ayrıntılarını güncelleyin.",
           "editTitle": "PSA Bağlantısını Düzenle"
         },
-        "subtitle": "Biletleri senkronize etmek ve uyarıları bağlamak için PSA'nızı bağlayın.",
+        "subtitle": "PSA bağlantılarını test edin ve şirketleri kuruluş olarak içe aktarın.",
         "test": {
           "failedMessage": "PSA sağlayıcısına bağlanılamıyor.",
           "failedTitle": "Bağlantı başarısız oldu",
@@ -1266,8 +1249,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Aramanızla veya filtrelerinizle eşleşen bilet yok.",
-          "noTickets": "Biletleri burada görmek için ilk PSA bağlantınızı senkronize edin.",
-          "title": "Senkronize edilen PSA bileti yok"
+          "noTickets": "Bilet senkronizasyonu henüz kullanılamıyor, bu nedenle PSA biletleri içe aktarılmaz.",
+          "title": "PSA bileti yok"
         },
         "filters": {
           "allStatuses": "Tüm durumlar",

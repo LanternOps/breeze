@@ -1151,27 +1151,10 @@
           "basicInformation": "Informações básicas",
           "connectionDetails": "Detalhes da conexão",
           "credentials": "Credenciais",
-          "syncSettings": "Configurações de sincronização"
+          "syncSettings": "Sincronização de tickets"
         },
         "sync": {
-          "autoClose": "Fechar tickets PSA automaticamente",
-          "autoCloseHelp": "Fechar tickets vinculados quando alertas do Breeze forem resolvidos.",
-          "enable": "Ativar sincronização",
-          "enableHelp": "Manter tickets e vínculos de alertas atualizados em uma programação.",
-          "notes": "Sincronizar notas de alerta",
-          "notesHelp": "Enviar comentários e atualizações do Breeze para a linha do tempo do ticket PSA."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirecional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Diariamente",
-          "every15Minutes": "A cada 15 minutos",
-          "every30Minutes": "A cada 30 minutos",
-          "every6Hours": "A cada 6 horas",
-          "everyHour": "A cada hora"
+          "unavailable": "A sincronização de tickets ainda não está disponível. As conexões podem ser testadas e usadas para importar empresas como organizações; nenhum dado de ticket é trocado entre o Breeze e o seu PSA."
         },
         "testDirtyHint": "Salve primeiro — o teste verifica as credenciais armazenadas, não suas edições não salvas.",
         "validation": {
@@ -1195,7 +1178,7 @@
         },
         "connectionCount": "{{filtered}} de {{total}} conexões",
         "empty": {
-          "noConnections": "Conecte um provedor PSA para começar a sincronizar tickets.",
+          "noConnections": "Conecte um provedor PSA para testá-lo e importar suas empresas.",
           "noMatches": "Nenhuma conexão corresponde à sua pesquisa ou filtros.",
           "title": "Nenhuma conexão PSA configurada"
         },
@@ -1248,10 +1231,10 @@
         "modal": {
           "addDescription": "Configure uma nova conexão PSA para sua organização.",
           "addTitle": "Adicionar conexão PSA",
-          "editDescription": "Atualize os detalhes da conexão PSA e as preferências de sincronização.",
+          "editDescription": "Atualize os detalhes da conexão PSA.",
           "editTitle": "Editar conexão PSA"
         },
-        "subtitle": "Conecte seu PSA para sincronizar tickets e vincular alertas.",
+        "subtitle": "Teste conexões PSA e importe empresas como organizações.",
         "test": {
           "failedMessage": "Não foi possível conectar ao provedor PSA.",
           "failedTitle": "Conexão falhou",
@@ -1266,8 +1249,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nenhum ticket corresponde à sua pesquisa ou filtros.",
-          "noTickets": "Sincronize sua primeira conexão PSA para ver tickets aqui.",
-          "title": "Nenhum ticket PSA sincronizado"
+          "noTickets": "A sincronização de tickets ainda não está disponível, então os tickets do PSA não são importados.",
+          "title": "Nenhum ticket do PSA"
         },
         "filters": {
           "allStatuses": "Todos os status",

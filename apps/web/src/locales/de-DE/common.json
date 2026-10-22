@@ -1151,27 +1151,10 @@
           "basicInformation": "Grundlegende Informationen",
           "connectionDetails": "Verbindungsdetails",
           "credentials": "Zugangsdaten",
-          "syncSettings": "Synchronisierungseinstellungen"
+          "syncSettings": "Ticket-Synchronisierung"
         },
         "sync": {
-          "autoClose": "PSA-Tickets automatisch schließen",
-          "autoCloseHelp": "Verknüpfte Tickets schließen, wenn Breeze-Warnmeldungen behoben wurden.",
-          "enable": "Synchronisierung aktivieren",
-          "enableHelp": "Tickets und Warnmeldungsverknüpfungen nach Zeitplan aktuell halten.",
-          "notes": "Warnmeldungsnotizen synchronisieren",
-          "notesHelp": "Breeze-Kommentare und -Aktualisierungen an die PSA-Ticket-Zeitleiste übertragen."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirektional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Täglich",
-          "every15Minutes": "Alle 15 Minuten",
-          "every30Minutes": "Alle 30 Minuten",
-          "every6Hours": "Alle 6 Stunden",
-          "everyHour": "Stündlich"
+          "unavailable": "Die Ticket-Synchronisierung ist noch nicht verfügbar. Verbindungen können getestet und zum Importieren von Unternehmen als Organisationen verwendet werden; es werden keine Ticketdaten zwischen Breeze und Ihrem PSA ausgetauscht."
         },
         "testDirtyHint": "Zuerst speichern – der Test prüft die gespeicherten Zugangsdaten, nicht Ihre ungespeicherten Änderungen.",
         "validation": {
@@ -1195,7 +1178,7 @@
         },
         "connectionCount": "{{filtered}} von {{total}} Verbindungen",
         "empty": {
-          "noConnections": "Verbinden Sie einen PSA-Anbieter, um Tickets zu synchronisieren.",
+          "noConnections": "Verbinden Sie einen PSA-Anbieter, um ihn zu testen und seine Unternehmen zu importieren.",
           "noMatches": "Keine Verbindungen entsprechen Ihrer Suche oder den Filtern.",
           "title": "Keine PSA-Verbindungen konfiguriert"
         },
@@ -1248,10 +1231,10 @@
         "modal": {
           "addDescription": "Richten Sie eine neue PSA-Verbindung für Ihre Organisation ein.",
           "addTitle": "PSA-Verbindung hinzufügen",
-          "editDescription": "Aktualisieren Sie die Details und Synchronisierungseinstellungen der PSA-Verbindung.",
+          "editDescription": "Aktualisieren Sie die Details der PSA-Verbindung.",
           "editTitle": "PSA-Verbindung bearbeiten"
         },
-        "subtitle": "Verbinden Sie Ihr PSA-System, um Tickets zu synchronisieren und Warnmeldungen zu verknüpfen.",
+        "subtitle": "Testen Sie PSA-Verbindungen und importieren Sie Unternehmen als Organisationen.",
         "test": {
           "failedMessage": "Verbindung mit dem PSA-Anbieter nicht möglich.",
           "failedTitle": "Verbindung fehlgeschlagen",
@@ -1266,8 +1249,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Keine Tickets entsprechen Ihrer Suche oder den Filtern.",
-          "noTickets": "Synchronisieren Sie Ihre erste PSA-Verbindung, damit hier Tickets angezeigt werden.",
-          "title": "Keine PSA-Tickets synchronisiert"
+          "noTickets": "Die Ticket-Synchronisierung ist noch nicht verfügbar, daher werden keine PSA-Tickets importiert.",
+          "title": "Keine PSA-Tickets"
         },
         "filters": {
           "allStatuses": "Alle Status",
