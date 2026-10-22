@@ -130,7 +130,7 @@ export function writeMcpToolAuditEvent(
     result: event.status === 'success' ? 'success' : 'failure',
     errorMessage: error ? redactAiToolOutputText(error.message).slice(0, 1000) : undefined,
     details: {
-      sessionId: event.correlation.sessionId,
+      sessionId: lifecycleSessionId(event.correlation),
       approvalId: null,
       ...(event.approvalBypassPrincipal
         ? { approvalBypass: 'unattended_principal', approvalBypassPrincipal: event.approvalBypassPrincipal }

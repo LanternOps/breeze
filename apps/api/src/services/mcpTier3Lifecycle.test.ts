@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  createAuditLogAsync: vi.fn(async () => undefined),
+  createAuditLogAsync: vi.fn(async (..._args: unknown[]) => undefined),
   begin: vi.fn(),
   complete: vi.fn(async () => undefined),
   existingAudit: [] as unknown[],

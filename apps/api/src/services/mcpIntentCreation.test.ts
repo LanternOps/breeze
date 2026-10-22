@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   revokeApiKey: vi.fn(async () => ({ revoked: true })),
   revokeGrantsDurably: vi.fn(async () => undefined),
   writeMarker: vi.fn(async () => ({ status: 'written' })),
-  createNotification: vi.fn(async () => 'n-1'),
+  createNotification: vi.fn(async (..._args: unknown[]) => 'n-1'),
   captureException: vi.fn(),
   createActionIntent: vi.fn(),
   validateToolInput: vi.fn(),
