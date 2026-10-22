@@ -171,16 +171,18 @@ func findXServerProcAt(procRoot, displayNum string) (pid int, argv []string, uid
 		candidates = append(candidates, xServerProc{pidN, args, st.uid})
 	}
 
-	// GDM uses -displayfd instead of a literal :N argument.
-	unix, err := os.ReadFile(filepath.Join(procRoot, "net", "unix"))
-	if err != nil {
-		return 0, nil, 0, false
-	}
-	inodes := parseXSocketInodes(string(unix), displayNum)
-	if len(inodes) == 0 {
-		return 0, nil, 0, false
-	}
+	// GDM uses -displayfd instead of a literal :N argument, so match the X
+	// server by the socket it listens on. Unix sockets are per network
+	// namespace: read each candidate's own /proc/<pid>/net/unix.
 	for _, c := range candidates {
+		unix, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(c.pid), "net", "unix"))
+		if err != nil {
+			continue
+		}
+		inodes := parseXSocketInodes(string(unix), displayNum)
+		if len(inodes) == 0 {
+			continue
+		}
 		fdRoot := filepath.Join(procRoot, strconv.Itoa(c.pid), "fd")
 		fds, err := os.ReadDir(fdRoot)
 		if err != nil {

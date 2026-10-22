@@ -46,7 +46,7 @@ func TestFindXServerProcAt(t *testing.T) {
 				args[0] = "/usr/bin/other"
 			}
 			write("100/cmdline", strings.Join(args, "\x00")+"\x00")
-			write("net/unix", "Num RefCount Protocol Flags Type St Inode Path\n"+
+			write("100/net/unix", "Num RefCount Protocol Flags Type St Inode Path\n"+
 				"0000000000000000: 00000002 00000000 00010000 0001 01 12345 "+tc.path+"\n")
 			fdRoot := filepath.Join(root, "100", "fd")
 			if err := os.MkdirAll(fdRoot, 0755); err != nil {
