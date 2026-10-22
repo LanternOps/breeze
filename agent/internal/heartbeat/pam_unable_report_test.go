@@ -65,7 +65,9 @@ func TestSendPamElevationUnablePostsReport(t *testing.T) {
 	if r.method != http.MethodPost || r.path != "/api/v1/agents/agent-9517/pam/elevation-unable" {
 		t.Fatalf("request = %s %s", r.method, r.path)
 	}
-	if r.auth == "" || r.contentType != "application/json" {
+	// The exact header the API's agent auth accepts: "Bearer <agent token>"
+	// (pamElevationUnableRoute.integration.test.ts sends the same shape).
+	if r.auth != "Bearer token" || r.contentType != "application/json" {
 		t.Fatalf("auth=%q contentType=%q", r.auth, r.contentType)
 	}
 	want := map[string]any{
