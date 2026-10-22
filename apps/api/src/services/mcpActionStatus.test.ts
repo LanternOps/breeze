@@ -126,8 +126,8 @@ describe('buildPendingApprovalResult', () => {
     const r = buildPendingApprovalResult(status);
     expect('isError' in r).toBe(false);
     expect(r.content).toHaveLength(1);
-    expect(r.content[0].text).toContain('get_action_status');
-    expect(r.content[0].text).toContain(ID);
+    expect(r.content[0]?.text).toContain('get_action_status');
+    expect(r.content[0]?.text).toContain(ID);
     expect(r.structuredContent).toEqual({
       ...status,
       next: 'Call get_action_status with this actionId; do not re-issue the call.',
