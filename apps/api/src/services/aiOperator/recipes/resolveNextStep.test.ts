@@ -97,7 +97,7 @@ describe('resolveDeterministicNextStep', () => {
 
   it('never consults permittedNextSteps', () => {
     const r = fixture({ a: { kind: 'probe', phase: 'plan' } });
-    (r as { permittedNextSteps: Record<string, string[]> }).permittedNextSteps = { a: ['b'] };
+    (r as unknown as { permittedNextSteps: Record<string, string[]> }).permittedNextSteps = { a: ['b'] };
     expect(resolveDeterministicNextStep(r, 'a', EMPTY_CTX).ok).toBe(false);
   });
 });
