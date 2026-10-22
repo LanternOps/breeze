@@ -90,6 +90,7 @@ alertsRoutes.get(
       const message = alert.message ? fillDevicePlaceholders(alert.message, deviceLabel) : alert.message;
       return {
         id: alert.id,
+        title,
         message: message || title,
         summary: title,
         severity: alert.severity,

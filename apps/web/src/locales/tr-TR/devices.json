@@ -1362,6 +1362,7 @@
     "drive": "Sür",
     "size": "Boyut",
     "used": "Kullanılmış",
+    "usedPercent": "Kullanım %",
     "health": "Sağlık",
     "noDiskInventoryReported": "Disk envanteri bildirilmedi.",
     "networkAdapters": "Ağ Bağdaştırıcıları",
@@ -2497,7 +2498,7 @@
     "showFindings": "Bulguları Göster",
     "stats": {
       "accepted": "Kabul edildi",
-      "kev": "Kev",
+      "kev": "Bilinen istismar",
       "mitigated": "Azaltılmış",
       "open": "Aç",
       "patchReady": "Yama Hazır",
@@ -2515,9 +2516,9 @@
     "statusLabel": "Durum Etiketi",
     "table": {
       "actions": "Eylemler",
-      "cve": "Cve",
-      "cvss": "Cvs",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risk",
       "severity": "Önem",
       "status": "Durum"
