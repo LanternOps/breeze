@@ -257,10 +257,44 @@ describe('backup dashboard routes', () => {
     expect(totals).toEqual([100, 100, 119]);
     expect(body.data.providers).toEqual(['s3']);
     const [where, since] = storedSnapshotBytesByProviderSinceMock.mock.calls[0]!;
-    expect(where).toEqual({ op: 'eq', column: 'backup_snapshots.org_id', value: ORG_ID });
+    expect(where).toEqual({
+      op: 'and',
+      conditions: [{ op: 'eq', column: 'backup_snapshots.org_id', value: ORG_ID }, undefined],
+    });
     expect((since as Date).toISOString().slice(0, 10)).toBe(
       new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
     );
+  });
+
+  it('narrows the storage trend to the site-scoped device list like Storage Used (#9631)', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock.mockReturnValueOnce(chainMock([
+      { id: DEVICE_ID, siteId: SITE_A },
+      { id: OTHER_DEVICE_ID, siteId: SITE_B },
+    ]));
+
+    const res = await app.request('/backup/usage-history?days=3');
+
+    expect(res.status).toBe(200);
+    expect(storedSnapshotBytesByProviderSinceMock.mock.calls[0]![0]).toEqual({
+      op: 'and',
+      conditions: [
+        { op: 'eq', column: 'backup_snapshots.org_id', value: ORG_ID },
+        { op: 'inArray', column: 'backup_snapshots.device_id', values: [DEVICE_ID] },
+      ],
+    });
+  });
+
+  it('reads no storage trend for a site-restricted caller who can see no devices', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock.mockReturnValueOnce(chainMock([{ id: OTHER_DEVICE_ID, siteId: SITE_B }]));
+
+    const res = await app.request('/backup/usage-history?days=3');
+
+    expect(res.status).toBe(200);
+    expect(storedSnapshotBytesByProviderSinceMock).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.data.points.every((point: { totalBytes: number }) => point.totalBytes === 0)).toBe(true);
   });
 
   it('keeps unrestricted dashboard behavior unchanged', async () => {

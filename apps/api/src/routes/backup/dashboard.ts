@@ -256,10 +256,19 @@ dashboardRoutes.get(
     // Stored bytes (#9631), not each snapshot's logical size. Snapshots
     // captured before the window form the starting level, so the series
     // ends at the same figure as Storage Used.
-    const usageRows = await storedSnapshotBytesByProviderSince(
-      eq(backupSnapshots.orgId, orgId),
-      startDate
-    );
+    // Same site narrowing as /dashboard's Storage Used: RLS does not see
+    // the site axis, and the two figures must agree.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+    const usageRows = allowedDeviceIds !== null && allowedDeviceIds.length === 0
+      ? []
+      : await storedSnapshotBytesByProviderSince(
+          and(
+            eq(backupSnapshots.orgId, orgId),
+            allowedDeviceIds ? inArray(backupSnapshots.deviceId, allowedDeviceIds) : undefined
+          ),
+          startDate
+        );
 
     const providers = new Set<string>();
     const baselineByProvider = new Map<string, number>();
