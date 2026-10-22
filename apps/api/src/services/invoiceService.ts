@@ -430,23 +430,32 @@ export type ContractLinePricedFrom = 'org_override' | 'price_book' | 'contract_s
 const INVOICE_LINE_NAME_MAX = 255;
 
 /**
- * #9664: the title + blurb of a contract-sourced invoice line. Every renderer
- * prints `name` as the title and `description` as the blurb under it (and falls
- * back to `description` as the title only when `name` is NULL), so a contract
- * line stored with name NULL showed an empty Name box in the editor.
+ * #9664: the title + blurb of a contract-sourced invoice line. The staff
+ * views, the invoice PDF and the portal print `name` as the title and
+ * `description` as the blurb under it (falling back to `description` as the
+ * title only when `name` is NULL), so a contract line stored with name NULL
+ * showed an empty Name box in the editor. The accounting push sends only the
+ * title (`name ?? description`), never the blurb.
  *
  * The title is the catalog item's name when the line references one, else the
  * first non-blank line of the contract line's text. `description` then keeps
  * only what the title does not already say — a blurb that repeats the title
- * would print twice on the customer's invoice. When the title had to be
- * capped to the column, the full text stays as the blurb so nothing is lost.
+ * would print twice on the PDF and portal. When the title had to be capped to
+ * the column, the full text stays as the blurb so nothing is lost.
+ *
+ * `titleSuffix` (a derived line's marker, e.g. the hour-block overage period)
+ * is appended to the TITLE and always survives the cap, so a multi-line base
+ * text can never push it down into the blurb.
  */
 function contractInvoiceLineLabel(
-  text: string, catalogName: string | null,
+  text: string, catalogName: string | null, titleSuffix = '',
 ): { name: string | null; description: string | null } {
-  const capped = (s: string) => s.length <= INVOICE_LINE_NAME_MAX
-    ? { value: s, truncated: false }
-    : { value: `${s.slice(0, INVOICE_LINE_NAME_MAX - 1)}…`, truncated: true };
+  const capped = (s: string) => {
+    const room = INVOICE_LINE_NAME_MAX - titleSuffix.length;
+    return s.length <= room
+      ? { value: `${s}${titleSuffix}`, truncated: false }
+      : { value: `${s.slice(0, room - 1)}…${titleSuffix}`, truncated: true };
+  };
   const full = text.trim();
   const catalogTitle = catalogName?.trim();
   if (catalogTitle) {
@@ -457,7 +466,7 @@ function contractInvoiceLineLabel(
   const firstLine = first.trim();
   // Unreachable while contract_lines.description is validated non-blank; a
   // blank text stays a legacy (name NULL) line rather than a '—' title.
-  if (!firstLine) return { name: null, description: full || null };
+  if (!firstLine) return { name: titleSuffix.trim() || null, description: full || null };
   const { value, truncated } = capped(firstLine);
   if (truncated) return { name: value, description: full };
   const blurb = rest.join('\n').trim();
@@ -484,6 +493,9 @@ export async function addContractLine(
      *  source_type='contract' line without it is a 500-worthy bug, never a
      *  silent insert, because the ACTIVE-contract restamp keys on this column. */
     contractId: string;
+    /** #9664: appended to the line's title (not its text), e.g. the hour-block
+     *  overage period, so it stays in the title for a multi-line base text. */
+    titleSuffix?: string;
   },
   actor: InvoiceActor
 ): Promise<{ line: typeof invoiceLines.$inferSelect; pricedFrom: ContractLinePricedFrom }> {
@@ -573,7 +585,7 @@ export async function addContractLine(
     const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'contract', sourceId: input.sourceId ?? null, sourceContractId: input.contractId,
       catalogItemId: input.catalogItemId ?? null,
-      parentLineId: null, ticketId: null, ...contractInvoiceLineLabel(input.description, catalogName), quantity,
+      parentLineId: null, ticketId: null, ...contractInvoiceLineLabel(input.description, catalogName, input.titleSuffix), quantity,
       unitPrice, costBasis, taxable, customerVisible: true,
       lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode), isUnapprovedTime: false
     });
@@ -1417,16 +1429,16 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
   })));
 }
 
-/** #8603: the zone a draft's time-entry lines are dated in (`invoice_lines.work_date`).
- *  Runs in the caller's DB context — a partner request can read its own partners
- *  row. `partners.timezone` is NOT NULL DEFAULT 'UTC'; the fallback only covers a
- *  row the context cannot see, and an unknown zone string is handled downstream
- *  by `toPartnerLocalDate` (UTC). Never blocks assembly. */
-/** The partner settings assembly reads before creating a draft: the zone that
- *  dates labour (#8603) and the document locale that groups the numbers in
- *  generated line text (#9669). An invoice has no stamped document_locale until
- *  issue/send, so a draft uses the partner's language, the same fallback every
- *  renderer applies to an unstamped invoice. */
+/** The partner settings assembly reads before creating a draft.
+ *  - timeZone (#8603): the zone a draft's time-entry lines are dated in
+ *    (`invoice_lines.work_date`). `partners.timezone` is NOT NULL DEFAULT 'UTC';
+ *    the fallback only covers a row the context cannot see, and an unknown zone
+ *    string is handled downstream by `toPartnerLocalDate` (UTC).
+ *  - documentLocale (#9669): groups the numbers in generated line text. An
+ *    invoice has no stamped document_locale until issue/send, so a draft uses
+ *    the partner's language (`resolvePartnerDocumentLocale`, 'en' fallback).
+ *  Runs in the caller's DB context — a partner request can read its own
+ *  partners row. Never blocks assembly. */
 async function readPartnerAssemblyDefaults(partnerId: string): Promise<{ timeZone: string; documentLocale: string }> {
   const [row] = await db.select({ timezone: partners.timezone, settings: partners.settings })
     .from(partners).where(eq(partners.id, partnerId)).limit(1);

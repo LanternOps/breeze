@@ -297,6 +297,16 @@ describe('contract line writers lock the contract row first (#3774)', () => {
     expect(chain.values.mock.calls[0]![0]).toMatchObject({ contractId: 'c1', orgId: 'org1', unitPrice: '500.00' });
   });
 
+  // #9664 review: the add writer used to coalesce an absent manual quantity to
+  // '0' — a fabricated quantity the CHECK cannot catch. Refuse it instead.
+  it.each([undefined, null])('rejects a manual line whose manualQuantity is %s (never stores 0)', async (manualQuantity) => {
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'manual', description: 'Licences', unitPrice: '10.00', taxable: false, manualQuantity,
+    } as never, actor)).rejects.toMatchObject({ code: 'MANUAL_QUANTITY_MISSING', status: 400 });
+    expect((db as unknown as LockChain).values.mock.calls.length).toBe(0);
+  });
+
   it('rejects a per_device_group line without deviceGroupId as typed INVALID_STATE', async () => {
     queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
 
@@ -2392,6 +2402,23 @@ describe('manual line with no quantity (#9664)', () => {
       expect(warn).toHaveBeenCalledWith(
         '[contracts] MRR rollup skipped contract %s: manual line %s has no quantity', 'c1', 'l1',
       );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('the MRR skip drops only the affected contract, not the org', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      queueResult([contract, { ...contract, id: 'c2' }]);
+      queueResult([
+        { ...manualLine('5.00'), id: 'l0' },               // c1: a good line BEFORE the bad one
+        manualLine(null),                                   // c1: no quantity → skip c1 whole
+        { ...manualLine('3.00'), id: 'l2', contractId: 'c2' }, // c2: bills 3 × 10.00
+      ]);
+      const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '30.00' }]);
+      expect(warn).toHaveBeenCalledOnce();
     } finally {
       warn.mockRestore();
     }

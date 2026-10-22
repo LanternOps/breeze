@@ -1646,6 +1646,38 @@ describe('addContractLine', () => {
       expect(inserted()).toMatchObject({ name: 'Backup', description: 'Nightly' });
     });
 
+    it('non-catalog, Windows line endings split the same way', async () => {
+      queueNonCatalog();
+      await nonCatalog('Backup\r\nNightly\r\nOffsite');
+      expect(inserted()).toMatchObject({ name: 'Backup', description: 'Nightly\nOffsite' });
+    });
+
+    // #9664 review: a derived line (hour-block overage) appends its marker to
+    // the TITLE, so a multi-line base text never pushes it into the blurb.
+    it('titleSuffix lands on the title line, not after the blurb', async () => {
+      queueNonCatalog();
+      await svc.addContractLine('i1', {
+        description: 'Support hours\nPriority queue', titleSuffix: ' — hours over block, 2026-07-01 – 2026-08-01',
+        quantity: '2', unitPrice: '150.00', taxable: false, catalogItemId: null, sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      expect(inserted()).toMatchObject({
+        name: 'Support hours — hours over block, 2026-07-01 – 2026-08-01', description: 'Priority queue',
+      });
+    });
+
+    it('titleSuffix survives the 255 cap', async () => {
+      queueNonCatalog();
+      const suffix = ' — hours over block, 2026-07-01 – 2026-08-01';
+      await svc.addContractLine('i1', {
+        description: 'B'.repeat(300), titleSuffix: suffix,
+        quantity: '2', unitPrice: '150.00', taxable: false, catalogItemId: null, sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      const row = inserted();
+      expect((row.name as string).length).toBe(255);
+      expect((row.name as string).endsWith(`…${suffix}`)).toBe(true);
+      expect(row.description).toBe('B'.repeat(300));
+    });
+
     it('non-catalog, a first line longer than the name column is capped and the full text stays as the blurb', async () => {
       queueNonCatalog();
       const long = 'A'.repeat(300);

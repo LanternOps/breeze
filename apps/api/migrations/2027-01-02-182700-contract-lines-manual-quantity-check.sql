@@ -3,10 +3,9 @@
 -- resolveLineQty and generateDueInvoice used to read a NULL manual_quantity as
 -- 0, so a manual line with no quantity put a silent $0 line on the customer's
 -- invoice. The shared validator already requires the quantity, and every app
--- writer stores one (add/spec writers default to '0' only for an absent field
--- the validator has already rejected, and quote conversion copies the quote
--- line's NOT NULL quantity), but nothing stopped a direct write, import or
--- seed. This CHECK closes that, and the services now refuse such a line
+-- writer stores one (the add and spec writers refuse a manual line without
+-- one, and quote conversion copies the quote line's NOT NULL quantity), but
+-- nothing stopped a direct write, import or seed. This CHECK closes that, and the services now refuse such a line
 -- (MANUAL_QUANTITY_MISSING) instead of billing it as 0.
 --
 -- NOT VALID first, then VALIDATE: an install that already holds an offending

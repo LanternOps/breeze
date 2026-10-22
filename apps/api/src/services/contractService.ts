@@ -1829,6 +1829,11 @@ export async function addContractLineToContract(contractId: string, input: Contr
     await requireWholeContractSiteAccess(actor, contractId, tx);
     assertEditable(c);
     assertSpecDeviceSetLine(input);
+    // #9664: never fabricate a quantity. The route validator requires one; a
+    // caller that skips it must get an error, not a manual line billing 0.
+    if (input.lineType === 'manual' && input.manualQuantity == null) {
+      throw new ContractServiceError('manual line requires manualQuantity', 400, 'MANUAL_QUANTITY_MISSING');
+    }
     // A restricted actor may only create a line inside its sites; a non-site-scopable
     // (org-level, siteId null) line is denied, as a null-site invoice/quote is.
     // Checked BEFORE pricing so the answer is the authorization one, not a 400.
@@ -1897,7 +1902,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
       const [row] = await tx.insert(contractLines).values({
         contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
         catalogItemId: input.catalogItemId ?? null, unitPrice,
-        manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+        manualQuantity: input.lineType === 'manual' ? input.manualQuantity! : null,
         siteId: site?.id ?? null,
         siteName: site?.name ?? null,
         // #3205: roles only on per_device_role (CHECK-enforced); the validator
@@ -2733,7 +2738,8 @@ export async function createContractWithLinesDetailed(
         description: l.description,
         catalogItemId: l.catalogItemId ?? null,
         unitPrice: l.unitPrice,
-        manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
+        // Non-null on a manual line: contractLineInvariantIssues (create) above rejects it otherwise.
+        manualQuantity: l.lineType === 'manual' ? l.manualQuantity! : null,
         siteId: site?.id ?? null,
         // #4693: acceptance passes the string the customer SIGNED. Prefer it
         // over a fresh read; every other caller falls back to the live name.

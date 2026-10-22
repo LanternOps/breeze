@@ -31,6 +31,21 @@ describe('generateDueInvoice with a block of hours (real DB) #8181', () => {
     expect(r.overages).toEqual([]);   // device-unit overages never carry hours (index delta 7)
   });
 
+  // #9664: the contract text's first line is the title; the overage marker
+  // stays on the title even when the block's text has more lines.
+  it('a multi-line block text keeps the overage marker in the title', async () => {
+    const f = await seedBlockFixture({ timing: 'arrears' });
+    await withSystemDbAccessContext(() => db.update(contractLines).set({ description: 'Support hours\nPriority queue' })
+      .where(eq(contractLines.id, f.blockLineId)));
+    await seedEntry(f, { minutes: 720, endedAt: '2026-07-15T12:00:00Z' });           // 12 h, 2 over
+    const r = await run(f.contractId, '2026-08-01');
+    const lines = await linesOf(r.invoiceId!);
+    expect(lines.map((l) => [l.name, l.description])).toEqual([
+      ['Support hours', 'Priority queue'],
+      ['Support hours — hours over block, 2026-07-01 – 2026-08-01', 'Priority queue'],
+    ]);
+  });
+
   it('advance: P0 overage lands on the P1 invoice with P0\'s dates', async () => {
     const f = await seedBlockFixture({ timing: 'advance', nextBillingAt: '2026-07-01' });
     const r0 = await run(f.contractId, '2026-07-01');
