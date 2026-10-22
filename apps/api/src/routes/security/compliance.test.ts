@@ -212,6 +212,21 @@ describe('GET /trends — selected organization (#9639)', () => {
     expect(getSecurityPostureTrend).not.toHaveBeenCalled();
   });
 
+  it('returns 400 for a malformed orgId', async () => {
+    const res = await buildApp(partnerAuth).request('/trends?orgId=not-a-uuid');
+
+    expect(res.status).toBe(400);
+    expect(getSecurityPostureTrend).not.toHaveBeenCalled();
+  });
+
+  it('denies an org-scoped caller selecting another org (403)', async () => {
+    const res = await buildApp({ orgId: ORG_A, accessibleOrgIds: [ORG_A], canAccessOrg: (id: string) => id === ORG_A })
+      .request(`/trends?orgId=${ORG_B}`);
+
+    expect(res.status).toBe(403);
+    expect(getSecurityPostureTrend).not.toHaveBeenCalled();
+  });
+
   it('keeps every accessible org when no org is selected', async () => {
     const res = await buildApp(partnerAuth).request('/trends');
 

@@ -194,6 +194,14 @@ describe('GET /score-breakdown — selected organization (#9639)', () => {
     expect(listLatestSecurityPosture).not.toHaveBeenCalled();
   });
 
+  it('denies an org-scoped caller selecting another org (403)', async () => {
+    const res = await buildApp({ orgId: ORG_A, accessibleOrgIds: [ORG_A], canAccessOrg: (id: string) => id === ORG_A })
+      .request(`/security/score-breakdown?orgId=${ORG_B}`);
+
+    expect(res.status).toBe(403);
+    expect(listLatestSecurityPosture).not.toHaveBeenCalled();
+  });
+
   it('keeps every accessible org when no org is selected', async () => {
     const res = await buildApp(partnerAuth).request('/security/score-breakdown');
 

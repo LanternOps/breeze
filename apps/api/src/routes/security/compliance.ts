@@ -49,6 +49,8 @@ complianceRoutes.get(
       }
       orgIds = scope.orgIds;
     } else {
+      // Deliberately not resolveScopedOrgIds(auth): that 400s a caller with no
+      // org context, where this route has always fallen back to RLS scoping.
       orgIds = auth.orgId
         ? [auth.orgId]
         : auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0
