@@ -33,7 +33,11 @@ import { M365_WRITE_ACTION_IDEMPOTENCY } from '@breeze/shared/m365';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiOperatorOperations, type AiOperatorTaskRow } from '../../db/schema/aiOperatorTasks';
 import { actionIntents } from '../../db/schema/actionIntents';
-import { aiOperatorPlanApprovalEffects, type AiOperatorEffectIdempotencyClass } from '../../db/schema/aiOperatorPlanApprovals';
+import {
+  aiOperatorPlanApprovalEffects,
+  aiOperatorPlanApprovals,
+  type AiOperatorEffectIdempotencyClass,
+} from '../../db/schema/aiOperatorPlanApprovals';
 import { aiOperatorTaskTargetAccounts, aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { buildActionLabel } from '../actionIntents/actionLabel';
 import { M365_HEADLESS_ACTIONS } from '../m365ToolsHeadless';
@@ -49,6 +53,7 @@ import {
   type PlanEffectLabels,
 } from './planApproval';
 import { appendTaskEvent } from './eventService';
+import { loadPlanningFacts } from './planningSnapshot';
 import type { PlannedEffect, RecipeDefinition } from './recipes/types';
 import type { TaskCheckpoint } from '@breeze/shared';
 
@@ -402,15 +407,93 @@ async function readApprovalIdempotency(orgId: string, approvalId: string): Promi
 // The `effect` step: propose → approval → each effect in order → done
 // ---------------------------------------------------------------------------
 
-function buildRecipePlan(recipe: RecipeDefinition<never>, checkpoint: TaskCheckpoint):
-  { ok: true; effects: PlannedEffect[] } | { ok: false; detail: string } {
+type BuiltPlan =
+  | { ok: true; effects: PlannedEffect[] }
+  | { ok: false; kind: 'build_threw' | 'snapshot'; detail: string };
+
+/**
+ * Re-run the recipe's pure `buildPlan` with the facts it planned from.
+ *
+ * A recipe that declares no `planningSnapshotStepKey` (and a checkpoint that
+ * carries no `planningSnapshot`) gets `buildPlan(recipeInput, {})` — today's
+ * path. A recipe that declares one gets the loaded, digest-verified facts, or
+ * a typed failure: a failed load is NEVER rebuilt with `{}` (A.4). An I/O
+ * error from the loader propagates so the wake retries.
+ */
+async function buildRecipePlan(
+  recipe: RecipeDefinition<never>,
+  checkpoint: TaskCheckpoint,
+  task: Pick<AiOperatorTaskRow, 'id' | 'orgId'>,
+): Promise<BuiltPlan> {
+  const loaded = await loadPlanningFacts(task, recipe, checkpoint);
+  if (!loaded.ok) return { ok: false, kind: 'snapshot', detail: `planning snapshot ${loaded.reason}: ${loaded.detail}` };
   try {
-    const effects = recipe.buildPlan(checkpoint.recipeInput as never, {});
+    const effects = recipe.buildPlan(checkpoint.recipeInput as never, loaded.facts);
     return { ok: true, effects: [...effects].sort((a, b) => a.ordinal - b.ordinal) };
   } catch (err) {
-    return { ok: false, detail: `buildPlan threw: ${err instanceof Error ? err.message : String(err)}` };
+    return { ok: false, kind: 'build_threw', detail: `buildPlan threw: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
+
+/**
+ * What a plan-building failure means depends on what may already have run
+ * (A.4). Read with its own narrow query, never `readPlanApprovalAtRevision`:
+ * whether ANY approval row exists at the task's revision, and whether an
+ * operation of `stepKey` (null = any step) is still `pending`.
+ */
+async function readPlanFailureContext(
+  task: Pick<AiOperatorTaskRow, 'id' | 'orgId' | 'revision'>,
+  stepKey: string | null,
+): Promise<{ approvalExists: boolean; pendingOperation: boolean }> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const approvals = await db
+      .select({ id: aiOperatorPlanApprovals.id })
+      .from(aiOperatorPlanApprovals)
+      .where(and(
+        eq(aiOperatorPlanApprovals.orgId, task.orgId),
+        eq(aiOperatorPlanApprovals.taskId, task.id),
+        eq(aiOperatorPlanApprovals.planRevision, task.revision),
+      ))
+      .limit(1);
+    if (approvals.length === 0) return { approvalExists: false, pendingOperation: false };
+    const pending = await db
+      .select({ id: aiOperatorOperations.id, resultState: aiOperatorOperations.resultState })
+      .from(aiOperatorOperations)
+      .where(and(
+        eq(aiOperatorOperations.orgId, task.orgId),
+        eq(aiOperatorOperations.taskId, task.id),
+        eq(aiOperatorOperations.resultState, 'pending'),
+        ...(stepKey === null ? [] : [eq(aiOperatorOperations.taskStepKey, stepKey)]),
+      ))
+      .limit(1);
+    return { approvalExists: true, pendingOperation: pending.some((o) => o.resultState === 'pending') };
+  }));
+}
+
+/**
+ * Fail closed on a plan that cannot be rebuilt (A.4):
+ * - no approval row at the revision → `fail`/`unresolved`: nothing was
+ *   proposed or dispatched, so it is an integrity fault;
+ * - an approval row → `hand_off`, `unknown_effect` if an operation is still
+ *   pending, else `unresolved`: a person must look at a task that may have
+ *   run part of its plan.
+ */
+async function planBuildFailure(
+  task: Pick<AiOperatorTaskRow, 'id' | 'orgId' | 'revision'>,
+  stepKey: string | null,
+  built: Extract<BuiltPlan, { ok: false }>,
+): Promise<EffectStepDirective> {
+  const ctx = await readPlanFailureContext(task, stepKey);
+  if (!ctx.approvalExists) return { action: 'settle', event: 'fail', outcome: 'unresolved', detail: built.detail };
+  return handOff(ctx.pendingOperation ? 'unknown_effect' : 'unresolved', built.detail,
+    `Breeze could not rebuild the approved plan for this task (${built.detail}). Nothing further was dispatched. `
+    + `${ctx.pendingOperation ? 'An earlier step may still be running; check the provider before retrying. ' : ''}`
+    + 'Review what was already done and complete the rest by hand.');
+}
+
+const PLAN_CHANGED_SUMMARY =
+  'The plan Breeze would run no longer matches the one that was approved. Nothing further was changed. '
+  + 'A new approval is required.';
 
 function remainingSummary(effects: readonly PlannedEffect[], fromOrdinal: number): string {
   const rest = effects.filter((e) => e.ordinal >= fromOrdinal).map((e) => e.toolName);
@@ -426,8 +509,8 @@ export async function planEffectStep(args: {
   const { task, recipe, checkpoint, now } = args;
   const stepKey = task.currentStepKey ?? '';
 
-  const built = buildRecipePlan(recipe, checkpoint);
-  if (!built.ok) return { action: 'settle', event: 'fail', outcome: 'unresolved', detail: built.detail };
+  const built = await buildRecipePlan(recipe, checkpoint, task);
+  if (!built.ok) return planBuildFailure(task, stepKey, built);
   const effects = built.effects;
 
   const finish = (detail: string): EffectStepDirective => {
@@ -437,7 +520,13 @@ export async function planEffectStep(args: {
     }
     return { action: 'settle', event: 'complete', outcome: 'verified_resolved', detail };
   };
-  if (effects.length === 0) return finish('the plan produced no effects');
+  if (effects.length === 0) {
+    // An empty plan under an existing approval means the plan changed: it is
+    // the seal-mismatch hand-off, not success (A.4 empty-plan hardening).
+    const ctx = await readPlanFailureContext(task, stepKey);
+    if (ctx.approvalExists) return handOff('unresolved', 'the plan changed under its approval', PLAN_CHANGED_SUMMARY);
+    return finish('the plan produced no effects');
+  }
 
   let approval = await readPlanApprovalAtRevision(task.orgId, task.id, task.revision);
 
@@ -466,9 +555,7 @@ export async function planEffectStep(args: {
   // The approved seal must still describe what buildPlan produces now.
   const sealNow = computeEffectSetDigest({ taskId: task.id, planRevision: task.revision, effects: toDigestProjection(effects) });
   if (sealNow !== approval.effectSetDigest) {
-    return handOff('unresolved', 'the plan changed under its approval',
-      'The plan Breeze would run no longer matches the one that was approved. Nothing further was changed. '
-      + 'A new approval is required.');
+    return handOff('unresolved', 'the plan changed under its approval', PLAN_CHANGED_SUMMARY);
   }
 
   if (approval.state === 'pending') {
@@ -601,8 +688,8 @@ export async function planProbeStep(args: {
 }): Promise<EffectStepDirective> {
   const { task, recipe, checkpoint, now } = args;
   const stepKey = task.currentStepKey ?? '';
-  const built = buildRecipePlan(recipe, checkpoint);
-  if (!built.ok) return { action: 'settle', event: 'fail', outcome: 'unresolved', detail: built.detail };
+  const built = await buildRecipePlan(recipe, checkpoint, task);
+  if (!built.ok) return planBuildFailure(task, null, built);
 
   const unconfirmed: string[] = [];
   for (const effect of built.effects) {

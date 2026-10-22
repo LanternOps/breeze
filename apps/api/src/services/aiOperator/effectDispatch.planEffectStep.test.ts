@@ -371,3 +371,112 @@ describe('planEffectStep — existing operation rows', () => {
     expect(h.createActionIntent).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// R1a-0 Task 1d — plan facts from a sealed planning snapshot; fail closed.
+// Appended: every case above is unchanged and runs on a recipe that declares
+// no snapshot step, i.e. today's buildPlan(input, {}) path.
+// ---------------------------------------------------------------------------
+import { aiOperatorTaskSteps } from '../../db/schema/aiOperatorTaskGraph';
+import { aiOperatorPlanApprovals } from '../../db/schema/aiOperatorPlanApprovals';
+import { sealPlanningSnapshot } from './planningSnapshot';
+import { planProbeStep } from './effectDispatch';
+
+describe('planEffectStep — planning snapshot (R1a-0 Task 1d)', () => {
+  const STEP_ID = '00000000-0000-4000-8000-0000000000f1';
+  const facts = { targets: { contactTargetId: TARGET }, accounts: { google: '101' } };
+  const sealed = sealPlanningSnapshot(facts, new Date('2026-10-11T09:00:00.000Z'));
+  const snapRecipe = () => ({ buildPlan, steps: { discover: {}, after: {} }, planningSnapshotStepKey: 'discover' }) as never;
+  const snapCheckpoint = (digest = sealed.digest) => ({ recipeInput: { who: 'dana' }, planningSnapshot: { stepId: STEP_ID, digest } });
+  const stepRow = { id: STEP_ID, orgId: 'o1', taskId: TASK_ID, stepKey: 'discover', state: 'succeeded', checkpoint: { planningSnapshot: sealed.envelope } };
+  const runSnap = (checkpoint: Record<string, unknown> = snapCheckpoint()) =>
+    planEffectStep({ task, recipe: snapRecipe(), checkpoint: checkpoint as never, now: new Date('2026-10-12T00:00:00Z') });
+  const MISMATCH = 'f'.repeat(64);
+
+  beforeEach(() => {
+    h.tables.set(aiOperatorTaskSteps, [stepRow]);
+  });
+
+  it('1: a recipe with planningSnapshotStepKey gets buildPlan(input, facts) with the loaded facts', async () => {
+    h.readPlanApprovalAtRevision.mockResolvedValue(null);
+    h.proposePlanApproval.mockResolvedValue({ ok: true, approvalId: 'ap1', intentId: 'plan-intent', effectSetDigest: 'x', effectCount: 3 });
+    await expect(runSnap()).resolves.toMatchObject({ action: 'wait', reason: 'approval' });
+    expect(buildPlan).toHaveBeenCalledTimes(1);
+    expect(buildPlan).toHaveBeenCalledWith({ who: 'dana' }, facts);
+  });
+
+  it('2: snapshot_digest_mismatch with NO approval row fails unresolved and never proposes', async () => {
+    h.readPlanApprovalAtRevision.mockResolvedValue(null);
+    const out = await runSnap(snapCheckpoint(MISMATCH));
+    expect(out).toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved', detail: expect.stringContaining('snapshot_digest_mismatch') });
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(h.proposePlanApproval).not.toHaveBeenCalled();
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('3: the same failure with an approval row at the revision hands off unresolved; nothing probed or minted', async () => {
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    const out = await runSnap(snapCheckpoint(MISMATCH)) as { handoffSummary: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: expect.stringContaining('snapshot_digest_mismatch') });
+    expect(out.handoffSummary).toContain('Nothing further was dispatched');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(h.probeEffect).not.toHaveBeenCalled();
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+    expect(h.checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+  });
+
+  it('4: the same failure with an operation row still pending hands off unknown_effect', async () => {
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    setOps([op(e0, { resultState: 'pending', intentId: 'c1' })]);
+    await expect(runSnap(snapCheckpoint(MISMATCH))).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('snapshot_required (recipe declares a step, checkpoint has no ref) fails closed and never builds with {}', async () => {
+    h.readPlanApprovalAtRevision.mockResolvedValue(null);
+    await expect(runSnap({ recipeInput: {} })).resolves.toMatchObject({ action: 'settle', event: 'fail', detail: expect.stringContaining('snapshot_required') });
+    expect(buildPlan).not.toHaveBeenCalled();
+  });
+
+  it('5: an I/O throw from the loader propagates; it is not settled', async () => {
+    h.tables.set(aiOperatorTaskSteps, { then: (_res: unknown, rej: (e: unknown) => void) => rej(new Error('pool timeout')) } as never);
+    await expect(runSnap()).rejects.toThrow('pool timeout');
+    expect(buildPlan).not.toHaveBeenCalled();
+  });
+
+  it('6: an approval at the revision plus an EMPTY plan hands off as a seal mismatch, not success', async () => {
+    buildPlan.mockReturnValue([]);
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    await expect(run({ recipeInput: {}, resumeStepKey: 'after' })).resolves.toMatchObject({
+      action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: 'the plan changed under its approval',
+    });
+    await expect(run()).resolves.toMatchObject({ action: 'settle', event: 'hand_off' });
+  });
+
+  it('6a: a buildPlan throw WITH an approval row hands off (pending op -> unknown_effect), never fail', async () => {
+    buildPlan.mockImplementation(() => { throw new Error('recipe code changed'); });
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    await expect(run()).resolves.toMatchObject({
+      action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: expect.stringContaining('recipe code changed'),
+    });
+    setOps([op(e0, { resultState: 'pending', intentId: 'c1' })]);
+    await expect(run()).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('7: planProbeStep loads facts the same way, and fails closed the same way', async () => {
+    h.probeEffect.mockResolvedValue(probe('satisfied'));
+    await expect(planProbeStep({ task, recipe: snapRecipe(), checkpoint: snapCheckpoint() as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'complete' });
+    expect(buildPlan).toHaveBeenCalledWith({ who: 'dana' }, facts);
+
+    buildPlan.mockClear();
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    await expect(planProbeStep({ task, recipe: snapRecipe(), checkpoint: snapCheckpoint(MISMATCH) as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', detail: expect.stringContaining('snapshot_digest_mismatch') });
+    expect(buildPlan).not.toHaveBeenCalled();
+    h.tables.set(aiOperatorPlanApprovals, []);
+    await expect(planProbeStep({ task, recipe: snapRecipe(), checkpoint: snapCheckpoint(MISMATCH) as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved' });
+  });
+});
