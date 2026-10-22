@@ -810,9 +810,10 @@
     "precision": "Precisione",
     "recentEvidence": "Evidenze recenti",
     "refresh": "Aggiorna",
+    "refreshing": "Aggiornamento in corso",
     "repeatSignalUsers": "Utenti con segnali ripetuti",
     "retry": "Riprova",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Rivedi punteggi di rischio rules-v0, evidenze ed etichette di valutazione.",
+    "reviewUserRiskScoresEvidenceAnd": "Rivedi i punteggi di rischio degli utenti, le evidenze che li motivano e le tue etichette di valutazione.",
     "scoreImpact": "Impatto {{value}}",
     "scoresEvidenceAndLabelsWillAppearHere": "Punteggi, evidenze ed etichette appariranno qui quando il producer user-risk v0 sarà abilitato.",
     "selectAUserToInspectRiskEvidence": "Seleziona un utente per esaminare le evidenze di rischio.",
@@ -821,7 +822,41 @@
     "truePositive": "Vero positivo",
     "truePositiveLabelSaved": "Etichetta vero positivo salvata",
     "userRisk": "Rischio utente",
-    "userRiskScoringIsDisabledForThis": "Il calcolo del rischio utente è disabilitato per questa organizzazione."
+    "userRiskScoringIsDisabledForThis": "Il calcolo del rischio utente è disabilitato per questa organizzazione.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Lacune nell’autenticazione a più fattori",
+        "description": "Account senza MFA o che usano metodi MFA più deboli."
+      },
+      "authFailureRisk": {
+        "label": "Tentativi di accesso falliti",
+        "description": "Accessi falliti ripetuti, che possono indicare tentativi di indovinare le password o credential stuffing."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Attività di sessione insolita",
+        "description": "Accessi da posizioni o dispositivi sconosciuti, o in orari insoliti."
+      },
+      "threatExposureRisk": {
+        "label": "Esposizione alle minacce",
+        "description": "Minacce rilevate sui dispositivi da cui lavora l’utente."
+      },
+      "softwareViolationRisk": {
+        "label": "Violazioni delle policy software",
+        "description": "Software installato che viola le tue policy software."
+      },
+      "deviceSecurityRisk": {
+        "label": "Postura di sicurezza dei dispositivi",
+        "description": "Stato di sicurezza debole sui dispositivi dell’utente, come protezioni o patch mancanti."
+      },
+      "staleAccessRisk": {
+        "label": "Accessi inattivi",
+        "description": "Account o accessi non utilizzati da molto tempo."
+      },
+      "recentImpactRisk": {
+        "label": "Eventi di rischio recenti",
+        "description": "Eventi di rischio registrati per questo utente negli ultimi giorni."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Attiva",

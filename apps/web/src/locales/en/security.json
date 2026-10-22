@@ -810,9 +810,10 @@
     "precision": "Precision",
     "recentEvidence": "Recent evidence",
     "refresh": "Refresh",
+    "refreshing": "Refreshing",
     "repeatSignalUsers": "Repeat signal users",
     "retry": "Retry",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Review rules-v0 risk scores, evidence, and evaluation labels.",
+    "reviewUserRiskScoresEvidenceAnd": "Review user risk scores, the evidence behind them, and your evaluation labels.",
     "scoreImpact": "{{value}} impact",
     "scoresEvidenceAndLabelsWillAppearHere": "Scores, evidence, and labels will appear here when the user-risk v0 producer is enabled.",
     "selectAUserToInspectRiskEvidence": "Select a user to inspect risk evidence.",
@@ -821,7 +822,41 @@
     "truePositive": "True positive",
     "truePositiveLabelSaved": "True positive label saved",
     "userRisk": "User Risk",
-    "userRiskScoringIsDisabledForThis": "User risk scoring is disabled for this organization."
+    "userRiskScoringIsDisabledForThis": "User risk scoring is disabled for this organization.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Multi-factor authentication gaps",
+        "description": "Accounts without MFA, or relying on weaker MFA methods."
+      },
+      "authFailureRisk": {
+        "label": "Failed sign-in attempts",
+        "description": "Repeated failed logins, which can point to password guessing or credential stuffing."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Unusual session activity",
+        "description": "Sign-ins from unfamiliar locations, devices, or at unusual times."
+      },
+      "threatExposureRisk": {
+        "label": "Threat exposure",
+        "description": "Threats detected on the devices this user works from."
+      },
+      "softwareViolationRisk": {
+        "label": "Software policy violations",
+        "description": "Installed software that breaks your software policies."
+      },
+      "deviceSecurityRisk": {
+        "label": "Device security posture",
+        "description": "Weak security health on the user's devices, such as missing protections or patches."
+      },
+      "staleAccessRisk": {
+        "label": "Stale access",
+        "description": "Accounts or access that have gone unused for a long time."
+      },
+      "recentImpactRisk": {
+        "label": "Recent risk events",
+        "description": "Risk events recorded for this user in the last few days."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Active",

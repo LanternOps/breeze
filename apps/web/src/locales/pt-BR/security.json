@@ -810,9 +810,10 @@
     "precision": "Precisão",
     "recentEvidence": "Evidência recente",
     "refresh": "Atualizar",
+    "refreshing": "Atualizando",
     "repeatSignalUsers": "Usuários com sinais repetidos",
     "retry": "Tentar novamente",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Revise regras v0, pontuações de risco, evidências e rótulos de avaliação.",
+    "reviewUserRiskScoresEvidenceAnd": "Revise as pontuações de risco dos usuários, as evidências por trás delas e seus rótulos de avaliação.",
     "scoreImpact": "impacto {{value}}",
     "scoresEvidenceAndLabelsWillAppearHere": "Pontuações, evidências e rótulos aparecerão aqui quando o produtor user-risk v0 estiver habilitado.",
     "selectAUserToInspectRiskEvidence": "Selecione um usuário para inspecionar evidências de risco.",
@@ -821,7 +822,41 @@
     "truePositive": "Verdadeiro positivo",
     "truePositiveLabelSaved": "Rótulo de verdadeiro positivo salvo",
     "userRisk": "Risco do usuário",
-    "userRiskScoringIsDisabledForThis": "A pontuação de risco do usuário está desabilitada para esta organização."
+    "userRiskScoringIsDisabledForThis": "A pontuação de risco do usuário está desabilitada para esta organização.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Lacunas de autenticação multifator",
+        "description": "Contas sem MFA ou que usam métodos de MFA mais fracos."
+      },
+      "authFailureRisk": {
+        "label": "Tentativas de login com falha",
+        "description": "Falhas repetidas de login, que podem indicar tentativa de adivinhar senhas ou credential stuffing."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Atividade de sessão incomum",
+        "description": "Logins de locais ou dispositivos desconhecidos, ou em horários incomuns."
+      },
+      "threatExposureRisk": {
+        "label": "Exposição a ameaças",
+        "description": "Ameaças detectadas nos dispositivos usados pelo usuário."
+      },
+      "softwareViolationRisk": {
+        "label": "Violações da política de software",
+        "description": "Software instalado que viola suas políticas de software."
+      },
+      "deviceSecurityRisk": {
+        "label": "Postura de segurança dos dispositivos",
+        "description": "Saúde de segurança fraca nos dispositivos do usuário, como proteções ou patches ausentes."
+      },
+      "staleAccessRisk": {
+        "label": "Acesso obsoleto",
+        "description": "Contas ou acessos sem uso há muito tempo."
+      },
+      "recentImpactRisk": {
+        "label": "Eventos de risco recentes",
+        "description": "Eventos de risco registrados para este usuário nos últimos dias."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Ativo",

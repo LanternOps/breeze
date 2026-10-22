@@ -810,9 +810,10 @@
     "precision": "Précision",
     "recentEvidence": "Preuves récentes",
     "refresh": "Actualiser",
+    "refreshing": "Actualisation",
     "repeatSignalUsers": "Utilisateurs répétés du signal",
     "retry": "Réessayer",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Examinez les scores de risque des règles v0, les preuves et les étiquettes d’évaluation.",
+    "reviewUserRiskScoresEvidenceAnd": "Examinez les scores de risque des utilisateurs, les preuves sur lesquelles ils reposent et vos étiquettes d’évaluation.",
     "scoreImpact": "{{value}} impact",
     "scoresEvidenceAndLabelsWillAppearHere": "Les scores, preuves et labels apparaîtront ici lorsque le producteur v0 de risque utilisateur est activé.",
     "selectAUserToInspectRiskEvidence": "Sélectionnez un utilisateur pour inspecter les preuves de risque.",
@@ -821,7 +822,41 @@
     "truePositive": "Vrai positif",
     "truePositiveLabelSaved": "Étiquette vraiment positive enregistrée",
     "userRisk": "Risque utilisateur",
-    "userRiskScoringIsDisabledForThis": "Le score de risque utilisateur est désactivé pour cette organisation."
+    "userRiskScoringIsDisabledForThis": "Le score de risque utilisateur est désactivé pour cette organisation.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Lacunes d’authentification multifacteur",
+        "description": "Comptes sans MFA ou utilisant des méthodes MFA plus faibles."
+      },
+      "authFailureRisk": {
+        "label": "Échecs de connexion",
+        "description": "Échecs de connexion répétés, pouvant indiquer des tentatives de devinette de mot de passe ou du bourrage d’identifiants."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Activité de session inhabituelle",
+        "description": "Connexions depuis des lieux ou appareils inconnus, ou à des heures inhabituelles."
+      },
+      "threatExposureRisk": {
+        "label": "Exposition aux menaces",
+        "description": "Menaces détectées sur les appareils utilisés par l’utilisateur."
+      },
+      "softwareViolationRisk": {
+        "label": "Violations de la politique logicielle",
+        "description": "Logiciels installés qui enfreignent vos politiques logicielles."
+      },
+      "deviceSecurityRisk": {
+        "label": "Niveau de sécurité des appareils",
+        "description": "Faible état de sécurité des appareils de l’utilisateur, par exemple protections ou correctifs manquants."
+      },
+      "staleAccessRisk": {
+        "label": "Accès obsolètes",
+        "description": "Comptes ou accès inutilisés depuis longtemps."
+      },
+      "recentImpactRisk": {
+        "label": "Événements de risque récents",
+        "description": "Événements de risque enregistrés pour cet utilisateur ces derniers jours."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Actives",
