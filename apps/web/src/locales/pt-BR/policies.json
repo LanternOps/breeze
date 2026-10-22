@@ -158,7 +158,9 @@
       "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}",
       "summary": "{{filtered}} de {{total}} políticas",
       "inheritsBadge": "Herda",
-      "statusFilterLabel": "Status"
+      "statusFilterLabel": "Status",
+      "partnerPolicy": "Parceiro",
+      "partnerPolicyAppliesOnlyWhereAssigned": "Política do parceiro — aplica-se somente onde está atribuída. Atribua-a a todas as organizações para torná-la de todo o parceiro."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Falha ao buscar as políticas de configuração",
@@ -756,7 +758,9 @@
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Notificar no término",
         "sendNotificationWhenWindowCloses": "Enviar uma notificação quando a janela for encerrada.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Janelas semanais abrem todo domingo no horário de início, no fuso horário selecionado.",
+        "monthlyOpensOnTheFirst": "Janelas mensais abrem no dia 1º de cada mês no horário de início, no fuso horário selecionado."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Coleta do agente",
@@ -887,7 +891,10 @@
         "noRingManualApprovalHint": "Nenhum anel vinculado — os patches só são instalados após aprovação manual.",
         "unavailableRingOption": "Anel indisponível",
         "ringInvalidTitle": "O anel de atualização vinculado não está mais disponível.",
-        "ringInvalidBody": "Os patches desta política ficam retidos até você escolher um anel e salvar."
+        "ringInvalidBody": "Os patches desta política ficam retidos até você escolher um anel e salvar.",
+        "ringDetailsNoHold": "Ordem de implantação {{order}} · sem espera antes da aprovação",
+        "ringDetailsWithHold_one": "Ordem de implantação {{order}} · {{count}} dia de espera antes da aprovação",
+        "ringDetailsWithHold_other": "Ordem de implantação {{order}} · {{count}} dias de espera antes da aprovação"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Vincular política de periféricos",

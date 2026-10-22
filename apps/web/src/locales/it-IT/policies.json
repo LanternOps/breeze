@@ -158,7 +158,9 @@
       "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
       "summary": "{{filtered}} di {{total}} criteri",
       "inheritsBadge": "Eredita",
-      "statusFilterLabel": "Stato"
+      "statusFilterLabel": "Stato",
+      "partnerPolicy": "Partner",
+      "partnerPolicyAppliesOnlyWhereAssigned": "Criterio del partner — si applica solo dove è assegnato. Assegnalo a tutte le organizzazioni per renderlo valido a livello di partner."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",
@@ -756,7 +758,9 @@
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Notifica alla fine",
         "sendNotificationWhenWindowCloses": "Invia una notifica alla chiusura della finestra.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Le finestre settimanali si aprono ogni domenica all’orario di inizio, nel fuso orario selezionato.",
+        "monthlyOpensOnTheFirst": "Le finestre mensili si aprono il giorno 1 di ogni mese all’orario di inizio, nel fuso orario selezionato."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Raccolta dell'agente",
@@ -887,7 +891,10 @@
         "noRingManualApprovalHint": "Nessun anello collegato: le patch vengono installate solo dopo l'approvazione manuale.",
         "unavailableRingOption": "Anello non disponibile",
         "ringInvalidTitle": "L'anello di aggiornamento collegato non è più disponibile.",
-        "ringInvalidBody": "Le patch di questo criterio restano in attesa finché non scegli un anello e salvi."
+        "ringInvalidBody": "Le patch di questo criterio restano in attesa finché non scegli un anello e salvi.",
+        "ringDetailsNoHold": "Ordine di rollout {{order}} · nessuna attesa prima dell’approvazione",
+        "ringDetailsWithHold_one": "Ordine di rollout {{order}} · {{count}} giorno di attesa prima dell’approvazione",
+        "ringDetailsWithHold_other": "Ordine di rollout {{order}} · {{count}} giorni di attesa prima dell’approvazione"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Collega criterio periferiche",

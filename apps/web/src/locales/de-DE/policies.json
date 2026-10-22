@@ -158,7 +158,9 @@
       "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
       "summary": "{{filtered}} von {{total}} Richtlinien",
       "inheritsBadge": "Erbt",
-      "statusFilterLabel": "Status"
+      "statusFilterLabel": "Status",
+      "partnerPolicy": "Partner",
+      "partnerPolicyAppliesOnlyWhereAssigned": "Partnerrichtlinie – gilt nur dort, wo sie zugewiesen ist. Weisen Sie sie allen Organisationen zu, um sie partnerweit zu machen."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -756,7 +758,9 @@
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Am Ende benachrichtigen",
         "sendNotificationWhenWindowCloses": "Benachrichtigung senden, wenn das Fenster geschlossen wird.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Wöchentliche Fenster öffnen jeden Sonntag zur Startzeit in der ausgewählten Zeitzone.",
+        "monthlyOpensOnTheFirst": "Monatliche Fenster öffnen am 1. jedes Monats zur Startzeit in der ausgewählten Zeitzone."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Agent-Erfassung",
@@ -887,7 +891,10 @@
         "noRingManualApprovalHint": "Kein Ring verknüpft – Patches werden erst nach manueller Genehmigung installiert.",
         "unavailableRingOption": "Nicht verfügbarer Ring",
         "ringInvalidTitle": "Der verknüpfte Update-Ring ist nicht mehr verfügbar.",
-        "ringInvalidBody": "Patches für diese Richtlinie werden zurückgehalten, bis Sie einen Ring auswählen und speichern."
+        "ringInvalidBody": "Patches für diese Richtlinie werden zurückgehalten, bis Sie einen Ring auswählen und speichern.",
+        "ringDetailsNoHold": "Rollout-Reihenfolge {{order}} · keine Wartezeit vor der Genehmigung",
+        "ringDetailsWithHold_one": "Rollout-Reihenfolge {{order}} · {{count}} Tag Wartezeit vor der Genehmigung",
+        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link-Peripherierichtlinie",

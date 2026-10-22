@@ -1035,7 +1035,9 @@
       "label": "approval",
       "byRing": "set by the linked update ring",
       "manualOnly": "manual approvals only (no update ring linked)"
-    }
+    },
+    "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
+    "featureOverriddenBy": "Overridden by {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Failed to fetch activities",

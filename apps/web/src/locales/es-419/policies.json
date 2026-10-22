@@ -158,7 +158,9 @@
       "organizationPolicyTitle": "Política de la organización: se aplica solo a {{organization}}",
       "summary": "{{filtered}} de {{total}} políticas",
       "inheritsBadge": "Hereda",
-      "statusFilterLabel": "Estado"
+      "statusFilterLabel": "Estado",
+      "partnerPolicy": "Socio",
+      "partnerPolicyAppliesOnlyWhereAssigned": "Política del socio: solo se aplica donde está asignada. Asígnela a todas las organizaciones para que aplique en todo el socio."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "No se pudieron recuperar las políticas de configuración",
@@ -756,7 +758,9 @@
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Notificar al final",
         "sendNotificationWhenWindowCloses": "Enviar notificación cuando se cierre la ventana.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Las ventanas semanales se abren cada domingo a la hora de inicio, en la zona horaria seleccionada.",
+        "monthlyOpensOnTheFirst": "Las ventanas mensuales se abren el día 1 de cada mes a la hora de inicio, en la zona horaria seleccionada."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Recolección del agente",
@@ -887,7 +891,10 @@
         "noRingManualApprovalHint": "Ningún anillo vinculado: los parches se instalan solo después de la aprobación manual.",
         "unavailableRingOption": "Anillo no disponible",
         "ringInvalidTitle": "El anillo de actualización vinculado ya no está disponible.",
-        "ringInvalidBody": "Los parches de esta directiva quedan retenidos hasta que elija un anillo y guarde."
+        "ringInvalidBody": "Los parches de esta directiva quedan retenidos hasta que elija un anillo y guarde.",
+        "ringDetailsNoHold": "Orden de lanzamiento {{order}} · sin espera antes de la aprobación",
+        "ringDetailsWithHold_one": "Orden de lanzamiento {{order}} · {{count}} día de espera antes de la aprobación",
+        "ringDetailsWithHold_other": "Orden de lanzamiento {{order}} · {{count}} días de espera antes de la aprobación"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Política de enlace periférico",
