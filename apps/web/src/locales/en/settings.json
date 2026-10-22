@@ -777,13 +777,10 @@
     "maintenancePlaceholder": "e.g. Sun 02:00-06:00, 02:00-04:00, or 24/7",
     "maintenanceInvalid": "Use a UTC window like <first>Sun 02:00-04:00</first> or <second>02:00-04:00</second>, or <always>24/7</always> for always-on. Leave empty to let orgs configure it.",
     "maintenanceHelp": "Time window (UTC) for automatic updates and reboots. Use <always>24/7</always> for always-on, or leave empty so orgs configure it individually.",
-    "deviceGroup": "Default Device Group",
-    "alertThreshold": "Default Alert Threshold",
     "autoEnrollment": {
       "title": "Auto-Enrollment",
       "enable": "Enable auto-enrollment for new devices",
-      "requireApproval": "Require admin approval",
-      "sendWelcome": "Send welcome notification"
+      "requireApproval": "Require admin approval"
     },
     "enrollment": {
       "title": "Device enrollment",
@@ -1792,27 +1789,12 @@
     "deviceGroup": {
       "title": "Default device group",
       "description": "Newly enrolled devices are added to this group automatically.",
-      "options": {
-        "AllManagedDevices": "All Managed Devices",
-        "CriticalInfrastructure": "Critical Infrastructure",
-        "RemoteStaff": "Remote Staff",
-        "Contractors": "Contractors"
-      }
-    },
-    "alertSeverity": {
-      "title": "Default alert severity",
-      "description": "Alerts below this severity are delivered to the summary feed only.",
-      "options": {
-        "critical": "Critical only",
-        "high": "High and critical",
-        "medium": "Medium and above"
-      }
+      "none": "None"
     },
     "autoEnrollment": {
       "title": "Auto-enrollment",
       "enable": "Enable automatic enrollment",
-      "requireApproval": "Require admin approval",
-      "sendWelcome": "Send welcome message"
+      "requireApproval": "Require admin approval"
     },
     "agentUpdates": {
       "title": "Agent update policy",

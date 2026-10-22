@@ -777,13 +777,10 @@
     "maintenancePlaceholder": "ad es. Sun 02:00-06:00, 02:00-04:00 oppure 24/7",
     "maintenanceInvalid": "Usa una finestra UTC come <first>Sun 02:00-04:00</first> o <second>02:00-04:00</second>, oppure <always>24/7</always> per sempre attivo. Lascia vuoto per consentire alle org di configurarla.",
     "maintenanceHelp": "Finestra oraria (UTC) per aggiornamenti e riavvii automatici. Usa <always>24/7</always> per sempre attivo, oppure lascia vuoto per consentire alle org di configurarla singolarmente.",
-    "deviceGroup": "Gruppo dispositivi predefinito",
-    "alertThreshold": "Soglia avvisi predefinita",
     "autoEnrollment": {
       "title": "Registrazione automatica",
       "enable": "Abilita la registrazione automatica per i nuovi dispositivi",
-      "requireApproval": "Richiedi approvazione amministratore",
-      "sendWelcome": "Invia notifica di benvenuto"
+      "requireApproval": "Richiedi approvazione amministratore"
     },
     "enrollment": {
       "title": "Registrazione dispositivi",
@@ -1792,27 +1789,12 @@
     "deviceGroup": {
       "title": "Gruppo dispositivi predefinito",
       "description": "I dispositivi appena registrati vengono aggiunti automaticamente a questo gruppo.",
-      "options": {
-        "AllManagedDevices": "Tutti i dispositivi gestiti",
-        "CriticalInfrastructure": "Infrastruttura critica",
-        "RemoteStaff": "Personale remoto",
-        "Contractors": "Collaboratori esterni"
-      }
-    },
-    "alertSeverity": {
-      "title": "Gravità avviso predefinita",
-      "description": "Gli avvisi sotto questa gravità vengono inviati solo al feed riepilogativo.",
-      "options": {
-        "critical": "Solo critici",
-        "high": "Alti e critici",
-        "medium": "Medi e superiori"
-      }
+      "none": "Nessuno"
     },
     "autoEnrollment": {
       "title": "Registrazione automatica",
       "enable": "Abilita registrazione automatica",
-      "requireApproval": "Richiedi approvazione amministratore",
-      "sendWelcome": "Invia messaggio di benvenuto"
+      "requireApproval": "Richiedi approvazione amministratore"
     },
     "agentUpdates": {
       "title": "Criterio aggiornamento agent",

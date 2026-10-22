@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { Bell, KeyRound, Layers, RefreshCcw, Save, ShieldCheck, Sparkles } from 'lucide-react';
+import { fetchWithAuth } from '@/stores/auth';
+import { KeyRound, Layers, RefreshCcw, Save, ShieldCheck, Sparkles } from 'lucide-react';
 import AgentVersionPinSelectors, {
   type PinnableVersions,
   type AgentVersionPinsValue,
@@ -54,6 +55,9 @@ type DefaultsData = InheritableDefaultSettings;
 
 type OrgDefaultsEditorProps = {
   organizationName: string;
+  // Needed to list the org's real device groups for the default-group picker
+  // (#9617). Without it the picker is empty (only "None").
+  organizationId?: string;
   defaults?: DefaultsData;
   onDirty?: () => void;
   onSave?: (data: DefaultsData) => void;
@@ -79,8 +83,6 @@ type OrgDefaultsEditorProps = {
 // `locked` array still advertises it when the partner has pinned a version.
 const LOCKABLE_FIELDS = [
   'policyDefaults',
-  'deviceGroup',
-  'alertThreshold',
   'autoEnrollment',
   'agentUpdatePolicy',
   'maintenanceWindow',
@@ -98,12 +100,9 @@ const defaultValues: DefaultsData = {
     dataProtection: 'strict',
     accessControl: 'standard'
   },
-  deviceGroup: 'All Managed Devices',
-  alertThreshold: 'high',
   autoEnrollment: {
     enabled: true,
-    requireApproval: false,
-    sendWelcome: true
+    requireApproval: false
   },
   // The UI exposes only "Automatic" and "Manual" — the legacy 'staged' value is
   // behaviourally identical to 'auto' (both are gated by the maintenance window;
@@ -124,19 +123,8 @@ const policyOptions = [
   { value: 'lenient', labelKey: 'orgDefaultsEditor.policies.options.lenient' },
 ];
 
-// Key casing matches the locale files (PascalCase leaf), which all seven
-// locales share — the camelCase spelling rendered raw keys in the select.
-const groupOptions = [
-  { value: 'All Managed Devices', labelKey: 'orgDefaultsEditor.deviceGroup.options.AllManagedDevices' },
-  { value: 'Critical Infrastructure', labelKey: 'orgDefaultsEditor.deviceGroup.options.CriticalInfrastructure' },
-  { value: 'Remote Staff', labelKey: 'orgDefaultsEditor.deviceGroup.options.RemoteStaff' },
-  { value: 'Contractors', labelKey: 'orgDefaultsEditor.deviceGroup.options.Contractors' },
-];
-const alertThresholds = [
-  { value: 'critical', labelKey: 'orgDefaultsEditor.alertSeverity.options.critical' },
-  { value: 'high', labelKey: 'orgDefaultsEditor.alertSeverity.options.high' },
-  { value: 'medium', labelKey: 'orgDefaultsEditor.alertSeverity.options.medium' },
-];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+type StaticGroup = { id: string; name: string };
 const policyFields = [
   { id: 'deviceCompliance', labelKey: 'orgDefaultsEditor.policies.fields.deviceCompliance' },
   { id: 'dataProtection', labelKey: 'orgDefaultsEditor.policies.fields.dataProtection' },
@@ -149,6 +137,7 @@ const maintenanceDays = MAINTENANCE_DAYS.map(day => ({
 
 export default function OrgDefaultsEditor({
   organizationName,
+  organizationId,
   defaults,
   onDirty,
   onSave,
@@ -169,8 +158,6 @@ export default function OrgDefaultsEditor({
   const lockedSeed: DefaultsData = {};
   if (effectiveDefaults) {
     if (isLocked('policyDefaults') && effectiveDefaults.policyDefaults) lockedSeed.policyDefaults = effectiveDefaults.policyDefaults;
-    if (isLocked('deviceGroup') && effectiveDefaults.deviceGroup !== undefined) lockedSeed.deviceGroup = effectiveDefaults.deviceGroup;
-    if (isLocked('alertThreshold') && effectiveDefaults.alertThreshold !== undefined) lockedSeed.alertThreshold = effectiveDefaults.alertThreshold;
     if (isLocked('autoEnrollment') && effectiveDefaults.autoEnrollment) lockedSeed.autoEnrollment = effectiveDefaults.autoEnrollment;
     if (isLocked('agentUpdatePolicy') && effectiveDefaults.agentUpdatePolicy !== undefined) lockedSeed.agentUpdatePolicy = effectiveDefaults.agentUpdatePolicy;
     if (isLocked('maintenanceWindow') && effectiveDefaults.maintenanceWindow !== undefined) lockedSeed.maintenanceWindow = effectiveDefaults.maintenanceWindow;
@@ -182,8 +169,29 @@ export default function OrgDefaultsEditor({
     initialData.agentVersionPins ?? {},
   );
   const [policyDefaults, setPolicyDefaults] = useState(initialData.policyDefaults || defaultValues.policyDefaults!);
-  const [deviceGroup, setDeviceGroup] = useState(initialData.deviceGroup || defaultValues.deviceGroup!);
-  const [alertThreshold, setAlertThreshold] = useState(initialData.alertThreshold || defaultValues.alertThreshold!);
+  // #9617: a real device_groups.id, or '' for none. Legacy stored display strings
+  // ("Contractors") are not ids and are treated as unset, matching enrollment.
+  const [deviceGroup, setDeviceGroup] = useState(
+    initialData.deviceGroup && UUID_RE.test(initialData.deviceGroup) ? initialData.deviceGroup : '',
+  );
+  const [staticGroups, setStaticGroups] = useState<StaticGroup[]>([]);
+  useEffect(() => {
+    if (!organizationId) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(`/device-groups?orgId=${organizationId}&limit=200`);
+        if (!res.ok) return;
+        const body = await res.json();
+        if (!alive) return;
+        const items: Array<{ id: string; name: string; type?: string }> = Array.isArray(body.data) ? body.data : [];
+        setStaticGroups(items.filter(g => g.type === 'static').map(g => ({ id: g.id, name: g.name })));
+      } catch {
+        // Picker stays at "None"; a failed list must not break the settings page.
+      }
+    })();
+    return () => { alive = false; };
+  }, [organizationId]);
   const [autoEnrollment, setAutoEnrollment] = useState(initialData.autoEnrollment || defaultValues.autoEnrollment!);
   // Fold the legacy 'staged' value into 'auto' (identical behaviour; see #1962)
   // so the select shows a valid selection rather than falling back to no match.
@@ -268,8 +276,7 @@ export default function OrgDefaultsEditor({
     if (windowError || !builtWindow) return; // never persist an invalid window
     const data: DefaultsData = {
       policyDefaults,
-      deviceGroup,
-      alertThreshold,
+      deviceGroup: deviceGroup || undefined,
       autoEnrollment,
       agentUpdatePolicy,
       maintenanceWindow: builtWindow,
@@ -372,59 +379,23 @@ export default function OrgDefaultsEditor({
           <select
             id="org-defaults-device-group"
             value={deviceGroup}
-            disabled={isLocked('deviceGroup')}
             data-testid="default-device-group"
             onChange={event => {
               setDeviceGroup(event.target.value);
               markDirty();
             }}
-            className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('deviceGroup') ? 'opacity-60' : ''}`}
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
-            {groupOptions.map(option => (
-              <option key={option.value} value={option.value}>
-                {t(/* i18n-dynamic */ option.labelKey)}
-              </option>
+            <option value="">{t('orgDefaultsEditor.deviceGroup.none')}</option>
+            {staticGroups.map(group => (
+              <option key={group.id} value={group.id}>{group.name}</option>
             ))}
           </select>
-          {isLocked('deviceGroup') && (
-            <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
-          )}
           <p className="text-xs text-muted-foreground">
             {t('orgDefaultsEditor.deviceGroup.description')}
           </p>
         </div>
 
-        <div className="space-y-4">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <Bell className="h-4 w-4" />
-            {t('orgDefaultsEditor.alertSeverity.title')}
-          </div>
-          <label htmlFor="org-defaults-alert-threshold" className="sr-only">
-            {t('orgDefaultsEditor.alertSeverity.title')}
-          </label>
-          <select
-            id="org-defaults-alert-threshold"
-            value={alertThreshold}
-            disabled={isLocked('alertThreshold')}
-            onChange={event => {
-              setAlertThreshold(event.target.value);
-              markDirty();
-            }}
-            className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('alertThreshold') ? 'opacity-60' : ''}`}
-          >
-            {alertThresholds.map(option => (
-              <option key={option.value} value={option.value}>
-                {t(/* i18n-dynamic */ option.labelKey)}
-              </option>
-            ))}
-          </select>
-          {isLocked('alertThreshold') && (
-            <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
-          )}
-          <p className="text-xs text-muted-foreground">
-            {t('orgDefaultsEditor.alertSeverity.description')}
-          </p>
-        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -458,20 +429,6 @@ export default function OrgDefaultsEditor({
                 markDirty();
               }}
               data-testid="auto-enrollment-require-approval"
-              className="h-4 w-4"
-            />
-          </label>
-          <label className={`flex items-center justify-between gap-4 text-sm ${isLocked('autoEnrollment') ? 'opacity-60' : ''}`}>
-            <span>{t('orgDefaultsEditor.autoEnrollment.sendWelcome')}</span>
-            <input
-              type="checkbox"
-              checked={autoEnrollment.sendWelcome}
-              disabled={isLocked('autoEnrollment')}
-              onChange={event => {
-                setAutoEnrollment(prev => ({ ...prev, sendWelcome: event.target.checked }));
-                markDirty();
-              }}
-              data-testid="auto-enrollment-send-welcome"
               className="h-4 w-4"
             />
           </label>

@@ -178,6 +178,12 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
   requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
 }));
 
+// #9617 — org default device group applied inside the enrollment transaction.
+const applyOrgDefaultDeviceGroupMock = vi.hoisted(() => vi.fn().mockResolvedValue('added'));
+vi.mock('../../services/enrollmentDefaultGroup', () => ({
+  applyOrgDefaultDeviceGroup: applyOrgDefaultDeviceGroupMock,
+}));
+
 // ---------- imports after mocks ----------
 
 import { db, withSystemDbAccessContext } from '../../db';
@@ -398,6 +404,32 @@ describe('POST /agents/enroll — backup server URL delivery (#2288)', () => {
   it('omits/empty backupServerUrl when env unset', async () => {
     const body = await enrollOk();
     expect(body.backupServerUrl ?? '').toBe('');
+  });
+});
+
+describe('POST /agents/enroll — org default device group (#9617)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    requestDeviceGroupReevaluationMock.mockResolvedValue('job-1');
+    applyOrgDefaultDeviceGroupMock.mockResolvedValue('added');
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('applies the default group to the freshly inserted device, inside the transaction', async () => {
+    await enrollOk();
+
+    expect(applyOrgDefaultDeviceGroupMock).toHaveBeenCalledTimes(1);
+    expect(applyOrgDefaultDeviceGroupMock).toHaveBeenCalledWith(
+      expect.objectContaining({ insert: expect.any(Function) }), // the tx, not the bare pool
+      { orgId: 'org-backup-url', deviceId: 'device-backup-url' },
+    );
+  });
+
+  it('still enrolls (201) when the group is missing/foreign and the helper skips', async () => {
+    applyOrgDefaultDeviceGroupMock.mockResolvedValue('skipped');
+    await enrollOk();
   });
 });
 

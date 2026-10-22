@@ -777,13 +777,10 @@
     "maintenancePlaceholder": "par exemple dimanche 02h00-06h00, 02h00-04h00, ou 24h/24",
     "maintenanceInvalid": "Utilisez une fenêtre UTC comme <first>Dim 02:00-04:00</first> ou <second>02:00-04:00</second>, ou <always>24/7</always> pour l’all-on. Laisse vide pour que les organisations le configurent.",
     "maintenanceHelp": "Fenêtre temporelle (UTC) pour les mises à jour et redémarrages automatiques. Utilisez <always>24/7</always> pour le mode toujours activé, ou laissez vide pour que les organisations le configurent individuellement.",
-    "deviceGroup": "Groupe de appareils par défaut",
-    "alertThreshold": "Seuil d’alerte par défaut",
     "autoEnrollment": {
       "title": "Inscription automatique",
       "enable": "Activez l’inscription automatique pour les nouveaux appareils",
-      "requireApproval": "Exigez l’approbation de l’administrateur",
-      "sendWelcome": "Envoyer une notification de bienvenue"
+      "requireApproval": "Exigez l’approbation de l’administrateur"
     },
     "enrollment": {
       "title": "Inscription des appareils",
@@ -1792,27 +1789,12 @@
     "deviceGroup": {
       "title": "Groupe de appareils par défaut",
       "description": "Les nouveaux appareils inscrits sont automatiquement ajoutés à ce groupe.",
-      "options": {
-        "AllManagedDevices": "Tous les appareils gérés",
-        "CriticalInfrastructure": "Infrastructures critiques",
-        "RemoteStaff": "Personnel à distance",
-        "Contractors": "Entrepreneurs"
-      }
-    },
-    "alertSeverity": {
-      "title": "Sévérité par défaut de l’alerte",
-      "description": "Les alertes inférieures à cette gravité sont transmises uniquement dans le flux résumé.",
-      "options": {
-        "critical": "Critique uniquement",
-        "high": "Haut et critique",
-        "medium": "Moyen et au-dessus"
-      }
+      "none": "Aucun"
     },
     "autoEnrollment": {
       "title": "Inscription automatique",
       "enable": "Activer l’inscription automatique",
-      "requireApproval": "Exigez l’approbation de l’administrateur",
-      "sendWelcome": "Envoyer un message de bienvenue"
+      "requireApproval": "Exigez l’approbation de l’administrateur"
     },
     "agentUpdates": {
       "title": "Politique de mise à jour des agents",

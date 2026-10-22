@@ -843,12 +843,15 @@ const partnerSettingsSchema = z.object({
   }).optional(),
   defaults: z.object({
     policyDefaults: z.record(z.string(), z.string()).optional(),
+    // #9617: a real device_groups.id (org level only; a partner-level value
+    // cannot name a per-org group). Legacy display strings are accepted so old
+    // clients don't 400, but enrollment ignores anything that isn't a group id.
+    // `alertThreshold` and `autoEnrollment.sendWelcome` were removed (no
+    // consumer); z.object strips them from old clients' payloads rather than 400.
     deviceGroup: z.string().optional(),
-    alertThreshold: z.string().optional(),
     autoEnrollment: z.object({
       enabled: z.boolean(),
       requireApproval: z.boolean(),
-      sendWelcome: z.boolean(),
     }).optional(),
     agentUpdatePolicy: z.string().optional(),
     // Reject malformed windows on the partner (/partners/me) write path at save

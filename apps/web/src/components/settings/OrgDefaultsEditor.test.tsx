@@ -1,17 +1,85 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { fetchWithAuthMock } = vi.hoisted(() => ({ fetchWithAuthMock: vi.fn() }));
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: fetchWithAuthMock }));
 
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 
 const ORG = 'Acme Corp';
+const G1 = '11111111-1111-4111-8111-111111111111';
+const G2 = '22222222-2222-4222-8222-222222222222';
+const GDYN = '33333333-3333-4333-8333-333333333333';
+
+beforeEach(() => {
+  fetchWithAuthMock.mockReset();
+  fetchWithAuthMock.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+});
+
+describe('OrgDefaultsEditor — default device group picker (#9617)', () => {
+  const groupsResponse = {
+    ok: true,
+    json: async () => ({
+      data: [
+        { id: G1, name: 'Servers', type: 'static' },
+        { id: G2, name: 'Laptops', type: 'static' },
+        { id: GDYN, name: 'Windows 11 (dynamic)', type: 'dynamic' },
+      ],
+    }),
+  };
+
+  it("lists the org's real static groups (not hard-coded names) and saves the group id", async () => {
+    fetchWithAuthMock.mockResolvedValue(groupsResponse);
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} organizationId="org-1" onSave={onSave} />);
+
+    await screen.findByRole('option', { name: 'Servers' });
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/device-groups?orgId=org-1'));
+    expect(screen.getByRole('option', { name: 'Laptops' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Windows 11 (dynamic)' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Contractors' })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByTestId('default-device-group'), G2);
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0].deviceGroup).toBe(G2);
+  });
+
+  it('treats a legacy display-string value as unset and saves no deviceGroup', async () => {
+    fetchWithAuthMock.mockResolvedValue(groupsResponse);
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        organizationId="org-1"
+        defaults={{ deviceGroup: 'Contractors' }}
+        onSave={onSave}
+      />,
+    );
+    await screen.findByRole('option', { name: 'Servers' });
+    expect((screen.getByTestId('default-device-group') as HTMLSelectElement).value).toBe('');
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0].deviceGroup).toBeUndefined();
+  });
+
+  it('pre-selects a stored group id and no longer renders alert-threshold or send-welcome controls', async () => {
+    fetchWithAuthMock.mockResolvedValue(groupsResponse);
+    render(<OrgDefaultsEditor organizationName={ORG} organizationId="org-1" defaults={{ deviceGroup: G1 }} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('default-device-group') as HTMLSelectElement).value).toBe(G1),
+    );
+    expect(screen.queryByRole('combobox', { name: 'Default alert severity' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('auto-enrollment-send-welcome')).not.toBeInTheDocument();
+  });
+});
 
 describe('OrgDefaultsEditor filter selects accessible name (#7156)', () => {
-  it('gives the device-group, alert-threshold, and agent-update-policy selects a real accessible name', () => {
+  it('gives the device-group and agent-update-policy selects a real accessible name', () => {
     render(<OrgDefaultsEditor organizationName={ORG} onSave={vi.fn()} />);
 
     expect(screen.getByRole('combobox', { name: 'Default device group' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Default alert severity' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Agent update policy' })).toBeInTheDocument();
   });
 });
@@ -272,7 +340,7 @@ describe('OrgDefaultsEditor — enrollment defaults (#2776)', () => {
 // hard-coded seeds, a partner-set `autoEnrollment` collided with the server-side
 // lock guard and 403'd every save in the category.
 describe('OrgDefaultsEditor — partner locks', () => {
-  const ENFORCED = { enabled: false, requireApproval: false, sendWelcome: false };
+  const ENFORCED = { enabled: false, requireApproval: false };
 
   it('disables the auto-enrollment checkboxes and flags them as partner-managed', () => {
     render(
@@ -285,7 +353,6 @@ describe('OrgDefaultsEditor — partner locks', () => {
 
     expect(screen.getByTestId('auto-enrollment-enabled')).toBeDisabled();
     expect(screen.getByTestId('auto-enrollment-require-approval')).toBeDisabled();
-    expect(screen.getByTestId('auto-enrollment-send-welcome')).toBeDisabled();
     expect(screen.getByTestId('auto-enrollment-locked')).toBeInTheDocument();
   });
 
@@ -298,9 +365,8 @@ describe('OrgDefaultsEditor — partner locks', () => {
       />,
     );
 
-    // The hard-coded default would have been enabled=true / sendWelcome=true.
+    // The hard-coded default would have been enabled=true.
     expect(screen.getByTestId('auto-enrollment-enabled')).not.toBeChecked();
-    expect(screen.getByTestId('auto-enrollment-send-welcome')).not.toBeChecked();
   });
 
   it('echoes the partner value back verbatim on save so the write is a permitted no-op', async () => {
@@ -312,7 +378,7 @@ describe('OrgDefaultsEditor — partner locks', () => {
         onSave={onSave}
         // The org's own stored value diverges from the partner's — it is inert
         // while the lock holds, and must not be what we post.
-        defaults={{ autoEnrollment: { enabled: true, requireApproval: true, sendWelcome: true } }}
+        defaults={{ autoEnrollment: { enabled: true, requireApproval: true } }}
         locked={['defaults.autoEnrollment']}
         effectiveDefaults={{ autoEnrollment: ENFORCED }}
       />,
@@ -325,23 +391,29 @@ describe('OrgDefaultsEditor — partner locks', () => {
   });
 
   it('leaves unlocked fields editable and org-owned', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: G1, name: 'Servers', type: 'static' }] }),
+    });
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(
       <OrgDefaultsEditor
         organizationName={ORG}
+        organizationId="org-1"
         onSave={onSave}
         locked={['defaults.autoEnrollment']}
-        effectiveDefaults={{ autoEnrollment: ENFORCED, deviceGroup: 'Critical Infrastructure' }}
+        effectiveDefaults={{ autoEnrollment: ENFORCED }}
       />,
     );
 
     const group = screen.getByTestId('default-device-group') as HTMLSelectElement;
     expect(group).toBeEnabled();
-    await user.selectOptions(group, 'Contractors');
+    await screen.findByRole('option', { name: 'Servers' });
+    await user.selectOptions(group, G1);
     await user.click(screen.getByTestId('save-defaults'));
 
-    expect(onSave.mock.calls[0][0].deviceGroup).toBe('Contractors');
+    expect(onSave.mock.calls[0][0].deviceGroup).toBe(G1);
     // The locked field still rides along unchanged — that is the payload shape
     // the API now accepts.
     expect(onSave.mock.calls[0][0].autoEnrollment).toEqual(ENFORCED);
@@ -396,7 +468,6 @@ describe('OrgDefaultsEditor — partner locks', () => {
     expect(onSave.mock.calls[0][0].autoEnrollment).toEqual({
       enabled: true,
       requireApproval: false,
-      sendWelcome: true,
     });
   });
 });
