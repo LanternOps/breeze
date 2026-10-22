@@ -4355,6 +4355,13 @@
     "commitmentTermRange": "Plazo de compromiso: ingresa un número entero de 1 a 120 meses."
   },
   "catalogItemsTab": {
+    "viewActive": "Activos",
+    "viewArchived": "Archivados",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Servicio"
+    },
     "itemArchived": "Artículo archivado",
     "itemRestored": "Artículo restaurado",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "El catálogo de productos está disponible únicamente para cuentas de socios.",

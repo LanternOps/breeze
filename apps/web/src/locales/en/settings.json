@@ -4355,6 +4355,13 @@
     "commitmentTermRange": "Commitment term: enter a whole number from 1–120 months."
   },
   "catalogItemsTab": {
+    "viewActive": "Active",
+    "viewArchived": "Archived",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Service"
+    },
     "itemArchived": "Item archived",
     "itemRestored": "Item restored",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "The product catalog is available to partner accounts only.",

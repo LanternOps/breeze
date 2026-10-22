@@ -4350,6 +4350,13 @@
     "commitmentTermRange": "Durata dell'impegno: inserisci un numero intero da 1 a 120 mesi."
   },
   "catalogItemsTab": {
+    "viewActive": "Attivi",
+    "viewArchived": "Archiviati",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Servizio"
+    },
     "itemArchived": "Elemento archiviato",
     "itemRestored": "Elemento ripristinato",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Il catalogo prodotti è disponibile solo per account partner.",

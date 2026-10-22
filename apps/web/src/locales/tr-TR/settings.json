@@ -4355,6 +4355,13 @@
     "commitmentTermRange": "Taahhüt süresi: 1 ile 120 ay arasında bir tam sayı girin."
   },
   "catalogItemsTab": {
+    "viewActive": "Etkin",
+    "viewArchived": "Arşivlenmiş",
+    "typeLabel": {
+      "hardware": "Donanım",
+      "software": "Yazılım",
+      "service": "Hizmet"
+    },
     "itemArchived": "Öğe arşivlendi",
     "itemRestored": "Öğe geri yüklendi",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",
