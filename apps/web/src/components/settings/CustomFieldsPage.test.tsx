@@ -212,3 +212,26 @@ describe('CustomFieldsPage — field key help (issue #4198)', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent(/PATCH request/i);
   });
 });
+
+describe('CustomFieldsPage dropdown choice value auto-fill (#9677)', () => {
+  beforeEach(() => {
+    mockedFetchWithAuth.mockReset();
+    mockedFetchWithAuth.mockResolvedValue(jsonResponse({ data: [] }));
+  });
+
+  it('keeps Value tracking the Label across keystrokes until Value is edited', async () => {
+    render(<CustomFieldsPage />);
+    await waitFor(() => expect(mockedFetchWithAuth).toHaveBeenCalled());
+    fireEvent.click(await screen.findByTestId('custom-field-add'));
+    fireEvent.click(screen.getByRole('button', { name: /^Dropdown/ }));
+    fireEvent.click(screen.getByText('Add Choice'));
+    const label = screen.getByPlaceholderText('Label');
+    const value = screen.getByPlaceholderText('Value') as HTMLInputElement;
+    fireEvent.change(label, { target: { value: 'S' } });
+    fireEvent.change(label, { target: { value: 'Standard' } });
+    expect(value.value).toBe('standard');
+    fireEvent.change(value, { target: { value: 'std' } });
+    fireEvent.change(label, { target: { value: 'Standard Plus' } });
+    expect(value.value).toBe('std');
+  });
+});
