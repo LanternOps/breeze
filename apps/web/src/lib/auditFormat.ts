@@ -169,7 +169,7 @@ function formatAiToolAction(
   const match = AI_TOOL_ACTION_RE.exec(action);
   if (!match) return null;
   // A namespaced MCP id (`mcp__<server>__<tool>`) shows only the tool.
-  const words = match[1].replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '').replace(/[_.]+/g, ' ').trim();
+  const words = match[1].replace(/^mcp__.+?__/, '').replace(/[_.]+/g, ' ').trim();
   const template = labels?.['ai.tool.*'] ?? ACTION_DISPLAY['ai.tool.*'];
   if (!words || !template) return null;
   return template.replace('{tool}', words.charAt(0).toUpperCase() + words.slice(1));

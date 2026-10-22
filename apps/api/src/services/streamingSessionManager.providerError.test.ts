@@ -226,6 +226,23 @@ describe('#9534: a rejected key names who can fix it, and the CLI text is never 
     expect(JSON.stringify(rows[0])).not.toContain('Fix external API key');
   });
 
+  it('BYO key: the persisted turn carries the partner-key text, not the administrator one', async () => {
+    await runTurn('s-persist-byok-401', authFrames(), undefined, makeResolvedModel('anthropic_byok'));
+    const rows = persistedAssistantRows();
+    const expected = providerFailureMessage('auth_failed', false, { platformKey: false });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.content).toBe(expected);
+    expect(rows[0]?.contentBlocks).toEqual([{ type: 'text', text: expected }]);
+  });
+
+  it('an error-tagged message the MODEL wrote (not <synthetic>) keeps its own text', async () => {
+    await runTurn('s-persist-model-error', [
+      { type: 'assistant', error: 'max_output_tokens', message: { model: 'claude-x', content: [{ type: 'text', text: 'Partial answer' }], usage: { input_tokens: 1, output_tokens: 1 } } },
+      sdkResult(),
+    ]);
+    expect(persistedAssistantRows().map((r) => r.content)).toEqual(['Partial answer']);
+  });
+
   it('a real (non-synthetic) assistant message is still persisted verbatim', async () => {
     await runTurn('s-persist-ok', [
       { type: 'assistant', message: { model: 'claude-x', content: [{ type: 'text', text: 'All 4 devices are online.' }], usage: { input_tokens: 1, output_tokens: 1 } } },

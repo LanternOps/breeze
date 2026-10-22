@@ -107,6 +107,7 @@ describe('formatAuditAction', () => {
     expect(formatAuditAction('ai.tool.query_devices')).toBe('AI tool: Query devices');
     // A namespaced MCP tool id never leaks its server prefix.
     expect(formatAuditAction('ai.tool.mcp__breeze__manage_services')).toBe('AI tool: Manage services');
+    expect(formatAuditAction('ai.tool.mcp__my_server__list_tickets')).toBe('AI tool: List tickets');
   });
 
   it('uses the translated ai.tool template when supplied', () => {

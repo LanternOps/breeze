@@ -563,6 +563,23 @@ describe('one card per tool call (#9534)', () => {
     expect(toolCallCards.props[0]).toMatchObject({ output: [] });
   });
 
+  it('never pairs a synthetic id-less row (unattended_release) with the tool_use before it', () => {
+    const { getByTestId, rerender } = renderWithMessages([
+      use('u1', 'x', 'run_script'),
+      result('note', undefined, 'unattended_release'),
+    ]);
+    expect(getByTestId('ai-unattended-release-note')).toBeTruthy();
+    expect(toolCallCards.props.at(-1)).toMatchObject({ toolName: 'run_script', isExecuting: true });
+
+    rerender(<AiChatMessages {...baseProps} messages={[
+      use('u1', 'x', 'run_script'),
+      result('note', undefined, 'unattended_release'),
+      result('r1', 'x', 'run_script'),
+    ] as never} />);
+    expect(getByTestId('ai-unattended-release-note')).toBeTruthy();
+    expect(toolCallCards.props.at(-1)).toMatchObject({ toolName: 'run_script', output: [] });
+  });
+
   it('still renders an orphan result (no tool_use row) as its own card', () => {
     renderWithMessages([result('r1', 'gone')]);
     expect(toolCallCards.props).toHaveLength(1);

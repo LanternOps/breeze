@@ -49,11 +49,6 @@ export type AiModelDiscoveryJobData =
   | { type: 'verify-offering'; offeringId: string; partnerId: string; retryFailed?: true };
 
 /**
- * Thrown by an env-path verification whose verdict was 'failed', so BullMQ
- * retries it with a delay. The failed record is already stored; this is not
- * an incident (logged, not captured).
- */
-/**
  * #9534: the failures below are expected outcomes the processor raises to ask
  * BullMQ for a retry, not faults. Their stack only ever points at this file
  * (the provider's own error is already reduced to the message), so it is
@@ -64,6 +59,12 @@ function oneLineStack(err: Error): void {
   err.stack = `${err.name}: ${err.message}`;
 }
 
+/**
+ * Thrown by an env-path verification whose verdict was 'failed', so BullMQ
+ * retries it with a delay. The failed record is already stored; an attempt is
+ * not an incident (logged as a warning), and only a run that spends all its
+ * retries reaches Sentry, once, at warning level (#9534).
+ */
 export class OfferingVerificationRetry extends Error {
   constructor(offeringId: string) {
     super(`Offering ${offeringId} failed verification; the queue will retry it`);

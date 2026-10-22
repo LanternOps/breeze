@@ -1760,7 +1760,9 @@ export class StreamingSessionManager {
             // hosted user at a BYO-key page. Persist the same fixed,
             // client-safe text the live turn's error event carries instead, so
             // a reload explains the empty turn without leaking provider text.
-            const syntheticErrorText = typeof message.error === 'string'
+            // Only a CLI-authored message (`<synthetic>` model) is replaced;
+            // anything the model itself wrote is persisted as streamed.
+            const syntheticErrorText = typeof message.error === 'string' && message.message.model === '<synthetic>'
               ? providerFailureMessage(
                 classifySdkAssistantError(message.error, null),
                 session.refusalObservation.sawOutput,
