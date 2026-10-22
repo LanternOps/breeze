@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../stores/auth", () => ({ fetchWithAuth: vi.fn() }));
@@ -39,12 +39,21 @@ describe("ComplianceDashboard create-policy prefill (#9636)", () => {
     await waitFor(() => expect((name as HTMLInputElement).value).toBe("Zoom Policy"));
     expect((screen.getByLabelText("Mode") as HTMLSelectElement).value).toBe("allowlist");
     expect((screen.getByPlaceholderText("Name *") as HTMLInputElement).value).toBe("Zoom");
+    expect((screen.getByPlaceholderText("Vendor") as HTMLInputElement).value).toBe("Zoom Inc");
+  });
+
+  it("a plain Create Policy click (no prefill) opens a blank form", async () => {
+    render(<ComplianceDashboard />);
+    fireEvent.click(await screen.findByText("Create Policy"));
+    const name = await screen.findByPlaceholderText("e.g. Block Unauthorized Software");
+    expect((name as HTMLInputElement).value).toBe("");
   });
 
   it("re-mounts the form when a second prefill arrives", async () => {
     const { rerender } = render(<ComplianceDashboard prefill={{ name: "Zoom" }} />);
     const name = await screen.findByPlaceholderText("e.g. Block Unauthorized Software");
     await waitFor(() => expect((name as HTMLInputElement).value).toBe("Zoom Policy"));
+    fireEvent.change(name, { target: { value: "Edited by user" } });
     rerender(<ComplianceDashboard prefill={{ name: "Slack" }} />);
     await waitFor(() =>
       expect(

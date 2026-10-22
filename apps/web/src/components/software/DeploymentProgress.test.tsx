@@ -235,10 +235,19 @@ describe("DeploymentProgress", () => {
       expect(pct.nextElementSibling?.textContent).toBe(label);
     });
 
+    it("a pending deployment whose scheduled time has passed reads In progress", async () => {
+      const payload = detailPayload("pending", { pending: 1, total: 1 });
+      (payload.data as Record<string, unknown>).scheduledAt = "2020-01-01T10:00:00Z";
+      routeFetch({ detail: payload });
+      render(<DeploymentProgress deploymentId={DEP_ID} />);
+      const pct = await screen.findByTestId("deployment-percent");
+      expect(pct.nextElementSibling?.textContent).toBe("In progress");
+    });
+
     it("shows Scheduled with the time for a future scheduled deployment", async () => {
       const payload = detailPayload("pending", { pending: 1, total: 1 });
       payload.data.scheduleType = "scheduled";
-      (payload.data as Record<string, unknown>).scheduledAt = "2999-01-01T10:00:00Z";
+      (payload.data as Record<string, unknown>).scheduledAt = "2999-06-15T10:00:00Z";
       routeFetch({ detail: payload });
       render(<DeploymentProgress deploymentId={DEP_ID} />);
       const pct = await screen.findByTestId("deployment-percent");
