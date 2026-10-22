@@ -467,6 +467,35 @@ func (s *SafeInput) Epochs() (reset, geo uint32) {
 // release itself timed out.
 func (s *SafeInput) ReleaseAll(reason string) { s.reset(reason, false, true) }
 
+// modifierStateResetter is implemented by platform handlers that can clear
+// modifier keys the OS still has down although no held record names them: a
+// latch left by a release that did not land, or by bookkeeping that went out
+// of step (issue #9595).
+type modifierStateResetter interface {
+	ResetModifierState() error
+}
+
+// ReleaseAllOnRequest is the operator's "Release stuck keys": ReleaseAll, then
+// the platform's modifier reset. Only an explicit request resets OS modifier
+// state; ReleaseAll also runs on disconnects, and there it must not release a
+// modifier the person at the remote machine is holding.
+func (s *SafeInput) ReleaseAllOnRequest() {
+	s.ReleaseAll("viewer_request")
+	r, ok := s.inner.(modifierStateResetter)
+	if !ok {
+		return
+	}
+	err := s.submit(true, s.closeTimeout, func() error {
+		if err := r.ResetModifierState(); err != nil {
+			slog.Warn("Resetting remote modifier state failed", "session", s.label, "error", err.Error())
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errInputClosed) {
+		slog.Warn("Resetting remote modifier state failed", "session", s.label, "error", err.Error())
+	}
+}
+
 // ResetGeometry is ReleaseAll plus a new geometry epoch, in one step. The
 // monitor and desktop switches call it before the display offset changes.
 func (s *SafeInput) ResetGeometry(reason string) { s.reset(reason, true, true) }

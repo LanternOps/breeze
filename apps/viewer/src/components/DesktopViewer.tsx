@@ -43,6 +43,7 @@ import {
   mouseButtonName,
   shouldForwardKeyRepeat,
   chordRouting,
+  modifiersReleasedByKeyPress,
   viewerShortcut,
   isPasteChord,
   isCopyChord,
@@ -1912,6 +1913,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [getInputSender, reliableInput]);
   releaseAllKeysRef.current = releaseAllKeys;
 
+  // "Release stuck keys" (toolbar and shortcut). releaseAllKeys only covers
+  // what this viewer believes is held, and its agent-side reset is sequenced
+  // input only; a key the bookkeeping lost stays down (#9595). So also ask the
+  // agent to release everything it holds and clear OS modifier state.
+  const handleReleaseStuckKeys = useCallback(() => {
+    releaseAllKeys();
+    if (viewOnlyRef.current) return;
+    if (!inputCapabilitiesRef.current.snapshot().releaseHeldOnRequest) return;
+    const control = transportRef.current === 'webrtc' ? webrtcRef.current?.controlChannel : undefined;
+    if (control && control.readyState === 'open') control.send(JSON.stringify({ type: 'release_held_input' }));
+  }, [releaseAllKeys]);
+
   // A new session's channel may open with releases still stranded from the
   // last one; send them as soon as it can carry them rather than waiting for
   // the next input event. 'connected' can precede the input channel opening.
@@ -2237,12 +2250,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── Input: keyboard handlers ───────────────────────────────────────
 
-  // key_press presses its modifiers around the key and then releases them, so
-  // a modifier we had sent as key_down is no longer down on the remote.
-  // Forget it, or the next chord would take the 'held' route and lose it
-  // (Shift+A arriving as a lowercase a).
+  // An older agent's key_press presses its modifiers around the key and then
+  // releases them, so a modifier we had sent as key_down is no longer down on
+  // the remote. Forget it, or the next chord would take the 'held' route and
+  // lose it (Shift+A arriving as a lowercase a). A current agent leaves held
+  // modifiers down, and forgetting them would strand them (#9595).
   const forgetModifiersReleasedByKeyPress = useCallback((modifiers: string[]) => {
-    for (const m of modifiers) pressedKeysRef.current.delete(m);
+    for (const m of modifiersReleasedByKeyPress(modifiers, inputCapabilitiesRef.current.snapshot().releasesHeldInput)) {
+      pressedKeysRef.current.delete(m);
+    }
   }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -2314,6 +2330,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (shortcut === 'paste-keystrokes') {
         handlePasteAsKeystrokes();
       } else if (shortcut === 'release-keys') {
+        handleReleaseStuckKeys();
         setInputNotice('Released all keys and mouse buttons on the remote.');
       } else {
         toggleDocumentFullscreen();
@@ -2414,7 +2431,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ne.code) heldKeyNameByCodeRef.current.set(ne.code, key);
     if (keyFields.code) heldCodeByKeyRef.current.set(key, keyFields.code);
     sendInputFn({ type: 'key_down', key, capsLock, ...keyFields });
-  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs, reliableInput]);
+  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, handleReleaseStuckKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs, reliableInput]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
@@ -2858,7 +2875,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setRemapOverride(v);
           rememberDevicePrefs({ remapCmdCtrl: v });
         }}
-        onReleaseAllKeys={releaseAllKeys}
+        onReleaseAllKeys={handleReleaseStuckKeys}
         onShowRemoteCursorChange={setShowRemoteCursor}
         onConfigChange={handleConfigChange}
         onBitrateChange={handleBitrateChange}

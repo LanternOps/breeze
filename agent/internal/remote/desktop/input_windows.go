@@ -21,6 +21,7 @@ var (
 	getSystemMetrics = user32.NewProc("GetSystemMetrics")
 	vkKeyScanW       = user32.NewProc("VkKeyScanW")
 	getKeyState      = user32.NewProc("GetKeyState")
+	getAsyncKeyState = user32.NewProc("GetAsyncKeyState")
 )
 
 const (
@@ -387,6 +388,22 @@ func (h *WindowsInputHandler) sendModifierKey(mod string, up bool) {
 	if ret == 0 {
 		slog.Debug("SendInput failed", "flags", ki.dwFlags)
 	}
+}
+
+// ResetModifierState releases every modifier key Windows reports down:
+// "Release stuck keys" for a modifier no held record names (issue #9595).
+func (h *WindowsInputHandler) ResetModifierState() error {
+	h.ensureInputDesktop()
+	releases := winStuckModifiers(func(vk uint16) bool {
+		r, _, _ := getAsyncKeyState.Call(uintptr(vk))
+		return r&0x8000 != 0
+	})
+	for _, k := range releases {
+		if !sendKeybdInput(k) {
+			slog.Debug("SendInput failed", "flags", k.Flags)
+		}
+	}
+	return nil
 }
 
 // vkToScanCode uses MapVirtualKeyW to derive the hardware scan code for a VK.
