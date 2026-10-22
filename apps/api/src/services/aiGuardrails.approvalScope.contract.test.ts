@@ -610,3 +610,70 @@ describe('W02 static classes (#6756)', () => {
     expect(r.approvalScope).toBe(scope);
   });
 });
+
+// ── W02 class rows (#6756, spec checklist item 3) ──────────────────────────
+// Copied from the plan's "Final per-action classes" table, NOT derived from
+// the guardrail tables. Every action-enum member of the seven tools must have
+// a row, so a new action reds here until someone classifies it. Input-aware
+// actions (comment, update_status, update_fields) are pinned on EMPTY input:
+// their escalation arms are covered by the input-aware suite above.
+// Billable time writes stay t2 (QV1: Todd kept t2, 2026-10-22).
+type W02Class = 't1' | 't2' | 'supervised' | 'four_eyes';
+const W02_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_tickets: {
+    list: 't1', get: 't1', list_work_types: 't1', list_links: 't1',
+    create: 't2', assign: 't2', link_alert: 't2', unlink_alert: 't2', create_from_alert: 't2',
+    log_time_entry: 't2', start_timer: 't2', stop_timer: 't2', update_time_entry: 't2',
+    link_device: 't2', draft: 't2', link_ticket: 't2', unlink_ticket: 't2',
+    comment: 't2', update_status: 't2', update_fields: 't2',
+    edit_comment: 'supervised', delete_comment: 'supervised',
+    move_org: 'four_eyes',
+  },
+  manage_quotes: {
+    create_draft: 't2', update: 't2', delete_draft: 't2', add_block: 't2', update_block: 't2',
+    delete_block: 't2', reorder_blocks: 't2', add_manual_line: 't2', add_catalog_line: 't2',
+    update_line: 't2', remove_line: 't2', move_line: 't2', reorder_lines: 't2',
+    decline: 'supervised', create_pay_link: 'supervised',
+    send: 'four_eyes',
+  },
+  manage_billing_catalog: {
+    create_item: 't2',
+    update_item: 'supervised', archive_item: 'supervised', set_price: 'supervised', remove_price: 'supervised',
+    set_org_price: 'supervised', remove_org_price: 'supervised', set_bundle_components: 'supervised',
+  },
+  manage_saved_filters: { list: 't1', get: 't1', create: 't2', delete: 't2' },
+  manage_tags: { list: 't1', add: 't2', remove: 't2' },
+  manage_notification_channels: { list: 't1', test: 't2', create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+};
+/** test_webhook has no action enum: the whole tool is supervised. */
+const W02_WHOLE_TOOL: Record<string, W02Class> = { test_webhook: 'supervised' };
+
+function classOf(tool: string, input: Record<string, unknown>): W02Class {
+  const r = checkGuardrails(tool, input);
+  if (r.tier === 3) {
+    expect(['supervised', 'four_eyes'], `${tool} tier 3 needs a scope`).toContain(r.approvalScope);
+    return r.approvalScope as W02Class;
+  }
+  expect(r.approvalScope, `${tool} tier ${r.tier} must not carry an approval scope`).toBeUndefined();
+  expect([1, 2]).toContain(r.tier);
+  return r.tier === 1 ? 't1' : 't2';
+}
+
+describe('W02 class rows (#6756)', () => {
+  it.each(Object.keys(W02_EXPECTED))('%s: W02_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W02_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W02_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W02_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+});
