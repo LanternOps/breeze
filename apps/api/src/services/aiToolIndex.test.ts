@@ -6,7 +6,7 @@ import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS } from '@breeze/shared';
 import './aiTools'; // populates the registry
 import { getAllRegisteredToolNames } from './aiTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from './aiAgentSdkTools';
-import { composeStaticSystemPrompt, DOMAIN_NOTES, listToolIndex, renderToolIndexByDomain } from './aiToolIndex';
+import { composeStaticSystemPrompt, DOMAIN_NOTES, listToolIndex, MAX_INLINE_ACTIONS, renderToolIndexByDomain } from './aiToolIndex';
 
 const COVERAGE_BURNDOWN_TOOLS = [
   ['Tickets & time', 'list_time_entries'],
@@ -118,6 +118,27 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     expect(DOMAIN_NOTES.scripts).toContain('get_script_execution');
     expect(renderToolIndexByDomain(['get_script_execution'])).toContain('external runs');
     expect(renderToolIndexByDomain(['run_script'])).not.toContain('external runs');
+  });
+
+  // Full-control W02 (#6756), Todd 2026-10-22 option 2: action lists collapse
+  // to "(N actions)" at 8+ actions so the 7 PSA/billing write tools fit the
+  // index ceiling. Renderer only — the names stay in each tool's schema.
+  it('inlines up to 7 action names and collapses 8+ to a count', () => {
+    expect(MAX_INLINE_ACTIONS).toBe(7);
+    const all = listToolIndex(getAllRegisteredToolNames());
+    // No registered tool has exactly 7 actions today, so pin the largest one
+    // that still inlines; the constant assertion above covers the boundary.
+    const inline = all.filter((e) => e.actions.length > 0 && e.actions.length <= 7)
+      .sort((a, b) => b.actions.length - a.actions.length)[0];
+    const eight = all.find((e) => e.actions.length === 8);
+    expect(inline, 'need a registered tool with 1-7 actions').toBeDefined();
+    expect(eight, 'need a registered tool with exactly 8 actions').toBeDefined();
+    expect(inline!.actions.length).toBeGreaterThanOrEqual(5);
+    expect(eight!.actions).toHaveLength(8);
+    expect(renderToolIndexByDomain([inline!.name])).toContain(`${inline!.name} (${inline!.actions.join('/')})`);
+    const collapsed = renderToolIndexByDomain([eight!.name]);
+    expect(collapsed).toContain(`${eight!.name} (8 actions)`);
+    expect(collapsed).not.toContain(eight!.actions.join('/'));
   });
 
   it('skips names that have no domain instead of throwing', () => {
