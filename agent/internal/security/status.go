@@ -605,8 +605,8 @@ func floatFromAny(value any) (float64, bool) {
 // BitLocker enum values as Get-BitLockerVolume reports them. Windows
 // PowerShell 5.1's ConvertTo-Json serialises enums as their integer value
 // (-EnumsAsStrings is PowerShell 6+), so the raw JSON can carry 6 rather than
-// "XtsAes128" (#9608). The numbering matches Win32_EncryptableVolume
-// GetEncryptionMethod / GetConversionStatus / ProtectionStatus.
+// "XtsAes128" (#9608). Numbering and names follow the BitLocker module's
+// enums, so an integer maps to the same name the [string] cast emits.
 var (
 	bitLockerEncryptionMethodNames = map[int]string{
 		0: "None",
@@ -623,8 +623,10 @@ var (
 		1: "FullyEncrypted",
 		2: "EncryptionInProgress",
 		3: "DecryptionInProgress",
-		4: "EncryptionPaused",
-		5: "DecryptionPaused",
+		4: "EncryptionSuspended",
+		5: "DecryptionSuspended",
+		6: "FullyEncryptedWipeInProgress",
+		7: "FullyEncryptedWipeSuspended",
 	}
 	bitLockerProtectionStatusNames = map[int]string{
 		0: "Off",

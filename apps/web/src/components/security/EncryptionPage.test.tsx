@@ -48,7 +48,28 @@ describe('EncryptionPage TPM column (#9607)', () => {
     } as unknown as Response);
     render(<EncryptionPage />);
     expect(await screen.findByTestId('encryption-tpm-a')).toHaveTextContent(/^—$/);
+    expect(screen.getByTestId('encryption-tpm-a')).toHaveAttribute('title', 'Not reported by the agent');
     expect(screen.getByTestId('encryption-tpm-b')).toHaveTextContent(/^Yes$/);
     expect(screen.getByTestId('encryption-tpm-c')).toHaveTextContent(/^No$/);
+  });
+});
+
+describe('EncryptionPage method tiles (#9607)', () => {
+  it('shows an Unknown tile for encrypted devices that reported no method', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: vi.fn().mockResolvedValue({
+        data: [],
+        summary: {
+          total: 5, fullyEncrypted: 4, partial: 0, unencrypted: 1, recoveryKeysEscrowed: 0,
+          methodCounts: { bitlocker: 1, filevault: 1, luks: 0, none: 1, unknown: 2 },
+        },
+      }),
+    } as unknown as Response);
+    render(<EncryptionPage />);
+    expect(await screen.findByTestId('encryption-method-unknown')).toHaveTextContent('Unknown');
+    expect(screen.getByTestId('encryption-method-unknown')).toHaveTextContent('2');
   });
 });

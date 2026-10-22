@@ -164,18 +164,26 @@ complianceRoutes.get(
       : [];
     const escrowedDeviceIds = new Set(escrowRows.map((r) => r.deviceId));
 
+    const FALLBACK_VOLUME_METHOD_LABELS: Record<string, string> = {
+      bitlocker: 'BitLocker',
+      filevault: 'FileVault',
+      luks: 'LUKS',
+      none: 'None',
+      unknown: 'Unknown'
+    };
+
     let devicesData = rows.map((row) => {
       const status = toStatusResponse(row);
       const encStatus = status.encryptionStatus;
       // What the agent reported, never inferred from the OS (#9607).
       const method = deriveEncryptionMethod(row.encryptionDetails, encStatus);
       // No per-volume detail reported: synthesize one row for the system
-      // volume. Its method is only what the device-level report supports
-      // ('None' when unencrypted, otherwise 'Unknown').
+      // volume. Its method mirrors the device-level method, which is itself
+      // only what the agent reported.
       const fallbackVolume = {
         drive: status.os === 'windows' ? 'C:' : status.os === 'macos' ? 'Macintosh HD' : '/dev/sda1',
         encrypted: encStatus !== 'unencrypted',
-        method: method === 'none' ? 'None' : 'Unknown',
+        method: FALLBACK_VOLUME_METHOD_LABELS[method] ?? method,
         status: null as string | null,
         percentEncrypted: null as number | null
       };

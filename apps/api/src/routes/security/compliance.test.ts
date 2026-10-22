@@ -144,6 +144,10 @@ describe('GET /encryption', () => {
         encryptionDetails: { source: 'bitlocker', volumes: [{ mount: 'C:', method: '6', protected: true, status: '1', percentEncrypted: 100 }] },
       }),
       statusRow({ deviceId: DEV_BARE, deviceName: 'win-no-details' }),
+      statusRow({
+        deviceId: '55555555-5555-4555-8555-555555555555', deviceName: 'win-empty-volumes',
+        encryptionDetails: { source: 'bitlocker', volumes: [] },
+      }),
       statusRow({ deviceId: '44444444-4444-4444-8444-444444444444', deviceName: 'mac-unencrypted', os: 'macos', encryptionStatus: 'unencrypted' }),
     ]);
     mockEscrowRows([]);
@@ -158,8 +162,12 @@ describe('GET /encryption', () => {
     expect(byName['win-no-details'].encryptionMethod).toBe('unknown');
     expect(byName['win-no-details'].volumes[0].method).toBe('Unknown');
     expect(byName['mac-unencrypted'].encryptionMethod).toBe('none');
+    // Reported BitLocker with no volume rows: the synthesized volume agrees
+    // with the device-level method instead of contradicting it.
+    expect(byName['win-empty-volumes'].encryptionMethod).toBe('bitlocker');
+    expect(byName['win-empty-volumes'].volumes[0].method).toBe('BitLocker');
 
-    expect(json.summary.methodCounts).toEqual({ bitlocker: 1, filevault: 0, luks: 0, none: 1, unknown: 1 });
+    expect(json.summary.methodCounts).toEqual({ bitlocker: 2, filevault: 0, luks: 0, none: 1, unknown: 1 });
   });
 });
 

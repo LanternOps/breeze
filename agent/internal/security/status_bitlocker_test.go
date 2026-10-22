@@ -1,6 +1,9 @@
 package security
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseBitLockerProtectionStatus(t *testing.T) {
 	tests := []struct {
@@ -89,8 +92,29 @@ func TestParseBitLockerVolumes(t *testing.T) {
 			name:          "stringified numbers",
 			output:        `{"MountPoint":"C:","ProtectionStatus":"1","EncryptionMethod":"3","VolumeStatus":"4"}`,
 			wantMethod:    "aes128",
-			wantStatus:    "EncryptionPaused",
+			wantStatus:    "EncryptionSuspended",
 			wantProtected: true,
+		},
+		{
+			name:          "bool protection status true",
+			output:        `{"MountPoint":"C:","ProtectionStatus":true,"EncryptionMethod":"XtsAes128","VolumeStatus":"FullyEncrypted"}`,
+			wantMethod:    "xtsaes128",
+			wantStatus:    "FullyEncrypted",
+			wantProtected: true,
+		},
+		{
+			name:          "bool protection status false",
+			output:        `{"MountPoint":"C:","ProtectionStatus":false,"EncryptionMethod":0,"VolumeStatus":0}`,
+			wantMethod:    "none",
+			wantStatus:    "FullyDecrypted",
+			wantProtected: false,
+		},
+		{
+			name:          "negative integer is unknown",
+			output:        `{"MountPoint":"C:","ProtectionStatus":-1,"EncryptionMethod":-1,"VolumeStatus":6}`,
+			wantMethod:    "unknown",
+			wantStatus:    "FullyEncryptedWipeInProgress",
+			wantProtected: false,
 		},
 		{
 			name:          "unmapped numeric values stay visible as unknown",
@@ -156,5 +180,16 @@ func TestParseBitLockerVolumesArray(t *testing.T) {
 func TestParseBitLockerVolumesInvalidJSON(t *testing.T) {
 	if _, err := parseBitLockerVolumes("not json"); err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// The [string] casts are what make Windows PowerShell 5.1 emit enum names;
+// parseBitLockerVolumes only backstops their absence (#9608).
+func TestBitLockerVolumesPSCastsEnumsToString(t *testing.T) {
+	for _, field := range []string{"ProtectionStatus", "EncryptionMethod", "VolumeStatus"} {
+		want := "@{n='" + field + "';e={[string]$_." + field + "}}"
+		if !strings.Contains(bitLockerVolumesPS, want) {
+			t.Errorf("bitLockerVolumesPS missing %s", want)
+		}
 	}
 }

@@ -76,11 +76,13 @@ describe('parseEncryptionVolumes — BitLocker enum integers from older agents (
       volumes: [
         { mount: 'C:', method: 'xtsaes128', protected: true, status: 'FullyEncrypted' },
         { mount: 'D:', method: '99', protected: true, status: '42' },
+        { mount: 'E:', method: '-1', protected: true, status: 4 },
       ],
     });
     expect(result?.map((v) => [v.method, v.status])).toEqual([
       ['xtsaes128', 'FullyEncrypted'],
       ['unknown', 'Unknown'],
+      ['unknown', 'EncryptionSuspended'],
     ]);
   });
 

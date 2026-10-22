@@ -458,8 +458,8 @@ export type EncryptionVolume = {
 // BitLocker enum values by integer. Agents before #9608 forwarded Windows
 // PowerShell 5.1's ConvertTo-Json output verbatim, which serialises enums as
 // numbers, so stored encryption_details can hold "6" / "1" instead of names.
-// Numbering matches Win32_EncryptableVolume and the agent's own table
-// (agent/internal/security/status.go). Methods are lowercased to match what
+// Numbering and names match the BitLocker PowerShell module enums and the
+// agent's own table (agent/internal/security/status.go). Methods are lowercased to match what
 // the agent stores.
 const BITLOCKER_METHOD_NAMES: Record<number, string> = {
   0: 'none',
@@ -477,14 +477,16 @@ const BITLOCKER_VOLUME_STATUS_NAMES: Record<number, string> = {
   1: 'FullyEncrypted',
   2: 'EncryptionInProgress',
   3: 'DecryptionInProgress',
-  4: 'EncryptionPaused',
-  5: 'DecryptionPaused'
+  4: 'EncryptionSuspended',
+  5: 'DecryptionSuspended',
+  6: 'FullyEncryptedWipeInProgress',
+  7: 'FullyEncryptedWipeSuspended'
 };
 
 // A name passes through; an integer (or integer string) maps to its name, or
 // to `unknownName` when outside the table so a bare number never reaches the UI.
 function bitLockerEnumName(value: string | null, names: Record<number, string>, unknownName: string): string | null {
-  if (value === null || !/^\d+$/.test(value)) return value;
+  if (value === null || !/^-?\d+$/.test(value)) return value;
   return names[Number(value)] ?? unknownName;
 }
 

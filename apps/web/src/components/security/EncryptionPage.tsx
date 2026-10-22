@@ -45,6 +45,8 @@ type Summary = {
     filevault: number;
     luks: number;
     none: number;
+    // Encrypted devices whose agent reported no method (#9607).
+    unknown: number;
   };
   recoveryKeysEscrowed: number;
 };
@@ -67,7 +69,7 @@ export default function EncryptionPage() {
     fullyEncrypted: 0,
     partial: 0,
     unencrypted: 0,
-    methodCounts: { bitlocker: 0, filevault: 0, luks: 0, none: 0 },
+    methodCounts: { bitlocker: 0, filevault: 0, luks: 0, none: 0, unknown: 0 },
     recoveryKeysEscrowed: 0,
   });
   const [pagination, setPagination] = useState<Pagination>({
@@ -212,7 +214,7 @@ export default function EncryptionPage() {
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-5">
         <div className="rounded-md border bg-muted/30 p-3 text-center">
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.bitlocker")}
@@ -236,6 +238,15 @@ export default function EncryptionPage() {
             {t("securityEncryptionPage.none")}
           </p>
           <p className="text-lg font-semibold">{stat(mc.none)}</p>
+        </div>
+        <div
+          className="rounded-md border bg-muted/30 p-3 text-center"
+          data-testid="encryption-method-unknown"
+        >
+          <p className="text-xs text-muted-foreground">
+            {t("securityEncryptionPage.unknown")}
+          </p>
+          <p className="text-lg font-semibold">{stat(mc.unknown ?? 0)}</p>
         </div>
       </div>
 
@@ -355,7 +366,9 @@ export default function EncryptionPage() {
                           {d.os}
                         </div>
                         <div className="px-4 py-3 text-sm capitalize">
-                          {d.encryptionMethod}
+                          {d.encryptionMethod === "unknown"
+                            ? t("securityEncryptionPage.unknown")
+                            : d.encryptionMethod}
                         </div>
                         <div className="px-4 py-3">
                           <span
@@ -370,6 +383,11 @@ export default function EncryptionPage() {
                         <div
                           className="px-4 py-3 text-sm"
                           data-testid={`encryption-tpm-${d.deviceId}`}
+                          title={
+                            typeof d.tpmPresent === "boolean"
+                              ? undefined
+                              : t("securityEncryptionPage.tpmNotReported")
+                          }
                         >
                           {/* null = the agent did not report TPM state (#9607) */}
                           {d.tpmPresent === true
