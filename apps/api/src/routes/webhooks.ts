@@ -138,7 +138,7 @@ export function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect
 // header (no separate column). The delivery worker already sends custom
 // headers, and GET responses already redact every header value, so the token
 // is encrypted at rest and never returned.
-export type WebhookAuthType = 'bearer' | 'hmac' | 'none';
+type WebhookAuthType = 'bearer' | 'hmac' | 'none';
 
 const UNSUPPORTED_AUTH_FIELD_MESSAGE =
   'Not supported: set bearer authentication as an `Authorization: Bearer <token>` entry in `headers`';
