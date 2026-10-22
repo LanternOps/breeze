@@ -37,7 +37,13 @@ const isoDay = (d: Date | string | null): string | null => {
   return Number.isNaN(t.getTime()) ? null : t.toISOString().slice(0, 10);
 };
 
-/** "<name> (<owner email>, <created date>)", capped at 80 code points by trimming the name. */
+/**
+ * "<name> (<owner email>, <created date>)". The name is trimmed toward 80 code
+ * points total but keeps at least 8, so a very long email can exceed that; the
+ * ledger column allows 120 (incl. the 11-char client suffix added later).
+ * Same-name matching (has_*_by_name) is deliberately scoped to one account +
+ * partner; two same-named apps of one account can retire each other's incident.
+ */
 function reuseDisplayName(r: PairRow): string {
   const base = cleanDisplayName(r.client_name, r.client_id);
   const parts = [typeof r.owner_email === 'string' ? cleanDisplayName(r.owner_email, '') : '', isoDay(r.grant_created_at) ?? '']
