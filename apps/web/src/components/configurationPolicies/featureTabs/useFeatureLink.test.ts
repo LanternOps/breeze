@@ -25,6 +25,16 @@ describe('feature Save action feedback', () => {
     expect.objectContaining({ method: existingId ? 'PATCH' : 'POST' }));
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
+  it('save with successMessage null stays silent; a string overrides the default', async () => {
+    vi.clearAllMocks();
+    const row = { id: LINK, ...payload };
+    vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(row), { status: 200 }));
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.save(LINK, payload, { successMessage: null })).toEqual(row); });
+    expect(showToast).not.toHaveBeenCalled();
+    await act(async () => { await result.current.save(LINK, payload, { successMessage: 'Custom' }); });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Custom' }));
+  });
   it.each([200, 403])('surfaces a failed body at HTTP %s and retains inline error', async (status) => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ success: false, error: 'Denied' }), { status }));
     const { result } = renderHook(() => useFeatureLink(POLICY));

@@ -360,7 +360,7 @@ export default function PatchTab({
       featureType: "patch",
       featurePolicyId: selectedRingId || null,
       inlineSettings: settings,
-    });
+    }, { successMessage: null });
     // The save POST returned 201 with no UI feedback before — confirm success
     // (the hook surfaces failures via `error` → FeatureTabShell).
     if (result) {
@@ -395,7 +395,7 @@ export default function PatchTab({
       featureType: "patch",
       featurePolicyId: selectedRingId || null,
       inlineSettings: settings,
-    });
+    }, { successMessage: null });
     if (result) {
       showToast({
         message: i18n.t(
