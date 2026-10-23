@@ -559,3 +559,28 @@ describe('quote acceptance evidence carve-out (#6633)', () => {
     expect(bodyLimitForPath(`/api/v1/quotes/${Q}/acceptance`).rule).toBe('default');
   });
 });
+
+describe('YARA rule test sample carve-out (#6263 W04-2)', () => {
+  const SET = '22222222-2222-4222-8222-222222222222';
+
+  it('gives the test upload 10 MiB + 64 KiB so the route answers its own 413', () => {
+    expect(bodyLimitForPath(`/api/v1/security/yara/rule-sets/${SET}/test`)).toEqual({
+      rule: 'yara-test-sample',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'File too large (max 10 MB)',
+    });
+  });
+
+  it('leaves every other /security/yara path at the default', () => {
+    for (const p of [
+      `/api/v1/security/yara/rule-sets/${SET}`,
+      `/api/v1/security/yara/rule-sets/${SET}/rules`,
+      `/api/v1/security/yara/rule-sets/${SET}/ioc-import`,
+      `/api/v1/security/yara/rule-sets/${SET}/test/extra`,
+      '/api/v1/security/yara/rule-sets/not-a-uuid/test',
+      '/api/v1/security/yara/rules/33333333-3333-4333-8333-333333333333',
+    ]) {
+      expect(bodyLimitForPath(p).rule, p).toBe('default');
+    }
+  });
+});

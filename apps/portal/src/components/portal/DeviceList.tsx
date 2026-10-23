@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Download, Monitor } from 'lucide-react';
 import { publicApiPath, type Device } from '@/lib/api';
 import { cn, formatDate, formatRelativeTime } from '@/lib/utils';
+import { deviceStatusMark } from '@/lib/deviceStatus';
 import {
   BTN_SECONDARY,
   ROW,
@@ -11,7 +12,6 @@ import {
   StatusMark,
   EmptyState,
   ErrorNotice,
-  type MarkTone,
 } from './ui';
 
 interface DeviceListProps {
@@ -105,19 +105,6 @@ function encryptionLabel(value: string | null): string {
   if (v.includes('encrypted')) return 'Encrypted';
   if (v === 'unknown') return 'Not known';
   return value;
-}
-
-function statusMark(status: Device['status']): { tone: MarkTone; label: string } {
-  switch (status) {
-    case 'online':
-      return { tone: 'success', label: 'Online' };
-    case 'offline':
-      return { tone: 'neutral', label: 'Offline' };
-    case 'warning':
-      return { tone: 'warning', label: 'Warning' };
-    default:
-      return { tone: 'neutral', label: status || 'Unknown' };
-  }
 }
 
 /** One line of the disclosure. Deliberately the same shape the security ledger
@@ -263,7 +250,7 @@ export function DeviceList({ devices, error, embedded = false }: DeviceListProps
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {devices.map((device) => {
-                const mark = statusMark(device.status);
+                const mark = deviceStatusMark(device.status);
                 const lastOnline = mounted
                   ? whenLabel(device.lastSeenAt, 'Not known')
                   : staticWhenLabel(device.lastSeenAt, 'Not known');

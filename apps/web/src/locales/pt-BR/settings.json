@@ -1030,8 +1030,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Empresa",
+      "devices": "Dispositivos e agentes",
       "security": "Segurança e acesso",
       "communications": "Comunicações",
+      "ai": "IA",
       "branding": "Identidade visual"
     },
     "aiFeatures": {
@@ -1060,11 +1062,11 @@
       },
       "company": {
         "label": "Empresa",
-        "description": "Nome, endereço, contatos"
+        "description": "Nome, endereço, contatos, assinatura de e-mail"
       },
       "regional": {
         "label": "Regional",
-        "description": "Fuso horário, formatos, horários"
+        "description": "Fuso horário, idioma, formatos, horários"
       },
       "defaults": {
         "label": "Padrões",
@@ -1072,7 +1074,7 @@
       },
       "security": {
         "label": "Segurança",
-        "description": "Lista de IPs e acesso"
+        "description": "Senhas, sessões, MFA e lista de IPs"
       },
       "remoteAccess": {
         "label": "Acesso remoto",
@@ -1080,11 +1082,11 @@
       },
       "eventLogs": {
         "label": "Logs de eventos",
-        "description": "Encaminhamento e retenção"
+        "description": "Encaminhar logs de eventos de dispositivos para o Elasticsearch"
       },
       "notifications": {
         "label": "Notificações",
-        "description": "Alertas por e-mail e webhook"
+        "description": "Endereço do remetente, SMTP e padrões de Slack e Pushover"
       },
       "ticketing": {
         "label": "Chamados",
@@ -1109,7 +1111,7 @@
       },
       "aiFeatures": {
         "label": "Recursos de IA",
-        "description": "Padrões de detecção de anomalias e correções sugeridas"
+        "description": "Política de dados de IA, detecção de anomalias e correções sugeridas"
       },
       "branding": {
         "label": "Identidade visual",
@@ -1126,6 +1128,14 @@
       "aiApprovals": {
         "label": "Tempo limite de aprovação de IA",
         "description": "Quanto tempo o chat de IA aguarda a aprovação de uma ação restrita"
+      },
+      "callerVerification": {
+        "label": "Verificação de chamador",
+        "description": "Verificação de identidade de quem liga nas solicitações de suporte"
+      },
+      "knownGuests": {
+        "label": "Convidados conhecidos",
+        "description": "Dispositivos aprovados de visitantes e técnicos por endereço MAC"
       }
     },
     "saved": "Configurações do parceiro salvas",
