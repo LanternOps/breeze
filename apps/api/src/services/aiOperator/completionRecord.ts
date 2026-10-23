@@ -36,6 +36,7 @@ import { users } from '../../db/schema/users';
 import { planEffectOperationKey } from './planApproval';
 import { readTaskSpentCents } from './taskLimitsLoader';
 import { OPERATOR_TASK_ACTOR, type HumanWorkDbHandle } from './humanWorkService';
+import { lockTicketForWrite } from '../ticketRowLock';
 
 export const COMPLETION_RECORD_MAX_CHARS = 12_000;
 const NARRATIVE_MAX_CHARS = 2_000;
@@ -47,7 +48,7 @@ export interface CompletionRecord { text: string; truncated: boolean }
 
 export class CompletionRecordNoTicketError extends Error {
   constructor(taskId: string) {
-    super(`[aiOperator] completion record for task ${taskId} has no ticket to post to`);
+    super(`[aiOperator] completion record for task ${taskId} has no ticket in its organization to post to`);
     this.name = 'CompletionRecordNoTicketError';
   }
 }
@@ -80,7 +81,10 @@ export interface CompletionRecordData {
  * partially masked: "set password to hunter2" with only the keyword masked
  * would still print the value.
  */
-const SECRETISH = /-----BEGIN|pass(word|wd)|secret|service_?account_?key|vault_?ref|private_?key|api_?key|\btoken\b/i;
+const SECRET_WORDS = /-----BEGIN|pass(word|wd|phrase)?|\bpwd\b|secret|credential|service_?account_?key|vault_?ref|private_?key|api_?key|access_?token|refresh_?token|token|\bpin\b|\botp\b|recovery|bearer/i;
+/** Value shapes, keyword or not: a JWT, cloud key prefixes, or a long high-entropy run. */
+const SECRET_SHAPES = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b(AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|[A-Za-z0-9+/_=-]{40,}/;
+const SECRETISH = { test: (s: string) => SECRET_WORDS.test(s) || SECRET_SHAPES.test(s) };
 
 function clean(s: string, max = 500): string {
   const flat = s.replace(/[\r\n]+/g, ' ').trim();
@@ -316,6 +320,12 @@ export async function postCompletionRecord(
   input: { orgId: string; taskId: string; ticketId: string | null; stepId: string; text: string },
 ): Promise<{ posted: boolean; commentId: string | null }> {
   if (!input.ticketId) throw new CompletionRecordNoTicketError(input.taskId);
+  // The ticket must be THIS task's org's ticket. The pointer comes from the
+  // task's own live ticket target, and a ticket org-move detaches that target,
+  // but this write runs in system scope, so the binding is re-proven here
+  // under the ticket lock rather than assumed.
+  const ticket = await lockTicketForWrite(dbh, input.ticketId);
+  if (!ticket || ticket.orgId !== input.orgId) throw new CompletionRecordNoTicketError(input.taskId);
   const stamped = await dbh
     .update(aiOperatorTaskSteps)
     .set({

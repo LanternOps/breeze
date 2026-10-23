@@ -6,6 +6,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const lockMock = vi.hoisted(() => ({ row: { id: 'ticket-1', orgId: 'o' } as { id: string; orgId: string } | null }));
+vi.mock('../ticketRowLock', () => ({ lockTicketForWrite: async () => lockMock.row }));
 vi.mock('../../db', () => ({
   db: {},
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -75,9 +77,14 @@ describe('renderCompletionRecord', () => {
   it('4. no secret-shaped material survives, even when a field carries some', () => {
     const { text } = renderCompletionRecord(data({
       narrative: 'password=hunter2 clientSecret=abc -----BEGIN PRIVATE KEY-----xyz vaultRef: vault://1',
+      humanWork: [
+        { label: 'Use eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig to log in', done: false, completedBy: null, completedAt: null },
+        { label: 'Key AKIAABCDEFGHIJKLMNOP for the bucket', done: false, completedBy: null, completedAt: null },
+        { label: 'Give them the recovery code 123456', done: false, completedBy: null, completedAt: null },
+      ],
       effects: [{ ordinal: 0, provider: 'google', toolName: 'google_set_vacation', rendering: 'set password to hunter2', outcome: 'succeeded', verification: 'verified' }],
     }));
-    expect(text).not.toMatch(/password|-----BEGIN|clientSecret|vaultRef|hunter2/i);
+    expect(text).not.toMatch(/password|-----BEGIN|clientSecret|vaultRef|hunter2|eyJhbGci|AKIAABCD|123456/i);
   });
 
   it('5. is capped with a visible marker; the narrative goes first and Unresolved is never cut', () => {
@@ -112,7 +119,17 @@ describe('postCompletionRecord', () => {
     insert: () => ({ values: (v: Record<string, unknown>) => { inserts.push(v); return { returning: async () => [{ id: 'comment-1' }] }; } }),
   });
 
-  beforeEach(() => { inserts = []; stampReturns = [{ id: 'doc-step' }]; });
+  beforeEach(() => { inserts = []; stampReturns = [{ id: 'doc-step' }]; lockMock.row = { id: 'ticket-1', orgId: 'o' }; });
+
+  it('REFUSES a ticket that is not in the task\'s org — no comment, no stamp', async () => {
+    lockMock.row = { id: 'ticket-1', orgId: 'other-org' };
+    await expect(postCompletionRecord(dbh() as never, { orgId: 'o', taskId: 't', ticketId: 'ticket-1', stepId: 'doc-step', text: 'r' }))
+      .rejects.toBeInstanceOf(CompletionRecordNoTicketError);
+    lockMock.row = null;
+    await expect(postCompletionRecord(dbh() as never, { orgId: 'o', taskId: 't', ticketId: 'ticket-1', stepId: 'doc-step', text: 'r' }))
+      .rejects.toBeInstanceOf(CompletionRecordNoTicketError);
+    expect(inserts).toHaveLength(0);
+  });
 
   it('6. posts an INTERNAL, non-public comment authored by the AI Operator', async () => {
     const r = await postCompletionRecord(dbh() as never, { orgId: 'o', taskId: 't', ticketId: 'ticket-1', stepId: 'doc-step', text: 'record' });
