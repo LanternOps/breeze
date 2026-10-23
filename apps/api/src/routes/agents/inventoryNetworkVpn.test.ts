@@ -49,7 +49,7 @@ function mockDeviceLookup(device: { id: string; orgId: string } | null) {
 // Capture what the handler writes to devices.activeVpns inside the txn.
 // `updateCalled` distinguishes "wrote []" from "never touched the column".
 // `ops` records statement order for the lock-ordering regression (BREEZE-1S).
-function mockTransactionCapture() {
+function mockTransactionCapture(opts: { writtenRows?: unknown[]; rowAfter?: unknown[] } = {}) {
   const captured: {
     activeVpns?: unknown;
     inserted?: unknown[];
@@ -72,9 +72,14 @@ function mockTransactionCapture() {
             captured.updateCalled = true;
             captured.activeVpns = row.activeVpns;
             // updateOwnDeviceRow (#8318 §6.4) always asks for the matched rows back.
-            return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]) }) };
+            return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(opts.writtenRows ?? [{ id: 'device-1' }]) }) };
           }),
         };
+      }),
+      // ownDeviceRowChangedHands' one re-read, on the 0-row path only.
+      select: vi.fn().mockImplementation(() => {
+        captured.ops.push('re-read');
+        return { from: () => ({ where: () => ({ limit: vi.fn().mockResolvedValue(opts.rowAfter ?? []) }) }) };
       }),
     };
     return fn(tx);
@@ -272,6 +277,37 @@ describe('agent network inventory — VPN presence ingest (#2139)', () => {
     // than overwritten to "no VPN" (avoids clobbering a live tunnel). The handler
     // signals this by not calling update on activeVpns.
     expect(captured.updateCalled).toBe(false);
+  });
+
+  // Review of wave 1b-1 (must-fix 3 sweep): a 0-row VPN write persisted
+  // nothing — no success answer, and the adapter sync is skipped with it.
+  const VPN_REPORT = {
+    adapters: [{ interfaceName: 'en0', ipAddress: '192.168.1.10', ipType: 'ipv4', isPrimary: true }],
+    vpns: [{ provider: 'tailscale', active: true, interfaceName: 'utun3', detectionSource: 'interface' }],
+  };
+
+  it('answers a VPN write the row refused because it changed hands with the stale-credential 401, syncing no adapters', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const captured = mockTransactionCapture({ writtenRows: [], rowAfter: [{ agentId: 'agent-after-reattach' }] });
+
+    const res = await putNetwork(makeApp(), VPN_REPORT);
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe('Invalid agent credentials');
+    expect(captured.ops).toEqual(['update', 're-read']);
+    expect(syncDeviceNetwork).not.toHaveBeenCalled();
+  });
+
+  it('answers a VPN write whose row vanished after the read with 404, syncing no adapters', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const captured = mockTransactionCapture({ writtenRows: [], rowAfter: [] });
+
+    const res = await putNetwork(makeApp(), VPN_REPORT);
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Device not found' });
+    expect(captured.ops).toEqual(['update', 're-read']);
+    expect(syncDeviceNetwork).not.toHaveBeenCalled();
   });
 
   it('returns 404 and does not open a txn when the device is unknown', async () => {

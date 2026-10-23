@@ -2360,6 +2360,37 @@ describe('Task 18 — suspendAgentToken helper', () => {
     expect(where).toContain('{"isNull":"agentTokenSuspendedAt"}');
   });
 
+  // #8318 §6.4 (review of wave 1b-1): the caller audits by outcome.
+  function updateReturning(rows: unknown[]) {
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }) }),
+    } as any);
+  }
+  function reReadReturning(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }),
+    } as any);
+  }
+
+  it('reports suspended when its write stamped the row, without re-reading it', async () => {
+    updateReturning([{ id: 'device-1' }]);
+    vi.mocked(db.select).mockClear();
+    await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('suspended');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('reports stale_caller when the 0-row write found the row in another install\'s hands', async () => {
+    updateReturning([]);
+    reReadReturning([{ agentId: 'agent-after-reattach' }]);
+    await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('stale_caller');
+  });
+
+  it('reports unchanged when the 0-row write met an already-suspended row of the same install', async () => {
+    updateReturning([]);
+    reReadReturning([{ agentId: 'agent-1' }]);
+    await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('unchanged');
+  });
+
   it('truncates reasons longer than 100 chars to fit the column', async () => {
     const setMock = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
@@ -2384,7 +2415,7 @@ describe('Task 18 — suspendAgentToken helper', () => {
 
     await expect(
       suspendAgentToken(identity, 'cross-tenant-probe')
-    ).resolves.toBeUndefined();
+    ).resolves.toBe('failed');
     expect(errSpy).toHaveBeenCalledWith(
       '[agentAuth] suspendAgentToken failed',
       expect.objectContaining({ deviceId: 'device-1' })

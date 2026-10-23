@@ -2,7 +2,6 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash, timingSafeEqual } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
-import { ERROR_CODES } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
@@ -22,6 +21,9 @@ import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
 import { isParkedAllowedAgentPath, PARKED_DEVICE_REFUSAL } from './agentAuthParked';
 import { agentAuthNegativeCache, type AgentAuthTerminalRejection } from './agentAuthNegativeCache';
+import { staleAgentCredentialRejection, terminalAgentAuthRejection } from './agentAuthRejection';
+
+export { staleAgentCredentialRejection };
 import { bufferAgentRequestBody } from './agentRequestBody';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
@@ -29,7 +31,7 @@ import {
   isReservedIngestPath,
   resolveOrgRateLimit,
 } from '../services/agentOrgRateLimit';
-import { updateOwnDeviceRow, type OwnDeviceRowIdentity } from '../services/agentOwnDeviceRow';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow, type OwnDeviceRowIdentity } from '../services/agentOwnDeviceRow';
 import { recordAgentCredentialUse } from '../services/agentCredentialUse';
 
 export interface AgentAuthContext {
@@ -298,20 +300,36 @@ export function isAgentTokenRotationDue(tokenIssuedAt: Date | null | undefined, 
 }
 
 /**
+ * What `suspendAgentToken` did:
+ * - `suspended`: this call stamped the suspension;
+ * - `unchanged`: nothing to write — already suspended (the write is
+ *   idempotent), or the row is no longer visible;
+ * - `stale_caller`: the row now carries another `agent_id` than the socket
+ *   authenticated as (#8318 §6.4: a reattach confirm or an in-place re-enroll
+ *   after the socket opened). Nothing was suspended, and the row belongs to a
+ *   different install;
+ * - `failed`: the write threw (logged here).
+ */
+export type AgentTokenSuspendOutcome = 'suspended' | 'unchanged' | 'stale_caller' | 'failed';
+
+/**
  * Task 18: Persistently suspend an agent token. Called when the WS layer
  * detects a cross-tenant probe pattern (token spraying foreign session IDs).
- * Idempotent — only writes on the first call per device.
+ * Idempotent — only writes on the first call per device. Never rejects.
  *
  * Unsuspending requires manual operator action (clear the columns directly
  * or via a future admin endpoint); the agent will retry forever and produce
  * a loud reconnect-loop signal that surfaces the suspension to ops.
  */
-export async function suspendAgentToken(agent: OwnDeviceRowIdentity, reason: AgentTokenSuspendReason): Promise<void> {
+export async function suspendAgentToken(
+  agent: OwnDeviceRowIdentity,
+  reason: AgentTokenSuspendReason,
+): Promise<AgentTokenSuspendOutcome> {
   try {
-    await withSystemDbAccessContext(async () => {
+    return await withSystemDbAccessContext(async (): Promise<AgentTokenSuspendOutcome> => {
       // #8318 §6.4: bound to the identity the socket authenticated as, so a
       // probe from a superseded install cannot suspend the row's new owner.
-      await updateOwnDeviceRow(
+      const suspended = await updateOwnDeviceRow(
         db,
         agent,
         {
@@ -320,6 +338,8 @@ export async function suspendAgentToken(agent: OwnDeviceRowIdentity, reason: Age
         },
         { where: isNull(devices.agentTokenSuspendedAt) },
       );
+      if (suspended.length > 0) return 'suspended';
+      return (await ownDeviceRowChangedHands(db, agent)) ? 'stale_caller' : 'unchanged';
     });
   } catch (err) {
     // Best-effort: the auth gate is the source of truth. A failed suspension
@@ -329,6 +349,7 @@ export async function suspendAgentToken(agent: OwnDeviceRowIdentity, reason: Age
       reason,
       err: err instanceof Error ? err.message : String(err),
     });
+    return 'failed';
   }
 }
 
@@ -568,52 +589,6 @@ function isDrainAllowedAgentPath(
     return true;
   }
   return false;
-}
-
-/**
- * #8050 — the single source of each TERMINAL rejection's agent-visible
- * response. Used both when the rejection is first decided and when the
- * negative cache replays it, so a replay is byte-for-byte the original: same
- * status, same message, same structured body. Build a fresh exception per call
- * (a Response body can only be read once).
- */
-function terminalAgentAuthRejection(kind: AgentAuthTerminalRejection): HTTPException {
-  switch (kind) {
-    case 're_enrollment_required':
-      // A device row exists but neither token hash is populated — the
-      // pre-hashed-token migration state. A distinct error so the agent can
-      // prompt for re-enrollment instead of silently retrying forever.
-      return new HTTPException(401, {
-        message: 'Re-enrollment required: device predates token-hash migration',
-        res: new Response(
-          JSON.stringify({ error: 'Re-enrollment required', code: ERROR_CODES.RE_ENROLLMENT_REQUIRED }),
-          { status: 401, headers: { 'content-type': 'application/json' } },
-        ),
-      });
-    case 'decommissioned':
-      return new HTTPException(403, { message: 'Device has been decommissioned' });
-    case 'device_not_found':
-    case 'token_suspended':
-    case 'token_mismatch':
-    case 'tenant_denied':
-      // Deliberately indistinguishable: a suspended token, a suspended tenant
-      // and a stale token all read as the same opaque 401.
-      return new HTTPException(401, { message: 'Invalid agent credentials' });
-  }
-}
-
-/**
- * #8318 §6.4: the answer for a request whose credential stopped matching its
- * device row while the request ran — a reattach confirm or an in-place
- * re-enroll changed the row's `agent_id` after this middleware authenticated
- * it (see services/agentOwnDeviceRow.ts `ownDeviceRowChangedHands`). It is
- * exactly the opaque 401 this middleware gives a token that no longer matches,
- * so the agent takes the same path it takes for that rejection (#2773: keep
- * the credential, retry; the next request re-authenticates against the row).
- * Not remembered in the negative cache: the next request answers for itself.
- */
-export function staleAgentCredentialRejection(): HTTPException {
-  return terminalAgentAuthRejection('token_mismatch');
 }
 
 /**

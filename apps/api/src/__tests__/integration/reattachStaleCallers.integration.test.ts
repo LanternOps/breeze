@@ -489,7 +489,7 @@ describe('own-row devices updates by a stale credential match 0 rows (#8318 §6.
     }
   });
 
-  runDb('a plain REST route (uninstall-intent): the stamp is not written', async () => {
+  runDb('a plain REST route (uninstall-intent): the stamp is not written and nothing is acknowledged', async () => {
     const org = await seedOrg('uninstall-intent');
     const device = await enrollDevice(org, 'uninstall-intent');
     const staleCtx = agentContext(device);
@@ -497,7 +497,10 @@ describe('own-row devices updates by a stale credential match 0 rows (#8318 §6.
 
     const stale = await agentApp(staleCtx, { wrapOrgContext: true })
       .request(`/agents/${device.agentId}/uninstall-intent`, { method: 'POST' });
-    expect(stale.status).toBe(200);
+    // Review of wave 1b-1: a 0-row stamp is not acknowledged; the row changed
+    // hands, so it gets the stale-credential 401.
+    expect(stale.status).toBe(401);
+    expect(await stale.text()).toBe('Invalid agent credentials');
     expect((await deviceRow(device.deviceId)).uninstallIntentAt).toBeNull();
 
     const fresh = await agentApp(agentContext(device, { agentId: newAgentId, installIncarnation: 2 }), { wrapOrgContext: true })

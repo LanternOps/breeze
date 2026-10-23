@@ -5107,22 +5107,37 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
     // suspension is reconciled at the next auth gate, so a delayed write
     // simply means one or two extra probes get through before the token
     // becomes invalid.
-    void suspendAgentToken({ deviceId, agentId }, AGENT_TOKEN_SUSPEND_REASON.crossTenantProbe);
-    void createAuditLogAsync({
-      orgId: null,
-      actorType: 'system',
-      actorId: ANONYMOUS_ACTOR_ID,
-      action: 'agent.token.suspended',
-      resourceType: 'device',
-      resourceId: deviceId,
-      details: {
-        reason: 'cross-tenant-probe',
-        kind,
-        dropsInWindow: counter.drops,
-        agentId,
-      },
-      result: 'denied',
-      initiatedBy: 'automation',
+    //
+    // #8318 §6.4: the audit follows the write's outcome. When the row changed
+    // hands after this socket authenticated (a reattach confirm or an in-place
+    // re-enroll), nothing was suspended and the row belongs to another
+    // install, so no `agent.token.suspended` row is attributed to it; the
+    // superseded socket closes at its next lease re-check (4040).
+    const drops = counter.drops;
+    void suspendAgentToken({ deviceId, agentId }, AGENT_TOKEN_SUSPEND_REASON.crossTenantProbe).then((outcome) => {
+      if (outcome === 'stale_caller') {
+        console.warn(
+          `[AgentWs] cross-tenant probe from a superseded install: agent=${agentId} device=${deviceId} ` +
+          `kind=${kind}; the device row changed hands, nothing suspended, not audited`
+        );
+        return;
+      }
+      void createAuditLogAsync({
+        orgId: null,
+        actorType: 'system',
+        actorId: ANONYMOUS_ACTOR_ID,
+        action: 'agent.token.suspended',
+        resourceType: 'device',
+        resourceId: deviceId,
+        details: {
+          reason: 'cross-tenant-probe',
+          kind,
+          dropsInWindow: drops,
+          agentId,
+        },
+        result: 'denied',
+        initiatedBy: 'automation',
+      });
     });
     try {
       captureException(

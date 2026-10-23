@@ -141,16 +141,19 @@ export function selectOwnDeviceRowForUpdate<TColumns extends SelectedFields>(
   exec: OwnDeviceRowReader,
   agent: OwnDeviceRowIdentity,
   columns: TColumns,
+  /** Extra predicate the site keeps (e.g. an org guard). ANDed with the identity. */
+  opts?: { where?: SQL | undefined },
 ): Promise<SelectResultFields<TColumns> | undefined>;
 export async function selectOwnDeviceRowForUpdate(
   exec: OwnDeviceRowReader,
   agent: OwnDeviceRowIdentity,
   columns?: SelectedFields,
+  opts: { where?: SQL | undefined } = {},
 ): Promise<unknown> {
   const query = columns ? exec.select(columns) : exec.select();
   const [row] = await query
     .from(devices)
-    .where(ownDeviceRowCondition(agent))
+    .where(and(ownDeviceRowCondition(agent), opts.where))
     .limit(1)
     .for('no key update');
   return row;

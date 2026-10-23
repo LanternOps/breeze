@@ -344,6 +344,42 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
         expect(details.changed).toEqual(['identity', 'categories.mdm', 'categories.rmm']);
       });
 
+      // Review of wave 1b-1 (must-fix 3): a 0-row write persisted nothing, so
+      // it records no success and audits no change.
+      function zeroRowWrite(rowAfter: Array<Record<string, unknown>>) {
+        mockDeviceLookup({ managementPosture: null });
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+          }),
+        } as never);
+        // ownDeviceRowChangedHands re-reads the row by id once.
+        vi.mocked(db.select).mockReset();
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, managementPosture: null }]))
+          .mockReturnValueOnce(selectResolving(rowAfter));
+      }
+
+      it('answers a write the row refused because it changed hands with the stale-credential 401: no success, no audit', async () => {
+        zeroRowWrite([{ agentId: 'agent-after-reattach' }]);
+        const res = await put('management/posture', posture);
+
+        expect(res.status).toBe(401);
+        expect(await res.text()).toBe('Invalid agent credentials');
+        expect(writeAuditEvent).not.toHaveBeenCalled();
+        expect(recordAgentIngestSubmission).not.toHaveBeenCalled();
+      });
+
+      it('answers a write whose row vanished after the read with 404: no success, no audit', async () => {
+        zeroRowWrite([]);
+        const res = await put('management/posture', posture);
+
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Device not found' });
+        expect(writeAuditEvent).not.toHaveBeenCalled();
+        expect(recordAgentIngestSubmission).not.toHaveBeenCalled();
+      });
+
       it('counts a failed posture write as a failed ingest', async () => {
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
         mockDeviceLookup({ managementPosture: null });

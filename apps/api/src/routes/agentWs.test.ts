@@ -7037,6 +7037,33 @@ describe('late terminal_start failure binds to the exact terminal generation', (
     expect(isAgentConnected('agent-term-rollout')).toBe(true);
   });
 
+  // #8318 §6.4 (review of wave 1b-1): a superseded install's socket whose
+  // suspension write finds the row in another install's hands suspends
+  // nothing, so no `agent.token.suspended` row is attributed to the device.
+  it('writes no suspension audit when the suspending write finds the row in another install\'s hands', async () => {
+    const sessionId = '10000000-0000-4000-8000-000000000005';
+    const owner = await openAgentSocket('agent-term-owner-2', TERM_DEVICE_ID);
+    const foreign = await openAgentSocket('agent-term-superseded', 'device-term-superseded');
+
+    const gen = await openTerminalGeneration(sessionId, 'agent-term-owner-2', owner.ws);
+    // The suspension write matches 0 rows, and the one re-read shows another agent_id.
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }) }),
+    } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ agentId: 'agent-after-reattach' }]) as any);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    for (let i = 0; i < 5; i += 1) {
+      await foreign.handlers.onMessage(failedStartResult(gen.startCommandId), foreign.ws as any);
+    }
+    await new Promise((r) => setImmediate(r));
+
+    expect(suspendAudits()).toHaveLength(0);
+    expect(warnSpy.mock.calls.some((call) =>
+      typeof call[0] === 'string' && call[0].includes('cross-tenant probe from a superseded install'))).toBe(true);
+    warnSpy.mockRestore();
+  });
+
   it('counts a LIVE start failure claimed by a different agent as a cross-tenant probe', async () => {
     const sessionId = '10000000-0000-4000-8000-000000000004';
     const owner = await openAgentSocket('agent-term-owner', TERM_DEVICE_ID);

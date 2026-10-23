@@ -2,6 +2,7 @@ import '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
+import { HTTPException } from 'hono/http-exception';
 import { workloadsReportSchema } from '@breeze/shared';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices, deviceWorkloadRuntimes, deviceWorkloads } from '../../db/schema';
@@ -102,6 +103,22 @@ it('creates the runtime row, the workload rows and the host axis from a first re
     { runtime: 'docker', detection: 'present', collection: 'ok', complete: true, runtimeVersion: '27.1.1', observedCount: 2, reportedCount: 2 },
   ]);
   expect(await f.host()).toEqual({ hostsWorkloads: true, workloadRuntimes: ['docker'] });
+});
+
+// #8318 §6.4 (review of wave 1b-1): the device row is read bound to the
+// authenticated agent_id and locked before any child row is written.
+it('refuses a stale caller (the row changed hands after auth) with the stale-credential 401 and writes nothing', async () => {
+  const f = await fixture();
+  await getTestDb().update(devices).set({ agentId: `reattached-${randomUUID()}` }).where(eq(devices.id, f.device.id));
+  const before = await f.host();
+
+  const refused = await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }))
+    .then(() => null, (err: unknown) => err);
+  expect(refused).toBeInstanceOf(HTTPException);
+  expect((refused as HTTPException).status).toBe(401);
+  expect(await f.workloads()).toEqual([]);
+  expect(await f.runtimes()).toEqual([]);
+  expect(await f.host()).toEqual(before);
 });
 
 it('keeps row ids and first_seen_at stable across later reports and advances last_seen_at', async () => {

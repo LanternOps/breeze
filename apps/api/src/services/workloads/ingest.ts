@@ -7,7 +7,8 @@ import {
 } from '@breeze/shared';
 import { db, withDbTransaction } from '../../db';
 import { deviceWorkloadRuntimes, deviceWorkloads, devices } from '../../db/schema';
-import { updateOwnDeviceRow } from '../agentOwnDeviceRow';
+import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../agentOwnDeviceRow';
+import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
 import { lockDeviceInventory } from '../inventoryChildSync';
 import { planWorkloadSync, type WorkloadRuntimePlan } from './plan';
 import { getDeviceWorkloadInventorySettings } from './settings';
@@ -229,12 +230,26 @@ export async function ingestWorkloadsReport(args: IngestWorkloadsArgs): Promise<
     // Per-device advisory lock (above) serializes concurrent reports; no other
     // writer takes this key. Then the device row, before any child row, which
     // is the same device-before-children order the deletion cascade uses.
-    const [device] = await db
-      .select({ id: devices.id, hostsWorkloads: devices.hostsWorkloads, workloadRuntimes: devices.workloadRuntimes })
-      .from(devices)
-      .where(and(eq(devices.id, args.deviceId), eq(devices.orgId, args.orgId)))
-      .for('no key update');
-    if (!device) throw new Error('Workload inventory device missing or ownership changed');
+    //
+    // #8318 §6.4: the row is read bound to the authenticated id + agent_id
+    // (and the org), locked, before any child row is written. A request a
+    // reattach confirm or an in-place re-enroll overtook finds 0 rows here and
+    // writes nothing; one that holds the lock first finishes as the old
+    // install before the identity change can apply.
+    const identity = { deviceId: args.deviceId, agentId: args.agentId };
+    const device = await selectOwnDeviceRowForUpdate(
+      db,
+      identity,
+      { id: devices.id, hostsWorkloads: devices.hostsWorkloads, workloadRuntimes: devices.workloadRuntimes },
+      { where: eq(devices.orgId, args.orgId) },
+    );
+    if (!device) {
+      // The row now carries another agent_id than the request authenticated
+      // as: nothing was written, and the request gets the stale-credential
+      // 401 agent auth gives a token that no longer matches.
+      if (await ownDeviceRowChangedHands(db, identity)) throw staleAgentCredentialRejection();
+      throw new Error('Workload inventory device missing or ownership changed');
+    }
 
     const reported = args.report.runtimes.map((entry) => entry.runtime);
     const storedRuntimes = reported.length
@@ -278,12 +293,15 @@ export async function ingestWorkloadsReport(args: IngestWorkloadsArgs): Promise<
     }
     await retireDroppedImageSubjects(args.deviceId, plan.runtimes, storedWorkloads);
     if (plan.host.changed) {
-      await updateOwnDeviceRow(
+      const written = await updateOwnDeviceRow(
         db,
-        { deviceId: args.deviceId, agentId: args.agentId },
+        identity,
         { hostsWorkloads: plan.host.hostsWorkloads, workloadRuntimes: plan.host.workloadRuntimes },
         { where: eq(devices.orgId, args.orgId) },
       );
+      // The bound, locked read above makes this unreachable; if it ever is
+      // reached, roll the child rows back rather than report them accepted.
+      if (written.length === 0) throw new Error('Workload inventory device row changed during ingest');
     }
     return {
       accepted: true as const,

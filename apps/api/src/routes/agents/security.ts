@@ -3,7 +3,8 @@ import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, securityStatus } from '../../db/schema';
-import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordAgentIngestSubmission } from '../metrics';
 import { securityStatusIngestSchema, managementPostureIngestSchema } from './schemas';
@@ -139,10 +140,12 @@ agentSecurityRoutes.put('/:id/management/posture', zValidator('json', management
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  const identity = { deviceId: device.id, agentId };
+  let written: { id: string }[];
   try {
     // #8318 §6.4: the row was read by the authenticated agent_id (`:id`);
     // the write is bound to the same identity through updateOwnDeviceRow.
-    await updateOwnDeviceRow(db, { deviceId: device.id, agentId }, {
+    written = await updateOwnDeviceRow(db, identity, {
       managementPosture: payload,
       updatedAt: new Date(),
     });
@@ -150,6 +153,17 @@ agentSecurityRoutes.put('/:id/management/posture', zValidator('json', management
     console.error('[agents] management posture DB update failed:', { agentId, deviceId: device.id, error: err });
     recordAgentIngestSubmission('management_posture', 'failed');
     return c.json({ error: 'Failed to save management posture' }, 500);
+  }
+  // 0 rows: nothing persisted, so no success metric and no audit. The row
+  // either changed hands after the read above (a reattach confirm or an
+  // in-place re-enroll: the stale-credential 401 the beats give) or vanished
+  // (the same answer as a row the read did not find).
+  if (written.length === 0) {
+    if (await ownDeviceRowChangedHands(db, identity)) {
+      console.warn('[agents] stale management posture submit: the device row changed hands after auth; refusing it', identity);
+      throw staleAgentCredentialRejection();
+    }
+    return c.json({ error: 'Device not found' }, 404);
   }
   recordAgentIngestSubmission('management_posture', 'success');
 
