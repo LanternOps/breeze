@@ -71,9 +71,38 @@ describe('Analytics papercuts (#9650)', () => {
     window.location.hash = 'sla';
     routes['/analytics/sla'] = { data: [] };
     render(<AnalyticsPage />);
-    await screen.findByText('Alert Statistics');
-    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/analytics/sla'))).toBe(true));
+    // "Updated <time>" is set only after every request (incl. SLA) has settled.
+    await screen.findByText(/^Updated /);
     expect(screen.queryByText('SLA Compliance', { selector: 'p' })).not.toBeInTheDocument();
+  });
+
+  it('sends the selected range to /metrics so sessions follow it', async () => {
+    render(<AnalyticsPage />);
+    await screen.findByText(/^Updated /);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Date range' }), { target: { value: '7d' } });
+    await waitFor(() => {
+      const last = fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith('/metrics?')).at(-1);
+      expect(last).toContain('range=7d');
+    });
+  });
+
+  it('does not show the coverage note below the device cap', async () => {
+    routes['/devices'] = { data: Array.from({ length: 99 }, (_, i) => ({ id: `d-${i}` })) };
+    render(<AnalyticsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Query Builder/ }));
+    await screen.findByText('Run Query');
+    await screen.findByText(/^Updated /);
+    expect(screen.queryByText(/online devices only/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the gauge when checks exist, even at a real 0%', async () => {
+    routes['/policies/compliance/stats'] = {
+      data: { complianceRate: 0, complianceOverview: { compliant: 0, non_compliant: 4, pending: 0 } }
+    };
+    render(<AnalyticsPage />);
+    await screen.findByText(/^Updated /);
+    expect(screen.queryByText('No compliance checks to evaluate')).not.toBeInTheDocument();
+    expect(screen.getByText('0%')).toBeInTheDocument();
   });
 
   it('labels the SLA definition it shows and drops the always-empty incidents figure', async () => {

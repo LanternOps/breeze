@@ -1678,7 +1678,9 @@ describe('metrics routes', () => {
       expect(res.status).toBe(200);
       const gteCond = findCondition(captured[2], 'gte', remoteSessions.createdAt);
       expect((gteCond.value as Date).toISOString()).toBe('2026-01-01T00:00:00.000Z');
-      expect(findCondition(captured[2], 'lt', remoteSessions.createdAt)).toBeDefined();
+      // A date-only endDate is inclusive: the window runs to the next UTC day.
+      const ltCond = findCondition(captured[2], 'lt', remoteSessions.createdAt);
+      expect((ltCond.value as Date).toISOString()).toBe('2026-01-11T00:00:00.000Z');
 
       const bad = await app.request('/?startDate=2026-01-10&endDate=2026-01-01', {
         headers: { Authorization: 'Bearer token' },
