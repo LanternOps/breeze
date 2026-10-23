@@ -344,7 +344,75 @@ export type AiStreamEvent =
     }
   // `usage` is set by the streaming manager's result case so client surfaces
   // can render turn cost (turn_complete). Technician UI ignores it.
-  | { type: 'done'; usage?: { inputTokens: number; outputTokens: number; costCents: number } };
+  | { type: 'done'; usage?: { inputTokens: number; outputTokens: number; costCents: number } }
+  /**
+   * #9427: the first data frame of `GET /ai/sessions/:id/stream` (attach). A
+   * snapshot of the session's CURRENT turn on this API instance — never sent
+   * on `/messages`. Live events after it carry a per-turn `seq` greater than
+   * `lastSeq`. See {@link AiAttachState}.
+   */
+  | ({ type: 'attach_state' } & AiAttachState);
+
+/** The cards a turn can be blocked on, verbatim as they were published. */
+export type AiPendingCardEvent = Extract<AiStreamEvent, { type: 'approval_required' | 'plan_approval_required' }>;
+
+/**
+ * #9427: what an attaching client needs to render the current turn of a
+ * session that another surface (or a previous page load) started.
+ *
+ * One attach covers ONE turn: every `POST /messages` replaces the in-memory
+ * session and closes its event bus, so a stream that ends without `done`
+ * means "a new turn started — attach again".
+ */
+export interface AiAttachState {
+  /**
+   * `running` — a turn is in progress on this instance; live events follow.
+   * `idle` — the session is in memory but no turn is running; the stream ends.
+   * `unavailable` — the session is not in memory on this instance (finished
+   * long ago, another instance, or a restart); the stream ends.
+   */
+  turn: 'idle' | 'running' | 'unavailable';
+  /** One per in-memory session, i.e. one per turn. Null when unavailable. */
+  turnId: string | null;
+  /** Highest `seq` the snapshot covers; 0 when none. */
+  lastSeq: number;
+  /**
+   * `ai_messages.id` of this turn's user row. Null when the turn has not
+   * persisted it yet (no output of the turn is persisted either).
+   */
+  turnUserMessageId: string | null;
+  /** Every event of the turn so far, in order; `[]` when `partial`. */
+  replay: AiStreamEvent[];
+  /** The turn outgrew the replay buffer; `replay` is empty, live events still follow. */
+  partial: boolean;
+  /** Cards still awaiting a decision, verbatim with their original deadlines. */
+  pendingCards: AiPendingCardEvent[];
+  /** The executing (or just finished) action plan, as of `lastSeq`. */
+  activePlan: {
+    planId: string;
+    steps: ActionPlanStep[];
+    currentStepIndex: number;
+    status: 'executing' | 'completed' | 'aborted';
+  } | null;
+  /** The turn's last `turn_model`, if one was published. */
+  turnModel: AiTurnModel | null;
+}
+
+const ATTACH_TURN_STATES: ReadonlySet<unknown> = new Set(['idle', 'running', 'unavailable']);
+
+/** Structural guard for an `attach_state` frame read off the wire. */
+export function isAttachStateEvent(e: unknown): e is { type: 'attach_state' } & AiAttachState {
+  if (!e || typeof e !== 'object') return false;
+  const v = e as Record<string, unknown>;
+  return v.type === 'attach_state'
+    && ATTACH_TURN_STATES.has(v.turn)
+    && typeof v.lastSeq === 'number'
+    && typeof v.partial === 'boolean'
+    && Array.isArray(v.replay)
+    && Array.isArray(v.pendingCards)
+    && (v.turnId === null || typeof v.turnId === 'string')
+    && (v.turnUserMessageId === null || typeof v.turnUserMessageId === 'string');
+}
 
 // ============================================
 // API Request/Response Types
