@@ -214,7 +214,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { gap: '#6781' },
   'accounting/connectionSetupRoutes.ts': { exempt: 'vendor_console_admin', note: 'Xero organisation picker, cancel, and settings-option pickers -- post-consent steps of the interactive OAuth connect flow for the partner\'s accounting connection (Xero W02); no agent-driven equivalent.' },
   'accounting/index.ts': { gap: '#6784' },
-  'actionIntents.ts': { exempt: 'identity' },
+  'actionIntents.ts': { exempt: 'identity' }, // reveal-secret + GET /:id/status are human-session-only UI; the MCP surface is get_action_status/cancel_action
   'admin/abuse.ts': { exempt: 'platform_admin' },
   'admin/aiBilling.ts': { exempt: 'platform_admin' },
   'admin/aiModels.ts': { exempt: 'platform_admin' },
@@ -566,6 +566,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
+  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked with the org-settings tool gap #6789 (the frozen-gap list takes no new entries).' },
   'orgPortalSettings.ts': { gap: '#6789' },
   'orgPortalUsers.ts': { gap: '#6789' },
   'orgSummary.ts': { gap: '#6789' },

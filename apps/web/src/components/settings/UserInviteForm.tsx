@@ -101,8 +101,8 @@ export default function UserInviteForm({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
+    <div className="fixed inset-0 z-50 flex overflow-y-auto bg-background/80 px-4 py-8">
+      <div className="m-auto w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{resolvedTitle}</h2>
           <p className="text-sm text-muted-foreground">{resolvedDescription}</p>

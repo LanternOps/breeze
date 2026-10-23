@@ -274,6 +274,7 @@ jobs:
         run: |
           node --test \
             .github/scripts/check-workflow-security.test.mjs \
+            .github/scripts/cancel-stale-merge-group-runs.test.mjs \
             scripts/security/pin-github-actions.test.mjs \
             scripts/release/attest-macos-pkg.test.mjs
           node .github/scripts/check-workflow-security.mjs

@@ -98,6 +98,7 @@
     "loading": "Son onaylar yükleniyor…",
     "error": "Son onaylar yüklenemedi.",
     "retry": "Yeniden dene",
+    "decisionReasonLabel": "Onaylayanın gerekçesi",
     "empty": "Son zamanlarda tamamlanan bir şey yok.",
     "status": {
       "failed": "Başarısız",
@@ -160,5 +161,19 @@
     "orderNote": "Etkiler bu sırayla çalışır. Oturum açma en son devre dışı bırakılır; böylece erken durdurma e-postaları asla yönlendirmesiz bırakmaz.",
     "empty": "Bu plan hiçbir etki içermiyor.",
     "invalid": "Bu planın tamamı görüntülenemedi. Onaylamayın."
+  },
+  "intentStatus": {
+    "title": "Onay durumu",
+    "waitingForApprovers": "Onaylayıcılar bekleniyor",
+    "notFound": "Bu onay bulunamadı.",
+    "status": {
+      "pending_approval": "Onay bekliyor",
+      "in_progress": "Devam ediyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "rejected": "Reddedildi",
+      "expired": "Süresi doldu",
+      "cancelled": "İptal edildi"
+    }
   }
 }

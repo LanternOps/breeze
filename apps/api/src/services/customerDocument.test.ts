@@ -288,6 +288,21 @@ describe('assembleCustomerInvoiceDocument', () => {
     expect(draft.branding).toMatchObject({ theme: 'classic', pageSize: 'letter' });
   });
 
+  it('branding: partner logo/colour fill in when portal_branding has none; an org value still wins (#9676)', async () => {
+    const settings = { branding: { logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' } };
+    setRows({ partners: [{ ...PIN_PARTNER_ROW, settings }], portal_branding: [{ logoUrl: null, primaryColor: null }] });
+    expect((await assembleCustomerInvoiceDocument(row(), 'portal')).branding)
+      .toMatchObject({ logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' });
+    // preloaded path (PDF render) agrees
+    const pre = await assembleCustomerInvoiceDocument(row(), 'portal', {
+      preloaded: { partner: { ...PIN_PARTNER_ROW, settings } as never, brand: { logoUrl: null, primaryColor: null } },
+    });
+    expect(pre.branding).toMatchObject({ logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' });
+    setRows({ partners: [{ ...PIN_PARTNER_ROW, settings }], portal_branding: [{ logoUrl: 'https://cdn.example.test/org.png', primaryColor: '#abcdef' }] });
+    expect((await assembleCustomerInvoiceDocument(row(), 'portal')).branding)
+      .toMatchObject({ logoUrl: 'https://cdn.example.test/org.png', primaryColor: '#abcdef' });
+  });
+
   it('a failing branding read logs and falls back; the document still assembles', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {

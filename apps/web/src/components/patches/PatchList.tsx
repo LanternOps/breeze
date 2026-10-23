@@ -59,6 +59,10 @@ export type Patch = {
    * published no rating. Undefined for the trusted catalog value or unknown.
    */
   severitySource?: 'vendor' | 'derived';
+  /** Package / KB identifier from the catalog (patches.package_id). */
+  packageId?: string | null;
+  /** When the catalog first imported the patch (patches.created_at). */
+  firstSeenAt?: string;
 };
 
 type PatchListProps = {

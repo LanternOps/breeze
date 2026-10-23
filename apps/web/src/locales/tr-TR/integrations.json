@@ -340,6 +340,7 @@
     "retry": "Yeniden dene",
     "since": "{{time}} beri",
     "fix": "Düzelt",
+    "remedy": { "reconnect": "İstemci uygulamasından yeniden bağlanın (ör. MCP sunucusunu yeniden ekleyin). Breeze'de yapılacak bir işlem yok." },
     "truncated": "İlk {{count}} gösteriliyor",
     "recentlyResolved": "Yakın zamanda çözülenler ({{count}})",
     "resolution": {

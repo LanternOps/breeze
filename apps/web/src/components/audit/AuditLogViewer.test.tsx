@@ -112,7 +112,7 @@ describe('AuditLogViewer', () => {
     await screen.findByText(/audit log/i);
     fireEvent.click(screen.getByRole('button', { name: /filters/i }));
     fireEvent.click(await screen.findByText('apply-test-filters'));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('user='))).toBe(true));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('userId='))).toBe(true));
 
     fireEvent.click(screen.getByRole('button', { name: /export/i }));
 
@@ -121,6 +121,9 @@ describe('AuditLogViewer', () => {
       expect(call).toBeTruthy();
       const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
       expect(qs.get('userId')).toBe('11111111-1111-4111-8111-111111111111');
+      // #9671: a picked user is matched by id; the email text match would AND
+      // away that user's rows that carry no actor email (agent.command.*).
+      expect(qs.has('user')).toBe(false);
     });
   });
 
@@ -139,7 +142,7 @@ describe('AuditLogViewer', () => {
       const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/audit-logs/export'));
       expect(call).toBeTruthy();
       const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
-      for (const key of ['user', 'action', 'resource', 'q']) {
+      for (const key of ['userId', 'action', 'resource', 'q']) {
         expect(listQs.get(key), `list sends ${key}`).toBeTruthy();
         expect(qs.get(key), `export sends ${key}`).toBe(listQs.get(key));
       }

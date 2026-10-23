@@ -16,7 +16,7 @@ import { ecExpressStatus, pax8Status } from '../../lib/api/distributors';
 import {
   listCatalog, getCatalogItem, getBundleEconomics, archiveCatalogItem, updateCatalogItem,
   computeMargin, formatMargin, marginTone,
-  CATALOG_TYPE_LABELS, CATALOG_TYPE_CHIP, CATALOG_TYPE_ORDER, CATALOG_PAGE_LIMIT,
+  CATALOG_TYPE_CHIP, CATALOG_TYPE_ORDER, CATALOG_PAGE_LIMIT,
   type CatalogItem, type CatalogItemType, type CatalogItemDetail,
   type BundleComponentRow, type BundleEconomics,
 } from '../../lib/api/catalog';
@@ -279,7 +279,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
               }`}
               data-testid={`catalog-filter-type-${catalogType}`}
             >
-              {catalogType === 'all' ? t('catalogItemsTab.all') : CATALOG_TYPE_LABELS[catalogType]}
+              {catalogType === 'all' ? t('catalogItemsTab.all') : t(/* i18n-dynamic */ `catalogItemsTab.typeLabel.${catalogType}`)}
             </button>
           ))}
         </div>
@@ -292,12 +292,12 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
               type="button"
               onClick={() => setView(v)}
               aria-pressed={view === v}
-              className={`rounded px-2.5 py-1 text-xs font-medium capitalize transition ${
+              className={`rounded px-2.5 py-1 text-xs font-medium transition ${
                 view === v ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
               }`}
               data-testid={`catalog-view-${v}`}
             >
-              {v}
+              {v === 'active' ? t('catalogItemsTab.viewActive') : t('catalogItemsTab.viewArchived')}
             </button>
           ))}
         </div>
@@ -442,7 +442,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                         </td>
                         <td className="px-3 py-3">
                           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${CATALOG_TYPE_CHIP[it.itemType]}`}>
-                            {CATALOG_TYPE_LABELS[it.itemType]}
+                            {t(/* i18n-dynamic */ `catalogItemsTab.typeLabel.${it.itemType}`)}
                           </span>
                         </td>
                         <td className="px-3 py-3 font-mono text-xs text-muted-foreground">{it.sku ?? '—'}</td>
@@ -576,7 +576,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
         message={pendingArchive
           ? t('catalogItemsTab.archiveConfirm', { name: pendingArchive.name })
           : ''}
-        confirmLabel="Archive"
+        confirmLabel={t('catalogItemsTab.archive')}
         variant="destructive"
         isLoading={archivingId !== null && archivingId === pendingArchive?.id}
         confirmTestId="catalog-archive-confirm"

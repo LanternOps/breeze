@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import SsoProviderForm, { type Role } from './SsoProviderForm';
+import { SSO_OIDC_PRESET_IDS } from '@breeze/shared';
+import SsoProviderForm, { type ProviderPreset, type Role } from './SsoProviderForm';
 
 const ROLES: Role[] = [
   { id: 'org-role', name: 'Org Technician', scope: 'organization' },
@@ -175,5 +176,46 @@ describe('SsoProviderForm in the All-organizations view (#7252)', () => {
     expect(partnerRadio.disabled).toBe(true);
     expect(screen.queryByTestId('sso-provider-owner-blocked')).toBeNull();
     expect((screen.getByRole('button', { name: /save provider/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// #9601: the preset dropdown's option values must be the ids the API publishes
+// from GET /sso/presets (and the create route accepts). The Azure AD option
+// used to be 'azure' while the API key is 'azure-ad', so picking it filled
+// nothing. The presets below are keyed by the shared id tuple the API's
+// PROVIDER_PRESETS table is typed against.
+describe('SsoProviderForm preset autofill (#9601)', () => {
+  const PRESETS: ProviderPreset[] = SSO_OIDC_PRESET_IDS.map(id => ({
+    id,
+    name: id,
+    scopes: `openid ${id}-scope`,
+    attributeMapping: {
+      email: 'email',
+      name: 'name',
+      firstName: `${id}-given`,
+      lastName: `${id}-family`
+    }
+  }));
+
+  it('offers exactly one option per API preset id, plus Custom', () => {
+    render(<SsoProviderForm presets={PRESETS} roles={ROLES} />);
+    const select = screen.getByLabelText(/Provider preset/i) as HTMLSelectElement;
+    const values = Array.from(select.options).map(o => o.value).filter(Boolean);
+    expect(values.sort()).toEqual([...SSO_OIDC_PRESET_IDS].sort());
+  });
+
+  it.each(SSO_OIDC_PRESET_IDS)('selecting %s fills scopes and the attribute mapping', async id => {
+    render(<SsoProviderForm presets={PRESETS} roles={ROLES} />);
+    fireEvent.change(screen.getByLabelText(/Provider preset/i), { target: { value: id } });
+
+    await waitFor(() =>
+      expect((document.getElementById('provider-scopes') as HTMLInputElement).value).toBe(`openid ${id}-scope`)
+    );
+    expect(
+      (document.getElementById('attr-first-name') as HTMLInputElement | null)?.value
+    ).toBe(`${id}-given`);
+    expect(
+      (document.getElementById('attr-last-name') as HTMLInputElement | null)?.value
+    ).toBe(`${id}-family`);
   });
 });

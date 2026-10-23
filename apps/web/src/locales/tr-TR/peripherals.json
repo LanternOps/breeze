@@ -79,6 +79,14 @@
     "allOrganizations": "Tüm kuruluşlar",
     "partnerWide": "(iş ortağı çapında politika)",
     "thisOrganization": "Yalnızca bu kuruluş",
+    "appliesTo": "Uygulandığı yer",
+    "targets": {
+      "organization": "Tüm cihazlar",
+      "site": "Belirli siteler ({{total}})",
+      "group": "Belirli cihaz grupları ({{total}})",
+      "device": "Belirli cihazlar ({{total}})"
+    },
+    "targetReadOnlyHint": "Hedefler bu formda değiştirilemez. Kaydetme mevcut hedefleri korur.",
     "deviceClass": "Cihaz Sınıfı",
     "classes": {
       "storage": "Depolama",
