@@ -142,6 +142,12 @@ describe('portal access after a merge (#8972 D1(b), real RLS)', () => {
       .toEqual({ content: 'survivor public reply', deleted_at: null });
   }, T);
 
+  runDb('soft-deleting the tombstone revokes the survivor access it granted', async () => {
+    const s = await seed();
+    await getTestDb().execute(sql`UPDATE tickets SET deleted_at = now() WHERE id = ${s.source}::uuid`);
+    expect((await get(s, s.tokenA, `/tickets/${s.survivor}`)).status).toBe(404);
+  }, T);
+
   runDb('an unrelated colleague still cannot read the survivor', async () => {
     const s = await seed();
     expect((await get(s, s.tokenC, `/tickets/${s.survivor}`)).status).toBe(404);

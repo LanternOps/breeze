@@ -27,6 +27,12 @@ describe('portalTicketReadAccess (#8972 D1(b))', () => {
     expect(q.sql).not.toMatch(/requester_contact_id"? = \$\d+.*requester_contact_id"? = \$\d+/);
   });
 
+  it('a soft-deleted tombstone grants nothing, and the grant never leaves the survivor\'s org', () => {
+    const q = compile(portalTicketReadAccess({ id: 'pu-4', contactId: null }) as never);
+    expect(q.sql).toContain('t2.deleted_at IS NULL');
+    expect(q.sql).toContain('t2.org_id = "tickets"."org_id"');
+  });
+
   it('the survivor arm is keyed on the tombstone\'s requester, never on the survivor\'s', () => {
     const q = compile(portalTicketReadAccess({ id: 'pu-3', contactId: 'ct-3' }) as never);
     expect(q.sql).toContain('t2.submitted_by =');

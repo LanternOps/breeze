@@ -32,8 +32,14 @@ export function portalTicketReadAccess(user: { id: string; contactId: string | n
     : sql`(t2.submitted_by = ${user.id}::uuid OR t2.requester_contact_id = ${user.contactId}::uuid)`;
   return or(
     portalTicketOwnership(user),
+    // A soft-deleted tombstone grants nothing (deleting the request revokes
+    // the access it carried), and the grant never crosses orgs (the composite
+    // FK already pins a tombstone to its survivor's org; defence in depth).
     sql`${tickets.id} IN (
       SELECT t2.merged_into_ticket_id FROM tickets t2
-       WHERE t2.merged_into_ticket_id IS NOT NULL AND ${ownsTombstone})`,
+       WHERE t2.merged_into_ticket_id IS NOT NULL
+         AND t2.deleted_at IS NULL
+         AND t2.org_id = ${tickets.orgId}
+         AND ${ownsTombstone})`,
   )!;
 }
