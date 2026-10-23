@@ -24,6 +24,9 @@ vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
 import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, callerVerificationAdministrativeDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation, type ScriptLaneWideningDelta } from './mfaStepUpGrant';
 import { scriptLaneStepUpResource, partnerScriptCeilingStepUpResource } from '../routes/auth/schemas';
+import { wispGrantResourceDigest } from './mfaStepUpGrant';
+import { wispGrantStepUpResource, mfaStepUpSchema } from '../routes/auth/schemas';
+import { createHash } from 'node:crypto';
 
 const bind = (operation: StepUpOperation) => ({
   userId: 'user-1',
@@ -516,5 +519,36 @@ describe('callerVerificationAdministrativeDigest', () => {
     for (const key of ['orgId', 'entraTenantId', 'entraOid', 'reason'] as const) {
       expect(callerVerificationAdministrativeDigest({ ...input, [key]: input[key] + 'x' })).not.toBe(digest);
     }
+  });
+});
+
+describe('wisp_grant step-up (Wisp design §4.2, W02)', () => {
+  it('wisp_grant grants live 10 minutes', () => {
+    expect(stepUpGrantTtlSeconds('wisp_grant')).toBe(600);
+  });
+
+  it('wisp_grant digest binds grantor, partner, scope and the requested ceiling', () => {
+    const base = { grantorUserId: 'u1', partnerId: 'p1', orgId: null, requestedCeilingHash: 'a'.repeat(64) };
+    expect(wispGrantResourceDigest(base)).toBe(
+      `sha256:${createHash('sha256').update(`u1:p1:*:${'a'.repeat(64)}`).digest('hex')}`,
+    );
+    expect(wispGrantResourceDigest({ ...base, orgId: 'o1' })).not.toBe(wispGrantResourceDigest(base));
+    expect(wispGrantResourceDigest({ ...base, requestedCeilingHash: 'b'.repeat(64) })).not.toBe(wispGrantResourceDigest(base));
+    expect(wispGrantResourceDigest({ ...base, grantorUserId: 'u2' })).not.toBe(wispGrantResourceDigest(base));
+    expect(wispGrantResourceDigest({ ...base, partnerId: 'p2' })).not.toBe(wispGrantResourceDigest(base));
+  });
+
+  it('the resource schema is strict and requires a 64-hex ceiling hash', () => {
+    const ok = { partnerId: '11111111-1111-4111-8111-111111111111', orgId: null, requestedCeilingHash: 'c'.repeat(64) };
+    expect(wispGrantStepUpResource.safeParse(ok).success).toBe(true);
+    expect(wispGrantStepUpResource.safeParse({ ...ok, requestedCeilingHash: 'z'.repeat(64) }).success).toBe(false);
+    // The grantor is always the caller; a body field naming one is refused.
+    expect(wispGrantStepUpResource.safeParse({ ...ok, grantorUserId: 'u1' }).success).toBe(false);
+  });
+
+  it('a wisp_grant resource survives the step-up body union intact', () => {
+    const resource = { partnerId: '11111111-1111-4111-8111-111111111111', orgId: '22222222-2222-4222-8222-222222222222', requestedCeilingHash: 'd'.repeat(64) };
+    const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'wisp_grant', resource });
+    expect(parsed.resource).toEqual(resource);
   });
 });
