@@ -1339,8 +1339,8 @@
       "recentViolations": "Violations récentes",
       "noCurrentSoftwareViolations": "Aucune violation logicielle actuelle.",
       "violationS": "Violation",
-      "remediation": "Assainissement :",
-      "checked": "Vérifié :",
+      "remediation": "Assainissement : {{value}}",
+      "checked": "Vérifié : {{date}}",
       "deactivatePolicy": "Politique de désactivation",
       "areYouSureYouWantToDeactivate": "Êtes-vous sûr de vouloir désactiver ?",
       "thePolicyWillBeMarkedInactiveAnd": "? La politique sera marquée comme inactive et les données de conformité seront effacées.",
@@ -1596,16 +1596,15 @@
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossible de récupérer les appareils",
-      "devicesWith": "Dispositifs avec",
-      "by": "par",
+      "devicesWith": "Appareils avec {{name}}",
+      "by": "par {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Aucun appareil trouvé avec ce logiciel.",
       "hostname": "Nom d’hôte",
       "oS": "OS",
       "version": "Version",
       "lastSeen": "Dernière apparition",
-      "device": "Dispositif",
-      "total": "Total",
-      "s": "s"
+      "deviceTotal_one": "{{count}} appareil au total",
+      "deviceTotal_other": "{{count}} appareils au total"
     },
     "policyForm": {
       "dryRunUnassigned": "0 appareil — généralement parce que cette stratégie n’est encore affectée à aucun appareil, mais un parc entièrement conforme ou une liste de sites vide donne aussi 0",

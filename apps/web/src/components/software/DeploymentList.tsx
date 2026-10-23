@@ -414,9 +414,6 @@ export default function DeploymentList({
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-muted-foreground">
-                            {item.id}
-                          </p>
                         </td>
                         <td className="px-4 py-3">
                           <span className="rounded-full border px-2 py-1 text-xs font-medium text-muted-foreground">
