@@ -209,6 +209,17 @@ describe('validateFlowDocument', () => {
     expect(codes(r.issues)).toContain('tier_input_not_literal');
   });
 
+  // W02 (#6756): resolving a ticket and repointing its requester escalate
+  // manage_tickets to tier 3, so a template must never pick those at run time.
+  it.each([
+    ['status', { action: 'update_status', ticketId: SCRIPT, status: '{{inputs.s}}' }],
+    ['statusName', { action: 'update_status', ticketId: SCRIPT, statusName: '{{inputs.s}}' }],
+    ['fields', { action: 'update_fields', ticketId: SCRIPT, fields: { submitterEmail: '{{inputs.s}}' } }],
+  ])('manage_tickets with a templated %s is tier_input_not_literal', async (_key, input) => {
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'manage_tickets', input }]), ORG_OWNER);
+    expect(codes(r.issues)).toContain('tier_input_not_literal');
+  });
+
   it('inlineSettings with one templated nested leaf is tier_input_not_literal', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'manage_policy_feature_link', input: {
       action: 'update', featureLinkId: SCRIPT, inlineSettings: { thresholds: { warnDays: '{{inputs.kind}}' } },

@@ -886,8 +886,10 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
  * never applies to a flow, which runs without a chat session.)
  */
 export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]>> = {
-  // isInputAwareTier3: comment + isPublic === true escalates to tier 3.
-  manage_tickets: ['isPublic'],
+  // isInputAwareTier3: comment + isPublic === true, update_status to
+  // 'resolved' or any statusName, and update_fields carrying a requester key
+  // (inside `fields`) escalate to tier 3 (W02, #6756).
+  manage_tickets: ['isPublic', 'status', 'statusName', 'fields'],
   // isInputAwareTier3: featureType === 'maintenance' or an HP CMSL inlineSettings payload.
   manage_policy_feature_link: ['featureType', 'inlineSettings'],
   // resolveApprovalScope: isolate === false is four-eyes.
