@@ -72,6 +72,8 @@ export const TICKET_LOCK_PRIMITIVES = ['lockTicketForWrite', 'lockTicketsForWrit
  * wrapper here can never stand in for a lock.
  */
 export const TICKET_LOCK_WRAPPERS: Record<string, string> = {
+  'services/ticketService.ts::lockCommentForWrite':
+    'comment edit / delete: lockTicketForWrite, then the comment FOR UPDATE, then the re-checks',
   'services/timeEntryService.ts::lockTicketRow':
     'the time-entry 404 mapping around lockTicketForWrite',
   'services/timeEntryService.ts::lockTicketsInOrder':

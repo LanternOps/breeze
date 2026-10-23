@@ -19,6 +19,7 @@ import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { removedTicketLinksFromRows, scheduleTicketLinkRemovalNotes, type RemovedTicketLink } from './ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from './ticketLinkLock';
+import { lockTicketForWrite } from './ticketRowLock';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
@@ -2388,12 +2389,7 @@ export async function addTicketComment(
   if (importMode && !imported) {
     throw new TicketServiceError('An imported comment needs its source id and original author', 400, 'INVALID_INPUT');
   }
-  const ticket = await getTicketOrThrow(ticketId);
-  if (importMode) assertImportWrite(importMode, actor, ticket);
   const attachmentIds = input.attachmentIds ?? [];
-  // The claim below matches on uploaded_by_user_id; a machine principal has
-  // no uploads to claim. Rejected up front rather than failing the claim.
-  const uploaderId = attachmentIds.length > 0 ? humanUserId(actor, 'Attaching uploads') : null;
 
   // W08 #3902: this used to be four separate writes on the global `db`. The
   // attachment claim must roll back with the comment, so the comment insert,
@@ -2401,7 +2397,19 @@ export async function addTicketComment(
   // emitTicketEvent / writeTicketOutbox / createAuditLogAsync stay AFTER the
   // commit — publishing ticket.commented for a comment that may still roll
   // back would be worse than a late event.
-  const { comment, firstResponseStamped, attachments } = await db.transaction(async (tx) => {
+  //
+  // #8972 W0: the transaction opens FIRST and locks the ticket row before the
+  // ticket is read, so the firstResponseAt decision below is made on the
+  // locked row (not a stale pre-read) and the comment insert never waits on
+  // the ticket while holding anything (services/ticketRowLock.ts).
+  const { ticket, comment, firstResponseStamped, attachments } = await db.transaction(async (tx) => {
+    if (!(await lockTicketForWrite(tx, ticketId))) throw new TicketServiceError('Ticket not found', 404);
+    const ticket = await getTicketOrThrow(ticketId);
+    if (importMode) assertImportWrite(importMode, actor, ticket);
+    // The claim below matches on uploaded_by_user_id; a machine principal has
+    // no uploads to claim. Rejected up front rather than failing the claim.
+    const uploaderId = attachmentIds.length > 0 ? humanUserId(actor, 'Attaching uploads') : null;
+
     const inserted = await tx.insert(ticketComments).values({
       ticketId,
       ...actorAuthorFields(actor),
@@ -2485,7 +2493,7 @@ export async function addTicketComment(
       }
     }
 
-    return { comment: row, firstResponseStamped: stamped, attachments: claimed };
+    return { ticket, comment: row, firstResponseStamped: stamped, attachments: claimed };
   });
 
   await fx.emitTicketEvent({
@@ -3281,6 +3289,38 @@ function assertCommentEditable(
   }
 }
 
+/**
+ * #8972 W0 lock order for a comment edit or delete: the ticket row FIRST, then
+ * the comment row, then re-check on the locked rows what
+ * loadCommentWithTicket read unlocked. Locking the comment first deadlocked
+ * (40P01) against any ticket-first writer of the same comment: the UPDATE's
+ * feed trigger (breeze_ticket_comments_touch_parent_feed) then waits on the
+ * ticket while holding the comment.
+ *
+ * The re-checks keep today's answers: a missing ticket is 404 'Ticket not
+ * found', a missing comment or one now on another ticket is 404 'Comment not
+ * found' (indistinguishable from missing), and assertCommentEditable runs
+ * again on the locked row.
+ */
+async function lockCommentForWrite(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  commentId: string,
+  ticketId: string,
+  actor: TicketActor,
+  canManageAny: boolean
+) {
+  if (!(await lockTicketForWrite(tx, ticketId))) throw new TicketServiceError('Ticket not found', 404);
+  const [locked] = await tx
+    .select()
+    .from(ticketComments)
+    .where(eq(ticketComments.id, commentId))
+    .limit(1)
+    .for('update');
+  if (!locked || locked.ticketId !== ticketId) throw new TicketServiceError('Comment not found', 404);
+  assertCommentEditable(locked, actor, canManageAny);
+  return locked;
+}
+
 export async function editTicketComment(
   commentId: string,
   input: { content: string },
@@ -3295,13 +3335,15 @@ export async function editTicketComment(
   }
   assertCommentEditable(comment, actor, opts.canManageAny);
 
-  const previousContent = comment.content;
-  const updated = await db
-    .update(ticketComments)
-    .set({ content: input.content, editedAt: new Date() })
-    .where(eq(ticketComments.id, commentId))
-    .returning();
-  const row = updated[0];
+  const { previousContent, row } = await db.transaction(async (tx) => {
+    const locked = await lockCommentForWrite(tx, commentId, comment.ticketId, actor, opts.canManageAny);
+    const updated = await tx
+      .update(ticketComments)
+      .set({ content: input.content, editedAt: new Date() })
+      .where(eq(ticketComments.id, commentId))
+      .returning();
+    return { previousContent: locked.content, row: updated[0] };
+  });
   if (!row) throw new TicketServiceError('Comment not found', 404);
 
   // NOTE: no emitTicketEvent here — emitting 'ticket.commented' on an edit
@@ -3334,12 +3376,15 @@ export async function deleteTicketComment(
   }
   assertCommentEditable(comment, actor, opts.canManageAny);
 
-  const previousContent = comment.content;
-  const deleted = await db
-    .update(ticketComments)
-    .set({ deletedAt: new Date() })
-    .where(eq(ticketComments.id, commentId))
-    .returning();
+  const { previousContent, deleted } = await db.transaction(async (tx) => {
+    const locked = await lockCommentForWrite(tx, commentId, comment.ticketId, actor, opts.canManageAny);
+    const rows = await tx
+      .update(ticketComments)
+      .set({ deletedAt: new Date() })
+      .where(eq(ticketComments.id, commentId))
+      .returning();
+    return { previousContent: locked.content, deleted: rows };
+  });
   if (deleted.length === 0) {
     throw new TicketServiceError('Comment not found or already deleted', 409);
   }

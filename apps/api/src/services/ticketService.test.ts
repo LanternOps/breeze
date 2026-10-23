@@ -3590,8 +3590,10 @@ describe('editTicketComment', () => {
     const updatedRow = { ...BASE_COMMENT, content: 'new', editedAt: new Date() };
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])  // loadCommentWithTicket: comment lookup
-      .mockResolvedValueOnce([BASE_TICKET]);  // loadCommentWithTicket: getTicketOrThrow
-    dbMocks.updateReturning.mockResolvedValue([updatedRow]);
+      .mockResolvedValueOnce([BASE_TICKET])  // loadCommentWithTicket: getTicketOrThrow
+      .mockResolvedValueOnce([BASE_TICKET])   // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([BASE_COMMENT]); // #8972 W0: the comment, FOR UPDATE
+    dbMocks.txUpdateReturning.mockResolvedValue([updatedRow]);
 
     const result = await editTicketComment('c1', { content: 'new' }, { kind: 'user' as const, userId: 'tech-1', name: 'Tech' }, { canManageAny: false });
 
@@ -3628,8 +3630,10 @@ describe('editTicketComment', () => {
     const updatedRow = { ...BASE_COMMENT, content: 'x', editedAt: new Date() };
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])
-      .mockResolvedValueOnce([BASE_TICKET]);
-    dbMocks.updateReturning.mockResolvedValue([updatedRow]);
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([BASE_TICKET])   // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([BASE_COMMENT]); // #8972 W0: the comment, FOR UPDATE
+    dbMocks.txUpdateReturning.mockResolvedValue([updatedRow]);
 
     const result = await editTicketComment('c1', { content: 'x' }, { kind: 'user' as const, userId: 'admin' }, { canManageAny: true });
     expect(result.content).toBe('x');
@@ -3652,8 +3656,10 @@ describe('editTicketComment', () => {
     const updatedRow = { ...BASE_COMMENT, content: 'compat', editedAt: new Date() };
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])
-      .mockResolvedValueOnce([BASE_TICKET]);
-    dbMocks.updateReturning.mockResolvedValue([updatedRow]);
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([BASE_TICKET])   // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([BASE_COMMENT]); // #8972 W0: the comment, FOR UPDATE
+    dbMocks.txUpdateReturning.mockResolvedValue([updatedRow]);
 
     // No expectedTicketId in opts — must still succeed
     const result = await editTicketComment('c1', { content: 'compat' }, { kind: 'user' as const, userId: 'tech-1' }, { canManageAny: false });
@@ -3714,9 +3720,11 @@ describe('deleteTicketComment', () => {
   it('soft-deletes (sets deletedAt) and audits with previousContent', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])
-      .mockResolvedValueOnce([BASE_TICKET]);
+      .mockResolvedValueOnce([BASE_TICKET])
     // delete path: update returns the soft-deleted row (required by TOCTOU guard)
-    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
+      .mockResolvedValueOnce([BASE_TICKET])   // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([BASE_COMMENT]); // #8972 W0: the comment, FOR UPDATE
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 'c1' }]);
 
     const res = await deleteTicketComment('c1', { kind: 'user' as const, userId: 'tech-1' }, { canManageAny: false });
 
@@ -3751,8 +3759,10 @@ describe('deleteTicketComment', () => {
   it('allows a non-author WITH canManageAny', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])
-      .mockResolvedValueOnce([BASE_TICKET]);
-    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([BASE_TICKET])   // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([BASE_COMMENT]); // #8972 W0: the comment, FOR UPDATE
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 'c1' }]);
 
     const res = await deleteTicketComment('c1', { kind: 'user' as const, userId: 'admin' }, { canManageAny: true });
     expect(res.id).toBe('c1');
@@ -3774,8 +3784,10 @@ describe('deleteTicketComment', () => {
   it('passes through when expectedTicketId is omitted (backward-compat)', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])
-      .mockResolvedValueOnce([BASE_TICKET]);
-    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([BASE_TICKET])   // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([BASE_COMMENT]); // #8972 W0: the comment, FOR UPDATE
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 'c1' }]);
 
     // No expectedTicketId in opts — must still succeed
     const res = await deleteTicketComment('c1', { kind: 'user' as const, userId: 'tech-1' }, { canManageAny: false });
@@ -3805,9 +3817,11 @@ describe('deleteTicketComment', () => {
   it('throws 409 when the soft-delete update races and returns zero rows (TOCTOU)', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([BASE_COMMENT])
-      .mockResolvedValueOnce([BASE_TICKET]);
+      .mockResolvedValueOnce([BASE_TICKET])
     // Simulate concurrent soft-delete: the UPDATE matched nothing.
-    dbMocks.updateReturning.mockResolvedValue([]);
+      .mockResolvedValueOnce([BASE_TICKET])   // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([BASE_COMMENT]); // #8972 W0: the comment, FOR UPDATE
+    dbMocks.txUpdateReturning.mockResolvedValue([]);
 
     const err = await deleteTicketComment('c1', { kind: 'user' as const, userId: 'tech-1' }, { canManageAny: false }).catch(e => e);
     expect(err).toBeInstanceOf(TicketServiceError);
@@ -3815,6 +3829,87 @@ describe('deleteTicketComment', () => {
     // Audit and event must NOT have fired.
     expect(auditMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('comment writers re-check on the locked rows (#8972 W0)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    dbMocks.selectResult.mockReset();
+    dbMocks.txUpdateReturning.mockReset();
+  });
+
+  const author = { kind: 'user' as const, userId: 'tech-1', name: 'Tech' };
+
+  it('edit: a ticket gone by the time it is locked answers 404 "Ticket not found" and writes nothing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([]); // lockTicketForWrite: not visible any more
+    const err = await editTicketComment('c1', { content: 'x' }, author, { canManageAny: false }).catch((e) => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err).toMatchObject({ status: 404, message: 'Ticket not found' });
+    expect(setMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('edit: a comment that left the locked ticket is indistinguishable from missing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([{ ...BASE_COMMENT, ticketId: 't-elsewhere' }]);
+    const err = await editTicketComment('c1', { content: 'x' }, author, { canManageAny: false }).catch((e) => e);
+    expect(err).toMatchObject({ status: 404, message: 'Comment not found' });
+    expect(setMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('edit: previousContent in the audit is the content of the LOCKED row', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([{ ...BASE_COMMENT, content: 'changed meanwhile' }]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ ...BASE_COMMENT, content: 'new' }]);
+    await editTicketComment('c1', { content: 'new' }, author, { canManageAny: false });
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      details: expect.objectContaining({ previousContent: 'changed meanwhile' }),
+    }));
+  });
+
+  it('delete: a comment deleted while waiting for the lock answers 409 and writes nothing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([{ ...BASE_COMMENT, deletedAt: new Date() }]);
+    const err = await deleteTicketComment('c1', author, { canManageAny: false }).catch((e) => e);
+    expect(err).toMatchObject({ status: 409, message: 'Comment already deleted' });
+    expect(setMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('add: a ticket gone by the time it is locked answers 404 and inserts nothing', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([]); // lockTicketForWrite
+    const err = await addTicketComment('t-1', { content: 'hi', isPublic: true }, actor).catch((e) => e);
+    expect(err).toMatchObject({ status: 404, message: 'Ticket not found' });
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('add: the first-response decision reads the ticket AFTER the lock', async () => {
+    // Lock row, then the full ticket re-read under it: already stamped, so a
+    // public reply must not restamp first_response_at.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1' }])
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: new Date('2026-01-01T00:00:00Z') }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+    const result = await addTicketComment('t-1', { content: 'again', isPublic: true }, actor);
+    expect(result.firstResponseStamped).toBe(false);
+    expect(setMock).not.toHaveBeenCalled();
   });
 });
 
