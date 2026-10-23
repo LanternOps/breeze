@@ -334,6 +334,7 @@ export function ReportRunList({
                             <Download className="h-4 w-4" aria-hidden="true" />
                             PDF
                           </a>
+                          {run.csvAvailable && (
                           <a
                             data-testid={`portal-report-run-csv-${run.id}`}
                             href={portalApi.reportArtifactUrl(run.id, 'csv')}
@@ -344,6 +345,7 @@ export function ReportRunList({
                             <Download className="h-4 w-4" aria-hidden="true" />
                             CSV
                           </a>
+                          )}
                         </div>
                       )}
                     </td>

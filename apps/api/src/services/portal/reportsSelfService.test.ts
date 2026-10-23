@@ -693,11 +693,12 @@ describe('generatePortalReport', () => {
       createdAt: new Date('2026-09-02T11:59:00.000Z'),
     }]);
 
-    await generatePortalReport({
+    const dto = await generatePortalReport({
       orgId: ORG_ID,
       portalUserId: PORTAL_USER_ID,
       type: 'executive_summary',
     });
+    expect(dto.csvAvailable).toBe(true);
 
     expect(state.execute).toHaveBeenCalled();
     const query = new PgDialect().sqlToQuery(state.execute.mock.calls[0]![0]);
@@ -779,7 +780,7 @@ describe('generatePortalReport', () => {
       createdAt: new Date('2026-09-02T11:59:00.000Z'),
     }]);
 
-    await generatePortalReport({
+    const dto = await generatePortalReport({
       orgId: ORG_ID,
       portalUserId: PORTAL_USER_ID,
       type: 'executive_summary',
@@ -789,6 +790,8 @@ describe('generatePortalReport', () => {
       status: 'completed',
       rowCount: null,
     }));
+    // #9774: no rows -> renderRunCsv would 422, so the DTO must not offer CSV.
+    expect(dto.csvAvailable).toBe(false);
     // The MSP Reports list reads reports.last_generated_at (#4562 QA walk).
     expect(state.updated).toHaveBeenCalledWith(expect.objectContaining({
       lastGeneratedAt: expect.any(Date),
@@ -1159,6 +1162,7 @@ describe('listPortalRuns', () => {
         startedAt: new Date('2026-09-02T11:59:00.000Z'),
         completedAt: new Date('2026-09-02T12:00:00.000Z'),
         rowCount: null,
+        csvAvailable: false,
         createdAt: new Date('2026-09-02T11:59:00.000Z'),
       }]);
 
@@ -1173,6 +1177,7 @@ describe('listPortalRuns', () => {
     expect(result.data).toEqual([expect.objectContaining({
       id: RUN_ID,
       rowCount: null,
+      csvAvailable: false,
       status: 'completed',
     })]);
   });

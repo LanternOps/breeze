@@ -340,6 +340,10 @@ export interface PortalRunDto {
   startedAt: string | null;
   completedAt: string | null;
   rowCount: number | null;
+  /** True when the stored result carries tabular `rows`, i.e. the CSV artifact
+   *  can be rendered. Executive summaries have none; the CSV route 422s for
+   *  them, so the client offers CSV only when this is true. */
+  csvAvailable: boolean;
   createdAt: string;
 }
 
