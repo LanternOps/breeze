@@ -53,6 +53,26 @@ describe('loadInvoiceForRender footer (#7510)', () => {
   });
 });
 
+// #9676: invoices fall back to the partner's Branding settings like quotes do;
+// an org portal_branding value still wins field by field.
+describe('loadInvoiceForRender partner branding fallback (#9676)', () => {
+  const brandedPartner = { ...partner, settings: { branding: { logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' } } };
+
+  it('carries the partner logo and colour when the org row has none', async () => {
+    rows.next = [[invoice], [brandedPartner], [{ logoUrl: null, primaryColor: null, footerText: null }]];
+    rows.i = 0;
+    const loaded = (await loadInvoiceForRender('inv-1'))!;
+    expect(loaded.branding).toMatchObject({ logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' });
+  });
+
+  it('lets an org portal_branding override win', async () => {
+    rows.next = [[invoice], [brandedPartner], [{ logoUrl: 'https://cdn.example.test/org.png', primaryColor: '#abcdef', footerText: null }]];
+    rows.i = 0;
+    const loaded = (await loadInvoiceForRender('inv-1'))!;
+    expect(loaded.branding).toMatchObject({ logoUrl: 'https://cdn.example.test/org.png', primaryColor: '#abcdef' });
+  });
+});
+
 // #9414 W3a: the PDF render holds an open transaction, so the assembler must not open a second
 // connection for the partner/branding reads: the loader hands over what it read on its own.
 describe('loadInvoiceForRender preloaded branding (W3a)', () => {

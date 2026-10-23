@@ -180,6 +180,33 @@ describe('POST /register-partner — SR2-21: email-first, no account created bef
     );
   });
 
+  it('parks an approved selection server-side without changing the generic response or looking up accounts', async () => {
+    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual' };
+    const res = await postRegisterPartner({ ...VALID_BODY, purchaseSelection });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, message: 'If registration can proceed, you will receive next steps shortly.' });
+    expect(createPendingRegistration).toHaveBeenCalledWith(expect.objectContaining({ purchaseSelection }));
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { catalogVersion: 'launch-2026-10', capacity: 150, billingPeriod: 'annual' },
+    { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly', priceId: 'price_client' },
+    { catalogVersion: 'old', capacity: 250, billingPeriod: 'monthly' },
+    {}, null,
+  ])('rejects an invalid supplied purchase selection before parking it: %j', async (purchaseSelection) => {
+    const res = await postRegisterPartner({ ...VALID_BODY, purchaseSelection });
+    expect(res.status).toBe(400);
+    expect(createPendingRegistration).not.toHaveBeenCalled();
+  });
+
+  it('durably selects the approved launch default for clients that omit purchase intent', async () => {
+    await postRegisterPartner(VALID_BODY);
+    expect(vi.mocked(createPendingRegistration).mock.calls[0]![0]).toHaveProperty('purchaseSelection', {
+      catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly',
+    });
+  });
+
   it('enqueues the verification job with the token HASH, never the raw token', async () => {
     await postRegisterPartner(VALID_BODY);
     const [arg] = vi.mocked(enqueueRegistrationVerification).mock.calls[0]!;

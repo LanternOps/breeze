@@ -12,6 +12,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import InheritedField from '../shared/InheritedField';
+import OrgPortalPreviewPanel from './OrgPortalPreviewPanel';
 
 type PortalSettings = {
   enableTickets: boolean;
@@ -547,6 +548,8 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
           </div>
         </div>
       </section>
+
+      <OrgPortalPreviewPanel orgId={orgId} />
 
       <div className="flex justify-end">
         <button

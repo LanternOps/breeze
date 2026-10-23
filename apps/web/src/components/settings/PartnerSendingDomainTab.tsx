@@ -219,7 +219,7 @@ export default function PartnerSendingDomainTab() {
   return (
     <div className="max-w-3xl space-y-4" data-testid="partner-sending-domains-tab">
       <section className="rounded-lg border p-4">
-        <h2 className="mb-1 text-sm font-semibold">{t('partnerSendingDomains.title')}</h2>
+        <h3 className="mb-1 text-sm font-semibold">{t('partnerSendingDomains.title')}</h3>
         <p className="text-xs text-muted-foreground">{t('partnerSendingDomains.description')}</p>
         {!capability.verifiesByDns && (
           <p className="mt-2 text-xs text-muted-foreground" data-testid="sending-domains-static-note">

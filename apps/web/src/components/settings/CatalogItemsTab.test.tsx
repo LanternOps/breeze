@@ -78,6 +78,15 @@ function seed(active: CatalogItem[] = [WIDGET, LAPTOP, BUNDLE], economics: Recor
 describe('CatalogItemsTab', () => {
   beforeEach(() => { vi.clearAllMocks(); resetPartnerCurrencyCache(); seed(); });
 
+  it('renders translated (not raw) Active/Archived toggle labels and type filter labels (#9665)', async () => {
+    render(<CatalogItemsTab />);
+    await screen.findByText('Widget Service');
+    expect(screen.getByTestId('catalog-view-active')).toHaveTextContent(/^Active$/);
+    expect(screen.getByTestId('catalog-view-archived')).toHaveTextContent(/^Archived$/);
+    expect(screen.getByTestId('catalog-filter-type-hardware')).toHaveTextContent(/^Hardware$/);
+    expect(screen.getByTestId('catalog-filter-type-service')).toHaveTextContent(/^Service$/);
+  });
+
   it('renders items with type chips and computed margin', async () => {
     render(<CatalogItemsTab />);
     await screen.findByText('Widget Service');

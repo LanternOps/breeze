@@ -23,6 +23,7 @@ import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
 import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
+import { resolveDocumentBrand } from './partnerDocumentBrand';
 import { invoiceAutopaySchedules, billingNoticeOutbox, invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets } from '../db/schema';
 import { isPartnerOnlinePaymentAvailable, isPartnerOnlinePaymentAvailableOnCallerConnection } from './partnerStripe';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
@@ -440,6 +441,7 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
   const onlinePaymentAvailable = partner && invoice.status !== 'draft'
     ? await isPartnerOnlinePaymentAvailableOnCallerConnection(invoice.partnerId)
     : undefined;
+  const documentBrand = resolveDocumentBrand(branding, partner?.settings);
   return {
     invoice,
     appendix,
@@ -465,8 +467,9 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
       // `||`, not `??`: neither name column is constrained non-empty, and a
       // blank wordmark is a worse document than the generic word.
       partnerName: partner?.name || (invoice.sellerSnapshot as SellerSnapshot | null)?.name || 'Invoice',
-      logoUrl: branding?.logoUrl ?? null,
-      primaryColor: branding?.primaryColor ?? null,
+      // #9676: org portal_branding wins; the partner's Branding settings fill the rest.
+      logoUrl: documentBrand.logoUrl,
+      primaryColor: documentBrand.primaryColor,
       footerText: resolveDocumentFooter({
         documentTerms: invoice.terms,
         partnerFooter: partner?.invoiceFooter ?? null,

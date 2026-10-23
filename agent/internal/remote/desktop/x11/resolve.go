@@ -35,7 +35,7 @@ type loginctlSession struct {
 	user string
 }
 
-// parseXSocketInodes reads listening X socket inodes from /proc/net/unix.
+// parseXSocketInodes reads listening X socket inodes from /proc/<pid>/net/unix.
 func parseXSocketInodes(out, displayNum string) map[string]struct{} {
 	inodes := map[string]struct{}{}
 	want := "/tmp/.X11-unix/X" + displayNum

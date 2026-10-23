@@ -30,7 +30,7 @@ import {
 import { loadFailedInstallPairs } from '../../services/patchInstallFailures';
 import { isPatchReportPastRetention } from '../../services/patchReportFiles';
 
-import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
+import { techFacingDeviceConditions } from '../../services/deviceStats';
 import { compliancePercentWithImageTerm } from '@breeze/shared';
 import {
   containerImageComplianceTerms,
@@ -99,9 +99,10 @@ complianceRoutes.get(
     }
 
     // Get devices scoped to org (or all accessible orgs for partner/system).
-    // Ephemeral Quick Support devices stay inside accessibleOrgIds for RLS by
-    // design, so exclude them from the patch-compliance population explicitly.
-    const deviceConditions = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+    // Same population as the device KPIs (#9611): decommissioned, ephemeral
+    // Quick Support (inside accessibleOrgIds for RLS by design) and parked
+    // devices are excluded, so the card's "N of M devices" matches Total Devices.
+    const deviceConditions = techFacingDeviceConditions();
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (effectiveOrgId) {
       deviceConditions.push(eq(devices.orgId, effectiveOrgId));

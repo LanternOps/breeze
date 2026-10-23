@@ -52,7 +52,9 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'id',
     orgId: 'orgId',
-    siteId: 'siteId'
+    siteId: 'siteId',
+    hostname: 'hostname',
+    displayName: 'displayName'
   },
   organizations: {
     id: 'id',
@@ -93,6 +95,10 @@ vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevices: vi.fn().mockResolvedValue(['job-1']),
 }));
 
+vi.mock('../services/peripheralEffectivePolicy', () => ({
+  loadAndResolveEffectivePeripheralPolicySet: vi.fn(),
+}));
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
@@ -113,6 +119,7 @@ vi.mock('../services/permissions', () => ({
 import { db } from '../db';
 import { schedulePeripheralPolicyDevices } from '../jobs/peripheralJobs';
 import { publishEvent } from '../services/eventBus';
+import { loadAndResolveEffectivePeripheralPolicySet } from '../services/peripheralEffectivePolicy';
 import { authMiddleware } from '../middleware/auth';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { peripheralControlRoutes } from './peripheralControl';
@@ -142,6 +149,9 @@ describe('peripheralControl routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps default implementations; reset so a fallback set in
+    // one test cannot leak into the next.
+    vi.mocked(db.select).mockReset();
     permissionGate.deny = false;
     mfaGate.deny = false;
     permsState.perms = undefined;
@@ -634,6 +644,17 @@ describe('peripheralControl routes', () => {
             })
           })
         })
+      } as any)
+      // Batched name lookups (#9621): devices, then policies.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: activityRow.deviceId, hostname: 'host-a', displayName: 'Front Desk' }])
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: policyId, name: 'Block USB Storage' }])
+        })
       } as any);
 
     const start = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
@@ -648,6 +669,8 @@ describe('peripheralControl routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.data[0].id).toBe(activityRow.id);
+    expect(body.data[0].deviceName).toBe('Front Desk');
+    expect(body.data[0].policyName).toBe('Block USB Storage');
     expect(body.pagination).toEqual({
       total: 1,
       limit: 50,
@@ -714,6 +737,10 @@ describe('peripheralControl routes', () => {
             })
           })
         } as any);
+    // Name lookups (#9621) fall through to a default empty result.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+    } as any);
     }
 
     it('returns 403 when a site-restricted caller requests an out-of-scope deviceId', async () => {
@@ -834,13 +861,85 @@ describe('peripheralControl routes', () => {
           })
         } as any);
 
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+      } as any);
+
       const res = await app.request('/peripherals/activity', { method: 'GET' });
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
-      // Unrestricted: exactly 2 selects (count + rows), no device-resolution query.
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+      // Unrestricted: count + rows + the two name lookups (devices, policies),
+      // and no site device-resolution query.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+    });
+  });
+
+  describe('GET /devices/:deviceId/effective (#9621)', () => {
+    const deviceId = '44444444-4444-4444-4444-444444444444';
+    const siteId = '55555555-5555-5555-5555-555555555555';
+    const deviceLookup = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) })
+    });
+
+    it("returns only the device's effective policies, with names", async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(deviceLookup([{ id: deviceId, orgId, siteId }]) as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: policyId, name: 'Block USB Storage', targetType: 'site' }]) })
+        } as any);
+      vi.mocked(loadAndResolveEffectivePeripheralPolicySet).mockResolvedValue({
+        identity: { deviceId, orgId, partnerId, siteId, groupIds: [] },
+        effectivePolicies: [{
+          policyId, source: 'partner', effectiveClass: 'storage', configuredClass: 'storage',
+          action: 'block', priority: 100, exceptions: [],
+        }],
+      } as any);
+
+      const res = await app.request(`/peripherals/devices/${deviceId}/effective`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([{
+        id: policyId, name: 'Block USB Storage', source: 'partner', deviceClass: 'storage',
+        action: 'block', targetType: 'site', priority: 100,
+      }]);
+      expect(loadAndResolveEffectivePeripheralPolicySet).toHaveBeenCalledWith(deviceId);
+    });
+
+    it('404s (not an empty list) when the resolver cannot find the device org', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(deviceLookup([{ id: deviceId, orgId, siteId }]) as any);
+      vi.mocked(loadAndResolveEffectivePeripheralPolicySet).mockResolvedValue(null);
+      const res = await app.request(`/peripherals/devices/${deviceId}/effective`, { method: 'GET' });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns an empty list when no policy applies', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(deviceLookup([{ id: deviceId, orgId, siteId }]) as any);
+      vi.mocked(loadAndResolveEffectivePeripheralPolicySet).mockResolvedValue({
+        identity: { deviceId, orgId, partnerId, siteId, groupIds: [] },
+        effectivePolicies: [],
+      } as any);
+      const res = await app.request(`/peripherals/devices/${deviceId}/effective`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([]);
+    });
+
+    it("404s for a device outside the caller's orgs without resolving anything", async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        deviceLookup([{ id: deviceId, orgId: '99999999-9999-9999-9999-999999999999', siteId }]) as any
+      );
+      const res = await app.request(`/peripherals/devices/${deviceId}/effective`, { method: 'GET' });
+      expect(res.status).toBe(404);
+      expect(loadAndResolveEffectivePeripheralPolicySet).not.toHaveBeenCalled();
+    });
+
+    it("404s for a device outside a site-restricted caller's sites", async () => {
+      permsState.perms = { allowedSiteIds: ['66666666-0000-0000-0000-000000000000'] };
+      vi.mocked(db.select).mockReturnValueOnce(deviceLookup([{ id: deviceId, orgId, siteId }]) as any);
+      const res = await app.request(`/peripherals/devices/${deviceId}/effective`, { method: 'GET' });
+      expect(res.status).toBe(404);
+      expect(loadAndResolveEffectivePeripheralPolicySet).not.toHaveBeenCalled();
     });
   });
 
@@ -872,6 +971,39 @@ describe('peripheralControl routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.data[0].id).toBe(policyId);
       expect(body.data[0].priority).toBe(100);
+    });
+
+    it("includes the selected org's partner-wide rows when orgId is given (#9621)", async () => {
+      let rowsWhere: unknown;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((w: unknown) => {
+              rowsWhere = w;
+              return {
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue([basePolicy]) })
+                })
+              };
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/peripherals/policies?orgId=${orgId}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+
+      const { PgDialect } = await import('drizzle-orm/pg-core');
+      const { sql: rendered, params } = new PgDialect().sqlToQuery(rowsWhere as any);
+      // org rows OR partner-wide rows (org_id IS NULL) of the selected org's partner
+      expect(rendered).toContain(
+        '($1 = $2 OR ($3 IS NULL AND $4 = (SELECT $5 FROM $6 WHERE $7 = $8)))',
+      );
+      // [orgId col, orgId, orgId col, partnerId col, org.partnerId, organizations, org.id, orgId]
+      expect(params.filter((p) => p === orgId)).toHaveLength(2);
+      expect(params).toContain('partnerId');
     });
 
     it('allows GET /policies/:id when caller has devices.read', async () => {

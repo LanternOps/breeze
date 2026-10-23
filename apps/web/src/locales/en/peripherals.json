@@ -110,6 +110,7 @@
     "serialNumber": "Serial Number",
     "allow": "Allow:",
     "reason": "Reason",
+    "expiresAt": "Expires (your local time)",
     "updatePolicy": "Update Policy",
     "createPolicy": "Create Policy"
   }

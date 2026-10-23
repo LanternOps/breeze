@@ -574,6 +574,13 @@ function buildPendingApproval(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// B-W04 (#6158, D-B35): the MCP-origin branch of report-suspicious. Default:
+// not an MCP-origin intent (null) → today's behaviour, 204.
+const mcpOriginReportMock = vi.hoisted(() => ({ reportSuspiciousMcpOrigin: vi.fn(async () => null) }));
+vi.mock('../services/mcpIntentCreation', () => ({
+  reportSuspiciousMcpOrigin: mcpOriginReportMock.reportSuspiciousMcpOrigin,
+}));
+
 describe('GET /approvals/pending', () => {
   it('returns only pending non-expired approvals for the authed user', async () => {
     mockPendingJoinResolves([{ approval: buildPendingApproval(), intent: null }]);
@@ -3488,6 +3495,49 @@ describe('POST /approvals/:id/report-suspicious', () => {
     expect(res.status).toBe(404);
   });
 
+  describe('B-W04: MCP-origin intent', () => {
+    function wireIntentRow() {
+      const intentRow = { ...baseRow, executionId: null, intentId: 'intent-mcp', requestingClientId: null };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([intentRow]) }),
+      } as any);
+      const casReturning = vi.fn().mockResolvedValue([{ orgId: 'org-9', actionName: 'execute_command', argumentDigest: 'd', source: 'mcp_api' }]);
+      const tx = {
+        select: txSelectForUpdateStub(),
+        update: vi.fn()
+          .mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any)
+          .mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) }) } as any)
+          .mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any),
+      };
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+      vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+    }
+
+    it('reported by its requester → origin revoked, 200 with credentialRevoked true', async () => {
+      wireIntentRow();
+      mcpOriginReportMock.reportSuspiciousMcpOrigin.mockResolvedValueOnce({ credentialRevoked: true } as never);
+      const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ reported: true, credentialRevoked: true });
+      expect(mcpOriginReportMock.reportSuspiciousMcpOrigin).toHaveBeenCalledWith('intent-mcp', TEST_USER.id);
+    });
+
+    it('a revocation failure is reported, never a silent 204', async () => {
+      wireIntentRow();
+      mcpOriginReportMock.reportSuspiciousMcpOrigin.mockResolvedValueOnce({ credentialRevoked: false, revocationError: 'revocation_failed' } as never);
+      const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ reported: true, credentialRevoked: false, revocationError: 'revocation_failed' });
+    });
+
+    it('a non-mcp intent keeps today\'s 204', async () => {
+      wireIntentRow();
+      const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+      expect(res.status).toBe(204);
+    });
+  });
+
   it('rejects the linked action intent and expires sibling approvals for an intent-backed row', async () => {
     // Intent-backed rows carry intentId (not executionId). A suspicious report
     // must reject the whole intent and expire siblings so another approver's
@@ -4119,10 +4169,15 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
     );
   });
 
-  it('403s human_decision_required for a non-user_session principal', async () => {
+  // B-W04 (#6158, D-B30): an MCP credential is never an approver — pinned for
+  // both MCP principal kinds.
+  it.each([
+    { kind: 'api_key', apiKeyId: 'key-1' },
+    { kind: 'oauth_grant', grantId: 'grant-1' },
+  ])('403s human_decision_required for a non-user_session principal (%o)', async (principal) => {
     vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
       c.set('auth', {
-        principal: { kind: 'api_key', apiKeyId: 'key-1' },
+        principal,
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,

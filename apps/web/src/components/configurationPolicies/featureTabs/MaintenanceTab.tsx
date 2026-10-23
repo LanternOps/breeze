@@ -483,9 +483,7 @@ export default function MaintenanceTab({
           )}
           checked={settings.rebootIfPending}
           onChange={(v) => update("rebootIfPending", v)}
-          testId={i18n.t(
-            "policies:configurationPolicies.featureTabs.maintenanceTab.maintenanceRebootIfPendingToggle",
-          )}
+          testId="maintenance-reboot-if-pending-toggle"
         />
       </div>
 

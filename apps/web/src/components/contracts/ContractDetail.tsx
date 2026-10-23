@@ -180,12 +180,29 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await runAction<{ data?: { invoiceId?: string; priceBookGaps?: PriceBookGap[]; uncoveredDevices?: UncoveredDevices | null; overages?: OverageSummary[] } }>({
+      const result = await runAction<{ data?: { generated?: boolean; skipped?: string; invoiceId?: string; priceBookGaps?: PriceBookGap[]; uncoveredDevices?: UncoveredDevices | null; overages?: OverageSummary[] } }>({
         request: () => generateContractInvoice(contract.id),
         errorFallback: t('contracts.contractDetail.errors.generateInvoice'),
-        successMessage: t('contracts.contractDetail.toast.invoiceGenerated'),
+        // #9508: a 200 with `generated: false` is a skipped run, not an invoice.
+        // An empty message suppresses runAction's success toast; the skip reason
+        // is toasted below instead.
+        successMessage: (r) => (r?.data?.generated === false
+          ? ''
+          : t('contracts.contractDetail.toast.invoiceGenerated')),
         onUnauthorized: UNAUTHORIZED,
       });
+      if (result?.data?.generated === false) {
+        const reason = result.data.skipped;
+        const known = ['already_billed', 'not_due', 'renewal_pending', 'expired'];
+        showToast({
+          type: 'warning',
+          message: reason && known.includes(reason)
+            ? t(/* i18n-dynamic */ `contracts.contractDetail.toast.skipped.${reason}`)
+            : t('contracts.contractDetail.toast.skipped.unknown'),
+        });
+        refresh();
+        return;
+      }
       const invoiceId = result?.data?.invoiceId;
       // Multi-currency wave 3 (#3775): a catalog line with no price in the
       // contract's currency was still billed — at the contract's stamped

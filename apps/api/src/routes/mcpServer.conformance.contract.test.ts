@@ -107,6 +107,9 @@ vi.mock('../services/permissions', async (importOriginal) => {
       permissions: [
         { resource: 'devices', action: 'read' },
         { resource: 'devices', action: 'write' },
+        // B-W04: ai:execute (Tier-3 intent test) re-clamps against execute grants.
+        { resource: 'devices', action: 'execute' },
+        { resource: 'scripts', action: 'execute' },
         { resource: 'alerts', action: 'read' },
         { resource: 'alerts', action: 'write' },
         { resource: 'scripts', action: 'read' },
@@ -161,6 +164,14 @@ vi.mock('../services/rate-limit', () => ({
 }));
 vi.mock('../modules/mcpInvites', () => ({
   initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }),
+}));
+
+// B-W04 (#6158): MCP-side Tier-3 intent creation (its own suite covers it).
+// mcpServer.ts loads this module lazily via dynamic import; vi.mock still applies.
+const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
+vi.mock('../services/mcpIntentCreation', () => ({
+  createMcpActionIntent: (...args: any[]) => intentMocks.createMcpActionIntent(...args),
+  resolveMcpClientLabel: vi.fn(async () => 'MCP · test'),
 }));
 
 vi.mock('../services/toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () => []) }));
@@ -244,15 +255,20 @@ describe.each([...LEGACY_MCP_PROTOCOL_VERSIONS])('MCP conformance for protocol %
     const { rpc } = await session();
     const { body } = await rpc('tools/list');
     const names = body.result.tools.map((t: { name: string }) => t.name);
-    expect(names).toEqual(['manage_services', 'query_devices', 'whoami']);
+    expect(names).toEqual(['cancel_action', 'get_action_status', 'manage_services', 'query_devices', 'whoami']);
     expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, 'en')));
     for (const t of body.result.tools) {
       expect(Object.keys(t).sort()).toEqual(['_meta', 'annotations', 'description', 'inputSchema', 'name', 'title']);
       expect(Object.keys(t.annotations).sort()).toEqual(['destructiveHint', 'idempotentHint', 'openWorldHint', 'readOnlyHint']);
-      const readOnly = t.name !== 'manage_services';
-      expect(t.annotations).toEqual({ readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: !readOnly });
-      // B-W02: whoami is server-intrinsic and always `core`.
-      expect(t._meta).toEqual({ 'app.breeze/domain': t.name === 'whoami' ? 'core' : 'devices' });
+      if (t.name === 'cancel_action') {
+        // B-W04: cancel_action is server-intrinsic, core, idempotent, not read-only, not destructive.
+        expect(t.annotations).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+      } else {
+        const readOnly = t.name !== 'manage_services';
+        expect(t.annotations).toEqual({ readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: !readOnly });
+      }
+      // B-W02/B-W04: whoami, get_action_status and cancel_action are server-intrinsic and always `core`.
+      expect(t._meta).toEqual({ 'app.breeze/domain': ['whoami', 'get_action_status', 'cancel_action'].includes(t.name) ? 'core' : 'devices' });
     }
   });
 
@@ -264,7 +280,7 @@ describe.each([...LEGACY_MCP_PROTOCOL_VERSIONS])('MCP conformance for protocol %
     });
     const restricted = await session();
     const listed = (await restricted.rpc('tools/list')).body.result.tools;
-    expect(listed.map((t: { name: string }) => t.name)).toEqual(['manage_services', 'query_devices', 'whoami']);
+    expect(listed.map((t: { name: string }) => t.name)).toEqual(['cancel_action', 'get_action_status', 'manage_services', 'query_devices', 'whoami']);
     for (const t of listed) expect(Object.keys(t).sort()).toEqual(['_meta', 'annotations', 'description', 'inputSchema', 'name', 'title']);
 
     mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
@@ -273,7 +289,7 @@ describe.each([...LEGACY_MCP_PROTOCOL_VERSIONS])('MCP conformance for protocol %
       return next();
     });
     const other = await session();
-    expect((await other.rpc('tools/list')).body.result.tools.map((t: { name: string }) => t.name)).toEqual(['whoami']);
+    expect((await other.rpc('tools/list')).body.result.tools.map((t: { name: string }) => t.name)).toEqual(['cancel_action', 'get_action_status', 'whoami']);
     const who = await other.rpc('tools/call', { name: 'whoami', arguments: {} });
     expect(who.body.result.structuredContent.domains).toMatchObject({ restricted: true, granted: ['core', 'tickets'] });
     const { body } = await other.rpc('tools/call', { name: 'query_devices', arguments: {} });
@@ -307,6 +323,37 @@ describe.each([...LEGACY_MCP_PROTOCOL_VERSIONS])('MCP conformance for protocol %
     expect(body.result.isError).toBe(true);
     expect(body.result.structuredContent).toBeUndefined();
     expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('B-W04: with Tier-3 intents enabled a Tier-3 tools/call is a normal result with structuredContent.status pending_approval and an actionId', async () => {
+    const actionId = '33333333-3333-4333-8333-333333333333';
+    intentMocks.createMcpActionIntent.mockReset().mockResolvedValue({
+      kind: 'pending', isNew: true,
+      status: {
+        actionId, status: 'pending_approval', toolName: 'manage_services', approvalScope: 'four_eyes',
+        expiresAt: '2027-01-01T00:00:00.000Z', approvalUrl: `https://app.example.com/approvals#intent-${actionId}`,
+      },
+    });
+    const prior = process.env.MCP_TIER3_INTENTS_ENABLED;
+    process.env.MCP_TIER3_INTENTS_ENABLED = 'true';
+    // Tier-3 calls need ai:execute before they reach the approval-intent path.
+    mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+      setApiKeyContext(c, ['ai:read', 'ai:write', 'ai:execute']);
+      return next();
+    });
+    try {
+      const { rpc } = await session();
+      const { body } = await rpc('tools/call', { name: 'manage_services', arguments: { action: 'restart' } });
+      expect(body.error).toBeUndefined();
+      expect(body.result.isError).toBeUndefined();
+      expect(body.result.structuredContent).toMatchObject({ status: 'pending_approval', actionId });
+      expect(body.result.content[0].text).toContain(actionId);
+      expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    } finally {
+      if (prior === undefined) delete process.env.MCP_TIER3_INTENTS_ENABLED;
+      else process.env.MCP_TIER3_INTENTS_ENABLED = prior;
+    }
   });
 });
 
@@ -350,7 +397,7 @@ describe('MCP conformance for protocol 2026-07-28 (stateless)', () => {
     expect(list.status).toBe(200);
     expect(list.sessionHeader).toBeNull();
     expect(list.body.result.resultType).toBe('complete');
-    expect(list.body.result.tools.map((t: { name: string }) => t.name)).toEqual(['manage_services', 'query_devices', 'whoami']);
+    expect(list.body.result.tools.map((t: { name: string }) => t.name)).toEqual(['cancel_action', 'get_action_status', 'manage_services', 'query_devices', 'whoami']);
 
     const call = await rpc('tools/call', { name: 'query_devices', arguments: {} }, 3);
     expect(call.status).toBe(200);

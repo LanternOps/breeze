@@ -111,6 +111,92 @@ describe('resolveEffectivePeripheralPolicySet', () => {
   });
 });
 
+describe('resolveEffectivePeripheralPolicySet — config-policy link governance (#9619)', () => {
+  const linkedId = '20000000-0000-4000-8000-000000000001';
+  const otherLinkedId = '20000000-0000-4000-8000-000000000002';
+  const standaloneId = '20000000-0000-4000-8000-000000000003';
+  const otherSite = '90000000-0000-4000-8000-000000000003';
+
+  it('applies a linked policy only to the devices its config policy resolves to', () => {
+    const linked = candidate(linkedId);
+    const linkedPolicyIds = new Set([linkedId]);
+    const assigned = resolveEffectivePeripheralPolicySet({
+      identity, policies: [linked], configLinks: { linkedPolicyIds, winningPolicyId: linkedId },
+    });
+    expect(assigned.map((p) => p.policyId)).toEqual([linkedId]);
+
+    // Device not covered by the config policy assignment: the policy's own
+    // org-wide standalone target must NOT leak it onto this device.
+    const unassigned = resolveEffectivePeripheralPolicySet({
+      identity, policies: [linked], configLinks: { linkedPolicyIds, winningPolicyId: null },
+    });
+    expect(unassigned).toEqual([]);
+  });
+
+  it("ignores the linked policy's own targetType/targetIds", () => {
+    const linked = candidate(linkedId, { targetType: 'site', targetIds: { siteIds: [otherSite] } });
+    const result = resolveEffectivePeripheralPolicySet({
+      identity, policies: [linked],
+      configLinks: { linkedPolicyIds: new Set([linkedId]), winningPolicyId: linkedId },
+    });
+    expect(result.map((p) => p.policyId)).toEqual([linkedId]);
+  });
+
+  it('a linked policy that loses the closest-wins walk does not apply', () => {
+    const linked = candidate(linkedId);
+    const winner = candidate(otherLinkedId, { deviceClass: 'bluetooth' });
+    const result = resolveEffectivePeripheralPolicySet({
+      identity, policies: [linked, winner],
+      configLinks: { linkedPolicyIds: new Set([linkedId, otherLinkedId]), winningPolicyId: otherLinkedId },
+    });
+    expect(result.map((p) => p.policyId)).toEqual([otherLinkedId]);
+  });
+
+  it('leaves an unlinked policy on its standalone targeting', () => {
+    const standalone = candidate(standaloneId, { targetType: 'site', targetIds: { siteIds: [identity.siteId] } });
+    const elsewhere = candidate(otherLinkedId, { targetType: 'site', targetIds: { siteIds: [otherSite] } });
+    const result = resolveEffectivePeripheralPolicySet({
+      identity, policies: [standalone, elsewhere],
+      configLinks: { linkedPolicyIds: new Set([linkedId]), winningPolicyId: null },
+    });
+    expect(result.map((p) => p.policyId)).toEqual([standaloneId]);
+  });
+
+  it('unlinking stops the link-governed application and reverts to standalone targeting', () => {
+    const policy = candidate(linkedId, { targetType: 'site', targetIds: { siteIds: [otherSite] } });
+    const linked = resolveEffectivePeripheralPolicySet({
+      identity, policies: [policy],
+      configLinks: { linkedPolicyIds: new Set([linkedId]), winningPolicyId: linkedId },
+    });
+    expect(linked).toHaveLength(1);
+    const unlinked = resolveEffectivePeripheralPolicySet({
+      identity, policies: [policy],
+      configLinks: { linkedPolicyIds: new Set(), winningPolicyId: null },
+    });
+    expect(unlinked).toEqual([]);
+  });
+
+  it('never applies a linked winner owned by another tenant or inactive', () => {
+    const foreign = candidate(linkedId, { orgId: '90000000-0000-4000-8000-000000000001' });
+    const inactive = candidate(otherLinkedId, { isActive: false });
+    for (const policy of [foreign, inactive]) {
+      expect(resolveEffectivePeripheralPolicySet({
+        identity, policies: [policy],
+        configLinks: { linkedPolicyIds: new Set([policy.id]), winningPolicyId: policy.id },
+      })).toEqual([]);
+    }
+  });
+
+  it('a partner-owned linked policy applies via the winner (partner-wide config policy)', () => {
+    const partnerOwned = candidate(linkedId, { orgId: null, partnerId: identity.partnerId });
+    const result = resolveEffectivePeripheralPolicySet({
+      identity, policies: [partnerOwned],
+      configLinks: { linkedPolicyIds: new Set([linkedId]), winningPolicyId: linkedId },
+    });
+    expect(result[0]?.source).toBe('partner');
+  });
+});
+
 describe('canonical peripheral envelope', () => {
   const envelope = {
     schemaVersion: 2 as const,

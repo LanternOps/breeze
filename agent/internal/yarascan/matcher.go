@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,15 +153,34 @@ func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, rule := range res.MatchingRules() {
+	rules := res.MatchingRules()
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	var evidence io.ReaderAt
+	if f, oerr := os.Open(path); oerr != nil {
+		log.Warn("could not re-read a matched file for evidence; reporting the match without matched strings", "path", path, "error", oerr.Error())
+	} else {
+		defer func() { _ = f.Close() }()
+		evidence = f
+	}
+	return buildMatches(w.entry, rules, evidence), nil
+}
+
+// buildMatches turns the engine's matching rules into Matches (rule index
+// lookup, threat_type meta, capped matched strings read back from evidence;
+// nil evidence = no matched strings). Shared by ScanFile and ScanSample.
+func buildMatches(entry *CacheEntry, rules []*yx.Rule, evidence io.ReaderAt) []Match {
+	out := make([]Match, 0, len(rules))
+	for _, rule := range rules {
 		ns, name := rule.Namespace(), rule.Identifier()
-		meta, ok := w.entry.Index[ns+":"+name]
+		meta, ok := entry.Index[ns+":"+name]
 		if !ok {
 			log.Warn("YARA match for a rule missing from the rule index", "ruleSetId", ns, "rule", name)
 			meta.Severity = "medium"
 		}
 		m := Match{RuleSetID: ns, RuleID: meta.RuleID, RuleName: name, Severity: meta.Severity,
-			ThreatType: "malware", Tags: rule.Tags(), AutoQuarantine: w.entry.AutoQuarantine[ns]}
+			ThreatType: "malware", Tags: rule.Tags(), AutoQuarantine: entry.AutoQuarantine[ns]}
 		for _, md := range rule.Metadata() {
 			if md.Identifier() != "threat_type" {
 				continue
@@ -171,22 +191,19 @@ func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 				}
 			}
 		}
-		m.Strings = collectStrings(path, rule)
+		if evidence != nil {
+			m.Strings = collectStrings(evidence, rule)
+		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out
 }
 
-// collectStrings re-reads at most MaxMatchedBytes per match from the file:
-// the engine reports offsets/lengths, and a result never carries more than
-// MaxMatchedStrings × MaxMatchedBytes of customer file content (spec §9).
-func collectStrings(path string, rule *yx.Rule) []MatchedString {
-	f, err := os.Open(path)
-	if err != nil {
-		log.Warn("could not re-read a matched file for evidence; reporting the match without matched strings", "path", path, "error", err.Error())
-		return nil
-	}
-	defer func() { _ = f.Close() }()
+// collectStrings re-reads at most MaxMatchedBytes per match from r (the
+// scanned file, or the in-memory sample): the engine reports offsets/lengths,
+// and a result never carries more than MaxMatchedStrings × MaxMatchedBytes of
+// customer file content (spec §9).
+func collectStrings(r io.ReaderAt, rule *yx.Rule) []MatchedString {
 	var out []MatchedString
 	for _, p := range rule.Patterns() {
 		for _, mt := range p.Matches() {
@@ -198,7 +215,7 @@ func collectStrings(path string, rule *yx.Rule) []MatchedString {
 				n = MaxMatchedBytes
 			}
 			buf := make([]byte, n)
-			k, _ := f.ReadAt(buf, int64(mt.Offset()))
+			k, _ := r.ReadAt(buf, int64(mt.Offset()))
 			out = append(out, MatchedString{ID: p.Identifier(), Offset: int64(mt.Offset()), Data: escapeMatched(buf[:k])})
 		}
 	}

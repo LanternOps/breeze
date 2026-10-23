@@ -589,6 +589,7 @@
       "title": "Documenti",
       "subtitle": "Runbook, baseline, criteri ed evidenze di erogazione per questa organizzazione.",
       "empty": "Ancora nessun documento. Carica un runbook, una baseline o un criterio firmato per avviare la libreria.",
+      "emptyPortalHint": "Il cliente vede i documenti contrassegnati come Visibile nel portale. Una proposta o un accordo firmato e una baseline di sicurezza sono ottimi primi documenti.",
       "emptyFiltered": "Nessun documento in questa categoria.",
       "loadFailed": "Impossibile caricare i documenti.",
       "upload": "Carica documento",

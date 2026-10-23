@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} approbation en attente",
     "pendingApprovals_other": "{{count}} approbations en attente",
     "tickets": "Tickets",
-    "incidents": "Incidents",
+    "incidents": "Incidents de sécurité",
     "remoteAccess": "Accès à distance",
     "scripts": "Scénarios",
     "patches": "Correctifs",
@@ -1385,6 +1385,12 @@
           "signingSecret": "Utilisez ce secret pour vérifier les signatures de webhooks."
         },
         "invalidJsonPreview": "Invalide JSON dans le modèle.",
+        "otherEvents": {
+          "allEvents": "Tous les événements (*)",
+          "allEventsHint": "Ce webhook est abonné à tous les événements ; les événements individuels ci-dessous ne sont donc pas utilisés. Retirez « Tous les événements » pour en choisir des précis.",
+          "remove": "Retirer {{event}}",
+          "title": "Autres événements souscrits"
+        },
         "payload": {
           "previewEmpty": "L’aperçu apparaît une fois que JSON est valide.",
           "subtitle": "Définissez la forme de la charge utile JSON envoyée à votre destination.",
@@ -2208,7 +2214,7 @@
         },
         "loading": "Incidents de chargement...",
         "tryAgain": "Réessayer",
-        "title": "Incidents",
+        "title": "Incidents de sécurité",
         "description": "Incidents suivis et constats EDR dans vos organisations.",
         "filters": {
           "tracked": "Suivis",
@@ -2238,6 +2244,11 @@
         "genericEdrProvider": "Fournisseur EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Technicien",
+          "system": "Système"
+        },
         "errors": {
           "notFound": "Incident non trouvé",
           "fetchFailed": "Impossible de charger l’incident"

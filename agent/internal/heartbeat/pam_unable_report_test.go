@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -152,6 +153,82 @@ func TestReportPamUnableIgnoresNilAndEmptyRequest(t *testing.T) {
 	h.reportPamUnable("", &pamUnable{Reason: pamUnableHelperUnavailable})
 	if calls != 0 {
 		t.Fatalf("calls = %d, want 0", calls)
+	}
+}
+
+func TestDeliverPamUnableCancelsInFlightOnStop(t *testing.T) {
+	h := unableReportHeartbeat("https://example.test")
+	// A broker drain that uses its whole shutdown budget: the report must be
+	// cancelled before it, not after.
+	h.stopBrokerAcceptingAndWait = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	var once sync.Once
+	h.client = &http.Client{Transport: failoverRoundTripper(func(r *http.Request) (*http.Response, error) {
+		once.Do(func() { close(arrived) })
+		select {
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		case <-release:
+			return nil, context.Canceled
+		}
+	})}
+	done := make(chan error, 1)
+	go func() {
+		done <- h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, time.Minute,
+			[]time.Duration{time.Second}, func(time.Duration) {}, time.Now)
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(time.Second):
+		t.Fatal("report never reached the transport")
+	}
+	// The real shutdown path: Stop cancels the report as it begins, before
+	// its bounded drain.
+	go h.Stop()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("deliverPamUnable = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not cancel the in-flight report")
+	}
+}
+
+func TestDeliverPamUnableStopsPendingRetryWait(t *testing.T) {
+	h := unableReportHeartbeat("https://example.test")
+	h.client = &http.Client{Transport: failoverRoundTripper(func(r *http.Request) (*http.Response, error) {
+		return failoverResponse(r, http.StatusServiceUnavailable, ""), nil
+	})}
+	waiting := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- h.deliverPamUnable("req", pamUnable{Reason: pamUnableHelperUnavailable}, time.Minute,
+			[]time.Duration{30 * time.Second}, func(d time.Duration) {
+				close(waiting)
+				h.waitBeforePamUnableRetry(d)
+			}, time.Now)
+	}()
+	select {
+	case <-waiting:
+	case <-time.After(time.Second):
+		t.Fatal("report never entered its retry wait")
+	}
+	// The real shutdown path: Stop cancels the report as it begins, before
+	// its bounded drain.
+	go h.Stop()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("deliverPamUnable = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not interrupt the pending retry wait")
 	}
 }
 
