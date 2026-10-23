@@ -765,6 +765,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Wisp W02 (#9908): 5-minute grant standing sweep; skips every tick while
+    // BREEZE_WISP_ENABLED is off.
+    name: 'wispGrantReconciler',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispGrantReconciler');
+      return { init: m.initializeWispGrantReconciler, shutdown: m.shutdownWispGrantReconciler };
+    },
+  },
+  {
     name: 'softwareUploadSessionCleanup',
     placement: 'global',
     load: async () => {
