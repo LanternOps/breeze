@@ -84,7 +84,7 @@ import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
-import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE } from '@breeze/shared';
+import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_LAUNCH_PURCHASE_SELECTION } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -662,6 +662,9 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         slug: data.slug,
         type: data.type,
         maxOrganizations: data.maxOrganizations,
+        // This route bypasses createPartner. Persist the fresh-business offer
+        // here too; existing partners' absent intent remains a legacy commitment.
+        purchaseSelection: { ...DEFAULT_LAUNCH_PURCHASE_SELECTION },
         settings: encryptColumnValueForWrite('partners', 'settings', createSecrets.settings),
         billingEmail: data.billingEmail
       })

@@ -78,34 +78,90 @@ function release(): void {
   }
 }
 
+/**
+ * Non-queueing admission to the same gate (#6263 W04-2): the rule test
+ * upload must answer "busy" at once instead of buffering a 10 MiB body to
+ * wait. Returns an idempotent release, or null when both slots are taken.
+ */
+export function tryAcquireYaracSlot(): (() => void) | null {
+  if (active >= YARAC_MAX_CONCURRENCY) return null;
+  active++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+}
+
 // ---- process runner --------------------------------------------------------
 
-type RunResult =
+export type RunResult =
   | { kind: 'exit'; code: number | null; stdout: string; stderr: string }
   | { kind: 'unavailable'; reason: string };
 
-function runYarac(args: string[], stdin: string | null, timeoutMs = YARAC_TIMEOUT_MS): Promise<RunResult> {
+export interface RunYaracOptions {
+  timeoutMs?: number;
+  /** Kills the child (SIGKILL) and resolves `unavailable: 'aborted'`. */
+  signal?: AbortSignal;
+  /** The child's whole environment. Default: PATH only. */
+  env?: Record<string, string>;
+  maxStdoutBytes?: number;
+  /**
+   * Called once, when the child is GONE ('close', or a spawn that never
+   * produced a process). The result can resolve earlier — a timeout or an
+   * abort resolves at once — so a caller holding a resource for the child's
+   * lifetime releases it here, not when the promise settles.
+   */
+  onExit?: () => void;
+}
+
+export function runYarac(args: string[], stdin: Buffer | string | null, opts: RunYaracOptions = {}): Promise<RunResult> {
+  const timeoutMs = opts.timeoutMs ?? YARAC_TIMEOUT_MS;
+  const maxStdout = opts.maxStdoutBytes ?? YARAC_MAX_STDOUT_BYTES;
+  let exited = false;
+  const exitOnce = () => {
+    if (exited) return;
+    exited = true;
+    opts.onExit?.();
+  };
   return new Promise<RunResult>((resolve) => {
+    if (opts.signal?.aborted) {
+      exitOnce();
+      resolve({ kind: 'unavailable', reason: 'aborted' });
+      return;
+    }
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
     const finish = (r: RunResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (onAbort) opts.signal?.removeEventListener('abort', onAbort);
       resolve(r);
     };
 
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(yaracPath(), args, { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '' } });
+      child = spawn(yaracPath(), args, { stdio: ['pipe', 'pipe', 'pipe'], env: opts.env ?? { PATH: process.env.PATH ?? '' } });
     } catch (err) {
+      exitOnce();
       resolve({ kind: 'unavailable', reason: errorCode(err) });
       return;
     }
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill('SIGKILL');
       finish({ kind: 'unavailable', reason: 'timeout' });
     }, timeoutMs);
+    if (opts.signal) {
+      onAbort = () => {
+        child.kill('SIGKILL');
+        finish({ kind: 'unavailable', reason: 'aborted' });
+      };
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     const out: Buffer[] = [];
     let outBytes = 0;
@@ -114,7 +170,7 @@ function runYarac(args: string[], stdin: string | null, timeoutMs = YARAC_TIMEOU
 
     child.stdout?.on('data', (chunk: Buffer) => {
       outBytes += chunk.length;
-      if (outBytes > YARAC_MAX_STDOUT_BYTES) {
+      if (outBytes > maxStdout) {
         child.kill('SIGKILL');
         finish({ kind: 'unavailable', reason: 'stdout_too_large' });
         return;
@@ -127,8 +183,13 @@ function runYarac(args: string[], stdin: string | null, timeoutMs = YARAC_TIMEOU
         errBytes += chunk.length;
       }
     });
-    child.on('error', (err) => finish({ kind: 'unavailable', reason: errorCode(err) }));
+    child.on('error', (err) => {
+      // A spawn failure (ENOENT, EACCES) has no process and may never 'close'.
+      if (child.pid === undefined) exitOnce();
+      finish({ kind: 'unavailable', reason: errorCode(err) });
+    });
     child.on('close', (code) => {
+      exitOnce();
       finish({
         kind: 'exit',
         code,
@@ -153,7 +214,7 @@ function errorCode(err: unknown): string {
 
 // ---- validate --------------------------------------------------------------
 
-function parseRuleErrors(raw: unknown): YaraPrecheckError[] | null {
+export function parseRuleErrors(raw: unknown): YaraPrecheckError[] | null {
   if (typeof raw !== 'object' || raw === null || !Array.isArray((raw as { errors?: unknown }).errors)) return null;
   const errors: YaraPrecheckError[] = [];
   for (const e of (raw as { errors: unknown[] }).errors) {
@@ -197,7 +258,7 @@ export async function precheckYaraBundle(json: string, opts: YaraPrecheckOptions
   await acquire();
   let run: RunResult;
   try {
-    run = await runYarac(['validate'], json, opts.timeoutMs ?? YARAC_TIMEOUT_MS);
+    run = await runYarac(['validate'], json, { timeoutMs: opts.timeoutMs ?? YARAC_TIMEOUT_MS });
   } finally {
     release();
   }

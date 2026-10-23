@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronRight,
@@ -26,6 +26,7 @@ import {
 } from "recharts";
 import { cn, formatNumber, widthPercentClass } from "@/lib/utils";
 import { fetchWithAuth } from "@/stores/auth";
+import { useOrgStore } from "@/stores/orgStore";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import AccessDenied from "../shared/AccessDenied";
 import { ENABLE_EDR_INTEGRATIONS } from "../../lib/featureFlags";
@@ -444,49 +445,17 @@ const normalizeOverview = (raw: unknown): SecurityOverview => {
     trend,
   };
 };
+// GET /vulnerabilities/stats — open CVE findings by severity over ALL findings
+// in the selected org scope (the same data the linked Vulnerabilities page
+// uses). Not the AV threats feed (#9640).
 const normalizeVulnerabilities = (raw: unknown): VulnerabilitySummary => {
   const record = getRecord(raw);
-  const data = isRecord(record.data) ? record.data : record;
-  const summary = isRecord(data.summary) ? data.summary : data;
-  let critical = pickNumber(
-    summary.critical,
-    summary.criticalCount,
-    summary.criticalIssues,
-  );
-  let high = pickNumber(summary.high, summary.highCount, summary.highIssues);
-  let medium = pickNumber(
-    summary.medium,
-    summary.mediumCount,
-    summary.mediumIssues,
-  );
-  let low = pickNumber(summary.low, summary.lowCount, summary.lowIssues);
-  const list = Array.isArray(data.items)
-    ? data.items
-    : Array.isArray(data.vulnerabilities)
-      ? data.vulnerabilities
-      : Array.isArray(data.data)
-        ? data.data
-        : Array.isArray(raw)
-          ? raw
-          : [];
-  if (Array.isArray(list) && list.length > 0) {
-    const counts = { critical: 0, high: 0, medium: 0, low: 0 };
-    list.forEach((entry) => {
-      const item = getRecord(entry);
-      const severity = String(
-        item.severity ?? item.priority ?? "",
-      ).toLowerCase();
-      if (severity === "critical") counts.critical += 1;
-      else if (severity === "high") counts.high += 1;
-      else if (severity === "medium") counts.medium += 1;
-      else if (severity === "low") counts.low += 1;
-    });
-    if (critical === 0 && high === 0 && medium === 0 && low === 0) {
-      ({ critical, high, medium, low } = counts);
-    }
-  }
-  const total = critical + high + medium + low;
-  return { critical, high, medium, low, total };
+  const by = isRecord(record.openBySeverity) ? record.openBySeverity : {};
+  const critical = pickNumber(by.critical);
+  const high = pickNumber(by.high);
+  const medium = pickNumber(by.medium);
+  const low = pickNumber(by.low);
+  return { critical, high, medium, low, total: critical + high + medium + low };
 };
 const fetchJson = async (url: string) => {
   const response = await fetchWithAuth(url);
@@ -529,7 +498,12 @@ export default function SecurityDashboard({
     vulnerabilities: "none",
   });
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  // Monotonic request id: a slow response for the previous org must not
+  // overwrite the data for the org just switched to.
+  const requestSeq = useRef(0);
   const fetchSecurityData = useCallback(async () => {
+    const seq = ++requestSeq.current;
+    const isCurrent = () => seq === requestSeq.current;
     setLoading(true);
     const failures: { overview: LoadErrorKind; vulnerabilities: LoadErrorKind } =
       { overview: "none", vulnerabilities: "none" };
@@ -537,7 +511,7 @@ export default function SecurityDashboard({
       (async () => {
         try {
           const overviewData = await fetchJson("/security/dashboard");
-          setOverview(normalizeOverview(overviewData));
+          if (isCurrent()) setOverview(normalizeOverview(overviewData));
         } catch (err) {
           // Keep any previously loaded data on refresh failure rather than
           // clobbering the dashboard with fabricated zeros.
@@ -546,20 +520,25 @@ export default function SecurityDashboard({
       })(),
       (async () => {
         try {
-          const vulnerabilityData = await fetchJson("/security/threats");
-          setVulnerabilities(normalizeVulnerabilities(vulnerabilityData));
+          const vulnerabilityData = await fetchJson("/vulnerabilities/stats");
+          if (isCurrent())
+            setVulnerabilities(normalizeVulnerabilities(vulnerabilityData));
         } catch (err) {
           failures.vulnerabilities = errorKindOf(err);
         }
       })(),
     ]);
+    if (!isCurrent()) return;
     setLoadFailures(failures);
     setLastUpdated(new Date());
     setLoading(false);
   }, []);
+  // Refetch when the header switcher changes org (#9642). fetchWithAuth reads the
+  // selected org at call time, so currentOrgId only needs to drive the effect.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   useEffect(() => {
     fetchSecurityData();
-  }, [fetchSecurityData]);
+  }, [fetchSecurityData, currentOrgId]);
   const scoreMeta = useMemo(
     () => (overview ? getScoreMeta(overview.securityScore) : null),
     [overview],
