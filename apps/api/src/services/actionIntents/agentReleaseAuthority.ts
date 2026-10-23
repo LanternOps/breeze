@@ -5,7 +5,14 @@ import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
 import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
-import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
+import { checkAgentGuardrails, requiredPermissionsForTool, type AgentGuardrailPolicy } from '../aiGuardrails';
+import {
+  assertWithinCeiling,
+  CeilingViolationError,
+  GrantInactiveError,
+  resolveGrantCeiling,
+  type GrantCeiling,
+} from '../wisp/grantAuthority';
 import { readAiKillState } from '../aiKillState';
 import {
   AgentRunOwnershipError,
@@ -68,6 +75,9 @@ export async function checkAgentReleaseAuthority(
           policySnapshot: aiAgentRuns.policySnapshot,
           // See the check below, mirroring policyDecide.ts.
           modeAtStart: aiAgentRuns.modeAtStart,
+          // Wisp W02 — the delegation grant pinned at admission.
+          grantId: aiAgentRuns.grantId,
+          grantRevisionId: aiAgentRuns.grantRevisionId,
         })
         .from(aiAgentRuns)
         .where(eq(aiAgentRuns.id, runId))
@@ -242,6 +252,51 @@ export async function checkAgentReleaseAuthority(
       errorCode: 'agent_identity_changed',
       details: { runAgentId: run.agentId, resolvedAgentId: resolved.agentId },
     };
+  }
+
+  // Wisp W02 (Wisp design §4.3): a run admitted under a delegation grant
+  // releases only inside the LIVE ceiling of the revision it was pinned to —
+  // re-checked here, not trusted from admission, so a grantor who lost the
+  // permission or the org since approval stops the effect (the run's org can
+  // fall out of the ceiling between admission and release). Ahead of the
+  // policy candidates loop: a ceiling violation wins over a snapshot deny.
+  //   - grant_inactive  (paused / revoked / expired / standing lost) is
+  //     PAUSABLE like kill_switch_engaged: the intent goes back to `approved`
+  //     and releases if the grant resumes before its lease expires.
+  //   - grant_ceiling_violation is TERMINAL: the authority behind the
+  //     approval no longer covers this effect.
+  if (run.grantId) {
+    const grantDetails = { grantId: run.grantId, grantRevisionId: run.grantRevisionId };
+    if (!run.grantRevisionId) {
+      return { ok: false, errorCode: 'grant_ceiling_violation', details: { ...grantDetails, code: 'inactive' } };
+    }
+    let ceiling: GrantCeiling;
+    try {
+      ceiling = await resolveGrantCeiling(run.grantId, run.grantRevisionId);
+    } catch (error) {
+      if (error instanceof GrantInactiveError) {
+        return { ok: false, errorCode: 'grant_inactive', details: { ...grantDetails, code: 'inactive' } };
+      }
+      throw error;
+    }
+    const scope = { toolName: intent.actionName, orgId: intent.orgId, siteId: deviceSiteId };
+    try {
+      assertWithinCeiling(ceiling, scope);
+      // No resolvable human permission ⇒ cannot be shown inside the grantor's
+      // authority ⇒ terminal violation (fail closed).
+      const requirements = requiredPermissionsForTool(intent.actionName, intent.arguments as Record<string, unknown>);
+      if (!requirements || requirements.length === 0) {
+        return { ok: false, errorCode: 'grant_ceiling_violation', details: { ...grantDetails, code: 'permission' } };
+      }
+      for (const r of requirements) {
+        assertWithinCeiling(ceiling, { ...scope, permission: `${r.resource}:${r.action}` });
+      }
+    } catch (error) {
+      if (error instanceof CeilingViolationError) {
+        return { ok: false, errorCode: 'grant_ceiling_violation', details: { ...grantDetails, code: error.code } };
+      }
+      throw error;
+    }
   }
 
   // Wave-5A review fix (#3827): refresh THIS lane's own kill-state read,

@@ -133,6 +133,13 @@ describe('delegation ceiling in createAgentRunPreToolUse', () => {
     expect(denied(await pre('query_devices', {})).error).toContain('(site)');
   });
 
+  it('a tool with no human permission mapping FAILS CLOSED under a grant (even a wildcard grantor)', async () => {
+    const outcome = makeOutcome();
+    grantMocks.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['*:*']) }));
+    const pre = makeHook({ grantId: 'g1', outcome, toolAllowlist: ['no_such_tool_mapping'] });
+    expect(denied(await pre('no_such_tool_mapping', {})).error).toBe('outside the delegation ceiling (permission)');
+  });
+
   it('a never-delegable tool is denied with code tool', async () => {
     const outcome = makeOutcome();
     grantMocks.resolveGrantCeiling.mockResolvedValue(ceiling());

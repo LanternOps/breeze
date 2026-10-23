@@ -244,9 +244,18 @@ function operationResultStateFromToolResult(
  * Lost CAS (`won === false`) mirrors `failIntent`'s own race handling: some
  * other delivery already moved this row (e.g. the stale-executing reaper
  * already reaped it to `failed:execution_lost`) — nothing further to do.
+ *
+ * Wisp W02 generalised this from the kill switch alone: `grant_inactive` (the
+ * run's delegation grant is paused, revoked, expired or its grantor lost
+ * standing) is recoverable the same way — a grant resumed before the lease
+ * passes releases normally. A ceiling VIOLATION is not in this set: it is
+ * terminal, like every other structural denial.
  */
-async function pauseIntentForKillSwitch(
+const PAUSABLE_RELEASE_CODES: ReadonlySet<string> = new Set(['kill_switch_engaged', 'grant_inactive']);
+
+async function pauseIntentForRecoverableDenial(
   intent: ActionIntent,
+  code: string,
   details?: Record<string, unknown>,
 ): Promise<void> {
   // #5205 W04 (#5209), spec §7.3: for a task-linked intent the reversal also
@@ -254,10 +263,12 @@ async function pauseIntentForKillSwitch(
   // `dispatched` would tell the reconciler an effect is in flight when the
   // claim was explicitly undone and the intent is claimable again.
   const won = isTaskLinkedIntent(intent)
-    ? await revertTaskLinkedDispatchClaim(intent.id, 'kill_switch_engaged')
+    ? await revertTaskLinkedDispatchClaim(intent.id, code)
     : await transitionIntent(intent.id, 'executing', 'approved');
   if (!won) return;
-  const message = `[IntentReleaseWorker] intent ${intent.id} release paused — kill switch engaged`;
+  const message = code === 'kill_switch_engaged'
+    ? `[IntentReleaseWorker] intent ${intent.id} release paused — kill switch engaged`
+    : `[IntentReleaseWorker] intent ${intent.id} release paused — ${code}`;
   console.warn(message, details);
   captureException(new Error(message));
 }
@@ -1160,12 +1171,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   if (!revalidation.ok) {
     // Wave-5A review fix (#3827): a kill-derived denial PAUSES, never
     // terminally fails, an already-human-approved intent — see
-    // `pauseIntentForKillSwitch`'s header. Every other revalidation stop
-    // (digest mismatch, tier escalated, actor/org invalid, rbac denied, a
-    // non-kill structural policy denial, …) is unchanged: CAS straight to
-    // `failed`.
-    if (revalidation.errorCode === 'kill_switch_engaged') {
-      await pauseIntentForKillSwitch(intent, revalidation.details);
+    // `pauseIntentForRecoverableDenial`'s header. Wisp W02 adds
+    // `grant_inactive` to that set. Every other revalidation stop (digest
+    // mismatch, tier escalated, actor/org invalid, rbac denied, a non-kill
+    // structural policy denial, a grant CEILING violation, …) is unchanged:
+    // CAS straight to `failed`.
+    if (PAUSABLE_RELEASE_CODES.has(revalidation.errorCode)) {
+      await pauseIntentForRecoverableDenial(intent, revalidation.errorCode, revalidation.details);
       return;
     }
     await failIntent(intent, revalidation.errorCode, { details: revalidation.details });
@@ -1364,11 +1376,11 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // that read: a real kill (or a transient read failure, which
   // `readAiKillState` maps fail-closed to `killed: true`) PAUSES the intent
   // back to `approved` rather than terminally failing it — see
-  // `pauseIntentForKillSwitch`'s header.
+  // `pauseIntentForRecoverableDenial`'s header.
   if (intent.requestingAgentRunId) {
     const preDispatchKillState = await readAiKillState();
     if (preDispatchKillState.killed) {
-      await pauseIntentForKillSwitch(intent, {
+      await pauseIntentForRecoverableDenial(intent, 'kill_switch_engaged', {
         epoch: preDispatchKillState.epoch,
         stage: 'pre_dispatch',
       });

@@ -928,20 +928,22 @@ export function createAgentRunPreToolUse(args: {
     }
   }
 
-  /** Every ceiling term for this tool call; the first violation's reason, or null. */
+  /**
+   * Every ceiling term for this tool call; the first violation's reason, or
+   * null. A tool with no resolvable human permission (no TOOL_PERMISSIONS
+   * mapping, unknown action) cannot be shown to sit inside the grantor's
+   * authority, so it FAILS CLOSED as a permission violation. Outcome tools
+   * never reach here (their branch returns earlier).
+   */
   function delegationCeilingDenial(ceiling: GrantCeiling, toolName: string, input: Record<string, unknown>): string | null {
-    const requirements = requiredPermissionsForTool(toolName, input);
-    const checks = requirements && requirements.length > 0
-      ? requirements.map((r) => `${r.resource}:${r.action}`)
-      : [undefined];
+    const scope = { toolName, orgId: run.orgId, siteId: guardrailPolicy.deviceSiteId ?? null };
     try {
-      for (const permission of checks) {
-        assertWithinCeiling(ceiling, {
-          toolName,
-          ...(permission ? { permission } : {}),
-          orgId: run.orgId,
-          siteId: guardrailPolicy.deviceSiteId ?? null,
-        });
+      // Tool / org / site terms first, so a never-delegable tool reports as such.
+      assertWithinCeiling(ceiling, scope);
+      const requirements = requiredPermissionsForTool(toolName, input);
+      if (!requirements || requirements.length === 0) return 'outside the delegation ceiling (permission)';
+      for (const r of requirements) {
+        assertWithinCeiling(ceiling, { ...scope, permission: `${r.resource}:${r.action}` });
       }
       return null;
     } catch (error) {
