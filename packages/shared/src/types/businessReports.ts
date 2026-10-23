@@ -449,3 +449,150 @@ export function emptyMrrRenewalsSummary(note: string): MrrRenewalsSummary {
     rows: [],
   };
 }
+
+// ---------------------------------------------------------------------------
+// Client profitability (`client_profitability`, #9828 W3; spec §3.1)
+// ---------------------------------------------------------------------------
+
+/** Revenue mix categories, in print order. A category is the invoice line's
+ *  source: contract → recurring (hour-block overage → labor), time entry →
+ *  labor, part / catalog / bundle / a quote-sold catalog line → product,
+ *  AI usage → ai, anything else → other. */
+export const CLIENT_PROFITABILITY_REVENUE_CATEGORIES = ['recurring', 'labor', 'product', 'ai', 'other'] as const;
+export type ClientProfitabilityRevenueCategory = (typeof CLIENT_PROFITABILITY_REVENUE_CATEGORIES)[number];
+export type ClientProfitabilityGroupBy = 'organization' | 'source';
+
+/**
+ * One currency's billed money (per client, or partner-wide). Money is a
+ * decimal string rounded once to the currency; ratios are fractions (0..1)
+ * and null when unmeasured, never 0.
+ *
+ * Margin is measured over cost-bearing lines only: a line with no recorded
+ * cost is unknown cost, never zero cost, so `costCoveragePct` (the share of
+ * revenue the margin is measured on) is printed beside every margin.
+ *
+ * The rate and labor-estimate fields are null unless the client's hours are
+ * attributed to this currency (`hoursAttribution: 'single_currency'`); the
+ * estimate fields are also null when no labor rate is set or it is in another
+ * currency. `estimatedContributionAfterLabor` = grossMargin + NULL-cost labor
+ * and recurring revenue − estimatedLaborCost (Gate B 6).
+ */
+export type ProfitabilityMoneyRow = {
+  currencyCode: string;
+  revenue: string;
+  costBearingRevenue: string;
+  cost: string;
+  grossMargin: string;
+  marginPct: number | null;
+  costCoveragePct: number | null;
+  unknownCostRevenue: string;
+  linesMissingCost: number;
+  partialCostBundles: number;
+  mix: Record<ClientProfitabilityRevenueCategory, string>;
+  /** (recurring + labor revenue) ÷ hours worked. */
+  effectiveServiceRate: number | null;
+  /** All revenue ÷ hours worked. */
+  revenuePerHour: number | null;
+  /** All completed hours × the uniform labor rate. */
+  estimatedLaborCost: string | null;
+  estimatedContributionAfterLabor: string | null;
+  /** Recurring revenue with no recorded cost — the share of the estimate's
+   *  service revenue that is an assumption (a resold licence would sit here). */
+  nullCostRecurringRevenue: string;
+  /** Product, AI and other revenue with no recorded cost: never in the estimate. */
+  excludedUnknownCostRevenue: string;
+};
+
+/** Hours worked (completed entries, 2 dp), split by effective coverage. */
+export type ProfitabilityHours = { total: number; billable: number; included: number; nonBillable: number };
+
+export type ClientProfitabilityHoursAttribution = 'single_currency' | 'multi_currency' | 'no_revenue';
+
+export type ClientProfitabilityOrgRow = {
+  orgId: string;
+  orgName: string | null;
+  /** Printed once per client, never per currency row. */
+  hours: ProfitabilityHours;
+  money: ProfitabilityMoneyRow[];
+  hoursAttribution: ClientProfitabilityHoursAttribution;
+};
+
+/** Per (revenue category, currency): the `source` grouping. */
+export type ClientProfitabilitySourceRow = {
+  category: ClientProfitabilityRevenueCategory;
+  currencyCode: string;
+  revenue: string;
+  costBearingRevenue: string;
+  cost: string;
+  grossMargin: string;
+  marginPct: number | null;
+  costCoveragePct: number | null;
+  unknownCostRevenue: string;
+  linesMissingCost: number;
+};
+
+/**
+ * One per (client, currency) at partner scope, plus one hours-only row
+ * (`currencyCode` null, money null) for a client whose hours cannot sit on a
+ * single money row, and one for internal (no-organization) time; one per
+ * invoice at org scope (hours null there).
+ */
+export type ClientProfitabilityDetailRow = {
+  orgId: string | null;
+  orgName: string | null;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  issueDate: string | null;
+  currencyCode: string | null;
+  revenue: string | null;
+  cost: string | null;
+  grossMargin: string | null;
+  marginPct: number | null;
+  costCoveragePct: number | null;
+  unknownCostRevenue: string | null;
+  recurringRevenue: string | null;
+  laborRevenue: string | null;
+  productRevenue: string | null;
+  aiRevenue: string | null;
+  otherRevenue: string | null;
+  hoursTotal: number | null;
+  hoursBillable: number | null;
+  hoursIncluded: number | null;
+  hoursNonBillable: number | null;
+  effectiveServiceRate: number | null;
+  estimatedContributionAfterLabor: string | null;
+};
+
+export type ClientProfitabilitySummary = {
+  generatedAt: string;
+  period: ReportPeriodMeta;
+  scope: ReportScopeMeta;
+  groupBy: ClientProfitabilityGroupBy;
+  /** The report's uniform labor rate, or null (hours only, no estimate). */
+  laborCostPerHour: { amount: string; currencyCode: string } | null;
+  byCurrency: ProfitabilityMoneyRow[];
+  orgs: ClientProfitabilityOrgRow[];
+  sources: ClientProfitabilitySourceRow[];
+  /** Partner scope: time entries with no organization, printed once. */
+  unattributedHours: ProfitabilityHours | null;
+  detail: DetailRowMeta;
+  notes: string[];
+  rows: ClientProfitabilityDetailRow[];
+};
+
+export function emptyClientProfitabilitySummary(note: string): ClientProfitabilitySummary {
+  return {
+    generatedAt: new Date().toISOString(),
+    period: { kind: 'custom', start: '', end: '', label: '', timeZone: 'UTC' },
+    scope: { kind: 'organization', orgId: '', orgName: null },
+    groupBy: 'organization',
+    laborCostPerHour: null,
+    byCurrency: [],
+    orgs: [],
+    sources: [],
+    unattributedHours: null,
+    detail: { ...EMPTY_DETAIL },
+    notes: [note],
+    rows: [],
+  };
+}

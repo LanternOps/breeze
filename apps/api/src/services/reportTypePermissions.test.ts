@@ -72,7 +72,7 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
   /** Every type that needs invoices:read. ai_usage_by_client (#7608) needs it
    *  too (plus ai_sessions:read_all, which `noInvoices` holds), so a caller
    *  without invoices:read sees neither money report. */
-  const invoiceGated = ['ar_aging', 'ai_usage_by_client'];
+  const invoiceGated = ['ar_aging', 'ai_usage_by_client', 'client_profitability'];
 
   it('hides exactly the types whose required permissions are missing', () => {
     expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noInvoices))).toEqual(invoiceGated);
@@ -101,6 +101,20 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
     expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noContracts))).toEqual(['mrr_renewals']);
     expect(reportTypeHiddenByPermission('mrr_renewals', {
       permissions: [{ resource: 'reports', action: '*' }, { resource: 'contracts', action: 'read' }],
+    })).toBe(false);
+  });
+
+  it('client_profitability (#9828 W3) needs BOTH invoices:read and time_entries:read', () => {
+    const noTime = { permissions: noInvoices.permissions.filter((p) => p.resource !== 'time_entries').concat({ resource: 'invoices', action: 'read' }) };
+    // technician_time_billability also needs time_entries:read; order follows REPORT_TYPES.
+    expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noTime)))
+      .toEqual(REPORT_TYPES.filter((t) => t === 'technician_time_billability' || t === 'client_profitability'));
+    const invoicesOnly = { permissions: [{ resource: 'reports', action: '*' }, { resource: 'invoices', action: 'read' }] };
+    const timeOnly = { permissions: [{ resource: 'reports', action: '*' }, { resource: 'time_entries', action: 'read' }] };
+    expect(reportTypeHiddenByPermission('client_profitability', invoicesOnly)).toBe(true);
+    expect(reportTypeHiddenByPermission('client_profitability', timeOnly)).toBe(true);
+    expect(reportTypeHiddenByPermission('client_profitability', {
+      permissions: [...invoicesOnly.permissions, { resource: 'time_entries', action: 'read' }],
     })).toBe(false);
   });
 

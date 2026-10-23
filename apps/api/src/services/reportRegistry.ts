@@ -27,6 +27,7 @@ import {
   endpointManagementConfigSchema,
   hardwareLifecycleConfigSchema,
   identityAccessConfigSchema,
+  clientProfitabilityConfigSchema,
   legacyReportConfigSchema,
   mrrRenewalsConfigSchema,
   securityCompliancePostureConfigSchema,
@@ -371,6 +372,19 @@ const generators = {
     generate: async (scope, config, authority) => {
       const { generateMrrRenewalsReport } = await import('./businessReports/mrrRenewalsReport');
       return generateMrrRenewalsReport(scope, config, authority);
+    },
+  },
+  // Business reports phase 2 W3 (#9828). Same shape as the other business
+  // types; needs invoices:read AND time_entries:read.
+  client_profitability: {
+    type: 'client_profitability', label: 'Client profitability',
+    configSchema: clientProfitabilityConfigSchema, supportedScopes: ORG_OR_PARTNER,
+    execution: 'user', audience: 'msp_staff',
+    requiredPermissions: BUSINESS_REPORT_REQUIRED_PERMISSIONS.client_profitability,
+    detailRowCap: BUSINESS_DETAIL_ROW_CAP,
+    generate: async (scope, config, authority) => {
+      const { generateClientProfitabilityReport } = await import('./businessReports/clientProfitabilityReport');
+      return generateClientProfitabilityReport(scope, config, authority);
     },
   },
 } satisfies { readonly [K in ReportType]: ReportTypeDef & { type: K } };

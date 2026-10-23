@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { CLIENT_PROFITABILITY_REVENUE_CATEGORIES, type ClientProfitabilityRevenueCategory } from '@breeze/shared';
 import { sqlTimestamp, sqlUuidArray } from '../../db/sqlValues';
 import { minorUnitScaleSql } from '../currencySql';
 import type { ReportScope } from '../reportScope';
@@ -34,8 +35,7 @@ import type { ResolvedReportPeriod } from './period';
  * `blockOverageLineIdsCte` is the same predicated sub-SELECT.
  */
 
-export type RevenueCategory = 'recurring' | 'labor' | 'product' | 'ai' | 'other';
-export const REVENUE_CATEGORIES: readonly RevenueCategory[] = ['recurring', 'labor', 'product', 'ai', 'other'];
+export type RevenueCategory = ClientProfitabilityRevenueCategory;
 
 /** Per (org, currency, category). Money is exact numeric ::text; rounding happens in TS. */
 export type LineFoldRow = {
@@ -137,7 +137,7 @@ export function invoiceLineFoldQuery(args: { scope: ReportScope } & PeriodDates)
 /** Org scope: one row per issued invoice in the period, capped at `limit` (pass cap + 1). */
 export function invoiceDetailQuery(args: { orgId: string; limit: number } & PeriodDates): SQL {
   const mix = sql.join(
-    ['recurring', 'labor', 'product', 'ai', 'other'].map(
+    CLIENT_PROFITABILITY_REVENUE_CATEGORIES.map(
       (c) => sql`COALESCE(SUM(l.line_total) FILTER (WHERE l.category = ${sql.raw(`'${c}'`)}), 0)::text AS ${sql.raw(`${c}_revenue`)}`,
     ),
     sql`,
