@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, numeric, char } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, numeric, char, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
@@ -272,7 +272,25 @@ export const tickets = pgTable('tickets', {
   // table. Partial index idx_tickets_migration_window (2026-12-25-120100) is
   // not modeled here, like the other partial indexes in this file.
   migrationWindowId: uuid('migration_window_id'),
+  // #8972 ticket merge (2027-01-03-130000): a merged source stays as a
+  // read-only tombstone pointing at its survivor, one hop (merge compresses
+  // paths, so the target is never itself merged). Composite same-org FK
+  // tickets_merged_into_org_fk below — DEFERRABLE INITIALLY IMMEDIATE in SQL
+  // (both org movers defer it), ON DELETE NO ACTION (a survivor cannot be
+  // hard-deleted alone). SQL-only CHECKs: tickets_merged_into_not_self_chk,
+  // tickets_merged_pair_chk ((merged_into_ticket_id IS NULL) = (merged_at IS NULL)).
+  mergedIntoTicketId: uuid('merged_into_ticket_id'),
+  mergedAt: timestamp('merged_at'),
+  // Null for a machine principal (AI on approval, Partner API); the audit row
+  // carries the full actor identity.
+  mergedByUserId: uuid('merged_by_user_id').references(() => users.id, { onDelete: 'set null' }),
 }, (table) => ({
+  mergedIntoOrgFk: foreignKey({
+    columns: [table.mergedIntoTicketId, table.orgId],
+    foreignColumns: [table.id, table.orgId],
+    name: 'tickets_merged_into_org_fk',
+  }),
+  mergedIntoIdx: index('tickets_merged_into_idx').on(table.mergedIntoTicketId).where(sql`merged_into_ticket_id IS NOT NULL`),
   // #8973 W3 SLA breach sweep (2027-01-02-190300, CONCURRENTLY). Predicates
   // must stay identical to the sweep in jobs/ticketSlaWorker.ts.
   slaResponseDueIdx: index('tickets_sla_response_due_idx').on(table.responseDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND first_response_at IS NULL AND response_due_at IS NOT NULL`),
@@ -369,6 +387,10 @@ export const ticketComments = pgTable('ticket_comments', {
   originalAuthorEmail: varchar('original_author_email', { length: 320 }),
   originalAuthorKind: text('original_author_kind').$type<'staff' | 'requester'>(),
   importSourceId: varchar('import_source_id', { length: 255 }),
+  // #8972 ticket merge (2027-01-03-130000): the ticket this comment was merged
+  // from, set only when null so a comment merged twice keeps its earliest
+  // origin. Plain FK, ON DELETE SET NULL.
+  mergedFromTicketId: uuid('merged_from_ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
 });
 
 export const assetCheckouts = pgTable('asset_checkouts', {

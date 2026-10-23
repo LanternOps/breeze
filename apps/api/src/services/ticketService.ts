@@ -3808,11 +3808,14 @@ export async function moveTicketOrg(
     // a link to or from this ticket is DELETED after the rewrite loop below
     // (TICKET_ORG_MOVE_DELETE_TABLES), so the ticket UPDATE must not check it
     // first; at COMMIT no such row remains.
+    // #8972 W1 adds tickets_merged_into_org_fk: a survivor and its merged
+    // tombstones are re-stamped one row at a time, so the self-FK is checked
+    // at COMMIT, when every one of them carries the target org.
     //
     // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
     // so it does not participate in the lock order this transaction documents.
     await tx.execute(
-      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk DEFERRED`
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_merged_into_org_fk DEFERRED`
     );
     // #7900 W02: the per-org ticket_links lock, SHARED, before any row lock —
     // so this move and a link add/remove of the same org never interleave
