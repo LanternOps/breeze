@@ -54,6 +54,8 @@ import {
   type TechnicianTimeSummary,
   type AiUsageByClientSummary,
   type ArAgingSummary,
+  type MrrRenewalsSummary,
+  type QuoteWinRateSummary,
   type ReportType as SharedReportType
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
@@ -471,6 +473,10 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
             | ArAgingSummary
             // #7608 W10 — AI usage by client.
             | AiUsageByClientSummary
+            // #9828 — MRR & renewals.
+            | MrrRenewalsSummary
+            // #9828 — quote win rate.
+            | QuoteWinRateSummary
             | undefined,
           // Drives the scorecard trend chip ("79, up from 74 last month")
           // when the stored run snapshot captured a prior baseline.

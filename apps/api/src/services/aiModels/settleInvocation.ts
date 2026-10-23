@@ -16,11 +16,12 @@ import {
   markCreditsDebited,
   recordCreditDebitFailure,
   recordCreditDebitRetry,
-  recordInvocationsWithRollups,
+  recordUnreservedInvocations,
   settleAiBudgetReservationDurably,
 } from '../aiBudgetReservations';
 import { checkCostAnomalies, debitBillingCredits } from '../aiCostTracker';
 import { captureException, captureMessage } from '../sentry';
+import { deliverCreditDebit, type CreditDebitOutcome } from '../aiCreditDebitOutbox';
 import { readConnectionOfferingRate } from './connectionOfferingRate';
 import type { BilledUsage, SdkUsageNote, SdkUsageSnapshot, SpeedServed, TurnOutcome } from './invocationUsage';
 import type { NewInvocation } from './invocationLedgerWrite';
@@ -515,7 +516,10 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     return { costCents, invocationIds: result.invocationIds, deferred: false };
   }
 
-  const invocationIds = await recordInvocationsWithRollups({
+  // #7717 item 2: the debit intent (platform spend only) commits with the
+  // ledger rows; delivery never throws, and a failure stays on the outbox row
+  // for the sweep (retryable) or an operator re-drive (terminal).
+  const { invocationIds, debit } = await recordUnreservedInvocations({
     orgId: input.orgId,
     invocations: rows,
     sessionId: input.sessionId,
@@ -524,9 +528,7 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     turnCount: input.turnCount ?? 1,
     ...(sdkUsage ? { sdkUsage } : {}),
   });
-  if (input.binding.funding === 'platform' && costCents > 0 && invocationIds[0]) {
-    await debitUnreservedCredits(input.orgId, costCents, invocationIds[0]);
-  }
+  if (debit) await deliverCreditDebit(debit);
   checkSpendThresholds(input.orgId, input.sessionId, costCents);
   return { costCents, invocationIds, deferred: false };
 }
@@ -542,7 +544,7 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
  * 409s a key reused with another amount). Never throws: the AI turn already
  * happened and settled.
  */
-export async function debitSettledCredits(input: { orgId: string; reservationId: string; costCents: number }): Promise<void> {
+export async function debitSettledCredits(input: { orgId: string; reservationId: string; costCents: number }): Promise<CreditDebitOutcome> {
   try {
     const result = await debitBillingCredits(input.orgId, input.costCents, {
       idempotencyKey: creditDebitIdempotencyKey(input.reservationId),
@@ -550,9 +552,9 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
     switch (result.kind) {
       case 'debited':
         await markCreditsDebited(input.reservationId);
-        return;
+        return 'debited';
       case 'not_configured':
-        return;
+        return 'not_configured';
       case 'rejected': {
         await recordCreditDebitFailure(input.reservationId, result.code);
         console.error('[AI] platform credit debit REJECTED; stamped failed for an operator', {
@@ -563,7 +565,7 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
             eventCode: 'ai_credit_debit_rejected', tags: billingTags(input.orgId, result.status),
           });
         }
-        return;
+        return 'rejected';
       }
       case 'retryable': {
         const { attempts, exhausted } = await recordCreditDebitRetry(input.reservationId, result.code);
@@ -577,7 +579,7 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
             });
           }
         }
-        return;
+        return exhausted ? 'retries_exhausted' : 'retry_scheduled';
       }
     }
   } catch (error) {
@@ -586,6 +588,7 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
       orgId: input.orgId, reservationId: input.reservationId, error: message,
     });
     captureException(new Error(`AI credit debit bookkeeping failed: ${message}`));
+    return 'bookkeeping_failed';
   }
 }
 
@@ -609,34 +612,4 @@ function reportUnrecordedSettlement(input: SettleInvocationInput, costCents: num
     level: 'error',
     tags: { org_id: input.orgId, ...(input.reservationId ? { ai_reservation_id: input.reservationId } : {}) },
   });
-}
-
-/**
- * A platform debit with no reservation to stamp. Keyed by the call's first
- * ledger row, so a repeat of THIS call cannot double-charge, but there is no
- * durable retry: a failure is logged and reported for reconciliation, carrying
- * that first ledger row id (review S4) — the operator re-sends the debit under
- * `ai-invocation:<id>` for the summed cost of the call's rows.
- */
-async function debitUnreservedCredits(orgId: string, costCents: number, firstInvocationId: string): Promise<void> {
-  const idempotencyKey = `ai-invocation:${firstInvocationId}`;
-  try {
-    const result = await debitBillingCredits(orgId, costCents, { idempotencyKey });
-    if (result.kind === 'debited' || result.kind === 'not_configured') return;
-    console.error('[AI] unreserved platform credit debit did not land', {
-      orgId, costCents, code: result.code, kind: result.kind, invocationId: firstInvocationId,
-    });
-    if (shouldReport('ai_credit_debit_rejected', orgId)) {
-      captureMessage('AI platform credit debit (no reservation) did not land', {
-        eventCode: 'ai_credit_debit_rejected',
-        tags: { ...billingTags(orgId, result.status), ai_invocation_id: firstInvocationId },
-      });
-    }
-  } catch (error) {
-    const message = safeErrorMessage(error);
-    console.error('[AI] unreserved platform credit debit failed', { orgId, costCents, invocationId: firstInvocationId, error: message });
-    captureException(new Error(`AI credit debit failed: ${message}`), undefined, {
-      org_id: orgId, ai_invocation_id: firstInvocationId,
-    });
-  }
 }

@@ -5,6 +5,7 @@ import { db } from '../db';
 import { actionIntents, intentOutbox } from '../db/schema/actionIntents';
 import type { ActionIntentSource } from '../db/schema/actionIntents';
 import { approvalRequests } from '../db/schema/approvals';
+import { aiToolExecutions } from '../db/schema/ai';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
@@ -352,6 +353,18 @@ export async function reapStaleExecutingIntents(): Promise<number> {
       payload: { intentId: row.id, orgId: row.org_id },
     })),
   );
+  // B-W04 (#6158, D-B29): an MCP-origin release opened an `executing` Tier-3
+  // ledger row (ai_tool_executions.intent_id) before dispatch; the intent is
+  // now `failed: execution_lost`, so that row must not stay `executing`
+  // forever. Same transaction. Only MCP-origin releases set intent_id.
+  await db.execute(sql`
+    UPDATE ${aiToolExecutions}
+    SET status = 'failed',
+        error_message = 'execution_lost',
+        completed_at = now()
+    WHERE ${aiToolExecutions.status} = 'executing'
+      AND ${inArray(aiToolExecutions.intentId, rows.map((row) => row.id))}
+  `);
   for (const row of rows) {
     if (row.task_id) {
       await enqueueTaskOutbox(db, {

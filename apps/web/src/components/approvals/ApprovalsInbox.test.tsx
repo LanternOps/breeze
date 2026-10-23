@@ -298,6 +298,9 @@ describe('ApprovalsInbox', () => {
         'approve',
         undefined,
         'four_eyes',
+        // The inbox shows its own "Approved {action} for {org}" toast, so the
+        // helper's generic one must be suppressed (#9658: two toasts per click).
+        { silentSuccess: true },
       ),
     );
   });
@@ -1754,6 +1757,106 @@ describe('ApprovalsInbox — #intent-<id> deep link (sweep G2-4)', () => {
 
     fireEvent.click(screen.getByTestId('approval-intent-gone-dismiss'));
     expect(screen.queryByTestId('approval-intent-gone-notice')).not.toBeInTheDocument();
+  });
+
+  const statusFetch = (approvals: unknown[], status: { code: number; payload: unknown }) => {
+    fetchMock.mockImplementation((async (url: string) => {
+      if (typeof url === 'string' && url.includes('/action-intents/')) {
+        return response(status.payload, status.code < 300, status.code);
+      }
+      return response({ approvals, nextCursor: null });
+    }) as unknown as typeof fetchWithAuth);
+  };
+  const statusCalls = () =>
+    fetchMock.mock.calls.filter(([url]) => String(url).includes('/action-intents/'));
+
+  it('shows a read-only status card from GET /status when the hashed intent is not in the loaded rows', async () => {
+    const intentId = '77777777-7777-4777-8777-777777777777';
+    statusFetch([pendingApproval], {
+      code: 200,
+      payload: {
+        id: intentId,
+        status: 'pending_approval',
+        actionLabel: 'manage_patches',
+        targetSummary: 'Install patches',
+        approvalScope: 'four_eyes',
+        requestingClientLabel: 'MCP · Claude Code',
+        expiresAt: '2026-10-23T00:00:00.000Z',
+        createdAt: '2026-10-22T00:00:00.000Z',
+      },
+    });
+    window.location.hash = `#intent-${intentId}`;
+
+    render(<ApprovalsInbox />);
+    const card = await screen.findByTestId('approval-intent-status-card');
+
+    expect(String(statusCalls()[0]?.[0])).toBe(`/action-intents/${intentId}/status`);
+    expect(card).toHaveTextContent('Pending approval');
+    expect(card).toHaveTextContent('manage_patches');
+    expect(card).toHaveTextContent('MCP · Claude Code');
+    expect(card).toHaveTextContent('Waiting for approvers');
+    expect(screen.queryByTestId('approval-intent-gone-notice')).not.toBeInTheDocument();
+  });
+
+  it('does not show the waiting line for a terminal status', async () => {
+    const intentId = '77777777-7777-4777-8777-777777777778';
+    statusFetch([pendingApproval], {
+      code: 200,
+      payload: {
+        id: intentId, status: 'completed', actionLabel: 'manage_patches', targetSummary: null,
+        approvalScope: 'supervised', requestingClientLabel: null,
+        expiresAt: '2026-10-23T00:00:00.000Z', createdAt: '2026-10-22T00:00:00.000Z',
+      },
+    });
+    window.location.hash = `#intent-${intentId}`;
+    render(<ApprovalsInbox />);
+    const card = await screen.findByTestId('approval-intent-status-card');
+    expect(card).toHaveTextContent('Completed');
+    expect(card).not.toHaveTextContent('Waiting for approvers');
+  });
+
+  it('keeps the gone notice on a 404 from GET /status, with no error toast', async () => {
+    const intentId = '88888888-8888-4888-8888-888888888888';
+    statusFetch([pendingApproval], { code: 404, payload: { error: 'not_found' } });
+    window.location.hash = `#intent-${intentId}`;
+
+    render(<ApprovalsInbox />);
+    expect(await screen.findByTestId('approval-intent-gone-notice')).toBeInTheDocument();
+    expect(screen.queryByTestId('approval-intent-status-card')).not.toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch the status when the hash matches a loaded row', async () => {
+    const intentId = '99999999-9999-4999-8999-999999999999';
+    statusFetch([{ ...pendingApproval, id: 'approval-1', intentId }], { code: 404, payload: {} });
+    window.location.hash = `#intent-${intentId}`;
+
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+    expect(statusCalls()).toHaveLength(0);
+    expect(screen.queryByTestId('approval-intent-status-card')).not.toBeInTheDocument();
+  });
+
+  it('re-resolves when the hash changes after the list has loaded', async () => {
+    const first = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const second = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    statusFetch([{ ...pendingApproval, id: 'approval-1', intentId: first }], {
+      code: 200,
+      payload: {
+        id: second, status: 'failed', actionLabel: 'x', targetSummary: null, approvalScope: 'supervised',
+        requestingClientLabel: null, expiresAt: '2026-10-23T00:00:00.000Z', createdAt: '2026-10-22T00:00:00.000Z',
+      },
+    });
+    window.location.hash = `#intent-${first}`;
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+    expect(statusCalls()).toHaveLength(0);
+
+    window.location.hash = `#intent-${second}`;
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    const card = await screen.findByTestId('approval-intent-status-card');
+    expect(card).toHaveTextContent('Failed');
+    expect(String(statusCalls()[0]?.[0])).toBe(`/action-intents/${second}/status`);
   });
 
   it('ignores a hash that does not name an intent', async () => {

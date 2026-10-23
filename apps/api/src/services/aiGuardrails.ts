@@ -3222,7 +3222,11 @@ export function buildApprovalDescription(
       break;
 
     case 'file_operations':
-      parts.push(`File ${action}: ${input.path}`);
+      // #9853: a permanent delete cannot be restored from the agent trash; the
+      // approver must see that before approving.
+      parts.push(action === 'delete' && input.permanent === true
+        ? `File delete (permanent, cannot be restored): ${input.path}`
+        : `File ${action}: ${input.path}`);
       break;
 
     case 'diagnose_connectivity':

@@ -287,6 +287,32 @@ describe('OrgDevicesTab', () => {
     expect(navigateTo).toHaveBeenCalledWith('/devices#add-device');
   });
 
+  it('resolves site names past the first 100 sites (no "Unknown Site"), through orgFetch (#9791)', async () => {
+    const mkSites = (from: number, to: number) =>
+      Array.from({ length: to - from }, (_, i) => ({ id: `site-${from + i + 1}`, name: `Site ${from + i + 1}` }));
+    const device150 = { ...DEVICE, siteId: 'site-150' };
+    const { orgFetch, calls } = makeRecordingOrgFetch({
+      '/devices': () => jsonResponse({ data: [device150] }),
+    });
+    // Page-aware stub layered over the recording fetch: 150 sites, 100 per page.
+    const paged = (async (path: string, init?: unknown) => {
+      if (path.startsWith('/orgs/sites')) {
+        calls.push(path);
+        const page = Number(new URL(path, 'http://x').searchParams.get('page') ?? '1');
+        const rows = page === 1 ? mkSites(0, 100) : mkSites(100, 150);
+        return jsonResponse({ data: rows, pagination: { page, limit: 100, total: 150 } });
+      }
+      return (orgFetch as unknown as (p: string, i?: unknown) => Promise<Response>)(path, init);
+    }) as unknown as OrgFetch;
+
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={paged} />);
+
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('Site 150').length).toBeGreaterThan(0));
+    expect(screen.queryByText('Unknown Site')).toBeNull();
+    expect(calls.filter((c) => c.startsWith('/orgs/sites')).length).toBe(2);
+  });
+
   it('shows no cap notice when the whole org fit in one request', async () => {
     const { orgFetch } = makeRecordingOrgFetch({
       '/devices': () => jsonResponse({ data: [DEVICE], pagination: { nextCursor: null, limit: ORG_DEVICES_LIMIT } }),

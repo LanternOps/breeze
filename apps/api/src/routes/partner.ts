@@ -5,7 +5,7 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, devices, partners, partnerUsers } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
-import { summarizeActiveContractMrrByOrg } from '../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../services/contractMrr';
 import { getEmailService } from '../services/email';
 
 import { notHiddenOrgType } from '../services/unassignedPool/visibility';

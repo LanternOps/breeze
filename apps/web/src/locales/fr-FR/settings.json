@@ -700,7 +700,13 @@
         "quality": "Qualité"
       },
       "failovers": "Basculements",
-      "failoversHelp": "Appels traités par un modèle de secours parce que le modèle configuré a échoué ou était indisponible"
+      "failoversHelp": "Appels traités par un modèle de secours parce que le modèle configuré a échoué ou était indisponible",
+      "titleBy": {
+        "model": "Utilisation de l'IA par modèle",
+        "organization": "Utilisation de l'IA par organisation",
+        "technician": "Utilisation de l'IA par technicien",
+        "feature": "Utilisation de l'IA par fonctionnalité"
+      }
     },
     "link": {
       "summary": "Modèle : {{model}} — défini sous Fournisseurs et modèles d'IA → Valeurs par défaut par fonctionnalité",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "par exemple dimanche 02h00-06h00, 02h00-04h00, ou 24h/24",
     "maintenanceInvalid": "Utilisez une fenêtre UTC comme <first>Dim 02:00-04:00</first> ou <second>02:00-04:00</second>, ou <always>24/7</always> pour l’all-on. Laisse vide pour que les organisations le configurent.",
     "maintenanceHelp": "Fenêtre temporelle (UTC) pour les mises à jour et redémarrages automatiques. Utilisez <always>24/7</always> pour le mode toujours activé, ou laissez vide pour que les organisations le configurent individuellement.",
-    "deviceGroup": "Groupe de périphériques par défaut",
-    "alertThreshold": "Seuil d’alerte par défaut",
     "autoEnrollment": {
       "title": "Inscription automatique",
       "enable": "Activez l’inscription automatique pour les nouveaux appareils",
-      "requireApproval": "Exigez l’approbation de l’administrateur",
-      "sendWelcome": "Envoyer une notification de bienvenue"
+      "requireApproval": "Exigez l’approbation de l’administrateur"
     },
     "enrollment": {
       "title": "Inscription des appareils",
@@ -1030,8 +1033,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Entreprise",
+      "devices": "Appareils et agents",
       "security": "Sécurité et accès",
       "communications": "Communications",
+      "ai": "IA",
       "branding": "Image de marque"
     },
     "aiFeatures": {
@@ -1060,11 +1065,11 @@
       },
       "company": {
         "label": "Entreprise",
-        "description": "Nom, adresse, contacts"
+        "description": "Nom, adresse, contacts, signature d’e-mail"
       },
       "regional": {
         "label": "Régional",
-        "description": "Fuseau horaire, formats, horaires"
+        "description": "Fuseau horaire, langue, formats, horaires"
       },
       "defaults": {
         "label": "Défauts",
@@ -1072,7 +1077,7 @@
       },
       "security": {
         "label": "Sécurité",
-        "description": "IP liste des permis et accès"
+        "description": "Mots de passe, sessions, MFA et liste d’IP autorisées"
       },
       "remoteAccess": {
         "label": "Accès à distance",
@@ -1080,11 +1085,11 @@
       },
       "eventLogs": {
         "label": "Journaux d’événements",
-        "description": "Transfert et conservation"
+        "description": "Transférer les journaux d’événements des appareils vers Elasticsearch"
       },
       "notifications": {
         "label": "Notifications",
-        "description": "Alertes email et webhooks"
+        "description": "Adresse d’expédition, SMTP et valeurs par défaut de Slack et Pushover"
       },
       "ticketing": {
         "label": "Ticketterie",
@@ -1109,7 +1114,7 @@
       },
       "aiFeatures": {
         "label": "Fonctionnalités IA",
-        "description": "Valeurs par défaut de la détection d'anomalies et des solutions proposées"
+        "description": "Politique de données IA, détection d’anomalies et solutions proposées"
       },
       "branding": {
         "label": "Image de marque",
@@ -1126,6 +1131,14 @@
       "aiApprovals": {
         "label": "Délai d'approbation IA",
         "description": "Durée d'attente du chat IA pour l'approbation d'une action contrôlée"
+      },
+      "callerVerification": {
+        "label": "Vérification de l’appelant",
+        "description": "Contrôle d’identité des appelants pour les demandes d’assistance"
+      },
+      "knownGuests": {
+        "label": "Invités connus",
+        "description": "Appareils approuvés de visiteurs et de techniciens, par adresse MAC"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -1409,7 +1422,10 @@
     "retrySites": "Réessayer",
     "createASite": "Créer un site",
     "maxUsage": "Utilisation maximale (optionnelle)",
-    "defaultDeviceLimit": "50 (par défaut)",
+    "defaultDeviceLimit": "{{count}} (valeur par défaut de l’organisation)",
+    "expiresAtHelp": "Laissez vide pour {{duration}} (valeur par défaut de l’organisation).",
+    "usageFromDefault": "par défaut",
+    "usageFromDefaultTitle": "La limite d’appareils provient de la valeur par défaut de l’organisation.",
     "maxUsageHelp": "Nombre maximal d’agents pouvant s’inscrire avec cette clé.",
     "expiresAt": "Expire à (optionnel)",
     "creating": "Création…",
@@ -1800,27 +1816,13 @@
     "deviceGroup": {
       "title": "Groupe de périphériques par défaut",
       "description": "Les nouveaux appareils inscrits sont automatiquement ajoutés à ce groupe.",
-      "options": {
-        "AllManagedDevices": "Tous les appareils gérés",
-        "CriticalInfrastructure": "Infrastructures critiques",
-        "RemoteStaff": "Personnel à distance",
-        "Contractors": "Entrepreneurs"
-      }
-    },
-    "alertSeverity": {
-      "title": "Sévérité par défaut de l’alerte",
-      "description": "Les alertes inférieures à cette gravité sont transmises uniquement dans le flux résumé.",
-      "options": {
-        "critical": "Critique uniquement",
-        "high": "Haut et critique",
-        "medium": "Moyen et au-dessus"
-      }
+      "none": "Aucun",
+      "unavailable": "Groupe sélectionné (indisponible)"
     },
     "autoEnrollment": {
       "title": "Inscription automatique",
       "enable": "Activer l’inscription automatique",
-      "requireApproval": "Exigez l’approbation de l’administrateur",
-      "sendWelcome": "Envoyer un message de bienvenue"
+      "requireApproval": "Exigez l’approbation de l’administrateur"
     },
     "agentUpdates": {
       "title": "Politique de mise à jour des agents",
@@ -1871,7 +1873,7 @@
     "disabledDescription": "Activez le transfert de journal ci-dessus pour configurer les paramètres de connexion.",
     "enable": {
       "title": "Activer le transfert de journaux",
-      "description": "Une fois activés, les journaux d’événements sont transférés vers votre magasin de journaux selon un calendrier récurrent."
+      "description": "Une fois activés, les journaux d’événements sont transférés vers votre magasin de journaux au fur et à mesure que chaque appareil les signale."
     },
     "connection": {
       "title": "Connexion",
@@ -1960,6 +1962,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vue client",
+      "subtitle": "Aperçu : ce que voit {{who}}",
+      "whoOrganization": "votre client",
+      "pickerLabel": "Afficher en tant que",
+      "pickerAll": "Toute l’organisation",
+      "loading": "Chargement de l’aperçu…",
+      "loadFailed": "Impossible de charger la vue client.",
+      "on": "Activé",
+      "off": "Désactivé",
+      "notAvailable": "Un aperçu détaillé de cette section n’est pas encore disponible.",
+      "permissionWithheld": "Non affiché : vous avez besoin de {{permissions}} pour prévisualiser ceci.",
+      "tilesWithheld": "Certaines tuiles ne sont pas affichées : vous avez besoin de {{permissions}} pour les prévisualiser.",
+      "noteNoUser": "Les données liées aux tickets sont masquées. Choisissez un utilisateur du portail pour voir ce que cette personne voit.",
+      "readinessTitle": "Vérifications de préparation",
+      "readinessNone": "Aucun problème détecté.",
+      "fix": "Corriger",
+      "readiness": {
+        "documents_empty": "Documents est activé, mais aucun document n’est marqué Visible dans le portail : votre client voit une bibliothèque vide.",
+        "reports_empty": "Rapports est activé, mais il n’y a pas encore d’exécution de rapport : votre client voit une liste vide.",
+        "service_one_time_visible": "Service est activé et les éléments ponctuels sont toujours visibles pour votre client.",
+        "backups_no_data": "Sauvegardes est activé, mais il n’y a pas encore de données de sauvegarde à afficher.",
+        "dashboard_security_no_data": "Tableau de bord est activé, mais le score de sécurité n’a pas encore de données : cette tuile est vide pour votre client.",
+        "branding_unset": "L’image de marque du portail n’a jamais été définie (logo, couleurs, message d’accueil ou contact du support)."
+      }
+    },
     "loading": "Paramètres de chargement du portail...",
     "save": "Paramètres du portail d’enregistrement",
     "toasts": {
@@ -2451,7 +2479,11 @@
     "sourceDefault": "Par défaut",
     "selectOrgForEffectiveBudget": "Sélectionnez une organisation pour voir son budget en vigueur, ou modifiez les valeurs par défaut à l’échelle du partenaire.",
     "editPartnerWideDefaults": "Modifier les valeurs par défaut à l’échelle du partenaire",
-    "thresholdsOff": "Désactivé"
+    "thresholdsOff": "Désactivé",
+    "todaysCost": "Coût du jour",
+    "monthlyCost": "Coût mensuel",
+    "messagesToday": "Messages du jour",
+    "tokensThisMonth": "Jetons du mois"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4718,6 +4750,7 @@
     "actions": "Actions",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Aucun rôle trouvé. Essayez d’ajuster votre recherche ou vos filtres.",
     "cloneRole": "Rôle du clone : {{name}}",
+    "cloneDescription": "Copie de {{name}}",
     "clone": "Cloner",
     "edit": "Modifier",
     "delete": "Supprimer",

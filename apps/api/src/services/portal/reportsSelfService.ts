@@ -457,6 +457,8 @@ function toDto(row: {
   startedAt: Date | null;
   completedAt: Date | null;
   rowCount: number | null;
+  // Mirrors renderRunCsv's gate: CSV renders only from an array `rows`.
+  csvAvailable?: boolean;
   createdAt: Date;
 }): PortalRunDto {
   return {
@@ -468,6 +470,7 @@ function toDto(row: {
     startedAt: row.startedAt?.toISOString() ?? null,
     completedAt: row.completedAt?.toISOString() ?? null,
     rowCount: row.rowCount,
+    csvAvailable: row.csvAvailable === true,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -532,6 +535,8 @@ export async function listPortalRuns(
     startedAt: reportRuns.startedAt,
     completedAt: reportRuns.completedAt,
     rowCount: reportRuns.rowCount,
+    // Computed in SQL so the (large) result blob is not shipped to list runs.
+    csvAvailable: sql<boolean>`coalesce(jsonb_typeof(${reportRuns.result} -> 'rows') = 'array', false)`,
     createdAt: reportRuns.createdAt,
   }).from(reportRuns)
     .innerJoin(reports, eq(reportRuns.reportId, reports.id))
@@ -651,6 +656,7 @@ export async function generatePortalReport(args: {
 
       return toDto({
         ...completed!,
+        csvAvailable: Array.isArray(result.rows),
         name: definition.name,
         type: definition.type as PortalReportType,
       });

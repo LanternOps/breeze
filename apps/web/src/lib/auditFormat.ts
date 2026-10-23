@@ -71,6 +71,10 @@ const ACTION_DISPLAY: Record<string, string> = {
   'device.delete': 'Removed device',
   'device.archive': 'Archived device',
 
+  // Recovery keys
+  'device.recovery_key.reveal': 'Revealed a recovery key',
+  'device.recovery_key.rotate': 'Rotated a recovery key',
+
   // Orgs/sites
   'organization.create': 'Created organization',
   'organization.update': 'Updated organization',
@@ -78,6 +82,9 @@ const ACTION_DISPLAY: Record<string, string> = {
   'site.create': 'Created site',
   'site.update': 'Updated site',
   'site.delete': 'Deleted site',
+
+  // Scripts run on a device (#9672)
+  'script.execute': 'Ran script on device',
 
   // Alerts
   'alert.create': 'Raised alert',
@@ -402,4 +409,27 @@ export function formatAuditDetails(details: unknown): string {
       return `${label}: ${rendered}`;
     })
     .join(', ');
+}
+
+/**
+ * Action-code prefixes for the Audit Trail's Action filter (#9672), derived from
+ * the catalog so the options are real dotted-code families (`script`, `device`,
+ * `agent.command`, ...) rather than bare verbs. The API matches each as a code
+ * prefix (`script` -> `script.*`). `api.*` catch-all rows are skipped: they are
+ * HTTP-verb templates, not a family anyone filters by.
+ */
+export function auditActionFilterOptions(): string[] {
+  const prefixes = new Set<string>();
+  for (const code of Object.keys(ACTION_DISPLAY)) {
+    if (!code.includes('.')) continue;
+    const first = code.split('.')[0];
+    if (first === 'api') continue;
+    prefixes.add(code.startsWith('agent.command.') ? 'agent.command' : first);
+  }
+  return [...prefixes].sort();
+}
+
+/** Human label for an action prefix / resource type option ("agent.command" -> "Agent command"). */
+export function auditPrefixLabel(prefix: string): string {
+  return prettify(prefix);
 }

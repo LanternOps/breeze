@@ -299,6 +299,25 @@ After all retries are exhausted, the delivery job is moved to a dead letter queu
 
 ---
 
+## Bearer Token Authentication
+
+If your endpoint expects a static token rather than a signature, authenticate with a bearer token instead of a signing secret. In the dashboard, choose **Bearer token** under **Authentication**. Through the API, send the token as an `Authorization` custom header and omit `secret`:
+
+```json
+{
+  "name": "Ticketing intake",
+  "url": "https://intake.example.com/breeze",
+  "events": ["ticket.created"],
+  "headers": [
+    { "key": "Authorization", "value": "Bearer your_token" }
+  ]
+}
+```
+
+The token is stored encrypted with the other custom headers and is never returned: GET responses show the header with a redacted value and report `"authType": "bearer"` (`"hmac"` for a signing secret, `"none"` for neither). A webhook needs either a `secret` or an `Authorization: Bearer <token>` header; other `Authorization` schemes (such as `Basic`) can be added as custom headers alongside a signing secret. To switch an existing webhook from HMAC to bearer, send `"secret": null` together with the `Authorization` header in the same `PATCH`. To keep a stored token while you edit other headers, send its value back as `********`.
+
+---
+
 ## Signature Verification
 
 When a webhook has a signing secret, every delivery includes an HMAC-SHA256 signature in the `X-Breeze-Signature` header. Use this to verify that the payload was sent by Breeze and has not been tampered with.

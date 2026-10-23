@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { getErrorMessage } from '@/lib/errorMessages';
 import { cn } from '@/lib/utils';
 import SegmentedBar from './SegmentedBar';
+import { DashboardMetric } from './DashboardMetric';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { PatchCompliance } from './types';
 
@@ -32,9 +33,9 @@ export default function PatchComplianceCard({
   if (patch.error && !patch.data) {
     return (
       <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-patch-compliance-card">
-        <a href="/patches" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="patch.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.patch.title')}
-        </a>
+        </DashboardMetric>
         <p className="mt-3 text-xs text-muted-foreground">{getErrorMessage(patch.error)}</p>
       </div>
     );
@@ -49,9 +50,9 @@ export default function PatchComplianceCard({
   return (
     <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-patch-compliance-card">
       <div className="mb-3 flex items-center justify-between">
-        <a href="/patches" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="patch.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.patch.title')}
-        </a>
+        </DashboardMetric>
       </div>
 
       {!hasAnyPatchData ? (
@@ -59,17 +60,23 @@ export default function PatchComplianceCard({
       ) : (
         <>
           <div className="flex items-baseline gap-1.5">
-            <span className="text-3xl font-semibold tracking-tight">{Math.round(data.compliancePercent)}%</span>
+            <DashboardMetric metric="patch.headline" className="text-3xl font-semibold tracking-tight">
+              {Math.round(data.compliancePercent)}%
+            </DashboardMetric>
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {t('dashboard.patch.devicesCompliant', {
-              compliant: data.compliantDevices,
-              total: data.totalDevices,
-            })}
+            <DashboardMetric metric="patch.devicesCompliant">
+              {t('dashboard.patch.devicesCompliant', {
+                compliant: data.compliantDevices,
+                total: data.totalDevices,
+              })}
+            </DashboardMetric>
           </p>
           {(data.containerImages?.unknown ?? 0) > 0 && (
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {t('dashboard.patch.imagesNotChecked', { count: data.containerImages!.unknown })}
+              <DashboardMetric metric="patch.imagesNotChecked">
+                {t('dashboard.patch.imagesNotChecked', { count: data.containerImages!.unknown })}
+              </DashboardMetric>
             </p>
           )}
 
@@ -77,16 +84,18 @@ export default function PatchComplianceCard({
             <SegmentedBar
               ariaLabel={t('dashboard.patch.title')}
               segments={[
-                { key: 'installed', label: t('dashboard.patch.installed'), count: installed, colorClass: 'bg-success' },
-                { key: 'pending', label: t('states.pending'), count: pending, colorClass: 'bg-chart-neutral' },
-                { key: 'failed', label: t('dashboard.patch.failed'), count: failed, colorClass: 'bg-destructive' },
+                { key: 'installed', metric: 'patch.installed', label: t('dashboard.patch.installed'), count: installed, colorClass: 'bg-success' },
+                { key: 'pending', metric: 'patch.pending', label: t('states.pending'), count: pending, colorClass: 'bg-chart-neutral' },
+                { key: 'failed', metric: 'patch.failed', label: t('dashboard.patch.failed'), count: failed, colorClass: 'bg-destructive' },
               ]}
             />
           </div>
 
           {data.criticalSummary.pending > 0 && (
             <p className="mt-3 border-t border-border/60 pt-3 text-xs font-medium text-destructive">
-              {t('dashboard.patch.criticalPending', { count: data.criticalSummary.pending })}
+              <DashboardMetric metric="patch.criticalPending">
+                {t('dashboard.patch.criticalPending', { count: data.criticalSummary.pending })}
+              </DashboardMetric>
             </p>
           )}
           {data.unratedSummary.pending > 0 && (
@@ -96,7 +105,9 @@ export default function PatchComplianceCard({
                 data.criticalSummary.pending > 0 ? 'mt-1' : 'mt-3 border-t border-border/60 pt-3'
               )}
             >
-              {t('dashboard.patch.unratedPending', { count: data.unratedSummary.pending })}
+              <DashboardMetric metric="patch.unratedPending">
+                {t('dashboard.patch.unratedPending', { count: data.unratedSummary.pending })}
+              </DashboardMetric>
             </p>
           )}
         </>

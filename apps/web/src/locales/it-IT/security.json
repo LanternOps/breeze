@@ -311,6 +311,8 @@
     "no": "No",
     "noDevicesFound": "Nessun dispositivo trovato.",
     "none": "Nessuno",
+    "unknown": "Sconosciuto",
+    "tpmNotReported": "Non segnalato dall'agente",
     "os": "OS",
     "pageOf": "Pagina {{page}} di {{totalPages}}",
     "partial": "Parziale",
@@ -423,6 +425,8 @@
     "osFilterLabel": "Sistema operativo"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Impossibile aggiornare la raccomandazione.",
+    "affectsOrgs": "Interessa {{count}} organizzazioni",
     "adminAccounts": "Account amministratori",
     "allCategories": "Tutte le categorie",
     "allPriorities": "Tutte le priorità",
@@ -431,18 +435,19 @@
     "completed": "Completato",
     "critical": "Critico",
     "criticalHigh": "Critico + Alto",
-    "devices": "Dispositivi:",
+    "devices": "Dispositivi: {{value}}",
     "dismiss": "Ignora",
     "dismissed": "Ignorato",
-    "effort": "Impegno:",
+    "effort": "Impegno: {{value}}",
     "encryption": "Crittografia",
     "firewall": "Firewall",
     "hideSteps": "Nascondi passaggi",
     "high": "Alto",
-    "impact": "Impatto:",
+    "impact": "Impatto: {{value}}",
     "invalidResponseFromServer": "Risposta del server non valida",
     "low": "Basso",
     "markComplete": "Segna come completato",
+    "reopen": "Riapri",
     "medium": "Medio",
     "next": "Avanti",
     "noRecommendationsMatchYourFilters": "Nessuna raccomandazione corrisponde ai filtri.",
@@ -457,10 +462,13 @@
     "vulnMgmt": "Gest. vuln.",
     "priorityFilterLabel": "Priorità",
     "categoryFilterLabel": "Categoria",
-    "statusFilterLabel": "Stato del suggerimento"
+    "statusFilterLabel": "Stato del suggerimento",
+    "remediationSteps_one": "{{count}} passaggio di correzione",
+    "remediationSteps_other": "{{count}} passaggi di correzione"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Verrà generata e depositata una nuova password di ripristino BitLocker; quella precedente verrà rimossa dopo l'attivazione della nuova chiave.",
+    "accessRevealed": "ha mostrato la chiave",
     "bitlocker": "BitLocker",
     "cancel": "Annulla",
     "collectNow": "Raccogli ora",
@@ -486,6 +494,7 @@
     "rotate": "Ruota",
     "rotateKey": "Ruota chiave",
     "rotateRecoveryKey": "Ruota chiave di ripristino",
+    "rotateVolume": "Volume da ruotare",
     "thisAccessHasBeenRecordedInThe": "Questo accesso è stato registrato nel registro di controllo."
   },
   "securityS1ThreatList": {
@@ -608,7 +617,10 @@
     "viewDetails": "Visualizza dettagli",
     "vulnerabilities": "Vulnerabilità",
     "weakAdmins": "Admin deboli",
-    "unknown": "Sconosciuto"
+    "unknown": "Sconosciuto",
+    "bitlockerPartial": "BitLocker parziale",
+    "filevaultPartial": "FileVault parziale",
+    "refreshTooltip": "Ricarica l'ultimo snapshot di sicurezza. I punteggi vengono ricalcolati a intervalli pianificati, non al clic."
   },
   "securitySecurityPageHeader": {
     "refresh": "Aggiorna",
@@ -681,12 +693,21 @@
     "noActiveScans": "Nessuna scansione attiva.",
     "noScanHistoryYet": "Nessuna cronologia scansioni ancora.",
     "quickScan": "Scansione rapida",
+    "scanClean": "Pulito",
     "scanHistory": "Cronologia scansioni",
     "scanHistoryPartiallyUnavailable": "Impossibile caricare la cronologia scansioni per {{failed}} di {{total}} dispositivi: l'elenco è incompleto.",
     "scanHistoryUnavailable": "Impossibile caricare la cronologia scansioni.",
+    "scanRequestFailed": "Richiesta di scansione non riuscita",
+    "scanThreatsFound_one": "{{count}} minaccia rilevata",
+    "scanThreatsFound_other": "{{count}} minacce rilevate",
+    "scanTimedOut": "Timeout",
+    "scanTimedOutWithCount": "Timeout ({{count}} rilevate)",
     "scanType": "Tipo di scansione",
     "scanTypeLabel": "Scansione {{type}}",
     "scansAreQueuedImmediatelyOnSelectedDevices": "Le scansioni vengono accodate immediatamente sui dispositivi selezionati.",
+    "scansQueuedCount": "{{count}} scansione in coda",
+    "scansQueuedCount_one": "{{count}} scansione in coda",
+    "scansQueuedCount_other": "{{count}} scansioni in coda",
     "securityScanManager": "Gestore scansioni di sicurezza",
     "singleSelect": "Selezione singola",
     "someScanRequestsFailed": "{{failed}} di {{total}} richieste di scansione sono fallite",
@@ -697,14 +718,10 @@
     "startedColumn": "Avviata",
     "status": "Stato: {{status}}",
     "status2": "Stato",
-    "type": "Tipo",
-    "scanRequestFailed": "Richiesta di scansione non riuscita",
-    "scansQueuedCount": "{{count}} scansione in coda",
-    "scansQueuedCount_one": "{{count}} scansione in coda",
-    "scansQueuedCount_other": "{{count}} scansioni in coda"
+    "type": "Tipo"
   },
   "securityThreatDetail": {
-    "analystReview": "Revisione analista",
+    "actionFailed": "Azione non riuscita",
     "detected": "Rilevata",
     "device": "Dispositivo",
     "deviceInfo": "Info dispositivo",
@@ -715,11 +732,14 @@
     "noThreatSelected": "Nessuna minaccia selezionata.",
     "otherDetectionsOnThisDevice": "Altri rilevamenti su questo dispositivo.",
     "provider": "Provider",
+    "providerUnknown": "Sconosciuto",
     "quarantine": "Quarantena",
+    "quarantineQueued": "Quarantena in coda. Il dispositivo riporterà l'esito.",
     "relatedThreats": "Minacce correlate",
     "remove": "Rimuovi",
+    "removeQueued": "Rimozione in coda. Il dispositivo riporterà l'esito.",
     "restore": "Ripristina",
-    "reviewRemediationCompletenessAndEndpointHealth": "Verifica completezza della remediation e salute dell'endpoint.",
+    "restoreQueued": "Ripristino in coda. Il dispositivo riporterà l'esito.",
     "severity": "Gravità",
     "status": "Stato",
     "threatDetail": "Dettaglio minaccia",
@@ -730,11 +750,7 @@
     "threatRemoved": "Minaccia rimossa",
     "threatStatus": "Stato minaccia",
     "threatWasMovedToQuarantineByPolicy": "La minaccia è stata spostata in quarantena da un criterio o da un operatore.",
-    "timeline": "Timeline",
-    "actionFailed": "Azione non riuscita",
-    "quarantineSucceeded": "Minaccia messa in quarantena",
-    "restoreSucceeded": "Minaccia ripristinata",
-    "removeSucceeded": "Minaccia rimossa"
+    "timeline": "Timeline"
   },
   "securityThreatList": {
     "active": "Attiva",
@@ -1329,17 +1345,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Inserisci almeno un ID dispositivo",
-      "createScan": "Impossibile creare la scansione"
+      "createScan": "Impossibile creare la scansione",
+      "devicesRequired": "Seleziona almeno un dispositivo",
+      "devicesNotReady": "L'elenco dei dispositivi è ancora in caricamento o incompleto. Attendi il completamento e riprova.",
+      "devicesLoadFailed": "Impossibile caricare l'elenco dei dispositivi. Usa Riprova nell'elenco dei dispositivi, poi riprova."
     },
     "title": "Crea scansione",
     "form": {
       "policyOptional": "Criterio (facoltativo)",
       "noPolicy": "Nessun criterio (configurazione manuale)",
-      "deviceIds": "ID dispositivi",
-      "deviceIdsHelp": "Un UUID per riga, oppure separati da virgole.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Classi di rilevamento"
+      "detectionClasses": "Classi di rilevamento",
+      "devices": "Dispositivi",
+      "devicesHelp": "Scegli i dispositivi da analizzare."
     },
     "actions": {
       "creating": "Creazione...",
@@ -1404,6 +1421,10 @@
       "showingSearch": "Visualizzati {{visible}} di {{pageCount}} in questa pagina ({{total}} totali)",
       "showingTotal": "Visualizzati {{visible}} di {{total}} rilevamenti",
       "pageOf": "Pagina {{page}} di {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Rischio accettato",
+      "markedFalsePositive": "Contrassegnato come falso positivo"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1442,14 +1463,18 @@
       "detectionClasses": "Classi di rilevamento",
       "scheduleType": "Tipo pianificazione",
       "intervalMinutes": "Intervallo (minuti)",
-      "cronExpression": "Espressione Cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Espressione cron (UTC)",
+      "cronNextRun": "Prossima esecuzione (ora locale): {{time}}",
+      "cronExpressionZone": "Espressione cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manuale",
       "interval": "Intervallo",
       "cron": "Cron",
-      "everyMinutes": "Ogni {{minutes}}m"
+      "everyMinutes": "Ogni {{minutes}}m",
+      "paused": "In pausa",
+      "pausedTitle": "La pianificazione è disattivata per questa policy, quindi non verrà eseguita automaticamente"
     },
     "table": {
       "name": "Nome",
@@ -1774,7 +1799,7 @@
     "unknown": "sconosciuto"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "Hardening CIS",
+    "title": "CIS Benchmarks",
     "description": "Baseline di configurazione, punteggio di conformità e monitoraggio della remediation.",
     "messages": {
       "loadFailed": "Impossibile caricare i dati CIS"
@@ -1867,6 +1892,11 @@
     "badges": {
       "allOrgs": "Tutte le org",
       "partnerWideTitle": "Baseline a livello di Partner: si applica ai dispositivi di ogni organizzazione"
+    },
+    "scanAll": {
+      "title": "Scansionare tutte le organizzazioni?",
+      "message": "«{{name}}» è una baseline a livello di partner. Senza un’organizzazione selezionata, scansiona tutte le {{orgCount}} organizzazioni. Seleziona prima un’organizzazione per scansionare solo i suoi dispositivi.",
+      "confirm": "Scansiona tutte"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1949,10 +1979,38 @@
       "status": "Stato",
       "approval": "Approvazione",
       "requested": "Richiesta",
-      "completed": "Completata"
+      "completed": "Completata",
+      "decision": "Decisione"
     },
     "loading": "Caricamento remediation...",
-    "empty": "Nessuna remediation trovata."
+    "empty": "Nessuna remediation trovata.",
+    "decision": {
+      "approve": "Approva",
+      "reject": "Rifiuta",
+      "approveTitle": "Approvare la correzione?",
+      "rejectTitle": "Rifiutare la correzione?",
+      "approveMessage": "Il controllo CIS {{checkId}} verrà messo in coda per l'esecuzione su {{device}}. L'agente modificherà la configurazione del dispositivo.",
+      "rejectMessage": "La correzione in attesa per il controllo CIS {{checkId}} su {{device}} verrà annullata. Sul dispositivo non verrà eseguito nulla.",
+      "noteLabel": "Nota (facoltativa)",
+      "approved": "Correzione per {{checkId}} approvata e messa in coda.",
+      "rejected": "Correzione per {{checkId}} rifiutata.",
+      "approveFailed": "Impossibile approvare la correzione",
+      "rejectFailed": "Impossibile rifiutare la correzione",
+      "queueFailed": "L'approvazione è stata registrata, ma non è stato possibile mettere in coda la correzione. È di nuovo in attesa di approvazione; riprova.",
+      "mfaRequired": "Per approvare o rifiutare una correzione serve una sessione avviata con l'autenticazione a più fattori. Esci e accedi di nuovo con l'MFA.",
+      "ownRequest": "Hai richiesto tu questa correzione, quindi deve approvarla un altro utente."
+    },
+    "detail": {
+      "toggle": "Mostra/nascondi dettagli",
+      "approvedBy": "Approvato da",
+      "approvedAt": "Approvato il",
+      "note": "Nota di approvazione",
+      "beforeState": "Prima",
+      "afterState": "Dopo",
+      "rollbackHint": "Suggerimento di rollback",
+      "noEvidence": "Nessuna evidenza registrata finora per questa remediation.",
+      "unknownApprover": "Utente sconosciuto"
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Baseline di audit",
@@ -2262,5 +2320,8 @@
       "awaitingEvaluation": "In attesa di valutazione",
       "vendorOrgMismatch": "Il fornitore segnala un'altra organizzazione"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Non hai accesso a questa organizzazione"
   }
 }

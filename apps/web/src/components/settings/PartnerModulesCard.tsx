@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Blocks, Network } from 'lucide-react';
+import { Network } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '@/stores/auth';
 import { handleActionError, runAction } from '@/lib/runAction';
@@ -221,11 +221,7 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
 
   return (
     <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="partner-modules-card">
-      <div className="mb-2 flex items-center gap-2">
-        <Blocks className="h-5 w-5 text-muted-foreground" />
-        <h2 className="text-lg font-semibold">{t('partnerSettingsPage.modules.title')}</h2>
-      </div>
-      <p className="mb-4 text-sm text-muted-foreground">{t('partnerSettingsPage.modules.description')}</p>
+      <p className="mb-4 max-w-prose text-sm text-muted-foreground">{t('partnerSettingsPage.modules.description')}</p>
 
       <div role="radiogroup" aria-label={t('partnerSettingsPage.modules.title')} className="space-y-3">
         {OFFERED_MODES.map((option) => (

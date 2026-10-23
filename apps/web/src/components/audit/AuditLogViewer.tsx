@@ -29,6 +29,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { actionBadgeClass } from './auditPresentation';
 
 /**
  * `/audit-logs` returns flat entries (string `resource`, JSON-string `details`).
@@ -58,15 +59,6 @@ type SortKey = 'timestamp' | 'user' | 'action' | 'resource' | 'details' | 'ipAdd
 type SortConfig = {
   key: SortKey;
   direction: 'asc' | 'desc';
-};
-
-const actionStyles: Record<string, string> = {
-  login: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-  update: 'bg-blue-100 text-blue-700 border-blue-200',
-  delete: 'bg-rose-100 text-rose-700 border-rose-200',
-  create: 'bg-indigo-100 text-indigo-700 border-indigo-200',
-  export: 'bg-amber-100 text-amber-700 border-amber-200',
-  access: 'bg-slate-100 text-slate-700 border-slate-200'
 };
 
 const getSortValue = (entry: AuditLogEntry, key: SortKey) => {
@@ -402,7 +394,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
             ) : (
               sortedEntries.map(entry => {
                 const isExpanded = expandedRows.has(entry.id);
-                const badgeClass = actionStyles[entry.action] ?? actionStyles.access;
+                const badgeClass = actionBadgeClass(entry.action);
                 return (
                   <Fragment key={entry.id}>
                     <tr className="hover:bg-muted/30">
@@ -410,6 +402,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
+                            data-testid="audit-row-toggle"
                             onClick={() => toggleExpanded(entry.id)}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-md border text-muted-foreground hover:text-foreground"
                           >
@@ -441,6 +434,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
                       </td>
                       <td className="px-4 py-4 text-sm">
                         <span
+                          data-testid="audit-action-badge"
                           className={cn(
                             'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium',
                             badgeClass
@@ -507,11 +501,14 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
                               <p className="text-xs font-semibold uppercase text-muted-foreground">
                                 {t('audit.auditLogViewer.expanded.changes')}
                               </p>
-                              <p className="mt-2 text-sm text-foreground">
-                                {t('audit.auditLogViewer.expanded.fieldsUpdated', {
-                                  count: Object.keys(entry.changes?.after || {}).length,
-                                })}
-                              </p>
+                              {/* #9672: only an update with a recorded before-state has a field count to report. */}
+                              {Object.keys(entry.changes?.before || {}).length > 0 && (
+                                <p className="mt-2 text-sm text-foreground">
+                                  {t('audit.auditLogViewer.expanded.fieldsUpdated', {
+                                    count: Object.keys(entry.changes?.after || {}).length,
+                                  })}
+                                </p>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => setSelectedEntry(entry)}

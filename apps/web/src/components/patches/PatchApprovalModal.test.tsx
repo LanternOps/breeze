@@ -319,22 +319,38 @@ describe('PatchApprovalModal', () => {
       await screen.findByTestId('confirm-fleet-action');
     };
 
-    it('ring selected: names the device count and the org', async () => {
+    it('ring selected: names the device count and the ring, not a single org (#9634)', async () => {
       render(
-        <PatchApprovalModal open patch={PATCH} ringId="ring-1" orgName="Acme" ringDeviceCount={5} onClose={() => {}} />
+        <PatchApprovalModal open patch={PATCH} ringId="ring-1" ringName="Pilot" ringDeviceCount={5} onClose={() => {}} />
       );
       await openConfirm();
-      expect(screen.getByText('Approve patch on 5 devices in Acme?')).toBeTruthy();
+      expect(screen.getByText('Approve patch on 5 devices across all organizations in ring Pilot?')).toBeTruthy();
+      expect(screen.queryByText(/Acme/)).toBeNull();
+    });
+
+    it('ring selected but ring name unknown: falls back to generic ring wording (#9634)', async () => {
+      render(
+        <PatchApprovalModal open patch={PATCH} ringId="ring-1" ringName={null} ringDeviceCount={5} onClose={() => {}} />
+      );
+      await openConfirm();
+      expect(screen.getByText('Approve patch on 5 devices across all organizations in ring (unnamed)?')).toBeTruthy();
+    });
+
+    it('ring selected, 1 device: singular wording (#9634)', async () => {
+      render(
+        <PatchApprovalModal open patch={PATCH} ringId="ring-1" ringName="Pilot" ringDeviceCount={1} onClose={() => {}} />
+      );
+      await openConfirm();
+      expect(screen.getByText('Approve patch on 1 device across all organizations in ring Pilot?')).toBeTruthy();
     });
 
     it('no ring: says partner-wide, with no "1 device" and no org name', async () => {
       render(
-        <PatchApprovalModal open patch={PATCH} ringId={null} orgName="Acme" ringDeviceCount={null} onClose={() => {}} />
+        <PatchApprovalModal open patch={PATCH} ringId={null} ringDeviceCount={null} onClose={() => {}} />
       );
       await openConfirm();
       expect(screen.getByText('Approve patch for all organizations under your partner?')).toBeTruthy();
       expect(screen.queryByText(/1 device/)).toBeNull();
-      expect(screen.queryByText(/Acme/)).toBeNull();
     });
   });
 });

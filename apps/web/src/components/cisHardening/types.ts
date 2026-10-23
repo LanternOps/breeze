@@ -36,6 +36,7 @@ export type ComplianceEntry = {
   device: {
     id: string;
     hostname: string;
+    displayName?: string | null;
     osType: string;
     status: string;
   };

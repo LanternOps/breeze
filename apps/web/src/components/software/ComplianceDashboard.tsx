@@ -936,9 +936,11 @@ export default function ComplianceDashboard({
                 </p>
               </div>
               <div className="text-xs text-muted-foreground">
-                {i18n.t("policies:software.complianceDashboard.remediation")}
-                {row.compliance.remediationStatus ??
-                  i18n.t("policies:software.complianceDashboard.none")}
+                {i18n.t("policies:software.complianceDashboard.remediation", {
+                  value:
+                    row.compliance.remediationStatus ??
+                    i18n.t("policies:software.complianceDashboard.none"),
+                })}
               </div>
               {row.compliance.installRemediationStatus &&
                 row.compliance.installRemediationStatus !== "none" && (
@@ -991,8 +993,9 @@ export default function ComplianceDashboard({
                   </div>
                 )}
               <div className="text-xs text-muted-foreground">
-                {i18n.t("policies:software.complianceDashboard.checked")}
-                {formatDateTime(row.compliance.lastChecked)}
+                {i18n.t("policies:software.complianceDashboard.checked", {
+                  date: formatDateTime(row.compliance.lastChecked),
+                })}
               </div>
             </div>
           ))}

@@ -167,11 +167,9 @@ type OrgDetails = {
     defaults?: {
       policyDefaults?: Record<string, string>;
       deviceGroup?: string;
-      alertThreshold?: string;
       autoEnrollment?: {
         enabled: boolean;
         requireApproval: boolean;
-        sendWelcome: boolean;
       };
       agentUpdatePolicy?: string;
       maintenanceWindow?: string;
@@ -916,6 +914,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             </section>
             <OrgDefaultsEditor
               organizationName={displayOrg.name}
+              organizationId={effectiveOrgId ?? undefined}
               defaults={orgDetails?.settings?.defaults}
               onDirty={handleDirty}
               // The editor now emits the shared `InheritableDefaultSettings`

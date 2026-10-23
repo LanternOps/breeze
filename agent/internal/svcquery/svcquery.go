@@ -6,7 +6,8 @@ import "errors"
 // does not exist (by key name or display name). Any other Windows GetStatus
 // error means the service could not be inspected (e.g. access denied), not
 // that it is absent; callers must not report those as "not found" (#7967).
-// The darwin and stub implementations do not wrap it yet.
+// The darwin GetStatus wraps it for a label that is neither loaded nor
+// installed as a plist (#6958); the stub implementation never does.
 var ErrServiceNotFound = errors.New("service not found")
 
 // ServiceStatus represents the status of a system service.

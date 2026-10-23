@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { CheckCircle, Settings2, HardDriveDownload } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
@@ -43,6 +43,14 @@ const BULK_PAST_TENSE_KEY: Record<string, string> = {
 // hash-state consumer on this page would need to combine into one segment.
 function hideAiNoiseFromHash(hash: string): boolean | undefined {
   return hash === 'hideAiNoise' ? true : undefined;
+}
+
+// `#<alertId>` deep-links straight to that alert's drawer (the Ticket
+// workbench's "Linked alerts" entries use it, #9625). The page owns the whole
+// hash, so the id form and `hideAiNoise` are mutually exclusive tokens.
+const ALERT_ID_HASH = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function alertIdFromHash(hash: string): string | null {
+  return ALERT_ID_HASH.test(hash) ? hash : null;
 }
 
 function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: string): Alert[] {
@@ -117,6 +125,9 @@ export default function AlertsPage() {
   // hashchange subscription live in the hook (#2421); the write happens in
   // handleHideAiNoiseChange below, per CLAUDE.md's URL-state rule.
   const [hideAiNoise, setHideAiNoiseState] = useHashState<boolean>(false, hideAiNoiseFromHash);
+  const [hashAlertId] = useHashState<string | null>(null, alertIdFromHash);
+  // Last hash id already opened, so closing the drawer doesn't re-open it.
+  const openedHashAlertRef = useRef<string | null>(null);
 
   // Honor the global Current/All-orgs scope toggle: when it flips (or the
   // current org changes), re-run the fetches so the list reflects the new
@@ -156,10 +167,13 @@ export default function AlertsPage() {
   // and mis-drive the empty state).
   const alertsFetchId = useRef(0);
 
-  const fetchAlerts = useCallback(async () => {
+  // `background` refetches (after an acknowledge/resolve/bulk action) leave
+  // `loading` alone so the list and any open drawer stay mounted (#9625);
+  // only first loads and scope changes show the full-page spinner.
+  const fetchAlerts = useCallback(async (opts?: { background?: boolean }) => {
     const fetchId = ++alertsFetchId.current;
     try {
-      setLoading(true);
+      if (!opts?.background) setLoading(true);
       setError(undefined);
       // Ask for every status BY NAME: the API's default (no status param) hides
       // dismissed alerts, but this page's status dropdown includes a "Dismissed"
@@ -190,6 +204,7 @@ export default function AlertsPage() {
       setAlerts(normalizeAlertRows(raw, stableT('alertsPage.unknownDevice')));
     } catch (err) {
       if (fetchId !== alertsFetchId.current) return;
+      console.error('Failed to fetch alerts:', err);
       setError(err instanceof Error ? err.message : stableT('alertsPage.genericError'));
     } finally {
       if (fetchId === alertsFetchId.current) setLoading(false);
@@ -246,7 +261,7 @@ export default function AlertsPage() {
     // resolving (#4147/sweep A3) — firing now would go out unscoped, then
     // fire again the instant currentOrgId lands.
     if (orgScopeResolving || orgIdParamPending) return;
-    fetchAlerts();
+    void fetchAlerts();
   }, [fetchAlerts, orgScopeResolving, orgIdParamPending]);
 
   const { ids: deviceFilterIds, loading: deviceFilterLoading, state: deviceFilterState, refetch: retryDeviceFilter } = useAdvancedFilterIds(deviceFilter, `${currentOrgId}:${allOrgs}`);
@@ -284,6 +299,12 @@ export default function AlertsPage() {
   };
 
   const handleCloseDetail = () => {
+    if (alertIdFromHash(window.location.hash.replace(/^#/, ''))) {
+      // Assigning (not replaceState) fires `hashchange`, so useHashState drops
+      // hashAlertId and following the same link again re-opens the drawer.
+      openedHashAlertRef.current = null;
+      window.location.hash = '';
+    }
     activeDetailIdRef.current = null;
     setDetailOpen(false);
     setSelectedAlert(null);
@@ -292,9 +313,23 @@ export default function AlertsPage() {
     setSelectedAlertTicketsFailed(false);
   };
 
+  // `/alerts#<alertId>` → open that alert's drawer once the list has loaded.
+  // An id that isn't in the list (other org, already purged) just leaves the
+  // page on the plain list.
+  useEffect(() => {
+    if (!hashAlertId || loading || openedHashAlertRef.current === hashAlertId) return;
+    const target = alerts.find((a) => a.id === hashAlertId);
+    if (!target) return;
+    openedHashAlertRef.current = hashAlertId;
+    void handleSelect(target);
+    // handleSelect is recreated every render; the ref guard makes this one-shot per id.
+  }, [hashAlertId, alerts, loading]);
+
   const patchAlert = useCallback((id: string, patch: Record<string, unknown>) => {
     setAlerts(prev => prev.map(a => (a.id === id ? ({ ...a, ...patch } as Alert) : a)));
   }, []);
+
+  const refreshInBackground = useCallback(() => fetchAlerts({ background: true }), [fetchAlerts]);
 
   const {
     submitting: actionSubmitting,
@@ -306,7 +341,7 @@ export default function AlertsPage() {
     cancelSuppress,
     confirmSuppress: performSuppress,
   } = useAlertActions<Alert>({
-    refresh: fetchAlerts,
+    refresh: refreshInBackground,
     patchAlert,
     onAcknowledged: async (alert) => {
       if (detailOpen && selectedAlert?.id === alert.id) {
@@ -343,7 +378,7 @@ export default function AlertsPage() {
         errorFallback: t('alertsPage.failedBulkAction', { action }),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-      await fetchAlerts();
+      await fetchAlerts({ background: true });
 
       const past = BULK_PAST_TENSE_KEY[action] ? t(/* i18n-dynamic */ `alertsPage.bulkPast.${BULK_PAST_TENSE_KEY[action]}`) : action;
       const updated = result?.updated ?? 0;
@@ -433,7 +468,7 @@ export default function AlertsPage() {
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={fetchAlerts}
+          onClick={() => void fetchAlerts()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('alertsPage.tryAgain')}
@@ -447,11 +482,15 @@ export default function AlertsPage() {
       <AlertsTabStrip currentPath="/alerts" />
       <div>
         <h1 className="text-xl font-bold tracking-tight">{t('alertsPage.alerts')}</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          {t('alertsPage.monitorAlertsAcrossYourDevicesRulesAre')}{' '}
-          <a href="/configuration-policies" className="text-primary hover:underline">
-            {t('alertsPage.configurationPolicies')}
-          </a>.
+        <p className="text-sm text-muted-foreground mt-1" data-testid="alerts-subtitle">
+          <Trans
+            i18nKey="alertsPage.subtitle"
+            t={t}
+            components={{
+              monitors: <a href="/alerts/monitors" className="text-primary hover:underline" />,
+              policies: <a href="/configuration-policies" className="text-primary hover:underline" />,
+            }}
+          />
         </p>
       </div>
 
@@ -562,7 +601,7 @@ export default function AlertsPage() {
             {t('alertsPage.noActiveAlertsYourFleetIsHealthy')}
           </p>
           <a
-            href="/configuration-policies"
+            href="/alerts/monitors"
             className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition"
           >
             <Settings2 className="h-4 w-4" />

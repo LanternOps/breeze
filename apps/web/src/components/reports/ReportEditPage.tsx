@@ -76,6 +76,22 @@ import {
   isAiUsageByClientOptionsValid,
   type AiUsageByClientOptions,
 } from './AiUsageByClientOptionsForm';
+import {
+  DEFAULT_MRR_RENEWALS_OPTIONS,
+  MrrRenewalsOptionsFields,
+  isMrrRenewalsOptionsValid,
+  mrrRenewalsConfigFromOptions,
+  mrrRenewalsOptionsFromConfig,
+  type MrrRenewalsOptions,
+} from './MrrRenewalsOptionsForm';
+import {
+  DEFAULT_QUOTE_WIN_RATE_OPTIONS,
+  QuoteWinRateOptionsFields,
+  isQuoteWinRateOptionsValid,
+  quoteWinRateConfigFromOptions,
+  quoteWinRateOptionsFromConfig,
+  type QuoteWinRateOptions,
+} from './QuoteWinRateOptionsForm';
 import { isBusinessReportType } from './businessReportAccess';
 import {
   BUSINESS_OPTION_CONFIG_KEYS,
@@ -112,6 +128,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [technicianTimeOptions, setTechnicianTimeOptions] = useState<TechnicianTimeOptions>(DEFAULT_TECHNICIAN_TIME_OPTIONS);
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
   const [aiUsageOptions, setAiUsageOptions] = useState<AiUsageByClientOptions>(DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS);
+  const [mrrRenewalsOptions, setMrrRenewalsOptions] = useState<MrrRenewalsOptions>(DEFAULT_MRR_RENEWALS_OPTIONS);
+  const [quoteWinRateOptions, setQuoteWinRateOptions] = useState<QuoteWinRateOptions>(DEFAULT_QUOTE_WIN_RATE_OPTIONS);
 
   const fetchReport = useCallback(async () => {
     try {
@@ -145,6 +163,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       setTechnicianTimeOptions(technicianTimeOptionsFromConfig(config));
       setArAgingOptions(arAgingOptionsFromConfig(config));
       setAiUsageOptions(aiUsageByClientOptionsFromConfig(config));
+      setMrrRenewalsOptions(mrrRenewalsOptionsFromConfig(config));
+      setQuoteWinRateOptions(quoteWinRateOptionsFromConfig(config));
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('reports.reportEditPage.errors.generic'));
     } finally {
@@ -251,6 +271,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const isTechnicianTime = report.type === 'technician_time_billability';
   const isArAging = report.type === 'ar_aging';
   const isAiUsage = report.type === 'ai_usage_by_client';
+  const isMrrRenewals = report.type === 'mrr_renewals';
+  const isQuoteWinRate = report.type === 'quote_win_rate';
   const isBusiness = isBusinessReportType(report.type);
   // Partner-owned (covers all the partner's organizations): the PUT must not
   // carry any orgId — the API answers 400 report_ownership_immutable.
@@ -315,6 +337,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     technician_time_billability: () => businessConfig(technicianTimeConfigFromOptions(technicianTimeOptions)),
     ar_aging: () => businessConfig(arAgingConfigFromOptions(arAgingOptions)),
     ai_usage_by_client: () => businessConfig(aiUsageByClientConfigFromOptions(aiUsageOptions)),
+    mrr_renewals: () => businessConfig(mrrRenewalsConfigFromOptions(mrrRenewalsOptions)),
+    quote_win_rate: () => businessConfig(quoteWinRateConfigFromOptions(quoteWinRateOptions)),
   };
   const baseConfig = curatedConfig[report.type]?.() ?? config;
   // The options panels render outside the builder, so their validity (custom
@@ -324,7 +348,9 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     (isTicketSla && !isTicketSlaOptionsValid(ticketSlaOptions))
     || (isTechnicianTime && !isTechnicianTimeOptionsValid(technicianTimeOptions))
     || (isArAging && !isArAgingOptionsValid(arAgingOptions))
-    || (isAiUsage && !isAiUsageByClientOptionsValid(aiUsageOptions));
+    || (isAiUsage && !isAiUsageByClientOptionsValid(aiUsageOptions))
+    || (isMrrRenewals && !isMrrRenewalsOptionsValid(mrrRenewalsOptions))
+    || (isQuoteWinRate && !isQuoteWinRateOptionsValid(quoteWinRateOptions));
 
   return (
     <div className="space-y-6">
@@ -419,6 +445,18 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       {isAiUsage && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <AiUsageByClientOptionsFields value={aiUsageOptions} onChange={setAiUsageOptions} />
+        </div>
+      )}
+
+      {isMrrRenewals && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <MrrRenewalsOptionsFields value={mrrRenewalsOptions} onChange={setMrrRenewalsOptions} />
+        </div>
+      )}
+
+      {isQuoteWinRate && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <QuoteWinRateOptionsFields value={quoteWinRateOptions} onChange={setQuoteWinRateOptions} />
         </div>
       )}
 

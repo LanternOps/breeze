@@ -127,6 +127,7 @@ export default function CisHardeningPage() {
                 <button
                   key={tab}
                   type="button"
+                  data-testid={`cis-tab-${tab}`}
                   onClick={() => setActiveTab(tab)}
                   className={cn(
                     'border-b-2 pb-3 text-sm font-medium transition-colors',
@@ -143,7 +144,7 @@ export default function CisHardeningPage() {
 
           {activeTab === 'compliance' && <CisComplianceTab refreshKey={refreshKey} />}
           {activeTab === 'baselines' && <CisBaselinesTab refreshKey={refreshKey} onMutate={handleRefresh} />}
-          {activeTab === 'remediations' && <CisRemediationsTab refreshKey={refreshKey} />}
+          {activeTab === 'remediations' && <CisRemediationsTab refreshKey={refreshKey} onMutate={handleRefresh} />}
         </>
       )}
     </div>

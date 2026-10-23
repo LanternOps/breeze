@@ -342,6 +342,8 @@
       "subnets": "Sous-réseaux"
     },
     "configuredCount": "{{count}} profils configurés",
+    "configuredCount_one": "{{count}} profil configuré",
+    "configuredCount_other": "{{count}} profils configurés",
     "empty": "Aucun profil de découverte pour l’instant. Créez votre premier profil pour commencer à scanner.",
     "lastRun": "Dernière exécution : {{time}}",
     "loading": "Chargement des profils de découverte...",
@@ -438,6 +440,8 @@
       "selectSite": "Sélectionnez un site avant d’enregistrer."
     },
     "configuredCount": "{{count}} bases configurées",
+    "configuredCount_one": "{{count}} base configurée",
+    "configuredCount_other": "{{count}} bases configurées",
     "subnetTopologyNote": "Les sous-réseaux saisis ici identifient aussi les réseaux de ce site sur la carte de topologie."
   },
   "networkChangeDetailModal": {
