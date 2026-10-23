@@ -13,12 +13,18 @@ outputs:
 runs:
   using: composite
   steps:
-    # ImageOS/ImageVersion are runner env vars, not expression-context values,
-    # so surface them through a step output for the cache key.
+    # ImageOS is a runner env var, not an expression-context value, so surface
+    # it through a step output for the cache key. The key deliberately omits
+    # ImageVersion: `ubuntu-latest` serves several image patch levels at once,
+    # the seed job saves under only the one it lands on, and a key that
+    # includes the patch level makes every run on another image miss (#9847).
+    # The .deb closure depends on the distro release (ImageOS) and the package
+    # list, not the runner patch level. If a cached closure ever fails to
+    # install on a different image, CI falls back to the network path.
     - name: Resolve runner image for apt cache key
       id: image
       shell: bash
-      run: echo "id=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      run: echo "id=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
 
     - name: Cache Tauri apt packages
       id: cache

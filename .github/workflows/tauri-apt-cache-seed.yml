@@ -15,7 +15,9 @@ on:
       - .github/actions/tauri-apt-cache/**
       - .github/workflows/tauri-apt-cache-seed.yml
   schedule:
-    # Daily: runner image versions roll over, and the key includes the image.
+    # Daily: refreshes the cache entry (GitHub evicts entries unused for 7 days)
+    # and picks up Ubuntu archive updates. The key is distro (ImageOS) + package
+    # list, so any image patch level restores it (#9847).
     - cron: '17 5 * * *'
   workflow_dispatch:
 
@@ -41,7 +43,7 @@ jobs:
         id: cache
         uses: ./.github/actions/tauri-apt-cache
 
-      # Same image + same package list as the CI job, so `--download-only`
+      # Same distro release + same package list as the CI job, so `--download-only`
       # fetches exactly the closure CI's install would. Not on any PR's
       # critical path, so generous retries are fine.
       - name: Download Tauri system dependencies
