@@ -66,7 +66,7 @@
     "alertAcknowledged": "Alerta reconhecido",
     "failedToResolveAlert": "Falha ao resolver alerta",
     "alertResolved": "Alerta resolvido",
-    "alertsBreadcrumb": "Navegação de alertas",
+    "alertsBreadcrumb": "Alertas",
     "alertFallback": "Alerta",
     "unknownMetric": "Métrica desconhecida",
     "severity": {
@@ -458,8 +458,6 @@
     "loadingAlerts": "Carregando alertas...",
     "tryAgain": "Tentar novamente",
     "alerts": "Alertas",
-    "monitorAlertsAcrossYourDevicesRulesAre": "Monitore alertas em seus dispositivos. As regras são gerenciadas em",
-    "configurationPolicies": "Políticas de configuração",
     "alert": "alerta",
     "dismissedAlertsAreHiddenForGoodWarranty": "Os alertas dispensados ficam ocultos permanentemente. O vencimento da garantia não gerará outro alerta para a mesma data final; outros alertas ainda poderão ser disparados se suas condições ocorrerem novamente.",
     "cancel": "Cancelar",
@@ -505,7 +503,8 @@
     },
     "bulkConfirmQuestion": "{{action}} {{count}} alerta?",
     "bulkConfirmQuestion_one": "{{action}} {{count}} alerta?",
-    "bulkConfirmQuestion_other": "{{action}} {{count}} alertas?"
+    "bulkConfirmQuestion_other": "{{action}} {{count}} alertas?",
+    "subtitle": "Monitore alertas em seus dispositivos. Os limites ficam em <monitors>Monitores</monitors>; implante-os nos clientes com <policies>Políticas de configuração</policies>."
   },
   "alertsSummary": {
     "activeAlerts": "Alertas ativos",
@@ -545,7 +544,8 @@
     "sections": {
       "channels": "Canais",
       "routing": "Roteamento",
-      "escalation": "Políticas de escalonamento"
+      "escalation": "Políticas de escalonamento",
+      "inheritedChannels": "Compartilhados pelo seu parceiro"
     },
     "routing": {
       "everythingElse": "Todo o resto",

@@ -125,7 +125,7 @@
     "unknownMetric": "Indicateur inconnu",
     "statusChange": "{{from}} → {{to}}",
     "resolveAlert": "Résoudre l’alerte",
-    "ticketCreationFailedRetry": "Nouvelle tentative après l’échec de création du ticket",
+    "ticketCreationFailedRetry": "Impossible de créer le ticket. Réessayez",
     "ticketCreated": "Ticket {{ticket}} créé",
     "severity": {
       "critical": "Critique",
@@ -458,8 +458,6 @@
     "loadingAlerts": "Alertes de chargement...",
     "tryAgain": "Réessayer",
     "alerts": "Alertes",
-    "monitorAlertsAcrossYourDevicesRulesAre": "Surveillez les alertes sur tous vos appareils. Les règles sont gérées dans",
-    "configurationPolicies": "Politiques de configuration",
     "alert": "alerte",
     "dismissedAlertsAreHiddenForGoodWarranty": "Les alertes ignorées sont définitivement cachées. L’expiration de la garantie ne se réalerte pas pour la même date de fin ; D’autres alertes peuvent toujours être déclenchées à neuf si leur état réapparaît.",
     "cancel": "Annuler",
@@ -505,7 +503,8 @@
     },
     "bulkConfirmQuestion": "{{action}} {{count}} alerte ?",
     "bulkConfirmQuestion_one": "{{action}} {{count}} alerte ?",
-    "bulkConfirmQuestion_other": "{{action}} {{count}} alertes ?"
+    "bulkConfirmQuestion_other": "{{action}} {{count}} alertes ?",
+    "subtitle": "Surveillez les alertes sur tous vos appareils. Les seuils se définissent dans <monitors>Moniteurs</monitors> ; déployez-les chez les clients avec <policies>Politiques de configuration</policies>."
   },
   "alertsSummary": {
     "activeAlerts": "Alertes actives",
@@ -545,7 +544,8 @@
     "sections": {
       "channels": "Canaux",
       "routing": "Routage",
-      "escalation": "Politiques d'escalade"
+      "escalation": "Politiques d'escalade",
+      "inheritedChannels": "Partagés par votre partenaire"
     },
     "routing": {
       "everythingElse": "Tout le reste",
