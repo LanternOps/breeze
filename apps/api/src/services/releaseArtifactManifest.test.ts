@@ -14,6 +14,7 @@ import {
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactBuffer,
   verifyReleaseArtifactManifestIntegrity,
+  verifyReleaseArtifactManifestIdentity,
   verifyManifestSignatureAgainstOfficialKeysOnly,
   ReleaseManifestTooOldError,
 } from "./releaseArtifactManifest";
@@ -928,6 +929,107 @@ describe("releaseArtifactManifest", () => {
       expect(() =>
         verifyReleaseArtifactManifestIntegrity(signed.manifest, signed.signature),
       ).toThrow(/public key is not configured/);
+    });
+  });
+
+  // #8874: the install-fallback wave adds two OPTIONAL top-level manifest keys,
+  // installFallbackInterface and (hosted) distribution. Every existing verifier
+  // must keep accepting a manifest that carries them — old servers and agents
+  // see them as unknown keys, and this pins that the API ignores them too.
+  describe("existing verifiers tolerate the new top-level keys (#8874)", () => {
+    function signWithExtras(extras: Record<string, unknown>) {
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const body = Buffer.from("agent bytes");
+      const manifest = Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "example-owner/example-repo",
+          release: "v0.124.0",
+          sourceCommit: "c".repeat(40),
+          ...extras,
+          assets: [
+            {
+              name: "breeze-agent-linux-amd64",
+              sha256: createSha256(body),
+              size: body.length,
+              platformTrust: "release-workflow-produced",
+              edition: "self-host",
+            },
+          ],
+        }),
+      );
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = publicDer
+        .subarray(publicDer.length - 32)
+        .toString("base64");
+      return {
+        manifest,
+        signature: Buffer.from(sign(null, manifest, privateKey).toString("base64")),
+      };
+    }
+
+    const EXTRAS = {
+      installFallbackInterface: 1,
+      distribution: { repository: "example-owner/example-dist", release: "v0.124.0" },
+    };
+
+    it("verifyReleaseArtifactManifestAsset accepts a manifest carrying installFallbackInterface and distribution", async () => {
+      const signed = signWithExtras(EXTRAS);
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-linux-amd64",
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+          expectedRepository: "example-owner/example-repo",
+          expectedRelease: "v0.124.0",
+          expectedEdition: "self-host",
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({ assetName: "breeze-agent-linux-amd64", release: "v0.124.0" }),
+      );
+    });
+
+    it("verifyReleaseArtifactManifestIdentity accepts it and still reports a full release", () => {
+      const signed = signWithExtras(EXTRAS);
+      expect(
+        verifyReleaseArtifactManifestIdentity({
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+          expectedRepository: "example-owner/example-repo",
+          expectedRelease: "v0.124.0",
+        }),
+      ).toEqual({
+        release: "v0.124.0",
+        repository: "example-owner/example-repo",
+        sourceCommit: "c".repeat(40),
+        releaseKind: "full",
+      });
+    });
+
+    it("verifyReleaseArtifactManifestIntegrity accepts it", () => {
+      const signed = signWithExtras(EXTRAS);
+      expect(
+        verifyReleaseArtifactManifestIntegrity(signed.manifest, signed.signature),
+      ).toEqual({ release: "v0.124.0", repository: "example-owner/example-repo" });
+    });
+
+    it("tolerates unexpected shapes of the new keys (these verifiers never read them)", async () => {
+      const signed = signWithExtras({ installFallbackInterface: "two", distribution: [1, 2] });
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-linux-amd64",
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).resolves.toEqual(expect.objectContaining({ release: "v0.124.0" }));
+      expect(
+        verifyReleaseArtifactManifestIdentity({
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+          expectedRepository: "example-owner/example-repo",
+          expectedRelease: "v0.124.0",
+        }).releaseKind,
+      ).toBe("full");
     });
   });
 

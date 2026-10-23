@@ -10,7 +10,9 @@ import {
   assertDistributableReleaseAsset,
   isUnsignedSelfHostAsset,
 } from './releaseAssetTrust';
+import { isValidReleaseSourceRepository } from './releaseSource';
 import { safeFetchFollowingRedirects } from './urlSafety';
+import { INSTALL_FALLBACK_RELEASE_RE } from '@breeze/shared';
 
 // Warn once per asset name per process. This fires on the normal, intended path
 // for a stock public release (#3504) — every self-hoster on BINARY_SOURCE=github
@@ -193,6 +195,15 @@ type ReleaseArtifactManifest = {
   binariesRelease?: unknown;
   binariesSourceCommit?: unknown;
   carriedImages?: unknown;
+  // Install fallback (#8874, additive, top-level, optional). Both are read
+  // ONLY through the readVerifiedManifest* readers below, after the signature
+  // has verified; every other verifier ignores them.
+  //   installFallbackInterface: 1 when the release's install.sh honours the
+  //     fallback flags (emitted from the install.sh marker).
+  //   distribution: { repository, release } on hosted manifests, naming where
+  //     the release's consumed assets are mirrored.
+  installFallbackInterface?: unknown;
+  distribution?: unknown;
   assets?: unknown;
 };
 
@@ -773,6 +784,63 @@ export function verifyReleaseArtifactManifestIntegrity(
     release: manifest.release as string,
     repository: manifest.repository as string,
   };
+}
+
+// Verify-first parse for the readers below: null on ANY failure (no trust
+// root, bad signature, invalid JSON or schema), so nothing is ever read from
+// an unverified manifest.
+function parseVerifiedManifestOrNull(
+  manifestBytes: Buffer,
+  signatureBytes: Buffer,
+): ReleaseArtifactManifest | null {
+  try {
+    verifyManifestSignature(manifestBytes, signatureBytes);
+    return parseManifest(manifestBytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The signed top-level `distribution: { repository, release }` of a hosted
+ * manifest (#8874, Gate B #1): where the release's consumed assets are
+ * mirrored. Verifies the signature first. Returns null when the manifest does
+ * not verify, or the field is absent or malformed (`repository` must be a
+ * valid `owner/repo`, `release` a release tag). Never throws.
+ */
+export function readVerifiedManifestDistribution(
+  manifestBytes: Buffer,
+  signatureBytes: Buffer,
+): { repository: string; release: string } | null {
+  const manifest = parseVerifiedManifestOrNull(manifestBytes, signatureBytes);
+  const distribution = manifest?.distribution;
+  if (typeof distribution !== "object" || distribution === null || Array.isArray(distribution)) {
+    return null;
+  }
+  const { repository, release } = distribution as { repository?: unknown; release?: unknown };
+  if (
+    typeof repository !== "string" ||
+    !isValidReleaseSourceRepository(repository) ||
+    typeof release !== "string" ||
+    !INSTALL_FALLBACK_RELEASE_RE.test(release)
+  ) {
+    return null;
+  }
+  return { repository, release };
+}
+
+/**
+ * The signed top-level `installFallbackInterface` (#8874, Gate B #15): the
+ * install-fallback interface version the release's install.sh honours.
+ * Verifies the signature first. Returns null when the manifest does not
+ * verify, or the field is absent or not an integer. Never throws.
+ */
+export function readVerifiedManifestInstallFallbackInterface(
+  manifestBytes: Buffer,
+  signatureBytes: Buffer,
+): number | null {
+  const value = parseVerifiedManifestOrNull(manifestBytes, signatureBytes)?.installFallbackInterface;
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
 /**
