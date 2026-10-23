@@ -110,6 +110,7 @@
     "serialNumber": "Seri Numarası",
     "allow": "İzin ver:",
     "reason": "Sebep",
+    "expiresAt": "Sona erer (yerel saatiniz)",
     "updatePolicy": "Güncelleme Politikası",
     "createPolicy": "Politika Oluştur"
   }

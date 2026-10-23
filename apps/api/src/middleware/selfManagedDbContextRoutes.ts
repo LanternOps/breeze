@@ -28,6 +28,11 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // YARA rule test upload (#6263 W04-2): the sandboxed `breeze-yarac match`
+  // child runs up to 30 s; inside the request transaction it would pin a
+  // pooled connection idle-in-transaction (#1105). The handler reads the set
+  // in a short caller-scoped context and audits afterwards.
+  { method: 'POST', pattern: /^\/api\/v1\/security\/yara\/rule-sets\/[0-9a-f-]{36}\/test\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.
   { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },

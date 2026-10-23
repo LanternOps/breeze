@@ -1,6 +1,5 @@
-import { Clock, Globe } from 'lucide-react';
+import { Clock } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import KnownGuestsSettings from './KnownGuestsSettings';
 import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import type { BusinessHoursPreset, DateFormat, TimeFormat, DaySchedule, SupportedLocale } from '@breeze/shared';
 import '@/lib/i18n';
@@ -57,15 +56,9 @@ export default function PartnerRegionalTab({
   return (
     <>
       <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <div className="mb-6">
-          <div className="flex items-center gap-2">
-            <Globe className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">{t('partner.regional.title')}</h2>
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t('partner.regional.description')}
-          </p>
-        </div>
+        <p className="mb-6 max-w-prose text-sm text-muted-foreground">
+          {t('partner.regional.description')}
+        </p>
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="partner-timezone" className="text-sm font-medium">{t('partner.regional.timezone')}</label>
@@ -123,14 +116,14 @@ export default function PartnerRegionalTab({
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <Clock className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">{t('partner.regional.businessHours.title')}</h2>
+            <h3 className="text-sm font-semibold">{t('partner.regional.businessHours.title')}</h3>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {t('partner.regional.businessHours.description')}
           </p>
         </div>
         <div className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div role="radiogroup" aria-label={t('partner.regional.businessHours.title')} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {BUSINESS_HOURS_PRESETS.map(preset => (
               <label key={preset.value}
                 className={`cursor-pointer rounded-lg border p-4 transition ${
@@ -146,8 +139,8 @@ export default function PartnerRegionalTab({
             ))}
           </div>
           {businessHoursPreset === 'custom' && (
-            <div className="mt-4 space-y-3 rounded-lg border bg-muted/40 p-4">
-              <p className="text-sm font-medium">{t('partner.regional.businessHours.customSchedule')}</p>
+            <div className="mt-6 space-y-3 border-t pt-6">
+              <h3 className="text-sm font-semibold">{t('partner.regional.businessHours.customSchedule')}</h3>
               {DAYS.map(day => (
                 <div key={day} className="flex items-center gap-4">
                   <div className="w-24 text-sm font-medium">{t(/* i18n-dynamic */ `partner.regional.days.${day}`)}</div>
@@ -173,8 +166,6 @@ export default function PartnerRegionalTab({
           )}
         </div>
       </section>
-
-      <KnownGuestsSettings />
     </>
   );
 }
