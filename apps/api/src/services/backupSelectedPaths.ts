@@ -21,16 +21,28 @@ export function normalizeSnapshotPath(value: string): string {
   return value.replaceAll('\\', '/');
 }
 
+function segmentKey(value: string): string {
+  return normalizeSnapshotPath(value).split('/').filter(Boolean).join('/');
+}
+
 export type SelectedSnapshotPathsResolution =
   | { ok: true; paths: string[] }
-  | { ok: false; invalidPath: string; reason: 'not_found' | 'ambiguous' };
+  | { ok: false; invalidPath: string; reason: 'not_found' | 'ambiguous' }
+  | { ok: false; invalidPath: string; reason: 'too_many'; count: number; limit: number };
+
+/** Most files a single selective restore may name once directories are expanded. */
+export const MAX_SELECTED_RESTORE_FILES = 10_000;
 
 /**
  * Resolve requested selections to the stored original paths of files in the
  * snapshot. A selection matches a stored path exactly, or failing that, by its
- * normalized form when exactly one stored path shares it. Selections that
- * match nothing, or whose normalized form is shared by several stored paths
- * (possible on POSIX, where `\` is a legal filename character), are refused.
+ * normalized form when exactly one stored path shares it. Failing both, it is
+ * treated as a directory and expands to every stored file whose normalized
+ * path is `<dir>/…` (exact-or-child rule: `pick.txt` never selects
+ * `pick.txtx/…`). Selections that match nothing, or whose normalized form is
+ * shared by several stored paths (possible on POSIX, where `\` is a legal
+ * filename character), are refused, as is a result above
+ * MAX_SELECTED_RESTORE_FILES.
  *
  * The returned paths are always members of `storedPaths`, so the result can
  * never widen a restore beyond files indexed for the snapshot.
@@ -52,19 +64,47 @@ export function resolveSelectedSnapshotPaths(
 
   const resolved: string[] = [];
   const seen = new Set<string>();
-  for (const selected of selectedPaths) {
-    let original: string;
-    if (exact.has(selected)) {
-      original = selected;
-    } else {
-      const candidates = byNormalized.get(normalizeSnapshotPath(selected));
-      if (!candidates) return { ok: false, invalidPath: selected, reason: 'not_found' };
-      if (candidates.length > 1) return { ok: false, invalidPath: selected, reason: 'ambiguous' };
-      original = candidates[0]!;
-    }
+  const add = (original: string) => {
     if (!seen.has(original)) {
       seen.add(original);
       resolved.push(original);
+    }
+  };
+
+  for (const selected of selectedPaths) {
+    if (exact.has(selected)) {
+      add(selected);
+    } else {
+      const candidates = byNormalized.get(normalizeSnapshotPath(selected));
+      if (candidates) {
+        if (candidates.length > 1) return { ok: false, invalidPath: selected, reason: 'ambiguous' };
+        add(candidates[0]!);
+      } else {
+        // Directory. Compared segment-wise — the same segmentation the browse
+        // tree uses (backslashes → `/`, repeated and leading/trailing
+        // separators dropped), because the tree hands directories back as
+        // `/C:/Users/x` or `/fileserver/share/x`. The match requires a segment
+        // boundary, so a sibling sharing a name prefix can never match.
+        const dir = segmentKey(selected);
+        if (dir === '') return { ok: false, invalidPath: selected, reason: 'not_found' };
+        const prefix = `${dir}/`;
+        let matched = false;
+        for (const [key, originals] of byNormalized) {
+          if (!segmentKey(key).startsWith(prefix)) continue;
+          matched = true;
+          for (const original of originals) add(original);
+        }
+        if (!matched) return { ok: false, invalidPath: selected, reason: 'not_found' };
+      }
+    }
+    if (resolved.length > MAX_SELECTED_RESTORE_FILES) {
+      return {
+        ok: false,
+        invalidPath: selected,
+        reason: 'too_many',
+        count: resolved.length,
+        limit: MAX_SELECTED_RESTORE_FILES,
+      };
     }
   }
 
@@ -75,6 +115,9 @@ export function resolveSelectedSnapshotPaths(
 export function selectedSnapshotPathError(
   failure: Extract<SelectedSnapshotPathsResolution, { ok: false }>
 ): string {
+  if (failure.reason === 'too_many') {
+    return `Selection expands to ${failure.count} files, more than the ${failure.limit}-file limit per restore; select fewer or smaller folders (at ${failure.invalidPath})`;
+  }
   return failure.reason === 'ambiguous'
     ? `Selected path matches more than one file in this snapshot: ${failure.invalidPath}`
     : `Selected path is not available in this snapshot: ${failure.invalidPath}`;
