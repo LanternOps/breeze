@@ -1,30 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  AtSign,
-  Bell,
-  Blocks,
-  Building2,
-  Globe,
-  Activity,
-  Hourglass,
-  KeyRound,
-  Loader2,
-  LogIn,
-  Mail,
-  MonitorSmartphone,
-  Palette,
-  Save,
-  ScrollText,
-  Shield,
-  ShieldCheck,
-  SlidersHorizontal,
-  Ticket,
-  Wallet,
-  type LucideIcon,
-} from 'lucide-react';
+import { Building2, Loader2, Save } from 'lucide-react';
 import EmailTemplatesTab from './EmailTemplatesTab';
 import SettingsSectionNav from './SettingsSectionNav';
 import { fetchWithAuth } from '../../stores/auth';
+import { useCallerVerificationEnabled } from '../../lib/useCallerVerificationEnabled';
+import { useFeaturesStore } from '../../stores/featuresStore';
 import { PartnerCallerVerificationPolicy } from '../callerVerification/CallerVerificationPolicyForm';
 import { getJwtClaims } from '../../lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
@@ -76,11 +56,10 @@ import MfaPolicyOffBanner, { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPol
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { TAB_BY_KEY, tabFromHash, visibleTabGroups, type TabKey } from './partnerSettings/tabRegistry';
 
 // Scalar security limits the API unsets when sent as null (see PATCH /partners/me).
 const CLEARABLE_SECURITY_KEYS = ['minLength', 'complexity', 'expirationDays', 'sessionTimeout', 'maxSessions'] as const;
-
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules' | 'trustCenter';
 
 type Partner = {
   id: string;
@@ -103,94 +82,11 @@ type Partner = {
   createdAt: string;
 };
 
-type TabDef = {
-  key: TabKey;
-  /** Canonical URL fragment (kebab-case). Legacy camelCase keys still resolve. */
-  hash: string;
-  label: string;
-  description: string;
-  icon: LucideIcon;
-  /** Tab persists its own changes; the global Save button does not apply. */
-  selfSaving?: boolean;
-  /** Values set here are enforced across all organizations (inheritance banner). */
-  enforced?: boolean;
-};
-
-const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
-  {
-    label: 'partnerSettingsPage.groups.company',
-    tabs: [
-      { key: 'company', hash: 'company', label: 'partnerSettingsPage.tabs.company.label', description: 'partnerSettingsPage.tabs.company.description', icon: Building2 },
-      { key: 'modules', hash: 'modules', label: 'partnerSettingsPage.tabs.modules.label', description: 'partnerSettingsPage.tabs.modules.description', icon: Blocks, selfSaving: true },
-      { key: 'regional', hash: 'regional', label: 'partnerSettingsPage.tabs.regional.label', description: 'partnerSettingsPage.tabs.regional.description', icon: Globe },
-      { key: 'defaults', hash: 'defaults', label: 'partnerSettingsPage.tabs.defaults.label', description: 'partnerSettingsPage.tabs.defaults.description', icon: SlidersHorizontal, enforced: true },
-    ],
-  },
-  {
-    label: 'partnerSettingsPage.groups.security',
-    tabs: [
-      { key: 'security', hash: 'security', label: 'partnerSettingsPage.tabs.security.label', description: 'partnerSettingsPage.tabs.security.description', icon: Shield, enforced: true },
-      { key: 'remoteAccess', hash: 'remote-access', label: 'partnerSettingsPage.tabs.remoteAccess.label', description: 'partnerSettingsPage.tabs.remoteAccess.description', icon: MonitorSmartphone, enforced: true },
-      { key: 'eventLogs', hash: 'event-logs', label: 'partnerSettingsPage.tabs.eventLogs.label', description: 'partnerSettingsPage.tabs.eventLogs.description', icon: ScrollText, enforced: true },
-    ],
-  },
-  {
-    label: 'partnerSettingsPage.groups.communications',
-    tabs: [
-      { key: 'notifications', hash: 'notifications', label: 'partnerSettingsPage.tabs.notifications.label', description: 'partnerSettingsPage.tabs.notifications.description', icon: Bell, enforced: true },
-      { key: 'ticketing', hash: 'ticketing', label: 'partnerSettingsPage.tabs.ticketing.label', description: 'partnerSettingsPage.tabs.ticketing.description', icon: Ticket, selfSaving: true },
-      { key: 'emailTemplates', hash: 'email-templates', label: 'partnerSettingsPage.tabs.emailTemplates.label', description: 'partnerSettingsPage.tabs.emailTemplates.description', icon: Mail, selfSaving: true },
-      { key: 'sendingDomains', hash: 'sending-domains', label: 'partnerSettingsPage.tabs.sendingDomains.label', description: 'partnerSettingsPage.tabs.sendingDomains.description', icon: AtSign, selfSaving: true },
-      { key: 'aiBudgets', hash: 'ai-budgets', label: 'partnerSettingsPage.tabs.aiBudgets.label', description: 'partnerSettingsPage.tabs.aiBudgets.description', icon: Wallet, enforced: true },
-      // NOT enforced: this is inherit-with-override (org wins when set), unlike
-      // the aiBudgets tab's partner-locks model — see aiApprovalSettings.ts.
-      { key: 'aiApprovals', hash: 'ai-approvals', label: 'partnerSettingsPage.tabs.aiApprovals.label', description: 'partnerSettingsPage.tabs.aiApprovals.description', icon: Hourglass },
-      { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
-      { key: 'aiFeatures', hash: 'ai-features', label: 'partnerSettingsPage.tabs.aiFeatures.label', description: 'partnerSettingsPage.tabs.aiFeatures.description', icon: Activity, selfSaving: true },
-    ],
-  },
-  {
-    label: 'partnerSettingsPage.groups.branding',
-    tabs: [
-      { key: 'branding', hash: 'branding', label: 'partnerSettingsPage.tabs.branding.label', description: 'partnerSettingsPage.tabs.branding.description', icon: Palette, enforced: true },
-      { key: 'loginBranding', hash: 'login-branding', label: 'partnerSettingsPage.tabs.loginBranding.label', description: 'partnerSettingsPage.tabs.loginBranding.description', icon: LogIn, selfSaving: true },
-      // Trust Center W2 (#8770 W02g): the partner-wide default for customer trust pages (own load/save, MFA).
-      { key: 'trustCenter', hash: 'trust-center', label: 'partnerSettingsPage.tabs.trustCenter.label', description: 'partnerSettingsPage.tabs.trustCenter.description', icon: ShieldCheck, selfSaving: true },
-    ],
-  },
-];
-
-const ALL_TABS: TabDef[] = TAB_GROUPS.flatMap(g => g.tabs);
-const TAB_BY_KEY = Object.fromEntries(ALL_TABS.map(t => [t.key, t])) as Record<TabKey, TabDef>;
-
-// Canonical kebab-case fragments plus the legacy camelCase keys this page used
-// to write (`#eventLogs`, `#remoteAccess`, ...) so old bookmarks keep working.
-const HASH_TO_TAB: Record<string, TabKey> = {};
-for (const t of ALL_TABS) {
-  HASH_TO_TAB[t.hash] = t.key;
-  HASH_TO_TAB[t.key] = t.key;
-}
-HASH_TO_TAB['ai-models'] = 'aiProvider'; // AI Providers & Models (W04 #7602) — canonical stays #ai-provider
-
-/**
- * Map a top-level URL hash to a partner settings tab, honored on first render.
- * Unknown fragments fall back to the default Company tab. `#ticketing` still
- * resolves, but only to the link-out card: ticketing configuration lives on
- * its own `/settings/ticketing` page (M0, #6233), which is a real page and not
- * a redirect here. Until v0.115 that route was a 301 to `#ticketing`, and
- * browsers that cached that 301 loop between the two (#7985).
- */
-function getTabFromHash(): TabKey | null {
-  if (typeof window === 'undefined') return null;
-  const hash = window.location.hash.replace('#', '');
-  return HASH_TO_TAB[hash] ?? null;
-}
-
 // The per-tab keys whose form state participates in dirty tracking. Self-saving
 // tabs (Ticketing, Email templates, Login Branding, AI Provider, Sender
 // Addresses, Modules) persist independently and are never "dirty" from this
 // page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules' | 'trustCenter'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules' | 'trustCenter' | 'knownGuests' | 'callerVerification'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -413,7 +309,7 @@ export default function PartnerSettingsPage() {
   // hash changes (back/forward, in-app links, the nav anchors below).
   useEffect(() => {
     const applyHash = () => {
-      const tab = getTabFromHash();
+      const tab = tabFromHash(window.location.hash);
       if (tab) setActiveTab(tab);
     };
     applyHash();
@@ -431,14 +327,14 @@ export default function PartnerSettingsPage() {
 
   const sendingDomainsVisible = isTabVisible(sendingDomainsCapability);
 
-  // TAB_GROUPS stays a module constant so HASH_TO_TAB keeps resolving
-  // `#sending-domains`; visibility is applied to the rendered nav only.
+  const callerVerificationVisible = useCallerVerificationEnabled();
+  const callerVerificationSettled = useFeaturesStore(s => s.loaded);
+
+  // Registry hash resolution is independent of visibility, so `#sending-domains`
+  // and `#caller-verification` keep resolving; visibility trims the rendered nav.
   const visibleGroups = useMemo(
-    () => TAB_GROUPS.map(group => ({
-      ...group,
-      tabs: group.tabs.filter(tab => tab.key !== 'sendingDomains' || sendingDomainsVisible),
-    })),
-    [sendingDomainsVisible]
+    () => visibleTabGroups({ sendingDomains: sendingDomainsVisible, callerVerification: callerVerificationVisible }),
+    [sendingDomainsVisible, callerVerificationVisible]
   );
 
   // A bookmark to a tab this instance hides falls back to Company — but only
@@ -448,6 +344,14 @@ export default function PartnerSettingsPage() {
       setActiveTab('company');
     }
   }, [sendingDomainsChecked, sendingDomainsVisible, activeTab]);
+
+  // Same for a `#caller-verification` bookmark: wait for the features store to
+  // settle, or a cold load would bounce to Security.
+  useEffect(() => {
+    if (callerVerificationSettled && !callerVerificationVisible && activeTab === 'callerVerification') {
+      setActiveTab('security');
+    }
+  }, [callerVerificationSettled, callerVerificationVisible, activeTab]);
 
   const handleSave = async () => {
     // Block a malformed maintenance window client-side (issue #1963) so the
