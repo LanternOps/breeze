@@ -103,7 +103,7 @@
     "empty": "Nothing has finished recently.",
     "status": {
       "failed": "Failed",
-      "rejected": "Rejected",
+      "rejected": "Denied",
       "expired": "Expired",
       "cancelled": "Cancelled",
       "completed": "Completed",
