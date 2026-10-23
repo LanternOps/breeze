@@ -18,10 +18,18 @@
  *
  * An AST check in the style of apps/web's no-silent-mutations guard:
  * TypeScript compiler API, call-local, the `devices` table resolved through
- * TypeScript symbols (aliases and the schema barrel's re-export included), so
- * `import { devices as d }` cannot hide a site and a local variable named
- * `devices` cannot create a false one. Raw SQL is read from string and
- * template literals only — a comment mentioning `UPDATE devices` is not a site.
+ * TypeScript symbols (aliases, the schema barrel's re-export and a local
+ * `const t = devices` included), so `import { devices as d }` or a renamed
+ * local cannot hide a site and a local variable named `devices` that is not
+ * the table cannot create a false one. Raw SQL is read from string and
+ * template literals only — a comment mentioning `UPDATE devices` is not a site
+ * — and a template that interpolates the table (`UPDATE ${devices} …`) reads
+ * as `UPDATE devices`. Imports resolve relative specifiers and the tsconfig
+ * `@/` path alias. Every reachable file is analysed (no text prefilter: it
+ * could not see an interpolated table or a renamed one).
+ *
+ * Known residual: a table reaching `update()` through a function parameter
+ * or a destructured binding is not followed.
  */
 import { describe, it, expect } from 'vitest';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -66,9 +74,12 @@ function listTsFiles(dir: string): string[] {
   return out;
 }
 
-function resolveRelativeImport(from: string, spec: string): string | null {
-  if (!spec.startsWith('.')) return null;
-  const base = resolve(dirname(from), spec);
+/** A runtime import's target file: relative specifiers and the tsconfig `@/*` → `src/*` alias. */
+function resolveImport(from: string, spec: string): string | null {
+  let base: string;
+  if (spec.startsWith('.')) base = resolve(dirname(from), spec);
+  else if (spec.startsWith('@/')) base = resolve(SRC_ROOT, spec.slice(2));
+  else return null;
   const candidates = [base + '.ts', join(base, 'index.ts'), base];
   for (const candidate of candidates) {
     if (existsSync(candidate) && statSync(candidate).isFile() && candidate.endsWith('.ts')) return candidate;
@@ -91,10 +102,10 @@ function runtimeImportsOf(file: string): string[] {
   const out: string[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly && ts.isStringLiteral(node.moduleSpecifier)) {
-      const target = resolveRelativeImport(file, node.moduleSpecifier.text);
+      const target = resolveImport(file, node.moduleSpecifier.text);
       if (target) out.push(target);
     } else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-      const target = resolveRelativeImport(file, node.moduleSpecifier.text);
+      const target = resolveImport(file, node.moduleSpecifier.text);
       if (target) out.push(target);
     } else if (
       ts.isCallExpression(node)
@@ -102,7 +113,7 @@ function runtimeImportsOf(file: string): string[] {
       && node.arguments[0]
       && ts.isStringLiteralLike(node.arguments[0])
     ) {
-      const target = resolveRelativeImport(file, node.arguments[0].text);
+      const target = resolveImport(file, node.arguments[0].text);
       if (target) out.push(target);
     }
     ts.forEachChild(node, visit);
@@ -117,19 +128,24 @@ function agentEntryPoints(): string[] {
   return files;
 }
 
-/** Every scannable file reachable from an agent entry point, with how it was reached. */
-function reachableFromAgentEntryPoints(): Map<string, string | null> {
+/** Every file `accept` admits reachable from `entries`, with how it was reached. */
+function reachableFrom(entries: string[], accept: (file: string) => boolean): Map<string, string | null> {
   const via = new Map<string, string | null>();
-  const stack = agentEntryPoints().map((file) => ({ file, from: null as string | null }));
+  const stack = entries.map((file) => ({ file, from: null as string | null }));
   while (stack.length > 0) {
     const { file, from } = stack.pop()!;
     if (via.has(file)) continue;
     via.set(file, from);
     for (const dep of runtimeImportsOf(file)) {
-      if (!via.has(dep) && isScannable(dep)) stack.push({ file: dep, from: file });
+      if (!via.has(dep) && accept(dep)) stack.push({ file: dep, from: file });
     }
   }
   return via;
+}
+
+/** Every scannable file reachable from an agent entry point, with how it was reached. */
+function reachableFromAgentEntryPoints(): Map<string, string | null> {
+  return reachableFrom(agentEntryPoints(), isScannable);
 }
 
 // ─── Site collection ───────────────────────────────────────────────────────
@@ -155,14 +171,47 @@ function resolvedSymbol(node: ts.Node, checker: ts.TypeChecker): ts.Symbol | und
   return symbol;
 }
 
-/** Is this expression the `devices` table from db/schema/devices.ts, by symbol? */
-function isDevicesTable(expr: ts.Expression, checker: ts.TypeChecker): boolean {
-  if (!ts.isIdentifier(expr) && !ts.isPropertyAccessExpression(expr)) return false;
-  const target = ts.isPropertyAccessExpression(expr) ? expr.name : expr;
+/** `(x)`, `x as T`, `x satisfies T`, `<T>x`, `x!` → `x`. */
+function unwrapExpression(expr: ts.Expression): ts.Expression {
+  let cur = expr;
+  while (
+    ts.isParenthesizedExpression(cur)
+    || ts.isAsExpression(cur)
+    || ts.isSatisfiesExpression(cur)
+    || ts.isTypeAssertionExpression(cur)
+    || ts.isNonNullExpression(cur)
+  ) {
+    cur = cur.expression;
+  }
+  return cur;
+}
+
+/**
+ * Is this expression the `devices` table from db/schema/devices.ts, by symbol?
+ * A local variable is followed to its initializer (`const t = devices`), so a
+ * renamed table is found and a local merely NAMED `devices` is judged by what
+ * it holds, never by its spelling.
+ */
+function isDevicesTable(expr: ts.Expression, checker: ts.TypeChecker, depth = 0): boolean {
+  const unwrapped = unwrapExpression(expr);
+  if (!ts.isIdentifier(unwrapped) && !ts.isPropertyAccessExpression(unwrapped)) return false;
+  const target = ts.isPropertyAccessExpression(unwrapped) ? unwrapped.name : unwrapped;
   const symbol = resolvedSymbol(target, checker);
-  if (!symbol || symbol.getName() !== 'devices') return false;
-  return (symbol.declarations ?? []).some(
-    (declaration) => resolve(declaration.getSourceFile().fileName) === DEVICES_SCHEMA_FILE,
+  if (!symbol) return false;
+  const declarations = symbol.declarations ?? [];
+  if (
+    symbol.getName() === 'devices'
+    && declarations.some((declaration) => resolve(declaration.getSourceFile().fileName) === DEVICES_SCHEMA_FILE)
+  ) {
+    return true;
+  }
+  if (depth >= 8) return false;
+  return declarations.some(
+    (declaration) =>
+      ts.isVariableDeclaration(declaration)
+      && resolve(declaration.getSourceFile().fileName) !== DEVICES_SCHEMA_FILE
+      && declaration.initializer !== undefined
+      && isDevicesTable(declaration.initializer, checker, depth + 1),
   );
 }
 
@@ -187,10 +236,17 @@ function markerFor(sf: ts.SourceFile, node: ts.Node): string | null {
   return MARKER_PATTERN.exec(window)?.[1] ?? null;
 }
 
-function literalText(node: ts.Node): string | null {
+/**
+ * The SQL text of a string or template literal. An interpolation of the
+ * `devices` table reads as `devices` (drizzle renders it as the table name),
+ * any other interpolation as an opaque placeholder.
+ */
+function literalText(node: ts.Node, checker: ts.TypeChecker): string | null {
   if (ts.isStringLiteralLike(node)) return node.text;
   if (ts.isTemplateExpression(node)) {
-    return [node.head.text, ...node.templateSpans.map((span) => span.literal.text)].join(' ');
+    return node.head.text + node.templateSpans
+      .map((span) => (isDevicesTable(span.expression, checker) ? 'devices' : '${…}') + span.literal.text)
+      .join('');
   }
   return null;
 }
@@ -217,18 +273,13 @@ function collectSites(sf: ts.SourceFile, checker: ts.TypeChecker): Site[] {
     ) {
       push(node, 'drizzle');
     } else if ((ts.isStringLiteralLike(node) || ts.isTemplateExpression(node))) {
-      const text = literalText(node);
+      const text = literalText(node, checker);
       if (text && RAW_UPDATE_DEVICES.test(text)) push(node, 'raw_sql');
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
   return sites;
-}
-
-function hasCandidateText(file: string): boolean {
-  const text = readFileSync(file, 'utf8');
-  return /\.update\(/.test(text) || RAW_UPDATE_DEVICES.test(text);
 }
 
 function programFor(files: string[]): { program: ts.Program; checker: ts.TypeChecker } {
@@ -244,11 +295,12 @@ function programFor(files: string[]): { program: ts.Program; checker: ts.TypeChe
 }
 
 function sitesIn(files: string[]): Site[] {
-  const candidates = files.filter(hasCandidateText);
-  if (candidates.length === 0) return [];
-  const { program, checker } = programFor(candidates);
+  // No text prefilter: `UPDATE ${devices}` and `const t = devices` are only
+  // visible to the AST and the checker, so every file goes through them.
+  if (files.length === 0) return [];
+  const { program, checker } = programFor(files);
   const sites: Site[] = [];
-  for (const file of candidates) {
+  for (const file of files) {
     const sf = program.getSourceFile(file);
     if (!sf) throw new Error(`program did not load ${file}`);
     sites.push(...collectSites(sf, checker));
@@ -302,11 +354,15 @@ describe('agent own-device-row contract — self-checks (fixtures)', () => {
     .map((name) => join(fixtureDir, name));
   const fixtureSites = sitesIn(fixtureFiles);
 
-  it('finds the three fixtures', () => {
+  it('finds the fixtures', () => {
     expect(fixtureFiles.map((f) => f.split(sep).pop()).sort()).toEqual([
+      'aliasPathImport.ts',
       'aliasedBareUpdate.ts',
       'bareUpdate.ts',
+      'constAliasUpdate.ts',
       'helperUpdate.ts',
+      'interpolatedRawUpdate.ts',
+      'localDevicesVariable.ts',
     ]);
   });
 
@@ -325,6 +381,35 @@ describe('agent own-device-row contract — self-checks (fixtures)', () => {
   it('does not flag the helper call (and resolves the aliased schema import without a false site)', () => {
     const compliant = fixtureSites.filter((s) => s.file.endsWith('helperUpdate.ts'));
     expect(compliant).toEqual([]);
+  });
+
+  // Review of wave 1b-1: the dodges an AST scan by name or by text would miss.
+  it('flags a table renamed through a local (`const t = devices; db.update(t)`)', () => {
+    const renamed = fixtureSites.filter((s) => s.file.endsWith('constAliasUpdate.ts'));
+    expect(renamed.map((s) => s.kind)).toEqual(['drizzle', 'drizzle']);
+    expect(judge(renamed).violations).toHaveLength(2);
+  });
+
+  it('flags a raw UPDATE whose table is interpolated (`sql`UPDATE ${devices} …``)', () => {
+    const interpolated = fixtureSites.filter((s) => s.file.endsWith('interpolatedRawUpdate.ts'));
+    expect(interpolated.map((s) => s.kind)).toEqual(['raw_sql']);
+    expect(judge(interpolated).violations).toHaveLength(1);
+  });
+
+  it('does not flag a local variable NAMED devices that is not the table (symbol resolution, not name matching)', () => {
+    const local = fixtureSites.filter((s) => s.file.endsWith('localDevicesVariable.ts'));
+    expect(local).toEqual([]);
+  });
+
+  it('follows a runtime import through the tsconfig `@/` alias and flags the site it reaches', () => {
+    const entry = join(fixtureDir, 'aliasPathImport.ts');
+    const lib = resolve(FIXTURE_ROOT, 'lib/bareViaAliasPath.ts');
+    expect(runtimeImportsOf(entry)).toContain(lib);
+    const reached = [...reachableFrom([entry], (file) => file.startsWith(FIXTURE_ROOT)).keys()];
+    expect(reached).toContain(lib);
+    const libSites = sitesIn(reached).filter((s) => resolve(s.file) === lib);
+    expect(libSites.map((s) => s.kind)).toEqual(['drizzle']);
+    expect(judge(libSites).violations).toHaveLength(1);
   });
 
   it('counts the helper\'s own update(devices) as the one exempt statement', () => {
