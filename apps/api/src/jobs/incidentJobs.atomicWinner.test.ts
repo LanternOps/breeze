@@ -156,4 +156,31 @@ describe('incident background passes pick a winner in the database', () => {
     expect(cas).toContain('escalatedAt');
     expect(cas).toContain('isNull');
   });
+
+  // #9661: the P1/P2 thresholds are time-to-contain SLAs. A contained or
+  // recovering incident has met (or is past) containment and must not page.
+  it('only scans incidents still awaiting containment (detected/analyzing)', async () => {
+    selectResults.push([]);
+    await __testOnly.runIncidentSlaMonitorPass();
+
+    const where = JSON.stringify(selectWheres[0]);
+    expect(where).toContain('"op":"inArray"');
+    expect(where).toContain('incidents.status');
+    expect(where).toContain('detected');
+    expect(where).toContain('analyzing');
+    expect(where).not.toContain('contained');
+    expect(where).not.toContain('recovering');
+  });
+
+  it('repeats the pre-containment guard in the escalation swap so a concurrent containment wins', async () => {
+    selectResults.push([STALE]);
+    updateReturnResults.push([]);
+
+    await __testOnly.runIncidentSlaMonitorPass();
+
+    const cas = JSON.stringify(updateWheres[0]);
+    expect(cas).toContain('incidents.status');
+    expect(cas).toContain('analyzing');
+    expect(publishEventMock).not.toHaveBeenCalled();
+  });
 });

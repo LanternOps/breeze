@@ -3,11 +3,13 @@ import "@/lib/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   CheckCircle2,
   HardDrive,
   Loader2,
   Play,
   Timer,
+  XCircle,
 } from "lucide-react";
 import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -31,7 +33,7 @@ type ScanRecord = {
   deviceId: string;
   deviceName: string;
   scanType: "quick" | "full" | "custom";
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "timed_out";
   startedAt: string | null;
   finishedAt: string | null;
   threatsFound: number;
@@ -79,7 +81,10 @@ export default function SecurityScanManager() {
     () =>
       scans
         .filter(
-          (scan) => scan.status === "completed" || scan.status === "failed",
+          (scan) =>
+            scan.status === "completed" ||
+            scan.status === "failed" ||
+            scan.status === "timed_out",
         )
         .slice(0, 25),
     [scans],
@@ -280,6 +285,44 @@ export default function SecurityScanManager() {
     } finally {
       setRunningScan(false);
     }
+  };
+  // A finished scan's pill must never read "Clean" next to a non-zero threat
+  // count, and a deadline hit (`timed_out`) still carries real detections (#9659).
+  const scanOutcome = (scan: ScanRecord) => {
+    const found = scan.threatsFound > 0 ? scan.threatsFound : 0;
+    if (scan.status === "timed_out") {
+      return {
+        kind: "timed_out",
+        icon: AlertTriangle,
+        className: "bg-amber-500/10 text-amber-700",
+        label:
+          found > 0
+            ? t("securitySecurityScanManager.scanTimedOutWithCount", { count: found })
+            : t("securitySecurityScanManager.scanTimedOut"),
+      };
+    }
+    if (scan.status === "failed") {
+      return {
+        kind: "failed",
+        icon: XCircle,
+        className: "bg-red-500/10 text-red-700",
+        label: t("securitySecurityScanManager.failed"),
+      };
+    }
+    if (found > 0) {
+      return {
+        kind: "threats_found",
+        icon: AlertTriangle,
+        className: "bg-red-500/10 text-red-700",
+        label: t("securitySecurityScanManager.scanThreatsFound", { count: found }),
+      };
+    }
+    return {
+      kind: "clean",
+      icon: CheckCircle2,
+      className: "bg-emerald-500/10 text-emerald-700",
+      label: t("securitySecurityScanManager.scanClean"),
+    };
   };
   const formatDuration = (durationSeconds: number | null): string => {
     if (!durationSeconds || durationSeconds <= 0) return "-";
@@ -601,14 +644,20 @@ export default function SecurityScanManager() {
                         {scan.scanType}
                       </td>
                       <td className="px-4 py-3">
-                        <span
-                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${scan.status === "completed" ? "bg-emerald-500/10 text-emerald-700" : "bg-red-500/10 text-red-700"}`}
-                        >
-                          <CheckCircle2 className="h-3 w-3" />
-                          {scan.status === "completed"
-                            ? `Clean${scan.threatsFound > 0 ? ` (${scan.threatsFound})` : ""}`
-                            : t("securitySecurityScanManager.failed")}
-                        </span>
+                        {(() => {
+                          const outcome = scanOutcome(scan);
+                          const Icon = outcome.icon;
+                          return (
+                            <span
+                              data-testid="scan-history-outcome"
+                              data-outcome={outcome.kind}
+                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${outcome.className}`}
+                            >
+                              <Icon className="h-3 w-3" />
+                              {outcome.label}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {formatTimestamp(scan.startedAt)}

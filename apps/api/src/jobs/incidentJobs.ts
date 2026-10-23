@@ -20,6 +20,13 @@ const SLA_MONITOR_INTERVAL_MS = envInt('INCIDENT_SLA_MONITOR_INTERVAL_MS', 60 * 
 const P1_ESCALATION_MINUTES = envInt('INCIDENT_SLA_P1_MINUTES', 15);
 const P2_ESCALATION_MINUTES = envInt('INCIDENT_SLA_P2_MINUTES', 60);
 
+/**
+ * The P1/P2 escalation thresholds are time-to-contain SLAs. Once an incident is
+ * `contained`, `recovering` or `closed` the SLA has been met, so only these
+ * statuses can breach it (#9661).
+ */
+const AWAITING_CONTAINMENT_STATUSES: Array<'detected' | 'analyzing'> = ['detected', 'analyzing'];
+
 let correlationTimer: ReturnType<typeof setInterval> | null = null;
 let timelineEnricherTimer: ReturnType<typeof setInterval> | null = null;
 let slaMonitorTimer: ReturnType<typeof setInterval> | null = null;
@@ -54,7 +61,12 @@ async function runExclusivePass(
  * per-incident claim into a fleet-wide one.
  */
 export function buildEscalationCas(incidentId: string) {
-  return and(eq(incidents.id, incidentId), isNull(incidents.escalatedAt));
+  return and(
+    eq(incidents.id, incidentId),
+    isNull(incidents.escalatedAt),
+    // Containment between the scan and this swap wins (#9661).
+    inArray(incidents.status, AWAITING_CONTAINMENT_STATUSES)
+  );
 }
 
 /** Rows the enricher is allowed to claim: open, and not already claimed. */
@@ -139,7 +151,7 @@ async function runIncidentSlaMonitorPass(): Promise<void> {
       .from(incidents)
       .where(
         and(
-          ne(incidents.status, 'closed'),
+          inArray(incidents.status, AWAITING_CONTAINMENT_STATUSES),
           // Exclude rows already escalated. Without this the LIMIT 100 window
           // fills with incidents that lose the CAS on every pass — they are
           // never re-paged (the CAS sees to that), but they permanently occupy

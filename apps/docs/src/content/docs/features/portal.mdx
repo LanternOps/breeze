@@ -35,6 +35,7 @@ Each organization can enable or disable portal features independently through th
 | `enableAssetCheckout` | `false` | Allow portal users to check out and return shared devices (parked: API only, no portal UI yet) |
 | `enableSelfService` | `true` | Allow portal users to view organization devices |
 | `enablePasswordReset` | `true` | Allow portal users to reset their password via email |
+| `enableTrustPageEditing` | `false` | **Customer trust page editing** (v0.124.0+): let the customer's admin contacts with a portal login edit the trust page draft -- security contact, website, hidden controls and what the page shows -- and withdraw the published page. You still publish their changes. Changing it needs MFA, and **Enable all visibility** leaves it off. See [Customer trust page editing](/security/trust-center-portal-editing/) |
 
 ### Visibility settings
 
@@ -199,6 +200,8 @@ Each organization can customize the portal appearance and contact information. B
 When **Dashboard** visibility is on, signing in lands the customer on a service-health summary instead of a device list: what is being looked after, what needs attention, and what has been done for them recently. It is the answer to "what am I paying you for", written for a business owner rather than a technician.
 
 Leave it off and portal users land on their devices as before.
+
+While the organization's public trust page is live, the dashboard also carries a **Public trust page** link to it (v0.124.0+). Nothing is shown while the page is unpublished.
 
 ---
 

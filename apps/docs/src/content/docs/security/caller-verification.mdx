@@ -13,17 +13,32 @@ Open **Verify caller** on a ticket, contact or device. Confirm the requester, ac
 
 In this release the available methods are SMS link, email link and callback attestation. SMS and email reach tier 2 only through an established destination. Imported or AI-written destinations require technician attestation. Callback attestation is tier 1. Email to any of the target account's mailbox addresses cannot verify a reset of that mailbox.
 
-**Workstation verification is not available in this release.** The prompt that appears on a bound workstation (tier 3) ships dark behind `CALLER_VERIFICATION_WORKSTATION_ENABLED`, which defaults to `false`. While it is off, the workstation method is reported as unavailable, and tier 3 cannot be selected in the policy: the policy editor and API cap the required tier at 2. Because tier 3 is reachable only through a bound workstation, a policy that required it could never be satisfied.
+**Workstation verification is not available in this release.** The prompt that appears on a bound workstation (tier 3) ships dark behind `CALLER_VERIFICATION_WORKSTATION_ENABLED`, which defaults to `false`. While it is off, the workstation method is reported as unavailable, and the policy editor and API cap the required tier for **password reset** at 2, because tier 3 is reachable for a reset only through a bound workstation, so a policy that required it could never be satisfied. For **account disable**, tier 3 can be required as long as the policy permits administrative disable, since an administrative disable satisfies that tier (see below). With administrative disable off, a tier 3 disable policy is refused the same way (`tier_unachievable`).
 
 Number matching confirms the request; it does not prove the technician's identity or prevent a coached caller from being relayed. If uncertain, the caller should hang up and call the MSP on a number they already trust.
 
 ## Disable an account without contacting its owner
 
-An org-level contact with an allowed authoriser role can verify a disable of another account. A site's primary contact has no automatic org-wide authority. For offboarding or containment, use **Administrative disable** through the API: enter a reason of at least 20 characters and complete interactive MFA step-up. This option requires organization write permission and an effective policy that permits it. It cannot authorise password resets, and ordinary action approval still applies.
+An org-level contact with an allowed authoriser role can verify a disable of another account. A site's primary contact has no automatic org-wide authority. For offboarding or containment, use **Administrative disable**: `POST /orgs/:orgId/caller-verifications/administrative` with a reason of at least 20 characters, from a session that has just completed interactive MFA step-up. The step-up proof is bound to your session, so it cannot be replayed from another one. This option requires organization write permission and an effective policy that permits it. It cannot authorise password resets, and ordinary action approval still applies.
+
+## When an action is refused
+
+A Microsoft 365 password reset or account disable runs only against a verification that is unused, fresh, and made for that action and target. Without one, the action is refused wherever it is attempted: the AI chat shows "Caller verification required" with a **Verify caller** prompt, an MCP client receives the same typed error, and an approved action that reaches the release worker is held with the same code rather than executed. Verify the caller, then retry the action.
+
+| Code | Where you see it | Meaning |
+|---|---|---|
+| `caller_verification_required` | Chat, MCP, action release | No usable verification exists for this action and target. Run **Verify caller** and retry. |
+| `subject_unmatched` | Action release | The action is not pinned to the account it was approved for. Recreate the action. |
+| `tier_unachievable` | Policy editor and API | The required tier cannot be reached with the methods available (see the workstation note above). |
+| `attempt_cap` | Verify caller | The contact's hourly attempt limit (default 3) is reached. Wait, or use another method. |
+
+Actions are pinned to one Entra account by its object id when they are created. Reset or disable actions that were approved before this pinning existed (created on a release before v0.124.0) carry no pinned target, so they fail at release with `subject_unmatched`. Recreate them.
 
 ## Rejection and failures
 
 **This is not me** fences the requester and relevant targets, opens a security incident, and cancels pending or approved actions. An action that already started dispatch appears in the incident for investigation; confirm in Entra whether the change landed. Expired challenges can still report a suspicious request within the rejection window.
+
+The rejection notice is delivered once. The in-app notification is retried until it lands; the email is attempted at most 3 times, after which the row is marked notified and left alone, so an install with no email transport does not retry forever (#9065). The in-app notice is still sent on such an install.
 
 A verification remains used when dispatch fails. Re-verify before creating another intent. A retry of the same intent does not consume a second grant, but an already-started dispatch must be reconciled rather than blindly repeated.
 

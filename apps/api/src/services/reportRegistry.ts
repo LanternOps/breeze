@@ -27,8 +27,10 @@ import {
   endpointManagementConfigSchema,
   hardwareLifecycleConfigSchema,
   identityAccessConfigSchema,
+  clientProfitabilityConfigSchema,
   legacyReportConfigSchema,
   mrrRenewalsConfigSchema,
+  quoteWinRateConfigSchema,
   securityCompliancePostureConfigSchema,
   storedArtifactConfigSchema,
   technicianTimeConfigSchema,
@@ -371,6 +373,32 @@ const generators = {
     generate: async (scope, config, authority) => {
       const { generateMrrRenewalsReport } = await import('./businessReports/mrrRenewalsReport');
       return generateMrrRenewalsReport(scope, config, authority);
+    },
+  },
+  // Business reports phase 2 W2 (#9828). Same shape as the other business
+  // types; the period applies to each lineage's first send date.
+  quote_win_rate: {
+    type: 'quote_win_rate', label: 'Quote win rate',
+    configSchema: quoteWinRateConfigSchema, supportedScopes: ORG_OR_PARTNER,
+    execution: 'user', audience: 'msp_staff',
+    requiredPermissions: BUSINESS_REPORT_REQUIRED_PERMISSIONS.quote_win_rate,
+    detailRowCap: BUSINESS_DETAIL_ROW_CAP,
+    generate: async (scope, config, authority) => {
+      const { generateQuoteWinRateReport } = await import('./businessReports/quoteWinRateReport');
+      return generateQuoteWinRateReport(scope, config, authority);
+    },
+  },
+  // Business reports phase 2 W3 (#9828). Same shape as the other business
+  // types; needs invoices:read AND time_entries:read.
+  client_profitability: {
+    type: 'client_profitability', label: 'Client profitability',
+    configSchema: clientProfitabilityConfigSchema, supportedScopes: ORG_OR_PARTNER,
+    execution: 'user', audience: 'msp_staff',
+    requiredPermissions: BUSINESS_REPORT_REQUIRED_PERMISSIONS.client_profitability,
+    detailRowCap: BUSINESS_DETAIL_ROW_CAP,
+    generate: async (scope, config, authority) => {
+      const { generateClientProfitabilityReport } = await import('./businessReports/clientProfitabilityReport');
+      return generateClientProfitabilityReport(scope, config, authority);
     },
   },
 } satisfies { readonly [K in ReportType]: ReportTypeDef & { type: K } };

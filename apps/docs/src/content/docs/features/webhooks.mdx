@@ -389,6 +389,8 @@ The `X-Breeze-Signature-Timestamp` header contains the same timestamp value used
 
 Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state. The list returns status and timing only; the event payload and the receiver's response body are not included. Reading the history requires `webhooks:read`.
 
+From v0.124.0, delivered and failed records are kept for **90 days** by default and then removed by a nightly job; records that are still pending or retrying are never removed. Self-hosters can change the window with the webhook delivery retention variables in [Environment Variables](/deploy/environment/). A webhook whose retries are exhausted with no later success also opens a connection-health incident on **Integrations** -- see [Connection Health Checks](/features/notifications/#connection-health-checks).
+
 ### Listing Deliveries
 
 ```bash
