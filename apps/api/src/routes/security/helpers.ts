@@ -428,6 +428,29 @@ export function resolveRecommendationStatus(
   return sawCompleted ? 'completed' : 'dismissed';
 }
 
+/**
+ * Per-org view of one recommendation: each org where the problem is present with
+ * that org's own effective status (same completion-voids-on-reobservation rule as
+ * the aggregate) so the UI can complete/dismiss/reopen for exactly one org (#9714).
+ */
+export function resolveOrgRecommendationBreakdown(
+  recommendationId: string,
+  affectedByOrg: AffectedOrgBreakdown | undefined,
+  actions: RecommendationActionMap | undefined
+): Array<{ orgId: string; status: 'open' | 'completed' | 'dismissed'; affectedDevices: number }> {
+  if (!affectedByOrg) return [];
+  const byOrg = actions?.get(recommendationId);
+  const rows: Array<{ orgId: string; status: 'open' | 'completed' | 'dismissed'; affectedDevices: number }> = [];
+  for (const [orgId, affected] of affectedByOrg) {
+    const action = byOrg?.get(orgId);
+    let status: 'open' | 'completed' | 'dismissed' = 'open';
+    if (action?.status === 'dismissed') status = 'dismissed';
+    else if (action?.status === 'completed' && affected.latestObservedMs <= action.at.getTime()) status = 'completed';
+    rows.push({ orgId, status, affectedDevices: affected.affectedDevices });
+  }
+  return rows;
+}
+
 // ── Org scoping ─────────────────────────────────────────────────────────────
 
 export function resolveScopedOrgIds(

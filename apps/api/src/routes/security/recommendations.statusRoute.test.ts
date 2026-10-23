@@ -120,3 +120,35 @@ describe('GET /security/recommendations status (#9641)', () => {
     expect(await firewallStatus()).toBe('open');
   });
 });
+
+describe('per-org breakdown + action orgId requirement (#9714)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auditRows.current = [];
+  });
+
+  it('lists each affected org with its own status and device count', async () => {
+    vi.mocked(listLatestSecurityPosture).mockResolvedValue([
+      device(ORG_A, 'd1', T0), device(ORG_A, 'd3', T0), device(ORG_B, 'd2', T0),
+    ] as never);
+    auditRows.current = [audit('security.recommendation.complete', ORG_A, T1)];
+    const res = await app().request('/security/recommendations');
+    const body = await res.json();
+    const rec = body.data.find((r: { id: string }) => r.id === REC);
+    const byOrg = Object.fromEntries(rec.orgs.map((o: { orgId: string }) => [o.orgId, o]));
+    expect(rec.orgs).toHaveLength(2);
+    expect(byOrg[ORG_A]).toMatchObject({ status: 'completed', affectedDevices: 2 });
+    expect(byOrg[ORG_B]).toMatchObject({ status: 'open', affectedDevices: 1 });
+  });
+
+  it.each(['complete', 'dismiss', 'reopen'])(
+    'POST %s without orgId for a multi-org partner is a clear 400',
+    async (action) => {
+      vi.mocked(listLatestSecurityPosture).mockResolvedValue([device(ORG_A, 'd1', T0)] as never);
+      const res = await app().request(`/security/recommendations/${REC}/${action}`, { method: 'POST' });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/orgId is required/i);
+    },
+  );
+});

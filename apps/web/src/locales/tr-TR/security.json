@@ -423,6 +423,8 @@
     "osFilterLabel": "İşletim sistemi"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Öneri güncellenemedi.",
+    "affectsOrgs": "{{count}} kuruluşu etkiliyor",
     "adminAccounts": "Yönetici Hesapları",
     "allCategories": "Tüm kategoriler",
     "allPriorities": "Tüm öncelikler",

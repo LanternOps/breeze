@@ -423,6 +423,8 @@
     "osFilterLabel": "Système d'exploitation"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Impossible de mettre à jour la recommandation.",
+    "affectsOrgs": "Touche {{count}} organisations",
     "adminAccounts": "Comptes administratifs",
     "allCategories": "Toutes les catégories",
     "allPriorities": "Toutes les priorités",
