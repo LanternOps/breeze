@@ -670,6 +670,32 @@ describe('computeEffectDigestOutcome', () => {
     });
   });
 
+  // Full-control W02 (#6756): channel delete is four_eyes (QV3).
+  describe('manage_notification_channels:delete', () => {
+    const args = { action: 'delete', channelId: 'channel-1' };
+    const row = { name: 'Ops Slack', type: 'slack', orgId: null, partnerId: 'partner-1' };
+
+    it('pins the channel identity: a rename or re-scope changes the digest, a test run does not', async () => {
+      const before = await digestFor('manage_notification_channels', args, makeFakeDb([[row]]).database);
+      const sameAfterATest = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row }]]).database);
+      const renamed = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row, name: 'Billing Slack' }]]).database);
+      const rescoped = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row, orgId: 'org-1', partnerId: null }]]).database);
+      expect(before).toMatch(/^[0-9a-f]{64}$/);
+      expect(before).toBe(sameAfterATest);
+      expect(before).not.toBe(renamed);
+      expect(before).not.toBe(rescoped);
+    });
+
+    it('reports missing_arg without a channelId and target_absent for a deleted channel', async () => {
+      const { database, select } = makeFakeDb([]);
+      expect(await computeEffectDigestOutcome('manage_notification_channels', { action: 'delete' }, database))
+        .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+      expect(select).not.toHaveBeenCalled();
+      expect(await computeEffectDigestOutcome('manage_notification_channels', args, makeFakeDb([[]]).database))
+        .toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    });
+  });
+
   describe('execute_dr_plan', () => {
     it('pins the plan revision — a plan edited between approval and release changes the digest', async () => {
       const args = { planId: 'plan-1', executionType: 'failover' };
