@@ -143,6 +143,19 @@ export async function admitServiceRecoveryTask(
     };
   }
 
+  // This entry point admits `service_recovery` and nothing else. Since R1a the
+  // registry holds a second recipe; a caller naming it HERE must get the same
+  // refusal it got before that recipe existed, never a service-recovery-shaped
+  // admission under another recipe's key. Other recipes go through admitTask.
+  if (input.workflowKey !== undefined && input.workflowKey !== SERVICE_RECOVERY_WORKFLOW_KEY) {
+    return {
+      ok: false,
+      refusal: 'unknown_recipe',
+      detail: `'${input.workflowKey}' is not a supported workflow for service-recovery admission. `
+        + `Supported workflows: ${SERVICE_RECOVERY_WORKFLOW_KEY}.`,
+    };
+  }
+
   // Resolve BEFORE the input parse and before any db work. An unknown workflow
   // cannot be admitted regardless of what the org contains, and reaching
   // Postgres to discover that would hold a connection for a request that can

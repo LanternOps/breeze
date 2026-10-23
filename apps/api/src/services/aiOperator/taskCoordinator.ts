@@ -63,12 +63,14 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
 import {
+  isIdentityOffboardingCheckpoint,
   isServiceRecoveryCheckpoint,
   serviceRecoveryCheckpointSchema,
   type ServiceRecoveryCheckpoint,
   type TaskCheckpoint,
 } from '@breeze/shared';
 import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
+import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
 import { getRecipe, validateRecipeNextStep } from './recipes';
 import type { RecipeDefinition, StepDefinition, StepKind } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
@@ -692,6 +694,7 @@ function withServiceRecoveryCheckpoint(
  */
 export const RECIPE_CHECKPOINT_ARMS: Readonly<Record<string, (c: TaskCheckpoint) => boolean>> = Object.freeze({
   [SERVICE_RECOVERY_WORKFLOW_KEY]: isServiceRecoveryCheckpoint,
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: isIdentityOffboardingCheckpoint,
 });
 
 /**
