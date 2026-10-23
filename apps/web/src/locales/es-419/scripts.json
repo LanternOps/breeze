@@ -970,7 +970,15 @@
       "allAdmitted": "Todos los dispositivos seleccionados fueron admitidos y puestos en cola.",
       "partiallyAdmitted": "Algunos dispositivos fueron admitidos y puestos en cola. Revise los objetivos restantes.",
       "rejected": "No se admitió ningún dispositivo. Revise los motivos a continuación.",
-      "queued": "En cola"
+      "queued": "En cola",
+      "reasons": {
+        "not_found_or_inaccessible": "Dispositivo no encontrado o inaccesible",
+        "site_access_denied": "No tienes acceso al sitio de este dispositivo",
+        "script_org_mismatch": "El script pertenece a una organización distinta a la del dispositivo",
+        "os_incompatible": "El script no es compatible con el sistema operativo de este dispositivo",
+        "device_decommissioned": "El dispositivo fue dado de baja",
+        "maintenance_suppressed": "Omitido: el dispositivo está en una ventana de mantenimiento"
+      }
     },
     "confirm": {
       "title": "Confirmar ejecución",

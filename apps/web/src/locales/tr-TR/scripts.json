@@ -970,7 +970,15 @@
       "allAdmitted": "Seçilen tüm cihazlar kabul edildi ve kuyruğa alındı.",
       "partiallyAdmitted": "Bazı cihazlar kabul edildi ve kuyruğa alındı. Kalan hedefleri inceleyin.",
       "rejected": "Hiçbir cihaz kabul edilmedi. Aşağıdaki nedenleri inceleyin.",
-      "queued": "Kuyruğa alındı"
+      "queued": "Kuyruğa alındı",
+      "reasons": {
+        "not_found_or_inaccessible": "Cihaz bulunamadı veya erişilemiyor",
+        "site_access_denied": "Bu cihazın sitesine erişiminiz yok",
+        "script_org_mismatch": "Komut dosyası, cihazdan farklı bir kuruluşa ait",
+        "os_incompatible": "Komut dosyası bu cihazın işletim sistemiyle uyumlu değil",
+        "device_decommissioned": "Cihaz hizmet dışı bırakıldı",
+        "maintenance_suppressed": "Atlandı: cihaz bir bakım penceresinde"
+      }
     },
     "confirm": {
       "title": "Yürütmeyi Onayla",
