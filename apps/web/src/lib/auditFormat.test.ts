@@ -189,6 +189,13 @@ describe('formatAuditAction', () => {
   });
 });
 
+describe('recovery key audit labels (#9609)', () => {
+  it('labels reveal and rotate instead of prettifying the code', () => {
+    expect(formatAuditAction('device.recovery_key.reveal')).toBe('Revealed a recovery key');
+    expect(formatAuditAction('device.recovery_key.rotate')).toBe('Rotated a recovery key');
+  });
+});
+
 // The English fallback map in auditFormat.ts and the `admin:audit.actions`
 // locale catalog are two copies of the same vocabulary. If they drift, a code
 // renders translated for some operators and prettified for others — the exact

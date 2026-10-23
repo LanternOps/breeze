@@ -145,6 +145,9 @@ export default function BackupHealthOverview({ orgId }: { orgId: string | null }
               {t('backupHealth.m365Accounts', { value: summary.m365Accounts })}
             </span>
           </div>
+          <p data-testid="backup-health-definition" className="text-xs text-muted-foreground">
+            {t('backupHealth.definition')}
+          </p>
 
           <div className="grid gap-6 lg:grid-cols-2">
             <BarGroup

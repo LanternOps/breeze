@@ -22,7 +22,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
   const set = (patch: Partial<InheritableDefaultSettings>) =>
     onChange({ ...data, ...patch });
 
-  const autoEnrollment = data.autoEnrollment ?? { enabled: false, requireApproval: true, sendWelcome: true };
+  const autoEnrollment = data.autoEnrollment ?? { enabled: false, requireApproval: true };
 
   const maintenanceWindow = data.maintenanceWindow ?? '';
   const maintenanceWindowInvalid = maintenanceWindow.trim() !== '' && !isValidMaintenanceWindow(maintenanceWindow);
@@ -110,29 +110,6 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
           />
         </div>
 
-        <div className="space-y-2">
-          <label htmlFor="partner-defaults-device-group" className="text-sm font-medium">{t('partnerDefaults.deviceGroup')}</label>
-          <input
-            id="partner-defaults-device-group"
-            type="text"
-            value={data.deviceGroup ?? ''}
-            onChange={e => set({ deviceGroup: e.target.value || undefined })}
-            placeholder={t('partnerDefaults.notSet')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-          />
-        </div>
-
-        <div className="space-y-2">
-          <label htmlFor="partner-defaults-alert-threshold" className="text-sm font-medium">{t('partnerDefaults.alertThreshold')}</label>
-          <input
-            id="partner-defaults-alert-threshold"
-            type="text"
-            value={data.alertThreshold ?? ''}
-            onChange={e => set({ alertThreshold: e.target.value || undefined })}
-            placeholder={t('partnerDefaults.notSet')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-          />
-        </div>
       </div>
 
       {/* Auto-enrollment */}
@@ -160,17 +137,6 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               className="h-4 w-4 rounded border"
             />
             <span className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.requireApproval')}</span>
-          </label>
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={autoEnrollment.sendWelcome}
-              onChange={e =>
-                set({ autoEnrollment: { ...autoEnrollment, sendWelcome: e.target.checked } })
-              }
-              className="h-4 w-4 rounded border"
-            />
-            <span className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.sendWelcome')}</span>
           </label>
         </div>
       </div>

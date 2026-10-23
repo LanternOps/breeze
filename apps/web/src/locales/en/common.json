@@ -772,9 +772,9 @@
     },
     "search": {
       "prompt": "Search Breeze",
-      "placeholder": "Search devices, scripts, alerts, users, settings…",
+      "placeholder": "Search devices, scripts, alerts, settings…",
       "searching": "Searching…",
-      "startTyping": "Start typing to search across devices, scripts, alerts, users, and settings.",
+      "startTyping": "Start typing to search across devices, scripts, alerts, and settings.",
       "noResults": "No results found. Try a different query.",
       "navigationHint": "Use arrows to navigate, Enter to open",
       "closeHint": "Esc to close",
@@ -864,6 +864,8 @@
       "cycleSidebar": "Cycle the sidebar mode",
       "help": "Open the help panel",
       "showThis": "Show this card",
+      "orgSwitcher": "Open the organization switcher",
+      "aiSidebar": "Toggle the AI sidebar",
       "close": "Close a dialog or menu",
       "typingNote": "Single-key shortcuts pause while you are typing in a field.",
       "create": "Create",
@@ -2380,7 +2382,7 @@
           },
           "search": {
             "title": "Search anything",
-            "description": "Press Cmd+K to instantly find devices, scripts, alerts, users, or settings."
+            "description": "Press Cmd+K to instantly find devices, scripts, alerts, or settings."
           },
           "switchOrgs": {
             "title": "Switch organizations",

@@ -15,6 +15,7 @@ import {
   getPolicyOrgId,
   getRecommendationStatusMap,
   resolveRecommendationStatus,
+  resolveOrgRecommendationBreakdown,
   buildBe9Recommendations
 } from './helpers';
 import { requireSecurityReadAccess } from './readAuthorization';
@@ -37,7 +38,7 @@ function resolveActionOrgId(
   }
   const orgId = getPolicyOrgId(auth);
   if (!orgId) {
-    return { error: 'Unable to determine organization context', status: 400 };
+    return { error: 'orgId is required: choose an organization to act on this recommendation', status: 400 };
   }
   return { orgId };
 }
@@ -61,7 +62,9 @@ recommendationsRoutes.get(
 
     let recommendations = recommendationsResult.recommendations.map((rec) => ({
       ...rec,
-      status: resolveRecommendationStatus(rec.id, recommendationsResult.affectedByOrg?.get(rec.id), recommendationStatusMap)
+      status: resolveRecommendationStatus(rec.id, recommendationsResult.affectedByOrg?.get(rec.id), recommendationStatusMap),
+      // Per-org rows so the UI can act on ONE org's recommendation (#9714).
+      orgs: resolveOrgRecommendationBreakdown(rec.id, recommendationsResult.affectedByOrg?.get(rec.id), recommendationStatusMap)
     }));
 
     if (query.priority) {

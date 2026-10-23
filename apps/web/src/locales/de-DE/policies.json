@@ -1356,8 +1356,8 @@
       "recentViolations": "Aktuelle Verstöße",
       "noCurrentSoftwareViolations": "Keine aktuellen Softwareverstöße.",
       "violationS": "Verstoß(e)",
-      "remediation": "Abhilfe:",
-      "checked": "Geprüft:",
+      "remediation": "Abhilfe: {{value}}",
+      "checked": "Geprüft: {{date}}",
       "deactivatePolicy": "Richtlinie deaktivieren",
       "areYouSureYouWantToDeactivate": "Sind Sie sicher, dass Sie die Funktion deaktivieren möchten?",
       "thePolicyWillBeMarkedInactiveAnd": "? Die Richtlinie wird als inaktiv markiert und die Compliance-Daten werden gelöscht.",
@@ -1613,16 +1613,15 @@
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Geräte konnten nicht abgerufen werden",
-      "devicesWith": "Geräte mit",
-      "by": "von",
+      "devicesWith": "Geräte mit {{name}}",
+      "by": "von {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Mit dieser Software wurden keine Geräte gefunden.",
       "hostname": "Hostname",
       "oS": "Betriebssystem",
       "version": "Version",
       "lastSeen": "Zuletzt gesehen",
-      "device": "Gerät",
-      "total": "insgesamt",
-      "s": "s"
+      "deviceTotal_one": "{{count}} Gerät insgesamt",
+      "deviceTotal_other": "{{count}} Geräte insgesamt"
     },
     "policyForm": {
       "dryRunUnassigned": "0 Geräte — meist, weil diese Richtlinie noch keinem Gerät zugewiesen ist; eine vollständig konforme Flotte oder eine leere Standort-Freigabeliste ergibt ebenfalls 0",

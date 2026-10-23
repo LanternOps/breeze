@@ -772,9 +772,9 @@
     },
     "search": {
       "prompt": "Breeze durchsuchen",
-      "placeholder": "Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen durchsuchen…",
+      "placeholder": "Geräte, Skripte, Warnmeldungen und Einstellungen durchsuchen…",
       "searching": "Wird gesucht…",
-      "startTyping": "Beginnen Sie mit der Eingabe, um Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen zu durchsuchen.",
+      "startTyping": "Beginnen Sie mit der Eingabe, um Geräte, Skripte, Warnmeldungen und Einstellungen zu durchsuchen.",
       "noResults": "Keine Ergebnisse gefunden. Versuchen Sie eine andere Suchanfrage.",
       "navigationHint": "Mit den Pfeiltasten navigieren, mit Enter öffnen",
       "closeHint": "Mit Esc schließen",
@@ -864,6 +864,8 @@
       "cycleSidebar": "Seitenleisten-Modus wechseln",
       "help": "Hilfebereich öffnen",
       "showThis": "Diese Karte anzeigen",
+      "orgSwitcher": "Organisationsauswahl öffnen",
+      "aiSidebar": "KI-Seitenleiste ein- oder ausblenden",
       "close": "Dialog oder Menü schließen",
       "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen.",
       "create": "Erstellen",
@@ -2380,7 +2382,7 @@
           },
           "search": {
             "title": "Alles durchsuchen",
-            "description": "Drücken Sie Cmd+K, um Geräte, Skripte, Warnungen, Benutzer oder Einstellungen sofort zu finden."
+            "description": "Drücken Sie Cmd+K, um Geräte, Skripte, Warnungen oder Einstellungen sofort zu finden."
           },
           "switchOrgs": {
             "title": "Wechseln Sie die Organisation",

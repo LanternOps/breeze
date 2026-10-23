@@ -700,7 +700,13 @@
         "quality": "Qualität"
       },
       "failovers": "Failover",
-      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war"
+      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war",
+      "titleBy": {
+        "model": "KI-Nutzung nach Modell",
+        "organization": "KI-Nutzung nach Organisation",
+        "technician": "KI-Nutzung nach Techniker",
+        "feature": "KI-Nutzung nach Funktion"
+      }
     },
     "link": {
       "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "z.B. So 02:00-06:00, 02:00-04:00 oder 24/7",
     "maintenanceInvalid": "Verwenden Sie ein UTC-Fenster wie <first>Sonntag 02:00-04:00</first> oder <second>02:00-04:00</second> oder <always>24/7</always> für Always-On. Lassen Sie das Feld leer, damit Organisationen es konfigurieren können.",
     "maintenanceHelp": "Zeitfenster (UTC) für automatische Updates und Neustarts. Verwenden Sie <always>24/7</always> für Always-On oder lassen Sie das Feld leer, damit Organisationen es individuell konfigurieren können.",
-    "deviceGroup": "Standardgerätegruppe",
-    "alertThreshold": "Standardalarmschwelle",
     "autoEnrollment": {
       "title": "Automatische Registrierung",
       "enable": "Aktivieren Sie die automatische Registrierung für neue Geräte",
-      "requireApproval": "Erfordert die Genehmigung des Administrators",
-      "sendWelcome": "Willkommensbenachrichtigung senden"
+      "requireApproval": "Erfordert die Genehmigung des Administrators"
     },
     "enrollment": {
       "title": "Geräteregistrierung",
@@ -1419,7 +1422,10 @@
     "retrySites": "Erneut versuchen",
     "createASite": "Standort erstellen",
     "maxUsage": "Maximale Nutzung (optional)",
-    "defaultDeviceLimit": "50 (Standard)",
+    "defaultDeviceLimit": "{{count}} (Organisationsstandard)",
+    "expiresAtHelp": "Leer lassen für {{duration}} (Organisationsstandard).",
+    "usageFromDefault": "Standard",
+    "usageFromDefaultTitle": "Das Geräte-Limit stammt aus dem Organisationsstandard.",
     "maxUsageHelp": "Maximale Anzahl von Agenten, die sich mit diesem Schlüssel registrieren können.",
     "expiresAt": "Läuft ab um (optional)",
     "creating": "Erstellen...",
@@ -1810,27 +1816,13 @@
     "deviceGroup": {
       "title": "Standardgerätegruppe",
       "description": "Neu registrierte Geräte werden dieser Gruppe automatisch hinzugefügt.",
-      "options": {
-        "AllManagedDevices": "Alle verwalteten Geräte",
-        "CriticalInfrastructure": "Kritische Infrastruktur",
-        "RemoteStaff": "Remote-Mitarbeiter",
-        "Contractors": "Auftragnehmer"
-      }
-    },
-    "alertSeverity": {
-      "title": "Standardschweregrad der Warnung",
-      "description": "Warnungen unterhalb dieses Schweregrads werden nur an den Zusammenfassungsfeed übermittelt.",
-      "options": {
-        "critical": "Nur kritisch",
-        "high": "Hoch und kritisch",
-        "medium": "Mittel und höher"
-      }
+      "none": "Keine",
+      "unavailable": "Ausgewählte Gruppe (nicht verfügbar)"
     },
     "autoEnrollment": {
       "title": "Automatische Registrierung",
       "enable": "Aktivieren Sie die automatische Registrierung",
-      "requireApproval": "Erfordert die Genehmigung des Administrators",
-      "sendWelcome": "Willkommensnachricht senden"
+      "requireApproval": "Erfordert die Genehmigung des Administrators"
     },
     "agentUpdates": {
       "title": "Agent-Update-Richtlinie",
@@ -2487,7 +2479,11 @@
     "sourceDefault": "Standard",
     "selectOrgForEffectiveBudget": "Wählen Sie eine Organisation aus, um deren geltendes Budget zu sehen, oder bearbeiten Sie die partnerweiten Standardwerte.",
     "editPartnerWideDefaults": "Partnerweite Standardwerte bearbeiten",
-    "thresholdsOff": "Aus"
+    "thresholdsOff": "Aus",
+    "todaysCost": "Kosten heute",
+    "monthlyCost": "Kosten im Monat",
+    "messagesToday": "Nachrichten heute",
+    "tokensThisMonth": "Token in diesem Monat"
   },
   "aiAgentsPage": {
     "schedules": {

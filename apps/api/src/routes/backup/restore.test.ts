@@ -612,9 +612,64 @@ describe('restore routes', () => {
     );
   });
 
+  it('expands a selected directory to the indexed files beneath it only (#9628)', async () => {
+    selectMock
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+      )
+      .mockReturnValueOnce(chainMock([
+        { id: 'f1', sourcePath: '/data/pick/a.txt' },
+        { id: 'f2', sourcePath: '/data/pick/sub/b.txt' },
+        { id: 'f3', sourcePath: '/data/pickx/c.txt' },
+      ]))
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
+    insertMock.mockReturnValueOnce(chainMock([{
+      id: 'restore-1', snapshotId: 'snap-db-1', deviceId: 'device-1', restoreType: 'selective',
+      selectedPaths: ['/data/pick/a.txt', '/data/pick/sub/b.txt'], status: 'pending', targetPath: null, startedAt: null,
+      completedAt: null, restoredSize: null, restoredFiles: null, targetConfig: null, commandId: null,
+      createdAt: new Date('2026-04-01T00:00:00Z'), updatedAt: new Date('2026-04-01T00:00:00Z'),
+    }]));
+    queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-1', status: 'sent' } });
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'selective', selectedPaths: ['/data/pick'] }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+      'device-1',
+      'backup_restore',
+      expect.objectContaining({ selectedPaths: ['/data/pick/a.txt', '/data/pick/sub/b.txt'] }),
+      expect.anything()
+    );
+  });
+
+  it('answers 400 naming the count when a directory expands past the cap (#9628)', async () => {
+    const rows = Array.from({ length: 10_001 }, (_, i) => ({ id: `f${i}`, sourcePath: `/big/f${i}.txt` }));
+    selectMock
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+      )
+      .mockReturnValueOnce(chainMock(rows));
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'selective', selectedPaths: ['/big'] }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('10001');
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     'C:/Users/alex/Documents/../../../Windows/System32/config/SAM',
-    'C:/Users/alex',
+    'C:/Users/bob',
     'D:/secrets/keys.txt',
   ])('refuses %s — normalization never admits a path outside the indexed snapshot files', async (selected) => {
     selectMock

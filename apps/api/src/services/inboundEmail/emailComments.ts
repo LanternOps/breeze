@@ -3,6 +3,7 @@ import { db } from '../../db';
 import { ticketComments, tickets } from '../../db/schema';
 import { emitTicketEvent } from '../ticketEvents';
 import { writeTicketCommentedOutbox } from '../ticketService';
+import { lockTicketForWrite } from '../ticketRowLock';
 
 export interface EmailCommentInput {
   ticketId: string;
@@ -30,6 +31,9 @@ export interface EmailCommentInput {
 export async function insertEmailAuthoredComment(input: EmailCommentInput): Promise<{ commentId: string }> {
   const { ticketId, orgId, senderPortalUserId, authorName, content, emitEvent = true } = input;
 
+  // #8972 W0: ticket row lock before the comment. A ticket this context
+  // cannot lock leaves the INSERT to answer exactly as before (RLS / FK).
+  await lockTicketForWrite(db, ticketId);
   const inserted = await db.insert(ticketComments).values({
     ticketId,
     userId: null,

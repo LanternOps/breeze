@@ -1356,8 +1356,8 @@
       "recentViolations": "Violazioni recenti",
       "noCurrentSoftwareViolations": "Nessuna violazione software corrente.",
       "violationS": "violazione/i",
-      "remediation": "Correzione:",
-      "checked": "Controllato:",
+      "remediation": "Correzione: {{value}}",
+      "checked": "Controllato: {{date}}",
       "deactivatePolicy": "Disattiva criterio",
       "areYouSureYouWantToDeactivate": "Vuoi davvero disattivare",
       "thePolicyWillBeMarkedInactiveAnd": "? Il criterio verrà contrassegnato come inattivo e i dati di conformità saranno cancellati.",
@@ -1613,16 +1613,15 @@
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossibile recuperare i dispositivi",
-      "devicesWith": "Dispositivi con",
-      "by": "di",
+      "devicesWith": "Dispositivi con {{name}}",
+      "by": "di {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Nessun dispositivo trovato con questo software.",
       "hostname": "Nome host",
       "oS": "OS",
       "version": "Versione",
       "lastSeen": "Ultimo rilevamento",
-      "device": "device",
-      "total": "totale",
-      "s": "s"
+      "deviceTotal_one": "{{count}} dispositivo in totale",
+      "deviceTotal_other": "{{count}} dispositivi in totale"
     },
     "policyForm": {
       "dryRunUnassigned": "0 dispositivi — di solito perché questa policy non è ancora assegnata ad alcun dispositivo, ma anche una flotta interamente conforme o un elenco di siti vuoto dà 0",

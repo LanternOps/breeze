@@ -7,10 +7,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { auditRows } = vi.hoisted(() => ({ auditRows: { current: [] as unknown[] } }));
+const { auditRows, insertedValues } = vi.hoisted(() => ({
+  auditRows: { current: [] as unknown[] },
+  insertedValues: { current: undefined as unknown },
+}));
 
 vi.mock('../../db', () => ({
   db: {
+    insert: vi.fn(() => ({
+      values: (v: unknown) => {
+        insertedValues.current = v;
+        return Promise.resolve();
+      },
+    })),
     select: vi.fn(() => ({
       from: () => ({
         // getRecommendationStatusMap: from().where().orderBy()
@@ -38,6 +47,7 @@ vi.mock('./readAuthorization', () => ({
   requireSecurityReadAccess: async (_c: unknown, next: () => Promise<void>) => next(),
 }));
 
+import { db } from '../../db';
 import { listLatestSecurityPosture } from '../../services/securityPosture';
 import { recommendationsRoutes } from './recommendations';
 
@@ -119,4 +129,60 @@ describe('GET /security/recommendations status (#9641)', () => {
     auditRows.current = [audit('security.recommendation.complete', ORG_A, T1)];
     expect(await firewallStatus()).toBe('open');
   });
+});
+
+describe('per-org breakdown + action orgId requirement (#9714)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auditRows.current = [];
+  });
+
+  it('lists each affected org with its own status and device count', async () => {
+    vi.mocked(listLatestSecurityPosture).mockResolvedValue([
+      device(ORG_A, 'd1', T0), device(ORG_A, 'd3', T0), device(ORG_B, 'd2', T0),
+    ] as never);
+    auditRows.current = [audit('security.recommendation.complete', ORG_A, T1)];
+    const res = await app().request('/security/recommendations');
+    const body = await res.json();
+    const rec = body.data.find((r: { id: string }) => r.id === REC);
+    const byOrg = Object.fromEntries(rec.orgs.map((o: { orgId: string }) => [o.orgId, o]));
+    expect(rec.orgs).toHaveLength(2);
+    expect(byOrg[ORG_A]).toMatchObject({ status: 'completed', affectedDevices: 2 });
+    expect(byOrg[ORG_B]).toMatchObject({ status: 'open', affectedDevices: 1 });
+  });
+
+  it('breakdown: dismissed stays dismissed; a completion voided by a later observation is open', async () => {
+    vi.mocked(listLatestSecurityPosture).mockResolvedValue([
+      device(ORG_A, 'd1', T0), device(ORG_B, 'd2', T2),
+    ] as never);
+    auditRows.current = [
+      audit('security.recommendation.dismiss', ORG_A, T1),
+      audit('security.recommendation.complete', ORG_B, T1),
+    ];
+    const body = await (await app().request('/security/recommendations')).json();
+    const rec = body.data.find((r: { id: string }) => r.id === REC);
+    const byOrg = Object.fromEntries(rec.orgs.map((o: { orgId: string; status: string }) => [o.orgId, o.status]));
+    expect(byOrg).toEqual({ [ORG_A]: 'dismissed', [ORG_B]: 'open' });
+  });
+
+  it('POST complete with ?orgId records the audit row against that org', async () => {
+    vi.mocked(listLatestSecurityPosture).mockResolvedValue([
+      device(ORG_A, 'd1', T0), device(ORG_B, 'd2', T0),
+    ] as never);
+    const res = await app().request(`/security/recommendations/${REC}/complete?orgId=${ORG_B}`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.insert).mock.results.length).toBeGreaterThan(0);
+    expect(insertedValues.current).toMatchObject({ orgId: ORG_B, action: 'security.recommendation.complete' });
+  });
+
+  it.each(['complete', 'dismiss', 'reopen'])(
+    'POST %s without orgId for a multi-org partner is a clear 400',
+    async (action) => {
+      vi.mocked(listLatestSecurityPosture).mockResolvedValue([device(ORG_A, 'd1', T0)] as never);
+      const res = await app().request(`/security/recommendations/${REC}/${action}`, { method: 'POST' });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/orgId is required/i);
+    },
+  );
 });

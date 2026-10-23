@@ -16,8 +16,9 @@ import {
 } from '../../db/schema';
 import {
   computeContractEstimate, generateDueInvoice, listContracts,
-  summarizeActiveContractMrrByOrg, type ContractActorT,
+  type ContractActorT,
 } from '../../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../../services/contractMrr';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 

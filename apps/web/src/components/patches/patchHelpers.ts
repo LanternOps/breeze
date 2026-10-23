@@ -112,6 +112,8 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
     installFailure: readInstallFailure(raw.installFailure),
     // #8728: only GET /patches supplies it; the ring list leaves it undefined.
     outstandingDeviceCount: typeof raw.outstandingDeviceCount === 'number' ? raw.outstandingDeviceCount : undefined,
+    externalId: typeof raw.externalId === 'string' && raw.externalId.trim() ? raw.externalId : undefined,
+    version: typeof raw.version === 'string' && raw.version.trim() ? raw.version : null,
   };
 }
 
@@ -228,6 +230,8 @@ export function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
 export type DevicePatchRow = {
   id: string;
   hostname: string;
+  /** Operator-set name from /devices; the UI leads with it when set (#9533). */
+  displayName?: string;
   osType: string;
   lastSeenAt?: string;
   pendingPatches: number;

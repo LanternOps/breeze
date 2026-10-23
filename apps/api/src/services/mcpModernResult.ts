@@ -49,9 +49,13 @@ export function decorateModernResult(method: string, result: Record<string, unkn
   const existingMeta = typeof result._meta === 'object' && result._meta !== null && !Array.isArray(result._meta)
     ? (result._meta as Record<string, unknown>)
     : {};
+  // B-W04 (#6158, D-B32): a tools/call result may itself be an MRTR
+  // `input_required` (URL-mode approval elicitation); keep it. tools/call is
+  // not cacheable, so no ttlMs/cacheScope is ever added to it.
+  const keepInputRequired = method === 'tools/call' && result.resultType === 'input_required';
   const decorated: Record<string, unknown> = {
     ...result,
-    resultType: 'complete',
+    resultType: keepInputRequired ? 'input_required' : 'complete',
     _meta: { ...existingMeta, [SERVER_INFO_META_KEY]: serverInfo() },
   };
   if (isCacheableMethod(method)) {

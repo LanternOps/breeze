@@ -41,4 +41,14 @@ describe('business report card gate (#3198)', () => {
     const { result: both } = renderHook(() => useCanUseBusinessReportType());
     expect(both.current('ai_usage_by_client')).toBe(true);
   });
+
+  it('gates mrr_renewals on contracts:read alone', () => {
+    granted = new Set(['tickets:read', 'time_entries:read', 'invoices:read', 'ai_sessions:read_all']);
+    const { result: without } = renderHook(() => useCanUseBusinessReportType());
+    expect(without.current('mrr_renewals')).toBe(false);
+
+    granted = new Set(['contracts:read']);
+    const { result: held } = renderHook(() => useCanUseBusinessReportType());
+    expect(held.current('mrr_renewals')).toBe(true);
+  });
 });

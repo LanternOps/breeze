@@ -14,6 +14,7 @@ import { cn, formatNumber, friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
 import { useOrgStore } from "@/stores/orgStore";
+import { runAction, handleActionError } from "@/lib/runAction";
 import AccessDenied from "../shared/AccessDenied";
 import { FilterSelect } from "../shared/FilterSelect";
 import SecurityPageHeader from "./SecurityPageHeader";
@@ -29,6 +30,13 @@ type Recommendation = {
   effort: string;
   affectedDevices: number;
   steps: string[];
+  /** Each org where the problem is present, with that org's own status (#9714). */
+  orgs?: RecommendationOrg[];
+};
+type RecommendationOrg = {
+  orgId: string;
+  status: "open" | "dismissed" | "completed";
+  affectedDevices: number;
 };
 type Summary = {
   total: number;
@@ -78,8 +86,6 @@ export default function RecommendationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
-  // Separate from `error`: a refetch clears the load error, not the action error.
-  const [actionError, setActionError] = useState<string>();
   const [priorityFilter, setPriorityFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -141,22 +147,31 @@ export default function RecommendationsPage() {
     fetchData();
     return () => abortRef.current?.abort();
   }, [fetchData]);
-  const handleAction = async (id: string, action: "complete" | "dismiss" | "reopen") => {
-    setActionError(undefined);
+  const organizations = useOrgStore((s) => s.organizations);
+  const orgName = (orgId: string) =>
+    organizations.find((o) => o.id === orgId)?.name ?? orgId.slice(0, 8);
+
+  // Always acts on ONE explicit org — the row's — never "all orgs". In the
+  // All-organizations view there is no ambient org, so the API 400s without it.
+  const handleAction = async (
+    id: string,
+    orgId: string,
+    action: "complete" | "dismiss" | "reopen",
+  ) => {
     try {
-      const res = await fetchWithAuth(
-        `/security/recommendations/${id}/${action}`,
-        { method: "POST" },
-      );
-      throwIfNotOk(res);
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/security/recommendations/${id}/${action}`, {
+            method: "POST",
+            orgIdOverride: orgId,
+          }),
+        errorFallback: t("securityRecommendationsPage.actionFailed"),
+      });
     } catch (err) {
+      // runAction already toasted the failure (#2472: it must be visible even
+      // though the refetch below clears `error`); 401 is the auth redirect's.
+      handleActionError(err, t("securityRecommendationsPage.actionFailed"));
       console.error(`[RecommendationsPage] ${action} error:`, err);
-      // NOT `setError`: the unconditional `fetchData` below opens with
-      // `setError(undefined)`, and React batches both writes into one render — so
-      // a failed complete/dismiss was wiped before it ever painted and the user
-      // saw NOTHING. Keep action failures in their own state, which the refetch
-      // does not clear. (#2472)
-      setActionError(friendlyFetchError(err));
     }
     fetchData(pagination.page);
   };
@@ -206,7 +221,7 @@ export default function RecommendationsPage() {
   const hasData = errorKind !== "other";
   const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="recommendations-page">
       <SecurityPageHeader
         title={t("securityRecommendationsPage.securityRecommendations")}
         subtitle={t(
@@ -245,16 +260,6 @@ export default function RecommendationsPage() {
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
           <p className="text-sm text-destructive">{error}</p>
-        </div>
-      )}
-
-      {actionError && (
-        <div
-          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center"
-          data-testid="recommendations-action-error"
-          role="alert"
-        >
-          <p className="text-sm text-destructive">{actionError}</p>
         </div>
       )}
 
@@ -338,6 +343,7 @@ export default function RecommendationsPage() {
             return (
               <div
                 key={rec.id}
+                data-testid={`recommendation-card-${rec.id}`}
                 className="rounded-lg border bg-card p-4 shadow-xs"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -371,24 +377,22 @@ export default function RecommendationsPage() {
                 </div>
 
                 <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-                  <span>
-                    {t("securityRecommendationsPage.impact")}
-                    <span
-                      className={cn(
-                        "font-medium capitalize",
-                        impactColor[rec.impact],
-                      )}
-                    >
-                      {rec.impact}
-                    </span>
+                  <span
+                    className={cn("capitalize", impactColor[rec.impact])}
+                  >
+                    {t("securityRecommendationsPage.impact", {
+                      value: rec.impact,
+                    })}
+                  </span>
+                  <span className="capitalize">
+                    {t("securityRecommendationsPage.effort", {
+                      value: rec.effort,
+                    })}
                   </span>
                   <span>
-                    {t("securityRecommendationsPage.effort")}
-                    <span className="font-medium capitalize">{rec.effort}</span>
-                  </span>
-                  <span>
-                    {t("securityRecommendationsPage.devices")}
-                    <span className="font-medium">{rec.affectedDevices}</span>
+                    {t("securityRecommendationsPage.devices", {
+                      value: rec.affectedDevices,
+                    })}
                   </span>
                 </div>
 
@@ -406,7 +410,9 @@ export default function RecommendationsPage() {
                       )}
                       {isExpanded
                         ? t("securityRecommendationsPage.hideSteps")
-                        : `${rec.steps.length} remediation steps`}
+                        : t("securityRecommendationsPage.remediationSteps", {
+                            count: rec.steps.length,
+                          })}
                     </button>
                     {isExpanded && (
                       <ol className="mt-2 ml-4 list-decimal space-y-1 text-xs text-muted-foreground">
@@ -418,38 +424,53 @@ export default function RecommendationsPage() {
                   </div>
                 )}
 
-                {rec.status !== "open" && (
-                  <div className="mt-3 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleAction(rec.id, "reopen")}
-                      className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
-                    >
-                      {t("securityRecommendationsPage.reopen")}
-                    </button>
-                  </div>
+                {(rec.orgs ?? []).length > 1 && (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    {t("securityRecommendationsPage.affectsOrgs", {
+                      count: rec.orgs!.length,
+                    })}
+                  </p>
                 )}
-
-                {rec.status === "open" && (
-                  <div className="mt-3 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleAction(rec.id, "complete")}
-                      className="inline-flex items-center gap-1 rounded-md border bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20"
-                    >
-                      <Check className="h-3 w-3" />
-                      {t("securityRecommendationsPage.markComplete")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleAction(rec.id, "dismiss")}
-                      className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
-                    >
-                      <X className="h-3 w-3" />
-                      {t("securityRecommendationsPage.dismiss")}
-                    </button>
+                {(rec.orgs ?? []).map((o) => (
+                  <div
+                    key={o.orgId}
+                    className="mt-2 flex flex-wrap items-center gap-2"
+                  >
+                    {(rec.orgs ?? []).length > 1 && (
+                      <span className="text-xs font-medium">
+                        {orgName(o.orgId)} · {t(/* i18n-dynamic */ `securityRecommendationsPage.${o.status}`)}
+                      </span>
+                    )}
+                    {o.status !== "open" ? (
+                      <button
+                        type="button"
+                        onClick={() => handleAction(rec.id, o.orgId, "reopen")}
+                        className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+                      >
+                        {t("securityRecommendationsPage.reopen")}
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleAction(rec.id, o.orgId, "complete")}
+                          className="inline-flex items-center gap-1 rounded-md border bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20"
+                        >
+                          <Check className="h-3 w-3" />
+                          {t("securityRecommendationsPage.markComplete")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAction(rec.id, o.orgId, "dismiss")}
+                          className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+                        >
+                          <X className="h-3 w-3" />
+                          {t("securityRecommendationsPage.dismiss")}
+                        </button>
+                      </>
+                    )}
                   </div>
-                )}
+                ))}
               </div>
             );
           })

@@ -772,9 +772,9 @@
     },
     "search": {
       "prompt": "Cerca in Breeze",
-      "placeholder": "Cerca dispositivi, script, avvisi, utenti, impostazioni...",
+      "placeholder": "Cerca dispositivi, script, avvisi, impostazioni...",
       "searching": "Ricerca…",
-      "startTyping": "Inizia a digitare per eseguire ricerche tra dispositivi, script, avvisi, utenti e impostazioni.",
+      "startTyping": "Inizia a digitare per eseguire ricerche tra dispositivi, script, avvisi e impostazioni.",
       "noResults": "Nessun risultato trovato. Prova una query diversa.",
       "navigationHint": "Usa le frecce per navigare, Invio per aprire",
       "closeHint": "Esc per chiudere",
@@ -864,6 +864,8 @@
       "cycleSidebar": "Cambia la modalità della barra laterale",
       "help": "Apri il pannello di aiuto",
       "showThis": "Mostra questa scheda",
+      "orgSwitcher": "Apri il selettore dell'organizzazione",
+      "aiSidebar": "Mostra o nascondi la barra laterale IA",
       "close": "Chiudi una finestra di dialogo o un menu",
       "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo.",
       "create": "Crea",
@@ -2380,7 +2382,7 @@
           },
           "search": {
             "title": "Cerca qualsiasi cosa",
-            "description": "Premi Cmd+K per trovare immediatamente dispositivi, script, avvisi, utenti o impostazioni."
+            "description": "Premi Cmd+K per trovare immediatamente dispositivi, script, avvisi o impostazioni."
           },
           "switchOrgs": {
             "title": "Cambia organizzazione",

@@ -10,7 +10,6 @@ import {
   Search,
   Settings,
   Terminal,
-  Users,
   Zap,
   type LucideIcon
 } from 'lucide-react';
@@ -25,7 +24,7 @@ import { searchSettingsCatalog } from '../../lib/settingsSearch';
 import { useUiStore } from '../../stores/uiStore';
 import { useRecentsStore } from '../../stores/recentsStore';
 
-type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'users' | 'settings';
+type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'settings';
 
 type SearchResult = {
   id?: string;
@@ -58,7 +57,6 @@ const CATEGORY_ORDER: SearchCategory[] = [
   'devices',
   'scripts',
   'alerts',
-  'users',
   'settings'
 ];
 
@@ -87,11 +85,6 @@ const CATEGORY_CONFIG: Record<
     label: 'Alerts',
     icon: Bell,
     baseHref: '/alerts'
-  },
-  users: {
-    label: 'Users',
-    icon: Users,
-    baseHref: '/settings/users'
   },
   settings: {
     label: 'Settings',

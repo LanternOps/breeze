@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
+import SnapshotIntegrityBadge, { isUnverifiedSnapshotStatus } from './SnapshotIntegrityBadge';
 import '../../lib/i18n';
 
 export type RestoreSnapshot = {
@@ -63,6 +63,8 @@ type RestoreSnapshotStepProps = {
   formatBytes: (bytes?: number | null) => string;
   /** The snapshot the wizard was opened with is no longer in the list. */
   carriedSnapshotMissing?: boolean;
+  /** The user has no second factor enrolled: flag unverified snapshots that will need one (#9629). */
+  secondFactorMissing?: boolean;
 };
 
 /**
@@ -79,6 +81,7 @@ export default function RestoreSnapshotStep({
   onSnapshotChange,
   formatBytes,
   carriedSnapshotMissing = false,
+  secondFactorMissing = false,
 }: RestoreSnapshotStepProps) {
   const { t } = useTranslation('backup');
   const deviceLabel = (group: SnapshotDeviceGroup) => group.deviceName || t('restoreWizard.unknownDevice');
@@ -160,6 +163,11 @@ export default function RestoreSnapshotStep({
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
                     {snapshot.label}
                     <SnapshotIntegrityBadge status={snapshot.integrityStatus} />
+                    {secondFactorMissing && isUnverifiedSnapshotStatus(snapshot.integrityStatus) ? (
+                      <span data-testid="snapshot-second-factor-hint" className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                        {t('restoreWizard.snapshotNeedsSecondFactor')}
+                      </span>
+                    ) : null}
                   </div>
                   {snapshot.deviceName ? (
                     <div className="mt-1 text-xs text-muted-foreground">{snapshot.deviceName}</div>

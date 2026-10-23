@@ -772,9 +772,9 @@
     },
     "search": {
       "prompt": "Ara Breeze",
-      "placeholder": "Cihazları, komut dosyalarını, uyarıları, kullanıcıları, ayarları arayın…",
+      "placeholder": "Cihazları, komut dosyalarını, uyarıları, ayarları arayın…",
       "searching": "Aranıyor…",
-      "startTyping": "Cihazlar, komut dosyaları, uyarılar, kullanıcılar ve ayarlar arasında arama yapmak için yazmaya başlayın.",
+      "startTyping": "Cihazlar, komut dosyaları, uyarılar ve ayarlar arasında arama yapmak için yazmaya başlayın.",
       "noResults": "Sonuç bulunamadı. Farklı bir sorgu deneyin.",
       "navigationHint": "Gezinmek için okları kullanın, açmak için Enter'ı kullanın",
       "closeHint": "Esc kapatılacak",
@@ -864,6 +864,8 @@
       "cycleSidebar": "Kenar çubuğu modunu değiştir",
       "help": "Yardım panelini aç",
       "showThis": "Bu kartı göster",
+      "orgSwitcher": "Kuruluş seçiciyi aç",
+      "aiSidebar": "Yapay zekâ kenar çubuğunu aç veya kapat",
       "close": "Bir iletişim kutusunu veya menüyü kapat",
       "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır.",
       "create": "Oluştur",
@@ -2380,7 +2382,7 @@
           },
           "search": {
             "title": "İstediğiniz şeyi arayın",
-            "description": "Cihazları, komut dosyalarını, uyarıları, kullanıcıları veya ayarları anında bulmak için Cmd+K tuşlarına basın."
+            "description": "Cihazları, komut dosyalarını, uyarıları veya ayarları anında bulmak için Cmd+K tuşlarına basın."
           },
           "switchOrgs": {
             "title": "Kuruluşları değiştir",

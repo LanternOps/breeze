@@ -150,6 +150,8 @@ listRoutes.get(
         title: patches.title,
         description: patches.description,
         source: patches.source,
+        // Catalog identity: the web tells same-title rows apart with it (#9533).
+        externalId: patches.externalId,
         vendor: patches.vendor,
         packageId: patches.packageId,
         version: patches.version,

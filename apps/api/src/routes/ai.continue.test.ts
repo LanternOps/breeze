@@ -592,7 +592,7 @@ describe('first turn of a continuation (W05)', () => {
     vi.mocked(reserveAiBudget).mockResolvedValue({
       kind: 'unlimited', reservationId: RESERVATION_ID, dailyPeriodKey: 'd', monthlyPeriodKey: 'm', status: 'active',
     } as never);
-    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'user-row-1' }]) }) } as any);
   });
 
   afterEach(() => {

@@ -33,7 +33,7 @@ import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
 import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from '../middleware/mcpTenantToolSelfManagedContext';
 import { tenantToolPermissionRequirement, checkTenantToolRateLimit } from '../services/toolSources/guardrails';
-import { db } from '../db';
+import { db, runOutsideDbContext } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
 import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
@@ -69,10 +69,13 @@ import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
-import { mcpAppBaseUrl, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
+import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
+import { mcpRequestStateKey, openMcpRequestState, sealMcpRequestState } from '../services/mcpRequestState';
+import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import { isMcpIntentEligible, mcpOriginRef, type McpIntentIneligibleReason } from '../services/mcpIntentEligibility';
 import type * as McpIntentCreation from '../services/mcpIntentCreation';
 import {
+  buildApprovalInputRequiredResult,
   buildPendingApprovalResult,
   MCP_CANCEL_ACTION_TOOL_LIST_ENTRY,
   MCP_CANCEL_ACTION_TOOL_NAME,
@@ -704,7 +707,12 @@ function domainDenialAuditDetails(body: JsonRpcRequest, response: JsonRpcRespons
  * the bare transport session id: it carries a server-minted request UUID
  * (the audit `resourceId`) plus the verified legacy session, if any.
  */
-type McpDispatchContext = { era: 'legacy' | 'modern'; correlation: McpRequestCorrelation };
+type McpDispatchContext = {
+  era: 'legacy' | 'modern';
+  correlation: McpRequestCorrelation;
+  /** B-W04 (#6158, D-B32): the modern request's declared client capabilities; null/absent in the legacy era. */
+  clientCapabilities?: Record<string, unknown> | null;
+};
 
 async function dispatchAndAudit(
   c: Context,
@@ -1190,7 +1198,7 @@ async function handleModernStreamableRequest(
   // side effect worth dispatching one for (D-B17).
   if (body.id === undefined) return c.body(null, 202);
 
-  const response = await dispatchAndAudit(c, body, { era: 'modern', correlation }, auth, apiKey);
+  const response = await dispatchAndAudit(c, body, { era: 'modern', correlation, clientCapabilities: meta.clientCapabilities }, auth, apiKey);
   const status = resolveMcpHttpStatus('modern', response, applyInsufficientScopeChallenge(c, apiKey, response));
   const decorated: JsonRpcResponse = response.result !== undefined
     ? { ...response, result: decorateModernResult(body.method, response.result as Record<string, unknown>) }
@@ -1254,7 +1262,7 @@ async function handleJsonRpc(
         return await handleToolsList(req.id, scopes, auth, req.params, apiKey);
 
       case 'tools/call':
-        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation);
+        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null);
 
       case 'resources/list':
         return handleResourcesList(req.id, parseStoredMcpDomains(apiKey?.mcpDomains));
@@ -1802,12 +1810,21 @@ async function handleToolsCall(
   apiKey: McpApiKeyContext | undefined,
   c: Context | undefined,
   correlation: McpRequestCorrelation,
+  clientCapabilities: Record<string, unknown> | null = null,
 ): Promise<JsonRpcResponse> {
   const requestedToolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
 
   if (!requestedToolName) {
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  }
+
+  // B-W04 (#6158, D-B32): a 2026-07-28 MRTR retry of an approval elicitation.
+  // It never files or executes anything; the only gates it needs are the
+  // ai:read preflight (already passed) and the always-granted core domain —
+  // `decline` additionally needs ai:write, checked inside.
+  if (correlation.era === 'modern' && params.requestState !== undefined) {
+    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName));
   }
 
   // B-W02 (#6156): parsed once per call; a missing value fails closed.
@@ -2073,7 +2090,7 @@ async function handleToolsCall(
     if (!executionOrgId || !apiKey) {
       return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
     }
-    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation });
+    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities });
   }
   // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
   // complete + uniform audit. The callback owns executeTool + the MCP response
@@ -2211,6 +2228,7 @@ async function fileMcpActionIntent(
     toolInput: Record<string, unknown>;
     executionOrgId: string;
     correlation: McpRequestCorrelation;
+    clientCapabilities?: Record<string, unknown> | null;
   },
 ): Promise<JsonRpcResponse> {
   let outcome: Awaited<ReturnType<typeof McpIntentCreation.createMcpActionIntent>>;
@@ -2239,7 +2257,161 @@ async function fileMcpActionIntent(
     });
   }
   if (outcome.kind === 'terminal_replay') return mcpActionStatusResult(id, outcome.status);
+  // B-W04 (#6158, D-B32): a modern client that declared URL-mode elicitation
+  // is pointed at the approval page through MRTR; everyone else polls.
+  // Only a request still waiting for a decision is elicited; an already
+  // approved / executing replay just reports its status.
+  const originRef = mcpOriginRef(args.auth.principal);
+  if (args.correlation.era === 'modern' && originRef && outcome.status.status === 'pending_approval'
+    && declaresUrlElicitation(args.clientCapabilities)) {
+    try {
+      const requestState = sealMcpRequestState({
+        a: outcome.status.actionId,
+        p: originRef,
+        m: 'tools/call',
+        t: args.toolName,
+        d: computeArgumentDigest(canonicalizeArguments(args.toolInput)),
+      }, mcpRequestStateKey(), Math.floor(Date.now() / 1000));
+      return jsonRpcResult(id, buildApprovalInputRequiredResult(outcome.status, requestState));
+    } catch (err) {
+      // The intent is already filed: never turn that into an error. The
+      // client still gets the pollable pending result.
+      console.error('[MCP] Failed to seal approval requestState; answering pending_approval:', err);
+      captureException(err);
+    }
+  }
   return jsonRpcResult(id, buildPendingApprovalResult(outcome.status));
+}
+
+/** URL mode only: `elicitation: {}` (form-only) or anything else never qualifies. */
+function declaresUrlElicitation(caps: Record<string, unknown> | null | undefined): boolean {
+  const elicitation = caps?.elicitation;
+  if (!elicitation || typeof elicitation !== 'object' || Array.isArray(elicitation)) return false;
+  const url = (elicitation as Record<string, unknown>).url;
+  return !!url && typeof url === 'object' && !Array.isArray(url);
+}
+
+/** In-process count of bounded approval waits per origin credential (D-B32). */
+const approvalWaitsByOrigin = new Map<string, number>();
+
+/**
+ * B-W04 (#6158, D-B32): the retry of a `tools/call` that answered
+ * `input_required`. Verifies the sealed `requestState` (size/shape,
+ * signature, bound credential, method, tool, argument digest, expiry), then
+ * ownership, then acts on `inputResponses.breeze_approval`: accept waits a
+ * bounded time for a terminal outcome, decline cancels, cancel/absent
+ * reports the current status. Never creates an intent, never charges the
+ * per-tool rate limit, and renders only through toMcpActionStatus.
+ */
+async function handleToolsCallContinuation(
+  id: string | number,
+  params: Record<string, unknown>,
+  auth: AuthContext,
+  scopes: string[],
+  apiKey: McpApiKeyContext | undefined,
+  c: Context | undefined,
+  toolName: string,
+): Promise<JsonRpcResponse> {
+  const callerRef = canOwnMcpIntents(auth, apiKey) ? mcpOriginRef(auth.principal) : null;
+  const invalid = () => jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_request_state' });
+  if (!callerRef) return invalid();
+
+  const opened = openMcpRequestState(params.requestState, mcpRequestStateKey(), Math.floor(Date.now() / 1000));
+  if (!opened.ok && opened.reason === 'invalid_request_state') return invalid();
+  const { payload } = opened;
+  const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
+  // Every binding (credential, method, tool, arguments) is checked before
+  // the payload's action id is ever exposed — an expired state reveals it
+  // only to the same credential, for the same call.
+  if (payload.p !== callerRef || payload.m !== 'tools/call' || payload.t !== toolName
+    || payload.d !== computeArgumentDigest(canonicalizeArguments(toolInput))) {
+    return invalid();
+  }
+  if (!opened.ok) {
+    return jsonRpcError(id, -32602, 'Invalid params', { reason: 'request_state_expired', actionId: payload.a });
+  }
+
+  const responses = params.inputResponses;
+  let action: 'accept' | 'decline' | 'cancel' | undefined;
+  if (responses !== undefined) {
+    if (!responses || typeof responses !== 'object' || Array.isArray(responses)) {
+      return jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_input_responses' });
+    }
+    const answer = (responses as Record<string, unknown>).breeze_approval;
+    if (answer !== undefined) {
+      const a = answer && typeof answer === 'object' && !Array.isArray(answer)
+        ? (answer as Record<string, unknown>).action
+        : undefined;
+      if (a !== 'accept' && a !== 'decline' && a !== 'cancel') {
+        return jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_input_responses' });
+      }
+      action = a;
+    }
+  }
+  if (action === 'decline' && !scopes.includes('ai:write') && !scopes.includes('ai:execute')) {
+    return jsonRpcError(id, -32603, `Tool "${MCP_CANCEL_ACTION_TOOL_NAME}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
+  }
+
+  try {
+    const { loadOwnedMcpIntent, cancelOwnedMcpIntent } = await liveMcpIntentCreation();
+    const intent = await loadOwnedMcpIntent(auth, payload.a);
+    if (!intent) return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+    const base = mcpAppBaseUrl();
+
+    if (action === 'decline') {
+      const outcome = await cancelOwnedMcpIntent(auth, intent.id, base);
+      if (outcome.kind === 'not_found') return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+      return mcpActionStatusResult(id, outcome.status, { outcome: outcome.kind });
+    }
+
+    let current = toMcpActionStatus(intent, base);
+    if (action === 'accept' && (current.status === 'pending_approval' || current.status === 'in_progress')) {
+      const inFlight = approvalWaitsByOrigin.get(callerRef) ?? 0;
+      if (inFlight < mcpApprovalWaitsPerPrincipal()) {
+        approvalWaitsByOrigin.set(callerRef, inFlight + 1);
+        const signal = c?.req.raw.signal;
+        try {
+          const { waitForIntentTerminalOutcome } = await import('../services/actionIntents/intentService');
+          // Ownership was asserted above; no DB transaction is held across the wait.
+          await runOutsideDbContext(() => waitForIntentTerminalOutcome(intent.id, mcpApprovalWaitMs(), signal));
+        } catch (err) {
+          // A failed wait is not a failed action: fall through to the re-read
+          // so the caller still gets the real status.
+          console.error('[MCP] approval wait failed; re-reading the status:', err);
+          captureException(err);
+        } finally {
+          const left = (approvalWaitsByOrigin.get(callerRef) ?? 1) - 1;
+          if (left <= 0) approvalWaitsByOrigin.delete(callerRef);
+          else approvalWaitsByOrigin.set(callerRef, left);
+        }
+        if (!signal?.aborted) {
+          const fresh = await loadOwnedMcpIntent(auth, intent.id);
+          if (!fresh) return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+          current = toMcpActionStatus(fresh, base);
+        }
+      }
+    }
+
+    if (current.status === 'pending_approval' || current.status === 'in_progress') {
+      // The MRTR cycle ends here; the model polls get_action_status.
+      return jsonRpcResult(id, buildPendingApprovalResult(current));
+    }
+    if (current.status === 'completed') {
+      return jsonRpcResult(id, {
+        content: [{ type: 'text', text: current.result ?? JSON.stringify(current) }],
+        structuredContent: current,
+      });
+    }
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(current) }],
+      structuredContent: current,
+      isError: true,
+    });
+  } catch (err) {
+    console.error('[MCP] approval continuation failed:', err);
+    captureException(err);
+    return jsonRpcError(id, -32000, 'Unable to read the action status');
+  }
 }
 
 /** get_action_status — tier 1 (the ai:read preflight already ran). */

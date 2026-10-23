@@ -300,3 +300,37 @@ export const aiUsageByClientConfigSchema = legacyReportConfigSchema.extend({
   groupBy: z.enum(['organization', 'model']).optional(),
 });
 export type AiUsageByClientConfig = z.infer<typeof aiUsageByClientConfigSchema>;
+
+/**
+ * #9828 W1 (Gate B 8). `mrr_renewals` is measured at run time: contracts keep
+ * no status history, so neither an `asOf` date nor a `period` can be honoured.
+ * Both are refused (400 naming the key) rather than stored and silently
+ * ignored. Same body as `refusedBusinessSelector`, with the run-time message.
+ */
+function refusedAsOfRunTime(key: string) {
+  return z.unknown().superRefine((value, ctx) => {
+    if (selectsSomething(value)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `${key} is not supported for mrr_renewals; it is measured at run time because contracts keep no status history`,
+      });
+    }
+  }).optional();
+}
+
+/**
+ * #9828 W1 — MRR & renewals.
+ *
+ * - `groupBy` (default `organization`) and `renewalHorizonDays` (default 90)
+ *   are applied in the generator: no `.default()` anywhere
+ *   (parseStoredReportConfig filters defaults top-level only).
+ * - No org/site/device selector keys (ruling T3e).
+ */
+export const mrrRenewalsConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
+  asOf: refusedAsOfRunTime('asOf'),
+  period: refusedAsOfRunTime('period'),
+  groupBy: z.enum(['organization', 'contract']).optional(),
+  renewalHorizonDays: z.union([z.literal(30), z.literal(60), z.literal(90), z.literal(180)]).optional(),
+});
+export type MrrRenewalsConfig = z.infer<typeof mrrRenewalsConfigSchema>;

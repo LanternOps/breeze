@@ -39,6 +39,7 @@ import { contentDispositionFor } from '../../services/attachmentFilename';
 import { Readable } from 'node:stream';
 import { ticketSla } from '../../services/portal/ticketReadModel';
 import { supportUsageForOrg } from '../../services/portal/supportUsage';
+import { lockTicketForWrite } from '../../services/ticketRowLock';
 
 export const ticketRoutes = new Hono();
 
@@ -481,6 +482,14 @@ ticketRoutes.post(
       .limit(1);
 
     if (!ticket) {
+      return c.json({ error: 'Ticket not found' }, 404);
+    }
+    // #8972 W0: ticket row lock before the comment (services/ticketRowLock.ts),
+    // and the visibility / not-deleted checks again on the locked row: a ticket
+    // moved out of the customer's org or deleted while this waited answers the
+    // same 404 as the read above, not an RLS-rejected insert.
+    const locked = await lockTicketForWrite(db, ticket.id);
+    if (!locked || locked.orgId !== auth.user.orgId || locked.deletedAt) {
       return c.json({ error: 'Ticket not found' }, 404);
     }
 

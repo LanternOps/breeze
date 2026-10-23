@@ -34,6 +34,7 @@ vi.mock('./contractQuantities', () => ({
 vi.mock('./contractHourBlockEstimate', () => ({ computeOpenHourBlockPeriod: vi.fn() }));
 
 import * as svc from './contractService';
+import { summarizeActiveContractMrrByOrg } from './contractMrr';
 import { db } from '../db';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
@@ -271,7 +272,7 @@ describe('estimate and MRR count the block fee once and never hours (#4547 W03)'
       results.length = 0;
       queueResult([{ id: 'c1', orgId: 'org1', status: 'active', currencyCode: 'USD', intervalMonths: 1, endDate: null, nextBillingAt: '2026-07-01', billingTiming: 'advance' }]);
       queueResult([line]);
-      const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-06-20T00:00:00Z'));
+      const out = await summarizeActiveContractMrrByOrg(['org1'], new Date('2026-06-20T00:00:00Z'));
       const total = out.get('org1')?.find((r) => r.currencyCode === 'USD')?.amount ?? '0.00';
       expect(Number(total)).toBe(Number(expected));
     }
