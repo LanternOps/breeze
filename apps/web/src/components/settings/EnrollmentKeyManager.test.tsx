@@ -351,7 +351,7 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     expect(screen.queryByText('Expiry must be in the future.')).toBeNull();
   });
 
-  it('leaving the device-limit field blank sends the 50-device default, not a single-use maxUsage (#4126 paper cut #31)', async () => {
+  it('leaving the device-limit field blank never yields a single-use key: placeholder shows 50 and the body omits it so the server resolves the default (#4126 paper cut #31, #9616)', async () => {
     seedOrgState({
       currentOrgId: 'org-1',
       organizations: [makeOrg('org-1', 'Org One')],
@@ -381,7 +381,10 @@ describe('EnrollmentKeyManager — create form site selector', () => {
       expect(calls.some((c) => c.url === '/enrollment-keys' && c.method === 'POST')).toBe(true);
     });
     const post = calls.find((c) => c.url === '/enrollment-keys' && c.method === 'POST');
-    expect(post?.body?.maxUsage).toBe(50);
+    // Defaults not loaded: the form omits the fields so the SERVER resolves the
+    // partner/org default (never a single-use key, never an unvetted client value).
+    expect(post?.body && 'maxUsage' in post.body).toBe(false);
+    expect(post?.body && 'ttlMinutes' in post.body).toBe(false);
   });
 
   // #9616 — Create Key must honour the partner/org enrollment defaults the way

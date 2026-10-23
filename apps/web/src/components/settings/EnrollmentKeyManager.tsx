@@ -321,11 +321,24 @@ export default function EnrollmentKeyManager() {
       // default device count (#4126), not a single-use key.
       // #9616: blank resolves to the partner/org default (what the field's
       // placeholder says), falling back to the product default.
+      // When the resolved defaults haven't loaded (or the read soft-failed) the
+      // fields are OMITTED so the server resolves them: posting product values
+      // would be treated as an explicit choice (and 400 against a lower
+      // partner TTL cap) and would ignore the real partner/org defaults.
+      // The store's defaults belong to the org switcher's org; a partner admin
+      // can aim the form at another org, whose defaults we don't have: omit and
+      // let the server resolve for the right org.
+      const defaultsApply =
+        enrollmentDefaults != null && (!body.orgId || body.orgId === currentOrgId);
       const usedDefaultCount = !formMaxUsage;
-      body.maxUsage = formMaxUsage ? parseInt(formMaxUsage, 10) : defaultDeviceCount;
+      if (formMaxUsage) {
+        body.maxUsage = parseInt(formMaxUsage, 10);
+      } else if (defaultsApply) {
+        body.maxUsage = defaultDeviceCount;
+      }
       if (formExpiresAt) {
         body.expiresAt = new Date(formExpiresAt).toISOString();
-      } else {
+      } else if (defaultsApply) {
         // ttlMinutes, not a computed expiresAt: the server does the time math
         // and applies the partner cap to it.
         body.ttlMinutes = defaultTtlMinutes;

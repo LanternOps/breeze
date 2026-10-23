@@ -984,6 +984,35 @@ describe('enrollment key routes — list & create', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    it('does not consult the defaults resolver when maxUsage and ttlMinutes are both explicit, and persists them (#9616)', async () => {
+      getEnrollmentDefaultsForOrgMock.mockClear();
+      const captured = mockInsertCapture([makeEnrollmentKey()]);
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Explicit', maxUsage: 3, ttlMinutes: 60 }),
+      });
+      expect(res.status).toBe(201);
+      expect(getEnrollmentDefaultsForOrgMock).not.toHaveBeenCalled();
+      expect(captured().maxUsage).toBe(3);
+    });
+
+    it('keeps an explicit maxUsage over the resolved device count when only the expiry is omitted (#9616)', async () => {
+      getEnrollmentDefaultsForOrgMock.mockResolvedValueOnce({
+        ttlMinutes: 1440,
+        deviceCount: 10,
+        maxTtlMinutes: 525600,
+      });
+      const captured = mockInsertCapture([makeEnrollmentKey()]);
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Explicit count', maxUsage: 3 }),
+      });
+      expect(res.status).toBe(201);
+      expect(captured().maxUsage).toBe(3);
+    });
+
     it('uses the resolved partner/org default TTL when neither ttlMinutes nor expiresAt is sent (#9616)', async () => {
       getEnrollmentDefaultsForOrgMock.mockResolvedValueOnce({
         ttlMinutes: 1440,
