@@ -3006,6 +3006,20 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Execute a system command on a device.',
     },
     {
+      name: 'manage_invoices void gets plain-language impact (#9657)',
+      toolName: 'manage_invoices',
+      input: { action: 'void' },
+      guardrailDescription: 'Manage invoices.',
+      expected: 'Voids the invoice. It will no longer be payable.',
+    },
+    {
+      name: 'remediate_vulnerability does not surface the model-facing description (#9657)',
+      toolName: 'remediate_vulnerability',
+      input: {},
+      guardrailDescription: 'x',
+      expected: 'Queues patches for the selected vulnerabilities on the affected devices; devices may restart to finish installing them.',
+    },
+    {
       name: 'an unrecognized tool falls back to the guardrail description',
       toolName: 'query_devices',
       input: { filter: 'online' },

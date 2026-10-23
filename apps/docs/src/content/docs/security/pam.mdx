@@ -136,6 +136,8 @@ This chain **fails safe**. If either evaluator *errors*, the request falls throu
 
 A rule must carry at least one identifying criterion; a rule scoped only by time window (or nothing) is rejected at the API, because it would match every elevation in the org -- catastrophic for an auto-approve verdict.
 
+**When the device cannot act.** The agent reports the request first and then needs a SYSTEM helper in the requesting user's Windows session to show the dialog and handle `consent.exe`. If the agent gives up because no helper can run the flow in time (for example on a Remote Desktop session host whose session is disconnected, or a helper stuck in crash cooldown), it reports that it cannot act on the request. A request still waiting for a technician is closed as `expired`, so nobody can approve it, and the server then withdraws its mobile approvals. That withdrawal is best-effort (the agent retries a failed one for up to five minutes); a phone approval of a closed request is refused whether or not it has run. When the agent cannot tell, the request stays pending until the stale-request expiry. Under the Expired or All status filter, the requests list shows that the device could not act, with one of three reasons (no PAM helper available, the user's session unavailable, the PAM helper failed to start) and the agent's diagnostic message as a tooltip. A request already decided by policy keeps its status; the report is recorded on it for the audit trail.
+
 ---
 
 ## Signer trust: CN matching vs. thumbprint pinning
@@ -189,6 +191,7 @@ Every elevation produces an immutable chain of events on a dedicated ledger, sep
 - Auto-decisions add an `approved` / `denied` event attributed to the deciding software policy or PAM rule.
 - Human decisions add `approved`, `denied`, or `revoked` events attributed to the approver **by user**, with the supplied reason.
 - Actuation, session start/stop, and command execution land as their own event types.
+- A `device_unable` event records an agent's report that it cannot act on the request, with the reason category; when that closes a pending request, an `expired` event with cause `device_unable` follows it.
 
 The ledger denormalizes the organization id and ties each audit row to its parent request with a **composite foreign key** `(elevation_request_id, org_id) -> elevation_requests(id, org_id)`. This is a structural guarantee that an audit row's tenant can never drift from its parent request's tenant, even under a logic bug. Because it inherits the platform's forced row-level security, an audit entry is only ever visible within its own tenant.
 

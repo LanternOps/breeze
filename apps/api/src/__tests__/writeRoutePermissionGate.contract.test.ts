@@ -106,6 +106,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/agents/:id/commands/:commandId/pam-observations': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/pamReconciliation.ts
   'POST /api/v1/agents/:id/pam/reconciliation-bindings': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/pamElevationUnable.ts (#9517)
+  'POST /api/v1/agents/:id/pam/elevation-unable': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/patches.ts
   'PUT /api/v1/agents/:id/patches/pending': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   'PUT /api/v1/agents/:id/patches/installed': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
