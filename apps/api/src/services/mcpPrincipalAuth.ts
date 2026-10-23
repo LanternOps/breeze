@@ -12,7 +12,7 @@
 import { eq, inArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext, PrincipalKind } from '../middleware/auth';
-import { siteAccessCheck } from '../middleware/auth';
+import { buildOrgAccessClosures, siteAccessCheck } from '../middleware/auth';
 import { resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getUserPermissions } from './permissions';
 import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from './apiKeyAuthorization';
@@ -294,6 +294,19 @@ export type McpOriginReleaseErrorCode =
 const REVOKED = { error: 'mcp_origin_revoked' } as const;
 
 /**
+ * A transient read failure while re-proving the origin credential. Thrown,
+ * never mapped to `mcp_origin_revoked`: the release is retried (or reaped as
+ * execution_lost), and the user is not told a healthy credential was revoked.
+ */
+export class McpOriginTransientError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(`transient: ${message}`);
+    this.name = 'McpOriginTransientError';
+    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
+  }
+}
+
+/**
  * Loads the credential an `mcp_api` intent was filed with and re-proves it is
  * still live, re-using the request path's own checks rather than re-spelling
  * them: key status/expiry, creator status + credential/MFA epoch
@@ -376,6 +389,11 @@ async function loadLiveApiKey(
     scopes: key.scopes ?? [],
   });
   if (!authz.ok) {
+    // A failed permission READ is not a revocation: throw so the release is
+    // retried / reaped as execution_lost, never misreported as revoked.
+    if (authz.reason === 'lookup_error') {
+      throw new McpOriginTransientError('creator permission lookup failed for the origin API key');
+    }
     return authz.reason === 'scope_exceeds_current_permissions' ? { error: 'mcp_scope_lost' } : REVOKED;
   }
 
@@ -463,6 +481,19 @@ async function loadLiveOAuthGrant(
   const unblocked = await filterBlockedOAuthClientOrgIds(orgIds, grant.clientId);
   if (unblocked.length !== orgIds.length) return REVOKED;
 
+  // buildAuthFromApiKey fails a partner-permission READ error closed (null),
+  // which release would report as revoked. Read it here first so a transient
+  // fault throws (retryable) and only a real "no membership" revokes.
+  if (!grant.orgId) {
+    let partnerPerms: Awaited<ReturnType<typeof getUserPermissions>>;
+    try {
+      partnerPerms = await getUserPermissions(grant.accountId, { partnerId: grant.partnerId });
+    } catch (err) {
+      throw new McpOriginTransientError('partner permission lookup failed for the origin OAuth grant', err);
+    }
+    if (!partnerPerms) return REVOKED;
+  }
+
   const effective = await computeEffectiveMcpScopes({
     requested: grantRequestedScopes(grant.payload),
     partnerId: grant.partnerId,
@@ -500,8 +531,16 @@ export async function rebuildMcpOriginAuthContext(
 ): Promise<{ auth: AuthContext; credential: LiveMcpOriginCredential } | { error: McpOriginReleaseErrorCode }> {
   const credential = await loadLiveMcpOriginCredential(intent);
   if ('error' in credential) return { error: credential.error };
-  const auth = await withSystemDbAccessContext(() => buildAuthFromApiKey(credential.keyInput));
-  if (!auth) return REVOKED;
+  const built = await withSystemDbAccessContext(() => buildAuthFromApiKey(credential.keyInput));
+  if (!built) return REVOKED;
+  let auth = built;
+  // The bearer path removes orgs the OAuth client is blocked in from a
+  // partner-scope token's org set (bearerTokenAuth.ts); buildAuthFromApiKey
+  // does not, so apply the same filter to the rebuilt context.
+  if (credential.kind === 'oauth_grant' && auth.scope === 'partner' && auth.accessibleOrgIds) {
+    const allowed = await filterBlockedOAuthClientOrgIds(auth.accessibleOrgIds, credential.oauthClientId ?? undefined);
+    auth = { ...auth, accessibleOrgIds: allowed, ...buildOrgAccessClosures(allowed) };
+  }
   return { auth, credential };
 }
 

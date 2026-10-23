@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   createNotification: vi.fn(async (..._args: unknown[]) => 'n-1'),
   captureException: vi.fn(),
   createActionIntent: vi.fn(),
+  cancelActionIntent: vi.fn(),
   validateToolInput: vi.fn(),
   rateLimiter: vi.fn(),
   loadRow: vi.fn(),
@@ -16,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('./actionIntents/intentService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./actionIntents/intentService')>();
-  return { ...actual, createActionIntent: mocks.createActionIntent };
+  return { ...actual, createActionIntent: mocks.createActionIntent, cancelActionIntent: mocks.cancelActionIntent };
 });
 vi.mock('./aiToolSchemas', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./aiToolSchemas')>()), validateToolInput: mocks.validateToolInput,
@@ -31,6 +32,10 @@ vi.mock('../oauth/revocationRetry', () => ({ writeOAuthRevocationMarkerDurably: 
 vi.mock('../oauth/provider', () => ({ ACCESS_TOKEN_TTL_SECONDS: 600 }));
 vi.mock('./userNotifications', () => ({ createNotification: mocks.createNotification }));
 vi.mock('./sentry', () => ({ captureException: mocks.captureException }));
+vi.mock('../middleware/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../middleware/auth')>()),
+  withAuthDbAccessContext: (_auth: unknown, fn: () => unknown) => fn(),
+}));
 vi.mock('../db', () => ({
   db: {
     select: () => ({ from: () => ({ where: () => Object.assign(Promise.resolve(mocks.approverRows), { limit: () => mocks.loadRow() }) }) }),
@@ -39,7 +44,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-import { createMcpActionIntent, reportSuspiciousMcpOrigin, type CreateMcpActionIntentInput } from './mcpIntentCreation';
+import { cancelOwnedMcpIntent, createMcpActionIntent, reportSuspiciousMcpOrigin, type CreateMcpActionIntentInput } from './mcpIntentCreation';
 import { ActionIntentError } from './actionIntents/intentService';
 
 const USER = '22222222-2222-4222-8222-222222222222';
@@ -243,5 +248,63 @@ describe('reportSuspiciousMcpOrigin (B-W04 D-B35)', () => {
     mocks.writeMarker.mockResolvedValueOnce({ status: 'retry_queued', errorCode: 'redis_unavailable' } as never);
     expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toEqual({ credentialRevoked: true });
     expect(mocks.revokeGrantsDurably).toHaveBeenCalled();
+  });
+});
+
+describe('B-W04 review fixes', () => {
+  const mcpRow = (o: Record<string, unknown> = {}) => ({
+    id: INTENT, orgId: ORG, source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-A',
+    requestedByUserId: USER, requestingClientLabel: 'MCP · ci key', actionName: 'execute_command', ...o,
+  });
+  const OTHER = '99999999-9999-4999-8999-999999999999';
+  const THIRD = '88888888-8888-4888-8888-888888888888';
+
+  it('one failed notification does not stop the others', async () => {
+    mocks.loadRow.mockResolvedValue([mcpRow()]);
+    mocks.approverRows = [{ userId: OTHER }, { userId: THIRD }];
+    mocks.createNotification.mockRejectedValueOnce(new Error('insert failed'));
+    expect(await reportSuspiciousMcpOrigin(INTENT, OTHER)).toEqual({ credentialRevoked: false });
+    expect(mocks.createNotification).toHaveBeenCalledTimes(3);
+    expect(mocks.captureException).toHaveBeenCalled();
+  });
+
+  it('owner report of a key that is gone reports credentialRevoked false', async () => {
+    mocks.loadRow.mockResolvedValueOnce([mcpRow()]).mockResolvedValueOnce([]);
+    mocks.revokeApiKey.mockResolvedValueOnce({ revoked: false });
+    expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toEqual({ credentialRevoked: false, revocationError: 'not_found' });
+  });
+
+  it('owner report of an already-revoked key reports credentialRevoked true', async () => {
+    mocks.loadRow.mockResolvedValueOnce([mcpRow()]).mockResolvedValueOnce([{ status: 'revoked' }]);
+    mocks.revokeApiKey.mockResolvedValueOnce({ revoked: false });
+    expect(await reportSuspiciousMcpOrigin(INTENT, USER)).toEqual({ credentialRevoked: true });
+  });
+});
+
+describe('cancelOwnedMcpIntent', () => {
+  const auth = { principal: { kind: 'api_key', apiKeyId: 'key-A' }, user: { id: USER } } as never;
+  const owned = (o: Record<string, unknown> = {}) => ({ ...row(), source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-A', ...o });
+
+  it('pending → cancelled reports the actual outcome', async () => {
+    mocks.loadRow.mockResolvedValueOnce([owned()]).mockResolvedValueOnce([owned({ status: 'cancelled' })]);
+    mocks.cancelActionIntent.mockResolvedValueOnce({ ok: true, status: 'cancelled' });
+    expect(await cancelOwnedMcpIntent(auth, INTENT, 'https://app.example.com')).toMatchObject({
+      kind: 'cancelled', status: { status: 'cancelled' },
+    });
+  });
+
+  it('lost the CAS to the worker → not_cancellable with the winner\'s status', async () => {
+    mocks.loadRow.mockResolvedValueOnce([owned({ status: 'approved' })]).mockResolvedValueOnce([owned({ status: 'executing' })]);
+    mocks.cancelActionIntent.mockResolvedValueOnce({ ok: false, status: 'executing' });
+    expect(await cancelOwnedMcpIntent(auth, INTENT, 'https://app.example.com')).toMatchObject({
+      kind: 'not_cancellable', status: { status: 'in_progress' },
+    });
+  });
+
+  it('a non-uuid or unowned id is not_found and never reaches cancelActionIntent', async () => {
+    expect(await cancelOwnedMcpIntent(auth, 'not-a-uuid', 'https://app.example.com')).toEqual({ kind: 'not_found' });
+    mocks.loadRow.mockResolvedValueOnce([]);
+    expect(await cancelOwnedMcpIntent(auth, INTENT, 'https://app.example.com')).toEqual({ kind: 'not_found' });
+    expect(mocks.cancelActionIntent).not.toHaveBeenCalled();
   });
 });

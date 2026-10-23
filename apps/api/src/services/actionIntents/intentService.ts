@@ -2194,6 +2194,26 @@ export async function createActionIntent(
       ))
       .limit(1)));
     if (!liveReplay) {
+      // Advisory cap pre-check (the locked check in the transaction stays
+      // authoritative): a credential already at its live cap must not burn
+      // its hourly churn budget on calls that will be refused anyway.
+      if (input.maxLiveForOrigin !== undefined) {
+        const [live] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(actionIntents)
+          .where(and(
+            eq(actionIntents.source, 'mcp_api'),
+            eq(actionIntents.originPrincipalKind, originPrincipalKind),
+            eq(actionIntents.originPrincipalId, credentialOriginId ?? ''),
+            inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+          ))));
+        if ((live?.n ?? 0) >= input.maxLiveForOrigin) {
+          throw new ActionIntentError(
+            'Too many actions from this connection are waiting for approval',
+            'too_many_pending_actions',
+          );
+        }
+      }
       await runOutsideDbContext(() => input.beforeInsert!());
     }
   }

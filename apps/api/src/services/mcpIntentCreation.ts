@@ -17,6 +17,7 @@ import type { AuthContext } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
 import { oauthClients } from '../db/schema/oauth';
+import { apiKeys } from '../db/schema/apiKeys';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { ActionIntentError, cancelActionIntent, createActionIntent } from './actionIntents/intentService';
 import { validateToolInput } from './aiToolSchemas';
@@ -240,7 +241,9 @@ export async function cancelOwnedMcpIntent(
   return result.ok ? { kind: 'cancelled', status } : { kind: 'not_cancellable', status };
 }
 
-export type McpOriginReportOutcome = { credentialRevoked: boolean; revocationError?: 'revocation_failed' };
+export type McpOriginReportOutcome =
+  | { credentialRevoked: true }
+  | { credentialRevoked: false; revocationError?: 'revocation_failed' | 'not_found' };
 
 const REPORT_REASON = 'reported suspicious from an approval request';
 
@@ -279,10 +282,18 @@ export async function reportSuspiciousMcpOrigin(
 
   if (intent.requestedByUserId === reporterUserId) {
     try {
-      await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const revoked = await runOutsideDbContext(() => withSystemDbAccessContext(async (): Promise<boolean> => {
         if (intent.originPrincipalKind === 'api_key') {
-          await revokeApiKey(originId, reporterUserId, REPORT_REASON, { includeReasonInAudit: true });
-          return;
+          const res = await revokeApiKey(originId, reporterUserId, REPORT_REASON, { includeReasonInAudit: true });
+          if (res.revoked) return true;
+          // revokeApiKey is a no-op for an already-revoked OR missing key;
+          // only the former means the credential is actually dead.
+          const [row] = await db
+            .select({ status: apiKeys.status })
+            .from(apiKeys)
+            .where(eq(apiKeys.id, originId))
+            .limit(1);
+          return row?.status === 'revoked';
         }
         // Same order as oauth/grantRevocation.ts: the eager marker first
         // (queued for retry inside this transaction if Redis is down), then
@@ -299,8 +310,9 @@ export async function reportSuspiciousMcpOrigin(
           revokedByUserId: reporterUserId,
           cascadeRefreshTokens: true,
         });
+        return true;
       }));
-      return { credentialRevoked: true };
+      return revoked ? { credentialRevoked: true } : { credentialRevoked: false, revocationError: 'not_found' };
     } catch (err) {
       console.error('[MCP] report-suspicious: origin credential revocation failed for intent', intentId, err);
       captureException(err);
@@ -319,6 +331,7 @@ export async function reportSuspiciousMcpOrigin(
     if (intent.requestedByUserId) recipients.add(intent.requestedByUserId);
     const label = intent.requestingClientLabel ?? `MCP ${intent.originPrincipalKind}`;
     for (const userId of recipients) {
+      // Per recipient: one failed insert must not silence everyone else.
       await runOutsideDbContext(() => withSystemDbAccessContext(() => createNotification({
         userId,
         orgId: intent.orgId,
@@ -330,7 +343,10 @@ export async function reportSuspiciousMcpOrigin(
         link: `/approvals#intent-${intentId}`,
         metadata: { intentId, originPrincipalKind: intent.originPrincipalKind, reportedBy: reporterUserId },
         dedupeKey: `mcp-origin-report:${intentId}`,
-      })));
+      }))).catch((err) => {
+        console.error('[MCP] report-suspicious: notification failed for a recipient of intent', intentId, err);
+        captureException(err);
+      });
     }
   } catch (err) {
     console.error('[MCP] report-suspicious: owner/approver notification failed for intent', intentId, err);

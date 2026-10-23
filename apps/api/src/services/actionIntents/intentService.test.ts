@@ -3465,6 +3465,17 @@ describe('createActionIntent — mcp_api origin (B-W04)', () => {
     expect(beforeInsert).not.toHaveBeenCalled();
   });
 
+  it('at the live cap the churn budget is not charged (advisory pre-check)', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([]); // no live replay
+    dbState.selectActionIntentsResults.push([{ n: 2 }]); // live count for this origin
+    const beforeInsert = vi.fn(async () => undefined);
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert, maxLiveForOrigin: 2 })))
+      .rejects.toMatchObject({ code: 'too_many_pending_actions' });
+    expect(beforeInsert).not.toHaveBeenCalled();
+  });
+
   it('a beforeInsert refusal propagates and nothing is inserted', async () => {
     fourEyes();
     intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);

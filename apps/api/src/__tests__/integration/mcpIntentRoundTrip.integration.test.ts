@@ -467,4 +467,65 @@ describe('Tier-3 over MCP via action intents: round trip (B-W04, real Postgres)'
     expect(handlerSpy).not.toHaveBeenCalled();
     expect(await ledgerRowsFor(actionId)).toHaveLength(0);
   }, 60_000);
+
+  it('same human, two credentials: separate intents and no cross-read', async () => {
+    const f = await seed();
+
+    // Second api_keys row: same creator, same org, same scopes, different secret.
+    const rawKeyB = `brz_${randomBytes(24).toString('hex')}`;
+    const [keyB] = await sys(() => db.insert(apiKeys).values({
+      orgId: f.orgId,
+      createdBy: f.requester.id,
+      name: `roundtrip-b-${randomUUID().slice(0, 8)}`,
+      keyHash: createHash('sha256').update(rawKeyB).digest('hex'),
+      keyPrefix: rawKeyB.slice(0, 12),
+      scopes: ['ai:read', 'ai:execute'],
+      status: 'active',
+      mcpDomains: null,
+    }).returning({ id: apiKeys.id }));
+    expect(keyB!.id).not.toBe(f.keyId);
+
+    const args = { snapshotId: randomUUID(), deviceId: f.deviceId };
+    const a = await mcpCall(f.rawKey, TOOL, args);
+    const b = await mcpCall(rawKeyB, TOOL, args);
+    expect(a.result.structuredContent.status).toBe('pending_approval');
+    expect(b.result.structuredContent.status).toBe('pending_approval');
+    const actionA = a.result.structuredContent.actionId as string;
+    const actionB = b.result.structuredContent.actionId as string;
+    expect(actionA).toMatch(/^[0-9a-f-]{36}$/);
+    expect(actionB).toMatch(/^[0-9a-f-]{36}$/);
+    expect(actionB).not.toBe(actionA);
+
+    expect(await readIntent(actionA)).toMatchObject({ originPrincipalId: f.keyId, status: 'pending_approval' });
+    expect(await readIntent(actionB)).toMatchObject({ originPrincipalId: keyB!.id, status: 'pending_approval' });
+
+    // Key B probes key A's intent, and a random unknown id for the baseline.
+    const unknownId = randomUUID();
+    const unknownStatus = await mcpCall(rawKeyB, 'get_action_status', { actionId: unknownId });
+    const unknownCancel = await mcpCall(rawKeyB, 'cancel_action', { actionId: unknownId });
+    expect(unknownStatus.error).toMatchObject({ code: -32602, data: { reason: 'not_found' } });
+    expect(unknownCancel.error).toMatchObject({ code: -32602, data: { reason: 'not_found' } });
+
+    const crossStatus = await mcpCall(rawKeyB, 'get_action_status', { actionId: actionA });
+    const crossCancel = await mcpCall(rawKeyB, 'cancel_action', { actionId: actionA });
+    for (const res of [crossStatus, crossCancel]) {
+      expect(res.result).toBeUndefined();
+      expect(res.error.code).toBe(-32602);
+      expect(res.error.data).toEqual({ reason: 'not_found' });
+    }
+    // Indistinguishable from "no such action": same body modulo the JSON-RPC id.
+    expect(crossStatus.error).toEqual(unknownStatus.error);
+    expect(crossCancel.error).toEqual(unknownCancel.error);
+
+    // Key A's intent is untouched and still readable by its own credential.
+    expect((await readIntent(actionA)).status).toBe('pending_approval');
+    const ownRead = await mcpCall(f.rawKey, 'get_action_status', { actionId: actionA });
+    expect(ownRead.error).toBeUndefined();
+    expect(ownRead.result.structuredContent).toMatchObject({
+      actionId: actionA,
+      status: 'pending_approval',
+      toolName: TOOL,
+    });
+    expect(handlerSpy).not.toHaveBeenCalled();
+  }, 60_000);
 });

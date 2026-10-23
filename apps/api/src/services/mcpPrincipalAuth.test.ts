@@ -214,6 +214,12 @@ describe('rebuildMcpOriginAuthContext — api_key origin', () => {
     expect('error' in rebuilt).toBe(false);
   });
 
+  it('a transient creator-permission read error is NOT reported as revoked: it throws (retryable)', async () => {
+    seedKey();
+    mocks.authorizeHumanApiKeyCreator.mockResolvedValue({ ok: false, reason: 'lookup_error' });
+    await expect(rebuildMcpOriginAuthContext(intent())).rejects.toThrow(/transient/i);
+  });
+
   it('delegation no longer backed by the creator → mcp_scope_lost', async () => {
     seedKey();
     mocks.authorizeHumanApiKeyCreator.mockResolvedValue({ ok: false, reason: 'scope_exceeds_current_permissions' });
@@ -273,6 +279,22 @@ describe('rebuildMcpOriginAuthContext — oauth_grant origin', () => {
   ])('%s → mcp_origin_revoked', async (_label, seed) => {
     seed();
     expect(await rebuildMcpOriginAuthContext(oauthIntent())).toEqual({ error: 'mcp_origin_revoked' });
+  });
+
+  it('a partner-scope OAuth context drops orgs the client is blocked in, as the bearer path does', async () => {
+    seedGrant();
+    mocks.filterBlockedOAuthClientOrgIds.mockImplementation(async (ids: string[]) => ids.filter((id) => id !== OTHER_ORG));
+    const rebuilt = await rebuildMcpOriginAuthContext(oauthIntent());
+    if ('error' in rebuilt) throw new Error(`unexpected ${rebuilt.error}`);
+    expect(rebuilt.auth.accessibleOrgIds).toEqual([ORG]);
+    expect(rebuilt.auth.canAccessOrg(OTHER_ORG)).toBe(false);
+    expect(rebuilt.auth.canAccessOrg(ORG)).toBe(true);
+  });
+
+  it('a transient partner-permission read error for an OAuth grant throws instead of revoking', async () => {
+    seedGrant();
+    mocks.getUserPermissions.mockRejectedValueOnce(new Error('connection reset'));
+    await expect(rebuildMcpOriginAuthContext(oauthIntent())).rejects.toThrow(/transient/i);
   });
 
   it('partner inactive is checked strictly (strictForOauth), as on the bearer path', async () => {

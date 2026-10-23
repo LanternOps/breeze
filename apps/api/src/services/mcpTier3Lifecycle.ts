@@ -13,6 +13,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { auditLogs } from '../db/schema/audit';
 import type { ActionIntent } from '../db/schema/actionIntents';
+import { captureException } from './sentry';
 import type { Context } from 'hono';
 import type { AuthContext } from '../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent, type AuditEventInput } from './auditEvents';
@@ -308,7 +309,9 @@ async function finalizeTier3ToolLifecycle<R>(
       result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
       error: outcome.status === 'failure' ? outcome.error : undefined,
     }).catch((err) => {
+      // Left 'executing': surface it, a stuck ledger row hides a real outcome.
       console.error('[MCP] Failed to complete tool execution ledger:', ctx.toolName, err);
+      captureException(err);
     });
   }
   writeMcpToolAuditEvent(ctx.audit, {
@@ -451,5 +454,6 @@ export async function writeMcpIntentOutcomeAudit(
     });
   } catch (err) {
     console.error('[MCP] Failed to write intent outcome audit for', intent.id, err);
+    captureException(err);
   }
 }
