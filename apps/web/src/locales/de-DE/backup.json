@@ -555,6 +555,7 @@
     "selectionFiles_other": "{{formatted}} Dateien",
     "selectionFolders_one": "{{formatted}} Ordner",
     "selectionFolders_other": "{{formatted}} Ordner",
+    "largeFolderSelectionTitle": "Große Auswahl",
     "selectFolder": "Ordner {{name}} auswählen",
     "confirmLargeFolderSelection": "Diese Auswahl umfasst etwa {{formatted}} Dateien und die Wiederherstellung kann einige Zeit dauern. Fortfahren?",
     "unknownDevice": "Unbekanntes Gerät",

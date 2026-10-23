@@ -17,6 +17,7 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
 import RestoreResultNotices from './RestoreResultNotices';
@@ -348,6 +349,15 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   // Selecting a folder stores its tree path; the API expands it to the indexed
   // files beneath it (#9628). Counts are remembered to gate very large picks.
   const folderCounts = useRef(new Map<string, number>());
+  const [pendingFolder, setPendingFolder] = useState<{ item: SnapshotTreeItem; total: number } | null>(null);
+  const applyFolderToggle = (item: SnapshotTreeItem) => {
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(item.path)) next.delete(item.path);
+      else next.add(item.path);
+      return next;
+    });
+  };
   const toggleFolder = (item: SnapshotTreeItem) => {
     const count = item.fileCount ?? 0;
     folderCounts.current.set(item.path, count);
@@ -356,19 +366,12 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     if (state === 'checked' && !selectedFiles.has(item.path)) return;
     if (state !== 'checked' && count > 0) {
       const total = selectedFolderFileTotal(selectedFiles, folderCounts.current, count);
-      if (
-        total > LARGE_FOLDER_SELECTION_THRESHOLD &&
-        !window.confirm(t('restoreWizard.confirmLargeFolderSelection', { count: total, formatted: formatNumber(total) }))
-      ) {
+      if (total > LARGE_FOLDER_SELECTION_THRESHOLD) {
+        setPendingFolder({ item, total });
         return;
       }
     }
-    setSelectedFiles((prev) => {
-      const next = new Set(prev);
-      if (next.has(item.path)) next.delete(item.path);
-      else next.add(item.path);
-      return next;
-    });
+    applyFolderToggle(item);
   };
 
   // Folder paths are remembered in folderCounts when toggled; everything else
@@ -1099,6 +1102,24 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
           </div>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={pendingFolder !== null}
+        onClose={() => setPendingFolder(null)}
+        onConfirm={() => {
+          if (!pendingFolder) return;
+          const { item } = pendingFolder;
+          setPendingFolder(null);
+          applyFolderToggle(item);
+        }}
+        title={t('restoreWizard.largeFolderSelectionTitle')}
+        message={t('restoreWizard.confirmLargeFolderSelection', {
+          count: pendingFolder?.total ?? 0,
+          formatted: formatNumber(pendingFolder?.total ?? 0),
+        })}
+        variant="warning"
+        dialogTestId="restore-large-folder-dialog"
+        confirmTestId="restore-large-folder-confirm"
+      />
     </div>
   );
 }

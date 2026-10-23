@@ -555,6 +555,7 @@
     "selectionFiles_other": "{{formatted}} dosya",
     "selectionFolders_one": "{{formatted}} klasör",
     "selectionFolders_other": "{{formatted}} klasör",
+    "largeFolderSelectionTitle": "Büyük seçim",
     "selectFolder": "{{name}} klasörünü seç",
     "confirmLargeFolderSelection": "Bu seçim yaklaşık {{formatted}} dosyayı kapsıyor ve geri yükleme biraz sürebilir. Devam edilsin mi?",
     "unknownDevice": "Bilinmeyen cihaz",

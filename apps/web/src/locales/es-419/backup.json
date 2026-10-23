@@ -555,6 +555,7 @@
     "selectionFiles_other": "{{formatted}} archivos",
     "selectionFolders_one": "{{formatted}} carpeta",
     "selectionFolders_other": "{{formatted}} carpetas",
+    "largeFolderSelectionTitle": "Selección grande",
     "selectFolder": "Seleccionar carpeta {{name}}",
     "confirmLargeFolderSelection": "Esta selección abarca unos {{formatted}} archivos y la restauración puede tardar. ¿Continuar?",
     "unknownDevice": "Dispositivo desconocido",

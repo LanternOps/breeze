@@ -555,6 +555,7 @@
     "selectionFiles_other": "{{formatted}} documenti",
     "selectionFolders_one": "{{formatted}} cartella",
     "selectionFolders_other": "{{formatted}} cartelle",
+    "largeFolderSelectionTitle": "Selezione estesa",
     "selectFolder": "Seleziona la cartella {{name}}",
     "confirmLargeFolderSelection": "Questa selezione comprende circa {{formatted}} file e il ripristino potrebbe richiedere tempo. Continuare?",
     "unknownDevice": "Dispositivo sconosciuto",

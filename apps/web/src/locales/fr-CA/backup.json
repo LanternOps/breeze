@@ -555,6 +555,7 @@
     "selectionFiles_other": "{{formatted}} fichiers",
     "selectionFolders_one": "{{formatted}} dossier",
     "selectionFolders_other": "{{formatted}} dossiers",
+    "largeFolderSelectionTitle": "Sélection volumineuse",
     "selectFolder": "Sélectionner le dossier {{name}}",
     "confirmLargeFolderSelection": "Cette sélection couvre environ {{formatted}} fichiers et la restauration peut prendre du temps. Continuer?",
     "unknownDevice": "Appareil inconnu",
