@@ -198,7 +198,8 @@ export default function RecentApprovals() {
                             denial derives its outcome reason from this field). */}
                         {(() => {
                           const approverReason = row.decisionReason?.trim();
-                          if (!approverReason || approverReason === row.intentOutcome?.reason?.trim()) return null;
+                          // A refused approve stores the approve-time note here, not a denial reason.
+                          if (row.refusalReason || !approverReason || approverReason === row.intentOutcome?.reason?.trim()) return null;
                           return (
                             <p
                               className="mt-1 text-xs text-muted-foreground"

@@ -13,7 +13,7 @@ const CANONICAL_OP_KEY = 'run_script:execute';
 const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, toolSourcesMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock, dispatchClaimMock, operationServiceMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
-  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
+  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status'), decisionReason: col('decision_reason'), refusalReason: col('refusal_reason') };
   const aiAgentRunsTbl = { id: col('id'), agentId: col('agent_id'), orgId: col('org_id'), alertId: col('alert_id') };
   const aiAgentsTbl = { id: col('id'), orgId: col('org_id'), partnerId: col('partner_id'), recipients: col('recipients') };
 
@@ -58,6 +58,7 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
        *  (e.g. loadIntentDecidedVia's SELECT) without disturbing every
        *  other test that relies on the queue-based happy path above. */
       selectActionIntentsNextError: null as Error | null,
+      selectApprovalRequestsNextError: null as Error | null,
     },
     intentServiceMock: { transitionIntent: vi.fn() },
     actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn() },
@@ -248,6 +249,11 @@ vi.mock('../db', () => {
             return Promise.resolve(dbState.selectActionIntentsResults.shift() ?? []);
           }
           if (table === schema.approvalRequestsTbl) {
+            if (dbState.selectApprovalRequestsNextError) {
+              const err = dbState.selectApprovalRequestsNextError;
+              dbState.selectApprovalRequestsNextError = null;
+              return Promise.reject(err);
+            }
             return Promise.resolve(dbState.selectApprovalRequestsResults.shift() ?? []);
           }
           if (table === schema.aiAgentRunsTbl) {
@@ -495,6 +501,7 @@ vi.mock('../services/toolTimeouts', async (importOriginal) => {
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
   and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
+  isNull: vi.fn((...args: unknown[]) => ({ op: 'isNull', args })),
   // Reached transitively via services/userNotifications (countUnread).
   sql: Object.assign(() => ({}), { raw: () => ({}) }),
 }));
@@ -652,6 +659,7 @@ function resetDbState() {
   dbState.selectAgentRunsResults.length = 0;
   dbState.selectAgentsResults.length = 0;
   dbState.selectActionIntentsNextError = null;
+  dbState.selectApprovalRequestsNextError = null;
 }
 
 /** Clears GOOGLE_HEADLESS_SECRET_ACTIONS keys in place (see the hoisted
@@ -4568,6 +4576,16 @@ describe('processIntentReleaseJob', () => {
   it('keeps the plain denial copy when the approver gave no reason', async () => {
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
     dbState.selectApprovalRequestsResults.push([{ decisionReason: '  ' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('run_script(deviceId=d-1) was denied and will not run.');
+  });
+
+  it('still sends the plain denial notification when the reason lookup fails', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsNextError = new Error('connection terminated unexpectedly');
 
     await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
 

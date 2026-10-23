@@ -1,6 +1,6 @@
 import { Job, Worker } from 'bullmq';
 import { parseSweepTriggerKey, type AiAgentRecipients } from '@breeze/shared';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
 import { aiAgentRuns, aiAgents } from '../db/schema/aiAgents';
@@ -1848,6 +1848,34 @@ function agentOutcomeCopy(intent: { targetSummary: string; status: string }): {
 }
 
 /**
+ * The approver's free-text deny reason for an intent, or null when none.
+ * Best-effort: it only decorates the notification, so a failed read degrades
+ * to the plain copy rather than throwing the job into retries. A refused
+ * approve (refusal_reason set) is excluded — its decision_reason is the
+ * approve-time note, not a denial reason.
+ */
+async function loadDenyReason(intentId: string): Promise<string | null> {
+  try {
+    const [row] = await withSystemDbAccessContext(() =>
+      db
+        .select({ decisionReason: approvalRequests.decisionReason })
+        .from(approvalRequests)
+        .where(
+          and(
+            eq(approvalRequests.intentId, intentId),
+            eq(approvalRequests.status, 'denied'),
+            isNull(approvalRequests.refusalReason),
+          ),
+        )
+        .limit(1));
+    return row?.decisionReason?.trim() || null;
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
+
+/**
  * Tell the requester how their intent ended.
  *
  * The point of doing this from the outbox rather than inline at decide time:
@@ -1859,17 +1887,6 @@ function agentOutcomeCopy(intent: { targetSummary: string; status: string }): {
  * delivered at-least-once and can be processed well after the fact, so the
  * status on the row is the truth and the event is only a nudge to go look.
  */
-/** The approver's free-text deny reason for an intent, or null when none. */
-async function loadDenyReason(intentId: string): Promise<string | null> {
-  const [row] = await withSystemDbAccessContext(() =>
-    db
-      .select({ decisionReason: approvalRequests.decisionReason })
-      .from(approvalRequests)
-      .where(and(eq(approvalRequests.intentId, intentId), eq(approvalRequests.status, 'denied')))
-      .limit(1));
-  return row?.decisionReason?.trim() || null;
-}
-
 async function notifyRequesterOfOutcome(
   intentId: string,
   eventType: 'intent_approved' | 'intent_rejected' | 'intent_expired' | 'intent_cancelled',
