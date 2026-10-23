@@ -12,6 +12,12 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { cascadeDeletePartner } from '../../services/tenantCascade';
+import {
+  __resetEntitlementCacheForTests,
+  getEntitlements,
+  revokeEntitlementRow,
+  upsertEntitlementRow,
+} from '../../services/entitlements';
 
 const partnerA = randomUUID();
 const partnerB = randomUUID();
@@ -124,6 +130,54 @@ describe('partner_entitlements — partner-axis RLS', () => {
     const rows = await withDbAccessContext(orgContext, () => db.execute(sql`
       SELECT id FROM partner_entitlements WHERE partner_id = ${partnerA}`));
     expect(rows).toHaveLength(0);
+  });
+
+  // ---- service path (Task 4) ------------------------------------------------
+
+  it('org-scoped context resolves the CORRECT rows through getEntitlements (#2822 class)', async () => {
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE partner_entitlements SET state = 'enabled' WHERE partner_id = ${partnerA} AND source = 'manual'`));
+    __resetEntitlementCacheForTests();
+    const { resolved, bare } = await withDbAccessContext(orgContext, async () => ({
+      resolved: await getEntitlements(partnerA),
+      bare: await db.execute(sql`SELECT id FROM partner_entitlements WHERE partner_id = ${partnerA}`),
+    }));
+    // Control: the bare read in the same context is blind, so 'manual' can only
+    // have come through the partner-axis escape.
+    expect(bare).toHaveLength(0);
+    expect(resolved.plan).toBe('free');
+    expect(resolved.entitlements.wisp).toMatchObject({ state: 'enabled', source: 'manual' });
+  });
+
+  it('concurrent billing and manual upserts for one key land as two rows, neither clobbering the other', async () => {
+    await Promise.all([
+      upsertEntitlementRow({ partnerId: partnerB, featureKey: 'wisp', source: 'billing', state: 'enabled', limits: null, expiresAt: null, reason: null, updatedBy: null }),
+      upsertEntitlementRow({ partnerId: partnerB, featureKey: 'wisp', source: 'manual', state: 'disabled', limits: null, expiresAt: null, reason: 'abuse hold pending review', updatedBy: null }),
+    ]);
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT source, state FROM partner_entitlements WHERE partner_id = ${partnerB} ORDER BY source`));
+    expect(rows).toEqual([{ source: 'billing', state: 'enabled' }, { source: 'manual', state: 'disabled' }]);
+    __resetEntitlementCacheForTests();
+    const resolved = await getEntitlements(partnerB);
+    expect(resolved.plan).toBe('pro');
+    expect(resolved.entitlements.wisp).toMatchObject({ state: 'disabled', source: 'manual' });
+  });
+
+  it('revoke keeps the grant reason when none is given; upsert after revoke re-grants the same row (revoked_at cleared)', async () => {
+    expect(await revokeEntitlementRow({ partnerId: partnerA, featureKey: 'wisp', source: 'manual', reason: null })).toBe(true);
+    expect(await revokeEntitlementRow({ partnerId: partnerA, featureKey: 'wisp', source: 'manual', reason: null })).toBe(false);
+    const revoked = (await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT id, revoked_at, reason FROM partner_entitlements WHERE partner_id = ${partnerA}`))) as unknown as Array<{ id: string; revoked_at: Date | null; reason: string }>;
+    expect(revoked).toHaveLength(1);
+    expect(revoked[0]!.revoked_at).not.toBeNull();
+    expect(revoked[0]!.reason).toBe('seeded manual row for partner A');
+
+    await upsertEntitlementRow({ partnerId: partnerA, featureKey: 'wisp', source: 'manual', state: 'enabled', limits: { maxGrants: 2, budgetCentsPerDayCeiling: 100, minFloorTickMinutes: 30 }, expiresAt: null, reason: 're-granted after review', updatedBy: null });
+    const regranted = (await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT id, revoked_at, state, reason, limits FROM partner_entitlements WHERE partner_id = ${partnerA}`))) as unknown as Array<Record<string, unknown>>;
+    expect(regranted).toHaveLength(1);
+    expect(regranted[0]).toMatchObject({ id: revoked[0]!.id, revoked_at: null, state: 'enabled', reason: 're-granted after review' });
+    expect(regranted[0]!.limits).toEqual({ maxGrants: 2, budgetCentsPerDayCeiling: 100, minFloorTickMinutes: 30 });
   });
 
   it('cascadeDeletePartner removes the rows with no hand registration', async () => {
