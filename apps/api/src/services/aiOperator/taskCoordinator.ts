@@ -83,7 +83,7 @@ import {
   recordAiOperatorUnknownEffectHandoff,
 } from '../aiOperatorCoordinatorMetrics';
 import { aiOperatorTasksEnabled } from '../../config/env';
-import { requesterAccessLost } from './requesterAccessGate';
+import { requesterAccessLost, requesterAccessLostForTargets } from './requesterAccessGate';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
 import { planEffectStep, planProbeStep, type EffectStepDirective } from './effectDispatch';
@@ -842,8 +842,15 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   // resume that jumps straight to a step by name), passes through this same
   // check before anything below it can run. No-op for a task with no human
   // requester (automatic origins have nothing to re-check).
+  //
+  // Selected by checkpoint ARM (R1a-0): the service-recovery arm keeps the
+  // device-keyed gate, call and arguments unchanged; every other arm re-checks
+  // the task's live target rows. `checkpointMatchesRecipe` above already
+  // guarantees the arm belongs to this recipe.
   if (stepNeedsRequesterAccessRecheck(recipe.steps[stepKey])) {
-    const accessCheck = await requesterAccessLost(task, checkpoint.recipeInput.deviceId);
+    const accessCheck = isServiceRecoveryCheckpoint(checkpoint)
+      ? await requesterAccessLost(task, checkpoint.recipeInput.deviceId)
+      : await requesterAccessLostForTargets(task);
     if (accessCheck.lost) {
       await settle({
         task, leaseEpoch, event: 'hand_off', outcome: 'unresolved',

@@ -230,3 +230,64 @@ describe('parseTaskCheckpointResult over the arm union (R1a-0 Task 1b)', () => {
     expect((parsed as { detail: string }).detail).toContain('recipeInput.serviceName');
   });
 });
+
+// ---------------------------------------------------------------------------
+// R1a-0 Task 1f — the requester gate is selected by checkpoint arm. Only the
+// service-recovery arm exists in R1a-0 (R1a adds the identity arm), so a
+// non-service-recovery checkpoint is emulated by stubbing the parse for ONE
+// call; every other call — including the cases above — runs the real parser.
+// ---------------------------------------------------------------------------
+import { requesterAccessLostForTargets } from './requesterAccessGate';
+
+const parseSeam = vi.hoisted(() => ({ next: null as null | { ok: true; checkpoint: unknown } }));
+vi.mock('./taskService', async (orig) => {
+  const real = await orig<typeof import('./taskService')>();
+  return {
+    ...real,
+    parseTaskCheckpointResult: (value: unknown) => {
+      if (parseSeam.next) { const out = parseSeam.next; parseSeam.next = null; return out; }
+      return real.parseTaskCheckpointResult(value);
+    },
+  };
+});
+
+describe('advanceTask — requester gate selected by checkpoint arm (R1a-0 Task 1f)', () => {
+  it('a non-service-recovery task at an effect step calls requesterAccessLostForTargets(task), never the device gate', async () => {
+    parseSeam.next = {
+      ok: true,
+      checkpoint: {
+        version: 1, recipeInput: { contactId: 'contact-1' }, findings: [], satisfiedCriteria: [], unsatisfiedCriteria: [],
+        mutationAttempts: 0, lastVerification: null, lastOperationKey: null, fixWatchId: null,
+      },
+    };
+    const row = taskRow('fixture_identity', 'offboard');
+    const out = await coordinator.advanceTask(row as never, 4);
+    expect(requesterAccessLostForTargets).toHaveBeenCalledTimes(1);
+    expect(requesterAccessLostForTargets).toHaveBeenCalledWith(row);
+    expect(requesterAccessLost).not.toHaveBeenCalled();
+    expect(out).toMatch(/requester access lost \(targets-gate-reached\)/);
+    expect(lastPatch()).toMatchObject({ outcome: 'unresolved', outcomeDetail: expect.stringContaining('targets-gate-reached') });
+    expect(planEffect).not.toHaveBeenCalled();
+  });
+
+  it('a service_recovery task still calls requesterAccessLost(task, recipeInput.deviceId) and never the targets gate', async () => {
+    const row = taskRow('service_recovery', 'execute');
+    await coordinator.advanceTask(row as never, 4);
+    expect(requesterAccessLost).toHaveBeenCalledWith(row, SR_DEVICE);
+    expect(requesterAccessLostForTargets).not.toHaveBeenCalled();
+  });
+
+  it('a non-effect step reaches neither gate', async () => {
+    planProbe.mockResolvedValue({ action: 'settle', event: 'complete', outcome: 'verified_resolved', detail: 'ok' });
+    parseSeam.next = {
+      ok: true,
+      checkpoint: {
+        version: 1, recipeInput: {}, findings: [], satisfiedCriteria: [], unsatisfiedCriteria: [],
+        mutationAttempts: 0, lastVerification: null, lastOperationKey: null, fixWatchId: null,
+      },
+    };
+    await coordinator.advanceTask(taskRow('fixture_identity', 'verify_outcome') as never, 4);
+    expect(requesterAccessLostForTargets).not.toHaveBeenCalled();
+    expect(requesterAccessLost).not.toHaveBeenCalled();
+  });
+});
