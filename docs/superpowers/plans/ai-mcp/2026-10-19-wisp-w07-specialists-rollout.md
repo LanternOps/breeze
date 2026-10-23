@@ -3,7 +3,7 @@ spec: docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md
 orchestrator: docs/superpowers/plans/ai-mcp/2026-10-19-wisp-w00-wave-map-and-contracts.md
 wave: W07
 depends_on: [W02, W05]
-tracking_issue: (sub-issue assigned by register_feature)
+tracking_issue: LanternOps/breeze#9906
 ---
 
 # Wisp W07 — Specialist Requests, Rollout, Private Gap-Finder: Implementation Plan
