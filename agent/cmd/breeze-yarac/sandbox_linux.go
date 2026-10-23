@@ -286,7 +286,25 @@ var deniedSyscalls = []uint32{
 	unix.SYS_EXECVE, unix.SYS_EXECVEAT,
 	unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER,
 	unix.SYS_TKILL, unix.SYS_RT_SIGQUEUEINFO, unix.SYS_RT_TGSIGQUEUEINFO,
+	// Same-uid knobs on ANOTHER process (the API): priority, CPU placement,
+	// I/O priority, NUMA pages, robust futex list.
+	unix.SYS_SETPRIORITY, unix.SYS_SCHED_SETAFFINITY, unix.SYS_SCHED_SETATTR, unix.SYS_SCHED_SETPARAM,
+	unix.SYS_SCHED_SETSCHEDULER, unix.SYS_IOPRIO_SET, unix.SYS_MOVE_PAGES, unix.SYS_MIGRATE_PAGES,
+	unix.SYS_GET_ROBUST_LIST, unix.SYS_PROCESS_MRELEASE,
+	// Kernel attack surface nothing in match needs.
+	unix.SYS_PERF_EVENT_OPEN, unix.SYS_BPF, unix.SYS_USERFAULTFD, unix.SYS_KEYCTL, unix.SYS_ADD_KEY,
+	unix.SYS_REQUEST_KEY, unix.SYS_UNSHARE, unix.SYS_SETNS,
+	// File metadata / events Landlock does not mediate.
+	unix.SYS_INOTIFY_INIT1, unix.SYS_INOTIFY_ADD_WATCH, unix.SYS_FANOTIFY_INIT,
+	unix.SYS_NAME_TO_HANDLE_AT, unix.SYS_OPEN_BY_HANDLE_AT,
 }
+
+// cloneNamespaceFlags: CLONE_NEW* — a new namespace is never needed to scan
+// (clone3 returns ENOSYS so libc falls back to the checked clone).
+// CLONE_NEWTIME (0x80) is absent: in clone() that bit is part of the CSIGNAL
+// byte, and a time namespace can only be made with clone3/unshare, both denied.
+const cloneNamespaceFlags = unix.CLONE_NEWNS | unix.CLONE_NEWCGROUP | unix.CLONE_NEWUTS | unix.CLONE_NEWIPC |
+	unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWNET
 
 // seccomp_data offsets (include/uapi/linux/seccomp.h); args are 64-bit, and
 // both supported arches are little-endian.
@@ -297,11 +315,15 @@ const (
 	seccompDataArg0Hi  = 20
 	x32SyscallBit      = 0x40000000
 	seccompRetEPERM    = unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)
+	seccompRetENOSYS   = unix.SECCOMP_RET_ERRNO | uint32(unix.ENOSYS)
 	seccompRetAllow    = unix.SECCOMP_RET_ALLOW
 	labelDeny          = "deny"
 	labelAllow         = "allow"
+	labelSelfOrZero    = "self_or_zero"
 	labelOwnPid        = "ownpid"
 	labelOwnPidAllowed = "ownpid_ok"
+	labelCloneFlags    = "clone_flags"
+	labelENOSYS        = "enosys"
 )
 
 type bpfInsn struct {
@@ -346,12 +368,24 @@ func seccompProgram(pid int) ([]unix.SockFilter, error) {
 	prog = append(prog,
 		jeq(unix.SYS_KILL, labelOwnPid, ""),
 		jeq(unix.SYS_TGKILL, labelOwnPid, ""),
+		jeq(unix.SYS_PRLIMIT64, labelSelfOrZero, ""), // pid 0 = self
+		jeq(unix.SYS_CLONE, labelCloneFlags, ""),
+		jeq(unix.SYS_CLONE3, labelENOSYS, ""),
 		ret(seccompRetAllow, labelAllow),
+		// arg0 (a pid) must be 0 or this process.
+		bpfInsn{code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, k: seccompDataArg0Lo, label: labelSelfOrZero},
+		jeq(0, labelOwnPid+"_hi", ""),
+		// arg0 (a pid) must be this process.
 		bpfInsn{code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, k: seccompDataArg0Lo, label: labelOwnPid},
 		jeq(uint32(pid), "", labelDeny),
-		ld(seccompDataArg0Hi),
+		bpfInsn{code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, k: seccompDataArg0Hi, label: labelOwnPid + "_hi"},
 		jeq(0, labelOwnPidAllowed, labelDeny),
 		ret(seccompRetAllow, labelOwnPidAllowed),
+		// clone(flags, …): no namespace flags (flags is arg0 on both arches).
+		bpfInsn{code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, k: seccompDataArg0Lo, label: labelCloneFlags},
+		bpfInsn{code: unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K, k: cloneNamespaceFlags, jt: labelDeny},
+		ret(seccompRetAllow, ""),
+		ret(seccompRetENOSYS, labelENOSYS),
 		ret(seccompRetEPERM, labelDeny),
 	)
 
@@ -428,6 +462,19 @@ func runProbes(control bool) []probeResult {
 			return err
 		}},
 		{"signal parent", func() error { return unix.Kill(ppid, 0) }},
+		{"prlimit parent", func() error {
+			var old unix.Rlimit // read-only: nothing is changed even when allowed
+			return unix.Prlimit(ppid, unix.RLIMIT_NOFILE, nil, &old)
+		}},
+		{"perf_event_open", func() error {
+			attr := unix.PerfEventAttr{Type: unix.PERF_TYPE_SOFTWARE, Config: unix.PERF_COUNT_SW_CPU_CLOCK}
+			attr.Size = uint32(unsafe.Sizeof(attr))
+			fd, err := unix.PerfEventOpen(&attr, 0, -1, -1, unix.PERF_FLAG_FD_CLOEXEC)
+			if err == nil {
+				_ = unix.Close(fd)
+			}
+			return err
+		}},
 		{"exec /bin/sh", func() error {
 			// Raw ForkExec with inherited fds: os/exec would first open
 			// /dev/null (a Landlock denial), and this probe must reach execve.
@@ -440,16 +487,19 @@ func runProbes(control bool) []probeResult {
 		}},
 	}
 	if !control {
-		probes = append(probes, struct {
+		probes = append(probes, []struct {
 			name string
 			fn   func() error
-		}{"ptrace parent", func() error {
-			err := unix.PtraceAttach(ppid)
-			if err == nil {
-				_ = unix.PtraceDetach(ppid) // the sandbox failed; let the parent go at once
-			}
-			return err
-		}})
+		}{
+			{"ptrace parent", func() error {
+				err := unix.PtraceAttach(ppid)
+				if err == nil {
+					_ = unix.PtraceDetach(ppid) // the sandbox failed; let the parent go at once
+				}
+				return err
+			}},
+			{"unshare user namespace", func() error { return unix.Unshare(unix.CLONE_NEWUSER) }},
+		}...)
 	}
 	out := make([]probeResult, 0, len(probes))
 	for _, p := range probes {
