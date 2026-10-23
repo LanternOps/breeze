@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { launchPurchaseSelectionSchema, type LaunchPurchaseSelection } from '@breeze/shared';
 import { persist } from 'zustand/middleware';
 import {
   startAuthentication,
@@ -1809,7 +1810,8 @@ export async function apiRegisterPartner(
   companyName: string,
   email: string,
   password: string,
-  name: string
+  name: string,
+  purchaseSelection?: LaunchPurchaseSelection
 ): Promise<
   | { success: true; message: string }
   | { success: false; error: string; action?: { url: string; label: string } }
@@ -1819,7 +1821,7 @@ export async function apiRegisterPartner(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ companyName, email, password, name, acceptTerms: true })
+      body: JSON.stringify({ companyName, email, password, name, acceptTerms: true, ...(purchaseSelection ? { purchaseSelection } : {}) })
     });
 
     const data = await response.json();
@@ -2086,6 +2088,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   user?: User;
   tokens?: Tokens;
   status?: 'sign_in';
+  purchaseSelection?: LaunchPurchaseSelection;
   redirectUrl?: string;
 }> {
   try {
@@ -2104,7 +2107,8 @@ export async function apiVerifyEmail(token: string): Promise<{
     // Registration-completion path bounced to sign-in (address already taken).
     // 200 body but `verified: false` — surface the status, not success.
     if (data.verified === false && data.status === 'sign_in') {
-      return { success: false, error: 'already_registered', status: 'sign_in' };
+      const selected = launchPurchaseSelectionSchema.safeParse(data.purchaseSelection);
+      return { success: false, error: 'already_registered', status: 'sign_in', ...(selected.success ? { purchaseSelection: selected.data } : {}) };
     }
 
     return {
