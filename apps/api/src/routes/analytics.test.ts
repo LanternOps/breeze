@@ -500,7 +500,7 @@ describe('analytics routes', () => {
       });
 
       expect(res.status).toBe(200);
-      const selected = vi.mocked(db.select).mock.calls.at(-1)![0] as { bucket: { values: unknown[] } };
+      const selected = vi.mocked(db.select).mock.calls.at(-1)![0] as unknown as { bucket: { values: unknown[] } };
       // A bound "minute" param in SELECT and GROUP BY are distinct $n for Postgres -> 500.
       expect(selected.bucket.values).not.toContain('minute');
       expect(JSON.stringify(selected.bucket.values[0])).toContain("'minute'");
