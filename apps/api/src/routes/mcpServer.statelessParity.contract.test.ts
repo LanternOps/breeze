@@ -6,8 +6,12 @@
  * For every principal × case pair the modern and legacy requests must produce
  * the same JSON-RPC error, the same result once the modern decoration is
  * stripped, the same HTTP status, the same `WWW-Authenticate`, and the same
- * audit details once correlation is stripped. The only documented exception
- * is an unknown method (modern 404 vs legacy 200), asserted on its own below.
+ * audit details once correlation is stripped. The documented exceptions are
+ * an unknown method (modern 404 vs legacy 200) and, with
+ * MCP_TIER3_INTENTS_ENABLED on, a Tier-3 call by a modern client that declared
+ * URL-mode elicitation (input_required vs legacy pending_approval, B-W04
+ * #6158 D-B32) — each asserted on its own below. Every CASES fixture declares
+ * `clientCapabilities: {}` (no elicitation.url).
  *
  * Legacy HTTP+SSE's owned-session 202 is out of the comparison by design.
  */
@@ -25,6 +29,13 @@ const mocks = vi.hoisted(() => ({
   ledgerBegin: vi.fn(),
   ledgerComplete: vi.fn(),
   enforceIpAllowlist: vi.fn(),
+}));
+
+// B-W04 (#6158): the MCP-side intent creation, for the documented exception.
+const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
+vi.mock('../services/mcpIntentCreation', () => ({
+  createMcpActionIntent: (...args: unknown[]) => intentMocks.createMcpActionIntent(...args),
+  resolveMcpClientLabel: vi.fn(async () => 'MCP · test'),
 }));
 
 vi.mock('../config/env', () => ({
@@ -225,7 +236,7 @@ async function legacyCall(method: string, params?: Record<string, unknown>) {
   return capture(res);
 }
 
-async function modernCall(method: string, params?: Record<string, unknown>) {
+async function modernCall(method: string, params?: Record<string, unknown>, clientCapabilities: Record<string, unknown> = {}) {
   mocks.writeAuditEvent.mockClear();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json', 'X-API-Key': 'k',
@@ -242,7 +253,7 @@ async function modernCall(method: string, params?: Record<string, unknown>) {
         ...(params ?? {}),
         _meta: {
           'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-          'io.modelcontextprotocol/clientCapabilities': {},
+          'io.modelcontextprotocol/clientCapabilities': clientCapabilities,
         },
       },
     }),
@@ -354,6 +365,39 @@ describe.each(PRINCIPALS)('stateless parity — $label', (principal) => {
       // Refused before dispatch (e.g. IP allowlist): identical in both eras.
       expect(modern.status).toBe(legacy.status);
     }
+  });
+});
+
+describe('documented exception: Tier-3 call by a URL-elicitation-capable modern client (B-W04)', () => {
+  const ACTION_ID = '77777777-7777-4777-8777-777777777777';
+  beforeEach(() => {
+    process.env.MCP_TIER3_INTENTS_ENABLED = 'true';
+    current = PRINCIPALS[0]!;
+    intentMocks.createMcpActionIntent.mockReset().mockResolvedValue({
+      kind: 'pending', isNew: true,
+      status: {
+        actionId: ACTION_ID, status: 'pending_approval', toolName: 'reboot_device', approvalScope: 'four_eyes',
+        expiresAt: '2027-01-01T00:00:00.000Z', approvalUrl: `https://app.example.com/approvals#intent-${ACTION_ID}`,
+      },
+    });
+  });
+  afterEach(() => { delete process.env.MCP_TIER3_INTENTS_ENABLED; });
+
+  it('legacy and a capability-less modern client get the same pending_approval; a URL-capable one gets input_required', async () => {
+    const params = { name: 'reboot_device', arguments: {} };
+    const legacy = await legacyCall('tools/call', params);
+    const plain = await modernCall('tools/call', params);
+    const url = await modernCall('tools/call', params, { elicitation: { url: {} } });
+
+    expect(legacy.body.result.structuredContent).toMatchObject({ status: 'pending_approval', actionId: ACTION_ID });
+    expect(stripModernDecoration(plain.body.result)).toEqual(legacy.body.result);
+    expect(url.status).toBe(200);
+    expect(url.body.result.resultType).toBe('input_required');
+    expect(url.body.result.inputRequests.breeze_approval.params).toMatchObject({
+      mode: 'url', url: `https://app.example.com/approvals#intent-${ACTION_ID}`,
+    });
+    expect(url.body.result).not.toHaveProperty('ttlMs');
+    expect(JSON.stringify([legacy.body, plain.body, url.body])).not.toContain('"mode":"form"');
   });
 });
 

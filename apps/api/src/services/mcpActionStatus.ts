@@ -143,3 +143,30 @@ export function buildPendingApprovalResult(status: McpActionStatus): {
     structuredContent: { ...status, next: NEXT },
   };
 }
+
+/**
+ * B-W04 (#6158, D-B32, PR B): the `2026-07-28` MRTR result for a client that
+ * declared URL-mode elicitation — exactly one `elicitation/create` in URL mode
+ * pointing at the Breeze approval page (never form mode), plus the sealed
+ * `requestState` the retry must carry. The URL carries only the intent id and
+ * is not pre-authenticated: the page needs a Breeze login.
+ */
+export function buildApprovalInputRequiredResult(status: McpActionStatus, requestState: string): Record<string, unknown> {
+  const who = status.approvalScope === 'supervised'
+    ? 'You must approve it yourself'
+    : 'Another person who can approve actions in this organization must approve it';
+  return {
+    resultType: 'input_required',
+    inputRequests: {
+      breeze_approval: {
+        method: 'elicitation/create',
+        params: {
+          mode: 'url',
+          message: `"${status.toolName}" needs approval before it runs. ${who} in the Breeze app; this opens Breeze in your browser. Declining cancels the request.`,
+          url: status.approvalUrl,
+        },
+      },
+    },
+    requestState,
+  };
+}
