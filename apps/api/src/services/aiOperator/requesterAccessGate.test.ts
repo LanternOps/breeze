@@ -192,7 +192,8 @@ function expectTargetsRead(i: number) {
 }
 
 describe('requesterAccessLostForTargets (R1a-0 Task 1f)', () => {
-  beforeEach(() => { reads.length = 0; });
+  // mockReset, not just clear: a failed case must not leave queued reads for the next one.
+  beforeEach(() => { reads.length = 0; shared.selectMock.mockReset(); });
 
   it('1: no requester → access OK, nothing read', async () => {
     await expect(lostForTargets({ ...TASK, requesterUserId: null })).resolves.toEqual({ lost: false, detail: null });
@@ -340,5 +341,55 @@ describe('requesterAccessLostForTargets (R1a-0 Task 1f)', () => {
 
   it('the device-keyed gate is still exported unchanged alongside it', () => {
     expect(gate.requesterAccessLost).toBe(requesterAccessLost);
+  });
+});
+
+describe('requesterAccessLostForTargets — ticket parity with the request-path ticket scope (R1a-0 Task 1f)', () => {
+  // mockReset, not just clear: a failed case must not leave queued reads for the next one.
+  beforeEach(() => { reads.length = 0; shared.selectMock.mockReset(); });
+  const user = () => queueRead([{ id: USER_ID, partnerId: 'p1', status: 'active' }]);
+
+  it('a soft-deleted ticket is lost (getScopedTicketOr404 hides it)', async () => {
+    user();
+    shared.getUserPermissions.mockResolvedValue(orgUser());
+    queueRead([target('ticket')]);
+    queueRead([{ id: 'ticket-1', deviceId: null, deletedAt: new Date('2026-10-01T00:00:00Z') }]);
+    await expect(lostForTargets()).resolves.toMatchObject({ lost: true, detail: expect.stringMatching(/ticket/) });
+  });
+
+  it('a device-bound ticket on a device outside the requester\'s sites is lost; the device read carries org_id', async () => {
+    user();
+    shared.getUserPermissions.mockResolvedValue(orgUser({ allowedSiteIds: ['site-A'] }));
+    queueRead([target('ticket')]);
+    queueRead([{ id: 'ticket-1', deviceId: DEVICE_ID, deletedAt: null }]);
+    queueRead([{ id: DEVICE_ID, siteId: 'site-B' }]);
+    shared.canAccessSite.mockReturnValue(false);
+    await expect(lostForTargets()).resolves.toMatchObject({ lost: true, detail: expect.stringMatching(/site/) });
+    expect(reads[3]!.table).toBe(devices);
+    expect(eqs(reads[3]!.where).get(devices.orgId)).toBe(ORG_ID);
+    expect(eqs(reads[3]!.where).get(devices.id)).toBe(DEVICE_ID);
+  });
+
+  it('a device-bound ticket whose device does not resolve in this org is lost', async () => {
+    user();
+    shared.getUserPermissions.mockResolvedValue(orgUser());
+    queueRead([target('ticket')]);
+    queueRead([{ id: 'ticket-1', deviceId: DEVICE_ID, deletedAt: null }]);
+    queueRead([]);
+    await expect(lostForTargets()).resolves.toMatchObject({ lost: true });
+  });
+
+  it('a device-bound ticket on an accessible site, and a deviceless ticket for a site-restricted requester, are OK', async () => {
+    user();
+    shared.getUserPermissions.mockResolvedValue(orgUser({ allowedSiteIds: ['site-A'] }));
+    queueRead([target('ticket')]);
+    queueRead([{ id: 'ticket-1', deviceId: DEVICE_ID, deletedAt: null }]);
+    queueRead([{ id: DEVICE_ID, siteId: 'site-A' }]);
+    await expect(lostForTargets()).resolves.toEqual({ lost: false, detail: null });
+
+    user();
+    queueRead([target('ticket')]);
+    queueRead([{ id: 'ticket-1', deviceId: null, deletedAt: null }]);
+    await expect(lostForTargets()).resolves.toEqual({ lost: false, detail: null });
   });
 });

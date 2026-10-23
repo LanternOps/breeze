@@ -145,8 +145,10 @@ function requesterCeiling(perms: UserPermissions): SiteCeilingAuth {
  *     exact-device ceiling (`canMutateOrgWideGovernance` — a directory
  *     account has no per-site slice, which is why every mutating Google/M365
  *     tool already refuses a site-restricted caller; the contact's own
- *     `site_id` grants nothing); a ticket is in the org. An unknown kind or a
- *     null pointer is lost.
+ *     `site_id` grants nothing); a ticket is in the org, not soft-deleted,
+ *     and — when device-bound — its device is in the org on a site the
+ *     requester can reach (the request-path ticket scope). An unknown kind
+ *     or a null pointer is lost.
  *
  * Deliberately NOT checked: provider grants. Child effects run as the plan's
  * approver, re-proven per mint; the connection's grants are the executor's.
@@ -245,13 +247,30 @@ export async function requesterAccessLostForTargets(
           continue;
         }
         if (target.targetKind === 'ticket' && target.ticketId) {
+          // Parity with the request-path ticket scope (routes/tickets/siteScope.ts):
+          // a soft-deleted ticket is hidden, and a device-bound ticket is only
+          // visible to a site-restricted caller when its device is on one of
+          // their sites. A deviceless ticket is org-level and stays visible.
           const [ticket] = await db
-            .select({ id: tickets.id })
+            .select({ id: tickets.id, deviceId: tickets.deviceId, deletedAt: tickets.deletedAt })
             .from(tickets)
             .where(and(eq(tickets.id, target.ticketId), eq(tickets.orgId, task.orgId)))
             .limit(1);
-          if (!ticket) {
+          if (!ticket || ticket.deletedAt) {
             return { lost: true, detail: 'a target ticket is no longer in this organization' };
+          }
+          if (ticket.deviceId) {
+            const [device] = await db
+              .select({ id: devices.id, siteId: devices.siteId })
+              .from(devices)
+              .where(and(eq(devices.id, ticket.deviceId), eq(devices.orgId, task.orgId)))
+              .limit(1);
+            if (!device) {
+              return { lost: true, detail: "a target ticket's device is no longer in this organization" };
+            }
+            if (!canAccessSite(perms, device.siteId)) {
+              return { lost: true, detail: "the requester no longer has access to a target ticket's device site" };
+            }
           }
           continue;
         }
