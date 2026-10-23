@@ -137,8 +137,12 @@ describe('SoftwareGroupTable', () => {
 
     it('explains the vocabulary in a header tooltip', async () => {
       const desktop = await renderWith({});
-      fireEvent.click(desktop.getByRole('button', { name: 'About the Patch column' }));
-      expect(desktop.getByRole('tooltip')).toHaveTextContent('pending on the device and approved');
+      const trigger = desktop.getByRole('button', { name: 'About the Patch column' });
+      fireEvent.click(trigger);
+      // The bubble is portaled outside the table to escape its overflow wrapper (#9552).
+      const tooltip = screen.getByRole('tooltip');
+      expect(trigger).toHaveAttribute('aria-describedby', tooltip.id);
+      expect(tooltip).toHaveTextContent('pending on the device and approved');
     });
   });
 
