@@ -125,7 +125,7 @@ export default function AlertsPage() {
     const legacy = params.get('severity');
     if (legacy === null) return;
     params.delete('severity');
-    const legacySeverity = parseAlertsHash(`severity=${legacy}`).severity;
+    const legacySeverity = parseAlertsHash(`severity=${legacy.toLowerCase()}`).severity;
     const current = parseAlertsHash(window.location.hash);
     const nextHash =
       legacySeverity.length > 0 && current.severity.length === 0

@@ -172,6 +172,13 @@ describe('AlertsPage — legacy /alerts?severity= (RF4, Gate B #5)', () => {
     pushSpy.mockRestore();
   });
 
+  it('a case-variant legacy value (?severity=Critical) still converts', async () => {
+    setUrl('/alerts?severity=Critical');
+    render(<AlertsPage />);
+    await waitFor(() => expect(window.location.hash).toBe('#severity=critical'));
+    expect(window.location.search).toBe('');
+  });
+
   it('keeps unrelated query params and an existing hash key', async () => {
     setUrl('/alerts?severity=critical&foo=bar#status=active');
     render(<AlertsPage />);
