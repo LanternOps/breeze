@@ -41,7 +41,7 @@
           "title": "Estadísticas de alerta"
         },
         "capacity": {
-          "title": "Previsión de capacidad"
+          "title": "Previsión de capacidad de disco"
         },
         "complianceGauge": {
           "policiesEvaluated": "Políticas {{count}} evaluadas",
@@ -62,7 +62,7 @@
           "title": "Sesiones remotas"
         },
         "uptime": {
-          "label": "Tiempo de actividad de la flota",
+          "label": "En línea ahora",
           "title": "tiempo de actividad"
         }
       },
@@ -105,6 +105,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Crítico {{value}}",
+      "noData": "No hay comprobaciones de cumplimiento para evaluar",
       "warnValue": "Advertir {{value}}"
     },
     "queryBuilder": {
@@ -115,7 +116,8 @@
         "p95": "P95",
         "sum": "Suma"
       },
-      "description": "Configure métricas y agregación para su panel",
+      "coverageNote": "Las consultas solo cubren los primeros {{count}} dispositivos en línea. Los dispositivos sin conexión y el resto de una flota mayor no se incluyen.",
+      "description": "Elija una métrica y una agregación para consultar sus dispositivos en línea",
       "errors": {
         "failedToExecuteQuery": "No se pudo ejecutar la consulta",
         "noDevicesSelected": "No hay dispositivos seleccionados para la consulta"

@@ -3,12 +3,16 @@
 package x11
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
 
 // ResolveDisplayTargets enumerates X sockets under /tmp/.X11-unix and Wayland
@@ -174,9 +178,13 @@ func findXServerProcAt(procRoot, displayNum string) (pid int, argv []string, uid
 	// GDM uses -displayfd instead of a literal :N argument, so match the X
 	// server by the socket it listens on. Unix sockets are per network
 	// namespace: read each candidate's own /proc/<pid>/net/unix.
+	var lastErr error
+	skipped := 0
 	for _, c := range candidates {
 		unix, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(c.pid), "net", "unix"))
 		if err != nil {
+			lastErr = err
+			skipped++
 			continue
 		}
 		inodes := parseXSocketInodes(string(unix), displayNum)
@@ -186,17 +194,32 @@ func findXServerProcAt(procRoot, displayNum string) (pid int, argv []string, uid
 		fdRoot := filepath.Join(procRoot, strconv.Itoa(c.pid), "fd")
 		fds, err := os.ReadDir(fdRoot)
 		if err != nil {
+			lastErr = err
+			skipped++
 			continue
 		}
 		var links []string
+		var fdErr error
 		for _, fd := range fds {
 			if link, err := os.Readlink(filepath.Join(fdRoot, fd.Name())); err == nil {
 				links = append(links, link)
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				// A descriptor closing between ReadDir and Readlink is normal
+				// (ENOENT); any other failure may hide the matching socket.
+				fdErr = err
 			}
 		}
 		if hasXSocket(links, inodes) {
 			return c.pid, c.argv, c.uid, true
 		}
+		if fdErr != nil {
+			lastErr = fdErr
+			skipped++
+		}
+	}
+	if skipped > 0 {
+		logging.L("desktop.x11").Debug("no X server matched the display socket; some candidates could not be read",
+			"display", want, "unreadable", skipped, "candidates", len(candidates), "error", lastErr.Error())
 	}
 	return 0, nil, 0, false
 }

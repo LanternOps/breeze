@@ -1383,6 +1383,12 @@
           "signingSecret": "Use este segredo para verificar assinaturas de webhook."
         },
         "invalidJsonPreview": "JSON inválido no modelo.",
+        "otherEvents": {
+          "allEvents": "Todos os eventos (*)",
+          "allEventsHint": "Este webhook está inscrito em todos os eventos, então os eventos individuais abaixo não são usados. Remova \"Todos os eventos\" para escolher eventos específicos.",
+          "remove": "Remover {{event}}",
+          "title": "Outros eventos assinados"
+        },
         "payload": {
           "previewEmpty": "A prévia aparece quando o JSON estiver válido.",
           "subtitle": "Defina o formato do payload JSON enviado ao seu destino.",

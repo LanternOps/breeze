@@ -851,6 +851,7 @@
       "mcp.resources.list": "MCP: kaynakları listele",
       "terminal.session.summary": "Terminal oturumu özeti",
       "script.run": "Komut dosyası çalıştırıldı",
+      "script.execute": "Komut dosyası cihazda çalıştırıldı",
       "script.create": "Komut dosyası oluşturuldu",
       "script.update": "Komut dosyası güncellendi",
       "script.delete": "Komut dosyası silindi",

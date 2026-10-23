@@ -145,7 +145,7 @@ describe('POST /agents/:id/pam/elevation-unable (#9517)', () => {
     );
   });
 
-  it('does not expire phone approvals or publish when the request was not pending', async () => {
+  it('expires phone approvals without publishing when the request was not pending', async () => {
     mocks.record.mockResolvedValue({ ...recordedClosed, priorStatus: 'auto_approved', status: 'auto_approved', closed: false });
 
     const res = await post(buildApp(), validBody);
