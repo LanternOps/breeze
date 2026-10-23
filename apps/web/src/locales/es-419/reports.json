@@ -340,6 +340,7 @@
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
         "mrr_renewals": "MRR y renovaciones",
+        "client_profitability": "Rentabilidad por cliente",
         "backup_status": "Estado de respaldo"
       },
       "threatDetection": {
@@ -444,6 +445,7 @@
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
         "mrr_renewals": "MRR y renovaciones",
+        "client_profitability": "Rentabilidad por cliente",
         "backup_status": "Estado de respaldo"
       },
       "runsTable": {
@@ -994,6 +996,7 @@
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
         "mrr_renewals": "MRR y renovaciones",
+        "client_profitability": "Rentabilidad por cliente",
         "backup_status": "Estado de respaldo"
       },
       "schedules": {
@@ -1070,6 +1073,10 @@
         "mrr_renewals": {
           "name": "MRR y renovaciones",
           "description": "Ingresos recurrentes mensuales y anuales de los contratos activos, medidos el día en que se ejecuta el informe, con los contratos que se renuevan dentro del horizonte elegido y lo que realmente se ha facturado como recurrente. Un conjunto de totales por moneda, sin conversión."
+        },
+        "client_profitability": {
+          "name": "Rentabilidad por cliente",
+          "description": "Ingresos facturados por cliente en el período, por fuente (recurrentes, proyectos, productos, otros), con las horas registradas y una estimación opcional del costo laboral a partir de una tarifa por hora única. Las cifras que usan esa tarifa se rotulan como estimaciones. Un conjunto de totales por moneda, nunca convertido."
         },
         "backup_status": {
           "name": "Informe de estado de respaldo",
@@ -1206,6 +1213,21 @@
       "renewalHorizon": "Horizonte de renovación",
       "renewalHorizonOption": "Próximos {{days}} días",
       "renewalHorizonHelp": "Los contratos cuyo plazo termina dentro de esta ventana se listan como renovaciones.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Agrupar por",
+      "groupByDefault": "Predeterminado según el alcance del informe",
+      "groupByValues": {
+        "organization": "Organización",
+        "source": "Fuente"
+      },
+      "groupByHelp": "Por defecto se agrupa por organización en un informe de todas las organizaciones y por fuente en una sola organización.",
+      "laborEnabled": "Estimar el costo laboral",
+      "laborAmount": "Costo laboral por hora",
+      "laborCurrency": "Moneda",
+      "laborHelp": "Una tarifa única para todos los técnicos. Las cifras que la usan se rotulan como estimaciones.",
       "cancel": "Cancelar",
       "createReport": "Crear informe"
     },

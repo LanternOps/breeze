@@ -40,6 +40,9 @@ export class ReportsPage {
   mrrRenewalsGroupBy = () => this.page.getByTestId('mrr-renewals-group-by');
   mrrRenewalsHorizon = () => this.page.getByTestId('mrr-renewals-horizon');
   mrrRenewalsCreate = () => this.page.getByTestId('mrr-renewals-create-report');
+  clientProfitabilityLaborEnabled = () => this.page.getByTestId('client-profitability-labor-enabled');
+  clientProfitabilityLaborAmount = () => this.page.getByTestId('client-profitability-labor-amount');
+  clientProfitabilityCreate = () => this.page.getByTestId('client-profitability-create-report');
 
   // Reports list — saved reports tab
   savedTab = () => this.page.getByTestId('reports-tab-saved');

@@ -340,6 +340,7 @@
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "mrr_renewals": "MRR e rinnovi",
+        "client_profitability": "Redditività per cliente",
         "backup_status": "Stato dei backup"
       },
       "threatDetection": {
@@ -444,6 +445,7 @@
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "mrr_renewals": "MRR e rinnovi",
+        "client_profitability": "Redditività per cliente",
         "backup_status": "Stato dei backup"
       },
       "runsTable": {
@@ -994,6 +996,7 @@
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "mrr_renewals": "MRR e rinnovi",
+        "client_profitability": "Redditività per cliente",
         "backup_status": "Stato dei backup"
       },
       "schedules": {
@@ -1070,6 +1073,10 @@
         "mrr_renewals": {
           "name": "MRR e rinnovi",
           "description": "Ricavi ricorrenti mensili e annuali dei contratti attivi, misurati il giorno in cui il report viene eseguito, con i contratti in rinnovo entro l'orizzonte scelto e ciò che è stato effettivamente fatturato come ricorrente. Un set di totali per valuta, senza conversione."
+        },
+        "client_profitability": {
+          "name": "Redditività per cliente",
+          "description": "Ricavi fatturati per cliente nel periodo, per fonte (ricorrenti, progetti, prodotti, altro), con le ore registrate e una stima facoltativa del costo del lavoro basata su un'unica tariffa oraria. I valori che usano quella tariffa sono indicati come stime. Un insieme di totali per valuta, mai convertito."
         },
         "backup_status": {
           "name": "Report sullo stato dei backup",
@@ -1206,6 +1213,21 @@
       "renewalHorizon": "Orizzonte di rinnovo",
       "renewalHorizonOption": "Prossimi {{days}} giorni",
       "renewalHorizonHelp": "I contratti la cui scadenza cade in questa finestra sono elencati come rinnovi.",
+      "cancel": "Annulla",
+      "createReport": "Crea report"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Raggruppa per",
+      "groupByDefault": "Predefinito per l'ambito del report",
+      "groupByValues": {
+        "organization": "Organizzazione",
+        "source": "Fonte"
+      },
+      "groupByHelp": "Per impostazione predefinita si raggruppa per organizzazione in un report di tutte le organizzazioni e per fonte per una singola organizzazione.",
+      "laborEnabled": "Stima il costo del lavoro",
+      "laborAmount": "Costo del lavoro per ora",
+      "laborCurrency": "Valuta",
+      "laborHelp": "Un’unica tariffa per tutti i tecnici. I valori che la usano sono indicati come stime.",
       "cancel": "Annulla",
       "createReport": "Crea report"
     },

@@ -340,6 +340,7 @@
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "mrr_renewals": "MRR und Verlängerungen",
+        "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
       "threatDetection": {
@@ -444,6 +445,7 @@
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "mrr_renewals": "MRR und Verlängerungen",
+        "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
       "runsTable": {
@@ -994,6 +996,7 @@
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "mrr_renewals": "MRR und Verlängerungen",
+        "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
       "schedules": {
@@ -1070,6 +1073,10 @@
         "mrr_renewals": {
           "name": "MRR und Verlängerungen",
           "description": "Monatlich und jährlich wiederkehrender Umsatz aus aktiven Verträgen, gemessen an dem Tag, an dem der Bericht läuft, mit den Verträgen, die innerhalb des gewählten Zeitraums verlängert werden, und dem tatsächlich als wiederkehrend abgerechneten Betrag. Pro Währung eine Summe, ohne Umrechnung."
+        },
+        "client_profitability": {
+          "name": "Kundenrentabilität",
+          "description": "Abgerechneter Umsatz pro Kunde für den Zeitraum nach Quelle (wiederkehrend, Projekte, Produkte, Sonstiges), mit den dazu erfassten Stunden und einer optionalen Schätzung der Arbeitskosten aus einem einheitlichen Stundensatz. Zahlen, die diesen Satz verwenden, sind als Schätzungen gekennzeichnet. Je Währung eine Summe, nie umgerechnet."
         },
         "backup_status": {
           "name": "Sicherungsstatusbericht",
@@ -1206,6 +1213,21 @@
       "renewalHorizon": "Verlängerungszeitraum",
       "renewalHorizonOption": "Nächste {{days}} Tage",
       "renewalHorizonHelp": "Verträge, deren Laufzeit innerhalb dieses Zeitraums endet, werden als Verlängerungen aufgeführt.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Gruppieren nach",
+      "groupByDefault": "Standard für den Berichtsumfang",
+      "groupByValues": {
+        "organization": "Organisation",
+        "source": "Quelle"
+      },
+      "groupByHelp": "Standardmäßig wird bei einem Bericht über alle Organisationen nach Organisation und bei einer einzelnen Organisation nach Quelle gruppiert.",
+      "laborEnabled": "Arbeitskosten schätzen",
+      "laborAmount": "Arbeitskosten pro Stunde",
+      "laborCurrency": "Währung",
+      "laborHelp": "Ein einheitlicher Satz für alle Techniker. Zahlen, die ihn verwenden, sind als Schätzungen gekennzeichnet.",
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen"
     },

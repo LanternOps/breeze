@@ -60,6 +60,8 @@ const NEVER_PORTAL_VISIBLE = new Set<string>([
   'ai_usage_by_client',
   // MRR, ARR and renewals are the MSP's own revenue numbers.
   'mrr_renewals',
+  // Per-client revenue, cost and margin are the MSP's own numbers.
+  'client_profitability',
 ]);
 
 /** What the reader is told is happening, in their own language. The MSP-side
