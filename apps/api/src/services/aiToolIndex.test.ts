@@ -150,7 +150,7 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   // get_topology) took it to 5.5 KB (5188 bytes) after the DOMAIN_NOTES prose
   // had already been tightened once.
   it('stays small: the whole index is under 6.75 KB and every note under 400 chars', () => {
-    // Ceiling raised to 6.5 KB (#6755): W01 wired 32 more chat-callable tools
+    // Ceiling raised to 6.5 KB (#6755; raised again to 6.75 KB for W02, below): W01 wired 32 more chat-callable tools
     // (measured 119280 -> 140468 registry bytes, see
     // docs/superpowers/specs/ai-mcp/2026-09-17-agent-tool-efficiency-baseline.md
     // "Full-control W01 (#6755) delta"), which legitimately grows this

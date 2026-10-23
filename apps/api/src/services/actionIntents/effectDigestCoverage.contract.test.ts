@@ -75,7 +75,7 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
   'manage_patches:rollback':
     'NEW-OBJECT: writes a `patch_rollbacks` row. The addressed `patches` row is a GLOBAL vendor catalog entry re-synced on a schedule, so its `updated_at` churns independently of anything the approver saw — pinning it would fail closed on routine syncs.',
   'manage_tickets:comment':
-    'NEW-OBJECT: inserts a `ticket_comments` row, and only a customer-visible (`isPublic: true`) comment reaches four_eyes. The full comment body travels in the intent input the approver reviews. `ticketId` addresses the PARENT ticket, which is not the thing being created, and whose `updated_at` churns with every ticket event — pinning it would fail closed on routine activity.',
+    'NEW-OBJECT: inserts a `ticket_comments` row, and only a customer-visible (`isPublic: true`) comment escalates to tier 3 — SUPERVISED, not four_eyes; it is listed because this enumeration folds every input-aware pair in. The full comment body travels in the intent input the approver reviews. `ticketId` addresses the PARENT ticket, which is not the thing being created, and whose `updated_at` churns with every ticket event — pinning it would fail closed on routine activity.',
   ...sharedReason(
     ['manage_tickets:update_status', 'manage_tickets:update_fields'],
     'SUPERVISED-ONLY input-aware arms (full-control W02, #6756): resolving / a custom statusName, and requester-key edits, escalate to tier 3 SUPERVISED, never four_eyes — they appear here only because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in conservatively. The requested change (status, resolutionNote, requester fields) travels in the intent input the approver reviews, and the only pinnable row is the ticket itself, whose `updated_at` churns with every comment and SLA touch — pinning it would fail closed on routine activity (same reason as manage_tickets:comment above and move_org\'s org+status pin).',
@@ -136,8 +136,9 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
  * Every four_eyes-classified surface, as `tool` or `tool:action`.
  *
  * Mirrors intentReleaseWorker.durable.contract.test.ts's superset construction
- * and its rationale: the input-aware surfaces (TIER3_INPUT_AWARE_*) resolve
- * four_eyes only on SOME inputs and are invisible to the static tables by
+ * and its rationale: the input-aware surfaces (TIER3_INPUT_AWARE_*) escalate
+ * only on SOME inputs (most to supervised; manage_organizations:update_org
+ * can reach four_eyes) and are invisible to the static tables by
  * construction, but they still need pinning coverage on the branch where they
  * DO resolve four_eyes — so they are folded in. Including a surface that
  * turns out never to be four_eyes only makes this check stricter, never wrong.
