@@ -56,7 +56,11 @@ import {
 } from "../services/installerBootstrapTokenIssuance";
 import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES } from "@breeze/shared";
 import { clampBootstrapTokenTtlMinutes } from "../services/installerBootstrapToken";
-import { assertTtlWithinCap, clampTtlToCap } from "../services/enrollmentDefaults";
+import {
+  assertTtlWithinCap,
+  clampTtlToCap,
+  getEnrollmentDefaultsForOrg,
+} from "../services/enrollmentDefaults";
 import { getDefaultEnrollmentKeyTtlMinutes } from "../services/enrollmentKeyTtlDefault";
 import {
   hasLiveUnexhaustedCapacityToken,
@@ -1388,14 +1392,30 @@ enrollmentKeyRoutes.post(
 
     const rawKey = generateEnrollmentKey();
     const keyHash = hashEnrollmentKey(rawKey);
+    // #9616: an omitted expiry / device budget resolves the partner→org
+    // enrollment defaults (the same ones Add Device pre-fills), so Settings →
+    // Create Key and API callers get the same answer. Read only when a field
+    // is actually omitted. The resolved TTL is already clamped to the partner
+    // cap. The env-driven deployment default still governs the other mint
+    // paths; here the resolver's product default (also 30 days) applies when
+    // no partner/org default is set.
+    const needsDefaults =
+      data.maxUsage === undefined ||
+      (data.ttlMinutes === undefined && data.expiresAt === undefined);
+    const resolvedDefaults = needsDefaults
+      ? await getEnrollmentDefaultsForOrg(orgId)
+      : null;
     // ttlMinutes preferred wire format (timezone math stays server-side);
     // explicit expiresAt remains accepted for callers that need it.
     const expiresAt = data.ttlMinutes !== undefined
       ? new Date(Date.now() + data.ttlMinutes * 60 * 1000)
       : data.expiresAt
         ? new Date(data.expiresAt)
-        : new Date(Date.now() + DEFAULT_ENROLLMENT_KEY_TTL_MINUTES * 60 * 1000);
-    const maxUsage = data.maxUsage ?? 1;
+        : new Date(
+            Date.now() +
+              (resolvedDefaults?.ttlMinutes ?? DEFAULT_ENROLLMENT_KEY_TTL_MINUTES) * 60 * 1000,
+          );
+    const maxUsage = data.maxUsage ?? resolvedDefaults?.deviceCount ?? 1;
 
     const [enrollmentKey] = await db
       .insert(enrollmentKeys)

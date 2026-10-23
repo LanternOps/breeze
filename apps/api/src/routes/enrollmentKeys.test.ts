@@ -198,6 +198,11 @@ vi.mock("../services/enrollmentDefaults", () => ({
   assertTtlWithinCap: (...args: [string, number | undefined]) =>
     assertTtlWithinCapMock(...args),
   clampTtlToCap: (...args: [string, number]) => clampTtlToCapMock(...args),
+  getEnrollmentDefaultsForOrg: async () => ({
+    ttlMinutes: 43200,
+    deviceCount: 50,
+    maxTtlMinutes: 525600,
+  }),
 }));
 
 // ============================================================
