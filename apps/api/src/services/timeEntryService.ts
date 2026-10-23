@@ -16,6 +16,7 @@ import { isMissingRateGap } from './invoiceAssembly';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits, laborAmount, laborHours, billedLaborMinutes } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
 import { emitTicketEvent } from './ticketEvents';
+import { lockTicketForWrite } from './ticketRowLock';
 import {
   peekEntry, peekRunningEntry, planGatedWrite, settleGatedWrite, settleRemovedEntry,
   type GatedWritePlan,
@@ -547,13 +548,9 @@ export async function getTicketTimeEntryDefaults(
  * the new row under its guard. RLS still scopes the read to the caller's axis.
  */
 async function lockTicketRow(ticketId: string): Promise<{ id: string; orgId: string }> {
-  const rows = await db
-    .select({ id: tickets.id, orgId: tickets.orgId })
-    .from(tickets)
-    .where(eq(tickets.id, ticketId))
-    .limit(1)
-    .for('update');
-  const row = rows[0];
+  // Same SQL as before #8972 W0, now shared by every ticket-child writer
+  // (services/ticketRowLock.ts); the 404 shape stays this service's own.
+  const row = await lockTicketForWrite(db, ticketId);
   if (!row) throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_NOT_FOUND');
   return row;
 }
