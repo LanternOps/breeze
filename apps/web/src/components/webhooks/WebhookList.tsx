@@ -33,8 +33,7 @@ export type Webhook = {
   events: string[];
   status?: WebhookStatus;
   enabled?: boolean;
-  lastTriggeredAt?: string | null;
-  lastTriggered?: string;
+  lastDeliveryAt?: string | null;
   successCount?: number;
   failureCount?: number;
   // Set by GET /webhooks in place of the secret itself, which is never returned.
@@ -183,7 +182,7 @@ export default function WebhookList({
                 const eventsToShow = webhook.events.slice(0, 2);
                 const remainingEvents = webhook.events.length - eventsToShow.length;
                 const status = getStatus(webhook);
-                const lastTriggered = webhook.lastTriggeredAt ?? webhook.lastTriggered;
+                const lastTriggered = webhook.lastDeliveryAt;
 
                 return (
                   <tr

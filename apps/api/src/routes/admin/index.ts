@@ -10,6 +10,7 @@ import { aiModelsAdminRoutes } from './aiModels';
 import { aiKillStateAdminRoutes } from './aiKillState';
 import { aiPromptVariantAdminRoutes } from './aiPromptVariants';
 import { aiToolUsageAdminRoutes } from './aiToolUsage';
+import { aiBillingAdminRoutes } from './aiBilling';
 import { trustAdminRoutes } from './trust';
 import { trustActionAdminRoutes } from './trustAct';
 import { adminMonitorConversionRoutes } from './monitorConversion';
@@ -48,6 +49,10 @@ adminRoutes.route('/ai-models', aiModelsAdminRoutes);
 // (including the SQL fallback for when no platform admin exists — true of
 // production today): docs/deploy/ai-kill-switch.md.
 adminRoutes.route('/ai-kill-state', aiKillStateAdminRoutes);
+// #7717: stuck platform AI credit debits (re-drive under the ORIGINAL key and
+// amount) and dead pending settlements (replay). Cross-tenant billing state,
+// so platform-admin (gate above) + MFA on every mutation inside the router.
+adminRoutes.route('/ai-billing', aiBillingAdminRoutes);
 // A-W01 (#6148): read-only cross-tenant AI tool-usage report.
 adminRoutes.route('/ai', aiToolUsageAdminRoutes);
 // AI model registry W11 (#7609): read-only, cross-tenant prompt variant

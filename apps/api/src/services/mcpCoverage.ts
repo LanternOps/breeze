@@ -216,6 +216,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accounting/index.ts': { gap: '#6784' },
   'actionIntents.ts': { exempt: 'identity' }, // reveal-secret + GET /:id/status are human-session-only UI; the MCP surface is get_action_status/cancel_action
   'admin/abuse.ts': { exempt: 'platform_admin' },
+  'admin/aiBilling.ts': { exempt: 'platform_admin' },
   'admin/aiModels.ts': { exempt: 'platform_admin' },
   'admin/aiKillState.ts': { exempt: 'platform_admin' },
   'admin/aiPromptVariants.ts': { exempt: 'platform_admin' },

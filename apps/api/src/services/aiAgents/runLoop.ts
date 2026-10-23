@@ -3181,6 +3181,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
       result,
     );
   } catch (error) {
+    // #9451 — settle the sandbox's MEASURED compute before any terminal
+    // transition below: that transition releases an outstanding reservation
+    // by settling it at the worst case, and a run attempt settles only once,
+    // so finalizing after it would bill the reservation instead of what the
+    // sandbox used. Idempotent: the `finally` call is then a no-op, because
+    // this nulls `ctx.workspace`.
+    await finalizeWorkspaceForRun(ctx, loopOutcome ?? orphanWorkspaceOutcome);
     if (error instanceof AgentRunBlockedError) {
       await terminalizeBlockedRun(ctx, error);
       return;
