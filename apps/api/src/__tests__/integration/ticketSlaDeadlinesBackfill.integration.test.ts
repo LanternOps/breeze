@@ -28,7 +28,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const DDL = '2027-01-02-190100-ticket-sla-deadlines.sql';
 const BACKFILL = '2027-01-02-190200-ticket-sla-deadlines-backfill.sql';
 const INDEXES = '2027-01-02-190300-ticket-sla-due-indexes.sql';
-const CALENDAR_REVISION = '2027-01-03-100200-ticket-sla-calendar-revision.sql';
+const CALENDAR_REVISION = '2027-01-03-160100-ticket-sla-calendar-revision.sql';
 
 async function migrationSql(name: string): Promise<string> {
   return readFile(new URL(`../../../migrations/${name}`, import.meta.url), 'utf8');
@@ -405,7 +405,7 @@ describe('ticket SLA deadline backfill (#8973 W3)', () => {
     expect(await withSystemDbAccessContext(() => healMissingDeadlines())).toBe(0);
   });
 
-  // #8973 W4 rebuilt the index (2027-01-03-100200) with
+  // #8973 W4 rebuilt the index (2027-01-03-160100) with
   // `sla_calendar_revision_id IS NULL` ANDed onto the whole predicate, matching
   // healMissingDeadlines(); re-applying that file is a drop + rebuild.
   runDb('the heal pass probes the partial missing-deadline index', async () => {

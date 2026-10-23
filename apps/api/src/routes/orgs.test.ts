@@ -7696,7 +7696,7 @@ describe('org routes', () => {
     // #8973 W4 Gate B5: business hours moved to Ticketing → Priorities & SLAs
     // (business calendars). partnerSettingsSchema no longer reads or writes
     // settings.businessHours: a stale client's key is stripped, and the stored
-    // blob (already imported into a calendar by 2027-01-03-100100) survives.
+    // blob (already imported into a calendar by 2027-01-03-160000) survives.
     describe('PATCH /partners/me — retired businessHours (Gate B5)', () => {
       const STORED = { preset: 'custom', custom: { mon: { start: '08:00', end: '16:00' } } };
 

@@ -267,3 +267,54 @@ describe('createSession records the page-context org anchor server-side (#6675)'
     expect(snapshotOf(valuesSpy)).toEqual(devicePageContext);
   });
 });
+
+// #9529: the sidebar opened from a page with no device/topology context now
+// sends the header's selected org as `orgId`. The server must bind the session
+// to it (not `accessibleOrgIds[0]`), re-check access, and NOT record it as a
+// #6675 write anchor: it is an explicit choice, like any other `orgId`.
+describe('createSession binds to the header-selected org (#9529)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function snapshotOf(valuesSpy: ReturnType<typeof vi.fn>) {
+    return (valuesSpy.mock.calls[0]![0] as { contextSnapshot: Record<string, unknown> | null }).contextSnapshot;
+  }
+
+  it('binds a partner session with no page context to the selected org, not accessibleOrgIds[0]', async () => {
+    const valuesSpy = expectInsert();
+
+    const result = await createSession(partnerAuth(), { orgId: ORG_B });
+
+    expect(result.orgId).toBe(ORG_B);
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B, contextSnapshot: null }));
+    expect(vi.mocked(readOrgPartnerId)).toHaveBeenCalledWith(ORG_B);
+    expect(vi.mocked(chooseSessionModel)).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B }));
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('binds a non-device page (dashboard) to the selected org without recording a page anchor', async () => {
+    const valuesSpy = expectInsert();
+    const dashboard = { type: 'dashboard' as const, orgName: 'Org B' };
+
+    await createSession(partnerAuth(), { orgId: ORG_B, pageContext: dashboard });
+
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B }));
+    expect(snapshotOf(valuesSpy)).toEqual(dashboard);
+  });
+
+  it('refuses a selected org the caller cannot reach instead of falling back to another org', async () => {
+    await expect(
+      createSession(partnerAuth(), { orgId: 'cccccccc-1111-4222-8333-444455556666' }),
+    ).rejects.toThrow('Access denied to this organization');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('still falls back to accessibleOrgIds[0] when no org is selected (All organizations, mobile)', async () => {
+    const valuesSpy = expectInsert();
+
+    await createSession(partnerAuth(), {});
+
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_A }));
+  });
+});

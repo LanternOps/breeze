@@ -153,7 +153,7 @@ purged 30 days after a user disappears from the tenant.
 
 ### Step 2 · Admin actions (Customer Graph Actions)
 
-Admin actions uses a separate Breeze application with write permissions (`User.ReadWrite.All` and `User-PasswordProfile.ReadWrite.All`) so the AI assistant can reset user passwords and disable user sign-in, always behind the approval step described under [After connecting](#after-connecting). It can be granted at any time, but AI lookups and reports need Read access, so connect Step 1 first.
+Admin actions uses a separate Breeze application with write permissions so the AI assistant can run account actions -- reset a password, disable sign-in, revoke sessions, assign or remove a licence, add to or remove from a group, retire an Intune device, create a user, and set a mailbox auto-reply -- always behind the approval step described under [After connecting](#after-connecting). From v0.124.0 the permission set is seven Microsoft Graph application permissions: `User.ReadWrite.All`, `User-PasswordProfile.ReadWrite.All`, `User.RevokeSessions.All`, `GroupMember.ReadWrite.All` (membership only -- Breeze cannot create, delete or edit a group), `DeviceManagementManagedDevices.PrivilegedOperations.All` (used to retire a device only; there is no wipe path), `MailboxSettings.ReadWrite`, and `Organization.Read.All` (the licence seat check before an assignment). It can be granted at any time, but AI lookups and reports need Read access, so connect Step 1 first.
 
 <Steps>
 1. In the tenant panel, choose **Grant admin actions…**. Nothing is sent to Microsoft yet.
@@ -162,6 +162,10 @@ Admin actions uses a separate Breeze application with write permissions (`User.R
 4. Confirm the tenant Breeze shows is the customer's (the same confirm step as Read access), then grant consent on Microsoft's screen.
 5. Confirm Admin actions shows **Active** for the same tenant.
 </Steps>
+
+<Aside type="note" title="Tenants that granted Admin actions before v0.124.0">
+  An earlier grant covers password reset and disable only. Those two keep working, but the actions added in v0.124.0 are refused with a "consent upgrade required" error until the tenant re-consents once to the current permission set -- choose **Grant admin actions…** again from the tenant panel and walk the same steps. A consent that was started on v0.121.x or earlier and never completed now answers "The consent session could not be verified. Start consent again."; start it over.
+</Aside>
 
 ### Legacy direct (existing client-secret method)
 

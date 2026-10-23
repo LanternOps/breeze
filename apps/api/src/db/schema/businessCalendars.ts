@@ -16,7 +16,7 @@ import { users } from './users';
 
 /**
  * Business-hours calendars (#8973 W4, spec §4.1) —
- * 2027-01-03-100100-business-calendars.sql.
+ * 2027-01-03-160000-business-calendars.sql.
  *
  * Ownership follows "Partner-Wide First": org_id XOR partner_id
  * (`*_one_owner_chk`, in the migration per the house convention). The three

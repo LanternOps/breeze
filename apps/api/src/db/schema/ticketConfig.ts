@@ -44,7 +44,7 @@ export const orgTicketSettings = pgTable('org_ticket_settings', {
   // SLA-only since #4628 W04b: the three labour-pricing columns were dropped by
   // 2026-10-29-100300-drop-legacy-labour-pricing-columns.sql (billing profiles
   // price labour now; skipped legacy values live in legacy_labour_pricing_archive).
-  // #8973 W4 (2027-01-03-100100): the org's business-calendar override; NULL =
+  // #8973 W4 (2027-01-03-160000): the org's business-calendar override; NULL =
   // inherit the partner default (resolveBusinessCalendar). An org-owned calendar
   // of this org or a partner-wide one of its partner — enforced by the
   // org_ticket_settings_business_calendar_guard_trg trigger and the service.

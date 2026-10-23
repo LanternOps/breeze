@@ -44,7 +44,7 @@ async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Prom
 }
 
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
-import { closeHourBlockPeriods, type HourBlockCloseSummary } from './contractHourBlockClose';
+import { closeHourBlockPeriods, lockHourBlockSourceTickets, type HourBlockCloseSummary } from './contractHourBlockClose';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { countContractSeats, type DeviceSnapshotRow } from './contractQuantities';
 import { buildOrgDeviceSnapshot } from './contractSnapshot';
@@ -2442,8 +2442,11 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //     claim so a period claimed on THIS run is visible to the selector.
   const hourBlockCloses: HourBlockCloseSummary[] = [];
   let hourBlockCloseTruncated = false;
-  for (const l of billable) {
-    if (l.lineType !== 'hour_block') continue;
+  const blockLines = billable.filter((l) => l.lineType === 'hour_block');
+  // #8972 W0: every close's tickets in one ascending batch, after the contract
+  // row this transaction locked first (lockHourBlockSourceTickets).
+  if (blockLines.length > 0) await lockHourBlockSourceTickets(c, blockLines, asOf);
+  for (const l of blockLines) {
     const hb = await closeHourBlockPeriods({ contract: c, line: l, overageInvoice: { id: inv.id, actor }, closeSource: 'billing_run', asOf });
     hourBlockCloses.push(...hb.closes);
     hourBlockCloseTruncated ||= hb.truncated;

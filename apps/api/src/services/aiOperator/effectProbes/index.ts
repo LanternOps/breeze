@@ -50,14 +50,37 @@ const MAX_PROBE_DETAIL_CHARS = 1000;
 export const PROBE_TIMEOUT_MS = 30_000;
 
 const PROBES = new Map<string, EffectProbe>();
+/** Tools whose probe makes no provider call and always answers `unknown` (R1a-0). */
+const ALWAYS_UNKNOWN = new Set<string>();
 
-export function registerEffectProbe(toolName: string, probe: EffectProbe): void {
+export interface EffectProbeRegistration {
+  /**
+   * The probe is STRUCTURALLY unobservable: it makes no provider call and
+   * always returns `unknown`, because the provider exposes no end state to
+   * read. Only such a tool may be a recipe's declared unobservable effect —
+   * an `unknown` caused by a failed provider call must still hand off.
+   */
+  alwaysUnknown?: true;
+}
+
+export function registerEffectProbe(toolName: string, probe: EffectProbe, opts?: EffectProbeRegistration): void {
   if (PROBES.has(toolName)) {
     // Two probes for one tool is a merge accident; whichever loaded last would
     // silently decide verification for a destructive identity effect.
     throw new Error(`effect probe for '${toolName}' is already registered`);
   }
   PROBES.set(toolName, probe);
+  if (opts?.alwaysUnknown === true) ALWAYS_UNKNOWN.add(toolName);
+}
+
+/**
+ * Whether `toolName`'s registered probe is structurally unobservable (its
+ * registration carried `{ alwaysUnknown: true }`). False for an unregistered
+ * tool. The E4 walk treats a declared unobservable effect's `unknown` as
+ * "recorded, not verified" ONLY when this holds.
+ */
+export function isStructurallyUnobservable(toolName: string): boolean {
+  return PROBES.has(toolName) && ALWAYS_UNKNOWN.has(toolName);
 }
 
 export function getEffectProbe(toolName: string): EffectProbe | undefined {
@@ -71,6 +94,7 @@ export function listProbedTools(): string[] {
 /** Test-only. Never called from product code. */
 export function __resetEffectProbesForTest(): void {
   PROBES.clear();
+  ALWAYS_UNKNOWN.clear();
 }
 
 function unknown(detail: string): EffectProbeResult {

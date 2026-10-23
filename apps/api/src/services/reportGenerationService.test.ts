@@ -33,6 +33,12 @@ vi.mock('./businessReports/aiUsageByClientReport', () => ({
 vi.mock('./businessReports/mrrRenewalsReport', () => ({
   generateMrrRenewalsReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'mrr_renewals' } })),
 }));
+vi.mock('./businessReports/quoteWinRateReport', () => ({
+  generateQuoteWinRateReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'quote_win_rate' } })),
+}));
+vi.mock('./businessReports/clientProfitabilityReport', () => ({
+  generateClientProfitabilityReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'client_profitability' } })),
+}));
 
 // #6013 W05: backup_status reads through the W03 unified read model, whose
 // SQL is built from Drizzle subqueries this file's flat `db.select` chain
@@ -59,6 +65,8 @@ import { generateTechnicianTimeBillabilityReport } from './businessReports/techn
 import { generateArAgingReport } from './businessReports/arAgingReport';
 import { generateAiUsageByClientReport } from './businessReports/aiUsageByClientReport';
 import { generateMrrRenewalsReport } from './businessReports/mrrRenewalsReport';
+import { generateQuoteWinRateReport } from './businessReports/quoteWinRateReport';
+import { generateClientProfitabilityReport } from './businessReports/clientProfitabilityReport';
 import type { OrgReportExecutionAuthority, ReportExecutionAuthority } from './siteScope';
 import {
   assertReportExecutionPreflight,
@@ -116,6 +124,8 @@ const BUSINESS_TYPES: readonly ReportType[] = [
   'ar_aging',
   'ai_usage_by_client',
   'mrr_renewals',
+  'quote_win_rate',
+  'client_profitability',
 ];
 /** The mocked generator each BUSINESS_TYPES entry must reach, and the marker
  *  summary it returns. */
@@ -125,6 +135,8 @@ const BUSINESS_GENERATORS: Record<string, { fn: () => unknown; marker: string }>
   ar_aging: { fn: generateArAgingReport as never, marker: 'ar_aging' },
   ai_usage_by_client: { fn: generateAiUsageByClientReport as never, marker: 'ai_usage_by_client' },
   mrr_renewals: { fn: generateMrrRenewalsReport as never, marker: 'mrr_renewals' },
+  quote_win_rate: { fn: generateQuoteWinRateReport as never, marker: 'quote_win_rate' },
+  client_profitability: { fn: generateClientProfitabilityReport as never, marker: 'client_profitability' },
 };
 const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
 

@@ -493,7 +493,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'browser_extensions',
   'browser_policies',
   'browser_policy_violations',
-  // Business-hours calendars (#8973 W4, 2027-01-03-100100): org_id XOR
+  // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
   // partner_id config tables; the three children copy the owner pair. Every
   // child FK is ON DELETE CASCADE to its parent, and the children sort before
   // the parent under localeCompare ('business_calendar_…' < 'business_calendars').

@@ -19,6 +19,7 @@ import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { removedTicketLinksFromRows, scheduleTicketLinkRemovalNotes, type RemovedTicketLink } from './ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from './ticketLinkLock';
+import { lockTicketForWrite } from './ticketRowLock';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
@@ -319,6 +320,18 @@ async function getTicketOrThrow(ticketId: string) {
 }
 
 /**
+ * #8972 W0: take the ticket row lock (services/ticketRowLock.ts) after the
+ * writer's unlocked read, answering a ticket that vanished meanwhile with
+ * getTicketOrThrow's 404. Ticket-first writers call it before their first
+ * child-row write; re-locking a row the transaction holds is a no-op.
+ */
+async function lockTicketOrThrow(ticketId: string, exec: Pick<typeof db, 'select'> = db) {
+  const locked = await lockTicketForWrite(exec, ticketId);
+  if (!locked) throw new TicketServiceError('Ticket not found', 404);
+  return locked;
+}
+
+/**
  * Transactional outbox write (#3828 wave-6-3 task 2 —
  * docs/superpowers/plans/ai-mcp/2026-08-28-ai-agents-wave6-3-ticket-shadow.md).
  * Deliberately a PLAIN `db.insert` through the ambient `db` handle — the same
@@ -453,8 +466,9 @@ export async function writeTicketCommentedOutbox(input: {
 export async function addCallerVerificationSystemComment(input: {
   orgId: string; ticketId: string; verificationId: string; event: string;
 }): Promise<void> {
-  const [ticket] = await db.select().from(tickets)
-    .where(and(eq(tickets.id, input.ticketId), eq(tickets.orgId, input.orgId))).limit(1);
+  // #8972 W0: the ticket row lock IS the read (ticket first, then the comment).
+  const locked = await lockTicketForWrite(db, input.ticketId);
+  const ticket = locked && locked.orgId === input.orgId ? locked : null;
   if (!ticket) {
     // Deleted, moved out of the org, or invisible in this RLS context. The
     // decision itself is never lost — audit_logs carries it
@@ -602,6 +616,8 @@ export async function revalidateTicketAssignee(
     email: assignee.email ?? null,
   }, partnerId, ticket.orgId, ticket.deviceId, { bypassCache: true })) return ticket;
 
+  // #8972 W0: ticket first. Movers already hold it (a no-op re-lock).
+  await lockTicketOrThrow(ticketId, connection);
   const [updated] = await connection.update(tickets)
     .set({ assignedTo: null, updatedAt: new Date() })
     .where(and(
@@ -1564,6 +1580,8 @@ export async function changeTicketStatus(
     if (sameStatusDraft) {
       patch.resolutionNote = appliedResolutionNote;
     }
+    // #8972 W0: after the draft (a pre-ticket child), before the ticket write.
+    await lockTicketOrThrow(ticketId);
     const updated = await db
       .update(tickets)
       .set(patch)
@@ -1645,18 +1663,27 @@ export async function changeTicketStatus(
     draftToConsume = { id: draft.id, runId: draft.runId };
   }
 
+  // #8972 W0: ticket row lock first (after any draft lock), then the CAS.
+  // Everything the patch below derives from the row (stamps, the pause fold,
+  // the #8973 SLA recompute) is read UNDER that lock: a first response or a
+  // breach stamped while this waited freezes an arm, and the recompute must
+  // see it rather than overwrite the frozen deadline from the unlocked
+  // pre-read. A status change meanwhile still fails the CAS below (409).
+  await lockTicketOrThrow(ticketId);
+  const current = await getTicketOrThrow(ticketId);
+
   const now = importMode ? importMode.at : new Date();
   const patch: Partial<typeof tickets.$inferInsert> = { status: toStatus, statusId: resolvedStatusId ?? null, updatedAt: now };
   if (importMode) (patch as Record<string, unknown>).updatedAt = importUpdatedAt(importMode.at);
 
   if (toStatus === 'resolved') {
-    patch.resolvedAt = ticket.resolvedAt ?? now;
+    patch.resolvedAt = current.resolvedAt ?? now;
     patch.resolutionNote = resolutionNote;
     patch.pendingReason = null;
   } else if (toStatus === 'closed') {
     patch.closedAt = now;
     patch.closedBy = actorUserFk(actor);
-    patch.resolvedAt = ticket.resolvedAt ?? now;
+    patch.resolvedAt = current.resolvedAt ?? now;
     patch.pendingReason = null;
   } else if (toStatus === 'open' && (fromStatus === 'resolved' || fromStatus === 'closed')) {
     // Reopen: clear resolution/close stamps (and recompute the resolution
@@ -1681,9 +1708,9 @@ export async function changeTicketStatus(
   if (!wasPaused && willBePaused) {
     patch.slaPausedAt = now;
   } else if (wasPaused && !willBePaused) {
-    if (ticket.slaPausedAt) {
-      const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - new Date(ticket.slaPausedAt).getTime()) / 60_000));
-      patch.slaPausedMinutes = (ticket.slaPausedMinutes ?? 0) + elapsedMinutes;
+    if (current.slaPausedAt) {
+      const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - new Date(current.slaPausedAt).getTime()) / 60_000));
+      patch.slaPausedMinutes = (current.slaPausedMinutes ?? 0) + elapsedMinutes;
     }
     patch.slaPausedAt = null;
   }
@@ -1695,8 +1722,8 @@ export async function changeTicketStatus(
   // or close out of a pause still recomputes resolution with the accrued
   // pause before resolved_at freezes it.
   if ((wasPaused && !willBePaused) || reopening) {
-    const calendar = await loadTicketCalendar(db, ticket.slaCalendarRevisionId);
-    const clock = slaClockRowOf(ticket);
+    const calendar = await loadTicketCalendar(db, current.slaCalendarRevisionId);
+    const clock = slaClockRowOf(current);
     const accrued = wasPaused && !willBePaused ? accruePauseEnd(clock, calendar, now) : null;
     if (accrued) patch.slaPausedBusinessMinutes = accrued.slaPausedBusinessMinutes;
     Object.assign(patch, computeSlaDeadlines({
@@ -2138,6 +2165,18 @@ export async function updateTicketFields(
   const budgetChanged = Object.keys(budgetPatch).length > 0;
   if (changed.length === 0 && !requesterChanged && !budgetChanged) return ticket;
 
+  // #8972 W0: ticket row lock (after the org SHARE above) before the ticket
+  // write and its feed comment, and before every SLA decision below: the
+  // #6691 restamp gate (no first response yet), the human-provenance check and
+  // the #8973 deadline recompute all read `current`, the row re-read under the
+  // lock when this change can touch SLA — a first response, breach or override
+  // that committed while this waited must win, not be overwritten from the
+  // pre-read.
+  await lockTicketOrThrow(ticketId);
+  const slaTouched = !importMode && changed.some((k) =>
+    k === 'categoryId' || k === 'priority' || (SLA_TARGET_FIELDS as readonly string[]).includes(k));
+  const current = slaTouched ? await getTicketOrThrow(ticketId) : ticket;
+
   // #6691 — amends SLA-engine plan D2 (originally "category changes after
   // create do not restamp"). When categoryId or priority ACTUALLY changes
   // while the ticket has no first response and its core status is not
@@ -2154,7 +2193,7 @@ export async function updateTicketFields(
   const restamped: SlaTargetField[] = [];
   const slaRestampPatch: Partial<Record<SlaTargetField, number | null>> = {};
   // Never in import mode: an imported ticket keeps its null targets (§4.3).
-  if (!importMode && (changed.includes('categoryId') || changed.includes('priority')) && slaRestampAllowed(ticket)) {
+  if (!importMode && (changed.includes('categoryId') || changed.includes('priority')) && slaRestampAllowed(current)) {
     const categoryId = changed.includes('categoryId') ? fields.categoryId ?? null : ticket.categoryId;
     const category = changed.includes('categoryId')
       ? newCategory
@@ -2169,7 +2208,7 @@ export async function updateTicketFields(
       workKind: ticket.workKind,
     });
     const explicit = new Set(SLA_TARGET_FIELDS.filter((field) => fields[field] !== undefined));
-    Object.assign(slaRestampPatch, computeSlaRestamp(ticket, targets, explicit));
+    Object.assign(slaRestampPatch, computeSlaRestamp(current, targets, explicit));
     restamped.push(...SLA_TARGET_FIELDS.filter((field) => field in slaRestampPatch));
   }
 
@@ -2195,12 +2234,12 @@ export async function updateTicketFields(
   // recomputes the unfrozen deadlines from the new target, in this statement.
   // A frozen arm (answered / resolved / already breached) keeps its deadline.
   if ('responseSlaMinutes' in patch || 'resolutionSlaMinutes' in patch) {
-    const clock = slaClockRowOf(ticket);
+    const clock = slaClockRowOf(current);
     Object.assign(patch, computeSlaDeadlines({
       ...clock,
       responseSlaMinutes: 'responseSlaMinutes' in patch ? patch.responseSlaMinutes ?? null : clock.responseSlaMinutes,
       resolutionSlaMinutes: 'resolutionSlaMinutes' in patch ? patch.resolutionSlaMinutes ?? null : clock.resolutionSlaMinutes,
-    }, await loadTicketCalendar(db, ticket.slaCalendarRevisionId)));
+    }, await loadTicketCalendar(db, current.slaCalendarRevisionId)));
   }
   if (requesterChanged) Object.assign(patch, requesterPatch);
   if (budgetChanged) Object.assign(patch, budgetPatch);
@@ -2339,6 +2378,8 @@ export async function assignTicket(
     patch.statusId = partnerId ? await getSystemStatusId(partnerId, 'open') : null;
   }
 
+  // #8972 W0: ticket row lock first; the CAS below stays the re-check.
+  await lockTicketOrThrow(ticketId);
   // Compare-and-swap: include the previously-read assignedTo in the WHERE.
   const updated = await db
     .update(tickets)
@@ -2459,12 +2500,7 @@ export async function addTicketComment(
   if (importMode && !imported) {
     throw new TicketServiceError('An imported comment needs its source id and original author', 400, 'INVALID_INPUT');
   }
-  const ticket = await getTicketOrThrow(ticketId);
-  if (importMode) assertImportWrite(importMode, actor, ticket);
   const attachmentIds = input.attachmentIds ?? [];
-  // The claim below matches on uploaded_by_user_id; a machine principal has
-  // no uploads to claim. Rejected up front rather than failing the claim.
-  const uploaderId = attachmentIds.length > 0 ? humanUserId(actor, 'Attaching uploads') : null;
 
   // W08 #3902: this used to be four separate writes on the global `db`. The
   // attachment claim must roll back with the comment, so the comment insert,
@@ -2472,7 +2508,19 @@ export async function addTicketComment(
   // emitTicketEvent / writeTicketOutbox / createAuditLogAsync stay AFTER the
   // commit — publishing ticket.commented for a comment that may still roll
   // back would be worse than a late event.
-  const { comment, firstResponseStamped, attachments } = await db.transaction(async (tx) => {
+  //
+  // #8972 W0: the transaction opens FIRST and locks the ticket row before the
+  // ticket is read, so the firstResponseAt decision below is made on the
+  // locked row (not a stale pre-read) and the comment insert never waits on
+  // the ticket while holding anything (services/ticketRowLock.ts).
+  const { ticket, comment, firstResponseStamped, attachments } = await db.transaction(async (tx) => {
+    if (!(await lockTicketForWrite(tx, ticketId))) throw new TicketServiceError('Ticket not found', 404);
+    const ticket = await getTicketOrThrow(ticketId);
+    if (importMode) assertImportWrite(importMode, actor, ticket);
+    // The claim below matches on uploaded_by_user_id; a machine principal has
+    // no uploads to claim. Rejected up front rather than failing the claim.
+    const uploaderId = attachmentIds.length > 0 ? humanUserId(actor, 'Attaching uploads') : null;
+
     const inserted = await tx.insert(ticketComments).values({
       ticketId,
       ...actorAuthorFields(actor),
@@ -2564,7 +2612,7 @@ export async function addTicketComment(
       }
     }
 
-    return { comment: row, firstResponseStamped: stamped, attachments: claimed };
+    return { ticket, comment: row, firstResponseStamped: stamped, attachments: claimed };
   });
 
   await fx.emitTicketEvent({
@@ -2643,6 +2691,12 @@ export async function addAiTriageNote(
 ): Promise<{ comment: { id: string } }> {
   const ticket = await getTicketOrThrow(ticketId);
   if (ticket.orgId !== orgId) {
+    throw new TicketServiceError('Ticket not found', 404);
+  }
+  // #8972 W0: lock the ticket OUTSIDE the insert's savepoint (a rolled-back
+  // savepoint would release it) and re-check the org on the locked row. A
+  // concurrent retry then waits here and sees the committed note.
+  if ((await lockTicketOrThrow(ticketId)).orgId !== orgId) {
     throw new TicketServiceError('Ticket not found', 404);
   }
 
@@ -2763,6 +2817,8 @@ export async function postProposalNote(
     .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.ticketId, ticketId)))
     .limit(1);
   if (!run) throw new TicketServiceError('Proposal run not found for this ticket', 404);
+  // #8972 W0: ticket lock outside the insert's savepoint (see addAiTriageNote).
+  await lockTicketOrThrow(ticketId);
 
   // #4211 review: idempotent per run via ticket_comments_one_proposal_note_per_run_uq
   // (partial unique on proposed_by_run_id WHERE ... AND origin_principal_kind='user')
@@ -3263,6 +3319,10 @@ export async function linkAlertToTicket(
   if (alert.orgId !== ticket.orgId) {
     throw new TicketServiceError('Alert and ticket must belong to the same organization', 400);
   }
+  // #8972 W0: ticket row lock, then the same-org check again on the locked row.
+  if ((await lockTicketOrThrow(ticketId)).orgId !== alert.orgId) {
+    throw new TicketServiceError('Alert and ticket must belong to the same organization', 400);
+  }
 
   // Idempotent insert: if the link already exists, onConflictDoNothing returns an empty array.
   const inserted = await db.insert(ticketAlertLinks).values({
@@ -3301,6 +3361,10 @@ export async function linkAlertToTicket(
 
 export async function unlinkAlertFromTicket(ticketId: string, alertId: string, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
+  // #8972 W0: ticket first. Deleting the link first and then writing the feed
+  // comment (whose trigger updates the ticket) deadlocked against a
+  // ticket-first writer of the same link.
+  await lockTicketOrThrow(ticketId);
   const deleted = await db.delete(ticketAlertLinks).where(
     and(eq(ticketAlertLinks.ticketId, ticketId), eq(ticketAlertLinks.alertId, alertId))
   ).returning();
@@ -3398,6 +3462,38 @@ function assertCommentEditable(
   }
 }
 
+/**
+ * #8972 W0 lock order for a comment edit or delete: the ticket row FIRST, then
+ * the comment row, then re-check on the locked rows what
+ * loadCommentWithTicket read unlocked. Locking the comment first deadlocked
+ * (40P01) against any ticket-first writer of the same comment: the UPDATE's
+ * feed trigger (breeze_ticket_comments_touch_parent_feed) then waits on the
+ * ticket while holding the comment.
+ *
+ * The re-checks keep today's answers: a missing ticket is 404 'Ticket not
+ * found', a missing comment or one now on another ticket is 404 'Comment not
+ * found' (indistinguishable from missing), and assertCommentEditable runs
+ * again on the locked row.
+ */
+async function lockCommentForWrite(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  commentId: string,
+  ticketId: string,
+  actor: TicketActor,
+  canManageAny: boolean
+) {
+  if (!(await lockTicketForWrite(tx, ticketId))) throw new TicketServiceError('Ticket not found', 404);
+  const [locked] = await tx
+    .select()
+    .from(ticketComments)
+    .where(eq(ticketComments.id, commentId))
+    .limit(1)
+    .for('update');
+  if (!locked || locked.ticketId !== ticketId) throw new TicketServiceError('Comment not found', 404);
+  assertCommentEditable(locked, actor, canManageAny);
+  return locked;
+}
+
 export async function editTicketComment(
   commentId: string,
   input: { content: string },
@@ -3412,13 +3508,15 @@ export async function editTicketComment(
   }
   assertCommentEditable(comment, actor, opts.canManageAny);
 
-  const previousContent = comment.content;
-  const updated = await db
-    .update(ticketComments)
-    .set({ content: input.content, editedAt: new Date() })
-    .where(eq(ticketComments.id, commentId))
-    .returning();
-  const row = updated[0];
+  const { previousContent, row } = await db.transaction(async (tx) => {
+    const locked = await lockCommentForWrite(tx, commentId, comment.ticketId, actor, opts.canManageAny);
+    const updated = await tx
+      .update(ticketComments)
+      .set({ content: input.content, editedAt: new Date() })
+      .where(eq(ticketComments.id, commentId))
+      .returning();
+    return { previousContent: locked.content, row: updated[0] };
+  });
   if (!row) throw new TicketServiceError('Comment not found', 404);
 
   // NOTE: no emitTicketEvent here — emitting 'ticket.commented' on an edit
@@ -3451,12 +3549,15 @@ export async function deleteTicketComment(
   }
   assertCommentEditable(comment, actor, opts.canManageAny);
 
-  const previousContent = comment.content;
-  const deleted = await db
-    .update(ticketComments)
-    .set({ deletedAt: new Date() })
-    .where(eq(ticketComments.id, commentId))
-    .returning();
+  const { previousContent, deleted } = await db.transaction(async (tx) => {
+    const locked = await lockCommentForWrite(tx, commentId, comment.ticketId, actor, opts.canManageAny);
+    const rows = await tx
+      .update(ticketComments)
+      .set({ deletedAt: new Date() })
+      .where(eq(ticketComments.id, commentId))
+      .returning();
+    return { previousContent: locked.content, deleted: rows };
+  });
   if (deleted.length === 0) {
     throw new TicketServiceError('Comment not found or already deleted', 409);
   }

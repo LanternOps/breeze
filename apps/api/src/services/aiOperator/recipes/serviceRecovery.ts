@@ -233,6 +233,8 @@ export function serviceRecoveryOperationKey(args: {
   deviceId: string;
   planRevision: number;
   ordinal: number;
+  /** R1 pass-through (`RecipeDefinition.operationKey`'s optional `toolName`). Absent → `manage_services`. */
+  toolName?: string;
 }): string {
   // Delegates to the shared builder rather than formatting its own string.
   // `runLoop.ts`'s pre-hook also has to build this key (it is where a Tier-3
@@ -242,7 +244,7 @@ export function serviceRecoveryOperationKey(args: {
   return buildTaskOperationKey({
     taskStepKey: args.stepKey,
     planRevision: args.planRevision,
-    toolName: 'manage_services',
+    toolName: args.toolName ?? 'manage_services',
     targetId: args.deviceId,
     ordinal: args.ordinal,
   });
@@ -332,6 +334,7 @@ export const serviceRecoveryRecipe: RecipeDefinition<ServiceRecoveryInput> = {
       deviceId: args.targetId ?? 'none',
       planRevision: args.planRevision,
       ordinal: args.ordinal,
+      toolName: args.toolName,
     });
   },
   crossCheckStepInputs: crossCheckServiceRecoveryInputs,

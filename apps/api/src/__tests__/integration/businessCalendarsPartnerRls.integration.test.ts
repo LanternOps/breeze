@@ -3,7 +3,7 @@
  * revision immutability, interval overlap, the org-override guard and the
  * partners.settings.businessHours blob backfill (#8973 W4, plan Task 4.1).
  *
- * Migration under test: 2027-01-03-100100-business-calendars.sql.
+ * Migration under test: 2027-01-03-160000-business-calendars.sql.
  *   <table>_isolation (FOR ALL):
  *     system OR (org_id IS NOT NULL AND breeze_has_org_access(org_id))
  *            OR (partner_id IS NOT NULL AND breeze_has_partner_access(partner_id))
@@ -33,7 +33,7 @@ import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const MIGRATION = '2027-01-03-100100-business-calendars.sql';
+const MIGRATION = '2027-01-03-160000-business-calendars.sql';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',

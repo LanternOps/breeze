@@ -3500,7 +3500,6 @@
   "security.securitySecurityScanManager.singleSelect",
   "security.securitySecurityScanManager.startScan",
   "security.securityThreatDetail.actionFailed",
-  "security.securityThreatDetail.analystReview",
   "security.securityThreatDetail.deviceInfo",
   "security.securityThreatDetail.filePath",
   "security.securityThreatDetail.relatedThreats",

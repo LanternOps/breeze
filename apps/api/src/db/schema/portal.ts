@@ -226,7 +226,7 @@ export const tickets = pgTable('tickets', {
   resolutionDueAt: timestamp('resolution_due_at'),
   responseWarnAt: timestamp('response_warn_at'),
   resolutionWarnAt: timestamp('resolution_warn_at'),
-  // #8973 W4 (2027-01-03-100200): the business-calendar revision the stored
+  // #8973 W4 (2027-01-03-160100): the business-calendar revision the stored
   // deadlines are computed on, snapshotted at create (spec §4.3); NULL = 24×7.
   // FK tickets_sla_calendar_revision_id_fk ON DELETE SET NULL (declared below).
   slaCalendarRevisionId: uuid('sla_calendar_revision_id'),
@@ -283,10 +283,10 @@ export const tickets = pgTable('tickets', {
   slaResponseDueIdx: index('tickets_sla_response_due_idx').on(table.responseDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND first_response_at IS NULL AND response_due_at IS NOT NULL`),
   slaResolutionDueIdx: index('tickets_sla_resolution_due_idx').on(table.resolutionDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND resolved_at IS NULL AND resolution_due_at IS NOT NULL`),
   // Gate B12 heal pass (empty in steady state).
-  // Rebuilt by 2027-01-03-100200 (W4): calendar tickets are owned by the
+  // Rebuilt by 2027-01-03-160100 (W4): calendar tickets are owned by the
   // calendar-aware writers, never by the wall-clock heal.
   slaDeadlinesMissingIdx: index('tickets_sla_deadlines_missing_idx').on(table.createdAt).where(sql`sla_calendar_revision_id IS NULL AND ((response_sla_minutes IS NOT NULL AND response_due_at IS NULL) OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL) OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))`),
-  // #8973 W4 (2027-01-03-100200, CONCURRENTLY): recompute, apply-revision,
+  // #8973 W4 (2027-01-03-160100, CONCURRENTLY): recompute, apply-revision,
   // delete-in-use and the FK's SET NULL find tickets by revision.
   slaCalendarRevisionIdx: index('tickets_sla_calendar_revision_idx').on(table.slaCalendarRevisionId).where(sql`sla_calendar_revision_id IS NOT NULL`),
   slaCalendarRevisionFk: foreignKey({

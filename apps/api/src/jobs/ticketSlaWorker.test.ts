@@ -224,13 +224,13 @@ describe('ticketSlaWorker', () => {
           + 'OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))',
       );
 
-      // The partial index tickets_sla_deadlines_missing_idx (2027-01-03-100200)
+      // The partial index tickets_sla_deadlines_missing_idx (2027-01-03-160100)
       // only serves the heal while the Drizzle declaration, the migration and
       // this CTE carry the identical predicate.
       const index = getTableConfig(tickets).indexes.find((i) => i.config.name === 'tickets_sla_deadlines_missing_idx');
       expect(sqlText(index?.config.where).replace(/\s+/g, ' ').trim()).toBe(cteWhere);
       const migration = readFileSync(
-        fileURLToPath(new URL('../../migrations/2027-01-03-100200-ticket-sla-calendar-revision.sql', import.meta.url)),
+        fileURLToPath(new URL('../../migrations/2027-01-03-160100-ticket-sla-calendar-revision.sql', import.meta.url)),
         'utf8',
       );
       const migrationWhere = /CREATE INDEX CONCURRENTLY IF NOT EXISTS tickets_sla_deadlines_missing_idx\s+ON public\.tickets \(created_at\)\s+WHERE ([^;]+);/

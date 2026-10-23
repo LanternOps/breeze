@@ -183,13 +183,20 @@ const CLEARED_SESSION = {
 function resetModelPicker(): void {
   const picker = useAiModelPickerStore.getState();
   picker.reset();
-  // orgStore is read lazily (the way helpStore is above) so this store does not
-  // pull the org/auth graph in at import time.
   const pageContext = useAiStore.getState().pageContext;
-  void import('./orgStore')
-    .then(({ useOrgStore }) => useOrgStore.getState().currentOrgId)
+  void readSelectedOrgId()
     .catch(() => null)
     .then((selectedOrgId) => picker.load({ orgId: noSessionOrgId(pageContext, selectedOrgId) }));
+}
+
+/**
+ * The org selected in the header, or null for none (All organizations).
+ * orgStore is read lazily (the way helpStore is) so this store does not pull
+ * the org/auth graph in at import time.
+ */
+async function readSelectedOrgId(): Promise<string | null> {
+  const { useOrgStore } = await import('./orgStore');
+  return useOrgStore.getState().currentOrgId ?? null;
 }
 
 /**
@@ -379,9 +386,15 @@ export const useAiStore = create<AiState>()(
       return;
     }
     try {
+      const orgId = pageContext?.type === 'device' || opts?.deviceId ? null : await readSelectedOrgId();
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
+          // #9529: with no device on the page, the session belongs to the org
+          // selected in the header. A device page / device task lets the
+          // server anchor to the device's org instead (#5593), and no
+          // selection (All organizations) sends nothing.
+          orgId: orgId ?? undefined,
           pageContext: pageContext ?? undefined,
           delegantM365ConnectionId: selectedM365ConnectionId ?? undefined,
           deviceId: opts?.deviceId ?? undefined,

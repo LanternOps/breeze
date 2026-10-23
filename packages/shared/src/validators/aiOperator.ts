@@ -182,10 +182,30 @@ export type TaskVerificationResult = (typeof TASK_VERIFICATION_RESULTS)[number];
  */
 export const TASK_CHECKPOINT_VERSION = 1 as const;
 
-export const taskCheckpointSchema = z.object({
-  version: z.literal(TASK_CHECKPOINT_VERSION),
-  recipeInput: serviceRecoveryInputSchema,
-  criterion: taskCriterionSchema,
+/**
+ * Where a recipe's frozen planning facts live (Recipe Library W06 R1a-0,
+ * plan Amendment A.4 "Seal semantics"). `stepId` is the
+ * `ai_operator_task_steps.id` of the recipe's `planningSnapshotStepKey` row,
+ * whose own `checkpoint` holds the full `{ version, capturedAt, facts }`
+ * envelope; `digest` is that envelope's facts digest (sha-256 hex). Integrity
+ * metadata only — it is never part of the plan's effect seal.
+ */
+export const planningSnapshotRefSchema = z.object({
+  stepId: z.string().uuid(),
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+export type PlanningSnapshotRef = z.infer<typeof planningSnapshotRefSchema>;
+
+/**
+ * Every checkpoint field common to every recipe's arm: today's field list minus
+ * `version` (each arm states it first), `recipeInput` and `criterion` (both are
+ * per-recipe), plus the two R1a-0 fields.
+ *
+ * The two R1a-0 fields are `.optional()` with NO default, on purpose: a
+ * defaulted field would serialize into every re-written `service_recovery`
+ * row and change its stored bytes (pinned by e4Characterization 1a-3).
+ */
+export const taskCheckpointBaseSchema = z.object({
   findings: z.array(taskStepFindingSchema).max(50).default([]),
   /** Criteria the coordinator has proven satisfied, by adapter name. */
   satisfiedCriteria: z.array(z.string().max(64)).max(10).default([]),
@@ -218,8 +238,50 @@ export const taskCheckpointSchema = z.object({
    * it. Absent is a recipe bug and is refused loudly, never guessed.
    */
   resumeStepKey: z.string().min(1).max(128).optional(),
+  /**
+   * The frozen planning snapshot `buildPlan` reads its facts from (R1a-0).
+   * Present exactly when the task's recipe declares `planningSnapshotStepKey`;
+   * either mismatch is a fail-closed snapshot failure, never a `{}` rebuild.
+   */
+  planningSnapshot: planningSnapshotRefSchema.optional(),
+  /**
+   * ISO-8601. Once the plan is approved and re-sealed, the effect walk starts
+   * no NEW dispatch before this instant (wait reason `maintenance_window`).
+   * Already-dispatched effects are still observed while it holds.
+   */
+  dispatchNotBefore: z.string().datetime().optional(),
+});
+
+/**
+ * The `service_recovery` arm: field-for-field the pre-R1a-0
+ * `taskCheckpointSchema`.
+ *
+ * Built as an explicit object, NOT `taskCheckpointBaseSchema.extend(...)`:
+ * key order is part of the stored-bytes promise. `extend` would serialize
+ * `version, findings, …, recipeInput, criterion`; stored rows are
+ * `version, recipeInput, criterion, findings, …`. The two R1a-0 fields come
+ * last and, having no default, never serialize for this arm unless set.
+ */
+export const serviceRecoveryCheckpointSchema = z.object({
+  version: z.literal(TASK_CHECKPOINT_VERSION),
+  recipeInput: serviceRecoveryInputSchema,
+  criterion: taskCriterionSchema,
+  ...taskCheckpointBaseSchema.shape,
 }).strict();
+export type ServiceRecoveryCheckpoint = z.infer<typeof serviceRecoveryCheckpointSchema>;
+
+/**
+ * One arm per recipe shape. A stored row's arm is fixed by its shape: a
+ * service-recovery row cannot lose its criterion, and another recipe's row
+ * cannot grow one. R1a appends the identity-offboarding arm.
+ */
+export const taskCheckpointSchema = z.union([serviceRecoveryCheckpointSchema]);
 export type TaskCheckpoint = z.infer<typeof taskCheckpointSchema>;
+
+/** Narrow to the `service_recovery` arm. Never cast a checkpoint; narrow it. */
+export function isServiceRecoveryCheckpoint(c: TaskCheckpoint): c is ServiceRecoveryCheckpoint {
+  return 'criterion' in c;
+}
 
 // ---- W08 (#5246): admission request ----
 
