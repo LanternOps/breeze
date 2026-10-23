@@ -71,31 +71,58 @@ export function resolveSelectedSnapshotPaths(
     }
   };
 
-  for (const selected of selectedPaths) {
+  // Segment keys are computed once, lazily, the first time they are needed.
+  let segmentKeys: { seg: string; originals: string[] }[] | undefined;
+  let dirKeys: Set<string> | undefined;
+  const ensureSegments = () => {
+    if (segmentKeys) return segmentKeys;
+    segmentKeys = Array.from(byNormalized, ([key, originals]) => ({ seg: segmentKey(key), originals }));
+    dirKeys = new Set();
+    for (const { seg } of segmentKeys) {
+      for (let i = seg.indexOf('/'); i !== -1; i = seg.indexOf('/', i + 1)) dirKeys.add(seg.slice(0, i));
+    }
+    return segmentKeys;
+  };
+  // Directory expansion. Compared segment-wise — the same segmentation the
+  // browse tree uses (backslashes → `/`, repeated and leading/trailing
+  // separators dropped), because the tree hands directories back as
+  // `/C:/Users/x` or `/fileserver/share/x`. The match requires a segment
+  // boundary, so a sibling sharing a name prefix can never match. Returns
+  // whether anything lay beneath the directory.
+  const expandDirectory = (selected: string): boolean => {
+    const dir = segmentKey(selected);
+    if (dir === '') return false;
+    const prefix = `${dir}/`;
+    let matched = false;
+    for (const { seg, originals } of ensureSegments()) {
+      if (!seg.startsWith(prefix)) continue;
+      matched = true;
+      for (const original of originals) add(original);
+      // Stop scanning as soon as the cap is blown; the check below reports it.
+      if (resolved.length > MAX_SELECTED_RESTORE_FILES) break;
+    }
+    return matched;
+  };
+
+  for (const selected of new Set(selectedPaths)) {
+    let fileMatch: string | undefined;
     if (exact.has(selected)) {
-      add(selected);
+      fileMatch = selected;
     } else {
       const candidates = byNormalized.get(normalizeSnapshotPath(selected));
       if (candidates) {
         if (candidates.length > 1) return { ok: false, invalidPath: selected, reason: 'ambiguous' };
-        add(candidates[0]!);
-      } else {
-        // Directory. Compared segment-wise — the same segmentation the browse
-        // tree uses (backslashes → `/`, repeated and leading/trailing
-        // separators dropped), because the tree hands directories back as
-        // `/C:/Users/x` or `/fileserver/share/x`. The match requires a segment
-        // boundary, so a sibling sharing a name prefix can never match.
-        const dir = segmentKey(selected);
-        if (dir === '') return { ok: false, invalidPath: selected, reason: 'not_found' };
-        const prefix = `${dir}/`;
-        let matched = false;
-        for (const [key, originals] of byNormalized) {
-          if (!segmentKey(key).startsWith(prefix)) continue;
-          matched = true;
-          for (const original of originals) add(original);
-        }
-        if (!matched) return { ok: false, invalidPath: selected, reason: 'not_found' };
+        fileMatch = candidates[0]!;
       }
+    }
+    if (fileMatch !== undefined) {
+      add(fileMatch);
+      // A file and a folder can share a name (`b` and `b/…`): the folder's
+      // contents are part of the selection too, never silently dropped.
+      ensureSegments();
+      if (dirKeys!.has(segmentKey(selected))) expandDirectory(selected);
+    } else if (!expandDirectory(selected)) {
+      return { ok: false, invalidPath: selected, reason: 'not_found' };
     }
     if (resolved.length > MAX_SELECTED_RESTORE_FILES) {
       return {
@@ -116,7 +143,7 @@ export function selectedSnapshotPathError(
   failure: Extract<SelectedSnapshotPathsResolution, { ok: false }>
 ): string {
   if (failure.reason === 'too_many') {
-    return `Selection expands to ${failure.count} files, more than the ${failure.limit}-file limit per restore; select fewer or smaller folders (at ${failure.invalidPath})`;
+    return `Selection reached ${failure.count} files while expanding ${failure.invalidPath}, more than the ${failure.limit}-file limit per restore; select fewer or smaller folders`;
   }
   return failure.reason === 'ambiguous'
     ? `Selected path matches more than one file in this snapshot: ${failure.invalidPath}`

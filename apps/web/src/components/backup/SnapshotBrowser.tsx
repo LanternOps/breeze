@@ -788,6 +788,8 @@ export default function SnapshotBrowser() {
                           ref={(el) => {
                             if (el) el.indeterminate = folderCheckState(folder.path, selectedFiles) === 'partial';
                           }}
+                          // Covered by a selected parent folder: uncheck that one instead.
+                          disabled={folderCheckState(folder.path, selectedFiles) === 'checked' && !selectedFiles.has(folder.path)}
                           onChange={() => toggleFolder(folder)}
                           aria-label={t('snapshotBrowser.selectFolder', { name: folder.name })}
                           className="h-4 w-4"

@@ -152,8 +152,45 @@ describe('resolveSelectedSnapshotPaths — directory expansion (#9628)', () => {
   });
 
   it('does not match sibling directories or files sharing a name prefix', () => {
-    const result = resolveSelectedSnapshotPaths(['C:/Users/alex/Documents'], stored);
-    expect(result.ok && result.paths.join('|')).not.toMatch(/Documents2|Documentsx/);
+    expect(resolveSelectedSnapshotPaths(['C:/Users/alex/Documents'], stored)).toEqual(docsExpected);
+  });
+
+  it.each([
+    ['a trailing dot-segment', 'C:/Users/alex/Documents/..'],
+    ['a dot-segment inside the directory', 'C:/Users/alex/Temp/../Documents'],
+    ['a case-variant directory', 'c:/users/alex/documents'],
+  ])('refuses %s as a directory selection', (_label, selection) => {
+    expect(resolveSelectedSnapshotPaths([selection], stored)).toEqual({
+      ok: false,
+      invalidPath: selection,
+      reason: 'not_found',
+    });
+  });
+
+  it('expands a folder that shares its name with a file (b and b/…) instead of dropping the contents', () => {
+    expect(resolveSelectedSnapshotPaths(['/a/b'], ['/a/b', '/a/b/c.txt', '/a/bb/d.txt'])).toEqual({
+      ok: true,
+      paths: ['/a/b', '/a/b/c.txt'],
+    });
+  });
+
+  it('reports too_many when several selections that each fit exceed the cap together', () => {
+    const half = MAX_SELECTED_RESTORE_FILES / 2 + 1;
+    const paths = [
+      ...Array.from({ length: half }, (_, i) => `/x/f${i}`),
+      ...Array.from({ length: half }, (_, i) => `/y/f${i}`),
+    ];
+    expect(resolveSelectedSnapshotPaths(['/x', '/y'], paths)).toMatchObject({
+      ok: false,
+      reason: 'too_many',
+      invalidPath: '/y',
+    });
+  });
+
+  it('does not double count overlapping selections toward the cap', () => {
+    const many = Array.from({ length: MAX_SELECTED_RESTORE_FILES }, (_, i) => `/big/f${i}.txt`);
+    const result = resolveSelectedSnapshotPaths(['/big', '/big/f1.txt'], many);
+    expect(result.ok && result.paths.length).toBe(MAX_SELECTED_RESTORE_FILES);
   });
 
   it('expands POSIX directories without partial-name matches (pick.txt vs pick.txtx/)', () => {
@@ -222,9 +259,7 @@ describe('resolveSelectedSnapshotPaths — directory expansion (#9628)', () => {
     expect(result.ok && result.paths.length).toBe(MAX_SELECTED_RESTORE_FILES);
   });
 
-  it('every expanded path is a stored original', () => {
-    const result = resolveSelectedSnapshotPaths(['C:/Users/alex'], stored);
-    expect(result.ok).toBe(true);
-    if (result.ok) for (const p of result.paths) expect(stored).toContain(p);
+  it('expands a parent folder to every stored original beneath it, in stored order', () => {
+    expect(resolveSelectedSnapshotPaths(['C:/Users/alex'], stored)).toEqual({ ok: true, paths: stored });
   });
 });

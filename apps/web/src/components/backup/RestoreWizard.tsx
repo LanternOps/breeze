@@ -677,6 +677,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                             ref={(el) => {
                               if (el) el.indeterminate = folderCheckState(item.path, selectedFiles) === 'partial';
                             }}
+                            // Covered by a selected parent folder: uncheck that one instead.
+                            disabled={folderCheckState(item.path, selectedFiles) === 'checked' && !selectedFiles.has(item.path)}
                             onChange={() => toggleFolder(item)}
                             className="h-4 w-4"
                           />
