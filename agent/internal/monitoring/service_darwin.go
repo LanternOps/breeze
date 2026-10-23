@@ -11,8 +11,11 @@ import (
 func checkService(name string) CheckResult {
 	info, err := svcquery.GetStatus(name)
 	if err != nil {
+		// Only a proven-absent label is not_found; a launchctl that could not
+		// be run is an error (the service may be running). Older agents
+		// reported both as not_found (#6958).
 		return CheckResult{
-			Status:  StatusNotFound,
+			Status:  serviceErrorStatus(err),
 			Details: map[string]any{"error": err.Error()},
 		}
 	}
