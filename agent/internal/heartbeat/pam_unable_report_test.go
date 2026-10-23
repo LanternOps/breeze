@@ -181,13 +181,14 @@ func TestDeliverPamUnableCancelsInFlightOnStop(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("report never reached the transport")
 	}
-	close(h.stopChan)
+	// The real shutdown path: Stop closes stopChan after its bounded drain.
+	go h.Stop()
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("deliverPamUnable = %v, want context.Canceled", err)
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 		t.Fatal("shutdown did not cancel the in-flight report")
 	}
 }
@@ -211,13 +212,14 @@ func TestDeliverPamUnableStopsPendingRetryWait(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("report never entered its retry wait")
 	}
-	close(h.stopChan)
+	// The real shutdown path: Stop closes stopChan after its bounded drain.
+	go h.Stop()
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("deliverPamUnable = %v, want context.Canceled", err)
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 		t.Fatal("shutdown did not interrupt the pending retry wait")
 	}
 }
