@@ -455,6 +455,13 @@ export default function DeploymentList({
                                 {progress}%
                               </span>
                             </div>
+                          ) : item.status === "completed" ? (
+                            <span
+                              className="text-xs text-muted-foreground"
+                              data-testid={`deployment-progress-done-${item.id}`}
+                            >
+                              100%
+                            </span>
                           ) : (
                             <span className="text-xs text-muted-foreground">
                               —
