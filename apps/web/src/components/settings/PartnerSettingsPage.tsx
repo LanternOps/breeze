@@ -535,7 +535,7 @@ export default function PartnerSettingsPage() {
     <div className="mx-auto max-w-6xl space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('partnerSettingsPage.title')}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('partnerSettingsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
             {t('partnerSettingsPage.description', { name: partner?.name || t('partnerSettingsPage.yourMsp') })}
           </p>
@@ -582,143 +582,6 @@ export default function PartnerSettingsPage() {
             </div>
           )}
 
-          {/* Company Tab */}
-          {activeTab === 'company' && (
-            <div className="space-y-6">
-              <PartnerCompanyTab
-              name={companyName}
-              address={address}
-              contact={{
-                name: contactName,
-                email: contactEmail,
-                phone: contactPhone,
-                website: contactWebsite,
-              }}
-              emailSignature={emailSignature}
-              onEmailSignatureChange={setEmailSignature}
-              onNameChange={setCompanyName}
-              onAddressChange={setAddress}
-              onContactChange={(c) => {
-                setContactName(c.name || '');
-                setContactEmail(c.email || '');
-                setContactPhone(c.phone || '');
-                setContactWebsite(c.website || '');
-              }}
-            />
-            </div>
-          )}
-
-          {/* Modules Tab (M7) — the service management on/off switch gets its
-              own home instead of living inside Company. */}
-          {activeTab === 'modules' && (
-            <PartnerModulesCard
-              serviceManagementMode={partner?.serviceManagementMode}
-              topologyFeatureFlags={partner?.settings?.topologyFeatureFlags}
-            />
-          )}
-
-          {/* Regional Tab */}
-          {activeTab === 'regional' && (
-            <PartnerRegionalTab
-              timezone={timezone}
-              dateFormat={dateFormat}
-              timeFormat={timeFormat}
-              language={language}
-              businessHoursPreset={businessHoursPreset}
-              customHours={customHours}
-              onTimezoneChange={setTimezone}
-              onDateFormatChange={setDateFormat}
-              onTimeFormatChange={setTimeFormat}
-              onLanguageChange={setLanguage}
-              onBusinessHoursPresetChange={setBusinessHoursPreset}
-              onCustomHoursChange={updateCustomHours}
-            />
-          )}
-
-          {/* Inheritable Settings Tabs */}
-          {activeTab === 'security' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
-            </section>
-          )}
-          {/* Caller verification (#6354): partner baseline, self-saving and
-              hidden unless the server flag is on. */}
-          {activeTab === 'security' && (
-            <div className="mt-4">
-              <PartnerCallerVerificationPolicy />
-            </div>
-          )}
-
-          {activeTab === 'notifications' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerNotificationsTab data={notificationsData} onChange={setNotificationsData} />
-            </section>
-          )}
-
-          {activeTab === 'eventLogs' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerEventLogsTab data={eventLogsData} onChange={setEventLogsData} />
-            </section>
-          )}
-
-          {activeTab === 'defaults' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerDefaultsTab data={defaultsData} onChange={setDefaultsData} pinnableVersions={pinnableVersions} />
-            </section>
-          )}
-
-          {activeTab === 'branding' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerBrandingTab data={brandingData} onChange={setBrandingData} />
-            </section>
-          )}
-
-          {/* Login Branding: self-contained card with its own load/save (the
-              top-level "Save Settings" button does not apply here). */}
-          {activeTab === 'loginBranding' && <LoginBrandingCard partnerSlug={partner?.slug} />}
-
-          {/* Trust Center defaults: self-contained form with its own load/save (MFA, revisioned). */}
-          {activeTab === 'trustCenter' && <TrustTemplateSettings />}
-
-          {activeTab === 'aiBudgets' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
-            </section>
-          )}
-
-          {activeTab === 'aiApprovals' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiApprovalsTab data={aiApprovalsData} onChange={setAiApprovalsData} />
-            </section>
-          )}
-
-          {/* AI Providers & Models: self-contained cards, each with its own load/save
-              (the top-level "Save Settings" button does not apply here). */}
-          {activeTab === 'aiProvider' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiModelsTab />
-            </section>
-          )}
-
-          {/* AI Features: self-contained card with its own autosave switches. */}
-          {activeTab === 'aiFeatures' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiDataPolicyCard />
-              <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={(ml) => setPartner((p) => (p ? { ...p, settings: { ...p.settings, ml } } : p))} />
-            </section>
-          )}
-
-          {activeTab === 'remoteAccess' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerRemoteAccessTab
-                data={remoteAccessData}
-                onChange={setRemoteAccessData}
-                networkProxy={networkProxyData}
-                onNetworkProxyChange={setNetworkProxyData}
-              />
-            </section>
-          )}
-
           {/* Ticketing now has its own standalone page (M0) — this tab links out
               to it rather than embedding the tab group. */}
           {activeTab === 'ticketing' && (
@@ -735,17 +598,165 @@ export default function PartnerSettingsPage() {
             </div>
           )}
 
-          {activeTab === 'emailTemplates' && (
-            <section className="space-y-2" data-testid="partner-email-templates-tab">
-              <EmailTemplatesTab />
+
+          {activeDef.kind === 'panel' && (
+            <section aria-labelledby="partner-settings-panel-heading" className="space-y-6">
+              <div className="space-y-1">
+                <h2 id="partner-settings-panel-heading" data-testid="partner-settings-panel-heading" className="text-lg font-semibold">
+                  {t(/* i18n-dynamic */ activeDef.label)}
+                </h2>
+                <p className="max-w-prose text-sm text-muted-foreground">{t(/* i18n-dynamic */ activeDef.description)}</p>
+              </div>
+            {/* Company Tab */}
+            {activeTab === 'company' && (
+              <div className="space-y-6">
+                <PartnerCompanyTab
+                name={companyName}
+                address={address}
+                contact={{
+                  name: contactName,
+                  email: contactEmail,
+                  phone: contactPhone,
+                  website: contactWebsite,
+                }}
+                emailSignature={emailSignature}
+                onEmailSignatureChange={setEmailSignature}
+                onNameChange={setCompanyName}
+                onAddressChange={setAddress}
+                onContactChange={(c) => {
+                  setContactName(c.name || '');
+                  setContactEmail(c.email || '');
+                  setContactPhone(c.phone || '');
+                  setContactWebsite(c.website || '');
+                }}
+              />
+              </div>
+            )}
+
+            {/* Modules Tab (M7) — the service management on/off switch gets its
+                own home instead of living inside Company. */}
+            {activeTab === 'modules' && (
+              <PartnerModulesCard
+                serviceManagementMode={partner?.serviceManagementMode}
+                topologyFeatureFlags={partner?.settings?.topologyFeatureFlags}
+              />
+            )}
+
+            {/* Regional Tab */}
+            {activeTab === 'regional' && (
+              <PartnerRegionalTab
+                timezone={timezone}
+                dateFormat={dateFormat}
+                timeFormat={timeFormat}
+                language={language}
+                businessHoursPreset={businessHoursPreset}
+                customHours={customHours}
+                onTimezoneChange={setTimezone}
+                onDateFormatChange={setDateFormat}
+                onTimeFormatChange={setTimeFormat}
+                onLanguageChange={setLanguage}
+                onBusinessHoursPresetChange={setBusinessHoursPreset}
+                onCustomHoursChange={updateCustomHours}
+              />
+            )}
+
+            {/* Inheritable Settings Tabs */}
+            {activeTab === 'security' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
+              </section>
+            )}
+            {/* Caller verification (#6354): partner baseline, self-saving and
+                hidden unless the server flag is on. */}
+            {activeTab === 'security' && (
+              <div className="mt-4">
+                <PartnerCallerVerificationPolicy />
+              </div>
+            )}
+
+            {activeTab === 'notifications' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerNotificationsTab data={notificationsData} onChange={setNotificationsData} />
+              </section>
+            )}
+
+            {activeTab === 'eventLogs' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerEventLogsTab data={eventLogsData} onChange={setEventLogsData} />
+              </section>
+            )}
+
+            {activeTab === 'defaults' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerDefaultsTab data={defaultsData} onChange={setDefaultsData} pinnableVersions={pinnableVersions} />
+              </section>
+            )}
+
+            {activeTab === 'branding' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerBrandingTab data={brandingData} onChange={setBrandingData} />
+              </section>
+            )}
+
+            {/* Login Branding: self-contained card with its own load/save (the
+                top-level "Save Settings" button does not apply here). */}
+            {activeTab === 'loginBranding' && <LoginBrandingCard partnerSlug={partner?.slug} />}
+
+            {/* Trust Center defaults: self-contained form with its own load/save (MFA, revisioned). */}
+            {activeTab === 'trustCenter' && <TrustTemplateSettings />}
+
+            {activeTab === 'aiBudgets' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
+              </section>
+            )}
+
+            {activeTab === 'aiApprovals' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerAiApprovalsTab data={aiApprovalsData} onChange={setAiApprovalsData} />
+              </section>
+            )}
+
+            {/* AI Providers & Models: self-contained cards, each with its own load/save
+                (the top-level "Save Settings" button does not apply here). */}
+            {activeTab === 'aiProvider' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerAiModelsTab />
+              </section>
+            )}
+
+            {/* AI Features: self-contained card with its own autosave switches. */}
+            {activeTab === 'aiFeatures' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerAiDataPolicyCard />
+                <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={(ml) => setPartner((p) => (p ? { ...p, settings: { ...p.settings, ml } } : p))} />
+              </section>
+            )}
+
+            {activeTab === 'remoteAccess' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerRemoteAccessTab
+                  data={remoteAccessData}
+                  onChange={setRemoteAccessData}
+                  networkProxy={networkProxyData}
+                  onNetworkProxyChange={setNetworkProxyData}
+                />
+              </section>
+            )}
+
+            {activeTab === 'emailTemplates' && (
+              <section className="space-y-2" data-testid="partner-email-templates-tab">
+                <EmailTemplatesTab />
+              </section>
+            )}
+
+            {/* Custom sender addresses: partner sending domains, DNS records,
+                per-stream sender identities and the test send. Self-contained
+                with its own load/save, so the top-level "Save Settings" button
+                does not apply here. */}
+            {activeTab === 'sendingDomains' && sendingDomainsVisible && <PartnerSendingDomainTab />}
             </section>
           )}
-
-          {/* Custom sender addresses: partner sending domains, DNS records,
-              per-stream sender identities and the test send. Self-contained
-              with its own load/save, so the top-level "Save Settings" button
-              does not apply here. */}
-          {activeTab === 'sendingDomains' && sendingDomainsVisible && <PartnerSendingDomainTab />}
         </div>
       </div>
     </div>
