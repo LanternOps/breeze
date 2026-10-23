@@ -989,7 +989,13 @@
       "flow": "Flusso",
       "status": "Stato",
       "riskTierTitle": "Tier di rischio {{tier}}",
-      "signer": "Firmatario: {{signer}}"
+      "signer": "Firmatario: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Il dispositivo non ha potuto agire: nessun helper PAM disponibile",
+        "sessionUnavailable": "Il dispositivo non ha potuto agire: sessione dell'utente non disponibile",
+        "helperStartFailed": "Il dispositivo non ha potuto agire: impossibile avviare l'helper PAM",
+        "generic": "Il dispositivo non ha potuto gestire questa richiesta"
+      }
     },
     "actions": {
       "respond": "Rispondi",

@@ -35,6 +35,40 @@ type loginctlSession struct {
 	user string
 }
 
+// parseXSocketInodes reads listening X socket inodes from /proc/net/unix.
+func parseXSocketInodes(out, displayNum string) map[string]struct{} {
+	inodes := map[string]struct{}{}
+	want := "/tmp/.X11-unix/X" + displayNum
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 8 || (fields[7] != want && fields[7] != "@"+want) {
+			continue
+		}
+		flags, err := strconv.ParseUint(fields[3], 16, 32)
+		if err != nil || flags&0x10000 == 0 || fields[4] != "0001" {
+			continue
+		}
+		if inode, err := strconv.ParseUint(fields[6], 10, 64); err == nil && inode > 0 {
+			inodes[fields[6]] = struct{}{}
+		}
+	}
+	return inodes
+}
+
+func hasXSocket(links []string, inodes map[string]struct{}) bool {
+	for _, link := range links {
+		inode, ok := strings.CutPrefix(link, "socket:[")
+		if !ok {
+			continue
+		}
+		inode, ok = strings.CutSuffix(inode, "]")
+		if _, found := inodes[inode]; ok && found {
+			return true
+		}
+	}
+	return false
+}
+
 // parseAuthArg returns the value of the "-auth <path>" argument in an X server
 // argv, or "" if absent.
 func parseAuthArg(argv []string) string {
