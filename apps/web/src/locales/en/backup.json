@@ -550,7 +550,7 @@
     "filesSelected_other": "{{formatted}} files selected",
     "folderFileCount_one": "{{formatted}} file",
     "folderFileCount_other": "{{formatted}} files",
-    "allFilesFromSnapshot": "All files from snapshot",
+    "allFilesFromSnapshot": "Every file in the snapshot",
     "selectionFiles_one": "{{formatted}} file",
     "selectionFiles_other": "{{formatted}} files",
     "selectionFolders_one": "{{formatted}} folder",
