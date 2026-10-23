@@ -48,7 +48,8 @@ func extractArchive(zipPath, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
 	}
-	defer r.Close()
+	// Read-only handle: a close error cannot affect what was extracted.
+	defer func() { _ = r.Close() }()
 
 	if len(r.File) > maxArchiveEntries {
 		return fmt.Errorf("archive has %d entries, more than the limit of %d", len(r.File), maxArchiveEntries)
@@ -116,7 +117,8 @@ func extractArchiveFile(f *zip.File, target string, perm os.FileMode, limit int6
 	if err != nil {
 		return 0, err
 	}
-	defer src.Close()
+	// Read side; a decompression or CRC failure surfaces from io.Copy instead.
+	defer func() { _ = src.Close() }()
 
 	dst, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
