@@ -690,3 +690,13 @@ it('#8167 PR-B self-manages the three push routes (vendor push-settings calls) a
   // The public webhook has no ambient auth transaction to opt out of.
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/webhooks/edr/abc-123')).toBe(false);
 });
+
+it('#6263 W04 self-manages only the YARA rule test upload (the scan runs outside any transaction)', () => {
+  const SET = '22222222-2222-4222-8222-222222222222';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/yara/rule-sets/${SET}/test`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/security/yara/rule-sets/${SET}/test`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/yara/rule-sets/${SET}/ioc-import`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/yara/rule-sets/${SET}/rules`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/security/yara/rules/33333333-3333-4333-8333-333333333333')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/security/yara/rule-sets/not-a-uuid/test')).toBe(false);
+});

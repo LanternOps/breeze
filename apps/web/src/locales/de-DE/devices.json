@@ -1362,6 +1362,7 @@
     "drive": "Laufwerk",
     "size": "Größe",
     "used": "Verwendet",
+    "usedPercent": "Belegt %",
     "health": "Zustand",
     "noDiskInventoryReported": "Kein Festplatteninventar gemeldet.",
     "networkAdapters": "Netzwerkadapter",
@@ -2497,7 +2498,7 @@
     "showFindings": "Befunde anzeigen",
     "stats": {
       "accepted": "Akzeptiert",
-      "kev": "Kev",
+      "kev": "Bekanntermaßen ausgenutzt",
       "mitigated": "Abgemildert",
       "open": "Offen",
       "patchReady": "Patch bereit",
@@ -2515,9 +2516,9 @@
     "statusLabel": "Statusetikett",
     "table": {
       "actions": "Aktionen",
-      "cve": "Cve",
-      "cvss": "Lebenslauf",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risiko",
       "severity": "Schweregrad",
       "status": "Status"
@@ -3483,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Es wird noch nichts überwacht",
+        "titleWithCheck": "Keine SNMP-Integritätsdaten",
+        "descriptionWithCheck": "Für dieses Gerät ist eine Netzwerkprüfung aktiv, daher wird die Erreichbarkeit weiterhin erfasst. Aktivieren Sie SNMP, um zusätzlich Integritätsdaten zu erfassen.",
         "action": "Überwachung einrichten",
         "benefit": {
           "printer": "Aktivieren Sie SNMP, um Toner- und Tintenstände, Papierfächer, Seitenzähler und Druckerfehler anzuzeigen.",

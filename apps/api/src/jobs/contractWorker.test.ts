@@ -349,6 +349,27 @@ describe('billing-sweep job ordering (#8181)', () => {
   });
 });
 
+describe('already_billed on a due contract is never silent (#9509)', () => {
+  beforeEach(() => { dueRows.length = 0; vi.clearAllMocks(); });
+
+  it('logs an error with the contract id and reports it (the pointer sat on a claimed period)', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null,
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runContractBillingSweep(new Date('2026-08-02T06:00:00Z'));
+      expect(res).toEqual({ billed: 0, failed: 0, deferred: 0 });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('already billed'), 'c1', 'org1');
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('c1') }));
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
 describe('renewal_pending deferrals are counted and never silent (#9243)', () => {
   beforeEach(() => { dueRows.length = 0; vi.clearAllMocks(); });
 

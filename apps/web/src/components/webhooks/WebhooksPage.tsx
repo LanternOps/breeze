@@ -8,7 +8,7 @@ import WebhookDeliveryHistory, { normalizeDelivery, type WebhookDelivery } from 
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
-import { formSecretValue, MASKED_SECRET } from '@/lib/redactedSecret';
+import { formSecretValue, isMaskedSecret, MASKED_SECRET } from '@/lib/redactedSecret';
 import { Trans, useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -19,6 +19,13 @@ import { useStableT } from '@/lib/i18n/useStableT';
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
 const defaultEventType = webhookEventOptions[0]?.value ?? 'device.online';
+
+// #9652: the API stores bearer auth as an encrypted `Authorization: Bearer
+// <token>` custom header. The form shows it as the Bearer option instead of
+// a custom header row, and writes it back as that header.
+const isAuthorizationHeader = (key: string) => key.trim().toLowerCase() === 'authorization';
+const webhookFormAuthType = (webhook: Webhook): 'hmac' | 'bearer' =>
+  webhook.authType === 'bearer' ? 'bearer' : 'hmac';
 
 // Reading webhooks requires webhooks:read (GET /webhooks and the delivery
 // history). Without it the page shows the permission-denied state and makes no
@@ -218,41 +225,59 @@ function WebhooksPageContent() {
     const status = current && enabled === isWebhookActive(current)
       ? undefined
       : enabled ? 'active' : 'paused';
-    const auth =
-      values.authType === 'bearer'
-        ? { type: 'bearer', token: values.bearerToken }
-        : { type: 'hmac', secret: values.secret };
+    const headers = values.headers?.filter(header => header.key) ?? [];
+    let secret: { secret?: string | null } = { secret: values.secret };
+    if (values.authType === 'bearer') {
+      // A masked token means "keep the stored one": the API resolves a masked
+      // value by exact key, then by position, so send the stored header's own
+      // key spelling back or it may resolve to a different header.
+      const storedKey = current && webhookFormAuthType(current) === 'bearer'
+        ? current.headers?.find(header => isAuthorizationHeader(header.key))?.key
+        : undefined;
+      const token = (values.bearerToken ?? '').trim().replace(/^bearer\s+/i, '');
+      headers.push({
+        key: storedKey ?? 'Authorization',
+        value: isMaskedSecret(token) ? MASKED_SECRET : `Bearer ${token}`,
+      });
+      // Switching an HMAC webhook to bearer clears its signing secret.
+      secret = current && webhookFormAuthType(current) !== 'bearer' ? { secret: null } : {};
+    }
 
     return {
       name: values.name,
       url: values.url,
       events: values.events,
       ...(status ? { status } : {}),
-      auth,
-      secret: values.authType === 'hmac' ? values.secret : undefined,
-      bearerToken: values.authType === 'bearer' ? values.bearerToken : undefined,
-      headers: values.headers?.filter(header => header.key) ?? []
+      ...secret,
+      headers
     };
   };
 
   const transformWebhookToForm = (webhook: Webhook): Partial<WebhookFormValues> => {
-    const authType = webhook.auth?.type ?? (webhook.bearerToken ? 'bearer' : 'hmac');
+    const authType = webhookFormAuthType(webhook);
     // The API never returns the stored secret, only `hasSecret`, and returns
     // each header value as a redaction marker. Pre-fill the masked string the
     // API reads as "keep what is stored"; a blank secret would fail HMAC
     // validation and block every edit until it was re-typed (#4983).
-    const storedSecret = webhook.auth?.secret ?? webhook.secret;
+    const headers = webhook.headers ?? [];
+    const bearerHeader = authType === 'bearer'
+      ? headers.find(header => isAuthorizationHeader(header.key))
+      : undefined;
     return {
       name: webhook.name,
       url: webhook.url,
       authType,
-      secret: storedSecret ?? (webhook.hasSecret ? MASKED_SECRET : ''),
-      bearerToken: webhook.auth?.token ?? webhook.bearerToken ?? '',
+      secret: webhook.hasSecret ? MASKED_SECRET : '',
+      bearerToken: bearerHeader ? formSecretValue(bearerHeader.value) : '',
       events: webhook.events ?? [],
-      headers: (webhook.headers ?? []).map(header => ({
-        key: header.key,
-        value: formSecretValue(header.value),
-      })),
+      // The bearer Authorization header is edited through the Bearer option,
+      // not as a custom header row.
+      headers: headers
+        .filter(header => header !== bearerHeader)
+        .map(header => ({
+          key: header.key,
+          value: formSecretValue(header.value),
+        })),
       enabled: isWebhookActive(webhook)
     };
   };
@@ -382,12 +407,10 @@ function WebhooksPageContent() {
     );
   }
 
-  const authSummary = activeWebhook
-    ? activeWebhook.auth?.type ?? (activeWebhook.bearerToken ? 'bearer' : 'hmac')
-    : 'hmac';
+  const authSummary = activeWebhook ? webhookFormAuthType(activeWebhook) : 'hmac';
 
   const authLabel = authSummary === 'bearer' ? t('longTail.webhooks.WebhooksPage.auth.bearerToken') : t('longTail.webhooks.WebhooksPage.auth.hmacSignature');
-  const authHeader = authSummary === 'bearer' ? 'Authorization: Bearer ***' : 'X-Signature: sha256=***';
+  const authHeader = authSummary === 'bearer' ? 'Authorization: Bearer ***' : 'X-Breeze-Signature: sha256=***';
 
   const testEventOptions = activeWebhook?.events?.length
     ? activeWebhook.events

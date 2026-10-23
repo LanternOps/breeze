@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PeripheralPolicyForm from './PeripheralPolicyForm';
 import { fetchWithAuth } from '../../stores/auth';
@@ -157,5 +157,65 @@ describe('PeripheralPolicyForm — edit keeps targeting (#9620)', () => {
 
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
     expect(postedBody()).toMatchObject({ targetType: 'organization', targetIds: {} });
+  });
+});
+
+// #9621: labels pair with their controls, and the exception expiry is edited in
+// the browser's local time (it is stored as a UTC ISO string).
+describe('PeripheralPolicyForm — accessible labels and local expiry (#9621)', () => {
+  const originalTz = process.env.TZ;
+  const policyWithExpiry = {
+    id: 'pol-9',
+    name: 'Temp allow',
+    deviceClass: 'storage',
+    action: 'block',
+    isActive: true,
+    targetType: 'organization',
+    targetIds: {},
+    exceptions: [{ vendor: 'Acme', allow: true, expiresAt: '2026-03-01T03:30:00.000Z' }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-aaaa', allOrgs: false, organizations: [orgA, orgB], organizationsLoaded: true, error: null });
+  });
+
+  afterEach(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+
+  it('pairs the Name, Device Class and Action labels with their controls', () => {
+    render(<PeripheralPolicyForm onClose={() => {}} />);
+    expect(screen.getByLabelText('Name')).toBe(screen.getByTestId('peripheral-policy-name'));
+    expect(screen.getByLabelText('Device Class')).toBe(screen.getByTestId('peripheral-policy-device-class'));
+    expect(screen.getByLabelText('Action')).toBe(screen.getByTestId('peripheral-policy-action'));
+    expect(screen.getByRole('switch', { name: 'Active' })).toBeTruthy();
+  });
+
+  it('labels every exception field', () => {
+    render(<PeripheralPolicyForm policy={policyWithExpiry} onClose={() => {}} />);
+    for (const label of ['Vendor', 'Product', 'Serial Number', 'Reason']) {
+      expect(screen.getByLabelText(label)).toBeTruthy();
+    }
+    expect(screen.getByLabelText(/Expires/)).toBe(screen.getByTestId('peripheral-policy-exception-expires-0'));
+  });
+
+  it('shows an existing expiry in local time, not UTC', () => {
+    process.env.TZ = 'America/New_York'; // UTC-5 on 2026-03-01
+    render(<PeripheralPolicyForm policy={policyWithExpiry} onClose={() => {}} />);
+    expect((screen.getByTestId('peripheral-policy-exception-expires-0') as HTMLInputElement).value).toBe('2026-02-28T22:30');
+  });
+
+  it('saves a typed local time as the matching UTC instant', async () => {
+    process.env.TZ = 'America/New_York';
+    fetchWithAuthMock.mockResolvedValueOnce(okResponse());
+    render(<PeripheralPolicyForm policy={policyWithExpiry} onClose={() => {}} />);
+    fireEvent.change(screen.getByTestId('peripheral-policy-exception-expires-0'), { target: { value: '2026-03-02T09:00' } });
+    fireEvent.click(screen.getByRole('button', { name: /Update Policy/i }));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+    const exceptions = postedBody().exceptions as Array<{ expiresAt: string }>;
+    expect(exceptions[0]!.expiresAt).toBe('2026-03-02T14:00:00.000Z');
   });
 });

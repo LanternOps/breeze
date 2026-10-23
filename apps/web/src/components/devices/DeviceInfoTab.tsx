@@ -40,6 +40,7 @@ import {
 import DeviceFunctionField from "./DeviceFunctionField";
 import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
+import { formatOsBuild } from "./formatOsLabel";
 import DeviceTimeSection from "./time/DeviceTimeSection";
 import { formatNumber } from "@/lib/i18n/format";
 import { Trans, useTranslation } from "react-i18next";
@@ -1073,7 +1074,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         />
         <InfoRow
           label={t("deviceInfoTab.osBuild")}
-          value={info?.osBuild ?? "—"}
+          value={formatOsBuild(info?.osType, info?.osVersion, info?.osBuild) ?? "—"}
         />
         <InfoRow
           label={t("deviceInfoTab.architecture")}

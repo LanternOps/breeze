@@ -3329,6 +3329,18 @@ describe('createActionIntent caller verification (#6354 W05)', () => {
       expect(callerState.requireCallerVerification).not.toHaveBeenCalled();
       expectNothingMinted();
     });
+
+    it('B-W04: an mcp_api live row filed by a DIFFERENT origin credential is an idempotency_conflict', async () => {
+      arrangeApproval();
+      dbState.selectActionIntentsResults.push([replayRow({
+        source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-B',
+      })]);
+      await expect(createActionIntent(
+        makeAuth({ principal: { kind: 'api_key', apiKeyId: 'key-A' } }),
+        protInput('m365_disable_user', { source: 'mcp_api' }),
+      )).rejects.toMatchObject({ name: 'ActionIntentError', code: 'idempotency_conflict' });
+      expectNothingMinted();
+    });
   });
 
   it('non-protected tools never resolve a caller target or call the gate, and pin nothing', async () => {
@@ -3344,5 +3356,147 @@ describe('createActionIntent caller verification (#6354 W05)', () => {
     expect(dbState.insertedActionIntentValues[0]).toMatchObject({
       targetEntraTenantId: null, targetEntraOid: null, targetConnectionRef: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-W04 (#6158, D-B27/D-B28): MCP-origin intents
+// ---------------------------------------------------------------------------
+describe('createActionIntent — mcp_api origin (B-W04)', () => {
+  const KEY_A = { kind: 'api_key', apiKeyId: 'key-A' };
+  const mcpInput = (over: Partial<CreateActionIntentInput> = {}) => baseInput({
+    source: 'mcp_api', idempotencyKey: 'mcp:v1:abc', ...over,
+  });
+  const fourEyes = () => guardrailMock.checkGuardrails.mockReturnValue({
+    tier: 3, allowed: true, requiresApproval: true, description: 'Run a script', approvalScope: 'four_eyes',
+  });
+  const supervised = () => guardrailMock.checkGuardrails.mockReturnValue({
+    tier: 3, allowed: true, requiresApproval: true, description: 'Run a script', approvalScope: 'supervised',
+  });
+  const liveMcpRow = (over: Record<string, unknown> = {}) => makeIntentRow({
+    id: 'intent-live-mcp', source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-A',
+    idempotencyKey: 'mcp:v1:abc', ...over,
+  });
+
+  it('mcp_api replay with a different origin principal → idempotency_conflict', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([liveMcpRow({ originPrincipalId: 'key-B' })]);
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput()))
+      .rejects.toMatchObject({ code: 'idempotency_conflict' });
+  });
+
+  it('mcp_api replay with a different requester → idempotency_conflict', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([liveMcpRow({ requestedByUserId: APPROVER_2 })]);
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput()))
+      .rejects.toMatchObject({ code: 'idempotency_conflict' });
+  });
+
+  it('mcp_api replay with the same origin returns the live intent and does not re-notify', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([liveMcpRow()]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: APPROVER_1 }]);
+    const snap = await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput());
+    expect(snap.id).toBe('intent-live-mcp');
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+    expect(pushState.getUserPushTokens).not.toHaveBeenCalled();
+  });
+
+  it('correlationId is stored for an mcp_api intent and ignored for chat', async () => {
+    const CORR = '6f2b7c1e-1d2a-4c3b-9e8f-0a1b2c3d4e5f';
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-mcp' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-mcp' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ correlationId: CORR }));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-chat' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-chat' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'chat-key', correlationId: CORR }));
+    const [mcp, chat] = dbState.insertedActionIntentValues;
+    expect(mcp!.correlationId).toBe(CORR);
+    expect(chat!.correlationId).not.toBe(CORR);
+    expect(mcp!.originPrincipalKind).toBe('api_key');
+    expect(mcp!.originPrincipalId).toBe('key-A');
+  });
+
+  it('supervised mcp_api intent notifies its requester (headless: nobody watches a chat pane)', async () => {
+    supervised();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-sup' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-sup' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput());
+    expect(notifyState.createNotification).toHaveBeenCalled();
+  });
+
+  it('supervised chat intent still does not notify; a user-session mcp_api intent keeps that rule too', async () => {
+    supervised();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-chat-sup' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-chat-sup' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'k-chat-sup' }));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-op-sup' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-op-sup' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'k-op-sup', source: 'mcp_api' }));
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('four_eyes mcp_api intent notifies its approvers (regression)', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-4e' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-4e' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput());
+    expect(notifyState.createNotification).toHaveBeenCalled();
+  });
+
+  it('beforeInsert (churn charge) runs when a new row is about to be inserted', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([]); // pre-insert live lookup: none
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-charge' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-charge' }]);
+    const beforeInsert = vi.fn(async () => undefined);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert }));
+    expect(beforeInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('beforeInsert is NOT charged for a replay of a live intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([liveMcpRow()]); // pre-insert live lookup: hit
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([liveMcpRow()]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: APPROVER_1 }]);
+    const beforeInsert = vi.fn(async () => undefined);
+    const snap = await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert }));
+    expect(snap.id).toBe('intent-live-mcp');
+    expect(beforeInsert).not.toHaveBeenCalled();
+  });
+
+  it('at the live cap the churn budget is not charged (advisory pre-check)', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([]); // no live replay
+    dbState.selectActionIntentsResults.push([{ n: 2 }]); // live count for this origin
+    const beforeInsert = vi.fn(async () => undefined);
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert, maxLiveForOrigin: 2 })))
+      .rejects.toMatchObject({ code: 'too_many_pending_actions' });
+    expect(beforeInsert).not.toHaveBeenCalled();
+  });
+
+  it('a beforeInsert refusal propagates and nothing is inserted', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([]);
+    const beforeInsert = vi.fn(async () => { throw new ActionIntentError('slow down', 'rate_limited'); });
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert })))
+      .rejects.toMatchObject({ code: 'rate_limited' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
   });
 });

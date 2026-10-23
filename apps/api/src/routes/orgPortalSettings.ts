@@ -184,7 +184,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
   };
 }
 
-async function resolveAccessibleOrg(c: any): Promise<{ id: string; partnerId: string } | Response> {
+export async function resolveAccessibleOrg(c: any): Promise<{ id: string; partnerId: string } | Response> {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {

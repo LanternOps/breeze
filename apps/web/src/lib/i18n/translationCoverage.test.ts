@@ -91,7 +91,8 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'devices.json': 187,
+    // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
+    'devices.json': 189,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -432,7 +433,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 106, // +1 W06: lists.separator ", " is punctuation
+    'common.json': 107, // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -635,7 +636,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 108, // +1 W06: lists.separator ", " is punctuation
+    'common.json': 109, // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -852,7 +853,7 @@ const namespaceDuplicateBaselines = {
     // rendered is a control that says which account a script runs under.
     // +1 W01 settings consolidation (#6224): nav.ticketing — "Ticketing" is
     // the standard de-DE loanword (matching partnerSettingsPage.tabs.ticketing).
-    'common.json': 109, // +1 W06: lists.separator ", " is punctuation; +1 system page W02: nav.system "System"
+    'common.json': 111, // +2 #9663: incidents.actors.brain "Breeze AI" (proper noun) + actors.system "System"; // +1 W06: lists.separator ", " is punctuation; +1 system page W02: nav.system "System"
     // +8 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -1040,7 +1041,8 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'devices.json': 153,
+    // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
+    'devices.json': 155,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.

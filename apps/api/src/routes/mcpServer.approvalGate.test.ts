@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 // MCP interactive-approval-only gate (user decision, 2026-08-02): ALL Tier 3
 // tools now require interactive approval, unconditionally, including tools
@@ -38,6 +38,13 @@ const mocks = vi.hoisted(() => ({
   ledgerBegin: vi.fn(),
   ledgerComplete: vi.fn(),
   writeAuditEvent: vi.fn(),
+}));
+
+// B-W04 (#6158): the MCP-side intent creation (its own suite covers it).
+const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
+vi.mock('../services/mcpIntentCreation', () => ({
+  createMcpActionIntent: (...args: any[]) => intentMocks.createMcpActionIntent(...args),
+  resolveMcpClientLabel: vi.fn(async () => 'MCP · test'),
 }));
 
 vi.mock('../services/mcpToolExecutionLedger', () => ({
@@ -171,6 +178,23 @@ const FULL_PERMISSIONS_BASELINE = [
   { resource: 'automations', action: 'write' },
 ];
 
+// An org service-principal key is authorized against the PRINCIPAL; the real
+// implementation reads `service_principals` through the DB, which this file's
+// `../db` mock cannot serve. Resolve ok with the passed scopes so the call
+// reaches the Tier-3 approval gate (same shape as mcpServer.creatorAuthz.test.ts).
+vi.mock('../services/apiKeyAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/apiKeyAuthorization')>();
+  return {
+    ...actual,
+    authorizeServicePrincipalKey: vi.fn(async (input: { principalId: string; scopes: string[] }) => ({
+      ok: true,
+      permissions: null,
+      allowedSiteIds: undefined,
+      clampedScopes: input.scopes,
+    })),
+  };
+});
+
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
@@ -280,7 +304,9 @@ async function listTools() {
   return res;
 }
 
-describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
+// With MCP_TIER3_INTENTS_ENABLED off (the default) this whole describe is the
+// byte-for-byte pin of today's fail-closed behaviour (B-W04 D-B37).
+describe('MCP interactive-approval-only gate (all Tier 3, tier-driven) — MCP_TIER3_INTENTS_ENABLED off', () => {
   // (a) A flat Tier 3 tool — absent from tools/list, denied on tools/call.
   describe('flat Tier 3 tool (execute_command) — wholly gated', () => {
     beforeEach(() => {
@@ -709,6 +735,212 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
 // Operator opt-in MCP_UNATTENDED_TIER3_PRINCIPALS (default: nobody). It removes
 // ONLY the approval-only deny, ONLY for the named principals; scope gates,
 // RBAC, ledger and audit still run.
+const PENDING_ID = '77777777-7777-4777-8777-777777777777';
+function pendingOutcome(toolName: string, isNew = true) {
+  return {
+    kind: 'pending', isNew,
+    status: {
+      actionId: PENDING_ID, status: 'pending_approval', toolName, approvalScope: 'four_eyes',
+      expiresAt: '2027-01-01T00:00:00.000Z', approvalUrl: `https://app.example.com/approvals#intent-${PENDING_ID}`,
+    },
+  };
+}
+
+// Today's exact refusal text, pinned so the flag-off path can be proven
+// byte-identical (B-W04 D-B25/D-B37).
+const TODAY_APPROVAL_REQUIRED_TEXT = JSON.stringify({
+  error: 'This action requires interactive approval and cannot be executed over MCP. Run it from the Breeze web app AI assistant, where it goes through the approval workflow.',
+  code: 'MCP_APPROVAL_REQUIRED',
+});
+
+describe('B-W04: flag off reproduces today byte-for-byte', () => {
+  beforeEach(() => {
+    delete process.env.MCP_TIER3_INTENTS_ENABLED;
+    mocks.getToolDefinitions.mockReturnValue([
+      { name: 'execute_command', description: 'Execute a system command.', input_schema: {} },
+    ]);
+    mocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 3 : undefined));
+  });
+
+  it('tools/call body is exactly today\'s, even without ai:execute, and the per-tool rate limiter is not charged', async () => {
+    const { checkToolRateLimit } = await import('../services/aiGuardrails');
+    for (const scopes of [['ai:read', 'ai:write', 'ai:execute'], ['ai:read']]) {
+      const body = await (await callTool('execute_command', { deviceId: 'd1', command: 'whoami' }, scopes)).json();
+      expect(body.result).toEqual({ content: [{ type: 'text', text: TODAY_APPROVAL_REQUIRED_TEXT }], isError: true });
+    }
+    expect(checkToolRateLimit).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('tools/list gains only get_action_status and cancel_action', async () => {
+    const names = (await (await listTools()).json()).result.tools.map((t: any) => t.name);
+    expect(names.sort()).toEqual(['cancel_action', 'get_action_status', 'whoami']);
+  });
+});
+
+describe('B-W04: Tier-3 tools/call files an approval intent (MCP_TIER3_INTENTS_ENABLED on)', () => {
+  beforeEach(() => {
+    process.env.MCP_TIER3_INTENTS_ENABLED = 'true';
+    testState.mfaSatisfied = true;
+    intentMocks.createMcpActionIntent.mockReset().mockImplementation(async (i: { toolName: string }) => pendingOutcome(i.toolName));
+  });
+  afterEach(() => {
+    delete process.env.MCP_TIER3_INTENTS_ENABLED;
+    process.env.NODE_ENV = 'test';
+  });
+
+  function useTools(defs: Array<{ name: string; tier: number; schema?: unknown; description?: string }>) {
+    mocks.getToolDefinitions.mockReturnValue(defs.map((d) => ({
+      name: d.name, description: d.description ?? `${d.name}.`, input_schema: d.schema ?? {},
+    })));
+    mocks.getToolTier.mockImplementation((name: string) => defs.find((d) => d.name === name)?.tier);
+  }
+
+  async function pendingBody(res: Response) {
+    const body = await res.json();
+    expect(body.result.isError).toBeUndefined();
+    expect(body.result.structuredContent).toMatchObject({ status: 'pending_approval', actionId: PENDING_ID });
+    expect(body.result.structuredContent.next).toContain('get_action_status');
+    return body;
+  }
+
+  it('flat Tier 3 (execute_command) is listed with the approval suffix and returns pending_approval without executing', async () => {
+    useTools([{ name: 'execute_command', tier: 3, description: 'Execute a system command.' }]);
+    const tools = (await (await listTools()).json()).result.tools;
+    const ec = tools.find((t: any) => t.name === 'execute_command');
+    expect(ec.description).toBe('Execute a system command. (Requires approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.)');
+
+    await pendingBody(await callTool('execute_command', { deviceId: 'd1', command: 'whoami' }));
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+    expect(intentMocks.createMcpActionIntent.mock.calls[0]![0]).toMatchObject({
+      toolName: 'execute_command', executionOrgId: 'org-1', toolInput: { deviceId: 'd1', command: 'whoami' },
+    });
+  });
+
+  it('mixed tool: registry_operations set_value → pending; get_value executes', async () => {
+    useTools([{ name: 'registry_operations', tier: 1, schema: REGISTRY_OPERATIONS_SCHEMA }]);
+    await pendingBody(await callTool('registry_operations', { action: 'set_value', deviceId: 'd1', path: 'HKLM\\x', value: '1' }));
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    const body = await (await callTool('registry_operations', { action: 'get_value', deviceId: 'd1', path: 'HKLM\\x' })).json();
+    expect(body.result.isError).toBeUndefined();
+    expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('manage_invoices issue → pending; create_draft executes; manage_tickets comment isPublic → pending', async () => {
+    useTools([
+      { name: 'manage_invoices', tier: 2, schema: MANAGE_INVOICES_SCHEMA },
+      { name: 'manage_tickets', tier: 2, schema: MANAGE_TICKETS_COMMENT_SCHEMA },
+    ]);
+    await pendingBody(await callTool('manage_invoices', { action: 'issue', invoiceId: 'inv-1' }));
+    await callTool('manage_invoices', { action: 'create_draft', orgId: 'org-1' });
+    expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    await pendingBody(await callTool('manage_tickets', { action: 'comment', ticketId: 't1', body: 'hi', isPublic: true }));
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(2);
+  });
+
+  it('scope gates run BEFORE intent creation: no ai:execute → -32603 requires ai:execute', async () => {
+    useTools([{ name: 'execute_command', tier: 3 }]);
+    const body = await (await callTool('execute_command', { deviceId: 'd1' }, ['ai:read', 'ai:write'])).json();
+    expect(body.error.code).toBe(-32603);
+    expect(body.error.message).toContain('requires ai:execute');
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('RBAC denial → refused, no intent', async () => {
+    useTools([{ name: 'execute_command', tier: 3 }]);
+    const { checkToolPermission } = await import('../services/aiGuardrails');
+    vi.mocked(checkToolPermission).mockResolvedValueOnce('Insufficient permissions');
+    const body = await (await callTool('execute_command', { deviceId: 'd1' })).json();
+    expect(body.error.message).toBe('Insufficient permissions');
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('domain-denied call never creates an intent', async () => {
+    useTools([{ name: 'execute_command', tier: 3 }]);
+    testState.apiKeyExtra = { mcpDomains: ['core'] };
+    const body = await (await callTool('execute_command', { deviceId: 'd1' })).json();
+    expect(body.error).toBeDefined();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('MFA-gated Tier-3 action for a caller without MFA → MCP_APPROVAL_REQUIRED with reason mfa_required', async () => {
+    testState.mfaSatisfied = false;
+    useTools([{ name: 'manage_policy_feature_link', tier: 2, schema: MANAGE_POLICY_FEATURE_LINK_SCHEMA }]);
+    const body = await (await callTool('manage_policy_feature_link', {
+      action: 'add', policyId: 'p1', featureType: 'maintenance', featurePolicyId: 'fp1',
+    })).json();
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED', reason: 'mfa_required' });
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('a flat Tier-3 multiplexer gets the flat suffix once, not the per-action sentence too', async () => {
+    useTools([{ name: 'manage_services', tier: 3, description: 'Services.', schema: {
+      type: 'object', properties: { action: { type: 'string', enum: ['list', 'restart', 'stop'] } },
+    } }]);
+    const tool = (await (await listTools()).json()).result.tools.find((t: any) => t.name === 'manage_services');
+    expect(tool.description).toBe('Services. (Requires approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.)');
+  });
+
+  it('mixed tool listing uses the per-action approval wording', async () => {
+    useTools([{ name: 'registry_operations', tier: 1, schema: REGISTRY_OPERATIONS_SCHEMA, description: 'Registry.' }]);
+    const tool = (await (await listTools()).json()).result.tools.find((t: any) => t.name === 'registry_operations');
+    expect(tool.description).toContain('require approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.');
+    expect(tool.description).not.toContain('not available over MCP');
+  });
+
+  it('collect_evidence stays MCP_APPROVAL_REQUIRED (approval_extra) and unlisted', async () => {
+    useTools([{ name: 'collect_evidence', tier: 2 }]);
+    expect((await (await listTools()).json()).result.tools.map((t: any) => t.name)).not.toContain('collect_evidence');
+    const body = await (await callTool('collect_evidence', { deviceId: 'd1' })).json();
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED', reason: 'approval_extra' });
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('Tier 4 stays unlisted and denied', async () => {
+    useTools([{ name: 'wipe_everything', tier: 4 }]);
+    expect((await (await listTools()).json()).result.tools.map((t: any) => t.name)).not.toContain('wipe_everything');
+    const body = await (await callTool('wipe_everything', {})).json();
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED', reason: 'not_tier3' });
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('an org service-principal key is refused with principal_not_supported', async () => {
+    useTools([{ name: 'execute_command', tier: 3 }]);
+    testState.apiKeyExtra = { principalType: 'service', principalId: 'sp-1' };
+    const body = await (await callTool('execute_command', { deviceId: 'd1' })).json();
+    expect(body.error).toBeUndefined();
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED', reason: 'principal_not_supported' });
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('replayed call returns the same actionId', async () => {
+    useTools([{ name: 'execute_command', tier: 3 }]);
+    intentMocks.createMcpActionIntent.mockResolvedValue(pendingOutcome('execute_command', false));
+    const a = await pendingBody(await callTool('execute_command', { deviceId: 'd1' }));
+    const b = await pendingBody(await callTool('execute_command', { deviceId: 'd1' }));
+    expect(a.result.structuredContent.actionId).toBe(b.result.structuredContent.actionId);
+  });
+
+  it('a refusal from creation (cap) is an isError tool result naming its code', async () => {
+    useTools([{ name: 'execute_command', tier: 3 }]);
+    intentMocks.createMcpActionIntent.mockResolvedValueOnce({ kind: 'refused', code: 'too_many_pending_actions', message: 'Too many.' });
+    const body = await (await callTool('execute_command', { deviceId: 'd1' })).json();
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'too_many_pending_actions' });
+  });
+
+  it('whoami reports approvalGate.tier3', async () => {
+    useTools([]);
+    const call = async () => JSON.parse((await (await callTool('whoami', {})).json()).result.content[0].text);
+    expect((await call()).approvalGate).toMatchObject({ tier3: 'approval_intent', tier3RequiresWebApp: false });
+    delete process.env.MCP_TIER3_INTENTS_ENABLED;
+    expect((await call()).approvalGate).toMatchObject({ tier3: 'web_app_only', tier3RequiresWebApp: true });
+  });
+});
+
 describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
   beforeEach(() => {
     vi.unstubAllEnvs();

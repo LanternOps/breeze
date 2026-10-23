@@ -1030,8 +1030,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Entreprise",
+      "devices": "Appareils et agents",
       "security": "Sécurité et accès",
       "communications": "Communications",
+      "ai": "IA",
       "branding": "Image de marque"
     },
     "aiFeatures": {
@@ -1060,11 +1062,11 @@
       },
       "company": {
         "label": "Entreprise",
-        "description": "Nom, adresse, contacts"
+        "description": "Nom, adresse, contacts, signature d’e-mail"
       },
       "regional": {
         "label": "Régional",
-        "description": "Fuseau horaire, formats, horaires"
+        "description": "Fuseau horaire, langue, formats, horaires"
       },
       "defaults": {
         "label": "Défauts",
@@ -1072,7 +1074,7 @@
       },
       "security": {
         "label": "Sécurité",
-        "description": "IP liste des permis et accès"
+        "description": "Mots de passe, sessions, MFA et liste d’IP autorisées"
       },
       "remoteAccess": {
         "label": "Accès à distance",
@@ -1080,11 +1082,11 @@
       },
       "eventLogs": {
         "label": "Journaux d’événements",
-        "description": "Transfert et conservation"
+        "description": "Transférer les journaux d’événements des appareils vers Elasticsearch"
       },
       "notifications": {
         "label": "Notifications",
-        "description": "Alertes email et webhooks"
+        "description": "Adresse d’expédition, SMTP et valeurs par défaut de Slack et Pushover"
       },
       "ticketing": {
         "label": "Ticketterie",
@@ -1109,7 +1111,7 @@
       },
       "aiFeatures": {
         "label": "Fonctionnalités IA",
-        "description": "Valeurs par défaut de la détection d'anomalies et des solutions proposées"
+        "description": "Politique de données IA, détection d’anomalies et solutions proposées"
       },
       "branding": {
         "label": "Image de marque",
@@ -1126,6 +1128,14 @@
       "aiApprovals": {
         "label": "Délai d'approbation IA",
         "description": "Durée d'attente du chat IA pour l'approbation d'une action contrôlée"
+      },
+      "callerVerification": {
+        "label": "Vérification de l’appelant",
+        "description": "Contrôle d’identité des appelants pour les demandes d’assistance"
+      },
+      "knownGuests": {
+        "label": "Invités connus",
+        "description": "Appareils approuvés de visiteurs et de techniciens, par adresse MAC"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -1388,6 +1398,14 @@
     "never": "Jamais",
     "downloadInstaller": "Télécharger un installateur préconfiguré",
     "downloading": "Téléchargement...",
+    "installerDialogTitle": "Télécharger le programme d’installation pour « {{name}} »",
+    "installerDialogDescription": "Le programme d’installation est généré pour un nombre fixe d’appareils. Chaque appareil qui l’exécute en utilise un.",
+    "installerDeviceCount": "Nombre d’appareils",
+    "installerDeviceCountRemaining": "Il reste {{count}} inscriptions sur cette clé.",
+    "installerDeviceCountRemaining_one": "Il reste {{count}} inscription sur cette clé.",
+    "installerDeviceCountRemaining_other": "Il reste {{count}} inscriptions sur cette clé.",
+    "installerDeviceCountUnlimited": "Cette clé n’a aucune limite d’utilisation.",
+    "installerDeviceCountRange": "Saisissez un nombre entier de 1 à {{max}}.",
     "rotate": "Renouveler",
     "page": "Page {{current}} de {{total}}",
     "previous": "Précédent",

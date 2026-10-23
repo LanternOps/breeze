@@ -88,8 +88,11 @@ func TestSchedulerRunsEventsAtOffsetsAndMarksPhases(t *testing.T) {
 		t.Fatalf("dropped %d, exec calls %v", dropped, ex.calls)
 	}
 	ev := s.Events()
-	if len(ev) != 1 || ev[0].End.Sub(ev[0].Start) < 40*ms { // hold runs from the planned start; Start is the actual one
-		t.Fatalf("event window %+v", ev)
+	// The hold is anchored to the PLANNED start (open+At), not the actual one,
+	// so a late Start under load shortens End-Start (#9816). Assert against the
+	// planned anchors instead of a wall-clock gap between the two.
+	if len(ev) != 1 || ev[0].Start.Before(open.Add(100*ms)) || ev[0].End.Before(open.Add(150*ms)) || ev[0].End.Before(ev[0].Start) {
+		t.Fatalf("event window %+v, open %v", ev, open)
 	}
 	rec.ObserveHTTP(RouteHeartbeat, true, time.Now(), 5*ms, 200, nil) // after recovery: in no phase
 	if n := rec.PhaseLatency("kill", "recovery").Count; n != 0 {

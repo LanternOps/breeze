@@ -2236,6 +2236,11 @@
         "genericEdrProvider": "Provider EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Tecnico",
+          "system": "Sistema"
+        },
         "errors": {
           "notFound": "Incidente non trovato",
           "fetchFailed": "Impossibile recuperare l'incidente"

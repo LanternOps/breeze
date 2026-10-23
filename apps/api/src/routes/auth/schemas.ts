@@ -1,6 +1,6 @@
 import { MIGRATION_WINDOW_MAX_ORGS } from '../../services/migrationWindowLimits';
 import { z } from 'zod';
-import { orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema } from '@breeze/shared';
+import { orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, newPartnerPurchaseSelectionSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -39,6 +39,7 @@ export const registerSchema = z.object({
 
 export const registerPartnerSchema = z.object({
   companyName: z.string().min(2).max(255),
+  purchaseSelection: newPartnerPurchaseSelectionSchema,
   email: z.string().email(),
   password: z.string().min(8),
   name: z.string().min(1).max(255),

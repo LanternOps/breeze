@@ -2236,6 +2236,11 @@
         "genericEdrProvider": "Fournisseur EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Technicien",
+          "system": "Système"
+        },
         "errors": {
           "notFound": "Incident non trouvé",
           "fetchFailed": "Impossible de charger l’incident"

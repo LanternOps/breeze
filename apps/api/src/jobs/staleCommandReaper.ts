@@ -92,10 +92,11 @@ const DEPLOYMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 // Software deployment (`deployment_results`) stale thresholds — §1.5 of the
 // 2026-07-28 software-deployment-visibility plan. Exported for tests.
 //
-// Tier 1 (delivered but silent): 55 min sits above the agent's own hard
-// ceilings (15 min download + 30 min install,
-// agent/internal/remote/tools/software_install.go:22-26), so the server only
-// declares a timeout after the agent's ceilings have provably lapsed.
+// Tier 1 (delivered but silent): 75 min sits above the agent's worst-case
+// budget: download 15 + installer 30 (software_install.go) + two install
+// scripts 2×10 (#6958; agent-side enforcement lands with the agent PR) +
+// detection settle window 1 = 66 min, plus margin. The server only declares a
+// timeout after the agent's ceilings have provably lapsed.
 // Lives in @breeze/shared (#3578) so the web deployment view's "no update from
 // the agent" hint quotes the same number this reaper enforces.
 export const SOFTWARE_INSTALL_TIMEOUT_MS = SOFTWARE_INSTALL_SERVER_TIMEOUT_MS;

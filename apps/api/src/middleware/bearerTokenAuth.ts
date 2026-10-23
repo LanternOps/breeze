@@ -230,7 +230,7 @@ function warnLegacyMcpWriteSeen(clientId: string | undefined): void {
   );
 }
 
-function expandOAuthScopes(oauthScopes: string[], clientId?: string): string[] {
+export function expandOAuthScopes(oauthScopes: string[], clientId?: string): string[] {
   const out = new Set<string>(oauthScopes);
   let sawLegacyMcpWriteOnly = false;
   for (const s of oauthScopes) {
@@ -367,7 +367,7 @@ export async function resolvePartnerAccess(
 // Exported for unit tests that exercise the partner-scope resolution path.
 export const _resolvePartnerAccessibleOrgIdsForTests = resolvePartnerAccessibleOrgIds;
 
-async function filterBlockedOAuthClientOrgIds(orgIds: string[], clientId: string | undefined): Promise<string[]> {
+export async function filterBlockedOAuthClientOrgIds(orgIds: string[], clientId: string | undefined): Promise<string[]> {
   if (!clientId || orgIds.length === 0) return orgIds;
 
   return withSystemDbAccessContext(async () => {
