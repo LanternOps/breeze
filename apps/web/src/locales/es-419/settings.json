@@ -254,41 +254,7 @@
       "twelveHour": "12 horas",
       "twentyFourHour": "24 horas",
       "language": "Idioma",
-      "languageDescription": "Idioma predeterminado para la configuración de socios.",
-      "businessHours": {
-        "title": "Horario comercial",
-        "description": "Establezca su horario de atención estándar para soporte y alertas.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Siempre disponible"
-          },
-          "business": {
-            "label": "Horario comercial",
-            "description": "Lunes a viernes de 9 a. m. a 5 p. m."
-          },
-          "extended": {
-            "label": "Horario extendido",
-            "description": "Lunes a viernes de 7 a. m. a 7 p. m., sábados de 9 a. m. a 1 p. m."
-          },
-          "custom": {
-            "label": "Personalizado",
-            "description": "Establezca su propio horario"
-          }
-        },
-        "customSchedule": "Horario personalizado",
-        "open": "Abierto",
-        "to": "a"
-      },
-      "days": {
-        "mon": "Lunes",
-        "tue": "Martes",
-        "wed": "Miércoles",
-        "thu": "Jueves",
-        "fri": "Viernes",
-        "sat": "Sábado",
-        "sun": "Domingo"
-      }
+      "languageDescription": "Idioma predeterminado para la configuración de socios."
     }
   },
   "partnerAiBudgets": {
@@ -5746,6 +5712,20 @@
       "sourceOrg": "Reemplazo de la organización",
       "sourcePartner": "Predeterminado del socio",
       "sourceDefault": "Predeterminado integrado"
+    },
+    "businessCalendar": {
+      "title": "Horario comercial",
+      "description": "El calendario según el cual corren los relojes de SLA de esta organización. Déjelo en Heredar para seguir el predeterminado del partner.",
+      "label": "Calendario comercial",
+      "inherit": "Heredar",
+      "inheritedDefault": "Heredado: {{name}} (predeterminado del partner)",
+      "inheritedNone": "Heredado: 24×7 (sin predeterminado del partner)",
+      "partnerWideOption": "{{name}} (todas las orgs)",
+      "archivedOverride": "Calendario archivado (ya no se aplica)",
+      "loadFailed": "No se pudo cargar el calendario comercial.",
+      "errors": {
+        "save": "No se pudo guardar el calendario comercial. Reintente."
+      }
     }
   },
   "organizationForm": {
@@ -6923,5 +6903,103 @@
     "enabledToast": "Atajos de una sola tecla activados",
     "disabledToast": "Atajos de una sola tecla desactivados",
     "saveFailed": "No se pudieron guardar los atajos de una sola tecla."
+  },
+  "businessHoursCard": {
+    "title": "Horario comercial",
+    "description": "Calendarios según los cuales corren los relojes de SLA de respuesta y resolución. Un ticket usa el calendario de su organización o su calendario predeterminado; si no hay ninguno, corre las 24 horas.",
+    "newTicketsOnly": "Editar los horarios o la zona horaria se aplica solo a los tickets nuevos. Use \"Aplicar a tickets abiertos\" para actualizar los tickets que ya están abiertos.",
+    "create": "Nuevo calendario",
+    "loading": "Cargando horario comercial…",
+    "loadError": "No se pudo cargar el horario comercial.",
+    "retry": "Reintentar",
+    "empty": "Aún no hay calendarios de horario comercial. Los tickets corren las 24 horas (24×7) hasta que cree uno y lo establezca como predeterminado.",
+    "allOrgs": "Todas las orgs",
+    "default": "Predeterminado",
+    "archived": "Archivado",
+    "edit": "Editar",
+    "setDefault": "Establecer como predeterminado",
+    "clearDefault": "Quitar predeterminado",
+    "applyOpen": "Aplicar a tickets abiertos",
+    "archive": "Archivar",
+    "unarchive": "Restaurar",
+    "delete": "Eliminar",
+    "deleteTitle": "¿Eliminar {{name}}?",
+    "deleteMessage": "Esto elimina de forma permanente el calendario y sus feriados. No se puede eliminar un calendario que aún usan tickets u organizaciones; archívelo en su lugar.",
+    "name": "Nombre",
+    "timezone": "Zona horaria",
+    "appliesTo": "Se aplica a",
+    "ownerPartner": "Todas las organizaciones (a nivel de partner)",
+    "ownerOrg": "Una organización",
+    "organization": "Organización",
+    "chooseOrg": "Elija una organización",
+    "weeklyHours": "Horario semanal",
+    "closed": "Cerrado",
+    "to": "a",
+    "addInterval": "Agregar horario",
+    "intervalStart": "{{day}} abre a las",
+    "intervalEnd": "{{day}} cierra a las",
+    "removeInterval": "Quitar el horario de {{day}}",
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "cancel": "Cancelar",
+    "holidays": "Feriados",
+    "holidayHint": "Los feriados con fecha de hoy o anterior no modifican los tickets abiertos.",
+    "noHolidays": "Sin feriados.",
+    "holidayDate": "Fecha",
+    "holidayName": "Nombre",
+    "holidayAdd": "Agregar feriado",
+    "holidayRemove": "Quitar el feriado {{name}}",
+    "weekdays": {
+      "0": "Domingo",
+      "1": "Lunes",
+      "2": "Martes",
+      "3": "Miércoles",
+      "4": "Jueves",
+      "5": "Viernes",
+      "6": "Sábado"
+    },
+    "errors": {
+      "nameRequired": "Ingrese un nombre.",
+      "orgRequired": "Elija una organización.",
+      "invalidTime": "Ingrese las horas como HH:MM (por ejemplo 09:00); el final puede ser 24:00.",
+      "order": "Cada intervalo debe terminar después de comenzar.",
+      "overlap": "Los intervalos del mismo día no deben superponerse.",
+      "empty": "Agregue al menos un intervalo de apertura.",
+      "timezone": "Elija una zona horaria válida.",
+      "save": "No se pudo guardar el calendario. Reintente.",
+      "holidayInvalid": "Ingrese una fecha válida y un nombre para el feriado.",
+      "holidayAdd": "No se pudo agregar el feriado. Reintente.",
+      "holidayRemove": "No se pudo quitar el feriado. Reintente.",
+      "inUse": "Este calendario lo usan tickets u organizaciones y no se puede eliminar. Archívelo en su lugar.",
+      "isDefault": "Este calendario es el predeterminado. Quite el predeterminado antes de eliminarlo.",
+      "default": "No se pudo cambiar el calendario predeterminado. Reintente.",
+      "archive": "No se pudo cambiar el estado de archivo. Reintente.",
+      "delete": "No se pudo eliminar el calendario. Reintente.",
+      "apply": "No se pudo aplicar el calendario a los tickets abiertos. Reintente."
+    },
+    "toasts": {
+      "created": "Calendario creado",
+      "updated": "Calendario actualizado",
+      "defaultSet": "Calendario predeterminado establecido",
+      "defaultCleared": "Predeterminado quitado; los tickets sin excepción corren 24×7",
+      "archived": "Calendario archivado",
+      "unarchived": "Calendario restaurado",
+      "deleted": "Calendario eliminado",
+      "holidayAdded": "Feriado agregado",
+      "holidayRemoved": "Feriado quitado",
+      "recompute": "Se están actualizando los plazos de los tickets abiertos.",
+      "applied": "Aplicado a tickets abiertos: {{count}} actualizados"
+    },
+    "apply": {
+      "title": "Aplicar {{name}} a tickets abiertos",
+      "explanation": "Los tickets abiertos que nunca se han pausado pasarán al horario actual y se recalcularán sus plazos. Los tickets con historial de pausas no se modifican.",
+      "loading": "Cargando vista previa…",
+      "loadFailed": "No se pudo cargar la vista previa.",
+      "revisionChanged": "El horario cambió desde esta vista previa. Revise los conteos actualizados antes de aplicar.",
+      "eligible": "Tickets que se actualizarán: {{count}}",
+      "breached": "De ellos, vencerían de inmediato: {{count}}",
+      "paused": "Omitidos por haberse pausado: {{count}}",
+      "confirm": "Aplicar a tickets abiertos"
+    }
   }
 }

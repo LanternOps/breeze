@@ -254,41 +254,7 @@
       "twelveHour": "12-hour",
       "twentyFourHour": "24-hour",
       "language": "Language",
-      "languageDescription": "Default language for partner settings.",
-      "businessHours": {
-        "title": "Business Hours",
-        "description": "Set your standard operating hours for support and alerts.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Always available"
-          },
-          "business": {
-            "label": "Business Hours",
-            "description": "Mon-Fri 9am-5pm"
-          },
-          "extended": {
-            "label": "Extended Hours",
-            "description": "Mon-Fri 7am-7pm, Sat 9am-1pm"
-          },
-          "custom": {
-            "label": "Custom",
-            "description": "Set your own schedule"
-          }
-        },
-        "customSchedule": "Custom Schedule",
-        "open": "Open",
-        "to": "to"
-      },
-      "days": {
-        "mon": "Monday",
-        "tue": "Tuesday",
-        "wed": "Wednesday",
-        "thu": "Thursday",
-        "fri": "Friday",
-        "sat": "Saturday",
-        "sun": "Sunday"
-      }
+      "languageDescription": "Default language for partner settings."
     }
   },
   "partnerAiBudgets": {
@@ -5794,6 +5760,20 @@
       "sourceOrg": "Organization override",
       "sourcePartner": "Partner default",
       "sourceDefault": "Built-in default"
+    },
+    "businessCalendar": {
+      "title": "Business hours",
+      "description": "The calendar this organization's SLA clocks are counted on. Leave on Inherit to follow the partner default.",
+      "label": "Business calendar",
+      "inherit": "Inherit",
+      "inheritedDefault": "Inherited: {{name}} (partner default)",
+      "inheritedNone": "Inherited: 24×7 (no partner default)",
+      "partnerWideOption": "{{name}} (all orgs)",
+      "archivedOverride": "Archived calendar (no longer applies)",
+      "loadFailed": "Business calendar failed to load.",
+      "errors": {
+        "save": "Couldn't save the business calendar. Retry."
+      }
     }
   },
   "organizationForm": {
@@ -6923,5 +6903,103 @@
     "enabledToast": "Character-key shortcuts turned on",
     "disabledToast": "Character-key shortcuts turned off",
     "saveFailed": "Could not save character-key shortcuts."
+  },
+  "businessHoursCard": {
+    "title": "Business hours",
+    "description": "Calendars that response and resolution SLA clocks are counted on. A ticket uses its organization's calendar, or your default calendar, or runs around the clock when neither is set.",
+    "newTicketsOnly": "Editing hours or the time zone applies to new tickets only. Use \"Apply to open tickets\" to update tickets that are already open.",
+    "create": "New calendar",
+    "loading": "Loading business hours…",
+    "loadError": "Business hours failed to load.",
+    "retry": "Retry",
+    "empty": "No business-hours calendars yet. Tickets run around the clock (24×7) until you create one and set it as the default.",
+    "allOrgs": "All orgs",
+    "default": "Default",
+    "archived": "Archived",
+    "edit": "Edit",
+    "setDefault": "Set as default",
+    "clearDefault": "Clear default",
+    "applyOpen": "Apply to open tickets",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "delete": "Delete",
+    "deleteTitle": "Delete {{name}}?",
+    "deleteMessage": "This permanently deletes the calendar and its holidays. A calendar that tickets or organizations still use cannot be deleted; archive it instead.",
+    "name": "Name",
+    "timezone": "Time zone",
+    "appliesTo": "Applies to",
+    "ownerPartner": "All organizations (partner-wide)",
+    "ownerOrg": "One organization",
+    "organization": "Organization",
+    "chooseOrg": "Choose an organization",
+    "weeklyHours": "Weekly hours",
+    "closed": "Closed",
+    "to": "to",
+    "addInterval": "Add hours",
+    "intervalStart": "{{day}} opens at",
+    "intervalEnd": "{{day}} closes at",
+    "removeInterval": "Remove {{day}} hours",
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "holidays": "Holidays",
+    "holidayHint": "Holidays dated today or earlier won't change open tickets.",
+    "noHolidays": "No holidays.",
+    "holidayDate": "Date",
+    "holidayName": "Name",
+    "holidayAdd": "Add holiday",
+    "holidayRemove": "Remove holiday {{name}}",
+    "weekdays": {
+      "0": "Sunday",
+      "1": "Monday",
+      "2": "Tuesday",
+      "3": "Wednesday",
+      "4": "Thursday",
+      "5": "Friday",
+      "6": "Saturday"
+    },
+    "errors": {
+      "nameRequired": "Enter a name.",
+      "orgRequired": "Choose an organization.",
+      "invalidTime": "Enter times as HH:MM (for example 09:00); the end can be 24:00.",
+      "order": "Each interval must end after it starts.",
+      "overlap": "Intervals on the same day must not overlap.",
+      "empty": "Add at least one open interval.",
+      "timezone": "Choose a valid time zone.",
+      "save": "Couldn't save the calendar. Retry.",
+      "holidayInvalid": "Enter a valid date and a name for the holiday.",
+      "holidayAdd": "Couldn't add the holiday. Retry.",
+      "holidayRemove": "Couldn't remove the holiday. Retry.",
+      "inUse": "This calendar is in use by tickets or organizations and can't be deleted. Archive it instead.",
+      "isDefault": "This calendar is the default. Clear the default before deleting it.",
+      "default": "Couldn't change the default calendar. Retry.",
+      "archive": "Couldn't change the archive state. Retry.",
+      "delete": "Couldn't delete the calendar. Retry.",
+      "apply": "Couldn't apply the calendar to open tickets. Retry."
+    },
+    "toasts": {
+      "created": "Calendar created",
+      "updated": "Calendar updated",
+      "defaultSet": "Default calendar set",
+      "defaultCleared": "Default cleared; tickets without an override run 24×7",
+      "archived": "Calendar archived",
+      "unarchived": "Calendar restored",
+      "deleted": "Calendar deleted",
+      "holidayAdded": "Holiday added",
+      "holidayRemoved": "Holiday removed",
+      "recompute": "Open tickets' deadlines are being updated.",
+      "applied": "Applied to open tickets: {{count}} updated"
+    },
+    "apply": {
+      "title": "Apply {{name}} to open tickets",
+      "explanation": "Tickets that are open and have never been paused will switch to the current hours and have their deadlines recalculated. Tickets with a pause history are left alone.",
+      "loading": "Loading preview…",
+      "loadFailed": "The preview failed to load.",
+      "revisionChanged": "The hours changed since this preview. Review the updated counts before applying.",
+      "eligible": "Tickets that will be updated: {{count}}",
+      "breached": "Of those, would become breached immediately: {{count}}",
+      "paused": "Skipped because they have paused: {{count}}",
+      "confirm": "Apply to open tickets"
+    }
   }
 }
