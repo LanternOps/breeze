@@ -3703,7 +3703,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                   // this write must not resurrect a decommissioned/quarantined
                   // row to 'updating'. #8318 §6.4: bound to the socket's
                   // authenticated id + agent_id through updateOwnDeviceRow.
-                  await updateOwnDeviceRow(
+                  const flipped = await updateOwnDeviceRow(
                     db,
                     agentDb,
                     {
@@ -3721,8 +3721,16 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     },
                     { where: notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES]) },
                   );
-                  written = true;
-                  console.log(`[AgentWs] Agent ${agentId} entering update to ${targetVersion}`);
+                  // Only a write that matched the row counts: a terminal-status
+                  // row, or one a reattach / re-enroll handed to another
+                  // install after this socket authenticated, recorded nothing,
+                  // so the coalescer must not absorb the next frame as if it had.
+                  written = flipped.length > 0;
+                  if (written) {
+                    console.log(`[AgentWs] Agent ${agentId} entering update to ${targetVersion}`);
+                  } else {
+                    console.warn(`[AgentWs] update_status from ${agentId} matched no device row (terminal status or the row changed hands); nothing recorded`);
+                  }
                 } catch (error) {
                   console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
                 }
