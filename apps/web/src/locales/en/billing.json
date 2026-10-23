@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Who agreed",
         "signerEmailLabel": "Their email (optional)",
         "consequenceInvoice": "An invoice for {{amount}} will be issued and numbered now.",
+        "consequenceInvoiceDraft": "A draft invoice will be created. It is not issued or numbered yet.",
         "consequenceContracts": "Recurring lines become draft contracts you activate later.",
         "consequenceEmail": "The invoice will be emailed to {{recipients}}.",
         "consequenceEmailNotConfigured": "No email service is configured; the invoice will not be emailed. Share it from the invoice page.",

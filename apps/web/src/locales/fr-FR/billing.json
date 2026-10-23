@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Qui a donné son accord",
         "signerEmailLabel": "Son e-mail (facultatif)",
         "consequenceInvoice": "Une facture de {{amount}} sera émise et numérotée maintenant.",
+        "consequenceInvoiceDraft": "Une facture brouillon sera créée. Elle n’est pas encore émise ni numérotée.",
         "consequenceContracts": "Les lignes récurrentes deviennent des contrats en brouillon que vous activez plus tard.",
         "consequenceEmail": "La facture sera envoyée par e-mail à {{recipients}}.",
         "consequenceEmailNotConfigured": "Aucun service e-mail n'est configuré ; la facture ne sera pas envoyée par e-mail. Partagez-la depuis la page de la facture.",
