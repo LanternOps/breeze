@@ -130,6 +130,10 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // resolver can read a partner-wide default through the SELECT-only branch.
   // Every other portal ticket route keeps the generic request transaction.
   { method: 'POST', pattern: /^\/api\/v1\/portal\/tickets\/?$/ },
+  // #8973 W4 D12 apply-revision: walks open tickets in 500-row chunks, each
+  // in its own short caller-scoped transaction (FOR UPDATE SKIP LOCKED), so
+  // no request transaction holds every touched ticket's row lock to the end.
+  { method: 'POST', pattern: /^\/api\/v1\/business-calendars\/[0-9a-f-]{36}\/apply-revision\/?$/i },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
   // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.

@@ -19,13 +19,14 @@
  * holiday edit (date > today in the calendar's time zone) queues the
  * business-calendar-recompute job after commit.
  */
-import { validateRevision, type CalendarInterval, type BusinessCalendarDto, type CreateBusinessCalendarInput, type UpdateBusinessCalendarInput } from '@breeze/shared';
-import { runAfterDbContextCommit } from '../../db';
+import { validateRevision, type CalendarInterval, type BusinessCalendarDto, type ResolvedBusinessCalendarDto, type CreateBusinessCalendarInput, type UpdateBusinessCalendarInput } from '@breeze/shared';
+import { db, runAfterDbContextCommit } from '../../db';
 import type { AuthContext } from '../../middleware/auth';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from '../partnerWideAccess';
 import { enqueueBusinessCalendarRecompute } from '../../jobs/businessCalendarRecomputeWorker';
 import * as repo from './repository';
+import { resolveBusinessCalendar } from './resolve';
 import type { CalendarRow, Owner } from './repository';
 
 export class BusinessCalendarError extends Error {
@@ -200,6 +201,24 @@ export async function getCalendar(auth: CalendarAuth, calendarId: string): Promi
     if (row.partnerId !== ownerPartnerId) throw notFound();
   }
   return toDto(row);
+}
+
+/**
+ * What a ticket created in `orgId` right now would snapshot, plus the stored
+ * override (spec §4.2 rule 4: blank = inherit, and the field shows the
+ * inherited value and its source).
+ */
+export async function getResolvedCalendarForOrg(auth: CalendarAuth, orgId: string): Promise<ResolvedBusinessCalendarDto> {
+  if (auth.scope === 'organization' && auth.orgId !== orgId) throw new BusinessCalendarError('Organization not found', 404, 'NOT_FOUND');
+  if (auth.scope === 'partner' && !auth.canAccessOrg(orgId)) throw new BusinessCalendarError('Organization not found', 404, 'NOT_FOUND');
+  const org = await repo.findOrg(orgId);
+  if (!org) throw new BusinessCalendarError('Organization not found', 404, 'NOT_FOUND');
+  const [resolved, overrideCalendarId] = await Promise.all([
+    resolveBusinessCalendar(db, { partnerId: org.partnerId, orgId: org.id }),
+    repo.readOrgOverride(org.id),
+  ]);
+  const calendarName = resolved.calendarId ? (await repo.findCalendar(resolved.calendarId))?.name ?? null : null;
+  return { ...resolved, calendarName, overrideCalendarId };
 }
 
 // ---------------------------------------------------------------------------

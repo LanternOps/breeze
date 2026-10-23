@@ -737,3 +737,12 @@ it('#8973 W4 self-manages only the portal ticket create (Gate B1), not the ticke
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/portal/tickets/forms')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/tickets')).toBe(false);
 });
+
+it('#8973 W4 self-manages only the D12 apply-revision POST of the business-calendar routes', () => {
+  const C = '55555555-5555-4555-8555-555555555555';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/business-calendars/${C}/apply-revision`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/business-calendars/${C}/apply-revision/preview`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/business-calendars/${C}/holidays`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/business-calendars')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/business-calendars/not-a-uuid/apply-revision')).toBe(false);
+});
