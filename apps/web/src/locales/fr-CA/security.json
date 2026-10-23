@@ -738,7 +738,23 @@
     "actionFailed": "Échec de l'action",
     "quarantineSucceeded": "Menace mise en quarantaine",
     "restoreSucceeded": "Menace restaurée",
-    "removeSucceeded": "Menace supprimée"
+    "removeSucceeded": "Menace supprimée",
+    "notFound": "Cette menace est introuvable. Elle a peut-être été supprimée, ou vous n’avez pas accès à son appareil.",
+    "relatedLoadFailed": "Impossible de charger les menaces associées.",
+    "rule": {
+      "title": "Règle de détection",
+      "legacy": "Signature intégrée (ancien balayage)",
+      "ruleName": "Règle",
+      "ruleSet": "Ensemble de règles",
+      "ruleSetMissing": "Ensemble de règles qui n’est plus disponible",
+      "tags": "Étiquettes",
+      "matchedStrings": "Chaînes correspondantes",
+      "noMatchedStrings": "Aucune chaîne correspondante n’a été signalée.",
+      "sha256": "SHA-256 du fichier",
+      "copy": "Copier le SHA-256",
+      "quarantinedTo": "Mis en quarantaine dans (au moment du balayage)",
+      "quarantineFailed": "Échec de la quarantaine automatique"
+    }
   },
   "securityThreatList": {
     "active": "Actives",

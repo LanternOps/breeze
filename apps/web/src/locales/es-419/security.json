@@ -738,7 +738,23 @@
     "actionFailed": "La acción falló",
     "quarantineSucceeded": "Amenaza puesta en cuarentena",
     "restoreSucceeded": "Amenaza restaurada",
-    "removeSucceeded": "Amenaza eliminada"
+    "removeSucceeded": "Amenaza eliminada",
+    "notFound": "No se encontró esta amenaza. Es posible que se haya eliminado o que usted no tenga acceso a su dispositivo.",
+    "relatedLoadFailed": "No se pudieron cargar las amenazas relacionadas.",
+    "rule": {
+      "title": "Regla de detección",
+      "legacy": "Firma integrada (escaneo heredado)",
+      "ruleName": "Regla",
+      "ruleSet": "Conjunto de reglas",
+      "ruleSetMissing": "El conjunto de reglas ya no está disponible",
+      "tags": "Etiquetas",
+      "matchedStrings": "Cadenas coincidentes",
+      "noMatchedStrings": "No se informaron cadenas coincidentes.",
+      "sha256": "SHA-256 del archivo",
+      "copy": "Copiar SHA-256",
+      "quarantinedTo": "En cuarentena en (al momento del escaneo)",
+      "quarantineFailed": "Falló la cuarentena automática"
+    }
   },
   "securityThreatList": {
     "active": "Activo",

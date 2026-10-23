@@ -738,7 +738,23 @@
     "actionFailed": "Action failed",
     "quarantineSucceeded": "Threat quarantined",
     "restoreSucceeded": "Threat restored",
-    "removeSucceeded": "Threat removed"
+    "removeSucceeded": "Threat removed",
+    "notFound": "This threat was not found. It may have been deleted, or you may not have access to its device.",
+    "relatedLoadFailed": "Related threats could not be loaded.",
+    "rule": {
+      "title": "Detection rule",
+      "legacy": "Built-in signature (legacy scan)",
+      "ruleName": "Rule",
+      "ruleSet": "Rule set",
+      "ruleSetMissing": "Rule set no longer available",
+      "tags": "Tags",
+      "matchedStrings": "Matched strings",
+      "noMatchedStrings": "No matched strings were reported.",
+      "sha256": "File SHA-256",
+      "copy": "Copy SHA-256",
+      "quarantinedTo": "Quarantined to (at scan time)",
+      "quarantineFailed": "Auto-quarantine failed"
+    }
   },
   "securityThreatList": {
     "active": "Active",

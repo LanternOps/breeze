@@ -738,7 +738,23 @@
     "actionFailed": "Azione non riuscita",
     "quarantineSucceeded": "Minaccia messa in quarantena",
     "restoreSucceeded": "Minaccia ripristinata",
-    "removeSucceeded": "Minaccia rimossa"
+    "removeSucceeded": "Minaccia rimossa",
+    "notFound": "Minaccia non trovata. Potrebbe essere stata eliminata, oppure non hai accesso al suo dispositivo.",
+    "relatedLoadFailed": "Impossibile caricare le minacce correlate.",
+    "rule": {
+      "title": "Regola di rilevamento",
+      "legacy": "Firma integrata (scansione legacy)",
+      "ruleName": "Regola",
+      "ruleSet": "Set di regole",
+      "ruleSetMissing": "Set di regole non più disponibile",
+      "tags": "Etichette",
+      "matchedStrings": "Stringhe corrispondenti",
+      "noMatchedStrings": "Non è stata segnalata alcuna stringa corrispondente.",
+      "sha256": "SHA-256 del file",
+      "copy": "Copia SHA-256",
+      "quarantinedTo": "Messo in quarantena in (al momento della scansione)",
+      "quarantineFailed": "Quarantena automatica non riuscita"
+    }
   },
   "securityThreatList": {
     "active": "Attiva",

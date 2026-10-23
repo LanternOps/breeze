@@ -738,7 +738,23 @@
     "actionFailed": "İşlem başarısız oldu",
     "quarantineSucceeded": "Tehdit karantinaya alındı",
     "restoreSucceeded": "Tehdit geri yüklendi",
-    "removeSucceeded": "Tehdit kaldırıldı"
+    "removeSucceeded": "Tehdit kaldırıldı",
+    "notFound": "Bu tehdit bulunamadı. Silinmiş olabilir veya cihazına erişiminiz olmayabilir.",
+    "relatedLoadFailed": "İlgili tehditler yüklenemedi.",
+    "rule": {
+      "title": "Tespit kuralı",
+      "legacy": "Yerleşik imza (eski tarama)",
+      "ruleName": "Kural",
+      "ruleSet": "Kural kümesi",
+      "ruleSetMissing": "Kural kümesi artık kullanılamıyor",
+      "tags": "Etiketler",
+      "matchedStrings": "Eşleşen dizeler",
+      "noMatchedStrings": "Eşleşen dize bildirilmedi.",
+      "sha256": "Dosya SHA-256 değeri",
+      "copy": "SHA-256 değerini kopyala",
+      "quarantinedTo": "Karantinaya alındığı yer (tarama anında)",
+      "quarantineFailed": "Otomatik karantina başarısız oldu"
+    }
   },
   "securityThreatList": {
     "active": "Aktif",

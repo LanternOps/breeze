@@ -72,8 +72,8 @@ describe('YARA UI copy rule (spec §11)', () => {
 
   it('every scoped key prefix that has shipped carries copy in en', () => {
     const present = SCOPES.filter(({ ns, prefix }) => leavesUnder(load('en', ns), prefix).length > 0);
-    // The Detection rules page, its nav entry and title are the floor; the
-    // picker and threat panel prefixes join as their tasks land.
+    // Every scope must carry copy, so a renamed prefix cannot silently drop
+    // out of the check.
     expect(present.map((s) => `${s.ns}:${s.prefix}`)).toEqual(
       expect.arrayContaining([
         'security:detectionRules',
@@ -81,6 +81,7 @@ describe('YARA UI copy rule (spec §11)', () => {
         'pages:titles.securityDetectionRules',
         'common:nav.securityDetectionRules',
         'policies:configurationPolicies.featureTabs.securityTab.ruleSets',
+        'security:securityThreatDetail.rule',
       ]),
     );
   });

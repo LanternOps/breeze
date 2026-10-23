@@ -738,7 +738,23 @@
     "actionFailed": "Falha na ação",
     "quarantineSucceeded": "Ameaça colocada em quarentena",
     "restoreSucceeded": "Ameaça restaurada",
-    "removeSucceeded": "Ameaça removida"
+    "removeSucceeded": "Ameaça removida",
+    "notFound": "Esta ameaça não foi encontrada. Ela pode ter sido excluída ou você pode não ter acesso ao dispositivo dela.",
+    "relatedLoadFailed": "Não foi possível carregar as ameaças relacionadas.",
+    "rule": {
+      "title": "Regra de detecção",
+      "legacy": "Assinatura integrada (varredura legada)",
+      "ruleName": "Regra",
+      "ruleSet": "Conjunto de regras",
+      "ruleSetMissing": "Conjunto de regras não está mais disponível",
+      "tags": "Marcadores",
+      "matchedStrings": "Cadeias correspondentes",
+      "noMatchedStrings": "Nenhuma cadeia correspondente foi informada.",
+      "sha256": "SHA-256 do arquivo",
+      "copy": "Copiar SHA-256",
+      "quarantinedTo": "Em quarentena em (no momento da varredura)",
+      "quarantineFailed": "A quarentena automática falhou"
+    }
   },
   "securityThreatList": {
     "active": "Ativo",

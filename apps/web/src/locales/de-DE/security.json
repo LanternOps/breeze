@@ -738,7 +738,23 @@
     "actionFailed": "Aktion fehlgeschlagen",
     "quarantineSucceeded": "Bedrohung unter Quarantäne gestellt",
     "restoreSucceeded": "Bedrohung wiederhergestellt",
-    "removeSucceeded": "Bedrohung entfernt"
+    "removeSucceeded": "Bedrohung entfernt",
+    "notFound": "Diese Bedrohung wurde nicht gefunden. Sie wurde möglicherweise gelöscht, oder Sie haben keinen Zugriff auf ihr Gerät.",
+    "relatedLoadFailed": "Verwandte Bedrohungen konnten nicht geladen werden.",
+    "rule": {
+      "title": "Erkennungsregel",
+      "legacy": "Integrierte Signatur (älterer Scan)",
+      "ruleName": "Regel",
+      "ruleSet": "Regelsatz",
+      "ruleSetMissing": "Regelsatz nicht mehr verfügbar",
+      "tags": "Schlagwörter",
+      "matchedStrings": "Gefundene Zeichenfolgen",
+      "noMatchedStrings": "Es wurden keine gefundenen Zeichenfolgen gemeldet.",
+      "sha256": "SHA-256 der Datei",
+      "copy": "SHA-256 kopieren",
+      "quarantinedTo": "In Quarantäne verschoben nach (zum Scanzeitpunkt)",
+      "quarantineFailed": "Automatische Quarantäne fehlgeschlagen"
+    }
   },
   "securityThreatList": {
     "active": "Aktiv",
