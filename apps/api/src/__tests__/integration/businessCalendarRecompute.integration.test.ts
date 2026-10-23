@@ -25,6 +25,7 @@ import {
 } from '../../db/schema';
 import { buildDbAccessContext } from '../../middleware/auth';
 import { addHoliday, type CalendarAuth } from '../../services/businessCalendars/service';
+import { applyRevision, previewApplyRevision } from '../../services/businessCalendars/applyRevision';
 import { runBusinessCalendarRecompute } from '../../jobs/businessCalendarRecomputeWorker';
 import { sweepTicketSlaBreaches } from '../../jobs/ticketSlaWorker';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -170,5 +171,38 @@ describe('business calendar holiday recompute (#8973 W4, spec §4.5)', () => {
 
     const [after] = await getTestDb().select().from(tickets).where(eq(tickets.id, t.id));
     expect(after?.slaBreachedAt).toBeNull();
+  });
+
+  // D12 against real Postgres: preview counts, the stale-revision refusal,
+  // and the chunked apply through its own caller-scoped transactions.
+  runDb('D12 apply-revision moves never-paused open tickets to the current revision', async () => {
+    const f = await fixture();
+    const fresh = await seedTicket(f, f.orgA.id);
+    const pausedHistory = await seedTicket(f, f.orgB.id, { slaPausedBusinessMinutes: 15, slaPausedMinutes: 15 });
+    const resolved = await seedTicket(f, f.orgA.id, { status: 'resolved', resolvedAt: new Date() });
+    // Revision 2: weekdays only (Mon–Fri all day), so deadlines move later.
+    const rev2 = await withSystemDbAccessContext(async () => {
+      const [r] = await db.insert(businessCalendarRevisions).values({
+        calendarId: f.calendarId, partnerId: f.partner.id, orgId: null, revision: 2, timezone: 'UTC',
+      }).returning();
+      await db.insert(businessCalendarIntervals).values([1, 2, 3, 4, 5].map((weekday) => ({
+        revisionId: r!.id, partnerId: f.partner.id, orgId: null, weekday, startMinute: 0, endMinute: 1440,
+      })));
+      return r!;
+    });
+    const auth = { ...f.auth, orgId: null, accessibleOrgIds: [f.orgA.id, f.orgB.id], principal: { kind: 'user' } } as never;
+
+    const preview = await withDbAccessContext(f.ctx, () => previewApplyRevision(auth, f.calendarId));
+    expect(preview).toEqual({ revisionId: rev2.id, eligibleCount: 1, immediatelyBreachedCount: 0, skippedPausedCount: 1 });
+
+    const stale = await applyRevision(auth, f.calendarId, { expectedRevisionId: f.revisionId }).catch((e) => e);
+    expect(stale).toMatchObject({ status: 409, code: 'REVISION_CHANGED' });
+
+    expect(await applyRevision(auth, f.calendarId, { expectedRevisionId: rev2.id })).toEqual({ updated: 1, skippedLocked: 0 });
+    const rows = new Map((await getTestDb().select().from(tickets).where(inArray(tickets.id, [fresh.id, pausedHistory.id, resolved.id]))).map((r) => [r.id, r]));
+    expect(rows.get(fresh.id)?.slaCalendarRevisionId).toBe(rev2.id);
+    expect(rows.get(fresh.id)!.resolutionDueAt!.getTime()).toBeGreaterThanOrEqual(fresh.resolutionDueAt!.getTime());
+    expect(rows.get(pausedHistory.id)?.slaCalendarRevisionId).toBe(f.revisionId);
+    expect(rows.get(resolved.id)?.slaCalendarRevisionId).toBe(f.revisionId);
   });
 });

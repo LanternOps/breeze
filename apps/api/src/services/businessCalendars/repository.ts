@@ -12,6 +12,7 @@ import {
   businessCalendars,
   orgTicketSettings,
   organizations,
+  tickets,
 } from '../../db/schema';
 
 export type CalendarRow = typeof businessCalendars.$inferSelect;
@@ -156,4 +157,69 @@ export async function writeOrgOverride(orgId: string, calendarId: string | null)
   await db.insert(orgTicketSettings)
     .values({ orgId, businessCalendarId: calendarId })
     .onConflictDoUpdate({ target: orgTicketSettings.orgId, set: { businessCalendarId: calendarId, updatedAt: new Date() } });
+}
+
+// ---- D12 apply-revision (applyRevision.ts) ---------------------------------
+
+const OPEN_TICKET_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
+
+/** The clock + deadline columns apply-revision reads, via the typed builder (UTC-safe). */
+const applySelection = {
+  id: tickets.id,
+  status: tickets.status,
+  deletedAt: tickets.deletedAt,
+  slaCalendarRevisionId: tickets.slaCalendarRevisionId,
+  createdAt: tickets.createdAt,
+  responseSlaMinutes: tickets.responseSlaMinutes,
+  resolutionSlaMinutes: tickets.resolutionSlaMinutes,
+  slaPausedAt: tickets.slaPausedAt,
+  slaPausedBusinessMinutes: tickets.slaPausedBusinessMinutes,
+  firstResponseAt: tickets.firstResponseAt,
+  resolvedAt: tickets.resolvedAt,
+  slaBreachReason: tickets.slaBreachReason,
+};
+export type ApplyCandidateRow = {
+  id: string;
+  status: string;
+  deletedAt: Date | null;
+  slaCalendarRevisionId: string | null;
+  createdAt: Date;
+  responseSlaMinutes: number | null;
+  resolutionSlaMinutes: number | null;
+  slaPausedAt: Date | null;
+  slaPausedBusinessMinutes: number;
+  firstResponseAt: Date | null;
+  resolvedAt: Date | null;
+  slaBreachReason: string | null;
+};
+
+const olderRevisionOf = (calendarId: string, target: { revision: number }) => sql`${tickets.slaCalendarRevisionId} IN (
+  SELECT r.id FROM business_calendar_revisions r WHERE r.calendar_id = ${calendarId} AND r.revision < ${target.revision})`;
+
+/** Open, live tickets on an OLDER revision of the calendar, id order (tickets_sla_calendar_revision_idx). */
+export async function listApplyCandidates(
+  calendarId: string,
+  target: { id: string; revision: number },
+  afterId: string | null,
+  limit: number,
+): Promise<ApplyCandidateRow[]> {
+  return db.select(applySelection).from(tickets)
+    .where(and(
+      olderRevisionOf(calendarId, target),
+      inArray(tickets.status, [...OPEN_TICKET_STATUSES]),
+      isNull(tickets.deletedAt),
+      afterId ? sql`${tickets.id} > ${afterId}::uuid` : undefined,
+    ))
+    .orderBy(asc(tickets.id))
+    .limit(limit);
+}
+
+/** Locks what it can of `ids` (FOR UPDATE SKIP LOCKED); the caller re-checks eligibility on the locked rows. */
+export async function lockApplyBatch(_calendarId: string, _target: { id: string; revision: number }, ids: string[]): Promise<ApplyCandidateRow[]> {
+  if (ids.length === 0) return [];
+  return db.select(applySelection).from(tickets).where(inArray(tickets.id, ids)).for('update', { skipLocked: true });
+}
+
+export async function applyTicketRevision(ticketId: string, patch: Partial<typeof tickets.$inferInsert>): Promise<void> {
+  await db.update(tickets).set(patch).where(eq(tickets.id, ticketId));
 }

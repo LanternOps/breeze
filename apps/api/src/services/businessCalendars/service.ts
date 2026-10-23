@@ -36,7 +36,7 @@ export class BusinessCalendarError extends Error {
 }
 
 export type CalendarAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'partnerOrgAccess' | 'accessibleOrgIds' | 'canAccessOrg'> & {
-  user: { id: string };
+  user: { id: string; email?: string };
 };
 
 const notFound = () => new BusinessCalendarError('Business calendar not found', 404, 'NOT_FOUND');
@@ -60,6 +60,11 @@ function assertCanWriteRow(auth: CalendarAuth, row: CalendarRow): void {
     return;
   }
   if (auth.scope === 'partner' && !auth.canAccessOrg(row.orgId)) throw notFound();
+}
+
+/** The calendar row under the caller's write gate (row-locked); exported for applyRevision.ts. */
+export async function loadCalendarForWrite(auth: CalendarAuth, calendarId: string): Promise<CalendarRow> {
+  return loadForWrite(auth, calendarId);
 }
 
 async function loadForWrite(auth: CalendarAuth, calendarId: string): Promise<CalendarRow> {
