@@ -1404,7 +1404,7 @@
           "name": "Webhook de produção",
           "signingSecret": "Informe um segredo de assinatura"
         },
-        "subtitle": "Defina entrega, autenticação e comportamento do payload.",
+        "subtitle": "Defina o destino, os eventos, a autenticação e os cabeçalhos.",
         "title": "Configuração do webhook",
         "validation": {
           "eventRequired": "Selecione pelo menos um evento",
@@ -1466,7 +1466,7 @@
           "noPayloadTemplate": "Ainda não há modelo de payload salvo.",
           "payloadPreview": "Prévia do modelo de payload",
           "testEvent": "Evento de teste",
-          "testEventHelp": "Os testes usam o evento selecionado e seu modelo de payload.",
+          "testEventHelp": "Envia um payload de exemplo do evento selecionado para este endpoint.",
           "title": "Detalhes do webhook"
         },
         "emptySelection": "Selecione um webhook para ver histórico de entrega e ferramentas de teste.",

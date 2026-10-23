@@ -1404,7 +1404,7 @@
           "name": "Produktions-Webhook",
           "signingSecret": "Signaturgeheimnis eingeben"
         },
-        "subtitle": "Konfigurieren Sie Zustellung, Authentifizierung und Nutzdatenverhalten.",
+        "subtitle": "Legen Sie Ziel, Ereignisse, Authentifizierung und Header fest.",
         "title": "Webhook-Konfiguration",
         "validation": {
           "eventRequired": "Wählen Sie mindestens ein Ereignis aus",
@@ -1466,7 +1466,7 @@
           "noPayloadTemplate": "Noch keine Payload-Vorlage gespeichert.",
           "payloadPreview": "Vorschau der Nutzlastvorlage",
           "testEvent": "Testereignis",
-          "testEventHelp": "Tests verwenden das ausgewählte Ereignis und Ihre Nutzlastvorlage.",
+          "testEventHelp": "Sendet eine Beispiel-Nutzlast für das ausgewählte Ereignis an diesen Endpunkt.",
           "title": "Webhook-Details"
         },
         "emptySelection": "Wählen Sie einen Webhook aus, um den Übermittlungsverlauf und die Testtools anzuzeigen.",

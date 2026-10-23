@@ -1,7 +1,9 @@
-import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, cleanup, act } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CatalogItemsTab from './CatalogItemsTab';
+import { i18n } from '@/lib/i18n';
+import { showToast } from '../shared/Toast';
 import { fetchWithAuth } from '../../stores/auth';
 import { resetPartnerCurrencyCache } from '../../lib/usePartnerCurrency';
 import type { CatalogItem } from '../../lib/api/catalog';
@@ -230,6 +232,33 @@ describe('CatalogItemsTab', () => {
       );
       expect(call).toBeTruthy();
     });
+  });
+
+  it('toasts archive failures in the CURRENT language after a locale switch (stale t / hard-coded copy)', async () => {
+    i18n.addResourceBundle('xx', 'settings', {
+      catalogItemsTab: { archiveFailedRetry: 'XX archive failed', itemArchived: 'XX archived' },
+    }, true, true);
+    try {
+      render(<CatalogItemsTab />);
+      await screen.findByText('Laptop');
+      await act(async () => { await i18n.changeLanguage('xx'); });
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (url, opts) => {
+        if (String(url) === '/catalog/l1/archive') return jsonResponse({}, 500);
+        return base(url, opts);
+      });
+      fireEvent.click(screen.getByTestId('catalog-actions-l1'));
+      fireEvent.click(await screen.findByTestId('catalog-archive-l1'));
+      fireEvent.click(await screen.findByTestId('catalog-archive-confirm'));
+      await waitFor(() =>
+        expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+          expect.objectContaining({ message: 'XX archive failed', type: 'error' }),
+        ),
+      );
+    } finally {
+      await act(async () => { await i18n.changeLanguage('en'); });
+      i18n.removeResourceBundle('xx', 'settings');
+    }
   });
 
   it('creates a bundle and PUTs components including showOnInvoice', async () => {

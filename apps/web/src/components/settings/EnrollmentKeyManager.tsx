@@ -112,7 +112,15 @@ function formatDefaultDuration(minutes: number, locale: string): string {
 export default function EnrollmentKeyManager() {
   const { t, i18n } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  const { currentOrgId, organizations, enrollmentDefaults } = useOrgStore();
+  const { currentOrgId, organizations, enrollmentDefaults: storeDefaults } = useOrgStore();
+  // #9876: the store only fills `enrollmentDefaults` on an org-switcher
+  // fetchSites, so a direct page load sees null. Fetch them here in that case.
+  const [fetchedDefaults, setFetchedDefaults] = useState<{
+    orgId: string;
+    defaults: NonNullable<typeof storeDefaults>;
+  } | null>(null);
+  const enrollmentDefaults =
+    storeDefaults ?? (fetchedDefaults?.orgId === currentOrgId ? fetchedDefaults.defaults : null);
   // #9616: the partner->org resolved enrollment defaults ride on the sites
   // response (same source as Add Device). Until they load, or if the API
   // soft-failed the read, fall back to the product defaults.
@@ -198,6 +206,29 @@ export default function EnrollmentKeyManager() {
   useEffect(() => {
     fetchKeys();
   }, [fetchKeys]);
+
+  useEffect(() => {
+    if (storeDefaults || !currentOrgId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth(
+          `/orgs/sites?organizationId=${currentOrgId}&includeEnrollmentDefaults=1&page=1&limit=1`,
+        );
+        if (!res.ok) return;
+        const body = await res.json();
+        if (!cancelled && body?.enrollmentDefaults) {
+          setFetchedDefaults({ orgId: currentOrgId, defaults: body.enrollmentDefaults });
+        }
+      } catch {
+        // Soft-fail: the form falls back to product defaults and omits the
+        // fields so the server resolves them.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeDefaults, currentOrgId]);
 
   useEffect(() => {
     if (!downloadDropdownId) return;

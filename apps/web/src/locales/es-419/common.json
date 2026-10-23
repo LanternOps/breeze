@@ -1404,7 +1404,7 @@
           "name": "Webhook de producción",
           "signingSecret": "Introduzca un secreto de firma"
         },
-        "subtitle": "Establezca el comportamiento de entrega, autenticación y carga útil.",
+        "subtitle": "Establezca el destino, los eventos, la autenticación y los encabezados.",
         "title": "Configuración de webhook",
         "validation": {
           "eventRequired": "Seleccione al menos un evento",
@@ -1466,7 +1466,7 @@
           "noPayloadTemplate": "Aún no se ha guardado ninguna plantilla de carga útil.",
           "payloadPreview": "Vista previa de la plantilla de carga útil",
           "testEvent": "Evento de prueba",
-          "testEventHelp": "Las pruebas utilizan el evento seleccionado y su plantilla de carga útil.",
+          "testEventHelp": "Envía una carga útil de ejemplo del evento seleccionado a este endpoint.",
           "title": "Detalles del webhook"
         },
         "emptySelection": "Seleccione un webhook para ver el historial de entrega y las herramientas de prueba.",

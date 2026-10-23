@@ -424,6 +424,34 @@ describe('EnrollmentKeyManager — create form site selector', () => {
       expect(screen.getByText('Leave blank for 7 days (org default).')).toBeInTheDocument();
     });
 
+    // #9876: direct load of /settings/enrollment-keys never runs the org
+    // switcher's fetchSites, so the store's defaults are null.
+    it('fetches the resolved defaults on mount when the store has none', async () => {
+      seedOrgState({
+        currentOrgId: 'org-1',
+        organizations: [makeOrg('org-1', 'Org One')],
+        enrollmentDefaults: null,
+      });
+      routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      const base = fetchWithAuth.getMockImplementation()!;
+      fetchWithAuth.mockImplementation((url: string, opts?: RequestInit) => {
+        if (url.startsWith('/orgs/sites?') && url.includes('includeEnrollmentDefaults=1')) {
+          return Promise.resolve(
+            jsonRes({
+              data: [],
+              enrollmentDefaults: { ttlMinutes: 1440, deviceCount: 7, maxTtlMinutes: 525600 },
+            }),
+          );
+        }
+        return base(url, opts);
+      });
+      render(<EnrollmentKeyManager />);
+      await screen.findByText(EMPTY);
+      fireEvent.click(screen.getByText('Create Key'));
+      expect(await screen.findByPlaceholderText('7 (org default)')).toBeInTheDocument();
+      expect(screen.getByText('Leave blank for 1 day (org default).')).toBeInTheDocument();
+    });
+
     it('sends the resolved device count and ttlMinutes (not expiresAt) when both are blank', async () => {
       seedDefaults();
       const calls = routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);

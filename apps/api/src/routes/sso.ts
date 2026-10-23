@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { eq, and, gt, ne, isNull, inArray, exists, notExists, sql } from 'drizzle-orm';
@@ -840,6 +840,23 @@ const PROVIDER_CREATE_ORG_REQUIRED: Omit<OrgResolutionError, 'status'> = {
   code: 'sso_provider_org_required',
 };
 
+/**
+ * The web client never sends a body orgId; fetchWithAuth appends the header
+ * switcher's `?orgId=`. A body orgId wins; otherwise fall back to a
+ * guid-valid query orgId, which the caller must be able to reach.
+ */
+function bodyOrSelectedQueryOrgId(
+  c: Context,
+  auth: Pick<AuthContext, 'canAccessOrg'>,
+  bodyOrgId?: string
+): { orgId: string | undefined } | { denied: true } {
+  if (bodyOrgId) return { orgId: bodyOrgId };
+  const query = z.string().guid().safeParse(c.req.query('orgId'));
+  if (!query.success) return { orgId: undefined };
+  if (!auth.canAccessOrg(query.data)) return { denied: true };
+  return { orgId: query.data };
+}
+
 function resolveOrgIdForProviderRoute(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
   requestedOrgId?: string,
@@ -1033,7 +1050,9 @@ ssoRoutes.post(
     }
     ownerColumns = { orgId: null, partnerId: auth.partnerId };
   } else {
-    const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId, PROVIDER_CREATE_ORG_REQUIRED);
+    const requestedOrg = bodyOrSelectedQueryOrgId(c, auth, body.orgId);
+    if ('denied' in requestedOrg) return c.json({ error: 'Access to this organization denied' }, 403);
+    const orgResult = resolveOrgIdForProviderRoute(auth, requestedOrg.orgId, PROVIDER_CREATE_ORG_REQUIRED);
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
     }
@@ -1807,7 +1826,9 @@ ssoRoutes.post(
       axis = { scope: 'partner', partnerId: auth.partnerId };
     } else {
       // Create-flow preflight: same axis derivation, so the same refusal as POST /providers.
-      const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId, PROVIDER_CREATE_ORG_REQUIRED);
+        const requestedOrg = bodyOrSelectedQueryOrgId(c, auth, body.orgId);
+      if ('denied' in requestedOrg) return c.json({ error: 'Access to this organization denied' }, 403);
+      const orgResult = resolveOrgIdForProviderRoute(auth, requestedOrg.orgId, PROVIDER_CREATE_ORG_REQUIRED);
       if ('error' in orgResult) {
         return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
       }

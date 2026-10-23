@@ -1404,7 +1404,7 @@
           "name": "Crochet de production",
           "signingSecret": "Entrez dans un secret de signature"
         },
-        "subtitle": "Définir la livraison, l’authentification et le comportement de la charge utile.",
+        "subtitle": "Définir la destination, les événements, l’authentification et les en-têtes.",
         "title": "Configuration Webhook",
         "validation": {
           "eventRequired": "Sélectionnez au moins un événement",
@@ -1466,7 +1466,7 @@
           "noPayloadTemplate": "Aucun modèle de charge utile n’a encore été enregistré.",
           "payloadPreview": "Aperçu du modèle de charge utile",
           "testEvent": "Événement test",
-          "testEventHelp": "Les tests utilisent l’événement sélectionné et le modèle de votre charge utile.",
+          "testEventHelp": "Envoie un exemple de charge utile pour l’événement sélectionné à ce point de terminaison.",
           "title": "Détails sur le webhook"
         },
         "emptySelection": "Sélectionnez un webhook pour consulter l’historique de livraison et les outils de test.",
