@@ -1,9 +1,10 @@
-import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, numeric, char } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, numeric, char, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { businessCalendarRevisions } from './businessCalendars';
 
 export const ticketStatusEnum = pgEnum('ticket_status', ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'high', 'urgent']);
@@ -225,6 +226,10 @@ export const tickets = pgTable('tickets', {
   resolutionDueAt: timestamp('resolution_due_at'),
   responseWarnAt: timestamp('response_warn_at'),
   resolutionWarnAt: timestamp('resolution_warn_at'),
+  // #8973 W4 (2027-01-02-210100): the business-calendar revision the stored
+  // deadlines are computed on, snapshotted at create (spec §4.3); NULL = 24×7.
+  // FK tickets_sla_calendar_revision_id_fk ON DELETE SET NULL (declared below).
+  slaCalendarRevisionId: uuid('sla_calendar_revision_id'),
   source: ticketSourceEnum('source').notNull().default('portal'),
   workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
   // #7900 (2026-12-26-170000): constant default, so existing rows read as
@@ -278,7 +283,17 @@ export const tickets = pgTable('tickets', {
   slaResponseDueIdx: index('tickets_sla_response_due_idx').on(table.responseDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND first_response_at IS NULL AND response_due_at IS NOT NULL`),
   slaResolutionDueIdx: index('tickets_sla_resolution_due_idx').on(table.resolutionDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND resolved_at IS NULL AND resolution_due_at IS NOT NULL`),
   // Gate B12 heal pass (empty in steady state).
-  slaDeadlinesMissingIdx: index('tickets_sla_deadlines_missing_idx').on(table.createdAt).where(sql`(response_sla_minutes IS NOT NULL AND response_due_at IS NULL) OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL) OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0)`),
+  // Rebuilt by 2027-01-02-210100 (W4): calendar tickets are owned by the
+  // calendar-aware writers, never by the wall-clock heal.
+  slaDeadlinesMissingIdx: index('tickets_sla_deadlines_missing_idx').on(table.createdAt).where(sql`sla_calendar_revision_id IS NULL AND ((response_sla_minutes IS NOT NULL AND response_due_at IS NULL) OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL) OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))`),
+  // #8973 W4 (2027-01-02-210100, CONCURRENTLY): recompute, apply-revision,
+  // delete-in-use and the FK's SET NULL find tickets by revision.
+  slaCalendarRevisionIdx: index('tickets_sla_calendar_revision_idx').on(table.slaCalendarRevisionId).where(sql`sla_calendar_revision_id IS NOT NULL`),
+  slaCalendarRevisionFk: foreignKey({
+    name: 'tickets_sla_calendar_revision_id_fk',
+    columns: [table.slaCalendarRevisionId],
+    foreignColumns: [businessCalendarRevisions.id],
+  }).onDelete('set null'),
 }));
 
 export const ticketComments = pgTable('ticket_comments', {

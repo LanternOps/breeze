@@ -131,6 +131,7 @@ export * from './tenantVariables';
 export * from './tickets';
 export * from './officeAddin';
 export * from './ticketConfig';
+export * from './businessCalendars';
 export * from './ticketAttachments';
 export * from './ticketEmailLinks';
 export * from './ticketExternalRefs';
