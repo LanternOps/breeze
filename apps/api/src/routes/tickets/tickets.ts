@@ -75,9 +75,11 @@ const PRIORITY_ORDER = sql`CASE ${tickets.priority}
 // #8973 W3 (spec §4.3 reader 2): at-risk compares now() with the STORED 80%
 // point of each unfrozen arm (services/ticketSlaDeadlines.ts writes it).
 // SLA_BREACHED is unchanged. A stamped breach on either arm leaves at-risk.
-const SLA_BREACHED = sql`${tickets.slaBreachedAt} IS NOT NULL`;
+// #8972: merged tombstones never count as breached / at-risk (spec §3.6).
+const SLA_BREACHED = sql`(${tickets.slaBreachedAt} IS NOT NULL AND ${tickets.mergedIntoTicketId} IS NULL)`;
 export const SLA_AT_RISK = sql`(
-  ${tickets.slaBreachedAt} IS NULL
+  ${tickets.mergedIntoTicketId} IS NULL
+  AND ${tickets.slaBreachedAt} IS NULL
   AND ${tickets.status} IN ('new', 'open')
   AND ${tickets.slaPausedAt} IS NULL
   AND (
@@ -224,6 +226,7 @@ ticketsRoutes.get(
     const siteCondition = ticketSiteScopeCondition(auth);
     if (siteCondition) conditions.push(siteCondition);
     conditions.push(isNull(tickets.deletedAt)); // soft-deleted tickets never count toward queue tabs
+    conditions.push(isNull(tickets.mergedIntoTicketId)); // #8972: merged tombstones never count
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await db
@@ -344,6 +347,8 @@ ticketsRoutes.get(
     } else {
       conditions.push(isNull(tickets.deletedAt));
     }
+    // #8972: merged tombstones are hidden (list, search, closed filter) unless asked for.
+    if (!q.showMerged) conditions.push(isNull(tickets.mergedIntoTicketId));
     if (q.status) conditions.push(eq(tickets.status, q.status));
     else if (q.statusGroup === 'open') conditions.push(inArray(tickets.status, [...OPEN_STATUSES]));
     else if (q.statusGroup === 'closed') conditions.push(inArray(tickets.status, [...CLOSED_STATUSES]));

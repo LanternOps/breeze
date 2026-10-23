@@ -289,7 +289,9 @@ export const listTicketsQuerySchema = z.object({
   sort: z.enum(['triage', 'newest', 'oldest', 'due']).default('triage'),
   // deleted=only returns the soft-deleted "Archived" queue (tickets:manage only).
   // Omitted/any other value returns live tickets (deleted rows excluded).
-  deleted: z.enum(['only']).optional()
+  deleted: z.enum(['only']).optional(),
+  // #8972: merged tombstones are hidden unless `showMerged=true`.
+  showMerged: z.enum(['true', 'false']).transform((v) => v === 'true').optional()
 });
 
 export const ticketCategoryInputSchema = z.object({

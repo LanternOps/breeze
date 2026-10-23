@@ -178,6 +178,18 @@ describe('ticketSlaWorker', () => {
       expect(resolutionSql).toContain('ORDER BY resolution_due_at ASC');
       expect(resolutionSql).not.toContain('created_at');
     });
+
+    // #8972 spec §3.6: merged tombstones are excluded from the sweep.
+    it('sweep SQL excludes merged tombstones in both passes', async () => {
+      executeMock
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await sweepTicketSlaBreaches();
+
+      expect(sqlText(executeMock.mock.calls[0]?.[0])).toContain('merged_into_ticket_id IS NULL');
+      expect(sqlText(executeMock.mock.calls[1]?.[0])).toContain('merged_into_ticket_id IS NULL');
+    });
   });
 
   // Gate B12: a pre-W3 API instance still serving during a rolling deploy
@@ -202,6 +214,12 @@ describe('ticketSlaWorker', () => {
       expect(healSql).toContain('LIMIT 500');
       expect(healSql).toContain('FOR UPDATE SKIP LOCKED');
       expect(healSql).toContain('ORDER BY created_at ASC');
+    });
+
+    it('heal pass skips merged tombstones (#8972)', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      await healMissingDeadlines();
+      expect(sqlText(executeMock.mock.calls[0]?.[0])).toContain('merged_into_ticket_id IS NULL');
     });
   });
 

@@ -105,9 +105,10 @@ export async function healMissingDeadlines(): Promise<number> {
     WITH missing AS (
       SELECT id
       FROM tickets
-      WHERE (response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
+      WHERE merged_into_ticket_id IS NULL
+        AND ((response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
          OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
-         OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0)
+         OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))
       ORDER BY created_at ASC
       LIMIT ${sql.raw(String(HEAL_BATCH))}
       FOR UPDATE SKIP LOCKED
@@ -156,6 +157,8 @@ async function stampBreaches(target: 'response' | 'resolution'): Promise<Breache
       SELECT id
       FROM tickets
       WHERE status IN ('new', 'open')
+        -- #8972 spec §3.6: merged tombstones never breach.
+        AND merged_into_ticket_id IS NULL
         -- #5573 spec §4.8: planned work has a due date, not an SLA. Rows
         -- written before tickets.work_kind shipped default to 'support', so
         -- this narrows nothing that used to be swept.
