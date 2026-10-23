@@ -66,7 +66,7 @@ type TaskGrantPin = { grantId?: string | null; grantRevisionId?: string | null }
  * reuses it).
  */
 async function grantCeilingLost(
-  task: TaskGrantPin & { orgId: string },
+  task: TaskGrantPin & { orgId: string; requesterUserId: string | null },
   check: Omit<CeilingCheck, 'orgId'>,
 ): Promise<RequesterAccessCheck | null> {
   if (!task.grantId) return null;
@@ -77,6 +77,11 @@ async function grantCeilingLost(
   } catch (error) {
     if (error instanceof GrantInactiveError) return { lost: true, detail: 'the delegation grant is no longer active' };
     throw error;
+  }
+  // A grant is one person's borrowed authority: the task's requester (whose
+  // live access is re-checked above) must BE that person.
+  if (ceiling.grantorUserId !== task.requesterUserId) {
+    return { lost: true, detail: 'the task requester is not the delegation grant\'s grantor' };
   }
   try {
     assertWithinCeiling(ceiling, { orgId: task.orgId, ...check });

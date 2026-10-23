@@ -21,10 +21,12 @@
  * is the literal `*:*` (w00 A3).
  */
 import { createHash } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { organizations } from '../../db/schema/orgs';
 import { users } from '../../db/schema/users';
+import { wispEnabled } from '../../config/env';
 import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
 import type { WispCeilingSnapshot, WispGrantStatus } from '../../db/schema/wisp';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_TOOLS } from '../aiToolExposure';
@@ -70,16 +72,30 @@ export type CeilingCheck = {
 
 export type CeilingViolationCode = 'org' | 'site' | 'permission' | 'tool' | 'inactive';
 
+/**
+ * Why a grant cannot be used, for callers that must tell a recoverable state
+ * from a permanent one (release pauses only `paused`):
+ *   - `paused`  — may come back: a pause of any reason, the grantor's lost
+ *                 standing (the reconciler persists it), or Wisp switched off;
+ *   - `ended`   — never comes back: revoked, expired, or the grant is gone;
+ *   - `corrupt` — the pin itself is broken (revision of another grant,
+ *                 malformed snapshot). Callers log and capture it.
+ */
+export type GrantInactiveKind = 'paused' | 'ended' | 'corrupt';
+
 /** The grant cannot be used right now (paused / revoked / expired / missing / grantor lost standing). */
 export class GrantInactiveError extends Error {
   readonly code = 'grant_inactive' as const;
+  readonly kind: GrantInactiveKind;
   constructor(
     public readonly grantId: string,
     public readonly status: WispGrantStatus,
     detail?: string,
+    kind?: GrantInactiveKind,
   ) {
     super(`Wisp grant ${grantId} is not active (${status})${detail ? `: ${detail}` : ''}`);
     this.name = 'GrantInactiveError';
+    this.kind = kind ?? (status === 'revoked' || status === 'expired' ? 'ended' : 'paused');
   }
 }
 
@@ -128,7 +144,13 @@ export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck):
   }
 
   if (check.toolName !== undefined) {
-    if (ceiling.deniedTools.has(check.toolName)) {
+    // The two agent deny registries are checked directly too, so the
+    // never-delegable floor does not depend on how the ceiling was built.
+    if (
+      ceiling.deniedTools.has(check.toolName)
+      || AGENT_HUMAN_ONLY_TOOLS.has(check.toolName)
+      || AGENT_DENIED_READ_TOOLS.has(check.toolName)
+    ) {
       throw new CeilingViolationError('tool', `tool ${check.toolName} is never delegable`);
     }
     if (ceiling.toolAllowlist !== null && !ceiling.toolAllowlist.has(check.toolName)) {
@@ -166,6 +188,28 @@ export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck):
   }
 }
 
+/**
+ * One tool call against the ceiling: the tool / org / site terms first (so a
+ * never-delegable tool reports as such), then EVERY human permission the call
+ * needs. `requirements` is `requiredPermissionsForTool(toolName, input)` from
+ * the caller; null or empty — no resolvable human permission — cannot be shown
+ * to sit inside the grantor's authority, so it FAILS CLOSED as a permission
+ * violation. The run loop and release both use this; there is no second copy.
+ */
+export function assertToolCallWithinCeiling(
+  ceiling: GrantCeiling,
+  call: { toolName: string; orgId: string; siteId: string | null },
+  requirements: ReadonlyArray<{ resource: string; action: string }> | null,
+): void {
+  assertWithinCeiling(ceiling, call);
+  if (!requirements || requirements.length === 0) {
+    throw new CeilingViolationError('permission', `tool ${call.toolName} has no human permission mapping`);
+  }
+  for (const r of requirements) {
+    assertWithinCeiling(ceiling, { ...call, permission: `${r.resource}:${r.action}` });
+  }
+}
+
 function sortedUnique(values: Iterable<string>): string[] {
   return [...new Set(values)].sort();
 }
@@ -179,6 +223,7 @@ export function ceilingSnapshotHash(snapshot: WispCeilingSnapshot): string {
     siteIds: snapshot.siteIds === null ? null : sortedUnique(snapshot.siteIds),
     toolAllowlist: snapshot.toolAllowlist === null ? null : sortedUnique(snapshot.toolAllowlist),
     version: snapshot.version,
+    partnerWide: snapshot.partnerWide === true,
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
@@ -282,7 +327,17 @@ export async function computeLiveHumanTerm(userId: string, partnerId: string): P
     }
 
     const reach = await computeAccessibleOrgIds('partner', partnerId, null, userId);
-    const orgIds = reach.orgIds ?? [];
+    const reachable = reach.orgIds ?? [];
+    // computeAccessibleOrgIds always grants the partner's hidden Quick Support
+    // org (it holds only ad-hoc support sessions with outsiders' devices). It is
+    // never delegable to Wisp, and it must not keep a grantor whose real reach
+    // shrank to nothing looking "ok".
+    const orgIds = reachable.length === 0 ? [] : (await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(inArray(organizations.id, reachable), ne(organizations.type, 'quick_support')))
+      .limit(reachable.length))
+      .map((o) => o.id);
     if (orgIds.length === 0) return { ok: false, reason: 'grantor_access_lost' };
 
     return {
@@ -307,6 +362,7 @@ export const wispCeilingSnapshotSchema = z.object({
   siteIds: z.array(z.string()).nullable(),
   toolAllowlist: z.array(z.string()).nullable(),
   deniedTools: z.array(z.string()),
+  partnerWide: z.boolean().optional(),
 });
 
 /**
@@ -317,6 +373,9 @@ export const wispCeilingSnapshotSchema = z.object({
  * function fails closed without writing).
  */
 export async function resolveGrantCeiling(grantId: string, revisionId: string): Promise<GrantCeiling> {
+  // Deployment switch: with Wisp off nothing runs under a grant, including
+  // work admitted before the flag flipped (it pauses, and resumes with the flag).
+  if (!wispEnabled()) throw new GrantInactiveError(grantId, 'paused', 'Wisp is disabled on this deployment', 'paused');
   const { grant, revision } = await inSystemContext(async () => {
       const [g] = await db
         .select({
@@ -338,16 +397,16 @@ export async function resolveGrantCeiling(grantId: string, revisionId: string): 
       return { grant: g, revision: r };
   });
 
-  if (!grant) throw new GrantInactiveError(grantId, 'revoked', 'grant not found');
+  if (!grant) throw new GrantInactiveError(grantId, 'revoked', 'grant not found', 'ended');
   if (!revision || revision.grantId !== grantId) {
-    throw new GrantInactiveError(grantId, grant.status, `revision ${revisionId} does not belong to this grant`);
+    throw new GrantInactiveError(grantId, grant.status, `revision ${revisionId} does not belong to this grant`, 'corrupt');
   }
   if (grant.status !== 'active') throw new GrantInactiveError(grantId, grant.status);
   if (!(grant.expiresAt instanceof Date) || grant.expiresAt.getTime() <= Date.now()) {
     throw new GrantInactiveError(grantId, 'expired');
   }
   const parsed = wispCeilingSnapshotSchema.safeParse(revision.ceilingSnapshot);
-  if (!parsed.success) throw new GrantInactiveError(grantId, grant.status, 'malformed ceiling snapshot');
+  if (!parsed.success) throw new GrantInactiveError(grantId, grant.status, 'malformed ceiling snapshot', 'corrupt');
   const snapshot = parsed.data as WispCeilingSnapshot;
 
   const live = await computeLiveHumanTerm(grant.grantorUserId, grant.partnerId);
@@ -369,7 +428,9 @@ export async function resolveGrantCeiling(grantId: string, revisionId: string): 
     partnerId: grant.partnerId,
     grantorUserId: grant.grantorUserId,
     scopeOrgId,
-    partnerWide: scopeOrgId === null && live.partnerOrgAccess === 'all',
+    // Pinned AND live: a grantor widened to org_access 'all' after the revision
+    // was taken needs a refresh before partner-level subjects open (§4.4).
+    partnerWide: scopeOrgId === null && snapshot.partnerWide === true && live.partnerOrgAccess === 'all',
     ...reach,
     orgIds,
     toolAllowlist: snapshot.toolAllowlist === null ? null : new Set(snapshot.toolAllowlist),

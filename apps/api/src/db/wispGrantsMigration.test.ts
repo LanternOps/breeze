@@ -64,7 +64,7 @@ describe('2027-01-04-100100-wisp-grants.sql', () => {
 
   it('binds a pinned grant to the run/task tenant (no partner_id column, so a trigger)', () => {
     for (const t of ['ai_agent_runs', 'ai_operator_tasks']) {
-      expect(sql).toContain(`CREATE TRIGGER ${t}_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, org_id ON ${t}`);
+      expect(sql).toContain(`CREATE TRIGGER ${t}_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, grant_revision_id, org_id ON ${t}`);
     }
     expect(sql).toMatch(/JOIN organizations o ON o\.partner_id = g\.partner_id[\s\S]*?g\.org_id IS NULL OR g\.org_id = NEW\.org_id/);
   });

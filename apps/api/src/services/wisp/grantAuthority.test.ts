@@ -4,7 +4,10 @@ const shared = vi.hoisted(() => ({
   selectMock: vi.fn(),
   getUserPermissions: vi.fn(),
   computeAccessibleOrgIds: vi.fn(),
+  wispEnabled: vi.fn(() => true),
 }));
+
+vi.mock('../../config/env', () => ({ wispEnabled: shared.wispEnabled }));
 
 vi.mock('../../db', () => ({
   db: { select: shared.selectMock },
@@ -161,6 +164,7 @@ const livePerms = (permissions: Array<{ resource: string; action: string }>, ext
 beforeEach(() => {
   vi.clearAllMocks();
   shared.selectMock.mockReset();
+  shared.wispEnabled.mockReturnValue(true);
 });
 
 describe('computeLiveHumanTerm', () => {
@@ -199,6 +203,7 @@ describe('computeLiveHumanTerm', () => {
     queueSelect([{ status: 'active', partnerId: PARTNER }]);
     shared.getUserPermissions.mockResolvedValueOnce(livePerms([{ resource: '*', action: '*' }], { allowedSiteIds: ['s1'] }));
     shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1', 'o2'], partnerOrgAccess: 'all' });
+    queueSelect([{ id: 'o1' }, { id: 'o2' }]); // non-Quick-Support filter
     expect(await computeLiveHumanTerm(USER, PARTNER)).toEqual({
       ok: true, permissionKeys: ['*:*'], orgIds: ['o1', 'o2'], siteIds: ['s1'], partnerOrgAccess: 'all',
     });
@@ -256,6 +261,7 @@ describe('resolveGrantCeiling', () => {
       { resource: 'ai_sessions', action: 'use' }, { resource: 'devices', action: 'read' },
     ]));
     shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o2', 'o3'], partnerOrgAccess: 'selected' });
+    queueSelect([{ id: 'o2' }, { id: 'o3' }]);
 
     const c = await resolveGrantCeiling('g1', 'r1');
     expect(c).toMatchObject({ grantId: 'g1', revisionId: 'r1', partnerId: PARTNER, grantorUserId: USER, scopeOrgId: 'o2', partnerWide: false, status: 'active' });
@@ -274,6 +280,7 @@ describe('resolveGrantCeiling', () => {
     queueSelect([{ status: 'active', partnerId: PARTNER }]);
     shared.getUserPermissions.mockResolvedValueOnce(livePerms([{ resource: 'ai_sessions', action: 'use' }]));
     shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1', 'o2'], partnerOrgAccess: 'all' });
+    queueSelect([{ id: 'o1' }, { id: 'o2' }]);
     const c = await resolveGrantCeiling('g1', 'r1');
     expect([...c.orgIds]).toEqual(['o1']);
     expect(c.partnerWide).toBe(false);
@@ -285,18 +292,55 @@ describe('resolveGrantCeiling', () => {
     queueSelect([{ status: 'active', partnerId: PARTNER }]);
     shared.getUserPermissions.mockResolvedValueOnce(livePerms([{ resource: 'ai_sessions', action: 'use' }]));
     shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o9'], partnerOrgAccess: 'selected' });
-    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toBeInstanceOf(GrantInactiveError);
+    queueSelect([{ id: 'o9' }]);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'paused', status: 'paused' });
   });
 
-  it('partnerWide is true only for a partner-wide grant whose grantor still has org_access all', async () => {
-    for (const [access, expected] of [['all', true], ['selected', false]] as const) {
+  it('partnerWide needs the PINNED partner-wide flag AND the grantor\'s live org_access all (widening needs a refresh)', async () => {
+    const cases = [
+      { pinned: true, access: 'all', expected: true },
+      { pinned: true, access: 'selected', expected: false },
+      // Widened to 'all' after the pin: still false until a refresh re-pins it.
+      { pinned: false, access: 'all', expected: false },
+    ] as const;
+    for (const { pinned, access, expected } of cases) {
       queueSelect([grantRow()]);
-      queueSelect([revisionRow()]);
+      queueSelect([revisionRow({ ceilingSnapshot: { ...SNAPSHOT, partnerWide: pinned } })]);
       queueSelect([{ status: 'active', partnerId: PARTNER }]);
       shared.getUserPermissions.mockResolvedValueOnce(livePerms([{ resource: 'ai_sessions', action: 'use' }]));
       shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1'], partnerOrgAccess: access });
+      queueSelect([{ id: 'o1' }]);
       const c = await resolveGrantCeiling('g1', 'r1');
-      expect(c.partnerWide, access).toBe(expected);
+      expect(c.partnerWide, `${pinned}/${access}`).toBe(expected);
     }
+  });
+
+  it('the partner\'s hidden Quick Support org never counts: a grantor left with only it has lost access', async () => {
+    queueSelect([{ status: 'active', partnerId: PARTNER }]);
+    shared.getUserPermissions.mockResolvedValueOnce(livePerms([{ resource: 'ai_sessions', action: 'use' }]));
+    shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['qs-org'], partnerOrgAccess: 'selected' });
+    queueSelect([]); // the filter dropped the quick_support org
+    expect(await computeLiveHumanTerm(USER, PARTNER)).toEqual({ ok: false, reason: 'grantor_access_lost' });
+  });
+
+  it('refuses every grant while Wisp is disabled (kind paused, no DB read)', async () => {
+    shared.wispEnabled.mockReturnValueOnce(false);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'paused' });
+    expect(shared.selectMock).not.toHaveBeenCalled();
+  });
+
+  it('classifies the failure: missing/revoked/expired are ended, a foreign revision or malformed snapshot is corrupt, paused is paused', async () => {
+    queueSelect([]); queueSelect([revisionRow()]);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'ended' });
+    queueSelect([grantRow({ status: 'revoked' })]); queueSelect([revisionRow()]);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'ended' });
+    queueSelect([grantRow({ expiresAt: new Date(Date.now() - 1000) })]); queueSelect([revisionRow()]);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'ended' });
+    queueSelect([grantRow()]); queueSelect([revisionRow({ grantId: 'other' })]);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'corrupt' });
+    queueSelect([grantRow()]); queueSelect([revisionRow({ ceilingSnapshot: { version: 9 } })]);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'corrupt' });
+    queueSelect([grantRow({ status: 'paused' })]); queueSelect([revisionRow()]);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'paused' });
   });
 });

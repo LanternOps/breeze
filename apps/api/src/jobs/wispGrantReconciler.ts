@@ -27,12 +27,17 @@ let reconcilerQueue: Queue<ReconcileJobData> | null = null;
 let reconcilerWorker: Worker<ReconcileJobData> | null = null;
 
 export async function processWispGrantReconcile(): Promise<
-  { skipped: true } | { skipped: false; scanned: number; paused: number; resumed: number; expired: number }
+  { skipped: true } | { skipped: false; scanned: number; paused: number; resumed: number; expired: number; failed: number }
 > {
   if (!wispEnabled()) return { skipped: true };
   const result = await reconcileActiveGrants(new Date());
-  if (result.paused || result.resumed || result.expired) {
-    console.log(`[WispGrantReconciler] scanned=${result.scanned} paused=${result.paused} resumed=${result.resumed} expired=${result.expired}`);
+  if (result.paused || result.resumed || result.expired || result.failed) {
+    console.log(`[WispGrantReconciler] scanned=${result.scanned} paused=${result.paused} resumed=${result.resumed} expired=${result.expired} failed=${result.failed}`);
+  }
+  // Per-grant failures are captured individually; a sweep where EVERY grant
+  // failed (schema drift, evaluator down) fails the job so it is visible.
+  if (result.scanned > 0 && result.failed === result.scanned) {
+    throw new Error(`[WispGrantReconciler] every grant failed to reconcile (${result.failed}/${result.scanned})`);
   }
   return { skipped: false, ...result };
 }

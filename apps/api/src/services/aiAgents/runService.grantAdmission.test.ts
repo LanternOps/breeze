@@ -22,6 +22,8 @@ const dbMockState = vi.hoisted(() => ({
   rowQueues: {} as Record<string, unknown[][]>,
   insertValues: [] as Record<string, unknown>[],
   insertRows: [] as unknown[],
+  updateSets: [] as Record<string, unknown>[],
+  updateRows: [] as unknown[],
 }));
 
 function nextRows(table: string): unknown[] {
@@ -56,7 +58,10 @@ vi.mock('../../db', () => {
         }),
       })),
       update: vi.fn(() => ({
-        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) })),
+        set: vi.fn((values: Record<string, unknown>) => {
+          dbMockState.updateSets.push(values);
+          return { where: vi.fn(() => ({ returning: vi.fn(async () => dbMockState.updateRows) })) };
+        }),
       })),
     },
     getCurrentDbAccessContext: vi.fn(() => undefined),
@@ -160,6 +165,8 @@ beforeEach(() => {
   dbMockState.rowQueues = {};
   dbMockState.insertValues = [];
   dbMockState.insertRows = [];
+  dbMockState.updateSets = [];
+  dbMockState.updateRows = [];
   resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
   resolveEffectiveAgentSystem.mockResolvedValue(snapshot(['get_device', 'manage_ai_agents', 'manage_services:restart', 'list_alerts']));
   resolveGrantCeiling.mockResolvedValue(ceiling());
@@ -211,6 +218,26 @@ describe('admission step 1d — grant ceiling', () => {
     expect(dbMockState.insertValues[0]).toMatchObject({ grantId: null, grantRevisionId: null });
     const snap = dbMockState.insertValues[0]!.policySnapshot as AiAgentPolicySnapshot;
     expect(snap.effective.toolAllowlist).toEqual(['get_device', 'manage_ai_agents', 'manage_services:restart', 'list_alerts']);
+  });
+});
+
+describe('enqueue-failed reclaim keeps the pin honest', () => {
+  const reclaimed = { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, status: 'queued' };
+
+  it('a reclaim under a grant stamps THIS attempt\'s grant + revision (never leaves the row unpinned)', async () => {
+    dbMockState.insertRows = []; // (org, dedupe_key) conflict → reclaim path
+    dbMockState.updateRows = [reclaimed];
+    await expect(createAndEnqueueAgentRun(input({ grant: GRANT }))).resolves.toMatchObject({ created: true });
+    const reclaimSet = dbMockState.updateSets.find((v) => 'policySnapshot' in v);
+    expect(reclaimSet).toMatchObject({ grantId: 'g1', grantRevisionId: 'r1' });
+  });
+
+  it('a reclaim without a grant writes the pin as null', async () => {
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [reclaimed];
+    await createAndEnqueueAgentRun(input());
+    const reclaimSet = dbMockState.updateSets.find((v) => 'policySnapshot' in v);
+    expect(reclaimSet).toMatchObject({ grantId: null, grantRevisionId: null });
   });
 });
 

@@ -58,6 +58,13 @@ export type WispCeilingSnapshot = {
   /** null = agent policy default */
   toolAllowlist: string[] | null;
   deniedTools: string[];
+  /**
+   * The grantor held `org_access = 'all'` when this revision was pinned AND the
+   * grant is partner-wide. Partner-level subjects (aggregates across every org)
+   * need this AND the grantor's live `'all'`, so a grantor widened to `'all'`
+   * later still needs a refresh (Wisp design §4.4). Absent = false.
+   */
+  partnerWide?: boolean;
 };
 
 export type WispFactorProof = { method: string; verifiedAt: string };

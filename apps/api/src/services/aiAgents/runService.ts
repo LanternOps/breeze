@@ -53,7 +53,13 @@ import {
 } from '../aiOperator/taskOutbox';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
-import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../wisp/grantAuthority';
+import {
+  assertWithinCeiling,
+  CeilingViolationError,
+  GrantInactiveError,
+  resolveGrantCeiling,
+  type GrantCeiling,
+} from '../wisp/grantAuthority';
 import { agentRunMatchesResourceScope } from './runResourceScope';
 import { recordAgentRunSkip } from './skipVisibility';
 import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
@@ -412,6 +418,11 @@ export interface CreateAgentRunInput {
  * Wisp W02 (w00 A11): a grant-bearing admission whose requester is not Wisp's
  * own run under the same grant and org. A THROW, not a skip — W07's
  * coordinator checks depth before admission, so reaching this is a caller bug.
+ *
+ * NOTE: W02 checks "same grant, same org" only. Nothing records which run
+ * requested which yet, so a specialist under grant G could still request
+ * another specialist under G; W07 adds the lineage columns (`depth`,
+ * `requested_by_run_id`) and the true depth-one predicate.
  */
 export class GrantDepthExceededError extends Error {
   readonly code = 'grant_depth_exceeded' as const;
@@ -1316,7 +1327,13 @@ export async function createAndEnqueueAgentRun(
       if (err instanceof GrantInactiveError) return skip('grant_inactive');
       throw err;
     }
-    if (!grantCeiling.orgIds.has(orgId)) return skip('grant_org_out_of_ceiling');
+    try {
+      // The single comparator, not a hand-rolled set lookup.
+      assertWithinCeiling(grantCeiling, { orgId });
+    } catch (err) {
+      if (err instanceof CeilingViolationError) return skip('grant_org_out_of_ceiling');
+      throw err;
+    }
   }
 
   // 2. Effective policy. Throws 404 when the org itself is missing — that is a

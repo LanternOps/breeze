@@ -174,22 +174,31 @@ describe('createGrant', () => {
     h.consumeStepUpGrant.mockResolvedValue(false);
     await expect(createGrant({ auth: auth(), scope: { partnerId: PARTNER, orgId: ORG }, stepUpGrantId: 'step-1' }))
       .rejects.toMatchObject({ code: 'step_up_required' });
-    const snapshot = { version: 1 as const, permissionKeys: LIVE.permissionKeys, orgIds: [ORG], siteIds: null, toolAllowlist: null, deniedTools: expect.any(Array) };
     const [id, bind] = h.consumeStepUpGrant.mock.calls[0]!;
     expect(id).toBe('step-1');
     expect(bind).toMatchObject({ userId: USER, operation: 'wisp_grant', authEpoch: 3, mfaEpoch: 4, sid: 'sid-1' });
-    expect(snapshot.orgIds).toEqual([ORG]);
+    expect(bind.resourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(valuesInserted()).toEqual([]);
   });
 
   it('the digest it consumes is exactly the one the preview hash yields', async () => {
-    h.results.push([]);
     const preview = await previewGrantCeiling({ auth: auth(), scope: { partnerId: PARTNER, orgId: ORG } });
     expect(preview.ceilingHash).toBe(ceilingSnapshotHash(preview.ceilingSnapshot));
     h.consumeStepUpGrant.mockResolvedValue(false);
     await expect(createGrant({ auth: auth(), scope: { partnerId: PARTNER, orgId: ORG }, stepUpGrantId: 'step-1' })).rejects.toThrow();
     const [, bind] = h.consumeStepUpGrant.mock.calls[0]!;
     expect(bind.resourceDigest).toBe(wispGrantResourceDigest({ grantorUserId: USER, partnerId: PARTNER, orgId: ORG, requestedCeilingHash: preview.ceilingHash }));
+  });
+
+  it('pins partnerWide only for a partner-wide scope held with org_access all', async () => {
+    h.computeLiveHumanTerm.mockResolvedValue({ ...LIVE, partnerOrgAccess: 'all' });
+    const wide = await previewGrantCeiling({ auth: auth(), scope: { partnerId: PARTNER, orgId: null } });
+    expect(wide.ceilingSnapshot.partnerWide).toBe(true);
+    const scoped = await previewGrantCeiling({ auth: auth(), scope: { partnerId: PARTNER, orgId: ORG } });
+    expect(scoped.ceilingSnapshot.partnerWide).toBe(false);
+    h.computeLiveHumanTerm.mockResolvedValue(LIVE); // selected
+    const selected = await previewGrantCeiling({ auth: auth(), scope: { partnerId: PARTNER, orgId: null } });
+    expect(selected.ceilingSnapshot.partnerWide).toBe(false);
   });
 
   it('writes grant + revision 1 + current pointer; factor_proof is { method, verifiedAt } only; defaults', async () => {
@@ -269,7 +278,21 @@ describe('refreshGrant', () => {
     expect(callsOf('insert').map((c) => c.args[0])).toEqual([wispGrantRevisions]);
     expect(valuesInserted()[0]).toMatchObject({ grantId: 'g1', revision: 4 });
     expect(callsOf('update').map((c) => c.args[0])).toEqual([wispGrants]);
+    expect(Object.keys(setsApplied()[0]!).sort()).toEqual(['currentRevisionId', 'expiresAt']);
     expect(setsApplied()[0]).toMatchObject({ currentRevisionId: 'r4', expiresAt: expect.any(Date) });
+  });
+
+  it('refreshing a PAUSED grant re-pins it but leaves it paused (no status in the update)', async () => {
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'user_paused' })], [{ maxRevision: 1 }], [{ id: 'r2' }],
+      [grantRow({ status: 'paused', pausedReason: 'user_paused', currentRevisionId: 'r2' })]);
+    const g = await refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' });
+    expect(g).toMatchObject({ status: 'paused', currentRevisionId: 'r2' });
+    expect(setsApplied()[0]).not.toHaveProperty('status');
+  });
+
+  it('a concurrent refresh that loses the revision race is a 409-class not_active, not a 500', async () => {
+    h.results.push([grantRow()], [{ maxRevision: 1 }], Object.assign(new Error('dup'), { cause: { code: '23505' } }));
+    await expect(refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' })).rejects.toMatchObject({ code: 'not_active' });
   });
 
   it('refuses a non-grantor with forbidden', async () => {
@@ -308,6 +331,11 @@ describe('updateGrantSettings', () => {
     expect(callsOf('update')).toEqual([]);
   });
 
+  it('caller bounds can never lower the 15-minute tick floor (the DB CHECK)', async () => {
+    await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { floorTickMinutes: 10 }, bounds: { budgetCentsPerDayMax: 1000, minFloorTickMinutes: 5 } }))
+      .rejects.toMatchObject({ code: 'settings_out_of_bounds' });
+  });
+
   it('honours caller-supplied plan bounds', async () => {
     await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { budgetCentsPerDay: 1500 }, bounds: { budgetCentsPerDayMax: 1000, minFloorTickMinutes: 30 } }))
       .rejects.toMatchObject({ code: 'settings_out_of_bounds' });
@@ -336,6 +364,15 @@ describe('wideningAvailable', () => {
     expect(await wideningAvailable('g1')).toBe(false);
     h.results.push([{ ...grantRow(), ceilingSnapshot: snap() }]);
     h.computeLiveHumanTerm.mockResolvedValueOnce({ ok: false, reason: 'grantor_suspended' });
+    expect(await wideningAvailable('g1')).toBe(false);
+  });
+
+  it('a partner-wide grant whose grantor gained org_access all since the pin offers a widening', async () => {
+    h.results.push([{ ...grantRow(), ceilingSnapshot: snap({ partnerWide: false }) }]);
+    h.computeLiveHumanTerm.mockResolvedValueOnce({ ...LIVE, partnerOrgAccess: 'all' });
+    expect(await wideningAvailable('g1')).toBe(true);
+    h.results.push([{ ...grantRow(), ceilingSnapshot: snap({ partnerWide: true }) }]);
+    h.computeLiveHumanTerm.mockResolvedValueOnce({ ...LIVE, partnerOrgAccess: 'all' });
     expect(await wideningAvailable('g1')).toBe(false);
   });
 
@@ -387,6 +424,21 @@ describe('pauseGrant / resumeGrant (system paths)', () => {
     h.results.push([grantRow({ status: 'paused', pausedReason: 'budget_exhausted' })]);
     await pauseGrant('g1', 'grantor_access_lost');
     expect(callsOf('update')).toEqual([]);
+  });
+
+  it('pauseGrant({ onlyFromActive }) leaves an already-paused grant (incl. user_paused) untouched', async () => {
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'user_paused' })]);
+    await pauseGrant('g1', 'grantor_access_lost', { onlyFromActive: true });
+    expect(callsOf('update')).toEqual([]);
+  });
+
+  it('resumeGrant(id, expectedReason) resumes only the pause the caller judged', async () => {
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'budget_exhausted' })]);
+    await resumeGrant('g1', 'grantor_access_lost');
+    expect(callsOf('update')).toEqual([]);
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'grantor_access_lost' })], [grantRow()]);
+    await resumeGrant('g1', 'grantor_access_lost');
+    expect(setsApplied()[0]).toMatchObject({ status: 'active' });
   });
 
   it('resumeGrant only moves paused → active, and never a user_paused grant', async () => {

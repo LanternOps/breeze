@@ -344,10 +344,25 @@ CREATE INDEX IF NOT EXISTS ai_operator_tasks_grant_id_idx ON ai_operator_tasks (
 -- grant must belong to the partner of the row's org, and an org-scoped grant
 -- may only pin work in its own org. It reads under the CALLER's RLS, so it
 -- fails closed in a context that cannot see the grant (grant-bearing work is
--- admitted in system scope).
+-- admitted in system scope). The pin is also IMMUTABLE after admission — a
+-- writer clearing it would strip the ceiling from a live run — except on the
+-- enqueue-failed reclaim, which re-admits the row as a new attempt.
 CREATE OR REPLACE FUNCTION public.wisp_grant_link_tenant_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'UPDATE'
+     AND (NEW.grant_id IS DISTINCT FROM OLD.grant_id OR NEW.grant_revision_id IS DISTINCT FROM OLD.grant_revision_id) THEN
+    -- Nested IFs: OLD.error_code exists only on ai_agent_runs.
+    IF TG_TABLE_NAME = 'ai_agent_runs' THEN
+      IF NOT (OLD.status = 'failed' AND OLD.error_code = 'enqueue_failed') THEN
+        RAISE EXCEPTION USING ERRCODE = '42501',
+          MESSAGE = format('%s: the delegation grant pin is immutable after admission', TG_TABLE_NAME);
+      END IF;
+    ELSE
+      RAISE EXCEPTION USING ERRCODE = '42501',
+        MESSAGE = format('%s: the delegation grant pin is immutable after admission', TG_TABLE_NAME);
+    END IF;
+  END IF;
   IF NEW.grant_id IS NULL THEN
     RETURN NEW;
   END IF;
@@ -366,10 +381,10 @@ BEGIN
 END $$;
 
 DROP TRIGGER IF EXISTS ai_agent_runs_grant_tenant_guard ON ai_agent_runs;
-CREATE TRIGGER ai_agent_runs_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, org_id ON ai_agent_runs
+CREATE TRIGGER ai_agent_runs_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, grant_revision_id, org_id ON ai_agent_runs
   FOR EACH ROW EXECUTE FUNCTION public.wisp_grant_link_tenant_guard();
 DROP TRIGGER IF EXISTS ai_operator_tasks_grant_tenant_guard ON ai_operator_tasks;
-CREATE TRIGGER ai_operator_tasks_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, org_id ON ai_operator_tasks
+CREATE TRIGGER ai_operator_tasks_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, grant_revision_id, org_id ON ai_operator_tasks
   FOR EACH ROW EXECUTE FUNCTION public.wisp_grant_link_tenant_guard();
 
 -- ---------------------------------------------------------------------------

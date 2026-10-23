@@ -41,11 +41,12 @@ vi.mock('../permissions', async (importOriginal) => {
   return { ...actual, getUserPermissions: vi.fn(async () => null) };
 });
 
-const grantMocks = vi.hoisted(() => ({ resolveGrantCeiling: vi.fn(), assertWithinCeiling: vi.fn() }));
+const grantMocks = vi.hoisted(() => ({ resolveGrantCeiling: vi.fn(), assertWithinCeiling: vi.fn(), assertToolCallWithinCeiling: vi.fn() }));
 vi.mock('../wisp/grantAuthority', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../wisp/grantAuthority')>();
   grantMocks.assertWithinCeiling.mockImplementation(actual.assertWithinCeiling);
-  return { ...actual, resolveGrantCeiling: grantMocks.resolveGrantCeiling, assertWithinCeiling: grantMocks.assertWithinCeiling };
+  grantMocks.assertToolCallWithinCeiling.mockImplementation(actual.assertToolCallWithinCeiling);
+  return { ...actual, resolveGrantCeiling: grantMocks.resolveGrantCeiling, assertWithinCeiling: grantMocks.assertWithinCeiling, assertToolCallWithinCeiling: grantMocks.assertToolCallWithinCeiling };
 });
 
 import { createAgentRunCallPairing, createAgentRunPreToolUse } from './runLoop';
@@ -97,6 +98,7 @@ function denied(result: Awaited<ReturnType<ReturnType<typeof createAgentRunPreTo
 beforeEach(() => {
   grantMocks.resolveGrantCeiling.mockReset();
   grantMocks.assertWithinCeiling.mockClear();
+  grantMocks.assertToolCallWithinCeiling.mockClear();
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
 });
 afterEach(() => {
@@ -120,10 +122,20 @@ describe('delegation ceiling in createAgentRunPreToolUse', () => {
     const pre = makeHook({ grantId: 'g1', outcome, toolAllowlist: ['query_devices'] });
     await pre('query_devices', {});
     expect(grantMocks.resolveGrantCeiling).toHaveBeenCalledWith('g1', 'r1');
-    expect(grantMocks.assertWithinCeiling).toHaveBeenCalledWith(
+    expect(grantMocks.assertToolCallWithinCeiling).toHaveBeenCalledWith(
       expect.objectContaining({ grantId: 'g1' }),
-      { toolName: 'query_devices', permission: 'devices:read', orgId: ORG_ID, siteId: SITE_ID },
+      { toolName: 'query_devices', orgId: ORG_ID, siteId: SITE_ID },
+      [{ resource: 'devices', action: 'read' }],
     );
+  });
+
+  it('control: a read inside every ceiling term is ALLOWED (the ceiling is not a blanket deny)', async () => {
+    const outcome = makeOutcome();
+    grantMocks.resolveGrantCeiling.mockResolvedValue(ceiling({ siteIds: new Set([SITE_ID]) }));
+    const pre = makeHook({ grantId: 'g1', outcome, toolAllowlist: ['query_devices'] });
+    const result = await pre('query_devices', {});
+    expect(result.allowed).toBe(true);
+    expect(outcome.deniedActions).toEqual([]);
   });
 
   it('a site-restricted ceiling denies a device outside it (code site)', async () => {
@@ -175,7 +187,7 @@ describe('delegation ceiling in createAgentRunPreToolUse', () => {
     const pre = makeHook({ grantId: null, outcome, toolAllowlist: ['query_devices'] });
     await pre('query_devices', {}).catch(() => undefined);
     expect(grantMocks.resolveGrantCeiling).not.toHaveBeenCalled();
-    expect(grantMocks.assertWithinCeiling).not.toHaveBeenCalled();
+    expect(grantMocks.assertToolCallWithinCeiling).not.toHaveBeenCalled();
   });
 
   it('the ceiling is memoised for 15 s inside one run frame (two tool calls → one resolve), then re-resolved', async () => {

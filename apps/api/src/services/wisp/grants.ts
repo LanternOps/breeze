@@ -201,6 +201,8 @@ export function buildGrantSnapshot(live: Extract<LiveHumanTerm, { ok: true }>, s
     siteIds: live.siteIds === null ? null : [...new Set(live.siteIds)].sort(),
     toolAllowlist: null,
     deniedTools: [...new Set(agentDeniedToolNames())].sort(),
+    // Pinned so a later widening to org_access 'all' needs a refresh (§4.4).
+    partnerWide: scope.orgId === null && live.partnerOrgAccess === 'all',
   };
 }
 
@@ -367,7 +369,9 @@ export async function refreshGrant(input: { auth: AuthContext; grantId: string; 
   const snapshot = buildGrantSnapshot(live, scope);
   const method = await consumeWispStepUp(auth, scope, ceilingSnapshotHash(snapshot), input.stepUpGrantId);
 
-  const { updated, revisionNumber } = await db.transaction(async (tx) => {
+  let refreshed: { updated: WispGrantRow; revisionNumber: number };
+  try {
+    refreshed = await db.transaction(async (tx) => {
     const [agg] = await tx
       .select({ maxRevision: max(wispGrantRevisions.revision) })
       .from(wispGrantRevisions)
@@ -392,7 +396,16 @@ export async function refreshGrant(input: { auth: AuthContext; grantId: string; 
       .returning();
     if (!next) throw new WispGrantError('not_active', 'This Wisp grant changed while refreshing; try again.');
     return { updated: next, revisionNumber: nextRevision };
-  });
+    });
+  } catch (err) {
+    // Two concurrent refreshes compute the same revision n+1; the loser trips
+    // wisp_grant_revisions_grant_rev_uq. Not a server error: tell it to retry.
+    if (pgErrorInfo(err).code === '23505') {
+      throw new WispGrantError('not_active', 'This Wisp grant changed while refreshing; try again.');
+    }
+    throw err;
+  }
+  const { updated, revisionNumber } = refreshed;
 
   const grant = toGrant(updated);
   await audit({
@@ -436,7 +449,12 @@ export async function updateGrantSettings(input: {
   patch: { budgetCentsPerDay?: number; floorTickMinutes?: number };
   bounds?: GrantSettingsBounds;
 }): Promise<WispGrant> {
-  const bounds = input.bounds ?? DEFAULT_SETTINGS_BOUNDS;
+  // The DB CHECK floor is 15 minutes; caller bounds can only tighten it.
+  const requested = input.bounds ?? DEFAULT_SETTINGS_BOUNDS;
+  const bounds: GrantSettingsBounds = {
+    budgetCentsPerDayMax: requested.budgetCentsPerDayMax,
+    minFloorTickMinutes: Math.max(DEFAULT_SETTINGS_BOUNDS.minFloorTickMinutes, requested.minFloorTickMinutes),
+  };
   const { budgetCentsPerDay, floorTickMinutes } = input.patch;
   const outOfBounds = () => new WispGrantError(
     'settings_out_of_bounds',
@@ -551,7 +569,18 @@ export async function listGrants(input: { auth: AuthContext; view: 'mine' | 'par
  * resume is refused with not_user_paused and the system owner resumes it). A
  * revoked / expired grant is never touched.
  */
-export async function pauseGrant(grantId: string, reason: WispGrantPauseReason): Promise<void> {
+export async function pauseGrant(
+  grantId: string,
+  reason: WispGrantPauseReason,
+  opts: {
+    /**
+     * Pause only an ACTIVE grant; never touch one already paused. The W02
+     * reconciler passes this: its standing was judged against an active row,
+     * and a pause the grantor made meanwhile must stay theirs (w00 A29).
+     */
+    onlyFromActive?: boolean;
+  } = {},
+): Promise<void> {
   const changed = await systemContext(async () => {
     const [row] = await db.select().from(wispGrants).where(eq(wispGrants.id, grantId)).limit(1);
     if (!row) return null;
@@ -563,7 +592,7 @@ export async function pauseGrant(grantId: string, reason: WispGrantPauseReason):
         .returning();
       return updated ?? null;
     }
-    if (row.status === 'paused' && row.pausedReason === 'user_paused' && reason !== 'user_paused') {
+    if (!opts.onlyFromActive && row.status === 'paused' && row.pausedReason === 'user_paused' && reason !== 'user_paused') {
       const [updated] = await db
         .update(wispGrants)
         .set({ pausedReason: reason })
@@ -581,12 +610,16 @@ export async function pauseGrant(grantId: string, reason: WispGrantPauseReason):
 /**
  * paused → active for a SYSTEM pause whose cause has cleared. Never resumes a
  * 'user_paused' grant (w00 A29), an expired one, or a non-paused one.
- * Callers own the "has the cause cleared" judgement for their reason.
+ * Callers own the "has the cause cleared" judgement for their reason, so they
+ * pass `expectedReason`: the resume is a compare-and-set on exactly the pause
+ * they judged, and a different pause set meanwhile (another wave's budget or
+ * entitlement pause) is left alone.
  */
-export async function resumeGrant(grantId: string): Promise<void> {
+export async function resumeGrant(grantId: string, expectedReason?: WispGrantPauseReason): Promise<void> {
   const changed = await systemContext(async () => {
     const [row] = await db.select().from(wispGrants).where(eq(wispGrants.id, grantId)).limit(1);
     if (!row || row.status !== 'paused' || row.pausedReason === 'user_paused') return null;
+    if (expectedReason !== undefined && row.pausedReason !== expectedReason) return null;
     if (row.expiresAt.getTime() <= Date.now()) return null;
     const [updated] = await db
       .update(wispGrants)
@@ -658,5 +691,7 @@ export async function wideningAvailable(grantId: string): Promise<boolean> {
   const snapshotOrgs = new Set(parsed.data.orgIds);
   const liveOrgs = row.orgId === null ? live.orgIds : live.orgIds.filter((id) => id === row.orgId);
   if (liveOrgs.some((id) => !snapshotOrgs.has(id))) return true;
+  // A partner-wide grant whose grantor gained org_access 'all' since the pin.
+  if (row.orgId === null && live.partnerOrgAccess === 'all' && parsed.data.partnerWide !== true) return true;
   return live.permissionKeys.some((k) => !covers(parsed.data.permissionKeys, k));
 }

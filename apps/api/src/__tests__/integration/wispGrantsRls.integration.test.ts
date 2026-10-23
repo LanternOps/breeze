@@ -30,6 +30,7 @@ import {
   aiAgentRuns,
   aiAgents,
   devices,
+  partnerUsers,
   permissions,
   rolePermissions,
   users,
@@ -39,7 +40,9 @@ import {
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import type { AuthContext } from '../../middleware/auth';
 import { mintStepUpGrant, wispGrantResourceDigest } from '../../services/mfaStepUpGrant';
-import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
+import { assertWithinCeiling, resolveGrantCeiling } from '../../services/wisp/grantAuthority';
+import { checkAgentReleaseAuthority } from '../../services/actionIntents/agentReleaseAuthority';
+import type { ActionIntent } from '../../db/schema/actionIntents';
 import { createGrant, previewGrantCeiling, refreshGrant, revokeGrant } from '../../services/wisp/grants';
 import { reconcileActiveGrants, reconcileGrantsForUser } from '../../services/wisp/grantLifecycle';
 import {
@@ -185,6 +188,13 @@ async function mintWispStepUp(t: Tenant, sid: string, orgId: string | null, ceil
   if (!id) throw new Error('mintStepUpGrant returned null (is the test Redis up?)');
   return id;
 }
+
+// resolveGrantCeiling refuses every grant while Wisp is off; the suite runs with it on.
+beforeEach(() => {
+  vi.stubEnv('IS_HOSTED', 'true');
+  vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -424,9 +434,6 @@ describe('grant lifecycle through the service (real step-up in test Redis)', () 
   });
 
   it('reconcileGrantsForUser pauses with grantor_suspended after users.status = disabled, and resumes after re-activation', async () => {
-    vi.stubEnv('IS_HOSTED', 'true');
-    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
-    vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
     const t = await seedTenant();
     const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
 
@@ -447,6 +454,64 @@ describe('grant lifecycle through the service (real step-up in test Redis)', () 
     expect(out.expired).toBeGreaterThanOrEqual(1);
     expect((await readGrant(expired.grantId)).status).toBe('expired');
     expect(await readGrant(userPaused.grantId)).toMatchObject({ status: 'paused', pausedReason: 'user_paused' });
+  });
+});
+
+describe('grant service edge cases against real Postgres', () => {
+  it('a grantor narrowed to selected-with-no-orgs is PAUSED, even though the hidden Quick Support org is still "reachable"', async () => {
+    const t = await seedTenant();
+    await createOrganization({ partnerId: t.partner.id, type: 'quick_support' });
+    const { grantId, revisionId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id, t.org2.id] });
+    await getTestDb().update(partnerUsers).set({ orgAccess: 'selected', orgIds: [] }).where(eq(partnerUsers.userId, t.grantor.id));
+    await expect(resolveGrantCeiling(grantId, revisionId)).rejects.toMatchObject({ kind: 'paused' });
+    expect(await reconcileGrantsForUser(t.grantor.id)).toMatchObject({ paused: 1 });
+    expect(await readGrant(grantId)).toMatchObject({ status: 'paused', pausedReason: 'grantor_access_lost' });
+  });
+
+  it('a partner-wide preview never pins the Quick Support org', async () => {
+    const t = await seedTenant();
+    const qs = await createOrganization({ partnerId: t.partner.id, type: 'quick_support' });
+    const preview = await asGrantor(t, () => previewGrantCeiling({ auth: grantorAuth(t, randomUUID()), scope: { partnerId: t.partner.id, orgId: null } }));
+    expect(preview.ceilingSnapshot.orgIds).not.toContain(qs.id);
+    expect(preview.ceilingSnapshot.partnerWide).toBe(true);
+  });
+
+  it('two concurrent createGrant calls for the same scope: exactly one succeeds, the other is already_active', async () => {
+    const t = await seedTenant();
+    const sid = randomUUID();
+    const auth = grantorAuth(t, sid);
+    const scope = { partnerId: t.partner.id, orgId: null };
+    const preview = await asGrantor(t, () => previewGrantCeiling({ auth, scope }));
+    const [a, b] = [await mintWispStepUp(t, sid, null, preview.ceilingHash), await mintWispStepUp(t, sid, null, preview.ceilingHash)];
+    const results = await Promise.allSettled([
+      asGrantor(t, () => createGrant({ auth, scope, stepUpGrantId: a })),
+      asGrantor(t, () => createGrant({ auth, scope, stepUpGrantId: b })),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: 'already_active' });
+    const live = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(wispGrants).where(eq(wispGrants.partnerId, t.partner.id)));
+    expect(live).toHaveLength(1);
+  });
+
+  it('a *:* partner admin is a valid grantor, and the ceiling honours the wildcard', async () => {
+    const t = await seedTenant();
+    const sid = randomUUID();
+    const admin = (await getTestDb().select().from(users).where(eq(users.id, t.admin.id)).limit(1))[0]!;
+    const auth = { ...grantorAuth(t, sid), user: { id: admin.id, email: admin.email, name: 'Admin', isPlatformAdmin: false } } as AuthContext;
+    const adminCtx = partnerContext(t.partner.id, [t.org.id, t.org2.id], admin.id);
+    const scope = { partnerId: t.partner.id, orgId: null };
+    const preview = await withDbAccessContext(adminCtx, () => previewGrantCeiling({ auth, scope }));
+    expect(preview.ceilingSnapshot.permissionKeys).toEqual(['*:*']);
+    const epochs = await userEpochs(admin.id);
+    const stepUp = await mintStepUpGrant({
+      userId: admin.id, operation: 'wisp_grant', authEpoch: epochs.authEpoch, mfaEpoch: epochs.mfaEpoch, sid,
+      resourceDigest: wispGrantResourceDigest({ grantorUserId: admin.id, partnerId: t.partner.id, orgId: null, requestedCeilingHash: preview.ceilingHash }),
+    });
+    const created = await withDbAccessContext(adminCtx, () => createGrant({ auth, scope, stepUpGrantId: stepUp! }));
+    const ceiling = await resolveGrantCeiling(created.id, created.currentRevisionId!);
+    expect(ceiling.permissionKeys.has('*:*')).toBe(true);
+    expect(() => assertWithinCeiling(ceiling, { permission: 'scripts:execute', orgId: t.org.id })).not.toThrow();
   });
 });
 
@@ -517,6 +582,47 @@ describe('run admission under a grant (Wisp design §4.3, §4.5)', () => {
     })).resolves.toEqual({ created: false, skipped: 'grant_inactive' });
     const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, t.org.id)));
     expect(runs).toEqual([]);
+  });
+
+  async function admitUnderGrant(t: Tenant, deviceId: string, g: { grantId: string; revisionId: string }) {
+    const r = await createAndEnqueueAgentRun({
+      orgId: t.org.id, kind: 'triage', triggerKind: 'manual', deviceId, dedupeKey: `manual:${randomUUID()}`,
+      grant: { grantId: g.grantId, grantRevisionId: g.revisionId },
+    });
+    if (!r.created) throw new Error(`expected admission, got ${r.skipped}`);
+    return r.run;
+  }
+
+  it('the grant pin is immutable after admission: clearing it → 42501 (ai_agent_runs_grant_tenant_guard)', async () => {
+    const t = await seedTenant();
+    const { deviceId } = await seedAgentAndDevice(t);
+    const g = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    const run = await admitUnderGrant(t, deviceId, g);
+    await expectSqlState(() => withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(aiAgentRuns).set({ grantId: null, grantRevisionId: null }).where(eq(aiAgentRuns.id, run.id))), '42501');
+  });
+
+  it('release under the real ceiling: paused → grant_inactive; revoked → grant_ended; org left the ceiling → grant_ceiling_violation(org)', async () => {
+    const t = await seedTenant();
+    const { deviceId } = await seedAgentAndDevice(t);
+    const g = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id, t.org2.id] });
+    const run = await admitUnderGrant(t, deviceId, g);
+    const intent = {
+      id: randomUUID(), orgId: t.org.id, partnerId: t.partner.id, requestingAgentRunId: run.id,
+      originPrincipalKind: 'ai_agent', originPrincipalId: run.agentId, source: 'ai_agent',
+      actionName: 'query_devices', arguments: {}, riskTier: 3, scopeKind: null, scopeDeviceId: null, scopeTicketId: null,
+    } as unknown as ActionIntent;
+
+    // The org leaves the grantor's live reach (still has org2, so not a pause).
+    await getTestDb().update(partnerUsers).set({ orgAccess: 'selected', orgIds: [t.org2.id] }).where(eq(partnerUsers.userId, t.grantor.id));
+    await expect(checkAgentReleaseAuthority(intent)).resolves.toMatchObject({ ok: false, errorCode: 'grant_ceiling_violation', details: { code: 'org' } });
+    await getTestDb().update(partnerUsers).set({ orgAccess: 'all', orgIds: null }).where(eq(partnerUsers.userId, t.grantor.id));
+
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(wispGrants).set({ status: 'paused', pausedReason: 'user_paused', pausedAt: new Date() }).where(eq(wispGrants.id, g.grantId)));
+    await expect(checkAgentReleaseAuthority(intent)).resolves.toMatchObject({ ok: false, errorCode: 'grant_inactive' });
+
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(wispGrants).set({ status: 'revoked', pausedReason: null, revokedAt: new Date() }).where(eq(wispGrants.id, g.grantId)));
+    await expect(checkAgentReleaseAuthority(intent)).resolves.toMatchObject({ ok: false, errorCode: 'grant_ended' });
   });
 });
 

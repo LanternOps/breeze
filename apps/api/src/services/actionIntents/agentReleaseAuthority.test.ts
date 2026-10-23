@@ -72,11 +72,12 @@ vi.mock('../aiAgents/effectivePolicy', () => ({
 
 // Wisp W02: the pinned grant ceiling. The REAL assertWithinCeiling runs; only
 // the live resolve is stubbed (spied so call shape can be asserted).
-const grantState = vi.hoisted(() => ({ resolveGrantCeiling: vi.fn(), assertWithinCeiling: vi.fn() }));
+const grantState = vi.hoisted(() => ({ resolveGrantCeiling: vi.fn(), assertWithinCeiling: vi.fn(), assertToolCallWithinCeiling: vi.fn() }));
 vi.mock('../wisp/grantAuthority', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../wisp/grantAuthority')>();
   grantState.assertWithinCeiling.mockImplementation(actual.assertWithinCeiling);
-  return { ...actual, resolveGrantCeiling: grantState.resolveGrantCeiling, assertWithinCeiling: grantState.assertWithinCeiling };
+  grantState.assertToolCallWithinCeiling.mockImplementation(actual.assertToolCallWithinCeiling);
+  return { ...actual, resolveGrantCeiling: grantState.resolveGrantCeiling, assertWithinCeiling: grantState.assertWithinCeiling, assertToolCallWithinCeiling: grantState.assertToolCallWithinCeiling };
 });
 
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicy } from '@breeze/shared';
@@ -789,12 +790,40 @@ describe('checkAgentReleaseAuthority', () => {
       expect(grantState.resolveGrantCeiling).not.toHaveBeenCalled();
     });
 
-    it('grant_inactive when resolveGrantCeiling throws GrantInactiveError (pausable)', async () => {
+    it('grant_inactive when the grant is PAUSED (pausable)', async () => {
       const { GrantInactiveError } = await import('../wisp/grantAuthority');
       seedHappyRows({ run: grantRun() });
-      grantState.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g1', 'revoked'));
+      grantState.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g1', 'paused'));
       await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toEqual({
         ok: false, errorCode: 'grant_inactive', details: { grantId: 'g1', grantRevisionId: 'r1', code: 'inactive' },
+      });
+    });
+
+    it('grant_ended (terminal) when the grant was revoked or expired', async () => {
+      const { GrantInactiveError } = await import('../wisp/grantAuthority');
+      for (const status of ['revoked', 'expired'] as const) {
+        seedHappyRows({ run: grantRun() });
+        grantState.resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError('g1', status));
+        await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({
+          ok: false, errorCode: 'grant_ended', details: { grantId: 'g1', status },
+        });
+      }
+    });
+
+    it('a corrupt pin is a terminal violation, never a pause', async () => {
+      const { GrantInactiveError } = await import('../wisp/grantAuthority');
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g1', 'active', 'malformed ceiling snapshot', 'corrupt'));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({
+        ok: false, errorCode: 'grant_ceiling_violation', details: { code: 'corrupt' },
+      });
+    });
+
+    it('an evaluator outage is grant_ceiling_unavailable (pausable), never a throw that strands the claim', async () => {
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockRejectedValue(new Error('connection terminated'));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({
+        ok: false, errorCode: 'grant_ceiling_unavailable', details: { grantId: 'g1', code: 'unavailable' },
       });
     });
 
@@ -819,9 +848,10 @@ describe('checkAgentReleaseAuthority', () => {
       grantState.resolveGrantCeiling.mockResolvedValue(ceiling());
       await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toEqual({ ok: true });
       expect(grantState.resolveGrantCeiling).toHaveBeenCalledWith('g1', 'r1');
-      expect(grantState.assertWithinCeiling).toHaveBeenCalledWith(
+      expect(grantState.assertToolCallWithinCeiling).toHaveBeenCalledWith(
         expect.objectContaining({ grantId: 'g1' }),
-        expect.objectContaining({ toolName: 'manage_services', orgId: 'org-1', siteId: 'site-a', permission: expect.stringMatching(/^devices:/) }),
+        { toolName: 'manage_services', orgId: 'org-1', siteId: 'site-a' },
+        expect.arrayContaining([expect.objectContaining({ resource: 'devices' })]),
       );
     });
 

@@ -246,12 +246,14 @@ function operationResultStateFromToolResult(
  * already reaped it to `failed:execution_lost`) — nothing further to do.
  *
  * Wisp W02 generalised this from the kill switch alone: `grant_inactive` (the
- * run's delegation grant is paused, revoked, expired or its grantor lost
- * standing) is recoverable the same way — a grant resumed before the lease
- * passes releases normally. A ceiling VIOLATION is not in this set: it is
- * terminal, like every other structural denial.
+ * run's delegation grant is paused, its grantor lost standing, or Wisp is off)
+ * is recoverable the same way — the row stays claimable by a later delivery,
+ * else the lease reaper expires it. `grant_ceiling_unavailable` (the evaluator
+ * itself failed) pauses too, rather than stranding the claim in `executing`.
+ * `grant_ended` (revoked / expired) and a ceiling VIOLATION are not in this
+ * set: they are terminal, like every other structural denial.
  */
-const PAUSABLE_RELEASE_CODES: ReadonlySet<string> = new Set(['kill_switch_engaged', 'grant_inactive']);
+const PAUSABLE_RELEASE_CODES: ReadonlySet<string> = new Set(['kill_switch_engaged', 'grant_inactive', 'grant_ceiling_unavailable']);
 
 async function pauseIntentForRecoverableDenial(
   intent: ActionIntent,

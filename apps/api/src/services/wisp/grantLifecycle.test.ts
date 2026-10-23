@@ -28,8 +28,10 @@ const h = vi.hoisted(() => {
     createAuditLogAsync: vi.fn(),
     wispEnabled: vi.fn(),
     onPermissionAuthorityChanged: vi.fn(),
+    captureException: vi.fn(),
   };
 });
+vi.mock('../sentry', () => ({ captureException: h.captureException }));
 
 vi.mock('../../db', () => ({
   db: h.db,
@@ -98,11 +100,12 @@ describe('evaluateGrantStanding', () => {
     expect(await evaluateGrantStanding(grant({ orgId: 'o2' }) as never)).toEqual({ kind: 'pause', reason: 'grantor_access_lost' });
   });
 
-  it('→ pause:grantor_access_lost when the current revision is missing or malformed (fail closed)', async () => {
+  it('→ pause:grantor_access_lost when the current revision is missing or malformed (fail closed) — and reports the corruption', async () => {
     h.results.push([]);
     expect(await evaluateGrantStanding(grant() as never)).toEqual({ kind: 'pause', reason: 'grantor_access_lost' });
     h.results.push([{ ceilingSnapshot: { version: 7 } }]);
     expect(await evaluateGrantStanding(grant() as never)).toEqual({ kind: 'pause', reason: 'grantor_access_lost' });
+    expect(h.captureException).toHaveBeenCalledTimes(2);
   });
 
   it('→ ok when partial narrowing still leaves an org (narrowing shrinks silently)', async () => {
@@ -129,16 +132,15 @@ describe('reconcileActiveGrants', () => {
     h.results.push([{ ceilingSnapshot: SNAPSHOT }]);
     // expiry updates (a-expired, p-expired)
     h.results.push([{ id: 'a-expired', partnerId: PARTNER, orgId: null }], [{ id: 'p-expired', partnerId: PARTNER, orgId: null }]);
-    h.results.push([]); // next page: empty
 
     const out = await reconcileActiveGrants(new Date());
-    expect(h.pauseGrant).toHaveBeenCalledWith('a-bad', 'grantor_suspended');
-    expect(h.resumeGrant).toHaveBeenCalledWith('p-recovered');
+    expect(h.pauseGrant).toHaveBeenCalledWith('a-bad', 'grantor_suspended', { onlyFromActive: true });
+    expect(h.resumeGrant).toHaveBeenCalledWith('p-recovered', 'grantor_access_lost');
     expect(h.resumeGrant).not.toHaveBeenCalledWith('p-entitlement');
     expect(h.resumeGrant).not.toHaveBeenCalledWith('p-user');
     expect(h.pauseGrant).not.toHaveBeenCalledWith('p-user', expect.anything());
     expect(setsApplied().filter((s) => (s as { status?: string }).status === 'expired')).toHaveLength(2);
-    expect(out).toMatchObject({ scanned: 6, paused: 1, resumed: 1, expired: 2 });
+    expect(out).toMatchObject({ scanned: 6, paused: 1, resumed: 1, expired: 2, failed: 0 });
   });
 
   it('one failing grant does not stop the sweep', async () => {
@@ -147,12 +149,13 @@ describe('reconcileActiveGrants', () => {
       if (userId === 'x') throw new Error('db down');
       return { ok: false, reason: 'grantor_suspended' };
     });
-    h.results.push([]);
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const out = await reconcileActiveGrants(new Date());
     errSpy.mockRestore();
-    expect(h.pauseGrant).toHaveBeenCalledWith('fine', 'grantor_suspended');
+    expect(h.pauseGrant).toHaveBeenCalledWith('fine', 'grantor_suspended', { onlyFromActive: true });
     expect(out.paused).toBe(1);
+    expect(out.failed).toBe(1);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { grantId: 'boom' });
   });
 });
 
@@ -161,7 +164,7 @@ describe('reconcileGrantsForUser', () => {
     h.results.push([grant()]);
     h.computeLiveHumanTerm.mockResolvedValueOnce({ ok: false, reason: 'grantor_suspended' });
     const out = await reconcileGrantsForUser('u1');
-    expect(h.pauseGrant).toHaveBeenCalledWith('g1', 'grantor_suspended');
+    expect(h.pauseGrant).toHaveBeenCalledWith('g1', 'grantor_suspended', { onlyFromActive: true });
     expect(out).toEqual({ paused: 1, resumed: 0, expired: 0 });
   });
 

@@ -86,7 +86,7 @@ import {
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
 import {
-  assertWithinCeiling,
+  assertToolCallWithinCeiling,
   CeilingViolationError,
   GrantInactiveError,
   resolveGrantCeiling,
@@ -900,14 +900,14 @@ export function createAgentRunPreToolUse(args: {
    * live run within the memo window; release re-checks independently.
    */
   let grantCeilingMemo: { ceiling: GrantCeiling; at: number } | null = null;
-  async function resolvePinnedCeiling(): Promise<
+  async function resolvePinnedCeiling(opts: { fresh?: boolean } = {}): Promise<
     { ok: true; ceiling: GrantCeiling } | { ok: false; reason: string; error: string }
   > {
     if (!run.grantId || !run.grantRevisionId) {
       const reason = 'delegation ceiling could not be verified';
       return { ok: false, reason, error: `${reason}. Stop and do not retry.` };
     }
-    if (grantCeilingMemo && Date.now() - grantCeilingMemo.at < GRANT_CEILING_MEMO_MS) {
+    if (!opts.fresh && grantCeilingMemo && Date.now() - grantCeilingMemo.at < GRANT_CEILING_MEMO_MS) {
       return { ok: true, ceiling: grantCeilingMemo.ceiling };
     }
     try {
@@ -921,8 +921,9 @@ export function createAgentRunPreToolUse(args: {
       const reason = error instanceof GrantInactiveError
         ? 'delegation grant is no longer active'
         : 'delegation ceiling could not be verified';
-      if (!(error instanceof GrantInactiveError)) {
+      if (!(error instanceof GrantInactiveError) || error.kind === 'corrupt') {
         console.error('[aiAgentRunLoop] delegation ceiling read failed; denying', { runId: run.id, grantId: run.grantId, error });
+        captureException(error, undefined, { grantId: run.grantId ?? '', runId: run.id, stage: 'run_loop' });
       }
       return { ok: false, reason, error: `${reason}. Stop and do not retry.` };
     }
@@ -936,15 +937,12 @@ export function createAgentRunPreToolUse(args: {
    * never reach here (their branch returns earlier).
    */
   function delegationCeilingDenial(ceiling: GrantCeiling, toolName: string, input: Record<string, unknown>): string | null {
-    const scope = { toolName, orgId: run.orgId, siteId: guardrailPolicy.deviceSiteId ?? null };
     try {
-      // Tool / org / site terms first, so a never-delegable tool reports as such.
-      assertWithinCeiling(ceiling, scope);
-      const requirements = requiredPermissionsForTool(toolName, input);
-      if (!requirements || requirements.length === 0) return 'outside the delegation ceiling (permission)';
-      for (const r of requirements) {
-        assertWithinCeiling(ceiling, { ...scope, permission: `${r.resource}:${r.action}` });
-      }
+      assertToolCallWithinCeiling(
+        ceiling,
+        { toolName, orgId: run.orgId, siteId: guardrailPolicy.deviceSiteId ?? null },
+        requiredPermissionsForTool(toolName, input),
+      );
       return null;
     } catch (error) {
       if (error instanceof CeilingViolationError) return `outside the delegation ceiling (${error.code})`;
@@ -1292,6 +1290,17 @@ export function createAgentRunPreToolUse(args: {
     }
 
     if (check.disposition === 'act') {
+      // Wisp W02: an act-mode effect runs straight from this hook and never
+      // reaches release, so it re-resolves the ceiling FRESH (no memo): a
+      // grant revoked a second ago must not execute an effect.
+      if (run.grantId) {
+        const fresh = await resolvePinnedCeiling({ fresh: true });
+        const denial = fresh.ok ? delegationCeilingDenial(fresh.ceiling, toolName, input) : fresh.reason;
+        if (denial) {
+          outcome.deniedActions.push({ tool: toolName, reason: denial });
+          return { allowed: false, error: fresh.ok ? denial : fresh.error };
+        }
+      }
       // Same pure resolver `checkAgentGuardrails` already called to reach
       // 'act' — deterministic on the same (toolName, input), so this can
       // only be non-null. The null branch below is defense in depth, never

@@ -7,13 +7,14 @@ import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { checkAgentGuardrails, requiredPermissionsForTool, type AgentGuardrailPolicy } from '../aiGuardrails';
 import {
-  assertWithinCeiling,
+  assertToolCallWithinCeiling,
   CeilingViolationError,
   GrantInactiveError,
   resolveGrantCeiling,
   type GrantCeiling,
 } from '../wisp/grantAuthority';
 import { readAiKillState } from '../aiKillState';
+import { captureException } from '../sentry';
 import {
   AgentRunOwnershipError,
   buildAgentAuthContext,
@@ -260,11 +261,14 @@ export async function checkAgentReleaseAuthority(
   // permission or the org since approval stops the effect (the run's org can
   // fall out of the ceiling between admission and release). Ahead of the
   // policy candidates loop: a ceiling violation wins over a snapshot deny.
-  //   - grant_inactive  (paused / revoked / expired / standing lost) is
-  //     PAUSABLE like kill_switch_engaged: the intent goes back to `approved`
-  //     and releases if the grant resumes before its lease expires.
-  //   - grant_ceiling_violation is TERMINAL: the authority behind the
-  //     approval no longer covers this effect.
+  //   - grant_inactive (a pause of any reason, standing lost, Wisp off) is
+  //     PAUSABLE like kill_switch_engaged: the intent goes back to `approved`,
+  //     claimable by a later delivery, else expired by the lease reaper.
+  //   - grant_ceiling_unavailable (the evaluator itself failed) is PAUSABLE
+  //     too, and captured: an outage must not strand the claimed intent in
+  //     `executing` until the stale reaper fails it as execution_lost.
+  //   - grant_ended (revoked / expired / gone) and grant_ceiling_violation
+  //     (outside the ceiling, or a corrupt pin) are TERMINAL.
   if (run.grantId) {
     const grantDetails = { grantId: run.grantId, grantRevisionId: run.grantRevisionId };
     if (!run.grantRevisionId) {
@@ -275,22 +279,25 @@ export async function checkAgentReleaseAuthority(
       ceiling = await resolveGrantCeiling(run.grantId, run.grantRevisionId);
     } catch (error) {
       if (error instanceof GrantInactiveError) {
-        return { ok: false, errorCode: 'grant_inactive', details: { ...grantDetails, code: 'inactive' } };
+        if (error.kind === 'paused') {
+          return { ok: false, errorCode: 'grant_inactive', details: { ...grantDetails, code: 'inactive' } };
+        }
+        if (error.kind === 'ended') {
+          return { ok: false, errorCode: 'grant_ended', details: { ...grantDetails, code: 'inactive', status: error.status } };
+        }
+        captureException(error, undefined, { grantId: run.grantId, stage: 'release' });
+        return { ok: false, errorCode: 'grant_ceiling_violation', details: { ...grantDetails, code: 'corrupt' } };
       }
-      throw error;
+      captureException(error, undefined, { grantId: run.grantId, stage: 'release' });
+      return { ok: false, errorCode: 'grant_ceiling_unavailable', details: { ...grantDetails, code: 'unavailable' } };
     }
-    const scope = { toolName: intent.actionName, orgId: intent.orgId, siteId: deviceSiteId };
     try {
-      assertWithinCeiling(ceiling, scope);
-      // No resolvable human permission ⇒ cannot be shown inside the grantor's
-      // authority ⇒ terminal violation (fail closed).
-      const requirements = requiredPermissionsForTool(intent.actionName, intent.arguments as Record<string, unknown>);
-      if (!requirements || requirements.length === 0) {
-        return { ok: false, errorCode: 'grant_ceiling_violation', details: { ...grantDetails, code: 'permission' } };
-      }
-      for (const r of requirements) {
-        assertWithinCeiling(ceiling, { ...scope, permission: `${r.resource}:${r.action}` });
-      }
+      // No resolvable human permission fails closed inside the helper.
+      assertToolCallWithinCeiling(
+        ceiling,
+        { toolName: intent.actionName, orgId: intent.orgId, siteId: deviceSiteId },
+        requiredPermissionsForTool(intent.actionName, intent.arguments as Record<string, unknown>),
+      );
     } catch (error) {
       if (error instanceof CeilingViolationError) {
         return { ok: false, errorCode: 'grant_ceiling_violation', details: { ...grantDetails, code: error.code } };

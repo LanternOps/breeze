@@ -510,6 +510,14 @@ describe('requesterAccessLost — delegation grant (Wisp W02)', () => {
     );
   });
 
+  it('a task whose requester is not the grantor is lost (no running on someone else\'s grant)', async () => {
+    primeAccessOk();
+    grantGate.resolveGrantCeiling.mockResolvedValue(grantCeiling({ grantorUserId: 'someone-else' }));
+    await expect(requesterAccessLost(grantTask, DEVICE_ID)).resolves.toMatchObject({
+      lost: true, detail: expect.stringMatching(/not the delegation grant's grantor/),
+    });
+  });
+
   it('a grant-bearing task with no requester is lost (a grant is always a person\'s)', async () => {
     await expect(requesterAccessLost({ ...grantTask, requesterUserId: null }, DEVICE_ID, { permission: 'devices:execute' }))
       .resolves.toMatchObject({ lost: true });
