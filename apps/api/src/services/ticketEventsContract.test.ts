@@ -191,6 +191,18 @@ vi.mock('./ticketMailbox/resolveOutboundMailbox', () => ({
 
 // ── real implementations ─────────────────────────────────────────────────────
 
+// #8972 W0: ticket-child writers lock the ticket row first; these select mocks have
+// no .for(), so the helper is stubbed and its call is asserted below.
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({
+    id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null, workKind: 'support',
+  })),
+}));
+vi.mock('./ticketRowLock', () => ({
+  lockTicketForWrite: lockTicketForWriteMock,
+  lockTicketsForWrite: vi.fn(async () => new Map()),
+}));
+
 import { createTicket, addTicketComment, changeTicketStatus, updateTicketFields } from './ticketService';
 import { handleTicketEvent } from '../jobs/ticketNotifyWorker';
 import { assigneeNotificationFromOutboxRow } from '../jobs/ticketOutboxPublisher';
@@ -287,6 +299,8 @@ describe('ticket-events producer→consumer contract', () => {
     hoisted.updateReturningQueue.push([{ id: 't-c2' }]);
 
     await addTicketComment('t-c2', { content: 'We are looking into this.', isPublic: true }, actor);
+    // #8972 W0: the comment writer locked the ticket row first
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), 't-c2');
 
     expect(hoisted.emitCaptured).toHaveLength(1);
     const event = hoisted.emitCaptured[0] as TicketEvent;
