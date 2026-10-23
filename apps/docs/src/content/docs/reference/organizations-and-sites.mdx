@@ -87,8 +87,6 @@ Partner-scoped users can update their own partner's settings via the `/partners/
 | `dateFormat` | `enum` | `MM/DD/YYYY`, `DD/MM/YYYY`, or `YYYY-MM-DD`. |
 | `timeFormat` | `enum` | `12h` or `24h`. |
 | `language` | `string` | Language code. Currently only `en` is supported. |
-| `businessHours.preset` | `enum` | `24/7`, `business`, `extended`, or `custom`. |
-| `businessHours.custom` | `object` | Per-day schedule when preset is `custom`. Each day has `start`, `end` (time strings), and optional `closed` boolean. |
 | `contact.name` | `string` | Primary contact name. |
 | `contact.email` | `string` | Primary contact email. |
 | `contact.phone` | `string` | Primary contact phone. |
@@ -634,10 +632,7 @@ curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
   -H "Content-Type: application/json" \
   -d '{
     "settings": {
-      "timezone": "America/Chicago",
-      "businessHours": {
-        "preset": "business"
-      }
+      "timezone": "America/Chicago"
     }
   }'
 ```
