@@ -588,10 +588,12 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                 ? metricsRecord.uptimeChangeLabel
                 : undefined,
               sessions: pickNumber(
-                metricsRecord.remoteSessions,
+                // `sessions` is the in-range count; `remoteSessions` is the live
+                // active count and only a fallback when `sessions` is absent.
                 metricsRecord.sessions,
-                metrics.remoteSessions,
-                metrics.sessions
+                metricsRecord.remoteSessions,
+                metrics.sessions,
+                metrics.remoteSessions
               ),
               sessionsChange: pickOptionalNumber(metricsRecord.sessionsChange, metrics.sessionsChange),
               sessionsChangeLabel: typeof metricsRecord.sessionsChangeLabel === 'string'
