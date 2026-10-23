@@ -160,3 +160,24 @@ export interface YaraTestResult {
   testedDigest: string;
   matches: YaraTestMatch[];
 }
+
+/**
+ * `rule` of `GET /security/threats/:id/details` (#6267 W04-5): a typed
+ * projection of the agent-reported `security_threats.details`. Junk fields
+ * are dropped, never passed through. `matchedStrings[].data` is already
+ * escaped by the agent (`\xNN`); render it as text, never escape it again.
+ */
+export interface YaraThreatRuleView {
+  engine: SecurityScanEngine;
+  ruleName: string | null;
+  ruleId: string | null;
+  ruleSetId: string | null;
+  /** The set, joined under the caller's visibility; null = no longer available. */
+  ruleSet: { id: string; name: string; isBuiltin: boolean; partnerWide: boolean } | null;
+  tags: string[];
+  matchedStrings: Array<{ id: string; offset: number; data: string }>;
+  sha256: string | null;
+  /** The scan-time quarantine path. */
+  quarantinedTo: string | null;
+  quarantineFailed: boolean;
+}

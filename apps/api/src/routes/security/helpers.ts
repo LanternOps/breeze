@@ -746,7 +746,18 @@ export function impactFromAffected(affectedDevices: number, totalDevices: number
 
 // ── Threat actions ──────────────────────────────────────────────────────────
 
-export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' | 'restore') {
+/**
+ * One threat as the caller may see it (#6263 W04-5: shared by the threat
+ * actions and the details view). BOTH checks, in this order: the org
+ * condition (404 — not visible), then the site-scope gate (403) — RLS does
+ * not defend the site axis, it is intra-org. Mirrors the GET
+ * /threats/:deviceId read path.
+ */
+export async function loadThreatForCaller(c: any, id: string): Promise<
+  | { threat: ThreatRowWithDetails }
+  | { status: 404; error: 'Threat not found' }
+  | { status: 403; error: 'Access to this site denied' }
+> {
   const auth = c.get('auth') as AuthContext;
   let userPerms = c.get('permissions') as UserPermissions | undefined;
   if (!userPerms) {
@@ -756,7 +767,6 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
     });
     userPerms = fetched || undefined;
   }
-  const { id } = c.req.valid('param') as { id: string };
 
   const orgCondition = auth.orgCondition(devices.orgId);
   const conditions = [eq(securityThreats.id, id)];
@@ -767,12 +777,17 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
       id: securityThreats.id,
       deviceId: securityThreats.deviceId,
       deviceSiteId: devices.siteId,
+      orgId: devices.orgId,
+      deviceName: devices.hostname,
       provider: securityThreats.provider,
       threatName: securityThreats.threatName,
       threatType: securityThreats.threatType,
       severity: securityThreats.severity,
       filePath: securityThreats.filePath,
-      status: securityThreats.status
+      status: securityThreats.status,
+      detectedAt: securityThreats.detectedAt,
+      resolvedAt: securityThreats.resolvedAt,
+      details: securityThreats.details
     })
     .from(securityThreats)
     .innerJoin(devices, eq(devices.id, securityThreats.deviceId))
@@ -780,18 +795,83 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
     .limit(1);
 
   if (!threat) {
-    return c.json({ error: 'Threat not found' }, 404);
+    return { status: 404, error: 'Threat not found' };
   }
 
-  // Site-scope gate: RLS does not defend the site axis (it is intra-org).
-  // Reject site-restricted callers acting on a threat whose device is outside
-  // their site allowlist. Mirrors the GET /threats/:deviceId read path.
+  // Site-scope gate: reject site-restricted callers on a threat whose device
+  // is outside their site allowlist.
   if (
     userPerms?.allowedSiteIds &&
     (typeof threat.deviceSiteId !== 'string' || !canAccessSite(userPerms, threat.deviceSiteId))
   ) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return { status: 403, error: 'Access to this site denied' };
   }
+  return { threat };
+}
+
+export type ThreatRowWithDetails = {
+  id: string;
+  deviceId: string;
+  deviceSiteId: string | null;
+  orgId: string;
+  deviceName: string;
+  provider: string;
+  threatName: string;
+  threatType: string | null;
+  severity: ThreatRow['severity'];
+  filePath: string | null;
+  status: string;
+  detectedAt: Date;
+  resolvedAt: Date | null;
+  details: unknown;
+};
+
+/** The listing's row shape for one loaded threat (same mapping as listThreatRows). */
+export function toThreatRow(t: ThreatRowWithDetails): ThreatRow {
+  return {
+    id: t.id,
+    deviceId: t.deviceId,
+    orgId: t.orgId,
+    deviceName: t.deviceName,
+    provider: normalizeProvider(t.provider),
+    threatName: t.threatName,
+    threatType: t.threatType ?? 'malware',
+    severity: t.severity,
+    status: mapThreatStatus(t.status),
+    filePath: t.filePath ?? '',
+    detectedAt: t.detectedAt,
+    resolvedAt: t.resolvedAt
+  };
+}
+
+/** Exactly the object `GET /threats` (and `/threats/:deviceId`) emits per item. */
+export function toThreatListItem(threat: ThreatRow) {
+  return {
+    id: threat.id,
+    deviceId: threat.deviceId,
+    deviceName: threat.deviceName,
+    orgId: threat.orgId,
+    providerId: threat.provider,
+    provider: providerCatalog[threat.provider],
+    name: threat.threatName,
+    category: threat.threatType.toLowerCase(),
+    severity: threat.severity,
+    status: threat.status,
+    detectedAt: threat.detectedAt.toISOString(),
+    removedAt: threat.resolvedAt?.toISOString() ?? null,
+    filePath: threat.filePath
+  };
+}
+
+export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' | 'restore') {
+  const auth = c.get('auth') as AuthContext;
+  const { id } = c.req.valid('param') as { id: string };
+
+  const loaded = await loadThreatForCaller(c, id);
+  if (!('threat' in loaded)) {
+    return c.json({ error: loaded.error }, loaded.status);
+  }
+  const { threat } = loaded;
 
   const commandType = action === 'quarantine'
     ? CommandTypes.SECURITY_THREAT_QUARANTINE
