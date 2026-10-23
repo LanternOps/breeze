@@ -1447,6 +1447,11 @@ interface FkEdge {
  */
 export const CASCADE_ORDER_SET_NULL_EDGE_BREAKS: ReadonlySet<string> = new Set([
   'report_runs_artifact_id_ai_run_artifacts_id_fk',
+  // Wisp W02: wisp_grants.current_revision_id -> wisp_grant_revisions is ON
+  // DELETE SET NULL (current_revision_id); the reverse edge (revisions ->
+  // grants, CASCADE) is the real ownership, so the partner-axis sweep deletes
+  // revisions first and the grant's pointer falls to NULL.
+  'wisp_grants_current_revision_fk',
 ]);
 
 /**
