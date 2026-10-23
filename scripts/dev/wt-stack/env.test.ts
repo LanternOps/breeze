@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { writeEnvStack, readStackEnvValue, setStackEnvValues, pinWebAuthnForStack, caddyPortPin } from './env';
+import { writeEnvStack, readStackEnvValue, setStackEnvValues, pinWebAuthnForStack, caddyPortPin, restoreLocalPublicUrls } from './env';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'wt-')); });
@@ -230,6 +230,18 @@ describe('pinWebAuthnForStack', () => {
     setStackEnvValues(dir, { TUNNEL_ORIGIN_TEMPLATE: 'https://{host}.tunnel.example', PUBLIC_PORTAL_URL: 'https://portal.tunnel.example/portal' });
     pinWebAuthnForStack(dir, 'http://localhost:55001', fakeDeps().deps);
     expect(readStackEnvValue(dir, 'PUBLIC_PORTAL_URL')).toBe('https://portal.tunnel.example/portal');
+  });
+
+  // #9777 — tunnel teardown used to blank PUBLIC_PORTAL_URL, which compose then
+  // resolves to `https:///portal` again.
+  it('restoreLocalPublicUrls resets a tunnel-mode portal URL to the local base', () => {
+    writeEnvStack(dir);
+    setStackEnvValues(dir, { TUNNEL_ORIGIN_TEMPLATE: 'x', PUBLIC_PORTAL_URL: 'http://app.localhost:55001/portal' });
+    restoreLocalPublicUrls(dir, 'http://localhost:55001');
+    expect(readStackEnvValue(dir, 'PUBLIC_PORTAL_URL')).toBe('http://localhost:55001/portal');
+    expect(readStackEnvValue(dir, 'PUBLIC_APP_URL')).toBe('http://localhost:55001');
+    expect(readStackEnvValue(dir, 'PUBLIC_API_URL')).toBe('http://localhost:55001');
+    expect(readStackEnvValue(dir, 'DASHBOARD_URL')).toBe('http://localhost:55001');
   });
 
   it('overrides a root .env WEBAUTHN_RP_ID and origin for the local stack', () => {
