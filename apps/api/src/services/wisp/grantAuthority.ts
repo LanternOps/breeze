@@ -374,7 +374,9 @@ export const wispCeilingSnapshotSchema = z.object({
  */
 export async function resolveGrantCeiling(grantId: string, revisionId: string): Promise<GrantCeiling> {
   // Deployment switch: with Wisp off nothing runs under a grant, including
-  // work admitted before the flag flipped (it pauses, and resumes with the flag).
+  // work admitted before the flag flipped. Runs and releases treat it as a
+  // pause (kind 'paused'); an Operator task reaching its requester gate is
+  // handed off, as for any inactive grant.
   if (!wispEnabled()) throw new GrantInactiveError(grantId, 'paused', 'Wisp is disabled on this deployment', 'paused');
   const { grant, revision } = await inSystemContext(async () => {
       const [g] = await db
