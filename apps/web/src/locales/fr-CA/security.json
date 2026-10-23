@@ -2334,6 +2334,72 @@
     },
     "test": {
       "requestFailed": "Le test ne s’est pas terminé. Vérifiez votre connexion et réessayez."
+    },
+    "severity": {
+      "low": "Faible",
+      "medium": "Moyenne",
+      "high": "Élevée",
+      "critical": "Critique"
+    },
+    "publish": {
+      "saved": "Enregistré",
+      "autoQuarantineOnly": "La quarantaine automatique est maintenant désactivée sur les appareils. Vos autres modifications ne sont pas encore en vigueur.",
+      "published": "Enregistré et publié comme version {{version}}",
+      "savedDisabled": "Enregistré. L’ensemble est désactivé, donc les appareils ne l’utilisent pas.",
+      "checkerUnavailable": "Enregistré, non publié : le vérificateur de règles n’est pas disponible. {{devices}}",
+      "compileErrors_one": "Enregistré, non publié : {{count}} règle contient des erreurs. {{devices}}",
+      "compileErrors_other": "Enregistré, non publié : {{count}} règles contiennent des erreurs. {{devices}}",
+      "setErrors": "Enregistré, non publié : {{message}}. {{devices}}",
+      "noEnabledRules": "Aucune règle activée : les appareils ne balaient plus avec cet ensemble.",
+      "unknown": "Enregistré, mais le résultat de la publication est illisible. Rechargez l’ensemble pour voir quelle version les appareils utilisent.",
+      "devicesKeep": "Les appareils conservent la version {{version}}.",
+      "neverPublished": "Cet ensemble n’a pas encore été publié, donc les appareils ne l’utilisent pas.",
+      "setDisabled": "L’ensemble est désactivé, donc les appareils ne l’utilisent pas.",
+      "staleBanner": "Non publié : corrigez les erreurs ci-dessous. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Règles",
+        "import": "Importer des IOC",
+        "test": "Tester un fichier"
+      },
+      "rename": "Renommer l’ensemble de règles",
+      "enabled": "Activé",
+      "autoQuarantine": "Quarantaine automatique",
+      "autoQuarantineHelp": "Déplacer en quarantaine les fichiers correspondants sur chaque appareil qui balaie avec cet ensemble.",
+      "deleteSet": "Supprimer",
+      "deleteSetTitle": "Supprimer cet ensemble de règles?",
+      "deleteSetMessage": "Ses règles sont aussi supprimées. Les politiques qui l’indiquent encore le signaleront comme introuvable à leur prochain balayage.",
+      "deleteRuleTitle": "Supprimer cette règle?",
+      "deleteRuleMessage": "L’ensemble est vérifié puis republié sans elle.",
+      "addRule": "Ajouter une règle",
+      "noRules": "Cet ensemble ne contient encore aucune règle.",
+      "columns": {
+        "name": "Règle",
+        "severity": "Gravité",
+        "tags": "Étiquettes",
+        "state": "État"
+      },
+      "viewSource": "Afficher la source",
+      "hideSource": "Masquer la source",
+      "editRule": "Modifier la règle",
+      "deleteRule": "Supprimer la règle",
+      "errorLine": "Ligne {{line}} :",
+      "publishedVersion": "Version publiée {{version}}",
+      "readOnlyBuiltin": "L’ensemble de règles intégré est en lecture seule. Ses règles sont mises à jour avec les versions de Breeze."
+    },
+    "dialog": {
+      "titleAdd": "Ajouter une règle",
+      "titleEdit": "Modifier la règle",
+      "name": "Nom de la règle",
+      "nameHelp": "Lettres, chiffres et traits de soulignement; commence par une lettre ou un trait de soulignement (128 max.).",
+      "severity": "Gravité",
+      "tags": "Étiquettes",
+      "tagsHelp": "Séparées par des virgules, p. ex. ransomware, advisory-42",
+      "enabled": "Activée",
+      "source": "Source YARA",
+      "sourceTooLarge": "La source de la règle dépasse 64 Ko.",
+      "checkedOnSave": "À l’enregistrement, l’ensemble est vérifié avec le même compilateur que les appareils. Les règles qui contiennent des erreurs ne sont pas publiées."
     }
   }
 }

@@ -2334,6 +2334,72 @@
     },
     "test": {
       "requestFailed": "La prueba no terminó. Revise su conexión e inténtelo de nuevo."
+    },
+    "severity": {
+      "low": "Baja",
+      "medium": "Media",
+      "high": "Alta",
+      "critical": "Crítica"
+    },
+    "publish": {
+      "saved": "Guardado",
+      "autoQuarantineOnly": "La cuarentena automática ya está desactivada en los dispositivos. Sus otros cambios todavía no están activos.",
+      "published": "Guardado y publicado como versión {{version}}",
+      "savedDisabled": "Guardado. El conjunto está deshabilitado, así que los dispositivos no lo usan.",
+      "checkerUnavailable": "Guardado, sin publicar: el verificador de reglas no está disponible. {{devices}}",
+      "compileErrors_one": "Guardado, sin publicar: {{count}} regla tiene errores. {{devices}}",
+      "compileErrors_other": "Guardado, sin publicar: {{count}} reglas tienen errores. {{devices}}",
+      "setErrors": "Guardado, sin publicar: {{message}}. {{devices}}",
+      "noEnabledRules": "No hay reglas habilitadas: los dispositivos ya no escanean con este conjunto.",
+      "unknown": "Guardado, pero no se pudo leer el resultado de la publicación. Vuelva a cargar el conjunto para ver qué versión usan los dispositivos.",
+      "devicesKeep": "Los dispositivos conservan la versión {{version}}.",
+      "neverPublished": "Este conjunto aún no se ha publicado, así que los dispositivos no lo usan.",
+      "setDisabled": "El conjunto está deshabilitado, así que los dispositivos no lo usan.",
+      "staleBanner": "Sin publicar: corrija los errores de abajo. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Reglas",
+        "import": "Importar IOC",
+        "test": "Probar un archivo"
+      },
+      "rename": "Cambiar nombre del conjunto",
+      "enabled": "Habilitado",
+      "autoQuarantine": "Cuarentena automática",
+      "autoQuarantineHelp": "Mover a cuarentena los archivos coincidentes en cada dispositivo que escanea con este conjunto.",
+      "deleteSet": "Eliminar",
+      "deleteSetTitle": "¿Eliminar este conjunto de reglas?",
+      "deleteSetMessage": "También se eliminan sus reglas. Las políticas que todavía lo incluyan lo registrarán como no encontrado en su próximo escaneo.",
+      "deleteRuleTitle": "¿Eliminar esta regla?",
+      "deleteRuleMessage": "El conjunto se verifica y se vuelve a publicar sin ella.",
+      "addRule": "Agregar regla",
+      "noRules": "Este conjunto todavía no tiene reglas.",
+      "columns": {
+        "name": "Regla",
+        "severity": "Gravedad",
+        "tags": "Etiquetas",
+        "state": "Estado"
+      },
+      "viewSource": "Ver código fuente",
+      "hideSource": "Ocultar código fuente",
+      "editRule": "Editar regla",
+      "deleteRule": "Eliminar regla",
+      "errorLine": "Línea {{line}}:",
+      "publishedVersion": "Versión publicada {{version}}",
+      "readOnlyBuiltin": "El conjunto de reglas integrado es de solo lectura. Sus reglas se actualizan con las versiones de Breeze."
+    },
+    "dialog": {
+      "titleAdd": "Agregar regla",
+      "titleEdit": "Editar regla",
+      "name": "Nombre de la regla",
+      "nameHelp": "Letras, dígitos y guiones bajos; debe empezar con una letra o un guion bajo (máx. 128).",
+      "severity": "Gravedad",
+      "tags": "Etiquetas",
+      "tagsHelp": "Separadas por comas, p. ej., ransomware, advisory-42",
+      "enabled": "Habilitada",
+      "source": "Código fuente YARA",
+      "sourceTooLarge": "El código fuente de la regla supera los 64 KB.",
+      "checkedOnSave": "Al guardar, el conjunto se verifica con el mismo compilador que usan los dispositivos. Las reglas con errores no se publican."
     }
   }
 }

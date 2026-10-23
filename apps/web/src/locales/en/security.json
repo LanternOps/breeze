@@ -2334,6 +2334,72 @@
     },
     "test": {
       "requestFailed": "The test did not finish. Check your connection and try again."
+    },
+    "severity": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "critical": "Critical"
+    },
+    "publish": {
+      "saved": "Saved",
+      "autoQuarantineOnly": "Auto-quarantine is off on devices now. Your other changes are not live yet.",
+      "published": "Saved and published as version {{version}}",
+      "savedDisabled": "Saved. The set is disabled, so devices do not use it.",
+      "checkerUnavailable": "Saved, not published: the rule checker is unavailable. {{devices}}",
+      "compileErrors_one": "Saved, not published: {{count}} rule has errors. {{devices}}",
+      "compileErrors_other": "Saved, not published: {{count}} rules have errors. {{devices}}",
+      "setErrors": "Saved, not published: {{message}}. {{devices}}",
+      "noEnabledRules": "No enabled rules: devices no longer scan with this set.",
+      "unknown": "Saved, but the publish result could not be read. Reload the set to see which version devices use.",
+      "devicesKeep": "Devices keep version {{version}}.",
+      "neverPublished": "This set has not been published yet, so devices do not use it.",
+      "setDisabled": "The set is disabled, so devices do not use it.",
+      "staleBanner": "Not published: fix the errors below. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Rules",
+        "import": "Import IOCs",
+        "test": "Test a file"
+      },
+      "rename": "Rename rule set",
+      "enabled": "Enabled",
+      "autoQuarantine": "Auto-quarantine",
+      "autoQuarantineHelp": "Move matching files to quarantine on every device that scans with this set.",
+      "deleteSet": "Delete",
+      "deleteSetTitle": "Delete this rule set?",
+      "deleteSetMessage": "Its rules are deleted too. Policies that still list it record it as not found on their next scan.",
+      "deleteRuleTitle": "Delete this rule?",
+      "deleteRuleMessage": "The set is checked and republished without it.",
+      "addRule": "Add rule",
+      "noRules": "No rules in this set yet.",
+      "columns": {
+        "name": "Rule",
+        "severity": "Severity",
+        "tags": "Tags",
+        "state": "State"
+      },
+      "viewSource": "View source",
+      "hideSource": "Hide source",
+      "editRule": "Edit rule",
+      "deleteRule": "Delete rule",
+      "errorLine": "Line {{line}}:",
+      "publishedVersion": "Published version {{version}}",
+      "readOnlyBuiltin": "The built-in rule set is read-only. Its rules update with Breeze releases."
+    },
+    "dialog": {
+      "titleAdd": "Add rule",
+      "titleEdit": "Edit rule",
+      "name": "Rule name",
+      "nameHelp": "Letters, digits and underscores, starting with a letter or underscore (max 128).",
+      "severity": "Severity",
+      "tags": "Tags",
+      "tagsHelp": "Comma-separated, e.g. ransomware, advisory-42",
+      "enabled": "Enabled",
+      "source": "YARA source",
+      "sourceTooLarge": "The rule source is larger than 64 KB.",
+      "checkedOnSave": "The set is checked with the same compiler devices use when you save. Rules with errors are not published."
     }
   }
 }

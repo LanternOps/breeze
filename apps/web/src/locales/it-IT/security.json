@@ -2334,6 +2334,72 @@
     },
     "test": {
       "requestFailed": "Il test non è stato completato. Controlla la connessione e riprova."
+    },
+    "severity": {
+      "low": "Bassa",
+      "medium": "Media",
+      "high": "Alta",
+      "critical": "Critica"
+    },
+    "publish": {
+      "saved": "Salvato",
+      "autoQuarantineOnly": "La quarantena automatica ora è disattivata sui dispositivi. Le altre modifiche non sono ancora attive.",
+      "published": "Salvato e pubblicato come versione {{version}}",
+      "savedDisabled": "Salvato. Il set è disattivato, quindi i dispositivi non lo usano.",
+      "checkerUnavailable": "Salvato, non pubblicato: il controllo delle regole non è disponibile. {{devices}}",
+      "compileErrors_one": "Salvato, non pubblicato: {{count}} regola contiene errori. {{devices}}",
+      "compileErrors_other": "Salvato, non pubblicato: {{count}} regole contengono errori. {{devices}}",
+      "setErrors": "Salvato, non pubblicato: {{message}}. {{devices}}",
+      "noEnabledRules": "Nessuna regola attiva: i dispositivi non eseguono più scansioni con questo set.",
+      "unknown": "Salvato, ma non è stato possibile leggere l'esito della pubblicazione. Ricarica il set per vedere quale versione usano i dispositivi.",
+      "devicesKeep": "I dispositivi mantengono la versione {{version}}.",
+      "neverPublished": "Questo set non è ancora stato pubblicato, quindi i dispositivi non lo usano.",
+      "setDisabled": "Il set è disattivato, quindi i dispositivi non lo usano.",
+      "staleBanner": "Non pubblicato: correggi gli errori qui sotto. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Regole",
+        "import": "Importa IOC",
+        "test": "Prova un file"
+      },
+      "rename": "Rinomina set di regole",
+      "enabled": "Attivo",
+      "autoQuarantine": "Quarantena automatica",
+      "autoQuarantineHelp": "Sposta in quarantena i file corrispondenti su ogni dispositivo che esegue la scansione con questo set.",
+      "deleteSet": "Elimina",
+      "deleteSetTitle": "Eliminare questo set di regole?",
+      "deleteSetMessage": "Vengono eliminate anche le sue regole. I criteri che lo includono ancora lo segnaleranno come non trovato alla prossima scansione.",
+      "deleteRuleTitle": "Eliminare questa regola?",
+      "deleteRuleMessage": "Il set viene verificato e ripubblicato senza di essa.",
+      "addRule": "Aggiungi regola",
+      "noRules": "Questo set non contiene ancora regole.",
+      "columns": {
+        "name": "Regola",
+        "severity": "Gravità",
+        "tags": "Tag",
+        "state": "Stato"
+      },
+      "viewSource": "Mostra sorgente",
+      "hideSource": "Nascondi sorgente",
+      "editRule": "Modifica regola",
+      "deleteRule": "Elimina regola",
+      "errorLine": "Riga {{line}}:",
+      "publishedVersion": "Versione pubblicata {{version}}",
+      "readOnlyBuiltin": "Il set di regole integrato è di sola lettura. Le sue regole si aggiornano con le versioni di Breeze."
+    },
+    "dialog": {
+      "titleAdd": "Aggiungi regola",
+      "titleEdit": "Modifica regola",
+      "name": "Nome della regola",
+      "nameHelp": "Lettere, cifre e trattini bassi; deve iniziare con una lettera o un trattino basso (max 128).",
+      "severity": "Gravità",
+      "tags": "Etichette",
+      "tagsHelp": "Separati da virgole, ad es. ransomware, advisory-42",
+      "enabled": "Attiva",
+      "source": "Sorgente YARA",
+      "sourceTooLarge": "Il sorgente della regola supera i 64 KB.",
+      "checkedOnSave": "Al salvataggio il set viene verificato con lo stesso compilatore usato dai dispositivi. Le regole con errori non vengono pubblicate."
     }
   }
 }

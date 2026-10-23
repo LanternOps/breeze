@@ -2334,6 +2334,72 @@
     },
     "test": {
       "requestFailed": "Test tamamlanmadı. Bağlantınızı denetleyip yeniden deneyin."
+    },
+    "severity": {
+      "low": "Düşük",
+      "medium": "Orta",
+      "high": "Yüksek",
+      "critical": "Kritik"
+    },
+    "publish": {
+      "saved": "Kaydedildi",
+      "autoQuarantineOnly": "Otomatik karantina artık cihazlarda kapalı. Diğer değişiklikleriniz henüz etkin değil.",
+      "published": "Kaydedildi ve {{version}} sürümü olarak yayımlandı",
+      "savedDisabled": "Kaydedildi. Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
+      "checkerUnavailable": "Kaydedildi, yayımlanmadı: kural denetleyicisi kullanılamıyor. {{devices}}",
+      "compileErrors_one": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
+      "compileErrors_other": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
+      "setErrors": "Kaydedildi, yayımlanmadı: {{message}}. {{devices}}",
+      "noEnabledRules": "Etkin kural yok: cihazlar artık bu kümeyle tarama yapmıyor.",
+      "unknown": "Kaydedildi, ancak yayımlama sonucu okunamadı. Cihazların hangi sürümü kullandığını görmek için kümeyi yeniden yükleyin.",
+      "devicesKeep": "Cihazlar {{version}} sürümünü kullanmaya devam ediyor.",
+      "neverPublished": "Bu küme henüz yayımlanmadı, bu nedenle cihazlar onu kullanmıyor.",
+      "setDisabled": "Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
+      "staleBanner": "Yayımlanmadı: aşağıdaki hataları düzeltin. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Kurallar",
+        "import": "IOC içe aktar",
+        "test": "Dosya test et"
+      },
+      "rename": "Kural kümesini yeniden adlandır",
+      "enabled": "Etkin",
+      "autoQuarantine": "Otomatik karantina",
+      "autoQuarantineHelp": "Bu kümeyle tarama yapan her cihazda eşleşen dosyaları karantinaya taşı.",
+      "deleteSet": "Sil",
+      "deleteSetTitle": "Bu kural kümesi silinsin mi?",
+      "deleteSetMessage": "Kuralları da silinir. Onu hâlâ listeleyen ilkeler bir sonraki taramada onu bulunamadı olarak kaydeder.",
+      "deleteRuleTitle": "Bu kural silinsin mi?",
+      "deleteRuleMessage": "Küme o kural olmadan denetlenir ve yeniden yayımlanır.",
+      "addRule": "Kural ekle",
+      "noRules": "Bu kümede henüz kural yok.",
+      "columns": {
+        "name": "Kural",
+        "severity": "Önem derecesi",
+        "tags": "Etiketler",
+        "state": "Durum"
+      },
+      "viewSource": "Kaynağı göster",
+      "hideSource": "Kaynağı gizle",
+      "editRule": "Kuralı düzenle",
+      "deleteRule": "Kuralı sil",
+      "errorLine": "Satır {{line}}:",
+      "publishedVersion": "Yayımlanan sürüm {{version}}",
+      "readOnlyBuiltin": "Yerleşik kural kümesi salt okunurdur. Kuralları Breeze sürümleriyle güncellenir."
+    },
+    "dialog": {
+      "titleAdd": "Kural ekle",
+      "titleEdit": "Kuralı düzenle",
+      "name": "Kural adı",
+      "nameHelp": "Harf, rakam ve alt çizgi; bir harf veya alt çizgiyle başlar (en fazla 128).",
+      "severity": "Önem derecesi",
+      "tags": "Etiketler",
+      "tagsHelp": "Virgülle ayrılmış, ör. ransomware, advisory-42",
+      "enabled": "Etkin",
+      "source": "YARA kaynağı",
+      "sourceTooLarge": "Kural kaynağı 64 KB'tan büyük.",
+      "checkedOnSave": "Kaydettiğinizde küme, cihazların kullandığı derleyiciyle denetlenir. Hatalı kurallar yayımlanmaz."
     }
   }
 }

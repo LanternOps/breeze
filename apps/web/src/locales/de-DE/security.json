@@ -2334,6 +2334,72 @@
     },
     "test": {
       "requestFailed": "Der Test wurde nicht abgeschlossen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+    },
+    "severity": {
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch",
+      "critical": "Kritisch"
+    },
+    "publish": {
+      "saved": "Gespeichert",
+      "autoQuarantineOnly": "Die automatische Quarantäne ist auf den Geräten jetzt aus. Ihre übrigen Änderungen sind noch nicht aktiv.",
+      "published": "Gespeichert und als Version {{version}} veröffentlicht",
+      "savedDisabled": "Gespeichert. Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
+      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Die Regelprüfung ist nicht verfügbar. {{devices}}",
+      "compileErrors_one": "Gespeichert, nicht veröffentlicht: {{count}} Regel ist fehlerhaft. {{devices}}",
+      "compileErrors_other": "Gespeichert, nicht veröffentlicht: {{count}} Regeln sind fehlerhaft. {{devices}}",
+      "setErrors": "Gespeichert, nicht veröffentlicht: {{message}}. {{devices}}",
+      "noEnabledRules": "Keine aktivierten Regeln: Geräte scannen nicht mehr mit diesem Satz.",
+      "unknown": "Gespeichert, aber das Veröffentlichungsergebnis konnte nicht gelesen werden. Laden Sie den Satz neu, um zu sehen, welche Version die Geräte verwenden.",
+      "devicesKeep": "Geräte behalten Version {{version}}.",
+      "neverPublished": "Dieser Satz wurde noch nicht veröffentlicht, daher verwenden Geräte ihn nicht.",
+      "setDisabled": "Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
+      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Regeln",
+        "import": "IOCs importieren",
+        "test": "Datei testen"
+      },
+      "rename": "Regelsatz umbenennen",
+      "enabled": "Aktiviert",
+      "autoQuarantine": "Automatische Quarantäne",
+      "autoQuarantineHelp": "Treffende Dateien auf jedem Gerät, das mit diesem Satz scannt, in die Quarantäne verschieben.",
+      "deleteSet": "Löschen",
+      "deleteSetTitle": "Diesen Regelsatz löschen?",
+      "deleteSetMessage": "Seine Regeln werden ebenfalls gelöscht. Richtlinien, die ihn noch enthalten, melden ihn beim nächsten Scan als nicht gefunden.",
+      "deleteRuleTitle": "Diese Regel löschen?",
+      "deleteRuleMessage": "Der Satz wird ohne sie geprüft und erneut veröffentlicht.",
+      "addRule": "Regel hinzufügen",
+      "noRules": "Dieser Satz enthält noch keine Regeln.",
+      "columns": {
+        "name": "Regel",
+        "severity": "Schweregrad",
+        "tags": "Schlagwörter",
+        "state": "Zustand"
+      },
+      "viewSource": "Quelltext anzeigen",
+      "hideSource": "Quelltext ausblenden",
+      "editRule": "Regel bearbeiten",
+      "deleteRule": "Regel löschen",
+      "errorLine": "Zeile {{line}}:",
+      "publishedVersion": "Veröffentlichte Version {{version}}",
+      "readOnlyBuiltin": "Der integrierte Regelsatz ist schreibgeschützt. Seine Regeln werden mit Breeze-Versionen aktualisiert."
+    },
+    "dialog": {
+      "titleAdd": "Regel hinzufügen",
+      "titleEdit": "Regel bearbeiten",
+      "name": "Regelname",
+      "nameHelp": "Buchstaben, Ziffern und Unterstriche; beginnt mit einem Buchstaben oder Unterstrich (max. 128).",
+      "severity": "Schweregrad",
+      "tags": "Schlagwörter",
+      "tagsHelp": "Durch Kommas getrennt, z. B. ransomware, advisory-42",
+      "enabled": "Aktiviert",
+      "source": "YARA-Quelltext",
+      "sourceTooLarge": "Der Regelquelltext ist größer als 64 KB.",
+      "checkedOnSave": "Beim Speichern wird der Satz mit demselben Compiler geprüft, den die Geräte verwenden. Fehlerhafte Regeln werden nicht veröffentlicht."
     }
   }
 }

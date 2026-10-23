@@ -2334,6 +2334,72 @@
     },
     "test": {
       "requestFailed": "O teste não terminou. Verifique sua conexão e tente novamente."
+    },
+    "severity": {
+      "low": "Baixa",
+      "medium": "Média",
+      "high": "Alta",
+      "critical": "Crítica"
+    },
+    "publish": {
+      "saved": "Salvo",
+      "autoQuarantineOnly": "A quarentena automática agora está desativada nos dispositivos. Suas outras alterações ainda não estão ativas.",
+      "published": "Salvo e publicado como versão {{version}}",
+      "savedDisabled": "Salvo. O conjunto está desativado, então os dispositivos não o usam.",
+      "checkerUnavailable": "Salvo, não publicado: o verificador de regras está indisponível. {{devices}}",
+      "compileErrors_one": "Salvo, não publicado: {{count}} regra tem erros. {{devices}}",
+      "compileErrors_other": "Salvo, não publicado: {{count}} regras têm erros. {{devices}}",
+      "setErrors": "Salvo, não publicado: {{message}}. {{devices}}",
+      "noEnabledRules": "Nenhuma regra ativada: os dispositivos não fazem mais varredura com este conjunto.",
+      "unknown": "Salvo, mas não foi possível ler o resultado da publicação. Recarregue o conjunto para ver qual versão os dispositivos usam.",
+      "devicesKeep": "Os dispositivos mantêm a versão {{version}}.",
+      "neverPublished": "Este conjunto ainda não foi publicado, então os dispositivos não o usam.",
+      "setDisabled": "O conjunto está desativado, então os dispositivos não o usam.",
+      "staleBanner": "Não publicado: corrija os erros abaixo. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Regras",
+        "import": "Importar IOCs",
+        "test": "Testar um arquivo"
+      },
+      "rename": "Renomear conjunto de regras",
+      "enabled": "Ativado",
+      "autoQuarantine": "Quarentena automática",
+      "autoQuarantineHelp": "Mover para a quarentena os arquivos correspondentes em todo dispositivo que faz varredura com este conjunto.",
+      "deleteSet": "Excluir",
+      "deleteSetTitle": "Excluir este conjunto de regras?",
+      "deleteSetMessage": "As regras dele também são excluídas. As políticas que ainda o listam vão registrá-lo como não encontrado na próxima varredura.",
+      "deleteRuleTitle": "Excluir esta regra?",
+      "deleteRuleMessage": "O conjunto é verificado e publicado novamente sem ela.",
+      "addRule": "Adicionar regra",
+      "noRules": "Este conjunto ainda não tem regras.",
+      "columns": {
+        "name": "Regra",
+        "severity": "Gravidade",
+        "tags": "Marcadores",
+        "state": "Estado"
+      },
+      "viewSource": "Ver código-fonte",
+      "hideSource": "Ocultar código-fonte",
+      "editRule": "Editar regra",
+      "deleteRule": "Excluir regra",
+      "errorLine": "Linha {{line}}:",
+      "publishedVersion": "Versão publicada {{version}}",
+      "readOnlyBuiltin": "O conjunto de regras integrado é somente leitura. As regras dele são atualizadas com as versões do Breeze."
+    },
+    "dialog": {
+      "titleAdd": "Adicionar regra",
+      "titleEdit": "Editar regra",
+      "name": "Nome da regra",
+      "nameHelp": "Letras, dígitos e sublinhados, começando com uma letra ou sublinhado (máx. 128).",
+      "severity": "Gravidade",
+      "tags": "Marcadores",
+      "tagsHelp": "Separados por vírgulas, por exemplo ransomware, advisory-42",
+      "enabled": "Ativada",
+      "source": "Código-fonte YARA",
+      "sourceTooLarge": "O código-fonte da regra tem mais de 64 KB.",
+      "checkedOnSave": "Ao salvar, o conjunto é verificado com o mesmo compilador que os dispositivos usam. Regras com erros não são publicadas."
     }
   }
 }
