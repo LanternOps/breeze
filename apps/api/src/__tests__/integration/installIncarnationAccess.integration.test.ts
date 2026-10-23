@@ -3,7 +3,7 @@
  *
  *  (a) breeze_device_command_incarnation_is_current(command_id) evaluates the
  *      CALLER's org access to the command's device org before it answers
- *      (migration 2027-01-02-180000): an org/partner context without access
+ *      (migration 2027-01-03-120000): an org/partner context without access
  *      gets false for a current command; system and contextless callers keep
  *      their answer (the documented rule for the result paths' bare-pool reads).
  *
