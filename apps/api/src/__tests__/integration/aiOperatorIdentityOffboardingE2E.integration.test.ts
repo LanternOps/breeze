@@ -1039,14 +1039,16 @@ describe('identity_offboarding end to end (R1a)', () => {
     // Intentionally empty: see the BUG note above.
   });
 
-  runDb('provider not ready before discover: m365_set_auto_reply is left out of the plan, a capability manual item replaces it, every Google effect dispatches', async () => {
+  runDb('provider not ready before discover: m365_set_auto_reply is left out, the M365 disable is HELD with it (never disabled with mail unrouted), every Google effect dispatches', async () => {
     const kept = allActionGrants().filter((g) => g.value !== 'MailboxSettings.ReadWrite');
     expect(kept.length).toBe(allActionGrants().length - 1);
     const t = await seedTenant({ observedGrants: kept });
     const a = await driveToApprovedAndHeld(t);
     const effects = await approvalEffects(a);
     expect(effects.map((e) => e.toolName)).not.toContain('m365_set_auto_reply');
-    expect(effects.map((e) => e.toolName)).toContain('m365_disable_user');
+    // The ordering contract applied to degradation: the auto-reply cannot run,
+    // so the disable is held back too and becomes a manual item for AFTER it.
+    expect(effects.map((e) => e.toolName)).not.toContain('m365_disable_user');
     await openWindow(a);
     await walkEffects(a);
     const task = await readTask(a);
@@ -1060,6 +1062,7 @@ describe('identity_offboarding end to end (R1a)', () => {
     const capability = items.filter((i) => i.label.startsWith('Do by hand in Microsoft 365:'));
     expect(capability).toHaveLength(1);
     expect(capability[0]!.label).toContain('auto-reply');
+    expect(items.map((i) => i.label)).toContain("Disable Dana Example's Microsoft 365 account by hand, after the mail steps");
   }, 120_000);
 
   // Under the PRODUCT DEFAULT caller-verification policy (tier 2 for

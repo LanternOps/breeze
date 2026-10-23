@@ -72,6 +72,7 @@ import {
   advanceDiscover,
   advanceIdentityEffects,
   advanceIntake,
+  advanceManualWork,
   advanceReview,
   advanceVerifyOutcome,
   leasedWrite,
@@ -372,31 +373,50 @@ describe('advanceVerifyOutcome (spec §6.6)', () => {
     });
   });
   const verdict = () => (h.settleStepAndMove.mock.calls[0]![0].checkpoint as IdentityOffboardingCheckpoint).lastVerification!;
+  const DISPATCHED = new Date('2026-10-20T09:00:00.000Z');
+  /** The walk's operation rows for this checkpoint's plan (all dispatched + verified unless overridden). */
+  async function walkRows(c: IdentityOffboardingCheckpoint, rec: RecipeDefinition<never> = recipe,
+    over: (toolName: string) => Record<string, unknown> | null = () => ({})) {
+    const { planEffectOperationKey } = await import('./planApproval');
+    return rec.buildPlan(c.recipeInput as never, SNAPSHOT_FACTS).flatMap((e) => {
+      const o = over(e.toolName);
+      if (o === null) return [];
+      return [{
+        operationKey: planEffectOperationKey({ stepKey: 'effects', planRevision: 1, toolName: e.toolName, targetId: e.targetId, ordinal: e.ordinal }),
+        dispatchedAt: DISPATCHED, result: { verified: { ok: true } }, ...o,
+      }];
+    });
+  }
+  async function verifyWith(c: IdentityOffboardingCheckpoint, rec: RecipeDefinition<never> = recipe,
+    over?: (toolName: string) => Record<string, unknown> | null) {
+    h.selectQueue = [await walkRows(c, rec, over), TARGETS, ACCOUNTS];
+    return advanceVerifyOutcome({ ...args('verify_outcome', c), recipe: rec });
+  }
 
   it('8. an OBSERVABLE effect that probed unknown is a failed verification (partial)', async () => {
     h.probeEffect.mockImplementation(async (e: { toolName: string }) => ({ state: e.toolName === 'm365_disable_user' ? 'unknown' : 'satisfied', detail: 'd', observedAt: NOW }));
-    await advanceVerifyOutcome(args('verify_outcome', plan()));
+    await verifyWith(plan());
     expect(verdict().result).toBe('failed');
     expect(verdict().detail).toContain('m365_disable_user');
   });
 
   it('9. verified when the only unknown is google_signout AND the suspend is satisfied on the same account', async () => {
     h.probeEffect.mockImplementation(async (e: { toolName: string }) => ({ state: e.toolName === 'google_signout' ? 'unknown' : 'satisfied', detail: 'd', observedAt: NOW }));
-    await advanceVerifyOutcome(args('verify_outcome', plan()));
+    await verifyWith(plan());
     expect(verdict().result).toBe('passed');
     expect(h.settleStepAndMove).toHaveBeenCalledWith(expect.objectContaining({ toStepKey: 'document' }));
   });
 
   it('10. NOT verified when the suspend is absent from the plan', async () => {
     h.probeEffect.mockImplementation(async (e: { toolName: string }) => ({ state: e.toolName === 'google_signout' ? 'unknown' : 'satisfied', detail: 'd', observedAt: NOW }));
-    await advanceVerifyOutcome(args('verify_outcome', plan({ effects: { disableAccount: false } })));
+    await verifyWith(plan({ effects: { disableAccount: false } }));
     expect(verdict().result).toBe('failed');
     expect(verdict().detail).toContain('google_signout');
   });
 
   it('10. NOT verified when the suspend acts on a DIFFERENT account', async () => {
     h.probeEffect.mockImplementation(async (e: { toolName: string }) => ({ state: e.toolName === 'google_signout' || e.toolName === 'google_suspend_user' ? 'unknown' : 'satisfied', detail: 'd', observedAt: NOW }));
-    await advanceVerifyOutcome(args('verify_outcome', plan()));
+    await verifyWith(plan());
     expect(verdict().result).toBe('failed');
   });
 
@@ -406,7 +426,7 @@ describe('advanceVerifyOutcome (spec §6.6)', () => {
       ordinal, toolName, provider: 'google' as const, targetId: CONTACT_TARGET, accountExternalId, canonicalArguments: { reason: 'r' },
     });
     const split = { ...recipe, buildPlan: () => [effect(0, 'google_signout', '101'), effect(1, 'google_suspend_user', '202')] } as never;
-    await advanceVerifyOutcome({ ...args('verify_outcome', plan()), recipe: split });
+    await verifyWith(plan(), split);
     expect(verdict().result).toBe('failed');
     expect(verdict().detail).toContain('google_signout');
   });
@@ -417,9 +437,55 @@ describe('advanceVerifyOutcome (spec §6.6)', () => {
       ...FACTS, google: { ...FACTS.google, suspended: true, groups: [{ id: 'g9', name: 'Added Wednesday', email: 'w@x', ownership: 'none', dynamic: false, roleAssignable: false }] },
       m365: { ...FACTS.m365, accountEnabled: false },
     });
-    await advanceVerifyOutcome(args('verify_outcome', plan()));
+    await verifyWith(plan());
     expect(verdict().result).toBe('failed');
     expect(verdict().detail).toContain('Added Wednesday');
+  });
+  it('probes each effect against WHEN THE WALK DISPATCHED IT, not verify time (a revoke must not look undone)', async () => {
+    h.probeEffect.mockResolvedValue({ state: 'satisfied', detail: 'd', observedAt: NOW });
+    await verifyWith(plan());
+    expect(h.probeEffect.mock.calls.length).toBeGreaterThan(0);
+    for (const call of h.probeEffect.mock.calls) expect(call[1].effectRequestedAt).toEqual(DISPATCHED);
+    expect(verdict().result).toBe('passed');
+  });
+
+  it('a mail setting unreadable after the suspend stands on the WALK\'s verification when that suspend is observed', async () => {
+    h.probeEffect.mockImplementation(async (e: { toolName: string }) => ({
+      state: e.toolName === 'google_set_vacation' || e.toolName === 'google_signout' ? 'unknown' : 'satisfied', detail: 'd', observedAt: NOW,
+    }));
+    await verifyWith(plan());
+    expect(verdict().result).toBe('passed');
+  });
+
+  it('…but NOT when the walk did not verify it, or the suspend is not observed', async () => {
+    h.probeEffect.mockImplementation(async (e: { toolName: string }) => ({
+      state: e.toolName === 'google_set_vacation' || e.toolName === 'google_signout' ? 'unknown' : 'satisfied', detail: 'd', observedAt: NOW,
+    }));
+    await verifyWith(plan(), recipe, (t) => (t === 'google_set_vacation' ? { result: { verified: { ok: false } } } : {}));
+    expect(verdict().result).toBe('failed');
+    expect(verdict().detail).toContain('google_set_vacation');
+    vi.clearAllMocks();
+    h.probeEffect.mockImplementation(async (e: { toolName: string }) => ({
+      state: ['google_set_vacation', 'google_signout', 'google_suspend_user'].includes(e.toolName) ? 'unknown' : 'satisfied', detail: 'd', observedAt: NOW,
+    }));
+    await verifyWith(plan());
+    expect(verdict().result).toBe('failed');
+    expect(verdict().detail).toContain('google_set_vacation');
+  });
+
+  it('a planned effect with NO operation row never ran: unconfirmed, and it is not probed', async () => {
+    h.probeEffect.mockResolvedValue({ state: 'satisfied', detail: 'd', observedAt: NOW });
+    await verifyWith(plan(), recipe, (t) => (t === 'm365_disable_user' ? null : {}));
+    expect(verdict().result).toBe('failed');
+    expect(verdict().detail).toContain('m365_disable_user (not dispatched)');
+    expect(h.probeEffect.mock.calls.map((c) => c[0].toolName)).not.toContain('m365_disable_user');
+  });
+
+  it('an admission lookup problem keeps the verdict from passing — Breeze never checked that provider', async () => {
+    h.probeEffect.mockResolvedValue({ state: 'satisfied', detail: 'd', observedAt: NOW });
+    await verifyWith(cp({ resumeStepKey: 'document', admissionProblems: ['m365 lookup failed (executor_unavailable)'] }));
+    expect(verdict().result).toBe('failed');
+    expect(verdict().detail).toContain('not checked by Breeze: m365 lookup failed (executor_unavailable)');
   });
 });
 
@@ -428,5 +494,42 @@ describe('residualAfterOffboarding', () => {
     const input = cp({}, { keepMailbox: true }).recipeInput as never;
     const fresh = { ...FACTS, m365: { ...FACTS.m365, licenses: [{ productId: null, skuId: 's', name: 'E3' }] } } as never;
     expect(residualAfterOffboarding(input, fresh).join(' ')).not.toContain('Microsoft 365 licence');
+  });
+});
+
+describe('advanceManualWork', () => {
+  beforeEach(() => {
+    h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: SNAPSHOT_FACTS });
+  });
+  const mwCp = () => cp({ resumeStepKey: 'verify_outcome' });
+  const row = (index: number, over: Record<string, unknown> = {}) => ({
+    index, stepId: `s${index}`, stepState: 'waiting', checklistItemId: `i${index}`, itemLabel: 'x',
+    itemDoneAt: null, itemDoneByUserId: null, ...over,
+  });
+
+  it('a DETACHED item (ticket moved / item deleted) hands off — it is never re-created on a new ticket', async () => {
+    h.selectQueue = [[]]; // review step checkpoint
+    h.readManualWork.mockResolvedValue([row(0), row(1, { checklistItemId: null, itemLabel: null })]);
+    await advanceManualWork(args('manual_work', mwCp()));
+    expect(h.ensureManualWorkItems).not.toHaveBeenCalled();
+    expect(h.settle).toHaveBeenCalledWith(expect.objectContaining({ event: 'hand_off', detail: expect.stringContaining('no longer reachable') }));
+  });
+
+  it('more review items than the checklist bound are folded into one, never a throw', async () => {
+    const flags = Array.from({ length: 40 }, (_, i) => ({ code: 'sole_group_owner', subject: `Group ${i}`, detail: 'd' }));
+    const exceptions = Array.from({ length: 20 }, (_, i) => ({ toolName: 'google_suspend_user', classification: 'human_work', detail: `e${i}` }));
+    h.selectQueue = [[{ checkpoint: { reviewOutput: { flags, exceptions, summary: 's' } } }], [{ id: CONTACT_TARGET }]];
+    h.readManualWork.mockResolvedValue([]);
+    h.ensureManualWorkItems.mockImplementation(async (_db: unknown, _t: unknown, items: unknown[]) => ({
+      ticketId: 't', itemIds: items.map((_, i) => `i${i}`), created: items.length,
+    }));
+    await advanceManualWork(args('manual_work', mwCp()));
+    const items = h.ensureManualWorkItems.mock.calls[0]![2] as Array<{ key: string; detail: string }>;
+    expect(items).toHaveLength(64);
+    expect(items[63]!.key).toBe('overflow');
+    // Two exceptions about the SAME tool are two entries, not one deduplicated away.
+    const all = items.map((i) => i.key).join(' ') + items[63]!.detail;
+    expect(all).toContain('google_suspend_user (1)');
+    expect(all).toContain('google_suspend_user (20)');
   });
 });

@@ -441,17 +441,17 @@ export function buildIdentityOffboardingPlan(
   const undegraded = buildUndegradedPlan(input, facts);
   const held = heldLockouts(undegraded, degraded);
   return undegraded
-    .filter((e) => !degraded.has(e.toolName) && !held.has(e.provider))
+    .filter((e) => !degraded.has(e.toolName) && !(e.provider !== 'breeze' && held.has(e.provider)))
     .map((e, i) => ({ ...e, ordinal: i }));
 }
 
 /** Effects that change where a person's mail goes or how it is answered. */
-export const MAIL_ROUTING_TOOLS: Readonly<Record<EffectProvider, readonly string[]>> = Object.freeze({
+export const MAIL_ROUTING_TOOLS: Readonly<Record<'google' | 'm365', readonly string[]>> = Object.freeze({
   google: Object.freeze(['google_set_vacation', 'google_set_forwarding', 'google_add_mail_delegate']),
   m365: Object.freeze(['m365_set_auto_reply']),
 });
 /** The effect after which the account can no longer sign in. */
-export const LOCKOUT_TOOL: Readonly<Record<EffectProvider, string>> = Object.freeze({
+export const LOCKOUT_TOOL: Readonly<Record<'google' | 'm365', string>> = Object.freeze({
   google: 'google_suspend_user',
   m365: 'm365_disable_user',
 });
@@ -468,8 +468,8 @@ export const LOCKOUT_TOOL: Readonly<Record<EffectProvider, string>> = Object.fre
 function heldLockouts(
   undegraded: readonly PlannedEffect[],
   degraded: ReadonlySet<string>,
-): Map<EffectProvider, string[]> {
-  const out = new Map<EffectProvider, string[]>();
+): Map<'google' | 'm365', string[]> {
+  const out = new Map<'google' | 'm365', string[]>();
   for (const provider of EFFECT_PROVIDER_ORDER) {
     const ofProvider = undegraded.filter((e) => e.provider === provider);
     const lockout = ofProvider.some((e) => e.toolName === LOCKOUT_TOOL[provider] && !degraded.has(e.toolName));

@@ -74,6 +74,28 @@ describe('renderCompletionRecord', () => {
     expect(section).toContain('google_signout: dispatched, not independently verifiable; superseded by the verified google_suspend_user');
   });
 
+  it('4b. ordinary names, group names and ids are NOT withheld (no false positives on the list a technician acts on)', () => {
+    const GUID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    const { text } = renderCompletionRecord(data({
+      targets: [{ kind: 'contact', label: 'Jane Passmore', detached: false }],
+      humanWork: [{ label: "Collect Jane Passmore's company hardware", done: false, completedBy: null, completedAt: null }],
+      verification: { result: 'failed', detail: `still in Microsoft 365 group Disaster Recovery Team; still in Google group Executive Secretaries; groupId=${GUID}` },
+    }));
+    expect(text).toContain('Jane Passmore');
+    expect(text).toContain('Disaster Recovery Team');
+    expect(text).toContain('Executive Secretaries');
+    expect(text).toContain(GUID);
+  });
+
+  it('4c. one secret-shaped verification problem withholds only that problem', () => {
+    const { text } = renderCompletionRecord(data({
+      verification: { result: 'failed', detail: 'still in Google group Finance; refreshToken=abc123; Google account is still active' },
+    }));
+    expect(text).toContain('still in Google group Finance');
+    expect(text).toContain('Google account is still active');
+    expect(text).not.toContain('abc123');
+  });
+
   it('4. no secret-shaped material survives, even when a field carries some', () => {
     const { text } = renderCompletionRecord(data({
       narrative: 'password=hunter2 clientSecret=abc -----BEGIN PRIVATE KEY-----xyz vaultRef: vault://1',

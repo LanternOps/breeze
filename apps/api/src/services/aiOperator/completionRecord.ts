@@ -81,10 +81,16 @@ export interface CompletionRecordData {
  * partially masked: "set password to hunter2" with only the keyword masked
  * would still print the value.
  */
-const SECRET_WORDS = /-----BEGIN|pass(word|wd|phrase)?|\bpwd\b|secret|credential|service_?account_?key|vault_?ref|private_?key|api_?key|access_?token|refresh_?token|token|\bpin\b|\botp\b|recovery|bearer/i;
-/** Value shapes, keyword or not: a JWT, cloud key prefixes, or a long high-entropy run. */
-const SECRET_SHAPES = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b(AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|[A-Za-z0-9+/_=-]{40,}/;
-const SECRETISH = { test: (s: string) => SECRET_WORDS.test(s) || SECRET_SHAPES.test(s) };
+const SECRET_WORDS = /-----BEGIN|\b(pass(word|wd|phrase|code)?|pwd|secrets?|credentials?|service[ _]?account[ _]?key|vault[ _]?ref|private[ _]?key|api[ _]?key|access[ _]?token|refresh[ _]?token|tokens?|pin|otp|recovery[ _]?(code|key)s?|bearer)\b/i;
+/** camelCase field names (`clientSecret`, `refreshToken`), which a word boundary misses. */
+const SECRET_CAMEL = /[a-z](Secret|Password|Passwd|Token|ApiKey|PrivateKey)\b/;
+/**
+ * Value shapes, keyword or not: a JWT, cloud key prefixes, or a long
+ * high-entropy run. The run excludes `-`, so a GUID (hyphenated groups of at
+ * most 12) never matches — group and object ids are ordinary record content.
+ */
+const SECRET_SHAPES = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b(AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|(?=[A-Za-z0-9+/_]*\d)(?=[A-Za-z0-9+/_]*[A-Za-z])[A-Za-z0-9+/_]{40,}/;
+const SECRETISH = { test: (s: string) => SECRET_WORDS.test(s) || SECRET_CAMEL.test(s) || SECRET_SHAPES.test(s) };
 
 function clean(s: string, max = 500): string {
   const flat = s.replace(/[\r\n]+/g, ' ').trim();
@@ -141,7 +147,10 @@ export function renderCompletionRecord(data: CompletionRecordData): CompletionRe
     ...data.effects.filter((e) => (e.outcome === 'succeeded') && e.verification === 'not_verified')
       .map((e) => `- ${clean(e.toolName, 64)} (#${e.ordinal}): ran but was not verified`),
     ...(data.verification && data.verification.result !== 'passed'
-      ? [`- Final verification ${clean(data.verification.result, 32)}: ${clean(data.verification.detail, 800)}`] : []),
+      // Cleaned PER PROBLEM: one secret-shaped leftover withholds that one, not
+      // the whole list a technician has to act on.
+      ? [`- Final verification ${clean(data.verification.result, 32)}: ${
+        data.verification.detail.split('; ').map((part) => clean(part, 300)).join('; ').slice(0, 800)}`] : []),
     ...data.discoveryFlags.map((f) => `- Discovery: ${clean(f.code, 64)} (${clean(f.subject, 120)}): ${clean(f.detail, 300)}`),
   ];
   let unresolvedText = ['## Unresolved', ...(unresolvedItems.length > 0 ? unresolvedItems : ['- (nothing)'])].join('\n');

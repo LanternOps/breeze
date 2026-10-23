@@ -80,6 +80,9 @@ async function ops() {
     advanceHumanWork: coordinator.advanceHumanWork,
     validateRecipeNextStep: recipes.validateRecipeNextStep,
     buildIdentityOffboardingManualWork: identity.buildIdentityOffboardingManualWork,
+    capManualWork: identity.capManualWork,
+    MAIL_ROUTING_TOOLS: identity.MAIL_ROUTING_TOOLS,
+    LOCKOUT_TOOL: identity.LOCKOUT_TOOL,
     loadPlanningFacts: planning.loadPlanningFacts,
     sealPlanningSnapshot: planning.sealPlanningSnapshot,
     planEffectOperationKey: approval.planEffectOperationKey,
@@ -457,6 +460,8 @@ export async function advanceDiscover(a: StepAdvancerArgs): Promise<string> {
     // item can say why (it is a policy choice, not a missing grant).
     callerVerificationTools: readiness.callerVerificationBlocked.filter((t) => catalog.has(t)),
     capabilityReadiness: readiness.capabilityReadiness,
+    // Frozen with the facts so the manual list can name each gap.
+    admissionProblems: cp.admissionProblems,
   };
   const sealed = o.sealPlanningSnapshot(facts, a.now);
   try {
@@ -559,7 +564,13 @@ export async function advanceIdentityEffects(a: StepAdvancerArgs): Promise<strin
   const loaded = await o.loadPlanningFacts(a.task, a.recipe, cp);
   let plan: PlannedEffect[] | null = null;
   if (loaded.ok) {
-    try { plan = a.recipe.buildPlan(cp.recipeInput as never, loaded.facts); } catch { plan = null; }
+    try {
+      plan = a.recipe.buildPlan(cp.recipeInput as never, loaded.facts);
+    } catch (err) {
+      // E4 rebuilds and classifies this failure; logged so it is never invisible here.
+      console.warn(`[aiOperator] identity effects veto: buildPlan failed for task ${a.task.id}: ${err instanceof Error ? err.message : String(err)}`);
+      plan = null;
+    }
   }
   // A snapshot or build failure is E4's to classify (fail vs hand-off by
   // whether an approval exists): delegate rather than duplicate that rule.
@@ -599,20 +610,35 @@ export async function advanceManualWork(a: StepAdvancerArgs): Promise<string> {
   const reviewOutput = (reviewCp?.reviewOutput ?? null) as IdentityReviewOutput | null;
   const flags = [
     ...(reviewOutput?.flags ?? []),
+    // Numbered: two exceptions about the same tool are two items, not one
+    // silently deduplicated away.
     ...(reviewOutput?.exceptions ?? []).filter((e) => e.classification === 'human_work')
-      .map((e) => ({ code: 'review_exception', subject: e.toolName, detail: e.detail })),
+      .map((e, i) => ({ code: 'review_exception', subject: `${e.toolName} (${i + 1})`, detail: e.detail })),
   ];
   const facts = built.facts as DiscoveryFacts & { capabilityReadiness?: Record<string, boolean> };
-  const items = o.buildIdentityOffboardingManualWork(
+  // Capped at the checklist bound by folding the overflow into one item that
+  // names the rest — never a throw (which would wedge the task after its
+  // effects ran) and never a silent drop.
+  const items = o.capManualWork(o.buildIdentityOffboardingManualWork(
     cp.recipeInput as IdentityOffboardingInput, facts, facts.capabilityReadiness ?? {}, flags,
-  );
+  ));
   const next = successorOf(o, a.recipe, 'manual_work', cp, built.facts);
   if (!next.ok) return fail(o, a, next.detail, cp);
   const taskRef = { id: a.task.id, orgId: a.task.orgId, objective: a.task.objective, revision: a.task.revision };
 
   const rows = await o.readManualWork(a.task.orgId, a.task.id);
   const linked = rows.filter((r) => r.checklistItemId !== null);
-  if (items.length > 0 && linked.length < items.length) {
+  // Checked BEFORE creation. Items and their step rows are created and linked
+  // in one transaction, so an existing row with no link was detached — the
+  // ticket moved to another org, or the item was deleted. Re-creating it would
+  // open a second ticket here and reset ticked work; hand off instead.
+  const unreachable = linked.filter((r) => r.itemLabel === null);
+  if (rows.some((r) => r.checklistItemId === null) || unreachable.length > 0) {
+    return handOff(o, a, 'a manual-work checklist item is no longer reachable from this task',
+      'A ticket step this task was waiting on is no longer part of this organization (it was moved or removed). '
+      + 'Nothing further was changed. Confirm the remaining work by hand.', cp);
+  }
+  if (items.length > 0 && rows.length < items.length) {
     let waitOn: string | null = null;
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
@@ -647,13 +673,6 @@ export async function advanceManualWork(a: StepAdvancerArgs): Promise<string> {
     return `waiting: ${items.length} manual item(s) on the ticket`;
   }
 
-  // The link is gone or the item is no longer in this org: hand off, never guess.
-  const unreachable = linked.filter((r) => r.itemLabel === null);
-  if (rows.some((r) => r.checklistItemId === null) || unreachable.length > 0) {
-    return handOff(o, a, 'a manual-work checklist item is no longer reachable from this task',
-      'A ticket step this task was waiting on is no longer part of this organization (it was moved or removed). '
-      + 'Nothing further was changed. Confirm the remaining work by hand.', cp);
-  }
   const toSettle = rows.filter((r) => r.itemDoneAt && r.stepState !== 'succeeded');
   const settleDone = async (targetId: string | null) => {
     for (const r of toSettle) {
@@ -712,16 +731,34 @@ export async function advanceVerifyOutcome(a: StepAdvancerArgs): Promise<string>
   const next = successorOf(o, a.recipe, 'verify_outcome', cp, built.facts);
   if (!next.ok) return fail(o, a, next.detail, cp);
 
+  // The walk's own record of each effect: WHEN it was dispatched (a probe
+  // judges "after the request", so verify must ask about the request time —
+  // asking about now makes a session revoke look undone) and whether the walk
+  // verified it. No operation row means the effect never ran.
+  const walk = await readWalkRecord(a, built.plan);
   const states = new Map<number, string>();
   for (const effect of built.plan) {
+    const ran = walk.get(effect.ordinal);
+    if (!ran) { states.set(effect.ordinal, 'not dispatched'); continue; }
     const probe = await o.probeEffect(effect, {
-      orgId: a.task.orgId, taskId: a.task.id, planRevision: a.task.revision, effectRequestedAt: a.now, phase: 'post',
+      orgId: a.task.orgId, taskId: a.task.id, planRevision: a.task.revision,
+      effectRequestedAt: ran.dispatchedAt ?? a.now, phase: 'post',
     });
     states.set(effect.ordinal, probe.state);
   }
   const satisfied = built.plan.filter((e) => states.get(e.ordinal) === 'satisfied');
+  // A mail setting cannot be re-read once the account is locked (Google reads
+  // it by impersonating the mailbox owner, which a suspended user cannot be).
+  // When the walk verified it and the SAME account's lockout is now observed,
+  // the walk's verification stands — the lockout is evidence nothing undid it.
+  const confirmedAtWalk = (e: PlannedEffect): boolean => {
+    if (states.get(e.ordinal) !== 'unknown' || walk.get(e.ordinal)?.verified !== true) return false;
+    if (e.provider === 'breeze' || e.accountExternalId === null || !o.MAIL_ROUTING_TOOLS[e.provider].includes(e.toolName)) return false;
+    const lockout = o.LOCKOUT_TOOL[e.provider];
+    return satisfied.some((s) => s.toolName === lockout && s.accountExternalId === e.accountExternalId);
+  };
   const unconfirmed = built.plan.filter((e) => {
-    if (states.get(e.ordinal) === 'satisfied') return false;
+    if (states.get(e.ordinal) === 'satisfied' || confirmedAtWalk(e)) return false;
     const subsumer = a.recipe.unobservableEffects?.[e.toolName];
     const subsumed = subsumer !== undefined && states.get(e.ordinal) === 'unknown' && o.isStructurallyUnobservable(e.toolName)
       && e.accountExternalId !== null
@@ -733,7 +770,9 @@ export async function advanceVerifyOutcome(a: StepAdvancerArgs): Promise<string>
   const fresh = await o.discoverIdentityFacts({ orgId: a.task.orgId, accounts: targets.accounts, now: a.now });
   const residual = residualAfterOffboarding(cp.recipeInput as IdentityOffboardingInput, fresh);
 
-  const problems = [...unconfirmed.map((u) => `unconfirmed: ${u}`), ...residual];
+  // A provider whose admission lookup failed was never checked by Breeze.
+  const unchecked = (cp.admissionProblems).map((p) => `not checked by Breeze: ${p}`);
+  const problems = [...unconfirmed.map((u) => `unconfirmed: ${u}`), ...residual, ...unchecked];
   const passed = problems.length === 0;
   const detail = passed
     ? `all ${built.plan.length} planned effect(s) observed in their end state; nothing left to remove`
@@ -746,6 +785,31 @@ export async function advanceVerifyOutcome(a: StepAdvancerArgs): Promise<string>
     settledDetail: detail, resolvedDetail: `verification ${passed ? 'passed' : 'found leftovers'}`,
   });
   return `advanced: verification ${passed ? 'passed' : 'failed'}, documenting`;
+}
+
+/** Per planned ordinal: when the walk dispatched it, and whether the walk verified it. */
+async function readWalkRecord(
+  a: StepAdvancerArgs,
+  plan: readonly PlannedEffect[],
+): Promise<Map<number, { dispatchedAt: Date | null; verified: boolean | null }>> {
+  const o = await ops();
+  const keys = plan.map((e) => o.planEffectOperationKey({
+    stepKey: 'effects', planRevision: a.task.revision, toolName: e.toolName, targetId: e.targetId, ordinal: e.ordinal,
+  }));
+  if (keys.length === 0) return new Map();
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({ operationKey: aiOperatorOperations.operationKey, dispatchedAt: aiOperatorOperations.dispatchedAt, result: aiOperatorOperations.result })
+    .from(aiOperatorOperations)
+    .where(and(eq(aiOperatorOperations.orgId, a.task.orgId), eq(aiOperatorOperations.taskId, a.task.id), inArray(aiOperatorOperations.operationKey, keys)))));
+  const byKey = new Map(rows.map((r) => [r.operationKey, r]));
+  const out = new Map<number, { dispatchedAt: Date | null; verified: boolean | null }>();
+  plan.forEach((e, i) => {
+    const r = byKey.get(keys[i]!);
+    if (!r) return;
+    const ok = ((r.result ?? {}) as { verified?: { ok?: unknown } }).verified?.ok;
+    out.set(e.ordinal, { dispatchedAt: r.dispatchedAt ?? null, verified: typeof ok === 'boolean' ? ok : null });
+  });
+  return out;
 }
 
 /** What is still there that the toggles asked to remove. Pure over a fresh read. */
