@@ -894,6 +894,7 @@ export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './aiToolDomains';
 export * from './aiOperator';
+export * from './aiOperatorRecipes';
 export * from './aiOrigin';
 export * from './orgNarrativeReport';
 export * from './fleetDesign';

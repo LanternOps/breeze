@@ -221,6 +221,13 @@ aiOperatorTasksRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // `deviceId` is optional on the wire since R1a (a contact-targeted recipe
+    // sends none). This device-targeted path still requires it.
+    const deviceId = body.deviceId;
+    if (deviceId === undefined) {
+      return c.json({ error: 'deviceId is required for this workflow', code: 'INVALID_INPUT' }, 400);
+    }
+
     // (3) Resolve the target under the caller's own visibility. Note this
     // read runs in the REQUEST's db context (RLS-scoped), unlike admission,
     // which runs as system — so the device must be visible to the caller
@@ -228,7 +235,7 @@ aiOperatorTasksRoutes.post(
     const [device] = await db
       .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname })
       .from(devices)
-      .where(and(eq(devices.id, body.deviceId), eq(devices.orgId, body.orgId)))
+      .where(and(eq(devices.id, deviceId), eq(devices.orgId, body.orgId)))
       .limit(1);
     // A site-restricted caller may not delegate against a device outside their
     // sites. Same non-enumerating 404 as the W07 detail route.
