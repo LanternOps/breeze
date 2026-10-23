@@ -1036,8 +1036,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Azienda",
+      "devices": "Dispositivi e agenti",
       "security": "Sicurezza e accesso",
       "communications": "Comunicazioni",
+      "ai": "IA",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1066,11 +1068,11 @@
       },
       "company": {
         "label": "Azienda",
-        "description": "Nome, indirizzo, contatti"
+        "description": "Nome, indirizzo, contatti, firma email"
       },
       "regional": {
         "label": "Area geografica",
-        "description": "Fuso orario, formati, orari"
+        "description": "Fuso orario, lingua, formati, orari"
       },
       "defaults": {
         "label": "Predefiniti",
@@ -1078,7 +1080,7 @@
       },
       "security": {
         "label": "Sicurezza",
-        "description": "Allowlist IP e accesso"
+        "description": "Password, sessioni, MFA e allowlist IP"
       },
       "remoteAccess": {
         "label": "Accesso remoto",
@@ -1086,11 +1088,11 @@
       },
       "eventLogs": {
         "label": "Log eventi",
-        "description": "Inoltro e conservazione"
+        "description": "Inoltra i log eventi dei dispositivi a Elasticsearch"
       },
       "notifications": {
         "label": "Notifiche",
-        "description": "Avvisi email e webhook"
+        "description": "Indirizzo mittente, SMTP e valori predefiniti di Slack e Pushover"
       },
       "ticketing": {
         "label": "Ticketing",
@@ -1115,7 +1117,7 @@
       },
       "aiFeatures": {
         "label": "Funzionalità IA",
-        "description": "Valori predefiniti per rilevamento anomalie e correzioni suggerite"
+        "description": "Policy sui dati IA, rilevamento anomalie e correzioni suggerite"
       },
       "branding": {
         "label": "Branding",
@@ -1132,6 +1134,14 @@
       "aiApprovals": {
         "label": "Timeout di approvazione IA",
         "description": "Per quanto tempo la chat IA attende l'approvazione di un'azione controllata"
+      },
+      "callerVerification": {
+        "label": "Verifica del chiamante",
+        "description": "Verifica dell’identità di chi chiama per le richieste di assistenza"
+      },
+      "knownGuests": {
+        "label": "Ospiti noti",
+        "description": "Dispositivi approvati di visitatori e tecnici per indirizzo MAC"
       }
     },
     "saved": "Impostazioni partner salvate",

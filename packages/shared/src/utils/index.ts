@@ -57,6 +57,7 @@ export * from './cleanupRules';
 export * from './scanPath';
 export * from './securityScanSettings';
 export * from './yaraBundle';
+export * from './yaraIocImport';
 export * from './paymentMethodLabel';
 export * from './discoverySubnetLimit';
 export * from './networkProxyOptIn';

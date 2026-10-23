@@ -102,7 +102,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     return registrationDisabledResponse(c);
   }
 
-  const { companyName, email, password, name, acceptTerms } = c.req.valid('json');
+  const { companyName, email, password, name, acceptTerms, purchaseSelection } = c.req.valid('json');
   const rateLimitClient = getClientRateLimitKey(c);
 
   // Self-hosted single-tenant installs need the seeded admin to finish setup
@@ -228,6 +228,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       acceptTerms,
       termsVersion: TERMS_VERSION,
       hostedExpectation: isHosted(),
+      purchaseSelection,
       signupIp: getTrustedClientIpOrUndefined(c),
       signupUserAgent: c.req.header('user-agent'),
     });

@@ -1036,8 +1036,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Şirket",
+      "devices": "Cihazlar ve ajanlar",
       "security": "Güvenlik ve Erişim",
       "communications": "İletişim",
+      "ai": "Yapay Zeka",
       "branding": "Markalama"
     },
     "aiFeatures": {
@@ -1066,11 +1068,11 @@
       },
       "company": {
         "label": "Şirket",
-        "description": "İsim, adres, kişiler"
+        "description": "İsim, adres, kişiler, e-posta imzası"
       },
       "regional": {
         "label": "Bölgesel",
-        "description": "Saat dilimi, formatlar, saatler"
+        "description": "Saat dilimi, dil, formatlar, saatler"
       },
       "defaults": {
         "label": "Varsayılanlar",
@@ -1078,7 +1080,7 @@
       },
       "security": {
         "label": "Güvenlik",
-        "description": "IP izin verilenler listesi ve erişim"
+        "description": "Parolalar, oturumlar, MFA ve IP izin listesi"
       },
       "remoteAccess": {
         "label": "Uzaktan Erişim",
@@ -1086,11 +1088,11 @@
       },
       "eventLogs": {
         "label": "Olay Günlükleri",
-        "description": "İletme ve saklama"
+        "description": "Cihaz olay günlüklerini Elasticsearch’e ilet"
       },
       "notifications": {
         "label": "Bildirimler",
-        "description": "E-posta ve web kancası uyarıları"
+        "description": "Gönderen adresi, SMTP, Slack ve Pushover varsayılanları"
       },
       "ticketing": {
         "label": "Biletleme",
@@ -1115,7 +1117,7 @@
       },
       "aiFeatures": {
         "label": "Yapay Zeka Özellikleri",
-        "description": "Anomali algılama ve önerilen düzeltme varsayılanları"
+        "description": "Yapay zeka veri politikası, anomali algılama ve önerilen düzeltmeler"
       },
       "branding": {
         "label": "Markalama",
@@ -1132,6 +1134,14 @@
       "aiApprovals": {
         "label": "Yapay Zeka Onay Zaman Aşımı",
         "description": "Yapay zeka sohbetinin kısıtlı bir eylem onayını ne kadar bekleyeceği"
+      },
+      "callerVerification": {
+        "label": "Arayan doğrulama",
+        "description": "Destek talepleri için arayan kimliği kontrolleri"
+      },
+      "knownGuests": {
+        "label": "Bilinen konuklar",
+        "description": "MAC adresine göre onaylı ziyaretçi ve teknisyen cihazları"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",

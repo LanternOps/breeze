@@ -1,4 +1,5 @@
 import { ensureDefaultProfile } from './billingProfileService';
+import { newPartnerPurchaseSelectionSchema, type LaunchPurchaseSelection } from '@breeze/shared';
 import { and, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -19,6 +20,7 @@ import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
 
 export interface CreatePartnerInput {
   orgName: string;
+  purchaseSelection?: LaunchPurchaseSelection;
   adminEmail: string;
   adminName: string;
   /** Null for MCP-originated bootstraps; users set their password later. */
@@ -57,6 +59,7 @@ export async function createPartner(
 ): Promise<CreatePartnerResult> {
   const normalizedEmail = input.adminEmail.toLowerCase();
   const mcpOrigin = input.origin.mcp;
+  const purchaseSelection = newPartnerPurchaseSelectionSchema.parse(input.purchaseSelection);
 
   const createInTransaction = async (
     tx: AuthLifecycleTransaction,
@@ -87,6 +90,7 @@ export async function createPartner(
         // not just a no-op against partners that were never put in probation.
         ...(partnerTrustMode() !== 'off' ? { trustState: 'probation' as const } : {}),
         billingEmail: normalizedEmail,
+        purchaseSelection,
         mcpOrigin,
         mcpOriginIp: mcpOrigin ? (input.origin as { ip?: string }).ip ?? null : null,
         mcpOriginUserAgent: mcpOrigin ? (input.origin as { userAgent?: string }).userAgent ?? null : null,
