@@ -60,6 +60,23 @@ interface IncidentDetailProps {
   incidentId: string;
 }
 
+// Legacy rows written by the (removed) timeline enricher carry no content.
+const EMPTY_ENRICHER_SUMMARY = 'Added baseline timeline context for open incident';
+
+type TFn = (key: string) => string;
+
+/** Maps the actor enum (brain | user | system) to a human label; unknown values pass through. */
+function actorLabel(t: TFn, actor: string): string {
+  switch (actor) {
+    case 'brain':
+    case 'user':
+    case 'system':
+      return t(/* i18n-dynamic */ `longTail.incidents.IncidentDetailPage.actors.${actor}`);
+    default:
+      return actor;
+  }
+}
+
 const severityColors: Record<IncidentSeverity, string> = {
   p1: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
   p2: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
@@ -255,6 +272,9 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
 /* ------------------------------------------------------------------ */
 function TimelineView({ entries }: { entries: TimelineEntry[] }) {
   const { t } = useTranslation('common');
+  entries = entries.filter(
+    (e) => !(e.type === 'timeline_enriched' && e.summary === EMPTY_ENRICHER_SUMMARY),
+  );
   if (entries.length === 0) {
     return <p className="text-sm text-muted-foreground py-4">{t('longTail.incidents.IncidentDetailPage.timeline.empty')}</p>;
   }
@@ -278,7 +298,7 @@ function TimelineView({ entries }: { entries: TimelineEntry[] }) {
                 {entry.actor && (
                   <>
                     <span className="text-xs text-muted-foreground">&middot;</span>
-                    <span className="text-xs text-muted-foreground">{entry.actor}</span>
+                    <span className="text-xs text-muted-foreground">{actorLabel(t, entry.actor)}</span>
                   </>
                 )}
               </div>
@@ -328,7 +348,7 @@ function ActionsView({ entries }: { entries: ActionEntry[] }) {
                 </span>
               </td>
               <td className="px-4 py-3 text-muted-foreground">
-                {action.executedBy ?? '-'}
+                {action.executedBy ? actorLabel(t, action.executedBy) : '-'}
               </td>
               <td className="px-4 py-3 text-muted-foreground">
                 {formatDateTime(action.executedAt)}

@@ -121,7 +121,7 @@ describe('ApprovalsInbox + script proposals', () => {
         // The row's scope rides along so a supervised proposal is a plain
         // click (#5600), not a passkey ceremony.
         'supervised',
-        { acknowledgedPatterns: ['PowerShell HKLM write'] },
+        { acknowledgedPatterns: ['PowerShell HKLM write'], silentSuccess: true },
       ),
     );
   });

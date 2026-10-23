@@ -18,9 +18,18 @@ const TYPE_BENEFIT_KEYS: Record<string, string> = {
   access_point: 'networkDeviceDetailPage.health.empty.benefit.switch',
 };
 
-export function EmptyHealth({ assetType, onSetUpMonitoring }: HealthCardProps) {
+export function EmptyHealth({ assetType, hasNetworkCheck, onSetUpMonitoring }: HealthCardProps) {
   const { t } = useTranslation('devices');
   const benefitKey = TYPE_BENEFIT_KEYS[assetType] ?? 'networkDeviceDetailPage.health.empty.benefit.generic';
+  // A live network check sits right next to this card in the Reachability
+  // card, so "nothing is being monitored" would be false. Say what is
+  // actually missing (SNMP) and name the check that is running.
+  const title = hasNetworkCheck
+    ? t('networkDeviceDetailPage.health.empty.titleWithCheck')
+    : t('networkDeviceDetailPage.health.empty.title');
+  const description = hasNetworkCheck
+    ? t('networkDeviceDetailPage.health.empty.descriptionWithCheck')
+    : t(/* i18n-dynamic */ benefitKey);
 
   return (
     <Section title={t('networkDeviceDetailPage.sections.deviceHealth')} testId="network-detail-health">
@@ -29,8 +38,8 @@ export function EmptyHealth({ assetType, onSetUpMonitoring }: HealthCardProps) {
         size="sm"
         testId="network-detail-health-empty"
         icon={<Activity aria-hidden="true" />}
-        title={t('networkDeviceDetailPage.health.empty.title')}
-        description={t(/* i18n-dynamic */ benefitKey)}
+        title={title}
+        description={description}
         action={
           <button
             type="button"

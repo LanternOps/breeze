@@ -269,6 +269,44 @@ describe('PamRequestsTab', () => {
     expect(screen.getByTestId('pam-decided-by-req-revoked')).toHaveTextContent('by Jane Admin');
   });
 
+  // #9517: the agent reported it could not act; the request was closed as
+  // expired, so it leaves the default Pending view and shows under Expired.
+  it('shows why the device could not act, with the agent detail as the tooltip', async () => {
+    const pendingOnly = listResponse([{ ...pendingRequest, id: 'req-ok' }]);
+    const expiredRows = listResponse([
+      {
+        ...pendingRequest,
+        id: 'req-unable',
+        status: 'expired',
+        deviceUnableAt: '2026-06-10T12:00:05.000Z',
+        deviceUnableReason: 'session_unavailable',
+        deviceUnableDetail: 'session 7 cannot host a SYSTEM helper (not active or connected)',
+      },
+      { ...pendingRequest, id: 'req-future', status: 'expired', deviceUnableAt: '2026-06-10T12:00:05.000Z', deviceUnableReason: 'some_new_category' },
+    ]);
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      const requested = new URLSearchParams(String(url).split('?')[1] ?? '').get('status');
+      return requested === 'expired' ? expiredRows : pendingOnly;
+    });
+    render(<PamRequestsTab liveTick={0} />);
+
+    // The default Pending view no longer lists the closed request.
+    await screen.findByTestId('pam-request-row-req-ok');
+    expect(screen.queryByTestId('pam-request-row-req-unable')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pam-respond-btn-req-ok')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('pam-filter-status'), { target: { value: 'expired' } });
+    const line = await screen.findByTestId('pam-device-unable-req-unable');
+    expect(line).toHaveTextContent("Device could not act: user's session unavailable");
+    expect(line).toHaveAttribute('title', 'session 7 cannot host a SYSTEM helper (not active or connected)');
+    // An unknown category from a newer agent still says the device could not act.
+    expect(screen.getByTestId('pam-device-unable-req-future')).toHaveTextContent('Device could not act on this request');
+    expect(screen.queryByTestId('pam-device-unable-req-ok')).not.toBeInTheDocument();
+    expect(String(fetchWithAuthMock.mock.calls.at(-1)?.[0])).toContain('status=expired');
+    // A closed request offers no Respond action.
+    expect(screen.queryByTestId('pam-respond-btn-req-unable')).not.toBeInTheDocument();
+  });
+
   it('fetches page=2 on Next and updates the footer range', async () => {
     fetchWithAuthMock.mockImplementation(async (url) => {
       const requestedPage = Number(

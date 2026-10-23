@@ -31,24 +31,18 @@ import {
   type UnattestedRestoreExtras,
 } from './useUnattestedRestoreStepUp';
 import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
+import RestoreSnapshotStep, {
+  groupSnapshotsByDevice,
+  snapshotDeviceKey,
+  type RestoreSnapshot,
+} from './RestoreSnapshotStep';
 import '../../lib/i18n';
 
 type RestoreType = 'full' | 'selective';
 
 type DestinationType = 'original' | 'alternate';
 
-type Snapshot = {
-  id: string;
-  label: string;
-  deviceName?: string | null;
-  size?: string;
-  sizeBytes?: number | null;
-  // /backup/snapshots carries no status (a snapshot row only exists once its
-  // backup completed), so the card shows when it was captured instead (#6496).
-  createdAt?: string | null;
-  /** Integrity status from GET /backup/snapshots (absent on an older API). */
-  integrityStatus?: string | null;
-};
+type Snapshot = RestoreSnapshot;
 
 type RestoreResultDetails = {
   status?: string;
@@ -155,19 +149,24 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   const { t } = useTranslation('backup');
   const [step, setStep] = useState(0);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [snapshotId, setSnapshotId] = useState(initialSnapshotId ?? '');
+  // The operator's pick. The EFFECTIVE selection (`snapshotId` below) is
+  // derived: only a snapshot of the chosen device counts (#9627).
+  const [pickedSnapshotId, setPickedSnapshotId] = useState(initialSnapshotId ?? '');
+  // Source device the operator chose in step 1; null until they pick one.
+  const [chosenDeviceKey, setChosenDeviceKey] = useState<string | null>(null);
   const [restoreType, setRestoreType] = useState<RestoreType>(
     initialSelectedPaths && initialSelectedPaths.length > 0 ? 'selective' : 'full'
   );
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(
     () => new Set(initialSelectedPaths ?? [])
   );
-  // The snapshot-change effect below clears the selection on every
-  // `snapshotId` change so a user picking a *different* snapshot in step 0
-  // doesn't drag a stale selection along. That would also fire on mount and
-  // wipe out the selection carried in via `initialSelectedPaths` the instant
-  // the wizard renders — skip its first run.
-  const isFirstSnapshotChange = useRef(true);
+  // The snapshot-change effect below clears the file selection when the
+  // operator moves from one snapshot to a *different* one, so a stale
+  // selection is not dragged along. It must not fire for the carried
+  // snapshot settling in once the list loads, or it would wipe the selection
+  // carried in via `initialSelectedPaths` — hence the last-seen id, seeded
+  // with the carried one.
+  const lastSnapshotId = useRef(initialSnapshotId ?? '');
   const [destination, setDestination] = useState<DestinationType>('original');
   // #6349: this defaulted to the demo path '/restore/nyc-db-14'. The wizard
   // was unreachable, so nobody saw it; now that it is mounted, a pre-filled
@@ -246,18 +245,45 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     void fetchRestoreHistory();
   }, [fetchRestoreHistory, fetchSnapshots]);
 
-  useEffect(() => {
-    if (!snapshotId && snapshots.length > 0) {
-      setSnapshotId(snapshots[0].id);
+  const deviceGroups = useMemo(() => groupSnapshotsByDevice(snapshots), [snapshots]);
+
+  // #9627: never preselect across devices. The org-wide list is newest-first,
+  // so its first row is whichever server backed up last, not the device the
+  // operator came to restore. Without an explicit choice, a device is only
+  // implied by the carried snapshot (its own device) or by an org that has
+  // exactly one device with snapshots. Derived, not set from an effect, so
+  // the first render after the list loads is already scoped.
+  // A carried id that is no longer listed (expired, deleted) implies no
+  // device at all — not even a single-device org's — or that device's newest
+  // snapshot would be silently substituted for the one the link named.
+  const carriedSnapshotMissing = Boolean(initialSnapshotId)
+    && !loading
+    && !snapshots.some((snap) => snap.id === initialSnapshotId);
+  const impliedDeviceKey = useMemo(() => {
+    if (initialSnapshotId) {
+      const carried = snapshots.find((snap) => snap.id === initialSnapshotId);
+      return carried ? snapshotDeviceKey(carried) : null;
     }
-  }, [snapshotId, snapshots]);
+    return deviceGroups.length === 1 ? deviceGroups[0].key : null;
+  }, [deviceGroups, initialSnapshotId, snapshots]);
+  const deviceKey = chosenDeviceKey ?? impliedDeviceKey;
+
+  // Within the chosen device: the operator's pick, else that device's newest.
+  // A pick from another device (or a carried id no longer listed) never
+  // survives a device switch.
+  const selectedSnapshot = useMemo(() => {
+    const group = deviceGroups.find((candidate) => candidate.key === deviceKey);
+    if (!group) return undefined;
+    return group.snapshots.find((snap) => snap.id === pickedSnapshotId) ?? group.snapshots[0];
+  }, [deviceGroups, deviceKey, pickedSnapshotId]);
+  const snapshotId = selectedSnapshot?.id ?? '';
 
   useEffect(() => {
-    if (isFirstSnapshotChange.current) {
-      isFirstSnapshotChange.current = false;
-      return;
+    if (!snapshotId) return;
+    if (lastSnapshotId.current && lastSnapshotId.current !== snapshotId) {
+      setSelectedFiles(new Set());
     }
-    setSelectedFiles(new Set());
+    lastSnapshotId.current = snapshotId;
   }, [snapshotId]);
 
   const loadDir = useCallback(async (dir: string, cursor?: string | null) => {
@@ -319,10 +345,6 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     return job.restoreType === 'selective' ? t('restoreWizard.kindSelective') : t('restoreWizard.kindFull');
   };
 
-  const selectedSnapshot = useMemo(
-    () => snapshots.find((snap) => snap.id === snapshotId),
-    [snapshotId, snapshots]
-  );
   const currentPage = dirs[browseDir];
   const currentItems = currentPage?.items ?? [];
   const parentDir = browseDir === ROOT_DIR
@@ -530,48 +552,15 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
 
         <div className="mt-6 space-y-6">
           {step === 0 && (
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-lg font-semibold text-foreground">{t('restoreWizard.selectASnapshot')}</h3>
-                <p className="text-sm text-muted-foreground">
-                  {t('restoreWizard.chooseTheRecoveryPointYouWantToRestore')} </p>
-              </div>
-              {snapshots.length === 0 ? (
-                <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                  {t('restoreWizard.noSnapshotsAvailable')} </div>
-              ) : (
-                <div className="grid gap-4 md:grid-cols-3">
-                  {snapshots.map((snapshot) => (
-                    <button
-                      key={snapshot.id}
-                      onClick={() => setSnapshotId(snapshot.id)}
-                      className={cn(
-                        'rounded-lg border p-4 text-left',
-                        snapshotId === snapshot.id
-                          ? 'border-primary bg-primary/5'
-                          : 'border-muted bg-muted/20'
-                      )}
-                    >
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>
-                          {typeof snapshot.sizeBytes === 'number'
-                            ? formatBytes(snapshot.sizeBytes)
-                            : snapshot.size ?? '--'}
-                        </span>
-                        {snapshot.createdAt ? <span>{formatDateTime(snapshot.createdAt)}</span> : null}
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
-                        {snapshot.label}
-                        <SnapshotIntegrityBadge status={snapshot.integrityStatus} />
-                      </div>
-                      {snapshot.deviceName ? (
-                        <div className="mt-1 text-xs text-muted-foreground">{snapshot.deviceName}</div>
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <RestoreSnapshotStep
+              groups={deviceGroups}
+              deviceKey={deviceKey}
+              onDeviceChange={setChosenDeviceKey}
+              snapshotId={snapshotId}
+              onSnapshotChange={setPickedSnapshotId}
+              formatBytes={formatBytes}
+              carriedSnapshotMissing={carriedSnapshotMissing && chosenDeviceKey === null}
+            />
           )}
 
           {step === 1 && (
@@ -757,6 +746,13 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <CheckCircle2 className="h-4 w-4 text-success" />
                     {t('restoreWizard.snapshot')} </div>
+                  {selectedSnapshot ? (
+                    <p data-testid="restore-review-device" className="mt-2 text-xs font-medium text-foreground">
+                      {t('restoreWizard.reviewDevice', {
+                        device: selectedSnapshot.deviceName || t('restoreWizard.unknownDevice'),
+                      })}
+                    </p>
+                  ) : null}
                   <p data-testid="restore-review-snapshot" className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     {selectedSnapshot?.label ?? 'No snapshot selected'}
                     <SnapshotIntegrityBadge status={selectedSnapshot?.integrityStatus} />
@@ -807,7 +803,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
             {step < 4 ? (
               <button
                 onClick={nextStep}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                disabled={step === 0 && !selectedSnapshot}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {t('restoreWizard.continue')} <ArrowRight className="h-4 w-4" />
               </button>
@@ -816,7 +813,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                 onClick={handleRestore}
                 disabled={
                   restoring ||
-                  !snapshotId ||
+                  !selectedSnapshot ||
                   (restoreType === 'selective' && selectedFiles.size === 0) ||
                   (destination === 'alternate' && !alternatePath.trim())
                 }

@@ -24,7 +24,7 @@ describe('UserInviteForm — organization access', () => {
     fillIdentity();
 
     fireEvent.change(screen.getByLabelText(/^Access level$/), { target: { value: 'selected' } });
-    fireEvent.focus(screen.getByPlaceholderText(/search organizations/i));
+    fireEvent.click(screen.getByPlaceholderText(/search organizations/i));
     fireEvent.click(await screen.findByRole('button', { name: 'Brightside Law' }));
     fireEvent.click(screen.getByRole('button', { name: /send invite/i }));
 

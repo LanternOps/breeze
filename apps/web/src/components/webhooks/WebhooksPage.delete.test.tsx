@@ -30,7 +30,7 @@ const WEBHOOK = {
   orgId: 'org-1',
   name: 'Alert relay',
   url: 'https://hooks.example.com/alerts',
-  events: ['alert.created'],
+  events: ['alert.triggered'],
   status: 'active',
   hasSecret: true,
 };

@@ -1388,6 +1388,14 @@
     "never": "Never",
     "downloadInstaller": "Download pre-configured installer",
     "downloading": "Downloading...",
+    "installerDialogTitle": "Download installer for \"{{name}}\"",
+    "installerDialogDescription": "The installer is built for a set number of devices. Each device that runs it uses one.",
+    "installerDeviceCount": "Number of devices",
+    "installerDeviceCountRemaining": "This key has {{count}} enrollments left.",
+    "installerDeviceCountRemaining_one": "This key has {{count}} enrollment left.",
+    "installerDeviceCountRemaining_other": "This key has {{count}} enrollments left.",
+    "installerDeviceCountUnlimited": "This key has no usage limit.",
+    "installerDeviceCountRange": "Enter a whole number from 1 to {{max}}.",
     "rotate": "Rotate",
     "page": "Page {{current}} of {{total}}",
     "previous": "Previous",
@@ -4381,6 +4389,13 @@
     "commitmentTermRange": "Commitment term: enter a whole number from 1–120 months."
   },
   "catalogItemsTab": {
+    "viewActive": "Active",
+    "viewArchived": "Archived",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Service"
+    },
     "itemArchived": "Item archived",
     "itemRestored": "Item restored",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "The product catalog is available to partner accounts only.",

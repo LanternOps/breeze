@@ -41,6 +41,18 @@ describe('mcpModernResult', () => {
     decorateModernResult('tools/list', input);
     expect(input).toEqual({ tools: [], _meta: { a: 1 } });
   });
+  it('B-W04: server/discover serves the approval-intent instructions only with MCP_TIER3_INTENTS_ENABLED on', () => {
+    const prev = process.env.MCP_TIER3_INTENTS_ENABLED;
+    try {
+      process.env.MCP_TIER3_INTENTS_ENABLED = 'true';
+      expect(buildDiscoverResult().instructions).toContain('get_action_status');
+      delete process.env.MCP_TIER3_INTENTS_ENABLED;
+      expect(buildDiscoverResult().instructions).toBe(MCP_SERVER_INSTRUCTIONS);
+    } finally {
+      if (prev === undefined) delete process.env.MCP_TIER3_INTENTS_ENABLED; else process.env.MCP_TIER3_INTENTS_ENABLED = prev;
+    }
+  });
+
   it('buildDiscoverResult advertises every supported version, private 5-minute cache', () => {
     expect(buildDiscoverResult()).toEqual({
       resultType: 'complete',

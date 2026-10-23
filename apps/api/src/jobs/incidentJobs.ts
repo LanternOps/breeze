@@ -106,38 +106,16 @@ async function runIncidentTimelineEnrichmentPass(): Promise<void> {
             .for('update', { skipLocked: true })
         )
       )
-      .returning({
-        id: incidents.id,
-        status: incidents.status,
-        timeline: incidents.timeline,
-      });
+      .returning({ id: incidents.id });
 
     if (rows.length === 0) {
       return;
     }
 
-    const now = new Date();
-    for (const row of rows) {
-      const nextTimeline = [
-        ...toTimeline(row.timeline),
-        {
-          at: now.toISOString(),
-          type: 'timeline_enriched',
-          actor: 'system',
-          summary: 'Added baseline timeline context for open incident',
-          metadata: { status: row.status },
-        } satisfies IncidentTimelineEntry,
-      ];
-
-      await db
-        .update(incidents)
-        .set({
-          timeline: nextTimeline,
-          updatedAt: now,
-        })
-        .where(eq(incidents.id, row.id));
-    }
-
+    // #9663: the claim marker (timelineEnrichedAt) is the whole effect for now.
+    // A content-free "baseline context" timeline entry used to be appended here;
+    // it was noise in the UI and in AI reports. Append real context here when
+    // there is some to add.
     console.log(`[IncidentJobs] timeline enricher updated ${rows.length} incidents`);
   });
 }

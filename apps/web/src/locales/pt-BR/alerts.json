@@ -112,6 +112,7 @@
     "close": "Fechar",
     "createALinkedTicketPreFilledFrom": "Criar um chamado vinculado preenchido com os dados deste alerta",
     "createTicket": "Criar chamado",
+    "viewTicket": "Ver chamado {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Silenciar este alerta — interrompe as notificações sem resolvê-lo",
     "suppress": "Suprimir",
     "dismissPermanentlyHidesThisAlertForGood": "Dispensar permanentemente — oculta este alerta de vez (o vencimento da garantia não gerará outro alerta para a mesma data final; outras condições ainda poderão abrir um novo alerta se ocorrerem novamente)",

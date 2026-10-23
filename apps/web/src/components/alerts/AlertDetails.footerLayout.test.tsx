@@ -27,7 +27,7 @@ const alert: Alert = {
 // instead of squeezing their labels onto two lines ("Create" / "ticket").
 describe('AlertDetails footer layout', () => {
   it('wraps the action row and keeps each button label on one line', () => {
-    render(<AlertDetails alert={alert} isOpen onClose={() => {}} />);
+    render(<AlertDetails alert={alert} isOpen onClose={() => {}} serviceManagementMode="native" />);
     const footer = screen.getByTestId('alert-details-footer');
     expect(footer.className.split(' ')).toContain('flex-wrap');
     const buttons = Array.from(footer.querySelectorAll('button'));

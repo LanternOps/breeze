@@ -195,7 +195,7 @@ describe('GET /connection-health/incidents', () => {
     const [item] = (await (await get()).json()).data;
     expect(Object.keys(item).sort()).toEqual([
       'condition', 'detail', 'displayName', 'firstFailedAt', 'fixHref', 'id', 'lastObservedAt',
-      'openedAt', 'orgId', 'resolution', 'resolvedAt', 'severity', 'sourceKind',
+      'openedAt', 'orgId', 'remedy', 'resolution', 'resolvedAt', 'severity', 'sourceKind',
     ]);
     const text = JSON.stringify(item);
     for (const secret of ['notifiedUserIds', 'ownerUserId', 'pendingNotice', 'ownerFixHref', 'u-secret', '/account/connected-apps']) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { addMonthsClamped, computePeriod, periodIndexFor, nextBillingDate, isExpired, addDaysISO, duePeriodStartFor, isWithinNoticeWindow, extendTermThrough, billingRunPeriods, isAutoRenewing, contractInTermForReporting, isPastEndForReporting } from './contractMath';
+import { addMonthsClamped, computePeriod, periodIndexFor, nextBillingDate, isExpired, addDaysISO, duePeriodStartFor, isWithinNoticeWindow, extendTermThrough, billingRunPeriods, isAutoRenewing, contractInTermForReporting, isPastEndForReporting, pointerPastClaimed } from './contractMath';
 
 describe('addMonthsClamped', () => {
   it('preserves day-of-month when valid', () => {
@@ -308,5 +308,32 @@ describe('contractInTermForReporting (#9220)', () => {
     for (const status of ['paused', 'cancelled', 'draft']) {
       expect(contractInTermForReporting({ ...annualAdvance, endDate: '2028-01-01', status }, '2026-06-15', true)).toBeNull();
     }
+  });
+});
+
+describe('pointerPastClaimed — a resume / already_billed run never targets a claimed period (#9509)', () => {
+  const monthly = { startDate: '2026-07-01', intervalMonths: 1 };
+
+  it('nothing claimed: the candidate period\'s pointer (advance = start, arrears = end)', () => {
+    expect(pointerPastClaimed({ ...monthly, billingTiming: 'advance', candidateIdx: 3, latestClaimedStart: null })).toBe('2026-10-01');
+    expect(pointerPastClaimed({ ...monthly, billingTiming: 'arrears', candidateIdx: 3, latestClaimedStart: null })).toBe('2026-11-01');
+  });
+
+  it('the candidate period itself is claimed: moves to the period after it', () => {
+    expect(pointerPastClaimed({ ...monthly, billingTiming: 'advance', candidateIdx: 0, latestClaimedStart: '2026-07-01' })).toBe('2026-08-01');
+    expect(pointerPastClaimed({ ...monthly, billingTiming: 'arrears', candidateIdx: 0, latestClaimedStart: '2026-07-01' })).toBe('2026-09-01');
+  });
+
+  it('claims only BEHIND the candidate: the candidate wins (no back-billing of the paused gap)', () => {
+    expect(pointerPastClaimed({ ...monthly, billingTiming: 'advance', candidateIdx: 3, latestClaimedStart: '2026-07-01' })).toBe('2026-10-01');
+  });
+
+  it('a claim AHEAD of the candidate: jumps past the latest claim in one step', () => {
+    expect(pointerPastClaimed({ ...monthly, billingTiming: 'advance', candidateIdx: 0, latestClaimedStart: '2026-09-01' })).toBe('2026-10-01');
+  });
+
+  it('month-end contract: uses the clamped period grid the claims are keyed on', () => {
+    expect(pointerPastClaimed({ startDate: '2026-01-31', intervalMonths: 1, billingTiming: 'advance', candidateIdx: 1, latestClaimedStart: '2026-02-28' }))
+      .toBe('2026-03-31');
   });
 });

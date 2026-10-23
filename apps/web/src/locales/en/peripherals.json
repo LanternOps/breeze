@@ -79,6 +79,14 @@
     "allOrganizations": "All organizations",
     "partnerWide": "(partner-wide policy)",
     "thisOrganization": "This organization only",
+    "appliesTo": "Applies to",
+    "targets": {
+      "organization": "All devices",
+      "site": "Specific sites ({{total}})",
+      "group": "Specific device groups ({{total}})",
+      "device": "Specific devices ({{total}})"
+    },
+    "targetReadOnlyHint": "Targeting can't be changed in this form. Saving keeps the current targets.",
     "deviceClass": "Device Class",
     "classes": {
       "storage": "Storage",
