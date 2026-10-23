@@ -98,6 +98,72 @@ describe('partner_entitlements — partner-axis RLS', () => {
     expect(await withDbAccessContext(partnerContext(partnerB), () => db.execute(stmt))).toHaveLength(0);
   });
 
+  // ---- no self-grant: partner-axis READ, system-only WRITE --------------------
+  // A partner can never write its OWN entitlement rows, even though
+  // breeze_has_partner_access(partner_id) is true for them. Every grant goes
+  // through services/entitlements.ts, which elects system scope.
+
+  it('policies: one SELECT-only partner read policy and one system-only write policy', async () => {
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT policyname, cmd, permissive, qual, with_check FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'partner_entitlements' ORDER BY policyname`)) as unknown as
+      Array<{ policyname: string; cmd: string; permissive: string; qual: string | null; with_check: string | null }>;
+    expect(rows.map((r) => [r.policyname, r.cmd, r.permissive])).toEqual([
+      ['partner_entitlements_partner_read', 'SELECT', 'PERMISSIVE'],
+      ['partner_entitlements_system_write', 'ALL', 'PERMISSIVE'],
+    ]);
+    // The write policy's predicates are a conjunction that requires system scope.
+    const write = rows.find((r) => r.policyname === 'partner_entitlements_system_write')!;
+    for (const expr of [write.qual, write.with_check]) {
+      expect(expr).toMatch(/breeze_current_scope\(\) = 'system'::text\) AND breeze_has_partner_access\(partner_id\)/);
+      expect(expr).not.toMatch(/\bOR\b/);
+    }
+  });
+
+  it('partner A cannot INSERT its OWN row (42501)', async () => {
+    await expect(withDbAccessContext(partnerContext(partnerA), () => db.execute(sql`
+      INSERT INTO partner_entitlements (partner_id, feature_key, state, source)
+      VALUES (${partnerA}, 'wisp', 'enabled', 'billing')`)))
+      .rejects.toMatchObject({ cause: { code: '42501' } });
+    expect(await countRows(partnerA)).toBe(1);
+  });
+
+  it('partner A cannot upsert (INSERT … ON CONFLICT DO UPDATE) its OWN row (42501)', async () => {
+    await expect(withDbAccessContext(partnerContext(partnerA), () => db.execute(sql`
+      INSERT INTO partner_entitlements (partner_id, feature_key, state, source, reason)
+      VALUES (${partnerA}, 'wisp', 'enabled', 'manual', 'self-grant attempt')
+      ON CONFLICT (partner_id, feature_key, source) DO UPDATE SET state = 'enabled'`)))
+      .rejects.toMatchObject({ cause: { code: '42501' } });
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT state FROM partner_entitlements WHERE partner_id = ${partnerA}`));
+    expect(rows).toEqual([{ state: 'disabled' }]);
+  });
+
+  it('partner A cannot UPDATE its OWN row (0 rows), yet still SELECTs it', async () => {
+    const { updated, visible } = await withDbAccessContext(partnerContext(partnerA), async () => ({
+      updated: await db.execute(sql`
+        UPDATE partner_entitlements SET state = 'enabled' WHERE partner_id = ${partnerA} RETURNING id`),
+      visible: await db.execute(sql`SELECT state FROM partner_entitlements WHERE partner_id = ${partnerA}`),
+    }));
+    // CONTROL: the same context sees the row, so 0 updated is the write policy, not invisibility.
+    expect(visible).toEqual([{ state: 'disabled' }]);
+    expect(updated).toHaveLength(0);
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT state FROM partner_entitlements WHERE partner_id = ${partnerA}`));
+    expect(rows).toEqual([{ state: 'disabled' }]);
+  });
+
+  it('partner A cannot DELETE its OWN row (0 rows), yet still SELECTs it', async () => {
+    const { deleted, visible } = await withDbAccessContext(partnerContext(partnerA), async () => ({
+      deleted: await db.execute(sql`
+        DELETE FROM partner_entitlements WHERE partner_id = ${partnerA} RETURNING id`),
+      visible: await db.execute(sql`SELECT id FROM partner_entitlements WHERE partner_id = ${partnerA}`),
+    }));
+    expect(visible).toHaveLength(1);
+    expect(deleted).toHaveLength(0);
+    expect(await countRows(partnerA)).toBe(1);
+  });
+
   it.each([
     ['state', sql`('x', 'manual', 'reason long enough')`, 'partner_entitlements_state_chk'],
     ['source', sql`('enabled', 'plan', 'reason long enough')`, 'partner_entitlements_source_chk'],

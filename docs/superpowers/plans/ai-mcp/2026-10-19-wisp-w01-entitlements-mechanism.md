@@ -292,15 +292,23 @@ ALTER TABLE partner_entitlements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE partner_entitlements FORCE ROW LEVEL SECURITY;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public'
-                 AND tablename = 'partner_entitlements' AND policyname = 'partner_entitlements_partner_access') THEN
-    CREATE POLICY partner_entitlements_partner_access ON partner_entitlements
+                 AND tablename = 'partner_entitlements' AND policyname = 'partner_entitlements_partner_read') THEN
+    CREATE POLICY partner_entitlements_partner_read ON partner_entitlements
+      FOR SELECT TO breeze_app
+      USING (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public'
+                 AND tablename = 'partner_entitlements' AND policyname = 'partner_entitlements_system_write') THEN
+    CREATE POLICY partner_entitlements_system_write ON partner_entitlements
       FOR ALL TO breeze_app
-      USING      (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id))
-      WITH CHECK (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id));
+      USING      (public.breeze_current_scope() = 'system' AND public.breeze_has_partner_access(partner_id))
+      WITH CHECK (public.breeze_current_scope() = 'system' AND public.breeze_has_partner_access(partner_id));
   END IF;
 END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON partner_entitlements TO breeze_app;
 ```
+
+Partner-axis READ, system-only WRITE (amended in review on PR #9924): a single `FOR ALL` partner policy would let a partner-scoped context write its OWN rows, so "a partner cannot self-grant" would hold only in app code. The `breeze_has_partner_access` conjunct on the write policy is a no-op under system scope; it keeps INSERT/UPDATE/DELETE on the partner axis that the strict `rls-coverage` contract checks (same shape as `stripe_connect_credentials`).
 
 No partner-wide SELECT branch (spec §4: partner-AXIS tables have no `org_id IS NULL` shape; org contexts reach it through the service).
 
