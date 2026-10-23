@@ -18,6 +18,23 @@ tracking_issue: LanternOps/breeze#9906
 
 **Spec:** `docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md` §3, §7.1–7.4, §9, §13, §14, §15 "other blockers". Orchestrator contracts: `docs/superpowers/plans/ai-mcp/2026-10-19-wisp-w00-wave-map-and-contracts.md` ("Triage engine (W05)" block defines this wave; the W02/W03/W04 blocks are consumed as written).
 
+## Execution split and parallelism (orchestrator, 2026-10-23)
+
+W05 is split into two sub-issues with a **schema/service seam**:
+- **W05a — Concerns, watches, budget, routes, chat tools** (sub-issue #9911, branch `feature/9906-wisp/wave-9911`): Tasks 1 (+ Task 1 edits), 3 (+ edits), 4, 5 (+ edits), 11, 11b, 12, 16, 17. Owns the migration, Drizzle schema, tenancy registrations, `services/wisp/concerns.ts`, `watches.ts`, `budget.ts`, `routes/wispConcerns.ts`, `routes/wispWatches.ts`, the chat tools file, the web concern list.
+- **W05b — Assessment engine** (sub-issue #9917, branch `feature/9906-wisp/wave-9917`): Tasks 2, 6, 7 (+ edits), 8, 9 (+ edits), 10, 13, 14, 15. Owns the `assessment` profile, outcome tools, `assessment.ts`, event bus additions, `jobs/wispWakeScheduler.ts`, the reaper, clustering/correlator, `readiness.ts`, and the end-to-end integration (Task 13, last).
+- **Seam:** W05b starts as soon as W05a has pushed Tasks 1, 3, 4, 5 (the orchestrator lists the SHAs in the W05b brief; W05b cherry-picks them first, keeps them byte-identical, and rebases when W05a merges). From then on the two run in parallel.
+
+PARALLEL GROUPS (W05a): G1 = Task 1. G2 = Task 3 ∥ Task 4 ∥ Task 5. G3 = Task 11 ∥ Task 11b ∥ Task 16 ∥ Task 12. Task 17 last.
+PARALLEL GROUPS (W05b): G1 = Task 2 ∥ Task 8 (profile vs event bus). G2 = Task 6 ∥ Task 7 ∥ Task 15 (outcome tools, assessment.ts, readiness.ts). G3 = Task 9 ∥ Task 10 ∥ Task 14 (wake, reaper, clustering). Task 13 last.
+**Sonnet:** Task 12 (web concern list + locales), Task 2's validator boilerplate, Task 8 emitter plumbing, Task 15 `renderReadinessSummary` copy.
+**Rules for every sub-issue and parallel group**
+- Every part bases on `origin/main` and targets `main` (never a stacked PR). The w00 contracts are the oracle, so parts can be built against each other's interfaces before they merge; web/mobile tests mock the API.
+- **Shared-package ownership:** the API part owns `packages/shared` additions. A web/mobile part that needs a type not yet on main copies the file **verbatim** from the API part's branch (`git show origin/feature/9906-wisp/wave-<api#>:<path>`) into the same path; whichever PR lands second rebases, and byte-identical files resolve cleanly. Never re-type a contract.
+- **In-wave fan-out:** tasks inside one PARALLEL GROUP are file-disjoint and may run as concurrent subagents in the same worktree. Concurrent subagents never run `git commit`; the fixer commits once per group after all members pass. Groups run in the listed order.
+- **Model routing:** the session and every tenancy/auth/permission/migration task are Opus. Tasks marked **Sonnet** are mechanical (locale fan-out, page scaffolds, pure helpers, docs, DTO plumbing) and run on Sonnet subagents with an Opus reviewer.
+- The part that lands last owns the whole-wave verification task and the PR-body statement that covers both parts.
+
 ## Global Constraints
 
 - **Dark by default.** Nothing in this wave changes runtime behaviour unless `wispEnabled()` (`apps/api/src/config/env.ts`, W02) is true: the wake scheduler's tick returns early, the subscriber returns early, routes 404. Flag off ⇒ `pnpm test` and the integration suites are unchanged except for the new files.

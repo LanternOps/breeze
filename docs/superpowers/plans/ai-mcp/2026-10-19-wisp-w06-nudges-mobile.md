@@ -17,6 +17,24 @@ tracking_issue: LanternOps/breeze#9906
 
 **Spec:** `docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md` §5 (mobile row), §7.4, §7.6, §13 "Reach one person's phone", §14. Names come from the orchestrator doc (`2026-10-19-wisp-w00-wave-map-and-contracts.md`, "Nudges (W06)"); where this plan and w00 disagree on a name, w00 wins.
 
+## Execution split and parallelism (orchestrator, 2026-10-23)
+
+W06 is split into three sub-issues that run **in parallel**:
+- **W06a — Nudges API** (sub-issue #9912, branch `feature/9906-wisp/wave-9912`): Tasks 1 (+ edits), 2 (+ edits), 3 (+ edits), 4, 5, 6, 12, 13, 14 (service + route), 16 (route). Owns `packages/shared`, `apps/api/**`.
+- **W06b — Nudges web** (sub-issue #9918, branch `feature/9906-wisp/wave-9918`): Task 7, Task 14 web panel + live line, Task 15 web, Task 16 web. Owns `apps/web/**`.
+- **W06c — Nudges mobile** (sub-issue #9919, branch `feature/9906-wisp/wave-9919`): Tasks 8, 9, 10, 11, Task 13 mobile preference rows, Task 14 mobile live line, Task 15 mobile, Task 16 mobile. Owns `apps/mobile/**`.
+
+PARALLEL GROUPS (W06a): G1 = Task 1 ∥ Task 2. G2 = Task 3 ∥ Task 13 ∥ Task 14-service (notifyUser, brief.ts, activity.ts). G3 = Task 4 ∥ Task 5 ∥ Task 6 ∥ Task 14-route ∥ Task 16-route. Task 12 last.
+PARALLEL GROUPS (W06b): G1 = Task 7-helpers (`wispThreadHash.ts`) ∥ Task 7-bell (`NotificationCenter.buildHref`). G2 = Task 7-page ∥ Task 14-web ∥ Task 15-web ∥ Task 16-web (page shell vs three panels/controls — the page composes them last).
+PARALLEL GROUPS (W06c): G1 = Task 8. G2 = Task 9 ∥ Task 10 ∥ Task 11. G3 = Task 13/14/15/16 mobile additions ∥ each other.
+**Sonnet:** W06b locale fan-out and `WispActivityPanel` list rendering; W06c Tasks 8 (service/store plumbing), 11 (preference rows), the pure `.ts` helpers; W06a Task 2 push-spec builder, Task 5 digest sweep scaffolding.
+**Rules for every sub-issue and parallel group**
+- Every part bases on `origin/main` and targets `main` (never a stacked PR). The w00 contracts are the oracle, so parts can be built against each other's interfaces before they merge; web/mobile tests mock the API.
+- **Shared-package ownership:** the API part owns `packages/shared` additions. A web/mobile part that needs a type not yet on main copies the file **verbatim** from the API part's branch (`git show origin/feature/9906-wisp/wave-<api#>:<path>`) into the same path; whichever PR lands second rebases, and byte-identical files resolve cleanly. Never re-type a contract.
+- **In-wave fan-out:** tasks inside one PARALLEL GROUP are file-disjoint and may run as concurrent subagents in the same worktree. Concurrent subagents never run `git commit`; the fixer commits once per group after all members pass. Groups run in the listed order.
+- **Model routing:** the session and every tenancy/auth/permission/migration task are Opus. Tasks marked **Sonnet** are mechanical (locale fan-out, page scaffolds, pure helpers, docs, DTO plumbing) and run on Sonnet subagents with an Opus reviewer.
+- The part that lands last owns the whole-wave verification task and the PR-body statement that covers both parts.
+
 ## Global Constraints
 
 - **Dark by default.** Every new route returns 404 and the digest worker's `initialize*` returns before constructing a Worker when `wispEnabled()` (`apps/api/src/config/env.ts`, W02) is false. `notifyUser` is never reached when the flag is off because its only callers are W05's tool and the digest. No `.env.example` change: W06 adds no flag.

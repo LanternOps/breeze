@@ -18,6 +18,22 @@ tracking_issue: LanternOps/breeze#9906
 
 **Spec:** `docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md` — §3 (autonomy line), §4.5 (sub-agents, depth one), §4.6 (`workspace_*` landmine), §7.5 (specialist requests), §11 (private gap-finder paragraph only), §13–§15. Names and signatures come from the orchestrator doc (w00), which wins over this plan on any name/signature/table/flag disagreement.
 
+## Execution split and parallelism (orchestrator, 2026-10-23)
+
+W07 is split into two sub-issues that run **in parallel**:
+- **W07a — Specialists API** (sub-issue #9913, branch `feature/9906-wisp/wave-9913`): Tasks 1 (+ edits), 2, 3, 4, 5, 6, 8, 10 (+ edit), 12. Owns `packages/shared`, `apps/api/**`, the CLI gap-finder.
+- **W07b — Specialists web, admin page, docs** (sub-issue #9920, branch `feature/9906-wisp/wave-9920`): Tasks 7 (web half; the API DTO half stays in W07a Task 7-API), 9, 11. Owns `apps/web/**`, `apps/docs/**`, release-notes draft, env sweep.
+
+PARALLEL GROUPS (W07a): G1 = Task 1 ∥ Task 8-metrics-registry. G2 = Task 2 ∥ Task 3 ∥ Task 12 (depth guard, coordinator, bulk reply — bulk reply is its own specialist file). G3 = Task 4 ∥ Task 5 ∥ Task 6 ∥ Task 7-API. Task 10 last.
+PARALLEL GROUPS (W07b): G1 = Task 7-web ∥ Task 9 ∥ Task 11-docs. Task 11-rollout-checklist last.
+**Sonnet:** Task 7 DTO plumbing + locales, Task 9 admin page scaffold + locales, Task 11 docs/release-notes/env sweep, Task 8 metric registration boilerplate.
+**Rules for every sub-issue and parallel group**
+- Every part bases on `origin/main` and targets `main` (never a stacked PR). The w00 contracts are the oracle, so parts can be built against each other's interfaces before they merge; web/mobile tests mock the API.
+- **Shared-package ownership:** the API part owns `packages/shared` additions. A web/mobile part that needs a type not yet on main copies the file **verbatim** from the API part's branch (`git show origin/feature/9906-wisp/wave-<api#>:<path>`) into the same path; whichever PR lands second rebases, and byte-identical files resolve cleanly. Never re-type a contract.
+- **In-wave fan-out:** tasks inside one PARALLEL GROUP are file-disjoint and may run as concurrent subagents in the same worktree. Concurrent subagents never run `git commit`; the fixer commits once per group after all members pass. Groups run in the listed order.
+- **Model routing:** the session and every tenancy/auth/permission/migration task are Opus. Tasks marked **Sonnet** are mechanical (locale fan-out, page scaffolds, pure helpers, docs, DTO plumbing) and run on Sonnet subagents with an Opus reviewer.
+- The part that lands last owns the whole-wave verification task and the PR-body statement that covers both parts.
+
 ## Global Constraints
 
 - **Dark by default.** Every new route, tool handler, finalizer and job short-circuits when `wispEnabled()` (`apps/api/src/config/env.ts`, W02) is false. With `BREEZE_WISP_ENABLED` unset nothing in this wave changes runtime behaviour; the registration-only changes (tool maps, schema columns) are inert.
