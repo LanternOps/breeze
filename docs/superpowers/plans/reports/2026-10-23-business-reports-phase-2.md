@@ -29,17 +29,17 @@ The spec was verified at `23648a6246`. Three of its W1/W3 work items have since 
 | T8 / `contractInTermForReporting` (W1) | **Shipped.** `apps/api/src/services/contractMath.ts:119` (#9220, auto-renew arm #9243), pinned by `contractMath.test.ts:241`. `summarizeActiveContractMrrByOrg` (`contractService.ts:1174`) already uses it. | W1 does **not** add the predicate and does **not** change the dashboard MRR figure. W1's rollup work is a behaviour-preserving extraction. |
 | `billed_final_term` valuation (W1) | **Shipped.** `loadBilledFinalTermValues` in `apps/api/src/services/contractBilledFinalTerm.ts:43` (follows void → reissue, excludes block-overage lines). | Reused as-is. Its `{ cents: null, reason }` arm is a silent skip today → becomes a `SkippedContract` reason (trap T3). |
 | T9 quote-accept cost stamp (W3 prerequisite) | **Shipped.** `quoteAcceptService.ts:539` writes `costBasis: snapshotCost(l.unitCost, …)` (#9221). | W3 has **no** prerequisite commit. The "accepted before the fix carry no cost" note stays (forward-only, no backfill). |
-| Phase 1 engine (four business types, registry, period, scope, PDF arms, export, options forms, `previousBaselineFor`) | Present: `reportRegistry.ts:315-361`, `businessReports/{common,period}.ts`, `reportScope.ts`, `reportGenerationService.ts:98`, `reportPdf.ts:180,2336`, `reportExport.ts:61`, `businessReportConfig.ts:25`. | Premise holds. The template to mirror for a new type is the AI-usage type (`507d14a160`, #7759). |
+| Phase 1 engine (four business types, registry, period, scope, PDF arms, export, options forms, `previousBaselineFor`) | Present: `reportRegistry.ts:315-361`, `businessReports/{common,period}.ts`, `reportScope.ts`, `reportGenerationService.ts:98`, `packages/shared/src/reportPdf/reportPdf.ts:180,2336-2396`, `reportExport.ts:61`, `businessReportConfig.ts:25`. | Premise holds. The template to mirror for a new type is the AI-usage type (`507d14a160`, #7759). |
 | `laborCostPerHour`-shaped partner setting | **None exists.** The only precedent is the per-report config key `weeklyCapacityHours` (`reportConfigSchemas.ts:252`). | OD2-B lands as a **report-config key**, not a partner setting (§4 Rule 9 statement). |
 | Quote lineage + statuses | `quote_status` = `draft, sent, viewed, accepted, declined, expired, converted, superseded`; `revision_of_quote_id`, `revision_number`, `quotes_revision_of_uq`, composite `(revision_of_quote_id, org_id)` FK (`schema/quotes.ts:13,124-138`); `isQuoteExpired` (`services/quoteExpiry.ts:24`). | Premise holds. Correction: the unique index does **not** prevent a cycle (A→B, B→A satisfies it); a cycle has no root, so it is unreachable from a root anchor — counted as a diagnostic, not walked (Task 2.1). |
-| AI exposure (spec §3.5 "none") | **Stale.** `GENERATE_REPORT_TYPES` = legacy six + `...BUSINESS_REPORT_TYPES` (`services/aiReportTypes.ts:24`, #9222). Appending a type to `BUSINESS_REPORT_TYPES` makes it reachable from `generate_report`, gated per type by the registry's permissions and audience. | Parity with the shipped business types now **means** inherited, gated AI exposure. The plan accepts it and extends the AI tests (Gate B 1). No AI write site or route changes. |
-| Hours have no currency (spec §3.1 effective rate) | **Partly wrong.** `time_entries.currency_code` is an immutable org-currency snapshot (`schema/timeTracking.ts:51`). | Used to *confirm* single-currency attribution, not to allocate (Task 3.2). |
+| AI exposure (spec §3.5 "none") | **Stale.** `GENERATE_REPORT_TYPES` = legacy six + `...BUSINESS_REPORT_TYPES` (`services/aiReportTypes.ts:25`, #9222). Appending a type to `BUSINESS_REPORT_TYPES` makes it reachable from `generate_report`, gated per type by the registry's permissions and audience. | Parity with the shipped business types now **means** inherited, gated AI exposure. The plan accepts it and extends the AI tests (Gate B 1). No AI write site or route changes. |
+| Hours have no currency (spec §3.1 effective rate) | **Partly wrong.** `time_entries.currency_code` is an immutable org-currency snapshot (`schema/timeTracking.ts:56`). | Used to *confirm* single-currency attribution, not to allocate (Task 3.2). |
 | Hour-block overage lines | Billed through `addContractLine` (`contractHourBlockClose.ts:146`), so they are `source_type = 'contract'`, NULL-cost usage — not recurring revenue. Identified only by `contract_hour_periods` lineage (`contractBilledFinalTerm.ts:107-128`). | W1's billed-recurring series and W3's mix must exclude/reclassify them (shared fragment, Task 1.2 / 3.1). |
 | Margin-panel parity for zero-decimal currencies | `computeQuoteProfit` calls `computeLineTotal(q, p)` with the default `'USD'` (`quoteMath.ts:290`); `computeInvoiceProfit` passes no currency. | The SQL fold cannot match the panel for JPY; parity is asserted for 2-dp currencies, and JPY against `multiplyToCurrency` directly. Panel fix = follow-up 3. |
 
 ## Global Constraints
 
-- Audience `msp_staff`, scopes `ORG_OR_PARTNER`, `execution: 'user'`, `detailRowCap: BUSINESS_DETAIL_ROW_CAP` (5,000) for all three types. Never portal-visible: add each type to `NEVER_PORTAL_VISIBLE` (`apps/portal/src/components/portal/ReportRunList.tsx:55`); never in `MANAGED_EVIDENCE_REGISTRY` / `PORTAL_DEFINITIONS`.
+- Audience `msp_staff`, scopes `ORG_OR_PARTNER`, `execution: 'user'`, `detailRowCap: BUSINESS_DETAIL_ROW_CAP` (5,000, `reportRegistry.ts:140`) for all three types. Never portal-visible: add each type to `NEVER_PORTAL_VISIBLE` (`apps/portal/src/components/portal/ReportRunList.tsx:55`); never in `MANAGED_EVIDENCE_REGISTRY` / `PORTAL_DEFINITIONS`.
 - Grants (`BUSINESS_REPORT_REQUIRED_PERMISSIONS`, `packages/shared/src/reportTypes.ts:79`): `mrr_renewals: [CONTRACTS_READ]`, `quote_win_rate: [QUOTES_READ]`, `client_profitability: [INVOICES_READ, TIME_ENTRIES_READ]`.
 - Per currency, never summed across currencies, no FX. Money in summary/rows is a decimal **string** rounded once with `roundToCurrency`; counts are numbers; unmeasured ratios are `null` via `ratio()` (`businessReports/common.ts:41`), never `0` or `NaN`.
 - Every query carries an explicit org allowlist (`org_id = ANY(...)` / `inArray(orgId, …)`) and, where the table has one, `partner_id = scope.partnerId` at partner scope. RLS is the backstop, not the fence. Bound parameters only (`sqlUuidArray`, `sqlTimestamp` from `db/sqlValues.ts`).
@@ -48,7 +48,7 @@ The spec was verified at `23648a6246`. Three of its W1/W3 work items have since 
 - Enum: `REPORT_TYPES` order = `report_type` enum order; each wave appends its type at the end of `REPORT_TYPES` **and** `BUSINESS_REPORT_TYPES`, and adds its value in its own enum-only migration.
 - PDF money through `moneyFormat.ts`; CSV/XLSX rows are raw numerics + `currencyCode`, never formatted strings.
 - Every new `en` locale key lands in all 8 locales: `en de-DE es-419 fr-CA fr-FR it-IT pt-BR tr-TR` (`apps/web/src/lib/i18n/localeParity.test.ts`). New controls carry `data-testid`. No new mutation handler (create/save already go through `runAction`).
-- AI exposure is inherited, not built (§0): no edit to `aiReportTypes.ts`, `aiToolsFleet.ts` or any AI write site; extend the business-type lists in `aiToolsFleet.reportAudience.test.ts` (`:310`, `:390`) and `aiToolSchemasFleet.test.ts` (`:385`) so each new type is proven hidden from a caller lacking its grants and from org-scope callers. No new route → no `mcp-coverage.test.ts` entry; line-keyed `SAFE_WRITE_SITES` untouched.
+- AI exposure is inherited, not built (§0): no edit to `aiReportTypes.ts`, `aiToolsFleet.ts` or any AI write site; extend the business-type lists in `aiToolsFleet.reportAudience.test.ts:390` (`BUSINESS`, all three types) and `aiToolSchemasFleet.test.ts:385` (all three); the `invoices:read`-only list at `aiToolsFleet.reportAudience.test.ts:314` gains **only** `client_profitability` so each new type is proven hidden from a caller lacking its grants and from org-scope callers. No new route → no `mcp-coverage.test.ts` entry; line-keyed `SAFE_WRITE_SITES` untouched.
 - Public repo: no customer names, hostnames or infra in code, fixtures, docs or PR text.
 
 ## Review Focus
@@ -100,7 +100,7 @@ Newest committed on `main` @ `8d20504960`: `2027-01-02-180500-webhook-alert-crea
 | W2 | `2027-01-02-200100-report-type-quote-win-rate.sql` |
 | W3 | `2027-01-02-200200-report-type-client-profitability.sql` |
 
-Enum-only, idempotent (`IF NOT EXISTS`), no `BEGIN`/`COMMIT`, no DML → no `breeze.scope` election. `scripts/check-migration-naming.sh` runs pre-commit; then `pnpm db:check-drift`. W1 and W2 may run in parallel; the second to merge rebases and keeps its later slot.
+Enum-only, idempotent (`IF NOT EXISTS`), no `BEGIN`/`COMMIT`, no DML → no `breeze.scope` election. `scripts/check-migration-naming.sh` runs pre-commit; then `pnpm db:check-drift`. W1 and W2 may be **built** in parallel, but **W1 merges first**. If W2 is ready first, it waits, or it takes the next free slot after W1's file and moves `quote_win_rate` after `mrr_renewals` in `REPORT_TYPES`. Either way, the enum's apply order on a fresh database must equal the `REPORT_TYPES` append order (`reportGenerationService.test.ts` pins it), and every migration must sort after the newest committed file when it merges (`apps/api/migrations/README.md`).
 
 ### 1.3 Tenancy & export policy
 
@@ -112,6 +112,7 @@ No new table, no new column, no new route, no new job (spec §4, OD1-A/OD2-B/OD4
 - `localeParity` and the per-type `<camel>Keys.test.ts` fail on any locale missing a key — fixers historically miss the 7 non-`en` files.
 - `parkedFanout.contract.test.ts` discovers any `apps/api/src` file that reads the `devices` table. None of the new files should (device counts come through `resolveLineQty`/`buildOrgDeviceSnapshot`). If `contractMrr.ts` ends up importing a devices read directly, classify it `VISIBILITY_MODULES` ("report: contract MRR rows") in that test.
 - `.github/scripts/ci-area-gating` maps paths to CI areas; all new files sit in existing directories, so no mapping change is expected — confirm the Lint job passes.
+- Red first applies to real-SQL and E2E tests too: each is written in the task that creates the code it exercises, before that code, and run red there (module / enum / test id missing). No task writes a test after its code.
 - Integration suites run only under **Integration Tests**, not Test API. Run the new `*.integration.test.ts` locally on a wt-stack (§1.5) before opening the PR.
 - Typecheck with `NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p tsconfig.json; echo "exit=$?"` in `apps/api`, `apps/web`, `apps/portal`, `packages/shared`; read the exit code, never pipe to `tail`.
 - Scoped vitest: `cd apps/<pkg> && npx vitest run <path>` — never `pnpm --filter … test -- --run`.
@@ -131,10 +132,10 @@ Depends on: nothing (OD4-A, OD7-A decided). Branch: `feature/6830-business-repor
 **Files:**
 - Create: `apps/api/src/services/contractMrr.ts`, `apps/api/src/services/contractMrr.test.ts`
 - Modify: `apps/api/src/services/contractService.ts:1113-1336` (move `OrgCurrencyMrr` + `summarizeActiveContractMrrByOrg` out; `export` the helpers listed below), `apps/api/src/routes/partner.ts:8` (import from `../services/contractMrr`)
-- Test (existing, must stay green unchanged): `contractService.test.ts` MRR cases, `routes/partner.test.ts` dashboard cases — move MRR-rollup cases into `contractMrr.test.ts` only if they import the function by path.
+- Repoint (import path / `vi.mock` target only, assertions unchanged): `routes/partner.test.ts:64` (`vi.mock('../services/contractService')` → mock `../services/contractMrr` for this function), `services/contractService.test.ts:949` (`svc.summarizeActiveContractMrrByOrg` → import from `./contractMrr`), `services/contractService.hourBlock.test.ts`, and the integration suites `contractMrrInTerm`, `contractLineSiteDeleted`, `contractAutoRenewLifecycle`, `contractHourBlockLines` (`apps/api/src/__tests__/integration/*.integration.test.ts`). `rg -l summarizeActiveContractMrrByOrg apps/api/src` must list only `contractMrr.ts`, `partner.ts` and these tests afterwards. No re-export from `contractService.ts` (it would make an import cycle).
 
 **Interfaces:**
-- Consumes (now exported from `contractService.ts`, no behaviour change): `resolveLineQty`, `lineCents`, `baseCents` (new: `toCents(multiplyToCurrency(r.billed, unitPrice, currency))`, the first term of `lineCents`), `overageValue`, `orgSnapshot`, `groupIdsOf`, `loadCatalogPriceInputs`, `priceKey`, `type DeviceCache`, `type SeatCache`, `type PriceKey`. `contractMrr.ts` imports from `contractService.ts`; `contractService.ts` must **not** import `contractMrr.ts` (no cycle).
+- Consumes (now exported from `contractService.ts`, no behaviour change): `resolveLineQty`, `lineCents`, `baseCents` (new: `toCents(multiplyToCurrency(r.billed, unitPrice, currency))`, the first term of `lineCents`), `overageValue`, `orgSnapshot`, `groupIdsOf`, `loadCatalogPriceInputs`, `priceKey`, `type DeviceCache`, `type SeatCache`, `type PriceKey`, `ContractServiceError`. The `resolvedUnitPrice` closure (`contractService.ts:1255-1276`, wraps `resolvePriceFrom` + `isPriceGap` over the loaded `overrides`/`bookRows`) moves into `contractMrr.ts` with the function — it has no other caller. The per-line `GROUP_EVALUATION_FAILED` catch and the `site_deleted` break move with it too. `contractMrr.ts` imports from `contractService.ts`; `contractService.ts` must **not** import `contractMrr.ts` (no cycle).
 - Produces:
 
 ```ts
@@ -163,7 +164,7 @@ export interface ActiveNotInTerm { contractId: string; orgId: string; name: stri
 export async function resolveContractMrrRows(
   orgIds: readonly string[],
   asOf: Date,
-  opts?: { include?: readonly ('paused' | 'draft')[] },
+  opts?: { include?: readonly ('paused' | 'draft')[]; partnerId?: string }, // partnerId binds contracts.partner_id too
 ): Promise<{ rows: ContractMrrRow[]; skipped: SkippedContract[]; activeNotInTerm: ActiveNotInTerm[] }>;
 
 export interface OrgCurrencyMrr { currencyCode: string; amount: string } // moved, unchanged
@@ -172,7 +173,8 @@ export async function summarizeActiveContractMrrByOrg(orgIds: readonly string[],
 
 Rules the implementation must keep:
 - Candidate load and in-term logic are exactly today's (`contractService.ts:1193-1219`); `include` adds `status IN ('paused','draft')` to the candidate `OR`. Paused/draft rows are live-resolved like `active` (same price/quantity caches) with `basis` = their status; they are never in MRR (the fold excludes them).
-- `ActiveNotInTerm` is the **complement**: every `status = 'active'` candidate for which `contractInTermForReporting` returns `null`. Reason: `startDate > asOfISO` → `starts_later`; else `endDate !== null && asOfISO >= endDate` → `ended_awaiting_expiry`; else → `final_period_not_billed`. No second test.
+- `opts.partnerId` adds `eq(contracts.partnerId, partnerId)` to the candidate load (the report always passes it at partner scope; the dashboard keeps its current call). Contract lines, billing periods and invoices are then read by the contract ids of that set only.
+- `ActiveNotInTerm` is the **complement**: every `status = 'active'` candidate for which `contractInTermForReporting(c, asOfISO, finalTermValues.has(c.id))` returns `null` — the same third argument the rollup passes today (`contractService.ts:1225`, `value !== undefined`). Reason: `startDate > asOfISO` → `starts_later`; else `endDate !== null && asOfISO >= endDate` → `ended_awaiting_expiry`; else → `final_period_not_billed`. No second test.
 - Every `continue` that drops a contract today becomes a `skipped` push with its reason; the existing `console.warn` lines stay verbatim.
 - `summarizeActiveContractMrrByOrg` = fold of `rows` with `basis ∈ {active, billed_final_term}`: per org, per currency, sum `Number(mrr)`, then `roundToCurrency(sum, currency)`, sorted by `currencyCode` — the same arithmetic as today's `addMonthly` + final map.
 
@@ -180,6 +182,7 @@ Rules the implementation must keep:
 - [ ] **Step 2: Write the failing resolver tests.**
 
 ```ts
+it('partnerId binds contracts.partner_id even when orgIds is poisoned', …); // bound-param assertion
 it('summarize parity over resolveContractMrrRows', async () => {
   for (const f of FIXTURES) expect(await summarizeActiveContractMrrByOrg(f.orgIds, f.asOf)).toEqual(f.expected);
 });
@@ -211,7 +214,7 @@ it('activeNotInTerm is the complement of the in-term predicate', async () => {
 ### Task 1.2: `mrr_renewals` type, config and generator
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-200000-report-type-mrr-renewals.sql`, `apps/api/src/services/businessReports/mrrRenewalsReport.ts` (+ `.test.ts`), `apps/api/src/services/businessReports/blockOverageSql.ts`, `apps/api/src/__tests__/integration/blockOverageSql.integration.test.ts`
+- Create: `apps/api/migrations/2027-01-02-200000-report-type-mrr-renewals.sql`, `apps/api/src/services/businessReports/mrrRenewalsReport.ts` (+ `.test.ts`), `apps/api/src/services/businessReports/blockOverageSql.ts`, `apps/api/src/__tests__/integration/{blockOverageSql,mrrRenewalsReport}.integration.test.ts`
 - Modify: every API/shared row of §1.1 (migration, Drizzle, tuple, permissions, shared types, config schema, registry, zero-safe dispatch, API tests); `businessReports/common.ts` (`SITE_RESTRICTED_NOTE` wording)
 
 **Interfaces:**
@@ -265,17 +268,17 @@ export const mrrRenewalsConfigSchema = legacyReportConfigSchema.extend({
   renewalHorizonDays: z.union([z.literal(30), z.literal(60), z.literal(90), z.literal(180)]).optional(),
 });
 ```
-`refusedAsOfRunTime(key)` is `refusedBusinessSelector`'s shape with that message. Generator defaults: `groupBy` `organization`, `renewalHorizonDays` 90.
+`refusedAsOfRunTime(key: string)` in `reportConfigSchemas.ts`: `z.unknown().superRefine((v, ctx) => { if (selectsSomething(v)) ctx.addIssue({ code: 'custom', message: \`${key} is not supported for mrr_renewals; it is measured at run time because contracts keep no status history\` }) }).optional()` — the `refusedBusinessSelector` body (`:197`) with that message. Generator defaults: `groupBy` `organization`, `renewalHorizonDays` 90.
 
 Generator rules (cite spec §3.2 for the why):
 - `asOf = generatedAt`; `asOfISO = todayISO(generatedAt)` (UTC, agrees with billing). `timeZone` (owner) is used only for the billed-series month labels' "partial" flag and the notes.
-- `resolveContractMrrRows(orgIds, generatedAt, { include: ['paused', 'draft'] })`; `orgIds = scope.kind === 'partner' ? scope.orgIds : [scope.orgId]`.
+- `resolveContractMrrRows(orgIds, generatedAt, { include: ['paused', 'draft'], partnerId })`; `orgIds = scope.kind === 'partner' ? scope.orgIds : [scope.orgId]`, `partnerId = scope.kind === 'partner' ? scope.partnerId : undefined`.
 - Totals per currency: `mrr`/`baseMrr`/`overageMrr` over `basis ∈ {active, billed_final_term}`; `finalTermMrr` = the `billed_final_term` share (its overage is unsplit, so `overageMrr` sums only `active` rows); each figure is the sum of per-row rounded strings, rounded once more with `roundToCurrency`.
-- Renewal window: in-term rows with `endDate` in `[asOfISO, addDaysISO(asOfISO, horizon))`; `advanceNoticeSentAt` from one query `contract_renewal_notices WHERE kind = 'advance' AND contract_id = ANY($ids) AND org_id = ANY($orgIds)` matched on `(contract_id, end_date = contract.endDate)`.
-- Block-overage identification (shared with W3): create `apps/api/src/services/businessReports/blockOverageSql.ts` exporting `isBlockOverageLineSql(line: SQL, invoice: SQL): SQL` — `EXISTS` a `contract_hour_periods h` with `h.contract_id = line.source_contract_id`, `h.contract_line_id = line.source_id`, `h.overage_hours = line.quantity`, `h.overage_unit_price = line.unit_price`, and `h.overage_invoice_id` = the invoice or one of its void→reissue predecessors (`invoices.replaced_by_invoice_id` chain, ≤ 10 hops, recursive CTE). Same rule as `contractBilledFinalTerm.ts:107-128`; its unit test runs both on one fixture (plain, reissued, coincidental-twin line) and asserts they exclude the same lines.
-- Billed recurring series: one query over `invoice_lines il JOIN invoices i` with `i.org_id = ANY($orgIds)`, `i.status IN ('sent','partially_paid','overdue','paid')`, `il.parent_line_id IS NULL`, `il.customer_visible`, `il.source_type = 'contract'`, `NOT isBlockOverageLineSql(il, i)` (usage, not recurring), `i.issue_date >= <window start − 12 months>`, left-joined to `contract_billing_periods cbp ON cbp.invoice_id = i.id AND cbp.contract_id = il.source_contract_id`. In TS: with a period, spread `line_total` in minor units evenly over `interval_months` months starting at `period_start`'s month (remainder to the last month); without, put it in `issue_date`'s month. Keep the 12 calendar months ending with the run month (owner timezone); the run month is `partial: true`. Dates are compared as `date` strings — no timezone math (T7).
+- Renewal window: in-term rows with `endDate` in `[asOfISO, addDaysISO(asOfISO, horizon))`; `advanceNoticeSentAt` from one query `contract_renewal_notices WHERE kind = 'advance' AND contract_id = ANY($ids) AND org_id = ANY($orgIds)` (the table has no `partner_id`; `$ids` come from the partner-bound contract set) matched on `(contract_id, end_date = contract.endDate)`.
+- Block-overage identification (shared with W3): create `apps/api/src/services/businessReports/blockOverageSql.ts` exporting `blockOverageLineIdsCte(args: { invoiceIds: SQL }): SQL`, a CTE `block_overage_lines(line_id)` the callers anti-join (`il.id NOT IN (SELECT line_id FROM block_overage_lines)`) or use in their category `CASE`. Rule — **the same consume-once rule as `contractBilledFinalTerm.ts:107-128`**: a candidate is a top-level `source_type = 'contract'` line matching a `contract_hour_periods h` on `h.contract_id = source_contract_id`, `h.contract_line_id = source_id`, `h.overage_hours = quantity`, `h.overage_unit_price = unit_price`, with `h.overage_invoice_id` = the line's invoice or one of its void→reissue predecessors (`invoices.replaced_by_invoice_id` chain, ≤ 10 hops, recursive CTE). Per match key, rank candidate lines `ROW_NUMBER() OVER (PARTITION BY invoice, contract, contract line, quantity, unit price ORDER BY il.id)` and keep only `rn <= COUNT(matching h rows)`. A coincidentally identical second line therefore still counts, as in the TS. A plain `EXISTS` is wrong (it would drop the twin).
+- Billed recurring series: one query over `invoice_lines il JOIN invoices i` with `i.org_id = ANY($orgIds)`, `i.status IN ('sent','partially_paid','overdue','paid')`, `il.parent_line_id IS NULL`, `il.customer_visible`, `il.source_type = 'contract'`, `il.id NOT IN block_overage_lines` (usage, not recurring), `i.partner_id = $partnerId` at partner scope, `i.issue_date >= <window start − 12 months>`, left-joined to `contract_billing_periods cbp ON cbp.invoice_id = i.id AND cbp.contract_id = il.source_contract_id`. In TS: with a period, spread `line_total` in minor units evenly over `interval_months` months starting at `period_start`'s month (remainder to the last month); without, put it in `issue_date`'s month. Keep the 12 calendar months ending with the run month (owner timezone); the run month is `partial: true`. Dates are compared as `date` strings — no timezone math (T7).
 - Detail rows: every resolved row (including paused/draft), sorted `orgName, contractName`; cap at `BUSINESS_DETAIL_ROW_CAP` after totals.
-- Notes (constants in the generator, exact wording reviewed in the PR): `AS_OF_RUN_TIME_NOTE` (UTC dates; no backdating), `LIVE_QUANTITIES_NOTE` (T11: seats are active Breeze users mapped to the org; billing prices), `FINAL_TERM_NOTE`, `BILLED_SERIES_NOTE` ("billed, not MRR"), `HISTORY_STARTS_NOTE` (trend starts at the first scheduled run), `SUSPENDED_ORGS_MRR_NOTE` (T6, partner scope only, besides `PARTNER_ORG_LIST_NOTE`), and `excludedContractsNote(n)` = "MRR excludes N contracts that could not be valued; they are listed below." when `skipped.length > 0`.
+- Notes (exported constants in the generator; each states the fact in parentheses in one or two plain sentences, in the register of `PARTNER_ORG_LIST_NOTE`; the generator test pins each constant's presence condition, not its prose): `AS_OF_RUN_TIME_NOTE` (UTC dates; no backdating), `LIVE_QUANTITIES_NOTE` (T11: seats are active Breeze users mapped to the org; billing prices), `FINAL_TERM_NOTE`, `BILLED_SERIES_NOTE` ("billed, not MRR"), `HISTORY_STARTS_NOTE` (trend starts at the first scheduled run), `SUSPENDED_ORGS_MRR_NOTE` (T6, partner scope only, besides `PARTNER_ORG_LIST_NOTE`), and `excludedContractsNote(n)` = "MRR excludes N contracts that could not be valued; they are listed below." when `skipped.length > 0`.
 
 - [ ] **Step 1: Failing tests** in `mrrRenewalsReport.test.ts` (mock `resolveContractMrrRows` and `db.execute`; assert bound params, not SQL text):
   - `config refuses asOf and period with the run-time message` (also in `schemas.configParity.test.ts`).
@@ -285,12 +288,14 @@ Generator rules (cite spec §3.2 for the why):
   - `renewal window is [asOf, asOf+horizon) and splits auto vs manual`.
   - `advance notice is matched on the contract's own end_date`.
   - `annual period invoice spreads over 12 months; interactive invoice lands in its issue month; spread sums to line_total exactly`.
-  - `block-overage contract line is excluded from billed recurring` + `isBlockOverageLineSql agrees with loadBilledFinalTermValues` (the latter in `blockOverageSql.integration.test.ts` — it needs real SQL; run on the wt-stack, §1.5).
+  - `block-overage contract line is excluded from billed recurring`.
+  - Real-SQL red, written **before** `blockOverageSql.ts` exists (`blockOverageSql.integration.test.ts`, wt-stack §1.5): on one seeded fixture (plain overage line, overage line on a reissued invoice, coincidental-twin line, unrelated contract line) the CTE's `line_id` set equals the set `loadBilledFinalTermValues` excludes — twin line kept by both. Red = module missing; then implement.
   - `USD and EUR contracts in one org produce two currency rows`.
   - `asOf is the UTC date even when the owner timezone is ahead` (Review Focus 5).
   - `site-restricted → SITE_RESTRICTED_NOTE, nothing queried`; `no orgs → NO_ORGS_NOTE`.
   - `detail cap truncates rows, not totals`.
-- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/businessReports/mrrRenewalsReport.test.ts` — FAIL (module missing).
+  - Integration red, same step (`apps/api/src/__tests__/integration/mrrRenewalsReport.integration.test.ts`; seed two orgs under one partner + one org under another): `partner scope sees both orgs and not the foreign partner's`; `org scope sees one org`; `an annual-advance contract flipped to expired mid-term is in MRR` (T8 on real billing state); `two runs: the second run's result.previous.summary.byCurrency equals the first run's` (the schedule baseline path via `previousBaselineFor`; no worker change).
+- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/businessReports/mrrRenewalsReport.test.ts` and the integration file on a wt-stack — both FAIL (generator module missing).
 - [ ] **Step 3: Implement** migration, enum, tuple, permissions, shared types, schema, registry, generator, zero-safe `case`. Update the enumerated lists in the four API tests of §1.1 (msp_staff 403/404 for an org-scope caller; caller without `contracts:read` has `mrr_renewals` excluded from lists).
 - [ ] **Step 4: Run** the generator test, `reportGenerationService.test.ts`, `reportTypePermissions.test.ts`, `routes/reports/mspStaffAudience.test.ts`, `routes/reports/schemas.configParity.test.ts`, `services/aiToolsFleet.reportAudience.test.ts`, `packages/shared` `reportTypes.test.ts` + `types/businessReports.test.ts` — PASS; `tsc` exit 0 in `apps/api` and `packages/shared`; `pnpm db:check-drift` clean.
 - [ ] **Step 5: Commit** `feat(reports): mrr_renewals generator (#6830)`.
@@ -311,26 +316,25 @@ Sections: scorecard per currency (MRR, ARR, contracts, paused, pending activatio
 
 ### Task 1.4: Web form, gallery card, locales, portal guard
 
-**Files:** create `MrrRenewalsOptionsForm.tsx` (+ test), `ReportTemplates.mrrRenewals.test.tsx`, `ReportEditPage.mrrRenewals.test.tsx`, `apps/web/src/lib/i18n/mrrRenewalsKeys.test.ts`; modify the web-wiring row of §1.1, 8× `reports.json`, `apps/portal/src/components/portal/ReportRunList.tsx` (+ test).
+**Files:** modify `e2e-tests/tests/business-reports.spec.ts`; create `MrrRenewalsOptionsForm.tsx` (+ test), `ReportTemplates.mrrRenewals.test.tsx`, `ReportEditPage.mrrRenewals.test.tsx`, `apps/web/src/lib/i18n/mrrRenewalsKeys.test.ts`; modify the web-wiring row of §1.1, 8× `reports.json`, `apps/portal/src/components/portal/ReportRunList.tsx` (+ test).
 
 **Interfaces:** `MrrRenewalsOptions = { groupBy: 'organization' | 'contract'; renewalHorizonDays: 30 | 60 | 90 | 180 }`; default `{ groupBy: 'organization', renewalHorizonDays: 90 }`; `BUSINESS_OPTION_CONFIG_KEYS` gains `'renewalHorizonDays'`. `businessDefaultRange('mrr_renewals')` returns `t('reports.reportTemplates.spec.asOfRunDate')` (no period, like `ar_aging`). Card: icon `Repeat` (lucide), `group: 'business'`, schedule `monthly`, format `pdf`. Test ids: `mrr-renewals-group-by`, `mrr-renewals-horizon`.
 
 - [ ] **Step 1: Failing tests:** options-form round-trip (`fromConfig(toConfig(x)) === x`; unknown horizon → default); gallery shows the card only with `contracts:read` (`businessReportAccess.test.ts`); edit page saves `renewalHorizonDays`; `reportTypeSurvivesBuilder('mrr_renewals') === false`; `mrrRenewalsKeys.test.ts` (every key the form uses exists in all 8 locales); portal `NEVER_PORTAL_VISIBLE` includes it.
-- [ ] **Step 2: Run** the new web tests + `src/lib/i18n/localeParity.test.ts` + portal `ReportRunList.test.tsx` — FAIL.
+  - E2E red, same step: `test('mrr_renewals: create from the Business card, generate, download')` in `e2e-tests/tests/business-reports.spec.ts`, `data-testid` selectors only.
+- [ ] **Step 2: Run** the new web tests + `src/lib/i18n/localeParity.test.ts` + portal `ReportRunList.test.tsx` — FAIL; the E2E case fails on the missing card test id.
 - [ ] **Step 3: Implement** + translate the keys into all 8 locales.
 - [ ] **Step 4: Run** them — PASS; `tsc` exit 0 in `apps/web`, `apps/portal`.
 - [ ] **Step 5: Commit** `feat(reports): mrr_renewals options form and gallery card (#6830)`.
 
-### Task 1.5: Integration, schedule baseline, E2E, docs
+### Task 1.5: Docs and pre-PR gates
 
-**Files:** create `apps/api/src/__tests__/integration/mrrRenewalsReport.integration.test.ts`; modify `e2e-tests/tests/business-reports.spec.ts`, `apps/docs/src/content/docs/features/reports.mdx`.
+**Files:** modify `apps/docs/src/content/docs/features/reports.mdx`. (The integration file is written red in Task 1.2, the E2E case in Task 1.4.)
 
-- [ ] **Step 1: Failing integration test** (real PG, seed two orgs under one partner + one org under another partner): `partner scope sees both orgs and not the foreign partner's`; `org scope sees one org`; `an annual-advance contract flipped to expired mid-term is in MRR` (T8 against real billing state); `two runs: the second run's result.previous.summary.byCurrency equals the first run's` (proves the schedule baseline path via `previousBaselineFor`, no worker change needed).
-- [ ] **Step 2: Run** on a wt-stack (§1.5) — FAIL before the migration is applied to the stack, PASS after.
-- [ ] **Step 3: E2E** `test('mrr_renewals: create from the Business card, generate, download')` using only `data-testid`.
-- [ ] **Step 4: Docs** section: what MRR counts (in term, base vs overage, final term billed), what sits beside it (paused, pending activation, evergreen, not-in-term, skipped), as-of run time, the billed series, renewal window.
-- [ ] **Step 5: Full pre-PR gates:** `cd apps/api && npx vitest run src/services src/routes/reports src/routes/partner.test.ts`; `cd apps/web && npx vitest run src/components/reports src/lib/i18n`; `cd packages/shared && npx vitest run`; portal tests; typecheck all four packages.
-- [ ] **Step 6: Commit** `test(reports): mrr_renewals integration, e2e and docs (#6830)`; open the PR (`Closes #<W1 sub-issue>`, `Refs #6830`), noting "partner-dashboard MRR unchanged (extraction only)".
+- [ ] **Step 1: Run** `mrrRenewalsReport.integration.test.ts` and `blockOverageSql.integration.test.ts` on a wt-stack (§1.5) — PASS; run the E2E case against the same stack — PASS.
+- [ ] **Step 2: Docs** section: what MRR counts (in term, base vs overage, final term billed), what sits beside it (paused, pending activation, evergreen, not-in-term, skipped), as-of run time, the billed series, renewal window.
+- [ ] **Step 3: Full pre-PR gates:** `cd apps/api && npx vitest run src/services src/routes/reports src/routes/partner.test.ts`; `cd apps/web && npx vitest run src/components/reports src/lib/i18n`; `cd packages/shared && npx vitest run`; portal tests; typecheck all four packages.
+- [ ] **Step 4: Commit** `docs(reports): mrr_renewals (#6830)`; open the PR (`Closes #<W1 sub-issue>`, `Refs #6830`), noting "partner-dashboard MRR unchanged (extraction only)".
 
 ---
 
@@ -340,13 +344,14 @@ Depends on: nothing (OD5-A, OD8-A decided). Parallel with W1; serialize only the
 
 ### Task 2.1: Lineage query (data access layer)
 
-**Files:** create `apps/api/src/services/businessReports/quoteWinRateQueries.ts` (+ `.test.ts`).
+**Files:** create `apps/api/src/services/businessReports/quoteWinRateQueries.ts` (+ `.test.ts`), `apps/api/src/__tests__/integration/quoteWinRateQueries.integration.test.ts`.
 
 **Interfaces:**
 
 ```ts
-export type QuoteOutcome = 'won' | 'lost' | 'expired' | 'open';
+export type QuoteOutcome = 'won' | 'lost' | 'expired' | 'open' | 'anomaly'; // anomaly: terminal 'superseded' (should be impossible)
 export const QUOTE_LINEAGE_MAX_DEPTH = 50;
+export function lineageDiagnosticsQuery(args: { partnerId: string | null; orgIds: readonly string[]; periodStart: Date; periodEnd: Date }): SQL; // → one row { unreachable, depth_capped }
 /** One row per lineage in the cohort (first sent_at in [period.start, period.end)). */
 export function lineageCte(args: { partnerId: string | null; orgIds: readonly string[]; periodStart: Date; periodEnd: Date; asOfUtcDate: string }): SQL;
 export function lineageDetailQuery(cte: SQL): SQL;          // detail grain, ordered first_sent_at, quote_number
@@ -356,23 +361,24 @@ export function lineageByCurrencyQuery(cte: SQL): SQL;
 
 CTE contract (spec §3.3, T5/T5b):
 - `WITH RECURSIVE lineage(root_id, id, org_id, depth)`: anchor `revision_of_quote_id IS NULL AND org_id = ANY($orgIds)` (+ `partner_id = $partnerId` at partner scope); step `JOIN quotes c ON c.revision_of_quote_id = l.id AND c.org_id = l.org_id WHERE l.depth < QUOTE_LINEAGE_MAX_DEPTH` (the org predicate repeats in the step). Traverse **before** cohort filtering and capping.
-- Diagnostics (`lineageDiagnosticsQuery(args): SQL` → `{ unreachable: number; depthCapped: number }`): sent quotes in the period that no root-anchored walk reached (a cycle or broken chain — the unique index does not prevent cycles), and lineages that hit the depth guard. Both print a note when > 0; neither is counted in any rate.
+- Diagnostics (`lineageDiagnosticsQuery`): sent quotes in the period that no root-anchored walk reached (a cycle or broken chain — the unique index does not prevent cycles), and lineages that hit the depth guard. Both print a note when > 0; neither is counted in any rate.
 - Per root: `first_sent_at = MIN(sent_at)`, `versions = COUNT(*)`, `ever_viewed = bool_or(first_viewed_at IS NOT NULL)`; terminal = the version with the highest `revision_number` whose `status <> 'draft'` (`DISTINCT ON (root_id) … ORDER BY root_id, revision_number DESC`).
 - Cohort: `first_sent_at >= $periodStart AND first_sent_at < $periodEnd`; never-sent lineages drop out.
-- Outcome: `converted|accepted` → `won`; `declined` → `lost`; `expired` → `expired`; `sent|viewed` with `expiry_date < $asOfUtcDate` → `expired` (the `isQuoteExpired` rule); other `sent|viewed` → `open`. `superseded` as terminal is impossible by construction; if it ever occurs, outcome `open` is **not** acceptable — map it to a counted `anomaly` bucket excluded from rates and print a note (defensive; assert in a test).
+- Outcome: `converted|accepted` → `won`; `declined` → `lost`; `expired` → `expired`; `sent|viewed` with `expiry_date < $asOfUtcDate` → `expired` (the `isQuoteExpired` rule); other `sent|viewed` → `open`. `superseded` as terminal is impossible by construction; if it ever occurs, the outcome is `anomaly` — counted, excluded from every rate and money total, listed in detail rows, with `anomalyNote(n)` (defensive; asserted in a test).
 - Outcome date: won `COALESCE(accepted_at, converted_at)`, lost `declined_at`, expired `expiry_date`.
 - Values from the terminal version: `one_time_total`, `monthly_recurring_total + annual_recurring_total / 12` (exact numeric; rounded once in TS), `currency_code`. Never `total`.
 - Author = root's `created_by` → `users.name` (`'Unknown user'` fallback).
 
 - [ ] **Step 1: Failing tests** (Drizzle-mock `db.execute`, assert bound params and row mapping): `decline → revise → accept is one won lineage` (T5); `stale sent past expiry is expired` (T5b); `a draft revision leaves the sent parent's outcome standing`; `never-sent lineage is excluded`; `cohort is by first sent_at, not the terminal's`; `depth guard is bound as 50`; `unreachable and depth-capped counts map to notes, not rates`; `partner scope binds partner_id and the org allowlist`.
-- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/businessReports/quoteWinRateQueries.test.ts` — FAIL.
+  - Integration red, same step (`quoteWinRateQueries.integration.test.ts`, real PG; seed via direct inserts honouring `quotes_revision_of_fk`): the T5, T5b and draft-revision cases above, plus a two-quote cycle (`unreachable = 2`, query still returns).
+- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/businessReports/quoteWinRateQueries.test.ts` and the integration file on a wt-stack — FAIL (module missing).
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — PASS. (Real-SQL proof of the same cases is Task 2.4.)
 - [ ] **Step 5: Commit** `feat(reports): quote lineage query for win rate (#6830)`.
 
 ### Task 2.2: `quote_win_rate` type, config and generator
 
-**Files:** create migration `2027-01-02-200100-report-type-quote-win-rate.sql`, `businessReports/quoteWinRateReport.ts` (+ test); modify the API/shared rows of §1.1.
+**Files:** create migration `2027-01-02-200100-report-type-quote-win-rate.sql`, `businessReports/quoteWinRateReport.ts` (+ test), `__tests__/integration/quoteWinRateReport.integration.test.ts`; modify the API/shared rows of §1.1.
 
 **Interfaces:**
 
@@ -414,7 +420,8 @@ export const quoteWinRateConfigSchema = legacyReportConfigSchema.extend({
 `groupBy` default: `organization` at partner scope, `author` at org scope (the ticket-SLA / AI-usage scope-dependent pattern; spec's "org (default)" is the partner-scope case). Medians via `percentile_cont(0.5)` over `EXTRACT(EPOCH FROM outcome_at - first_sent_at) / 86400`, rounded to 1 dp. `declineReason` appears in detail rows only. Notes: `MATURITY_NOTE` when `open > 0`; `DECIDED_DENOMINATOR_NOTE`; `PRE_TAX_VALUES_NOTE`; `NO_CONVERSION_TRACKING_NOTE` (OD8-A: accepted quotes create draft contracts; see `mrr_renewals` pending activation); `PARTNER_ORG_LIST_NOTE` at partner scope; `anomalyNote(n)` when `anomalies > 0`.
 
 - [ ] **Step 1: Failing tests:** `win rate is decided-only with the open count beside it`; `zero decided → winRate null, never 0`; `value win rate per currency, USD and EUR never summed`; `monthly recurring value = monthly + annual/12, rounded once`; `maturity note only when open > 0`; `author grouping uses the root's created_by`; `site-restricted / no-orgs empty summaries`; `detail cap truncates rows, not totals`; config parity fixture.
-- [ ] **Step 2: Run** the generator test — FAIL.
+  - Integration red, same step (`quoteWinRateReport.integration.test.ts`): partner scope ≥2 orgs, foreign partner excluded; org scope one org.
+- [ ] **Step 2: Run** the generator test and the integration file — FAIL (generator missing).
 - [ ] **Step 3: Implement** + the §1.1 API/shared rows (permission `QUOTES_READ`).
 - [ ] **Step 4: Run** generator + the six API/shared tests from Task 1.2 Step 4 — PASS; `tsc` exit 0; `pnpm db:check-drift` clean.
 - [ ] **Step 5: Commit** `feat(reports): quote_win_rate generator (#6830)`.
@@ -423,26 +430,25 @@ export const quoteWinRateConfigSchema = legacyReportConfigSchema.extend({
 
 Same shape as Tasks 1.3 + 1.4 (one task here because the form has no novel control). **Files:** `quoteWinRatePdf.ts` (+ `reportPdf.quoteWinRate.test.ts`), `QuoteWinRateOptionsForm.tsx` (+ test), `ReportTemplates.quoteWinRate.test.tsx`, `ReportEditPage.quoteWinRate.test.tsx`, `reportExport.quoteWinRate.test.tsx`, `lib/i18n/quoteWinRateKeys.test.ts`, the web-wiring row, 8× `reports.json`, portal guard. Options `{ period: ReportPeriodInput; groupBy: QuoteWinRateGroupBy | null /* null = scope default */ }`; card icon `Trophy`; test ids `quote-win-rate-period`, `quote-win-rate-group-by`; `REPORT_TYPE_LABELS` `'Quote Win Rate'`; PDF headline = win rate with "N still open" beside it, then close rate, viewed rate, medians, the per-currency money table, the grouped table.
 
-- [ ] **Step 1: Failing tests** (PDF designed arm + shape guard; headline shows open count; CSV raw numerics; form round-trip; gallery gated on `quotes:read`; locale keys; portal guard).
+- [ ] **Step 1: Failing tests** (PDF designed arm + shape guard; headline shows open count; CSV raw numerics; form round-trip; gallery gated on `quotes:read`; locale keys; portal guard; E2E `quote_win_rate: create, generate, download`).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; `tsc` exit 0 in `packages/shared`, `apps/web`, `apps/portal`.
 - [ ] **Step 5: Commit** `feat(reports): quote_win_rate PDF, export and options form (#6830)`.
 
-### Task 2.4: Integration, E2E, docs
+### Task 2.4: Docs and pre-PR gates
 
-- [ ] **Step 1: Failing integration test** `quoteWinRateReport.integration.test.ts`: the T5/T5b/draft-revision cases from Task 2.1 plus a two-quote cycle (`unreachable = 2`, report still completes) against real Postgres (seed via the quote service or direct inserts honouring `quotes_revision_of_fk`); partner scope ≥2 orgs, foreign partner excluded; org scope one org.
-- [ ] **Step 2: Run** on a wt-stack — FAIL then PASS.
-- [ ] **Step 3: E2E** `quote_win_rate: create, generate, download`. **Step 4: Docs** section (unit = opportunity/lineage, decided-only headline, expiry at read time, pre-tax values, no conversion tracking).
-- [ ] **Step 5: Pre-PR gates** as Task 1.5 Step 5. **Step 6: Commit** + PR.
+- [ ] **Step 1: Run** `quoteWinRateQueries.integration.test.ts`, `quoteWinRateReport.integration.test.ts` and the E2E case on a wt-stack — PASS.
+- [ ] **Step 2: Docs** section (unit = opportunity/lineage, decided-only headline, expiry at read time, pre-tax values, no conversion tracking).
+- [ ] **Step 3: Pre-PR gates** as Task 1.5 Step 3. **Step 4: Commit** + PR.
 
 ---
 
 ## W3 — Client profitability (`client_profitability`)
 
-Depends on: OD1–OD3 decided (A / B / A). No prerequisite commit (T9 shipped as #9221). Blast radius: medium (money at partner scope; a new report-config key).
+Depends on: **W1 merged** (W3 imports `blockOverageLineIdsCte` from W1's `businessReports/blockOverageSql.ts`) and OD1–OD3 decided (A / B / A). No prerequisite commit (T9 shipped as #9221). Blast radius: medium (money at partner scope; a new report-config key).
 
 ### Task 3.1: Invoice-line fold and hours (data access layer)
 
-**Files:** create `apps/api/src/services/businessReports/clientProfitabilityQueries.ts` (+ `.test.ts`, + `clientProfitability.parity.test.ts`).
+**Files:** create `apps/api/src/services/businessReports/clientProfitabilityQueries.ts` (+ `.test.ts`, + `clientProfitability.parity.test.ts`), `apps/api/src/__tests__/integration/clientProfitabilityQueries.integration.test.ts`; modify `businessReports/common.ts` (`effectiveCoverageSql`), `businessReports/technicianTimeReport.ts` (use it).
 
 **Interfaces:**
 
@@ -465,18 +471,19 @@ Fold contract (spec §3.1, T1/T2/T10):
 - `invoices.status IN ('sent','partially_paid','overdue','paid')`; `issue_date >= $startDate AND issue_date < $endDate` (date vs local date, T7); `il.parent_line_id IS NULL AND il.customer_visible`; `i.org_id = ANY($orgIds)` and, at partner scope, `i.partner_id = $partnerId` (`schema/invoices.ts:56`).
 - Known cost ⇔ `il.cost_basis IS NOT NULL AND NOT EXISTS (child line of il with cost_basis IS NULL)`. A parent failing only the child test counts in `partial_cost_bundles` (T10).
 - `revenue = SUM(il.line_total)`; `cost = SUM(ROUND(il.quantity * il.cost_basis, minorUnitScaleSql(sql\`i.currency_code\`))) FILTER (known)`; `cost_bearing_revenue = SUM(line_total) FILTER (known)`; `unknown_cost_revenue = revenue − cost_bearing_revenue`.
-- Category `CASE`, first match wins: `contract` and `isBlockOverageLineSql(il, i)` (W1's fragment) → labor (hours over a block are usage); `contract` → recurring; `time_entry` → labor; `part|catalog|bundle` or (`manual` with `catalog_item_id IS NOT NULL`) → product; `ai_usage` → ai; else other.
-- Hours: completed entries only (`ended_at IS NOT NULL`), `started_at` in `[periodStart, periodEnd)` instants, `partner_id = $partnerId`, `org_id = ANY($orgIds)` plus `OR org_id IS NULL` at partner scope, grouped by `(org_id, currency_code)`; coverage `COALESCE(coverage, CASE WHEN is_billable THEN 'billable' ELSE 'non_billable' END)` and the minutes expression exactly as `technicianTimeReport.ts:136` (export that fragment from `technicianTimeReport.ts` or move it to `common.ts`; do not copy it).
+- Category `CASE`, first match wins: `contract` and `il.id IN block_overage_lines` (W1's `blockOverageLineIdsCte`) → labor (hours over a block are usage); `contract` → recurring; `time_entry` → labor; `part|catalog|bundle` or (`manual` with `catalog_item_id IS NOT NULL`) → product; `ai_usage` → ai; else other.
+- Hours: completed entries only (`ended_at IS NOT NULL`), `started_at` in `[periodStart, periodEnd)` instants, `partner_id = $partnerId`, `org_id = ANY($orgIds)` plus `OR org_id IS NULL` at partner scope, grouped by `(org_id, currency_code)`; coverage via a new `effectiveCoverageSql(alias: SQL): SQL` in `businessReports/common.ts` returning `COALESCE(<alias>.coverage, CASE WHEN <alias>.is_billable THEN 'billable' ELSE 'non_billable' END)`; `technicianTimeReport.ts`'s `baseCte` (`businessReports/technicianTimeReport.ts:136`) switches to it in the same commit, and its existing tests must pass unchanged (proof the extraction is behaviour-neutral). Minutes = `te.duration_minutes`, as R2's totals (`technicianTimeReport.ts:187-190`). `currency_code` is NOT NULL for org-attached entries (CHECK `time_entries_currency_required_when_org_chk`); only `org_id IS NULL` rows can be NULL, and those go to the unattributed line, never to an org's attribution test.
 
 - [ ] **Step 1: Failing parity test** `clientProfitability.parity.test.ts` (pure, no DB): for shared **2-decimal-currency** fixtures (plain catalog lines; visible-component bundle; hidden line; all-labor invoice; explicit `0.00` cost; mixed known/unknown; a half-cent tie), a TS reference fold implementing the SQL contract (`referenceFold(lines, currency)` using `multiplyToCurrency`) equals `computeQuoteProfit(lines.filter(l => l.parentLineId === null).map(toProfitLine))` — the exact `computeInvoiceProfit` mapping (`apps/web/src/components/billing/invoiceTypes.ts:402`) — on revenue, cost (`totalCost`), net, `linesMissingCost`, coverage and margin %, **except** the partial-cost-bundle fixture, where the test asserts the documented difference. A JPY fixture (quantity `0.5`, price `4`, cost `1`) asserts the reference against `multiplyToCurrency(…, 'JPY')` and **documents** that `computeQuoteProfit` disagrees (USD rounding; follow-up 3).
 - [ ] **Step 2: Failing query tests:** `top-level only — bundle cost counted once` (T1); `block-overage contract line is labor, not recurring`; `NULL cost is unknown, not zero: all-labor invoice → cost_bearing_revenue 0, unknown = revenue` (T2); `partial-cost bundle counted unknown and tallied` (T10); `quote-accepted manual line with catalog_item_id is product`; `JPY cost rounds per line at 0 dp`; `draft and void invoices excluded`; `owner-timezone period bounds bind local dates for issue_date and instants for started_at` (Review Focus 5); `running timers excluded`; `partner scope adds the org_id IS NULL hours row`.
-- [ ] **Step 3: Run** `cd apps/api && npx vitest run src/services/businessReports/clientProfitability` — FAIL.
+- [ ] **Step 2b: Integration red** (`clientProfitabilityQueries.integration.test.ts`, real PG, written before the queries exist): real invoices with a visible-component bundle, an all-labor invoice, a block-overage contract line, a quote-accepted product line (cost stamped by the shipped #9221 path), void + draft invoices, time entries across coverage incl. a running timer; the SQL fold's rows equal `referenceFold` (Step 1) over the same seeded lines.
+- [ ] **Step 3: Run** `cd apps/api && npx vitest run src/services/businessReports/clientProfitability` and the integration file on a wt-stack — FAIL (module missing).
 - [ ] **Step 4: Implement.**
 - [ ] **Step 5: Run** — PASS. **Step 6: Commit** `feat(reports): client profitability invoice-line fold and hours (#6830)`.
 
 ### Task 3.2: `client_profitability` type, config (incl. `laborCostPerHour`) and generator
 
-**Files:** create migration `2027-01-02-200200-report-type-client-profitability.sql`, `businessReports/clientProfitabilityReport.ts` (+ test); modify the API/shared rows of §1.1.
+**Files:** create migration `2027-01-02-200200-report-type-client-profitability.sql`, `businessReports/clientProfitabilityReport.ts` (+ test), `__tests__/integration/clientProfitabilityReport.integration.test.ts`; modify the API/shared rows of §1.1.
 
 **Interfaces:**
 
@@ -503,6 +510,15 @@ export type ClientProfitabilitySummary = {
   unattributedHours: ProfitabilityHours | null; // partner scope, org_id IS NULL
   detail: DetailRowMeta; notes: string[]; rows: ClientProfitabilityDetailRow[]; // org rows at partner scope, invoice rows at org scope
 };
+export type ClientProfitabilityDetailRow = { // one per (org, currency) at partner scope; one per (invoice) at org scope
+  orgId: string; orgName: string | null; invoiceId: string | null; invoiceNumber: string | null; issueDate: string | null;
+  currencyCode: string;
+  revenue: string; cost: string; grossMargin: string; marginPct: number | null; costCoveragePct: number | null;
+  unknownCostRevenue: string;
+  recurringRevenue: string; laborRevenue: string; productRevenue: string; aiRevenue: string; otherRevenue: string;
+  hoursTotal: number | null; hoursBillable: number | null; hoursIncluded: number | null; hoursNonBillable: number | null; // null on invoice rows
+  effectiveServiceRate: number | null; estimatedContributionAfterLabor: string | null;
+};
 export function emptyClientProfitabilitySummary(note: string): ClientProfitabilitySummary;
 export const clientProfitabilityConfigSchema = legacyReportConfigSchema.extend({
   ...BUSINESS_SELECTOR_REFUSALS, period: periodSchema.optional(),
@@ -523,7 +539,8 @@ Labor rules (OD2-B, decided; formula settled in the quorum, §7):
 Notes: `BILLED_BASIS_NOTE` (OD3-A: invoiced at `issue_date`; annual contracts land in their billing month), `ARREARS_NOTE` (hours when worked, their invoice may be later), `UNKNOWN_COST_NOTE`, `PARTIAL_BUNDLE_NOTE` (when `partialCostBundles > 0`), `QUOTE_COST_FORWARD_ONLY_NOTE`, `AI_COST_NOTE` (see `ai_usage_by_client`), `LABOR_ESTIMATE_NOTE` (when set), the attribution notes above, `PARTNER_ORG_LIST_NOTE`.
 
 - [ ] **Step 1: Failing tests:** `all-labor client: marginPct null, coverage 0, unknown = revenue` (T2); `rate unset → no labor fields, no estimate note` (OD2-A parity); `rate set, single currency → estimated labor cost and contribution per formula` (worked fixture: revenue recurring 1000.00 NULL-cost + product 500.00 cost 300.00, 10 h at 45.00 → grossMargin 200.00, contribution 200.00 + 1000.00 − 450.00 = 750.00); `rate in another currency → estimate null + note`; `multi-currency org → hours printed once, rate figures null, note` (Review Focus 2); `single revenue currency but an entry stamped in another currency → not attributed`; `contribution prints its NULL-cost recurring share`; `zero hours → effective rate null`; `effective rate excludes product and AI revenue`; `unattributed hours line at partner scope`; `config rejects a non-positive or 3-dp rate and an unknown currency`; `groupBy source sums per category per currency`; `site-restricted / no-orgs`; `detail cap`.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** + §1.1 API/shared rows (permissions `INVOICES_READ` + `TIME_ENTRIES_READ`).
+  - Integration red, same step (`clientProfitabilityReport.integration.test.ts`): partner scope ≥2 orgs + foreign partner excluded; org scope one org; the unattributed-hours row appears once at partner scope.
+- [ ] **Step 2: Run** — FAIL (generator missing). **Step 3: Implement** + §1.1 API/shared rows (permissions `INVOICES_READ` + `TIME_ENTRIES_READ`).
 - [ ] **Step 4: Run** generator + the six API/shared tests — PASS; `tsc` exit 0; `pnpm db:check-drift` clean.
 - [ ] **Step 5: Commit** `feat(reports): client_profitability generator with opt-in labor estimate (#6830)`.
 
@@ -531,18 +548,17 @@ Notes: `BILLED_BASIS_NOTE` (OD3-A: invoiced at `issue_date`; annual contracts la
 
 **Files:** `clientProfitabilityPdf.ts` (+ test), `ClientProfitabilityOptionsForm.tsx` (+ test), `ReportTemplates.clientProfitability.test.tsx`, `ReportEditPage.clientProfitability.test.tsx`, `reportExport.clientProfitability.test.tsx`, `lib/i18n/clientProfitabilityKeys.test.ts`, the web-wiring row, 8× `reports.json`, portal guard.
 
-Options `{ period; groupBy: ClientProfitabilityGroupBy | null; laborCostEnabled: boolean; laborCostAmount: string; laborCostCurrency: string }` → config omits `laborCostPerHour` when disabled; `BUSINESS_OPTION_CONFIG_KEYS` gains `'laborCostPerHour'`. Control: a checkbox "Estimate labor cost" (`client-profitability-labor-enabled`) revealing amount (`client-profitability-labor-amount`) + currency select (`client-profitability-labor-currency`, default the partner's default currency if the page already has it, else `USD`), helper text "One blended rate for every technician. Figures using it are labelled as estimates." Invalid amount disables Save (`isClientProfitabilityOptionsValid`). Card icon `PiggyBank`; `REPORT_TYPE_LABELS` `'Client Profitability'`. PDF: per-currency scorecard (revenue, margin %, cost coverage %, effective service rate), per-client table with coverage beside every margin, revenue-mix bar per client, hours by coverage, the labor estimate block **only** when set and always badged "Estimate".
+Options `{ period; groupBy: ClientProfitabilityGroupBy | null; laborCostEnabled: boolean; laborCostAmount: string; laborCostCurrency: string }` → config omits `laborCostPerHour` when disabled; `BUSINESS_OPTION_CONFIG_KEYS` gains `'laborCostPerHour'`. Control: a checkbox "Estimate labor cost" (`client-profitability-labor-enabled`) revealing amount (`client-profitability-labor-amount`) + currency select (`client-profitability-labor-currency`, default = the partner currency from `usePartnerCurrency()` (`apps/web/src/lib/usePartnerCurrency.ts:88`); `USD` while it is loading or null; never inferred from report data), helper text "One blended rate for every technician. Figures using it are labelled as estimates." Invalid amount disables Save (`isClientProfitabilityOptionsValid`). Card icon `PiggyBank`; `REPORT_TYPE_LABELS` `'Client Profitability'`. PDF: per-currency scorecard (revenue, margin %, cost coverage %, effective service rate), per-client table with coverage beside every margin, revenue-mix bar per client, hours by coverage, the labor estimate block **only** when set and always badged "Estimate".
 
-- [ ] **Step 1: Failing tests:** PDF never prints a margin without its coverage; estimate block absent when rate unset, badged when set; CSV raw numerics with `currencyCode`, `marginPct` as a number or empty; form round-trip incl. disabled → key omitted; gallery gated on `invoices:read` **and** `time_entries:read`; locale keys; portal guard.
+- [ ] **Step 1: Failing tests:** E2E `client_profitability: create with a labor rate, generate, download`; PDF never prints a margin without its coverage; estimate block absent when rate unset, badged when set; CSV raw numerics with `currencyCode`, `marginPct` as a number or empty; form round-trip incl. disabled → key omitted; gallery gated on `invoices:read` **and** `time_entries:read`; locale keys; portal guard.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; `tsc` exit 0 in `packages/shared`, `apps/web`, `apps/portal`.
 - [ ] **Step 5: Commit** `feat(reports): client_profitability PDF, export and options form (#6830)`.
 
-### Task 3.4: Integration, E2E, docs
+### Task 3.4: Docs and pre-PR gates
 
-- [ ] **Step 1: Failing integration test** `clientProfitabilityReport.integration.test.ts`: real invoices with a visible-component bundle, an all-labor invoice, a quote-accepted product line (cost stamped by the shipped #9221 path), void + draft invoices, time entries across coverage incl. a running timer; partner scope ≥2 orgs + foreign partner excluded; the SQL fold equals the Task 3.1 reference on the same rows.
-- [ ] **Step 2: Run** on a wt-stack — FAIL then PASS.
-- [ ] **Step 3: E2E** `client_profitability: create with a labor rate, generate, download`. **Step 4: Docs** section (billed basis, unknown cost ≠ zero, coverage %, bundle rule, effective service rate, the labor estimate and its attribution rule).
-- [ ] **Step 5: Pre-PR gates** as Task 1.5 Step 5. **Step 6: Commit** + PR with the Rule 9 statement (§4).
+- [ ] **Step 1: Run** `clientProfitabilityQueries.integration.test.ts`, `clientProfitabilityReport.integration.test.ts` and the E2E case on a wt-stack — PASS.
+- [ ] **Step 2: Docs** section (billed basis, unknown cost ≠ zero, coverage %, bundle rule, effective service rate, the labor estimate and its attribution rule).
+- [ ] **Step 3: Pre-PR gates** as Task 1.5 Step 3. **Step 4: Commit** + PR with the Rule 9 statement (§4).
 
 ---
 
@@ -585,9 +601,9 @@ Opus position written first (`/tmp` scratch, 10 questions); codex (`codex exec`,
 **Agreed independently:** vertical waves; SQL fold with per-line `minorUnitScaleSql` rounding; per-contract resolver with an exhaustive skip list and the dashboard output byte-identical; `billed_final_term` overage not inferred; paused/draft valued live into labelled buckets outside MRR/ARR/renewals; recursive-CTE lineage with a depth guard and a terminal `superseded` treated as an anomaly; `laborCostPerHour` as a report option (Rule 2), shape `{ amount, currencyCode }`; multi-currency orgs get null rate figures.
 
 **Adopted from codex (verified):**
-- AI exposure is automatic since #9222 (`aiReportTypes.ts:24`) → Gate B 1, §0, AI tests in the checklist.
-- Hour-block overage lines are `source_type = 'contract'` (`contractHourBlockClose.ts:146`) → `isBlockOverageLineSql`, excluded from the billed-recurring series and classed as labor in R4.
-- `time_entries.currency_code` exists (`timeTracking.ts:51`) → used to confirm single-currency attribution.
+- AI exposure is automatic since #9222 (`aiReportTypes.ts:25`) → Gate B 1, §0, AI tests in the checklist.
+- Hour-block overage lines are `source_type = 'contract'` (`contractHourBlockClose.ts:146`) → `blockOverageLineIdsCte` (consume-once, as the TS), excluded from the billed-recurring series and classed as labor in R4.
+- `time_entries.currency_code` exists (`timeTracking.ts:56`) → used to confirm single-currency attribution.
 - `computeQuoteProfit` rounds at USD precision → parity restricted to 2-dp currencies; follow-up 3.
 - The unique revision index does not prevent cycles → unreachable/depth-capped diagnostics.
 - Extra CI surfaces: `reportRegistry.test.ts` set/identity assertions, `aiToolSchemasFleet.test.ts`, series exclusion.
