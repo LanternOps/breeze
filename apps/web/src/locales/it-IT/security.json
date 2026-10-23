@@ -464,6 +464,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Verrà generata e depositata una nuova password di ripristino BitLocker; quella precedente verrà rimossa dopo l'attivazione della nuova chiave.",
+    "accessRevealed": "ha mostrato la chiave",
     "bitlocker": "BitLocker",
     "cancel": "Annulla",
     "collectNow": "Raccogli ora",
@@ -489,6 +490,7 @@
     "rotate": "Ruota",
     "rotateKey": "Ruota chiave",
     "rotateRecoveryKey": "Ruota chiave di ripristino",
+    "rotateVolume": "Volume da ruotare",
     "thisAccessHasBeenRecordedInThe": "Questo accesso è stato registrato nel registro di controllo."
   },
   "securityS1ThreatList": {

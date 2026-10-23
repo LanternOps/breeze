@@ -158,7 +158,6 @@ complianceRoutes.get(
     const { page, limit } = getPagination(query);
 
     const rows = await listStatusRows(auth, query.orgId);
-    const statuses = rows.map(toStatusResponse);
 
     // Real escrow status: devices with at least one active escrowed key.
     // Constrained to the org-scoped device set already resolved by
@@ -234,18 +233,20 @@ complianceRoutes.get(
       devicesData = devicesData.filter((device) => device.deviceName.toLowerCase().includes(term));
     }
 
-    const fullyEncrypted = statuses.filter((status) => normalizeEncryption(status.encryptionStatus) === 'encrypted').length;
-    const partial = statuses.filter((status) => normalizeEncryption(status.encryptionStatus) === 'partial').length;
-    const unencrypted = statuses.filter((status) => normalizeEncryption(status.encryptionStatus) === 'unencrypted').length;
+    // Every tile (state, escrow and method) counts the same filtered set so
+    // they never disagree under a filter (#9609).
+    const fullyEncrypted = devicesData.filter((device) => normalizeEncryption(device.encryptionStatus) === 'encrypted').length;
+    const partial = devicesData.filter((device) => normalizeEncryption(device.encryptionStatus) === 'partial').length;
+    const unencrypted = devicesData.filter((device) => normalizeEncryption(device.encryptionStatus) === 'unencrypted').length;
 
     return c.json({
       ...paginate(devicesData, page, limit),
       summary: {
-        total: statuses.length,
+        total: devicesData.length,
         fullyEncrypted,
         partial,
         unencrypted,
-        recoveryKeysEscrowed: rows.filter((row) => escrowedDeviceIds.has(row.deviceId)).length,
+        recoveryKeysEscrowed: devicesData.filter((device) => device.recoveryKeyEscrowed).length,
         methodCounts: {
           bitlocker: devicesData.filter((device) => device.encryptionMethod === 'bitlocker').length,
           filevault: devicesData.filter((device) => device.encryptionMethod === 'filevault').length,

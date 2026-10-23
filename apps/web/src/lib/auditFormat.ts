@@ -71,6 +71,10 @@ const ACTION_DISPLAY: Record<string, string> = {
   'device.delete': 'Removed device',
   'device.archive': 'Archived device',
 
+  // Recovery keys
+  'device.recovery_key.reveal': 'Revealed a recovery key',
+  'device.recovery_key.rotate': 'Rotated a recovery key',
+
   // Orgs/sites
   'organization.create': 'Created organization',
   'organization.update': 'Updated organization',
