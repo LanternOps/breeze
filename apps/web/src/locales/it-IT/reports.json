@@ -340,6 +340,7 @@
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "mrr_renewals": "MRR e rinnovi",
+        "quote_win_rate": "Tasso di successo dei preventivi",
         "backup_status": "Stato dei backup"
       },
       "threatDetection": {
@@ -444,6 +445,7 @@
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "mrr_renewals": "MRR e rinnovi",
+        "quote_win_rate": "Tasso di successo dei preventivi",
         "backup_status": "Stato dei backup"
       },
       "runsTable": {
@@ -994,6 +996,7 @@
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "mrr_renewals": "MRR e rinnovi",
+        "quote_win_rate": "Tasso di successo dei preventivi",
         "backup_status": "Stato dei backup"
       },
       "schedules": {
@@ -1070,6 +1073,10 @@
         "mrr_renewals": {
           "name": "MRR e rinnovi",
           "description": "Ricavi ricorrenti mensili e annuali dei contratti attivi, misurati il giorno in cui il report viene eseguito, con i contratti in rinnovo entro l'orizzonte scelto e ciò che è stato effettivamente fatturato come ricorrente. Un set di totali per valuta, senza conversione."
+        },
+        "quote_win_rate": {
+          "name": "Tasso di successo dei preventivi",
+          "description": "La quota di preventivi inviati che sono stati vinti, contata per opportunità, così un preventivo rivisto e reinviato conta una sola volta. Il tasso principale riguarda solo le opportunità concluse, con il numero di quelle ancora aperte accanto. I valori sono al netto delle imposte, un insieme per valuta, senza conversione."
         },
         "backup_status": {
           "name": "Report sullo stato dei backup",
@@ -1206,6 +1213,18 @@
       "renewalHorizon": "Orizzonte di rinnovo",
       "renewalHorizonOption": "Prossimi {{days}} giorni",
       "renewalHorizonHelp": "I contratti la cui scadenza cade in questa finestra sono elencati come rinnovi.",
+      "cancel": "Annulla",
+      "createReport": "Crea report"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Raggruppa per",
+      "groupByAutomatic": "Automatico: per organizzazione per tutte le organizzazioni, per autore per una singola organizzazione",
+      "groupByValues": {
+        "organization": "Organizzazione",
+        "author": "Autore",
+        "currency": "Valuta"
+      },
+      "periodNote": "Il periodo si riferisce alla data del primo invio del preventivo. Un preventivo rivisto e reinviato conta una sola volta, come una singola opportunità.",
       "cancel": "Annulla",
       "createReport": "Crea report"
     },

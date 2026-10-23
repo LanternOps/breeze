@@ -340,6 +340,7 @@
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
         "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
         "backup_status": "Backup Status"
       },
       "threatDetection": {
@@ -444,6 +445,7 @@
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
         "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
         "backup_status": "Backup Status"
       },
       "runsTable": {
@@ -994,6 +996,7 @@
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
         "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
         "backup_status": "Backup Status"
       },
       "schedules": {
@@ -1070,6 +1073,10 @@
         "mrr_renewals": {
           "name": "MRR & renewals",
           "description": "Monthly and annual recurring revenue from active contracts, measured on the day the report runs, with the contracts renewing inside the chosen horizon and what has actually been billed as recurring. One set of totals per currency, never converted."
+        },
+        "quote_win_rate": {
+          "name": "Quote win rate",
+          "description": "The share of sent quotes that were won, counted per opportunity so a revised and re-sent quote counts once. The headline rate covers decided opportunities only, with the still-open count beside it. Values are pre-tax, one set per currency, never converted."
         },
         "backup_status": {
           "name": "Backup Status Report",
@@ -1206,6 +1213,18 @@
       "renewalHorizon": "Renewal horizon",
       "renewalHorizonOption": "Next {{days}} days",
       "renewalHorizonHelp": "Contracts whose term ends within this window are listed as renewals.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Group by",
+      "groupByAutomatic": "Automatic: by organization for all organizations, by author for one organization",
+      "groupByValues": {
+        "organization": "Organization",
+        "author": "Author",
+        "currency": "Currency"
+      },
+      "periodNote": "The period applies to the date each quote was first sent. A quote that is revised and re-sent counts once, as one opportunity.",
       "cancel": "Cancel",
       "createReport": "Create report"
     },
