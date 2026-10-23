@@ -324,6 +324,7 @@ describe('recoveryKeysRoutes', () => {
     expect(queueCommandMock).toHaveBeenCalledWith(DEVICE_ID, 'encryption_rotate_key', { volumeMount: 'C:' }, 'user-1');
     const auditArg = writeRouteAuditMock.mock.calls[0]![1] as any;
     expect(auditArg.action).toBe('device.recovery_key.rotate');
+    expect(auditArg.details.volumeMount).toBe('C:');
   });
 
   it('rotate windows honors an explicit data volume', async () => {
@@ -331,6 +332,7 @@ describe('recoveryKeysRoutes', () => {
     const res = await rotate({ volumeMount: 'D:' });
     expect(res.status).toBe(202);
     expect(queueCommandMock).toHaveBeenCalledWith(DEVICE_ID, 'encryption_rotate_key', { volumeMount: 'D:' }, 'user-1');
+    expect((writeRouteAuditMock.mock.calls[0]![1] as any).details.volumeMount).toBe('D:');
   });
 
   it('rotate windows without a volume is a 400 when several volumes are escrowed', async () => {

@@ -117,4 +117,16 @@ describe('RecoveryKeysPanel', () => {
     const [, init] = fetchWithAuthMock.mock.calls.at(-1)!;
     expect(JSON.parse(init.body)).toEqual({ volumeMount: 'D:' });
   });
+
+  it('disables rotate on Windows when no volume has an active escrowed key', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: { ...listPayload.data, keys: [{ ...listPayload.data.keys[0], status: 'superseded' }] },
+      }),
+    });
+    render(<RecoveryKeysPanel deviceId={DEVICE_ID} />);
+    await waitFor(() => expect(screen.getByTestId('recovery-rotate-open')).toBeTruthy());
+    expect((screen.getByTestId('recovery-rotate-open') as HTMLButtonElement).disabled).toBe(true);
+  });
 });

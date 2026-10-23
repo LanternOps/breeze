@@ -256,8 +256,9 @@ export default function RecoveryKeysPanel({
             <button
               type="button"
               onClick={() => setRotateOpen(true)}
+              disabled={os === "windows" && escrowedVolumes.length === 0}
               data-testid="recovery-rotate-open"
-              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted/40"
+              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted/40 disabled:opacity-50"
             >
               <RotateCcw className="h-3 w-3" />
               {t("securityRecoveryKeysPanel.rotateKey")}
