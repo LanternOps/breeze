@@ -64,8 +64,14 @@ export async function loadEntitlements(): Promise<EntitlementsSnapshot | null> {
       let snapshot: EntitlementsSnapshot | null = null;
       try {
         const res = await fetchWithAuth('/partner/me/entitlements');
-        if (res?.ok) snapshot = normalize(await res.json().catch(() => null));
-      } catch {
+        if (res?.ok) {
+          snapshot = normalize(await res.json().catch(() => null));
+          if (!snapshot) console.warn('[entitlements] malformed /partner/me/entitlements response');
+        } else {
+          console.warn(`[entitlements] /partner/me/entitlements failed (${res?.status ?? 'no response'})`);
+        }
+      } catch (err) {
+        console.warn('[entitlements] /partner/me/entitlements request failed', err);
         snapshot = null;
       }
       if (snapshot && entitlementsCache.generation === generation) entitlementsCache.value = snapshot;
@@ -127,7 +133,10 @@ export function useEntitlements(): UseEntitlementsResult {
 }
 
 export type UseEntitlementResult = {
+  /** Never 'enabled' on a failed load — see `failed` to tell a stuck load apart. */
   state: 'loading' | 'enabled' | 'locked';
+  /** The last load failed (state stays 'loading'); offer `reload()` instead of a spinner. */
+  failed: boolean;
   limits: unknown | null;
   source: ClientEntitlement['source'] | null;
   why: string | null;
@@ -136,16 +145,17 @@ export type UseEntitlementResult = {
 };
 
 export function useEntitlement(key: EntitlementKey): UseEntitlementResult {
-  const { snapshot, reload } = useEntitlements();
+  const { snapshot, failed, reload } = useEntitlements();
   if (!snapshot) {
-    return { state: 'loading', limits: null, source: null, why: null, graceUntil: null, reload };
+    return { state: 'loading', failed, limits: null, source: null, why: null, graceUntil: null, reload };
   }
   const entry = snapshot.entitlements.find((e) => e.key === key);
   if (!entry) {
-    return { state: 'locked', limits: null, source: null, why: null, graceUntil: null, reload };
+    return { state: 'locked', failed: false, limits: null, source: null, why: null, graceUntil: null, reload };
   }
   return {
     state: entry.state === 'enabled' ? 'enabled' : 'locked',
+    failed: false,
     limits: entry.limits,
     source: entry.source,
     why: entry.why,

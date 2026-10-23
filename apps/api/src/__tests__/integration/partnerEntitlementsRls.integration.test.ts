@@ -180,6 +180,38 @@ describe('partner_entitlements — partner-axis RLS', () => {
     expect(regranted[0]!.limits).toEqual({ maxGrants: 2, budgetCentsPerDayCeiling: 100, minFloorTickMinutes: 30 });
   });
 
+  // Review focus 5: a platform admin whose own request context is partner A
+  // writes partner B. Without the runOutsideDbContext escape the nested
+  // system context would keep A's GUCs and the write would fail 42501.
+  it('upsert and revoke for partner B succeed from inside a partner-A request context', async () => {
+    // CONTROL: partner A's context cannot write B directly.
+    await expect(withDbAccessContext(partnerContext(partnerA), () => db.execute(sql`
+      INSERT INTO partner_entitlements (partner_id, feature_key, state, source)
+      VALUES (${partnerB}, 'wisp', 'enabled', 'billing')`))).rejects.toMatchObject({ cause: { code: '42501' } });
+
+    await withDbAccessContext(partnerContext(partnerA), () =>
+      upsertEntitlementRow({ partnerId: partnerB, featureKey: 'verified_library', source: 'manual', state: 'disabled', limits: null, expiresAt: null, reason: 'cross-partner admin write', updatedBy: null }));
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT feature_key, state FROM partner_entitlements WHERE partner_id = ${partnerB}`));
+    expect(rows).toEqual([{ feature_key: 'verified_library', state: 'disabled' }]);
+
+    const revoked = await withDbAccessContext(partnerContext(partnerA), () =>
+      revokeEntitlementRow({ partnerId: partnerB, featureKey: 'verified_library', source: 'manual', reason: 'cross-partner revoke' }));
+    expect(revoked).toBe(true);
+  });
+
+  it('revoke returns false for a row already past its grace window', async () => {
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE partner_entitlements SET expires_at = now() - interval '20 days'
+      WHERE partner_id = ${partnerA} AND source = 'manual'`));
+    expect(await revokeEntitlementRow({ partnerId: partnerA, featureKey: 'wisp', source: 'manual', reason: null })).toBe(false);
+    // Still within grace (13 days past expiry) → live → revocable.
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE partner_entitlements SET expires_at = now() - interval '13 days'
+      WHERE partner_id = ${partnerA} AND source = 'manual'`));
+    expect(await revokeEntitlementRow({ partnerId: partnerA, featureKey: 'wisp', source: 'manual', reason: null })).toBe(true);
+  });
+
   it('cascadeDeletePartner removes the rows with no hand registration', async () => {
     await withSystemDbAccessContext(() => db.execute(sql`
       INSERT INTO partner_entitlements (partner_id, feature_key, state, source)

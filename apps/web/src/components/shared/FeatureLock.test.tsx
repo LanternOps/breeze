@@ -45,7 +45,7 @@ describe('FeatureLock', () => {
     const cta = screen.getByTestId('feature-lock-cta');
     expect(cta.tagName).toBe('A');
     expect(cta.getAttribute('href')).toBe('/settings/plan');
-    expect(cta.textContent).toBeTruthy();
+    expect(cta).toHaveTextContent('See plans');
   });
 
   it('upgradeHref overrides the CTA target', () => {

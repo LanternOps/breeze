@@ -26,8 +26,10 @@ import {
   ENTITLEMENT_GRACE_DAYS,
   ENTITLEMENT_KEYS,
   ENTITLEMENT_SOURCE_RANK,
+  PARTNER_PLANS,
   isEntitlementKey,
   type EntitlementKey,
+  type EntitlementLimitsByKey,
   type EntitlementRowSource,
   type EntitlementSource,
   type EntitlementState,
@@ -103,10 +105,51 @@ const isRowSource = (v: string): v is EntitlementRowSource => Object.hasOwn(ENTI
 const isState = (v: string): v is EntitlementState => v === 'enabled' || v === 'disabled';
 
 const unknownKeyThrottle = createReportThrottle(60_000);
+const invalidLimitsThrottle = createReportThrottle(60_000);
 
-function defaultLimitsFor(key: EntitlementKey, plan: PartnerPlan): unknown | null {
+function planDefaultLimits(key: EntitlementKey, plan: PartnerPlan): unknown | null {
   const defaults = ENTITLEMENTS[key].defaultLimits as Partial<Record<PartnerPlan, unknown>> | undefined;
   return defaults?.[plan] ?? null;
+}
+
+/**
+ * Limits for an ENABLED feature are never null when the key has a limits
+ * schema: a feature granted above its plan (a manual comp on `free`, a billing
+ * row that outlived a downgrade) gets the entry tier's defaults — the first
+ * plan in `plan_type` order that declares them — so a consumer never has to
+ * guess whether null means "no cap" or "zero".
+ */
+function defaultLimitsFor(key: EntitlementKey, plan: PartnerPlan, state: EntitlementState): unknown | null {
+  const own = planDefaultLimits(key, plan);
+  if (own !== null || state !== 'enabled' || !ENTITLEMENTS[key].limits) return own;
+  for (const p of PARTNER_PLANS) {
+    const entryTier = planDefaultLimits(key, p);
+    if (entryTier !== null) return entryTier;
+  }
+  return null;
+}
+
+/**
+ * Stored limits are validated on write, but a later registry schema change can
+ * leave older rows in a shape consumers no longer accept. Such a blob is
+ * replaced by the defaults (reported, throttled) rather than handed on — and
+ * rather than failing the whole partner, so one bad row cannot 503 every key.
+ */
+function storedLimitsOrDefault(
+  key: EntitlementKey,
+  stored: unknown,
+  plan: PartnerPlan,
+  state: EntitlementState
+): unknown | null {
+  if (stored === null || stored === undefined) return defaultLimitsFor(key, plan, state);
+  const schema = ENTITLEMENTS[key].limits;
+  const parsed = schema?.safeParse(stored);
+  if (parsed?.success) return parsed.data;
+  if (invalidLimitsThrottle.shouldReport(key)) {
+    console.warn(`[entitlements] invalid stored limits for "${key}"; using the defaults`);
+    captureException(new Error(`invalid stored limits for entitlement ${key}`), undefined, { subsystem: 'entitlements' });
+  }
+  return defaultLimitsFor(key, plan, state);
 }
 
 export function resolveEntitlementRows(
@@ -135,11 +178,12 @@ export function resolveEntitlementRows(
   for (const key of ENTITLEMENT_KEYS) {
     const win = winners.get(key);
     if (!win) {
+      const state = ENTITLEMENTS[key].defaults[plan];
       out[key] = {
         key,
-        state: ENTITLEMENTS[key].defaults[plan],
+        state,
         source: 'plan',
-        limits: defaultLimitsFor(key, plan),
+        limits: defaultLimitsFor(key, plan, state),
         expiresAt: null,
         graceUntil: null,
         reason: null
@@ -150,7 +194,7 @@ export function resolveEntitlementRows(
       key,
       state: win.state,
       source: win.source,
-      limits: win.limits ?? defaultLimitsFor(key, plan),
+      limits: storedLimitsOrDefault(key, win.limits, plan, win.state),
       expiresAt: win.expiresAt,
       graceUntil: win.expiresAt ? new Date(win.expiresAt.getTime() + GRACE_MS) : null,
       reason: win.reason
@@ -166,9 +210,11 @@ export function resolveEntitlementRows(
 type CacheEntry = { value: ResolvedEntitlements; fetchedAt: number };
 
 const cache = new Map<string, CacheEntry>();
-const inflight = new Map<string, Promise<ResolvedEntitlements>>();
+type InFlight = { promise: Promise<RawEntitlements>; generation: number };
+const inflight = new Map<string, InFlight>();
 let generation = 0;
 const staleServeThrottle = createReportThrottle(60_000);
+const failureThrottle = createReportThrottle(60_000);
 
 function invalidateLocal(partnerId?: string): void {
   generation += 1;
@@ -192,10 +238,12 @@ export function invalidateEntitlementCache(partnerId?: string): void {
   void getClusterCacheBus().publish(ENTITLEMENT_CLUSTER_CACHE_NAME, partnerId ?? null);
 }
 
-async function loadEntitlements(partnerId: string): Promise<ResolvedEntitlements> {
+type RawEntitlements = { plan: PartnerPlan; rows: EntitlementRowLike[] };
+
+async function loadRawEntitlements(partnerId: string): Promise<RawEntitlements> {
   // One escape, two statements — never one read per key. partnerId must come
   // from verified auth context or a platform-admin route (see partnerAxisRead).
-  const { plan, rows } = await readWithPartnerAxisVisibility(async () => {
+  return readWithPartnerAxisVisibility(async () => {
     const [p] = await db.select({ plan: partners.plan }).from(partners).where(eq(partners.id, partnerId)).limit(1);
     const rows = await db
       .select({
@@ -209,39 +257,37 @@ async function loadEntitlements(partnerId: string): Promise<ResolvedEntitlements
       })
       .from(partnerEntitlements)
       .where(eq(partnerEntitlements.partnerId, partnerId));
+    // A missing partner resolves as `free` (every key default-disabled — fails
+    // closed); callers that must distinguish "no such partner" check first.
     return { plan: (p?.plan ?? 'free') as PartnerPlan, rows };
   });
-  return { plan, entitlements: resolveEntitlementRows(rows, plan, new Date()) };
 }
 
 /**
  * The resolved entitlement set for one partner. Cached 60 s; on a failed
- * reload serves the previous value while it is under 5 min old; otherwise
- * throws `EntitlementResolutionError` (callers map it to 503, never to a
- * default).
+ * READ serves the previous value while it is under 5 min old; otherwise throws
+ * `EntitlementResolutionError` (callers map it to 503, never to a default).
+ * Only the DB read is treated as transient: an error in the pure fold is a
+ * bug and propagates as itself, never as a stale value or a retryable 503.
  */
 export async function getEntitlements(partnerId: string): Promise<ResolvedEntitlements> {
   const entry = cache.get(partnerId);
   if (entry && Date.now() - entry.fetchedAt < ENTITLEMENT_CACHE_TTL_MS) return entry.value;
 
-  let pending = inflight.get(partnerId);
-  if (!pending) {
-    const startedGeneration = generation;
-    pending = loadEntitlements(partnerId).then((value) => {
-      // An invalidate that landed mid-load means this value may predate the
-      // write: return it to this caller, but never store it.
-      if (generation === startedGeneration) cache.set(partnerId, { value, fetchedAt: Date.now() });
-      return value;
-    });
-    const tracked = pending;
+  let flight = inflight.get(partnerId);
+  if (!flight) {
+    const promise = loadRawEntitlements(partnerId);
+    const tracked: InFlight = { promise, generation };
+    flight = tracked;
     inflight.set(partnerId, tracked);
-    void tracked.finally(() => {
+    void promise.finally(() => {
       if (inflight.get(partnerId) === tracked) inflight.delete(partnerId);
     }).catch(() => undefined);
   }
 
+  let raw: RawEntitlements;
   try {
-    return await pending;
+    raw = await flight.promise;
   } catch (err) {
     const stale = cache.get(partnerId);
     if (stale && Date.now() - stale.fetchedAt < ENTITLEMENT_CACHE_STALE_CEILING_MS) {
@@ -251,8 +297,21 @@ export async function getEntitlements(partnerId: string): Promise<ResolvedEntitl
       }
       return stale.value;
     }
+    if (failureThrottle.shouldReport(partnerId)) {
+      console.error(`[entitlements] could not resolve entitlements for partner ${partnerId}`, err);
+      captureException(err, undefined, { subsystem: 'entitlements' });
+    }
     throw new EntitlementResolutionError(partnerId, err);
   }
+
+  const value: ResolvedEntitlements = {
+    plan: raw.plan,
+    entitlements: resolveEntitlementRows(raw.rows, raw.plan, new Date())
+  };
+  // An invalidate that landed mid-load means this value may predate the
+  // write: return it to this caller, but never store it.
+  if (generation === flight.generation) cache.set(partnerId, { value, fetchedAt: Date.now() });
+  return value;
 }
 
 export async function hasEntitlement(partnerId: string, key: EntitlementKey): Promise<boolean> {
@@ -260,9 +319,17 @@ export async function hasEntitlement(partnerId: string, key: EntitlementKey): Pr
   return resolved.entitlements[key].state === 'enabled';
 }
 
-export async function getEntitlementLimits<K extends EntitlementKey>(partnerId: string, key: K): Promise<unknown | null> {
+/**
+ * The resolved limits for `key`, typed by the registry. Non-null whenever the
+ * feature is enabled and the key declares a limits schema (see defaultLimitsFor);
+ * stored values are schema-checked on read (see storedLimitsOrDefault).
+ */
+export async function getEntitlementLimits<K extends EntitlementKey>(
+  partnerId: string,
+  key: K
+): Promise<EntitlementLimitsByKey[K] | null> {
   const resolved = await getEntitlements(partnerId);
-  return resolved.entitlements[key].limits;
+  return resolved.entitlements[key].limits as EntitlementLimitsByKey[K] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,5 +435,7 @@ export function __resetEntitlementCacheForTests(): void {
   inflight.clear();
   generation = 0;
   staleServeThrottle.reset();
+  failureThrottle.reset();
   unknownKeyThrottle.reset();
+  invalidLimitsThrottle.reset();
 }

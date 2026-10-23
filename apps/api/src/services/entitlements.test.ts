@@ -65,7 +65,7 @@ vi.mock('./clusterCacheBus', () => ({
 
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
-import { db, runAfterDbContextCommit, withSystemDbAccessContext } from '../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { captureException } from './sentry';
 import { getClusterCacheTarget } from './clusterCacheRegistry';
 import {
@@ -203,11 +203,28 @@ describe('resolveEntitlementRows (pure)', () => {
     expect(r.wisp).toMatchObject({ state: 'enabled', source: 'billing' });
   });
 
+  it('an enabled row with no limits on a plan with no defaults gets the entry-tier defaults, never null', () => {
+    const r = resolveEntitlementRows([row({ source: 'manual', reason: 'comp', limits: null })], 'free', NOW);
+    expect(r.wisp).toMatchObject({ state: 'enabled', source: 'manual', limits: WISP_PRO });
+    // A DISABLED winner on a plan without defaults keeps null limits.
+    expect(resolveEntitlementRows([row({ source: 'manual', state: 'disabled', reason: 'hold' })], 'free', NOW).wisp.limits)
+      .toBeNull();
+  });
+
+  it('stored limits that fail the key schema fall back to the defaults and are reported', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = resolveEntitlementRows([row({ limits: { maxGrants: 'lots' } })], 'enterprise', NOW);
+    expect(r.wisp.limits).toEqual({ maxGrants: 100, budgetCentsPerDayCeiling: 2500, minFloorTickMinutes: 15 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid stored limits'));
+    warn.mockRestore();
+  });
+
   it('row limits override defaultLimits; null row limits fall back to defaultLimits[plan]', () => {
     const custom = { maxGrants: 3, budgetCentsPerDayCeiling: 50, minFloorTickMinutes: 30 };
     expect(resolveEntitlementRows([row({ limits: custom })], 'pro', NOW).wisp.limits).toEqual(custom);
     expect(resolveEntitlementRows([row({ limits: null })], 'pro', NOW).wisp.limits).toEqual(WISP_PRO);
-    expect(resolveEntitlementRows([row({ limits: null })], 'free', NOW).wisp.limits).toBeNull();
+    // Enabled above its plan → entry-tier defaults (see the case above), not null.
+    expect(resolveEntitlementRows([row({ limits: null })], 'free', NOW).wisp.limits).toEqual(WISP_PRO);
   });
 });
 
@@ -258,10 +275,23 @@ describe('getEntitlements cache', () => {
     expect(ENTITLEMENT_CACHE_STALE_CEILING_MS).toBe(300_000);
   });
 
-  it('a throwing load with no cached entry throws EntitlementResolutionError', async () => {
+  it('a throwing load with no cached entry throws EntitlementResolutionError and reports it', async () => {
     h.selectQueue.push(new Error('db down'));
     await expect(getEntitlements(PARTNER)).rejects.toBeInstanceOf(EntitlementResolutionError);
-    await expect(hasEntitlement(PARTNER, 'wisp')).rejects.toBeInstanceOf(Error);
+    expect(captureException).toHaveBeenCalledTimes(1);
+    h.selectQueue.push(new Error('db down'));
+    await expect(hasEntitlement(PARTNER, 'wisp')).rejects.toBeInstanceOf(EntitlementResolutionError);
+  });
+
+  it('a bug in the fold is NOT masked as a transient resolution failure nor served stale', async () => {
+    queueLoad('pro');
+    await getEntitlements(PARTNER);
+    vi.advanceTimersByTime(ENTITLEMENT_CACHE_TTL_MS);
+    // expiresAt that is not a Date makes the pure fold throw a TypeError.
+    queueLoad('pro', [row({ expiresAt: 'not-a-date' as unknown as Date })]);
+    const err = await getEntitlements(PARTNER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err).not.toBeInstanceOf(EntitlementResolutionError);
   });
 
   it('invalidateEntitlementCache(partnerId) drops the entry and publishes {cache:"partner-entitlements", key: partnerId}', async () => {
@@ -327,8 +357,12 @@ describe('write primitives', () => {
   it('upsertEntitlementRow writes ON CONFLICT (partner_id, feature_key, source) DO UPDATE clearing revoked_at, then invalidates after commit', async () => {
     queueLoad('pro');
     await getEntitlements(PARTNER);
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    vi.mocked(runOutsideDbContext).mockClear();
     await upsertEntitlementRow({ ...base, limits: WISP_PRO });
-    expect(withSystemDbAccessContext).toHaveBeenCalled();
+    // The write escapes any caller context and runs system-scoped.
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledWith(expect.any(Function), 'entitlements.write');
     expect(h.insertCalls).toHaveLength(1);
     const { values, conflict } = h.insertCalls[0] as { values: Record<string, unknown>; conflict: { target: unknown[]; set: Record<string, unknown> } };
     expect(values).toMatchObject({ partnerId: PARTNER, featureKey: 'wisp', source: 'manual', state: 'enabled', limits: WISP_PRO });
@@ -355,7 +389,7 @@ describe('write primitives', () => {
     h.updateResults.push([{ id: 'x' }]);
     expect(await revokeEntitlementRow({ partnerId: PARTNER, featureKey: 'wisp', source: 'manual', reason: 'hold lifted, see ticket' })).toBe(true);
     expect(h.updateCalls[0]!.set).toHaveProperty('revokedAt');
-    expect(h.updateCalls[0]!.set).toHaveProperty('reason');
+    expect(h.updateCalls[0]!.set.reason).toBe('hold lifted, see ticket');
     expect(h.publish).toHaveBeenCalledWith(ENTITLEMENT_CLUSTER_CACHE_NAME, PARTNER);
 
     h.publish.mockClear();

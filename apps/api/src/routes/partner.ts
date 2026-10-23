@@ -108,7 +108,12 @@ partnerRoutes.get('/me', async (c) => {
 // prefix. Reads go through services/entitlements.ts, which takes the
 // partner-axis escape (#2822) — an org context sees zero rows directly.
 partnerRoutes.get('/me/entitlements', async (c) => {
-  const partnerId = await resolveCallerPartnerId(c.get('auth'));
+  const auth = c.get('auth');
+  const partnerId = await resolveCallerPartnerId(auth);
+  // `reason` is the operator's free-text note on a manual/licence row (e.g. an
+  // abuse hold). It is MSP-internal: an org-scoped caller — possibly a
+  // customer org's own user — gets the state and source, never the note.
+  const showReason = auth.scope !== 'organization';
   if (!partnerId) {
     return c.json({ error: 'No partner association' }, 404);
   }
@@ -137,7 +142,7 @@ partnerRoutes.get('/me/entitlements', async (c) => {
         limits: e.limits,
         expiresAt: e.expiresAt ? e.expiresAt.toISOString() : null,
         graceUntil: e.graceUntil ? e.graceUntil.toISOString() : null,
-        reason: e.reason,
+        reason: showReason ? e.reason : null,
       };
     }),
   });

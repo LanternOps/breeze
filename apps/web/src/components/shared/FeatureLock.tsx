@@ -19,7 +19,10 @@ export type FeatureLockProps = {
  * surface stays visible (so the partner can see what an upgrade adds) but is
  * wrapped in a disabled fieldset, followed by the `why` line and a CTA to the
  * Plan & features page. Pair with `useEntitlement(key)`: render it locked only
- * when the state is `'locked'` — `'loading'` is neither locked nor enabled.
+ * when the state is `'locked'` — `'loading'` is neither locked nor enabled:
+ * render the surface's own loading state, and when `failed` is true a retry
+ * (`reload()`) instead of an endless spinner. The server-side gate
+ * (`requireEntitlement`) is the enforcement; this is the affordance.
  */
 export function FeatureLock({
   locked,

@@ -193,13 +193,15 @@ describe('admin entitlements routes', () => {
     expect(h.writeRouteAudit).not.toHaveBeenCalled();
   });
 
-  it('writes under system context; audit carries the target partner', async () => {
+  // The system-context WRITE itself is proven against real Postgres in
+  // partnerEntitlementsRls.integration.test.ts (caller context = partner A,
+  // target = partner B); here the service is mocked, so only attribution.
+  it('audit carries the target partner, not the caller\'s own partner', async () => {
     // Caller's own JWT is partner-scoped to A; the target is B.
     h.selectQueue.push([{ id: PARTNER_B }]);
     h.getEntitlements.mockResolvedValue(resolvedWith('enabled', 'manual'));
     const res = await buildApp().request(url(PARTNER_B), json('PUT', { state: 'disabled', reason: REASON }));
     expect(res.status).toBe(200);
-    expect(withSystemDbAccessContext).toHaveBeenCalled();
     expect(h.upsertEntitlementRow).toHaveBeenCalledWith(expect.objectContaining({ partnerId: PARTNER_B, limits: null, expiresAt: null }));
     const [, event] = h.writeRouteAudit.mock.calls[0]!;
     expect(event.partnerId).toBe(PARTNER_B);
@@ -250,6 +252,40 @@ describe('admin entitlements routes', () => {
   it('non-uuid partnerId → 400', async () => {
     const res = await buildApp().request(url('not-a-uuid'), json('PUT', { state: 'enabled', reason: REASON }));
     expect(res.status).toBe(400);
+  });
+
+  it('PUT: a failed read-back AFTER the write still audits (to = granted state) and returns 200', async () => {
+    h.selectQueue.push([{ id: PARTNER_B }]);
+    h.getEntitlements
+      .mockResolvedValueOnce(resolvedWith('disabled'))
+      .mockRejectedValueOnce(new h.EntitlementResolutionError('db blip'));
+    const res = await buildApp().request(url(), json('PUT', { state: 'enabled', reason: REASON }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: null, warning: 'Saved; the resolved state could not be read back' });
+    expect(h.writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(h.writeRouteAudit.mock.calls[0]![1].details).toMatchObject({ from: 'disabled', to: 'enabled' });
+  });
+
+  it('DELETE: a failed read-back AFTER the revoke still audits (to = null) and returns 200', async () => {
+    h.selectQueue.push([{ id: PARTNER_B }]);
+    h.getEntitlements
+      .mockResolvedValueOnce(resolvedWith('enabled', 'manual'))
+      .mockRejectedValueOnce(new h.EntitlementResolutionError('db blip'));
+    const res = await buildApp().request(url(), json('DELETE', { reason: REASON }));
+    expect(res.status).toBe(200);
+    expect(h.writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(h.writeRouteAudit.mock.calls[0]![1]).toMatchObject({
+      action: 'partner.entitlement.revoked', details: { from: 'enabled', to: null }
+    });
+  });
+
+  it('PUT with an expiresAt in the past → 400, no write', async () => {
+    const res = await buildApp().request(url(), json('PUT', {
+      state: 'enabled', reason: REASON, expiresAt: '2020-01-01T00:00:00.000Z'
+    }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'expiresAt must be in the future' });
+    expect(h.upsertEntitlementRow).not.toHaveBeenCalled();
   });
 
   it('resolver unavailable → 503 with Retry-After, no write', async () => {

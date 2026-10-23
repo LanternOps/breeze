@@ -366,6 +366,10 @@ describe('GET /partner/me/entitlements', () => {
     expect(res.status).toBe(200);
     expect(entitlementsMock.getEntitlements).toHaveBeenCalledWith('partner-123');
     expect(db.select).not.toHaveBeenCalled();
+    // The free-text operator reason is MSP-internal: never shown to an
+    // org-scoped caller (which can be a customer org's own user).
+    const body = await res.json();
+    expect(body.entitlements[0]).toMatchObject({ key: 'onboarding_supervisor', source: 'manual', reason: null });
   });
 
   it('resolves the partner from partner_users when the JWT has none', async () => {

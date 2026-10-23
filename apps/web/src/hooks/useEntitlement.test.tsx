@@ -79,6 +79,8 @@ describe('useEntitlement', () => {
 
     await waitFor(() => expect(list.result.current.failed).toBe(true));
     expect(result.current.state).toBe('loading');
+    // Consumers can tell "still loading" from "load failed" and offer a retry.
+    await waitFor(() => expect(result.current.failed).toBe(true));
     expect(entitlementsCache.value).toBeNull();
   });
 

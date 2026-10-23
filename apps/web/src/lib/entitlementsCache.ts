@@ -51,9 +51,10 @@ export function resetEntitlementsCache(): void {
   listeners.forEach((listener) => {
     try {
       listener();
-    } catch {
+    } catch (err) {
       // A throwing subscriber must not abort the logout path or skip the
       // remaining subscribers.
+      console.error('[entitlements] cache reset listener threw', err);
     }
   });
 }
