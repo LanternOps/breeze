@@ -21,7 +21,7 @@
 import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { wispEnabled } from '../../config/env';
 import { db } from '../../db';
-import { wispGrantRevisions, wispGrants } from '../../db/schema';
+import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
 import type { WispGrantRow } from '../../db/schema/wisp';
 import { createAuditLogAsync } from '../auditService';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';

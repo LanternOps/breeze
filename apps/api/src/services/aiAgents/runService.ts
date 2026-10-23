@@ -53,6 +53,7 @@ import {
 } from '../aiOperator/taskOutbox';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../wisp/grantAuthority';
 import { agentRunMatchesResourceScope } from './runResourceScope';
 import { recordAgentRunSkip } from './skipVisibility';
 import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
@@ -391,6 +392,33 @@ export interface CreateAgentRunInput {
    * Required for an `analysis` run; ignored for every other profile.
    */
   analysis?: { deviceIds: string[]; inputHandles: string[] };
+  /**
+   * Wisp W02 (Wisp design §4.3, §4.5) — TRUSTED INTERNAL INPUT, like `task`:
+   * the delegation grant and the revision this run is admitted under. Never
+   * forwarded from a caller's payload. Admission step 1d resolves the live
+   * ceiling (pinned revision ∩ the grantor's live authority) and skips
+   * `grant_inactive` / `grant_org_out_of_ceiling`; the inserted run's
+   * allowlist is intersected with the ceiling and the pair is stamped on the
+   * row, so the run loop and release re-check the SAME pin.
+   *
+   * `requestedByRunId` is the depth guard's input (w00 A11): when set, it must
+   * name a run under the same grant and org — Wisp's own run. W07's
+   * `requestSpecialist.requestedByRunId` forwards it.
+   */
+  grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null };
+}
+
+/**
+ * Wisp W02 (w00 A11): a grant-bearing admission whose requester is not Wisp's
+ * own run under the same grant and org. A THROW, not a skip — W07's
+ * coordinator checks depth before admission, so reaching this is a caller bug.
+ */
+export class GrantDepthExceededError extends Error {
+  readonly code = 'grant_depth_exceeded' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'GrantDepthExceededError';
+  }
 }
 
 export type AgentRunSkipReason =
@@ -472,7 +500,11 @@ export type AgentRunSkipReason =
   // fix memory already has an attachable proven fix for the alert; the
   // automation lane attaches it instead. Not published: an expected,
   // memory-served outcome, not a policy event.
-  | 'proven_fix_available';
+  | 'proven_fix_available'
+  // Wisp W02 (admission step 1d): the pinned delegation grant is not usable
+  // (paused / revoked / expired / grantor lost standing), or the run's org is
+  // outside its live ceiling. Policy events — published.
+  | 'grant_inactive' | 'grant_org_out_of_ceiling';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -774,7 +806,27 @@ const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'too_many_input_devices', 'workspace_unavailable',
   // AI model registry W03 — a policy event an admin must act on.
   'model_unavailable',
+  // Wisp W02 — delegation-ceiling refusals.
+  'grant_inactive', 'grant_org_out_of_ceiling',
 ]);
+
+/**
+ * Wisp W02: the run's allowlist under a delegation ceiling — entries whose
+ * tool is never delegable are dropped, and with a ceiling allowlist only its
+ * tools survive. Entry shape (`tool` or `tool:action`) is preserved. Never
+ * wider than `allowlist`.
+ */
+export function intersectAllowlistWithCeiling(
+  allowlist: readonly string[],
+  ceiling: Pick<GrantCeiling, 'toolAllowlist' | 'deniedTools'>,
+): string[] {
+  return allowlist.filter((entry) => {
+    const colon = entry.indexOf(':');
+    const tool = colon === -1 ? entry : entry.slice(0, colon);
+    if (ceiling.deniedTools.has(tool)) return false;
+    return ceiling.toolAllowlist === null || ceiling.toolAllowlist.has(tool);
+  });
+}
 
 /**
  * The fallback daily sandbox-compute ceiling for an org with no `ai_budgets`
@@ -1239,10 +1291,51 @@ export async function createAndEnqueueAgentRun(
     return skip('workspace_unavailable');
   }
 
+  // 1d. Wisp W02 — the delegation ceiling (Wisp design §4.3, §4.5). Before the
+  //     policy read: a run under a grant that cannot be used must not resolve
+  //     an agent at all. The depth guard first (w00 A11): a grant-bearing
+  //     request may come only from Wisp's own run under the same grant and org.
+  let grantCeiling: GrantCeiling | null = null;
+  if (input.grant) {
+    const { grantId, grantRevisionId, requestedByRunId } = input.grant;
+    if (requestedByRunId) {
+      const [requester] = await inSystemDbContext(() => db
+        .select({ grantId: aiAgentRuns.grantId, orgId: aiAgentRuns.orgId })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, requestedByRunId))
+        .limit(1));
+      if (!requester || requester.grantId !== grantId || requester.orgId !== orgId) {
+        throw new GrantDepthExceededError(
+          'createAndEnqueueAgentRun: grant-bearing work may only be requested by Wisp\'s own run under the same grant and org (depth 1)',
+        );
+      }
+    }
+    try {
+      grantCeiling = await resolveGrantCeiling(grantId, grantRevisionId);
+    } catch (err) {
+      if (err instanceof GrantInactiveError) return skip('grant_inactive');
+      throw err;
+    }
+    if (!grantCeiling.orgIds.has(orgId)) return skip('grant_org_out_of_ceiling');
+  }
+
   // 2. Effective policy. Throws 404 when the org itself is missing — that is a
   //    caller bug, not a skip, and is deliberately allowed to propagate.
-  const resolved = await resolveEffectiveAgentSystem(orgId, kind);
-  if (!resolved) return skip('no_effective_agent');
+  const resolvedPolicy = await resolveEffectiveAgentSystem(orgId, kind);
+  if (!resolvedPolicy) return skip('no_effective_agent');
+  // Wisp W02: under a grant the run is admitted — and recorded — with its
+  // allowlist intersected with the ceiling, computed ONCE here so every later
+  // gate (the workspace capability check below) and the stored policySnapshot
+  // agree. Narrower ⇒ release denies more ⇒ fail closed.
+  const resolved: AiAgentPolicySnapshot = grantCeiling
+    ? {
+        ...resolvedPolicy,
+        effective: {
+          ...resolvedPolicy.effective,
+          toolAllowlist: intersectAllowlistWithCeiling(resolvedPolicy.effective.toolAllowlist, grantCeiling),
+        },
+      }
+    : resolvedPolicy;
   snapshot = resolved;
 
   // 2a. Fleet Designer (W01) — the kind/profile pairing, BOTH directions, and
@@ -1803,6 +1896,9 @@ export async function createAndEnqueueAgentRun(
         taskStepKey: input.task?.taskStepKey ?? null,
         taskAttemptOrdinal: input.task?.attemptOrdinal ?? null,
         promptVersion: input.task?.promptVersion ?? null,
+        // Wisp W02: both or none (`ai_agent_runs_grant_link_chk`).
+        grantId: grantCeiling ? input.grant!.grantId : null,
+        grantRevisionId: grantCeiling ? input.grant!.grantRevisionId : null,
         // Stamped by runLoop.ts with the model the run actually used, once
         // resolveModel has bound the offering (spec §6.2). Admission knows only
         // the offering, not a model string (W08: the policy model string is gone).
@@ -1901,6 +1997,11 @@ export async function createAndEnqueueAgentRun(
         fundingSource: billingSource,
         admittedOfferingId,
         ...admissionServed,
+        // Wisp W02: this attempt's own grant pin. A reclaim must never leave a
+        // previous attempt's pin (or none) on a row admitted under a ceiling —
+        // the run loop and release enforce whatever the row carries.
+        grantId: grantCeiling ? input.grant!.grantId : null,
+        grantRevisionId: grantCeiling ? input.grant!.grantRevisionId : null,
       })
       .where(and(
         eq(aiAgentRuns.orgId, orgId),

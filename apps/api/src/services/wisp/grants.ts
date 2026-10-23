@@ -19,7 +19,7 @@
 import { and, desc, eq, isNull, max, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
-import { wispGrantRevisions, wispGrants } from '../../db/schema';
+import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
 import type { WispCeilingSnapshot, WispGrantPauseReason, WispGrantRow, WispGrantStatus } from '../../db/schema/wisp';
 import { hasSatisfiedMfa, type AuthContext } from '../../middleware/auth';
 import { ENABLE_2FA } from '../../routes/auth/schemas';

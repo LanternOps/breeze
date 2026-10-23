@@ -24,12 +24,11 @@ import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { users, wispGrantRevisions, wispGrants } from '../../db/schema';
+import { users } from '../../db/schema/users';
+import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
 import type { WispCeilingSnapshot, WispGrantStatus } from '../../db/schema/wisp';
-import { computeAccessibleOrgIds } from '../../middleware/auth';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_TOOLS } from '../aiToolExposure';
 import { permissionGrantMatches } from '../permissionMatching';
-import { getUserPermissions } from '../permissions';
 
 export type GrantCeiling = {
   grantId: string;
@@ -259,6 +258,12 @@ export function inSystemContext<T>(fn: () => Promise<T>): Promise<T> {
  * longer holds `ai_sessions:use`, or reaches zero orgs (access lost).
  */
 export async function computeLiveHumanTerm(userId: string, partnerId: string): Promise<LiveHumanTerm> {
+  // Lazy: run admission, the run loop and release import this module, and the
+  // permission resolver / auth middleware graphs are not theirs to load.
+  const [{ getUserPermissions }, { computeAccessibleOrgIds }] = await Promise.all([
+    import('../permissions'),
+    import('../../middleware/auth'),
+  ]);
   // One system transaction for the whole term: getUserPermissions and
   // computeAccessibleOrgIds both reuse an ambient system context.
   return inSystemContext(async () => {
