@@ -3164,6 +3164,26 @@ jobs:
         with:
           persist-credentials: false
 
+      # Cache the resolved .deb closure so a normal run never touches the Ubuntu
+      # mirror (#9753: mirror stalls hit the step timeout and ejected merge-queue
+      # groups). Keyed on the exact package list and the runner image build, so a
+      # new image or a changed list rebuilds the set. Saved only after the
+      # install step below succeeds (cache miss); on a hit the install step
+      # installs with dpkg from the cache and falls back to the network path if
+      # that fails for any reason.
+      # ImageOS/ImageVersion are runner env vars, not expression-context values,
+      # so surface them through a step output for the cache key.
+      - name: Resolve runner image for apt cache key
+        id: tauri-image
+        run: echo "id=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Tauri apt packages
+        id: tauri-apt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tauri-debs
+          key: tauri-apt-${{ steps.tauri-image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}
+
       - name: Install Tauri system dependencies
         # Bound the STEP, not just the commands inside it. The per-command
         # deadlines below sum to ~27.75m worst case (3 attempts x 8m, plus two
@@ -3179,7 +3199,25 @@ jobs:
         # step timeout, leaving 23m for the Rust work regardless of how badly
         # the mirror behaves.
         timeout-minutes: 12
+        env:
+          TAURI_DEBS_DIR: ${{ runner.temp }}/tauri-debs
+          TAURI_CACHE_HIT: ${{ steps.tauri-apt-cache.outputs.cache-hit }}
         run: |
+          # Cache hit: install the saved .deb closure with dpkg. No apt-get
+          # update, no mirror traffic (#9753). Any failure here falls through to
+          # the network path below, which is also the cache-miss path.
+          if [ "${TAURI_CACHE_HIT}" = "true" ] && ls "${TAURI_DEBS_DIR}"/*.deb >/dev/null 2>&1; then
+            if sudo timeout --kill-after=30s 3m dpkg -i "${TAURI_DEBS_DIR}"/*.deb; then
+              echo "Tauri system dependencies installed from cache (no mirror access)."
+              exit 0
+            fi
+            echo "::warning::cached .deb install failed; falling back to the network install"
+            sudo timeout --kill-after=30s 60s dpkg --configure -a || true
+          fi
+          # Network path. Download into a private archives dir so the .debs can
+          # be copied into the cache dir once the install succeeds.
+          TAURI_PKGS=($(grep -v '^#' .github/tauri-apt-packages.txt))
+          TAURI_ARCHIVES=$(mktemp -d)
           # The Azure apt mirror (azure.archive.ubuntu.com) is intermittently
           # degraded and can crawl at 1-4 min/package, blowing this job's
           # timeout before Rust ever compiles — a transient infra flake that
@@ -3220,12 +3258,17 @@ jobs:
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
             sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
-              libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+              -o "Dir::Cache::archives=$TAURI_ARCHIVES" "${TAURI_PKGS[@]}"
           }
           attempts=3
           for attempt in $(seq 1 "${attempts}"); do
             if install_deps; then
               echo "Tauri system dependencies installed (attempt ${attempt})."
+              # Seed the cache (saved by the post step only on a cache miss).
+              rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
+              sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/ 2>/dev/null \
+                && sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}" \
+                || echo "::warning::could not seed the Tauri apt cache; next run will use the network path"
               exit 0
             fi
             if [ "${attempt}" -eq "${attempts}" ]; then
