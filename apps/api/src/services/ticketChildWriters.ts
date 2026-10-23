@@ -320,6 +320,35 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
       + 'ticket_drafts is a pre-ticket table in the #3778 order, and the merge holds the fenced org set.',
   },
 
+  // ── Ticket merge (#8972 W1, spec §3.5) ──────────────────────────────────
+  'services/ticketMerge/execute.ts::mergeInTx': {
+    tables: ['ticket_comments', 'ticket_drafts'],
+    lock: 'mover',
+    tombstoneGuard: false,
+    reason:
+      'Ticket merge: per-org links lock (exclusive), org SHARE, the source\'s drafts and Operator targets, then '
+      + 'source + survivor + every ticket merged into the source in ONE ascending lockTicketsForWrite batch, then '
+      + 'the children (repoint.ts). Writes the two merge notes after every lock is held; eligibility (incl. '
+      + 'already-merged) is re-checked on the locked rows.',
+  },
+  'services/ticketMerge/repoint.ts::repointTicketChildren': {
+    tables: ['ticket_comments', 'time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_attachments',
+      'ticket_email_links', 'ticket_checklist_items', 'ticket_external_refs', 'ticket_drafts'],
+    lock: 'mover',
+    tombstoneGuard: false,
+    reason:
+      'Ticket merge re-point: runs only inside mergeInTx after the ticket locks, one statement per table in '
+      + 'ticket_comments → TICKET_CHILD_ORG_REWRITE_LOCK_ORDER; same-org, ticket_id only (billing fields untouched).',
+  },
+  'services/ticketMerge/repoint.ts::repointTicketLinks': {
+    tables: ['ticket_links'],
+    lock: 'mover',
+    tombstoneGuard: false,
+    reason:
+      'Ticket merge link re-point: the ticket_links slot of the canonical order, under mergeInTx\'s exclusive '
+      + 'per-org links lock and ticket locks; drops what would break a link rule.',
+  },
+
   // ── Cascades (erasure) ──────────────────────────────────────────────────
   'services/tenantCascade.ts::deleteOrgRows': {
     tables: ['ticket_comments', 'ticket_attachments', 'time_entries', 'ticket_parts', 'ticket_checklist_items',

@@ -7,6 +7,7 @@
 --                    + tickets_merged_pair_chk
 --                    + tickets_merged_into_idx (partial)
 --   ticket_comments  merged_from_ticket_id (plain FK, ON DELETE SET NULL)
+--   ticket_outbox    ticket_outbox_event_type_check admits 'ticket.merged'
 --
 -- A merged source stays as a read-only tombstone pointing at its survivor
 -- (one hop; merge compresses paths). The FK is composite on org_id so a
@@ -64,6 +65,20 @@ ALTER TABLE public.tickets
   ADD CONSTRAINT tickets_merged_pair_chk
     CHECK ((merged_into_ticket_id IS NULL) = (merged_at IS NULL)) NOT VALID;
 ALTER TABLE public.tickets VALIDATE CONSTRAINT tickets_merged_pair_chk;
+
+-- ticket_outbox admits the new event (spec §3.7). event_type is text, but
+-- 2026-09-19-ai-agents-ticket-shadow.sql pins the admitted set with a named
+-- CHECK, widened here the same way (swap NOT VALID, then VALIDATE: the
+-- existing rows all satisfy the wider set).
+ALTER TABLE public.ticket_outbox
+  DROP CONSTRAINT IF EXISTS ticket_outbox_event_type_check,
+  ADD CONSTRAINT ticket_outbox_event_type_check
+    CHECK (event_type IN (
+      'ticket.created', 'ticket.status_changed', 'ticket.updated',
+      'ticket.assigned', 'ticket.commented', 'ticket.restored',
+      'ticket.merged'
+    )) NOT VALID;
+ALTER TABLE public.ticket_outbox VALIDATE CONSTRAINT ticket_outbox_event_type_check;
 
 RESET lock_timeout;
 
