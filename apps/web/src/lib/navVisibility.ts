@@ -70,7 +70,7 @@ export function useNavViewer(): NavViewer {
       serviceManagementMode,
       canManagePartnerWide,
     }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // accessToken is a cache key only: getScope() re-reads the decoded claims.
     [isPlatformAdmin, permissions, canManagePartnerWide, accessToken, serviceManagementMode],
   );
 }

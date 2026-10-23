@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFilterFromHash } from '../devices/filterUrl';
 import { readDeviceClassFromHash } from '../devices/deviceClassFilter';
 import { topLevelNav, navSections } from '../layout/Sidebar';
-import { pickNavGate, type NavViewer } from '../../lib/navVisibility';
+import { canOpenDestination, pickNavGate, type NavViewer } from '../../lib/navVisibility';
 import {
   DASHBOARD_METRICS,
   DESTINATION_GATES,
@@ -123,6 +123,28 @@ describe('visibility gates (R4)', () => {
     expect(DASHBOARD_METRICS['kpi.tickets'].visible?.(viewer({ serviceManagementMode: 'off' }))).toBe(false);
     expect(DASHBOARD_METRICS['kpi.tickets'].visible?.(viewer())).toBe(true);
   });
+});
+
+describe('each metric is gated by its own destination', () => {
+  const viewers = [
+    viewer(),
+    viewer({ permissions: [] }),
+    viewer({ permissions: [{ resource: 'tickets', action: 'read' }] }),
+    viewer({ permissions: [{ resource: 'alerts', action: 'read' }] }),
+    viewer({ permissions: [{ resource: 'devices', action: 'read' }] }),
+    viewer({ serviceManagementMode: 'off' }),
+  ];
+  for (const [key, def] of entries) {
+    if (def.kind === 'exempt') continue;
+    it(key, () => {
+      const href = metricHref(key, { devices: stats })!;
+      const path = new URL(href, 'http://x').pathname as keyof typeof DESTINATION_GATES;
+      expect(DESTINATION_GATES[path], `no gate for ${path}`).toBeTruthy();
+      for (const v of viewers) {
+        expect(def.visible?.(v)).toBe(canOpenDestination(DESTINATION_GATES[path], v));
+      }
+    });
+  }
 });
 
 describe('gates match the Sidebar item for the same destination', () => {
