@@ -425,6 +425,8 @@
     "osFilterLabel": "Sistema operacional"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Não foi possível atualizar a recomendação.",
+    "affectsOrgs": "Afeta {{count}} organizações",
     "adminAccounts": "Contas de administrador",
     "allCategories": "Todas as categorias",
     "allPriorities": "Todas as prioridades",

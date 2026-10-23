@@ -39,6 +39,14 @@ vi.mock('./ticketConfigService', () => ({
   getTicketStatusById: (...a: unknown[]) => configMocks.getTicketStatusById(...a),
 }));
 
+// #8972 W0: writers lock the ticket row first; the lock helper has its own tests, so
+// here it echoes the ticket back (same org as the fixtures) and records the id.
+const { lockMock } = vi.hoisted(() => ({
+  lockMock: vi.fn(async (_tx: unknown, id: string) => ({
+    id, orgId: '22222222-2222-2222-2222-222222222222', partnerId: 'p-1', status: 'open', deletedAt: null, workKind: 'support',
+  })),
+}));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockMock, lockTicketsForWrite: vi.fn(async () => new Map()) }));
 const setMock = vi.fn();
 const updateWhereMock = vi.fn();
 const insertValuesMock = vi.fn();
@@ -91,6 +99,16 @@ function queueSelect(table: unknown, rows: unknown[]) {
   dbState.selectQueues.get(table)!.push(rows);
 }
 
+/**
+ * The ticket row, served to the writer's unlocked pre-read AND to its re-read
+ * under the ticket lock (#8972 W0: the SLA recompute judges "frozen" on the
+ * locked row). A path that never re-reads leaves the second copy unused.
+ */
+function queueTicket(row: unknown) {
+  queueSelect(tickets, [row]);
+  queueSelect(tickets, [row]);
+}
+
 const TICKET_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
@@ -129,12 +147,13 @@ afterEach(() => {
 
 describe('updateTicketFields — SLA restamp before first response (#6691)', () => {
   it('(a) setting a category on an uncategorised, unanswered ticket stamps the category targets', async () => {
-    queueSelect(tickets, [UNANSWERED]);
+    queueTicket(UNANSWERED);
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
 
     await updateTicketFields(TICKET_ID, { categoryId: CATEGORY_ID }, actor);
 
+    expect(lockMock).toHaveBeenCalledWith(expect.anything(), TICKET_ID); // #8972 W0: ticket locked first
     expect(setMock).toHaveBeenCalledTimes(1);
     const setArg = setMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(setArg.categoryId).toBe(CATEGORY_ID);
@@ -158,7 +177,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it('(b) a priority change on an unanswered ticket applies the org → partner priority chain', async () => {
-    queueSelect(tickets, [UNANSWERED]);
+    queueTicket(UNANSWERED);
     configMocks.getOrgSlaOverride.mockResolvedValue({ responseMinutes: 45, resolutionMinutes: null });
     configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: 90, resolutionMinutes: 600 });
     dbState.updateReturningQueue.push([{ ...UNANSWERED, priority: 'high' }]);
@@ -174,7 +193,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it('a priority change keeps the ticket\'s existing category as the first link of the chain', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, categoryId: CATEGORY_ID, responseSlaMinutes: 30, resolutionSlaMinutes: null }]);
+    queueTicket({ ...UNANSWERED, categoryId: CATEGORY_ID, responseSlaMinutes: 30, resolutionSlaMinutes: null });
     queueCategory(CATEGORY_ID, 30, null);
     configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: 90, resolutionMinutes: 600 });
     dbState.updateReturningQueue.push([{ ...UNANSWERED, priority: 'urgent' }]);
@@ -188,7 +207,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it('(c) no restamp once the ticket has a first response', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, firstResponseAt: new Date('2026-09-01T10:00:00Z') }]);
+    queueTicket({ ...UNANSWERED, firstResponseAt: new Date('2026-09-01T10:00:00Z') });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
 
@@ -202,7 +221,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it.each(['resolved', 'closed'])('(d) no restamp on a %s ticket', async (status) => {
-    queueSelect(tickets, [{ ...UNANSWERED, status }]);
+    queueTicket({ ...UNANSWERED, status });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
 
@@ -214,9 +233,9 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it('(e) a user-set response target survives; the resolution target is restamped', async () => {
-    queueSelect(tickets, [{
+    queueTicket({
       ...UNANSWERED, responseSlaMinutes: 15, fieldProvenance: { responseSlaMinutes: 'user' },
-    }]);
+    });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
 
@@ -228,7 +247,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it('(f) an explicit SLA value in the same PATCH wins over the restamp and takes user provenance', async () => {
-    queueSelect(tickets, [UNANSWERED]);
+    queueTicket(UNANSWERED);
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
 
@@ -242,7 +261,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it('no restamp when neither category nor priority actually changes', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
+    queueTicket({ ...UNANSWERED, categoryId: CATEGORY_ID });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ ...UNANSWERED, subject: 'x' }]);
 
@@ -255,7 +274,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it('clearing the category falls back to the org/partner/default chain', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, categoryId: CATEGORY_ID, priority: 'urgent', responseSlaMinutes: 30, resolutionSlaMinutes: 480 }]);
+    queueTicket({ ...UNANSWERED, categoryId: CATEGORY_ID, priority: 'urgent', responseSlaMinutes: 30, resolutionSlaMinutes: 480 });
     dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: null }]);
 
     await updateTicketFields(TICKET_ID, { categoryId: null }, actor);
@@ -268,7 +287,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
   });
 
   it('non-support work carries no SLA (work-kind link of the chain)', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, workKind: 'deliverable' }]);
+    queueTicket({ ...UNANSWERED, workKind: 'deliverable' });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
 
@@ -282,7 +301,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
 
 describe('applyAiFieldUpdates — SLA restamp before first response (#6691)', () => {
   it('(g) applying a category on an unanswered email ticket restamps under the same gate, in SQL', async () => {
-    queueSelect(tickets, [UNANSWERED]);
+    queueTicket(UNANSWERED);
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'normal', fieldProvenance: { categoryId: 'ai_agent' } }]);
     dbState.updateReturningQueue.push([{ id: TICKET_ID }]);
@@ -318,7 +337,7 @@ describe('applyAiFieldUpdates — SLA restamp before first response (#6691)', ()
   });
 
   it('(g2) a priority applied by the AI restamps from the ticket\'s existing category + chain', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, categoryId: OTHER_CATEGORY_ID }]);
+    queueTicket({ ...UNANSWERED, categoryId: OTHER_CATEGORY_ID });
     queueCategory(OTHER_CATEGORY_ID, null, null);
     configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: 90, resolutionMinutes: 600 });
     dbState.updateReturningQueue.push([{ categoryId: OTHER_CATEGORY_ID, priority: 'high', fieldProvenance: { priority: 'ai_agent' } }]);
@@ -333,7 +352,7 @@ describe('applyAiFieldUpdates — SLA restamp before first response (#6691)', ()
   });
 
   it('(h) a skipped (human_set) update does not restamp', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, categoryId: OTHER_CATEGORY_ID, fieldProvenance: { categoryId: 'user' } }]);
+    queueTicket({ ...UNANSWERED, categoryId: OTHER_CATEGORY_ID, fieldProvenance: { categoryId: 'user' } });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ categoryId: OTHER_CATEGORY_ID, priority: 'normal', fieldProvenance: { categoryId: 'user' } }]);
 
@@ -347,7 +366,7 @@ describe('applyAiFieldUpdates — SLA restamp before first response (#6691)', ()
   });
 
   it('no restamp when the AI applies a category to an already-answered ticket', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, firstResponseAt: new Date('2026-09-01T10:00:00Z') }]);
+    queueTicket({ ...UNANSWERED, firstResponseAt: new Date('2026-09-01T10:00:00Z') });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'normal', fieldProvenance: { categoryId: 'ai_agent' } }]);
 
@@ -357,7 +376,7 @@ describe('applyAiFieldUpdates — SLA restamp before first response (#6691)', ()
   });
 
   it('a user-set target is left out of the AI restamp entirely', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, responseSlaMinutes: 15, fieldProvenance: { responseSlaMinutes: 'user' } }]);
+    queueTicket({ ...UNANSWERED, responseSlaMinutes: 15, fieldProvenance: { responseSlaMinutes: 'user' } });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'normal', fieldProvenance: { categoryId: 'ai_agent', responseSlaMinutes: 'user' } }]);
     dbState.updateReturningQueue.push([{ id: TICKET_ID }]);
@@ -377,7 +396,7 @@ describe('SLA deadlines follow the restamp and the explicit override (#8973)', (
   const at = (minutes: number) => new Date(Date.parse('2026-06-01T09:00:00Z') + minutes * 60_000);
 
   it('a #6691 restamp recomputes both deadlines from the new targets', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, slaPausedBusinessMinutes: 5 }]);
+    queueTicket({ ...UNANSWERED, slaPausedBusinessMinutes: 5 });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
 
@@ -395,10 +414,10 @@ describe('SLA deadlines follow the restamp and the explicit override (#8973)', (
   });
 
   it('an explicit override after the first response leaves the frozen response deadline alone', async () => {
-    queueSelect(tickets, [{
+    queueTicket({
       ...UNANSWERED, responseSlaMinutes: 60, resolutionSlaMinutes: 480,
       firstResponseAt: at(20), responseDueAt: at(60), responseWarnAt: at(48),
-    }]);
+    });
     dbState.updateReturningQueue.push([UNANSWERED]);
 
     await updateTicketFields(TICKET_ID, { responseSlaMinutes: 15, resolutionSlaMinutes: 240 }, actor);
@@ -412,7 +431,7 @@ describe('SLA deadlines follow the restamp and the explicit override (#8973)', (
   });
 
   it('clearing a target clears its deadlines', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, responseSlaMinutes: 60, resolutionSlaMinutes: 480 }]);
+    queueTicket({ ...UNANSWERED, responseSlaMinutes: 60, resolutionSlaMinutes: 480 });
     dbState.updateReturningQueue.push([UNANSWERED]);
 
     await updateTicketFields(TICKET_ID, { resolutionSlaMinutes: null }, actor);
@@ -421,7 +440,7 @@ describe('SLA deadlines follow the restamp and the explicit override (#8973)', (
   });
 
   it('a field edit that touches no target writes no deadline', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, responseSlaMinutes: 60 }]);
+    queueTicket({ ...UNANSWERED, responseSlaMinutes: 60 });
     dbState.updateReturningQueue.push([UNANSWERED]);
 
     await updateTicketFields(TICKET_ID, { subject: 'Printer offline again' }, actor);
@@ -433,7 +452,7 @@ describe('SLA deadlines follow the restamp and the explicit override (#8973)', (
   });
 
   it('the AI restamp guards each deadline with its target\'s provenance and the breach freeze, in SQL', async () => {
-    queueSelect(tickets, [UNANSWERED]);
+    queueTicket(UNANSWERED);
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'normal', fieldProvenance: { categoryId: 'ai_agent' } }]);
     dbState.updateReturningQueue.push([{ id: TICKET_ID }]);
@@ -458,7 +477,7 @@ describe('SLA deadlines follow the restamp and the explicit override (#8973)', (
   });
 
   it('a user-set target keeps its deadlines out of the AI restamp', async () => {
-    queueSelect(tickets, [{ ...UNANSWERED, responseSlaMinutes: 15, fieldProvenance: { responseSlaMinutes: 'user' } }]);
+    queueTicket({ ...UNANSWERED, responseSlaMinutes: 15, fieldProvenance: { responseSlaMinutes: 'user' } });
     queueCategory(CATEGORY_ID, 30, 480);
     dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'normal', fieldProvenance: { categoryId: 'ai_agent', responseSlaMinutes: 'user' } }]);
     dbState.updateReturningQueue.push([{ id: TICKET_ID }]);

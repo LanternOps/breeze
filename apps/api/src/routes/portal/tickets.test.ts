@@ -25,6 +25,13 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 // ── service mocks ─────────────────────────────────────────────────────────────
 
+// #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
+// mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+}));
+vi.mock('../../services/ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
+
 const { createTicketMock, portalCommentMutableMock, editTicketCommentMock, deleteTicketCommentMock } = vi.hoisted(() => ({
   createTicketMock: vi.fn(),
   portalCommentMutableMock: vi.fn(),
@@ -864,6 +871,31 @@ describe('POST /tickets/:id/comments', () => {
     expect(res.status).toBe(201);
     const body = await res.json() as { comment: Record<string, unknown> };
     expect(body.comment).toHaveProperty('authorType', 'portal');
+  });
+
+  // #8972 W0: the ticket row is locked first, and a ticket soft-deleted under
+  // the lock answers 404 without inserting.
+  it('locks the ticket row before inserting the comment', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+    expect(res.status).toBe(201);
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), TICKET_ID);
+  });
+
+  it('404s without inserting when the locked ticket is soft-deleted', async () => {
+    lockTicketForWriteMock.mockResolvedValueOnce({
+      id: TICKET_ID, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: new Date(), workKind: 'support',
+    });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'x' }),
+    });
+    expect(res.status).toBe(404);
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   /**
