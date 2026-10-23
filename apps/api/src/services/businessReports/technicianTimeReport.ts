@@ -14,7 +14,7 @@ import type { ReportResult } from '../reportGenerationService';
 import { reportTypeDef } from '../reportRegistry';
 import { reportOwnerOfScope, runInReportScope, type ReportScope } from '../reportScope';
 import type { ReportGenerationAuthority } from '../siteScope';
-import { PARTNER_ORG_LIST_NOTE, ratio, rowsOf, SITE_RESTRICTED_NOTE } from './common';
+import { effectiveCoverageSql, PARTNER_ORG_LIST_NOTE, ratio, rowsOf, SITE_RESTRICTED_NOTE } from './common';
 import {
   resolveReportOwnerTimezone,
   resolveReportPeriod,
@@ -133,7 +133,7 @@ function baseCte(scope: ReportScope, period: ResolvedReportPeriod): SQL {
       SELECT te.id, te.user_id, te.org_id, te.work_type_id, te.started_at,
         te.duration_minutes, te.billable_minutes, te.hourly_rate, te.currency_code,
         te.billing_status, te.is_approved,
-        COALESCE(te.coverage, CASE WHEN te.is_billable THEN 'billable' ELSE 'non_billable' END) AS eff_coverage
+        ${effectiveCoverageSql(sql`te`)} AS eff_coverage
       FROM time_entries te
       WHERE ${entryScopePredicate(scope)}
         -- A running timer has no duration yet.
