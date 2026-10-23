@@ -30,6 +30,16 @@ it('renders inherited partner-wide channels as read-only cards under a "Shared b
   expect(section.tagName).not.toBe('UL');
 });
 
+it('shows a display label for the inherited channel type, not the raw lowercase enum', async () => {
+  fetchMock.mockImplementation(async (url) => String(url).includes('rail=channels')
+    ? ok({ data: [], inherited: [{ id: 'c2', name: 'On-call', type: 'pagerduty', enabled: true, inherited: true }] })
+    : ok({ data: [] }));
+  render(<DeliveryPage />);
+  const card = await screen.findByTestId('delivery-inherited-channel-c2');
+  expect(within(card).getByText('PagerDuty')).toBeInTheDocument();
+  expect(within(card).queryByText('pagerduty')).toBeNull();
+});
+
 it('renders nothing for the inherited block when there are no partner-wide channels', async () => {
   fetchMock.mockImplementation(async () => ok({ data: [] }));
   render(<DeliveryPage />);
