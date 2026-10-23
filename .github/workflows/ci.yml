@@ -3164,25 +3164,15 @@ jobs:
         with:
           persist-credentials: false
 
-      # Cache the resolved .deb closure so a normal run never touches the Ubuntu
-      # mirror (#9753: mirror stalls hit the step timeout and ejected merge-queue
-      # groups). Keyed on the exact package list and the runner image build, so a
-      # new image or a changed list rebuilds the set. Saved only after the
-      # install step below succeeds (cache miss); on a hit the install step
-      # installs with dpkg from the cache and falls back to the network path if
-      # that fails for any reason.
-      # ImageOS/ImageVersion are runner env vars, not expression-context values,
-      # so surface them through a step output for the cache key.
-      - name: Resolve runner image for apt cache key
-        id: tauri-image
-        run: echo "id=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
-
+      # Restore the cached .deb closure so a normal run never touches the Ubuntu
+      # mirror (#9753). The key lives in the shared composite action. Caches
+      # are ref-scoped and CI does not run on push to main, so this job only
+      # READS what `tauri-apt-cache-seed.yml` saves from main; a run that
+      # misses falls back to the network path below (and its own save is
+      # visible only to that ref).
       - name: Cache Tauri apt packages
         id: tauri-apt-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/tauri-debs
-          key: tauri-apt-${{ steps.tauri-image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}
+        uses: ./.github/actions/tauri-apt-cache
 
       - name: Install Tauri system dependencies
         # Bound the STEP, not just the commands inside it. The per-command
@@ -3200,7 +3190,7 @@ jobs:
         # the mirror behaves.
         timeout-minutes: 12
         env:
-          TAURI_DEBS_DIR: ${{ runner.temp }}/tauri-debs
+          TAURI_DEBS_DIR: ${{ steps.tauri-apt-cache.outputs.dir }}
           TAURI_CACHE_HIT: ${{ steps.tauri-apt-cache.outputs.cache-hit }}
         run: |
           # Cache hit: install the saved .deb closure with dpkg. No apt-get
