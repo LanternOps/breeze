@@ -1074,6 +1074,9 @@ aiRoutes.post(
         // #9427: the anchor an attaching client splices this turn's replay
         // after. Set before the turn is pushed.
         activeSession.turnUserMessageId = userRow?.id ?? null;
+        if (!userRow) {
+          console.warn('[AI] User message insert returned no row; attaching clients get no turn anchor', { sessionId });
+        }
       } catch (err) {
         console.error('[AI] Failed to save user message to DB:', err);
         activeSession.state = 'idle';

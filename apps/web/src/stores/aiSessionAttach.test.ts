@@ -119,6 +119,23 @@ describe('attachAiSession', () => {
     await expect(a.finished).resolves.toEqual({ kind: 'closed' });
   });
 
+  it('a first typed frame that is not a valid attach_state -> error (version skew), not a silent wait', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { res, cancel } = sseResponse([
+      frame({}, 'ping'),
+      frame(attachState({ turn: 'paused' })),
+      frame({ type: 'done', seq: 3 }),
+    ], { hold: true });
+    fetchMock.mockResolvedValue(res);
+    const a = attach();
+    await expect(a.ready).resolves.toMatchObject({ kind: 'error' });
+    await expect(a.finished).resolves.toMatchObject({ kind: 'error' });
+    expect(a.events).toEqual([]);
+    expect(cancel).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('stream ends before attach_state -> ready and finished agree (closed)', async () => {
     const { res } = sseResponse([frame({}, 'ping')]);
     fetchMock.mockResolvedValue(res);

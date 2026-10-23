@@ -17,14 +17,17 @@ import { CLIENT_AI_SSE_PING_INTERVAL_MS } from './clientAi/sse';
  * Wire format: `event: ping` (beacon), then one `event: attach_state` frame
  * (see `AiAttachState`), then — only while a turn runs — every later event of
  * that turn as `event: <type>`, `id: <seq>`, `data: {...event, seq}`, until
- * `done` or until the turn's bus closes. A stream that ends without `done`
- * means the turn was replaced (a new `POST /messages`): attach again.
+ * `done` or until the turn's bus closes. A RUNNING attach that ends without
+ * `done` means the turn's bus closed — usually because a new `POST /messages`
+ * replaced it (attach again); an `idle` or `unavailable` attach always ends
+ * right after its `attach_state`.
  *
  * Security: ownership is the DB row, read by `getSession(id, auth)` — the
  * same owner + accessible-org + topology-site filter as `GET /ai/sessions/:id`,
- * never `allowAnyOwnerInOrg`. Every refusal before the stream is the same 404
- * body as a missing id. The in-memory session is only looked up by an id the
- * caller already proved it owns.
+ * never `allowAnyOwnerInOrg`. Every ownership or type refusal is the same 404
+ * body as a missing id; the only other pre-stream refusal, 429 `attach_limit`,
+ * is reachable only after ownership is proved. The in-memory session is only
+ * looked up by an id the caller already proved it owns.
  *
  * Read-only: never creates an in-memory session, never sends, never
  * interrupts. DB: one short `withAuthDbAccessContext` for `getSession` before
@@ -58,6 +61,17 @@ function isLive(session: ActiveSession): boolean {
   return session.state !== 'closing' && session.state !== 'closed' && !session.eventBus.closed;
 }
 
+/**
+ * `initializing`/`ready`: a session `/messages` has created but not yet
+ * claimed for its turn (between `getOrCreate` and `tryTransitionToProcessing`).
+ * Reported as `unavailable`, not `idle`, so a client re-attaching after a
+ * closed stream or a `turn_in_progress` 409 keeps trying (see the web
+ * `shouldReattach`) instead of settling on a turn that is about to start.
+ */
+function isAwaitingTurn(session: ActiveSession): boolean {
+  return session.state === 'initializing' || session.state === 'ready';
+}
+
 type Capture =
   | { kind: 'unavailable' }
   | { kind: 'idle'; state: AiAttachState }
@@ -78,8 +92,15 @@ type Capture =
 function captureTurn(session: ActiveSession, callerUserId: string): Capture {
   // Defense in depth: the DB row already proved ownership of this id, and only
   // its owner can start a turn on it. If the in-memory session disagrees,
-  // show nothing rather than trust it.
-  if (!isLive(session) || session.auth?.user?.id !== callerUserId) return { kind: 'unavailable' };
+  // show nothing rather than trust it — and say so, because it means an
+  // invariant broke somewhere.
+  if (session.auth?.user?.id !== callerUserId) {
+    console.warn('[AI] Attach: in-memory session owner differs from the session row owner; refusing', {
+      sessionId: session.breezeSessionId,
+    });
+    return { kind: 'unavailable' };
+  }
+  if (!isLive(session) || isAwaitingTurn(session)) return { kind: 'unavailable' };
 
   const bus = session.eventBus;
   const subscriptionId = crypto.randomUUID();
@@ -181,8 +202,9 @@ export function registerAiAttachRoute(routes: Hono): void {
           }
           // Ending without `done` means the bus closed: the turn was replaced.
         } catch (err) {
-          // Never stream raw error text; the client re-attaches on a closed stream.
-          console.error('[AI] Attach stream error:', err);
+          // Never stream raw error text; the client treats the early end like a
+          // closed stream (bounded re-attach, then a re-read of the transcript).
+          console.error('[AI] Attach stream error:', { sessionId, userId: auth.user.id }, err);
         } finally {
           teardown();
         }

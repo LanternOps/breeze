@@ -23,6 +23,16 @@ describe('aiConversationHandoff', () => {
     expect(useHandoffStore.getState().pending).toBeNull();
   });
 
+  it('a throwing onRelease resolves aborted (the origin was not released), logs, and does not throw', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const p = beginHandoff({ sessionId: 's1', origin: 'panel' }, () => { throw new Error('boom'); });
+    expect(() => completeHandoff('s1')).not.toThrow();
+    await expect(p).resolves.toBe('aborted');
+    expect(useHandoffStore.getState().pending).toBeNull();
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
   it('abort never releases and resolves aborted', async () => {
     const onRelease = vi.fn();
     const p = beginHandoff({ sessionId: 's1', origin: 'panel' }, onRelease);

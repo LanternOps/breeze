@@ -341,6 +341,18 @@ describe('POST /ai/sessions/:id/messages — turn identity, coded 409s, abort te
     expect(active.inputController.pushMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('an insert that returns no row leaves the anchor null and says so', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    insertReturning.mockResolvedValue([]);
+    const active = makeActiveSession();
+    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(active);
+    active.inputController.pushMessage = vi.fn(() => active.eventBus.publish({ type: 'done' }));
+    await (await post(app)).text();
+    expect(active.turnUserMessageId).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('turn anchor'), expect.anything());
+    warn.mockRestore();
+  });
+
   it('a client abort drops its subscription at once; the turn keeps running and publishing', async () => {
     const active = makeActiveSession();
     vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(active);

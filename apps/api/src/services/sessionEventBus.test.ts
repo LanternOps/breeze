@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AiStreamEvent } from '@breeze/shared/types/ai';
 import {
   ATTACH_REPLAY_MAX_BYTES,
@@ -223,5 +223,22 @@ describe('SessionEventBus (#9427)', () => {
     bus.subscribeSequenced('same');
     expect(bus.subscriberCount).toBe(1);
     expect(await drain(first, 1)).toEqual([]);
+  });
+
+  it('an event that cannot be serialized still reaches live subscribers; the replay degrades to partial', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const bus = new SessionEventBus();
+    const sub = bus.subscribeSequenced('s');
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const bad = { type: 'tool_result', toolUseId: 't1', output: circular, isError: false } as AiStreamEvent;
+    expect(() => bus.publish(bad)).not.toThrow();
+    bus.publish({ type: 'done' });
+    const live = await drain<SequencedEvent>(sub, 2);
+    expect(live.map((e) => e.seq)).toEqual([1, 2]);
+    expect(live[0]!.event).toBe(bad);
+    expect(bus.snapshot()).toMatchObject({ partial: true, replay: [], lastSeq: 2, sawDone: true });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

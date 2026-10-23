@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 
 import { authMiddleware } from '../../middleware/auth';
 import { listSessions, searchSessions } from '../../services/aiAgent';
+import { registerAiAttachRoute } from '../../routes/aiAttach';
 import { aiMessages, aiSessions } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser, setupTestEnvironment, type TestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -90,5 +91,45 @@ describe('AI session list/search — chat types only, with org/type/device (#942
     // Message-content matches only (the title does not contain this text).
     const content = await get<Row[]>(env, '/search?q=please%20check');
     expect(content.map((r) => r.id).sort()).toEqual([ids.generalA, ids.topologyB].sort());
+  });
+
+  /**
+   * The attach stream (#9427) is the same ownership surface as
+   * GET /ai/sessions/:id: the real getSession filters (owner, accessible orgs)
+   * and the chat-type rule, against real rows, through the real auth
+   * middleware and the self-managed DB context path. Every refusal is the
+   * same bytes as a missing id.
+   */
+  it('attach: own chat session streams; every other row is a byte-identical 404', async () => {
+    const attachApp = new Hono();
+    attachApp.use('*', authMiddleware);
+    const ai = new Hono();
+    registerAiAttachRoute(ai);
+    attachApp.route('/api/v1/ai', ai);
+    const attach = (id: string) => attachApp.request(`/api/v1/ai/sessions/${id}/stream`, {
+      headers: { Authorization: `Bearer ${env.token}` },
+    });
+
+    const own = await attach(ids.generalA);
+    expect(own.status).toBe(200);
+    const text = await own.text();
+    expect(text).toContain('event: attach_state');
+    expect(text).toContain('"turn":"unavailable"'); // not in memory in this process
+
+    const refusals: Record<string, { status: number; body: string; type: string | null }> = {};
+    for (const [label, id] of Object.entries({
+      missing: '99999999-9999-4999-8999-999999999999',
+      otherUserSameOrg: ids.otherUser,
+      outOfReachOrg: ids.foreignOrg,
+      scriptBuilder: ids.scriptBuilder,
+      mcp: ids.mcp,
+    })) {
+      const res = await attach(id);
+      refusals[label] = { status: res.status, body: await res.text(), type: res.headers.get('content-type') };
+    }
+    for (const r of Object.values(refusals)) {
+      expect(r).toEqual(refusals.missing);
+    }
+    expect(refusals.missing).toMatchObject({ status: 404, body: '{"error":"Session not found"}' });
   });
 });

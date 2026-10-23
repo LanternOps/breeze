@@ -325,6 +325,25 @@ describe('attach — snapshot and live tail', () => {
     expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
   });
 
+  it.each(['initializing', 'ready'])('a replacement session not yet claimed for a turn (state %s) → unavailable, so a re-attach cycle retries', async (state) => {
+    const active = activeSession({ state });
+    vi.mocked(streamingSessionManager.get).mockReturnValue(active);
+    const frames = parseFrames(await (await attach(makeApp())).text());
+    expect(frames.map((f) => f.event)).toEqual(['ping', 'attach_state']);
+    expect(frames[1]!.data.turn).toBe('unavailable');
+    expect(active.eventBus.subscriberCount).toBe(0);
+  });
+
+  it('a closing session with a full bus is unavailable, not 429', async () => {
+    const active = activeSession({ state: 'closing' });
+    for (let i = 0; i < 8; i++) active.eventBus.subscribeSequenced(`stale-${i}`);
+    vi.mocked(streamingSessionManager.get).mockReturnValue(active);
+    const res = await attach(makeApp());
+    expect(res.status).toBe(200);
+    expect(parseFrames(await res.text())[1]!.data.turn).toBe('unavailable');
+    expect(active.eventBus.subscriberCount).toBe(8);
+  });
+
   it.each(['closing', 'closed'])('a session in state %s → unavailable', async (state) => {
     vi.mocked(streamingSessionManager.get).mockReturnValue(activeSession({ state }));
     const frames = parseFrames(await (await attach(makeApp())).text());
@@ -428,7 +447,7 @@ describe('attach — snapshot and live tail', () => {
     expect(frames.slice(2).map((f) => [f.event, f.data.seq])).toEqual([['done', 3]]);
   });
 
-  it('seq boundary: no await between subscribe and snapshot — an event racing the snapshot is not lost', async () => {
+  it('seq boundary: the subscription is open before the snapshot — an event right after the snapshot is not lost', async () => {
     const active = activeSession();
     const bus: SessionEventBus = active.eventBus;
     const realSnapshot = bus.snapshot.bind(bus);
@@ -529,8 +548,10 @@ describe('attach — snapshot and live tail', () => {
     expect(seventh.status).toBe(200);
     expect(active.eventBus.subscriberCount).toBe(8);
 
+    const subscribeSpy = vi.spyOn(active.eventBus, 'subscribeSequenced');
     const ninth = await attach(makeApp());
     expect(ninth.status).toBe(429);
+    expect(subscribeSpy).not.toHaveBeenCalled();
     expect(await ninth.json()).toEqual({ error: 'Too many viewers', code: 'attach_limit' });
     expect(active.eventBus.subscriberCount).toBe(8);
 
@@ -589,5 +610,32 @@ describe('attach — snapshot and live tail', () => {
     await r.reader.cancel();
     await until(() => active.eventBus.subscriberCount === 0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a client that aborts before reading anything leaves no subscriber and no error log', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const active = activeSession();
+    vi.mocked(streamingSessionManager.get).mockReturnValue(active);
+    const res = await attach(makeApp());
+    await res.body!.cancel();
+    await until(() => active.eventBus.subscriberCount === 0);
+    expect(active.eventBus.closed).toBe(false);
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('the ping interval is cleared when the turn ends with done', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const active = activeSession();
+    vi.mocked(streamingSessionManager.get).mockReturnValue(active);
+    const res = await attach(makeApp());
+    const r = frameReader(res);
+    await r.next();
+    await r.next();
+    await until(() => vi.getTimerCount() === 1);
+    active.eventBus.publish({ type: 'done' });
+    expect((await r.rest()).map((f) => f.event)).toEqual(['done']);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(active.eventBus.subscriberCount).toBe(0);
   });
 });

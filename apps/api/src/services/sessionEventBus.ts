@@ -25,7 +25,10 @@ export interface SequencedEvent {
 export interface SessionEventBusSnapshot {
   /** Highest seq published so far (0 when none). */
   lastSeq: number;
-  /** Every event up to `lastSeq`; `[]` when `partial`. */
+  /**
+   * Every event up to `lastSeq` (screenshots with `imageBase64` emptied);
+   * `[]` when `partial`.
+   */
   replay: AiStreamEvent[];
   partial: boolean;
   /**
@@ -166,7 +169,16 @@ export class SessionEventBus {
     const stored: AiStreamEvent = event.type === 'plan_screenshot'
       ? { ...event, imageBase64: SCREENSHOT_REPLAY_PLACEHOLDER }
       : event;
-    const bytes = Buffer.byteLength(JSON.stringify(stored), 'utf8');
+    let bytes: number;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(stored), 'utf8');
+    } catch (err) {
+      // Accounting must never stop fan-out (publish() is called from the SDK
+      // loop and from inside approval waits). An event the replay cannot hold
+      // makes the replay partial, exactly like an oversized one.
+      console.warn('[AI] Session event not serializable for attach replay; replay is now partial:', event.type, err);
+      bytes = Number.POSITIVE_INFINITY;
+    }
     if (this.bufferBytes + bytes > ATTACH_REPLAY_MAX_BYTES) {
       this.overflowed = true;
       this.buffer = [];

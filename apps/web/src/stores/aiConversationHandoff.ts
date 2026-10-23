@@ -34,12 +34,19 @@ function finish(a: Active, result: 'completed' | 'aborted'): void {
   }
   // The signal fires on abort so a late destination does not commit a tab or
   // bind the panel while the origin is kept (that would mirror the session).
+  if (result === 'aborted') {
+    a.controller.abort();
+    a.settle('aborted');
+    return;
+  }
   try {
-    if (result === 'aborted') a.controller.abort();
-    else a.onRelease();
-  } finally {
-    // A throwing onRelease must not leave the caller awaiting forever.
-    a.settle(result);
+    a.onRelease();
+    a.settle('completed');
+  } catch (err) {
+    // The origin was NOT released, so report the hand-off as aborted rather
+    // than completed; never rethrow into completeHandoff's caller or a timer.
+    console.error('[AI] Hand-off origin release failed', err);
+    a.settle('aborted');
   }
 }
 

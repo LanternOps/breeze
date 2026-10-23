@@ -1,7 +1,8 @@
 // Read-only attach to a session's current turn (#9427): GET /ai/sessions/:id/stream.
 // One attach covers ONE turn - every POST /messages replaces the in-memory
-// session and closes its bus, so a stream that ends without `done` means a new
-// turn started and the caller should attach again (see shouldReattach).
+// session and closes its bus, so a RUNNING attach that ends without `done`
+// usually means a new turn started and the caller should attach again (see
+// shouldReattach). An idle or unavailable attach ends right after attach_state.
 //
 // Loads on the topology island: '@breeze/shared' imports must stay type-only,
 // hence the local structural attach_state check instead of isAttachStateEvent.
@@ -12,7 +13,7 @@ export type AttachOutcome =
   | { kind: 'done' }
   | { kind: 'idle' }
   | { kind: 'unavailable' }
-  | { kind: 'closed' } // stream ended without done (bus replaced)
+  | { kind: 'closed' } // a running attach ended without done (bus closed, usually replaced by a new turn)
   | { kind: 'gap' } // seq jumped; caller re-attaches for a fresh snapshot
   | { kind: 'not_found' }
   | { kind: 'busy' }
@@ -86,7 +87,14 @@ export function attachAiSession(
         if (!data || typeof data !== 'object' || typeof (data as { type?: unknown }).type !== 'string') return false;
 
         if (!state) {
-          if (!isAttachState(data)) return false;
+          // The server's first typed frame is always attach_state. Anything
+          // else (e.g. an API/web version skew) must fail loudly, not leave the
+          // caller waiting on a ready that never settles for the whole turn.
+          if (!isAttachState(data)) {
+            console.warn('[AI] Attach: unrecognized first frame', { type: (data as { type: string }).type, turn: (data as { turn?: unknown }).turn });
+            outcome = { kind: 'error', message: 'Unrecognized attach response' };
+            return true;
+          }
           state = data;
           prevSeq = data.lastSeq;
           const keep = (e: AiStreamEvent) => !filter || filter(e);

@@ -361,15 +361,20 @@ export type AiPendingCardEvent = Extract<AiStreamEvent, { type: 'approval_requir
  * session that another surface (or a previous page load) started.
  *
  * One attach covers ONE turn: every `POST /messages` replaces the in-memory
- * session and closes its event bus, so a stream that ends without `done`
- * means "a new turn started — attach again".
+ * session and closes its event bus, so a `running` attach that ends without
+ * `done` usually means "a new turn started — attach again". `idle` and
+ * `unavailable` attaches end right after this frame.
  */
 export interface AiAttachState {
   /**
    * `running` — a turn is in progress on this instance; live events follow.
-   * `idle` — the session is in memory but no turn is running; the stream ends.
-   * `unavailable` — the session is not in memory on this instance (finished
-   * long ago, another instance, or a restart); the stream ends.
+   * `idle` — the session is in memory and its last turn has ended (or `done`
+   * was already published); the stream ends.
+   * `unavailable` — no turn to show here: the session is not in memory on
+   * this instance (finished long ago, another instance, a restart), is
+   * closing, or is a replacement not yet claimed for its turn; the stream
+   * ends. A client re-attaching after a closed stream or a
+   * `turn_in_progress` 409 retries on this.
    */
   turn: 'idle' | 'running' | 'unavailable';
   /** One per in-memory session, i.e. one per turn. Null when unavailable. */
@@ -381,7 +386,10 @@ export interface AiAttachState {
    * persisted it yet (no output of the turn is persisted either).
    */
   turnUserMessageId: string | null;
-  /** Every event of the turn so far, in order; `[]` when `partial`. */
+  /**
+   * Every event of a `running` turn so far, in order, with `plan_screenshot`
+   * images emptied; `[]` when `partial`, and always `[]` for `idle`/`unavailable`.
+   */
   replay: AiStreamEvent[];
   /** The turn outgrew the replay buffer; `replay` is empty, live events still follow. */
   partial: boolean;

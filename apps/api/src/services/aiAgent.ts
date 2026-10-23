@@ -307,7 +307,7 @@ export { CHAT_SESSION_TYPES } from './aiChatSessionTypes';
 
 export async function listSessions(auth: AuthContext, options: { status?: string; page?: number; limit?: number }) {
   // #9427: chat conversations only — script-builder, MCP, helper and client-AI
-  // sessions belong to other surfaces and must never be listed (or opened) here.
+  // sessions belong to other surfaces and must never be listed here.
   const conditions = [eq(aiSessions.userId, auth.user.id), inArray(aiSessions.type, [...CHAT_SESSION_TYPES])];
   const orgCondition = auth.orgCondition(aiSessions.orgId);
   if (orgCondition) conditions.push(orgCondition);
