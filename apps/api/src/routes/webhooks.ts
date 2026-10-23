@@ -21,6 +21,7 @@ import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../s
 import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { bumpApprovalGeneration } from '../services/approvalGeneration';
+import { EVENT_TYPES } from '../services/eventBus';
 
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
@@ -296,12 +297,40 @@ const customHeadersSchema = z.array(z.object({ key: z.string().min(1), value: z.
   }
 });
 
+// Every event type the bus can publish. The webhook-delivery subscriber
+// listens on `*` (services/eventSubscribers.ts), so any of these reaches a
+// matching webhook; a name outside this set can never fire.
+const PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set<string>(Object.values(EVENT_TYPES));
+
+// Names that were offered for subscription but are not what the bus publishes.
+// The web form offered `alert.created` while alerts publish `alert.triggered`
+// (#9651); stored rows were rewritten by
+// 2027-01-02-180500-webhook-alert-created-event-rename.sql, and old API
+// clients that still send the legacy name get it rewritten here.
+const LEGACY_EVENT_ALIASES: Readonly<Record<string, string>> = {
+  'alert.created': 'alert.triggered',
+};
+
+const webhookEventsSchema = z
+  .array(z.string().min(1))
+  .min(1)
+  .transform((events) => [...new Set(events.map((event) => LEGACY_EVENT_ALIASES[event] ?? event))])
+  .superRefine((events, ctx) => {
+    const unknown = events.filter((event) => event !== '*' && !PUBLISHED_EVENT_TYPES.has(event));
+    if (unknown.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Unknown webhook event type(s): ${unknown.join(', ')}`,
+      });
+    }
+  });
+
 const createWebhookSchema = z.object({
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   url: z.string().url(),
   secret: z.string().min(1).max(255),
-  events: z.array(z.string().min(1)).min(1),
+  events: webhookEventsSchema,
   headers: customHeadersSchema.optional().default([]),
   status: z.enum(['active', 'paused']).optional()
 });
@@ -310,7 +339,7 @@ const updateWebhookSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   url: z.string().url().optional(),
   secret: z.string().min(1).max(255).optional(),
-  events: z.array(z.string().min(1)).min(1).optional(),
+  events: webhookEventsSchema.optional(),
   headers: customHeadersSchema.optional(),
   status: z.enum(['active', 'paused', 'failed']).optional()
 });

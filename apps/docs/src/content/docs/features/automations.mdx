@@ -131,7 +131,7 @@ The run's status becomes `cancelled` once the stop is processed.
 | Type | Fires when |
 |------|------------|
 | `schedule` | A cron expression matches in the specified timezone |
-| `event` | A platform event occurs (e.g., `alert.created`, `device.offline`) |
+| `event` | A platform event occurs (e.g., `alert.triggered`, `device.offline`) |
 | `webhook` | An HTTP POST is received at the automation's generated URL |
 | `manual` | An admin explicitly triggers a run via UI or API |
 
@@ -231,7 +231,7 @@ You can define multiple automations per feature link by adding additional items 
 | `triggerType` | string | Yes | `schedule`, `event`, `webhook`, or `manual` |
 | `cronExpression` | string | If schedule | Cron expression (5-field format) |
 | `timezone` | string | If schedule | IANA timezone name (e.g., `America/Denver`) |
-| `eventType` | string | If event | Platform event type string (e.g., `alert.created`) |
+| `eventType` | string | If event | Platform event type string (e.g., `alert.triggered`) |
 | `actions` | array | Yes | Ordered list of action objects |
 | `onFailure` | string | No | `stop`, `continue`, or `notify`. Defaults to `stop` |
 | `sortOrder` | integer | No | Ordering when multiple automations share a feature link |
