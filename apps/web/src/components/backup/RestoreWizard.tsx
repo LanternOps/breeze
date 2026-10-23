@@ -17,7 +17,7 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
 import RestoreResultNotices from './RestoreResultNotices';
 import { showToast } from '../shared/Toast';
@@ -30,7 +30,7 @@ import {
   useUnattestedRestoreStepUp,
   type UnattestedRestoreExtras,
 } from './useUnattestedRestoreStepUp';
-import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
+import SnapshotIntegrityBadge, { isUnverifiedSnapshotStatus } from './SnapshotIntegrityBadge';
 import RestoreSnapshotStep, {
   groupSnapshotsByDevice,
   snapshotDeviceKey,
@@ -345,6 +345,15 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     return job.restoreType === 'selective' ? t('restoreWizard.kindSelective') : t('restoreWizard.kindFull');
   };
 
+  const copyCommandId = async (commandId: string) => {
+    try {
+      await navigator.clipboard.writeText(commandId);
+      showToast({ type: 'success', message: t('restoreWizard.commandIdCopied') });
+    } catch {
+      showToast({ type: 'error', message: t('restoreWizard.commandIdCopyFailed') });
+    }
+  };
+
   const currentPage = dirs[browseDir];
   const currentItems = currentPage?.items ?? [];
   const parentDir = browseDir === ROOT_DIR
@@ -381,6 +390,9 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   // A backup without an integrity attestation is restored only after the
   // operator confirms it (two-factor when enabled); the server asks for it.
   const unattestedStepUp = useUnattestedRestoreStepUp();
+  // Presentational hint only (#9629): the server gate stays the one authority.
+  const secondFactorMissing = useAuthStore((state) => state.user?.mfaEnabled === false);
+  const selectedNeedsConfirmation = isUnverifiedSnapshotStatus(selectedSnapshot?.integrityStatus);
 
   const submitRestore = useCallback(async (extras: UnattestedRestoreExtras): Promise<boolean> => {
     try {
@@ -560,6 +572,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
               onSnapshotChange={setPickedSnapshotId}
               formatBytes={formatBytes}
               carriedSnapshotMissing={carriedSnapshotMissing && chosenDeviceKey === null}
+              secondFactorMissing={secondFactorMissing}
             />
           )}
 
@@ -757,6 +770,28 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     {selectedSnapshot?.label ?? 'No snapshot selected'}
                     <SnapshotIntegrityBadge status={selectedSnapshot?.integrityStatus} />
                   </p>
+                  {selectedNeedsConfirmation ? (
+                    <p
+                      data-testid="restore-review-second-factor-note"
+                      data-tone={secondFactorMissing ? 'warning' : 'info'}
+                      className={cn(
+                        'mt-2 rounded-md border px-2 py-1.5 text-xs',
+                        secondFactorMissing
+                          ? 'border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300'
+                          : 'border-muted bg-muted/40 text-muted-foreground'
+                      )}
+                    >
+                      {secondFactorMissing
+                        ? t('restoreWizard.secondFactorNoteNotEnrolled')
+                        : t('restoreWizard.secondFactorNote')}
+                      {secondFactorMissing ? (
+                        <>
+                          {' '}
+                          <a href="/settings/profile" className="font-medium underline">{t('restoreWizard.secondFactorSetUp')}</a>
+                        </>
+                      ) : null}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -913,9 +948,26 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                 <div className="grid gap-3">
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.commandTarget')}</p>
-                    <p className="mt-2 text-xs text-foreground">{t('restoreWizard.command')} {latestKnownRestore.commandId ?? '--'}</p>
+                    <p data-testid="restore-job-summary" className="mt-2 text-sm font-semibold text-foreground">
+                      {latestKnownRestore.deviceName ?? t('restoreWizard.unknownDevice')} · {restoreKindLabel(latestKnownRestore)}
+                    </p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? t('restoreWizard.stagingFolder')}</p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.completed')} {formatTimestamp(latestKnownRestore.completedAt)}</p>
+                    {latestKnownRestore.commandId ? (
+                      <details className="mt-2 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer">{t('restoreWizard.commandDetails')}</summary>
+                        <div className="mt-1 flex items-center gap-2">
+                          <code className="break-all">{latestKnownRestore.commandId}</code>
+                          <button
+                            type="button"
+                            onClick={() => void copyCommandId(latestKnownRestore.commandId as string)}
+                            className="rounded border px-2 py-0.5 text-xs font-medium text-foreground hover:bg-muted"
+                          >
+                            {t('restoreWizard.copyCommandId')}
+                          </button>
+                        </div>
+                      </details>
+                    ) : null}
                   </div>
                 </div>
               </div>

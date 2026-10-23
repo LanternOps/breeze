@@ -95,6 +95,40 @@ describe('SnapshotBrowser', () => {
     expect(screen.getByText(/Use the restore workflow to recover or export files from this snapshot/i)).toBeTruthy();
   });
 
+  it('formats file size and modified time in the file table instead of raw bytes / ISO strings (#9626)', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots/snap-1/browse?dir=%2FDocuments') {
+        return makeJsonResponse({
+          data: [{ name: 'big.bin', path: '/Documents/big.bin', type: 'file', sizeBytes: 4823117, modifiedAt: '2026-10-21T01:12:44.000Z' }],
+          nextCursor: null,
+        });
+      }
+      return base(input, init);
+    });
+    render(<SnapshotBrowser />);
+    fireEvent.click(await screen.findByText('Documents'));
+    const row = (await screen.findByText('big.bin')).closest('tr')!;
+    expect(row.textContent).toContain('4.6 MB');
+    expect(row.textContent).not.toContain('4823117 B');
+    expect(row.textContent).not.toContain('2026-10-21T01:12:44.000Z');
+  });
+
+  it('shows integrity status in the snapshot picker and the details card (#9626)', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots') {
+        const res = await base(input, init);
+        const payload = await res.json();
+        return makeJsonResponse({ data: payload.data.map((row: object) => ({ ...row, integrityStatus: 'unattested' })) });
+      }
+      return base(input, init);
+    });
+    render(<SnapshotBrowser />);
+    expect(await screen.findByRole('option', { name: /Nightly Snapshot.*Not verified/ })).toBeTruthy();
+    expect((await screen.findByTestId('snapshot-integrity-badge')).textContent).toBe('Not verified');
+  });
+
   it('loads only the root level up front and fetches a directory when it is selected (#8230)', async () => {
     render(<SnapshotBrowser />);
 
