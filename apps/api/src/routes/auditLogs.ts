@@ -253,6 +253,10 @@ function redactedDetails(log: DbRow['log']): Record<string, unknown> | null {
   return redactPersistedToolInput(log.details) as Record<string, unknown>;
 }
 
+function isUpdateAction(action: string): boolean {
+  return action === 'update' || action.endsWith('.update');
+}
+
 function flattenEntry(row: DbRow) {
   const log = row.log;
   const rawDetails = log.details as Record<string, unknown> | null;
@@ -271,13 +275,15 @@ function flattenEntry(row: DbRow) {
     user: {
       name: actorName,
       email: log.actorEmail ?? '',
-      role: log.actorType,
-      department: ''
+      role: log.actorType
     },
     initiatedBy: log.initiatedBy ?? null,
+    // #9672: only an update has a meaningful "after" snapshot; for every other
+    // action echoing the whole details object made the UI report "N fields
+    // updated" on a script run. No before-state is stored, so `before` is empty.
     changes: {
       before: {},
-      after: details ?? {}
+      after: isUpdateAction(log.action) ? (details ?? {}) : {}
     }
   };
 }
@@ -363,7 +369,14 @@ function buildFilterConditions(
     conditions.push(sql`false`);
   } else if (actionTerms.length > 0) {
     conditions.push(
-      or(...actionTerms.map((t) => ilike(auditLogsTable.action, `%${escapeIlike(t)}%`)))!
+      // #9672: a dotted-code prefix (`script` matches `script.run`), not a
+      // substring - `dataset` or `device` would otherwise match unrelated codes.
+      or(
+        ...actionTerms.flatMap((t) => [
+          ilike(auditLogsTable.action, escapeIlike(t)),
+          ilike(auditLogsTable.action, `${escapeIlike(t)}.%`)
+        ])
+      )!
     );
   }
 
@@ -374,10 +387,10 @@ function buildFilterConditions(
     conditions.push(
       or(
         ...resourceTerms.flatMap((t) => {
-          const term = `%${escapeIlike(t)}%`;
           return [
-            ilike(auditLogsTable.resourceType, term),
-            ilike(auditLogsTable.resourceName, term)
+            // resource_type matches as a prefix (#9672); the free-text name stays a substring.
+            ilike(auditLogsTable.resourceType, `${escapeIlike(t)}%`),
+            ilike(auditLogsTable.resourceName, `%${escapeIlike(t)}%`)
           ];
         })
       )!
@@ -939,8 +952,11 @@ auditLogRoutes.get(
     const where = buildListWhere(scope.orgCond, query);
     const rows = await queryRows(where, 10000, 0);
 
+    // #9672: record the export in the trail that was exported. A partner
+    // technician has no orgId of their own, so a pinned (accessible - checked
+    // above) org wins; with none pinned the row stays partner-level.
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId: query.orgId ?? auth.orgId,
       action: 'audit_logs.export',
       resourceType: 'audit_log',
       details: {

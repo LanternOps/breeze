@@ -1881,7 +1881,7 @@
     "disabledDescription": "Bağlantı ayarlarını yapılandırmak için yukarıda günlük iletmeyi etkinleştirin.",
     "enable": {
       "title": "Günlük iletmeyi etkinleştir",
-      "description": "Etkinleştirildiğinde, olay günlükleri yinelenen bir programa göre günlük deponuza iletilir."
+      "description": "Etkinleştirildiğinde, olay günlükleri her cihaz bunları bildirdikçe günlük deponuza iletilir."
     },
     "connection": {
       "title": "Bağlantı",
