@@ -1030,8 +1030,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Şirket",
+      "devices": "Cihazlar ve ajanlar",
       "security": "Güvenlik ve Erişim",
       "communications": "İletişim",
+      "ai": "Yapay Zeka",
       "branding": "Markalama"
     },
     "aiFeatures": {
@@ -1060,11 +1062,11 @@
       },
       "company": {
         "label": "Şirket",
-        "description": "İsim, adres, kişiler"
+        "description": "İsim, adres, kişiler, e-posta imzası"
       },
       "regional": {
         "label": "Bölgesel",
-        "description": "Saat dilimi, formatlar, saatler"
+        "description": "Saat dilimi, dil, formatlar, saatler"
       },
       "defaults": {
         "label": "Varsayılanlar",
@@ -1072,7 +1074,7 @@
       },
       "security": {
         "label": "Güvenlik",
-        "description": "IP izin verilenler listesi ve erişim"
+        "description": "Parolalar, oturumlar, MFA ve IP izin listesi"
       },
       "remoteAccess": {
         "label": "Uzaktan Erişim",
@@ -1080,11 +1082,11 @@
       },
       "eventLogs": {
         "label": "Olay Günlükleri",
-        "description": "İletme ve saklama"
+        "description": "Cihaz olay günlüklerini Elasticsearch’e ilet"
       },
       "notifications": {
         "label": "Bildirimler",
-        "description": "E-posta ve web kancası uyarıları"
+        "description": "Gönderen adresi, SMTP, Slack ve Pushover varsayılanları"
       },
       "ticketing": {
         "label": "Biletleme",
@@ -1109,7 +1111,7 @@
       },
       "aiFeatures": {
         "label": "Yapay Zeka Özellikleri",
-        "description": "Anomali algılama ve önerilen düzeltme varsayılanları"
+        "description": "Yapay zeka veri politikası, anomali algılama ve önerilen düzeltmeler"
       },
       "branding": {
         "label": "Markalama",
@@ -1126,6 +1128,14 @@
       "aiApprovals": {
         "label": "Yapay Zeka Onay Zaman Aşımı",
         "description": "Yapay zeka sohbetinin kısıtlı bir eylem onayını ne kadar bekleyeceği"
+      },
+      "callerVerification": {
+        "label": "Arayan doğrulama",
+        "description": "Destek talepleri için arayan kimliği kontrolleri"
+      },
+      "knownGuests": {
+        "label": "Bilinen konuklar",
+        "description": "MAC adresine göre onaylı ziyaretçi ve teknisyen cihazları"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -1388,6 +1398,14 @@
     "never": "Hiçbir zaman",
     "downloadInstaller": "Önceden yapılandırılmış yükleyiciyi indirin",
     "downloading": "İndiriliyor...",
+    "installerDialogTitle": "\"{{name}}\" için yükleyiciyi indir",
+    "installerDialogDescription": "Yükleyici belirli sayıda cihaz için oluşturulur. Onu çalıştıran her cihaz bir hak kullanır.",
+    "installerDeviceCount": "Cihaz sayısı",
+    "installerDeviceCountRemaining": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountRemaining_one": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountRemaining_other": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountUnlimited": "Bu anahtarın kullanım sınırı yok.",
+    "installerDeviceCountRange": "1 ile {{max}} arasında bir tam sayı girin.",
     "rotate": "Döndür",
     "page": "Sayfa {{current}} / {{total}}",
     "previous": "Önceki",
@@ -4355,6 +4373,13 @@
     "commitmentTermRange": "Taahhüt süresi: 1 ile 120 ay arasında bir tam sayı girin."
   },
   "catalogItemsTab": {
+    "viewActive": "Etkin",
+    "viewArchived": "Arşivlenmiş",
+    "typeLabel": {
+      "hardware": "Donanım",
+      "software": "Yazılım",
+      "service": "Hizmet"
+    },
     "itemArchived": "Öğe arşivlendi",
     "itemRestored": "Öğe geri yüklendi",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",

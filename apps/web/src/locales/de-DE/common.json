@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} ausstehende Genehmigung",
     "pendingApprovals_other": "{{count}} ausstehende Genehmigungen",
     "tickets": "Tickets",
-    "incidents": "Vorfälle",
+    "incidents": "Sicherheitsvorfälle",
     "remoteAccess": "Fernzugriff",
     "scripts": "Skripte",
     "patches": "Patches",
@@ -2206,7 +2206,7 @@
         },
         "loading": "Vorfälle werden geladen...",
         "tryAgain": "Versuchen Sie es erneut",
-        "title": "Vorfälle",
+        "title": "Sicherheitsvorfälle",
         "description": "Verfolgen Sie Vorfälle und EDR-Befunde in all Ihren Organisationen.",
         "filters": {
           "tracked": "Verfolgt",
@@ -2236,6 +2236,11 @@
         "genericEdrProvider": "EDR-Anbieter"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Techniker",
+          "system": "System"
+        },
         "errors": {
           "notFound": "Vorfall nicht gefunden",
           "fetchFailed": "Vorfall konnte nicht abgerufen werden"

@@ -1030,8 +1030,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Unternehmen",
+      "devices": "Geräte und Agenten",
       "security": "Sicherheit und Zugang",
       "communications": "Kommunikation",
+      "ai": "KI",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1062,11 @@
       },
       "company": {
         "label": "Unternehmen",
-        "description": "Name, Adresse, Kontakte"
+        "description": "Name, Adresse, Kontakte, E-Mail-Signatur"
       },
       "regional": {
         "label": "Regional",
-        "description": "Zeitzone, Formate, Stunden"
+        "description": "Zeitzone, Sprache, Formate, Stunden"
       },
       "defaults": {
         "label": "Standardeinstellungen",
@@ -1072,7 +1074,7 @@
       },
       "security": {
         "label": "Sicherheit",
-        "description": "IP-Zulassungsliste und Zugriff"
+        "description": "Passwörter, Sitzungen, MFA und IP-Zulassungsliste"
       },
       "remoteAccess": {
         "label": "Fernzugriff",
@@ -1080,11 +1082,11 @@
       },
       "eventLogs": {
         "label": "Ereignisprotokolle",
-        "description": "Weitergabe und Aufbewahrung"
+        "description": "Geräte-Ereignisprotokolle an Elasticsearch weiterleiten"
       },
       "notifications": {
         "label": "Benachrichtigungen",
-        "description": "E-Mail- und Webhook-Benachrichtigungen"
+        "description": "Absenderadresse, SMTP, Slack- und Pushover-Standardwerte"
       },
       "ticketing": {
         "label": "Ticketverkauf",
@@ -1109,7 +1111,7 @@
       },
       "aiFeatures": {
         "label": "KI-Funktionen",
-        "description": "Standardwerte für Anomalieerkennung und Korrekturvorschläge"
+        "description": "KI-Datenrichtlinie, Anomalieerkennung und Korrekturvorschläge"
       },
       "branding": {
         "label": "Branding",
@@ -1126,6 +1128,14 @@
       "aiApprovals": {
         "label": "KI-Genehmigungs-Timeout",
         "description": "Wie lange der KI-Chat auf die Genehmigung einer gesperrten Aktion wartet"
+      },
+      "callerVerification": {
+        "label": "Anruferverifizierung",
+        "description": "Identitätsprüfung von Anrufern bei Support-Anfragen"
+      },
+      "knownGuests": {
+        "label": "Bekannte Gäste",
+        "description": "Zugelassene Besucher- und Techniker-Geräte nach MAC-Adresse"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -1388,6 +1398,14 @@
     "never": "Niemals",
     "downloadInstaller": "Vorkonfiguriertes Installationsprogramm herunterladen",
     "downloading": "Wird heruntergeladen...",
+    "installerDialogTitle": "Installationsprogramm für „{{name}}“ herunterladen",
+    "installerDialogDescription": "Das Installationsprogramm wird für eine feste Anzahl von Geräten erstellt. Jedes Gerät, das es ausführt, verbraucht eine davon.",
+    "installerDeviceCount": "Anzahl der Geräte",
+    "installerDeviceCountRemaining": "Dieser Schlüssel hat noch {{count}} Registrierungen übrig.",
+    "installerDeviceCountRemaining_one": "Dieser Schlüssel hat noch {{count}} Registrierung übrig.",
+    "installerDeviceCountRemaining_other": "Dieser Schlüssel hat noch {{count}} Registrierungen übrig.",
+    "installerDeviceCountUnlimited": "Dieser Schlüssel hat kein Nutzungslimit.",
+    "installerDeviceCountRange": "Geben Sie eine ganze Zahl von 1 bis {{max}} ein.",
     "rotate": "Rotieren",
     "page": "Seite {{current}} von {{total}}",
     "previous": "Zurück",
@@ -4355,6 +4373,13 @@
     "commitmentTermRange": "Bindungsdauer: Geben Sie eine ganze Zahl von 1 bis 120 Monaten ein."
   },
   "catalogItemsTab": {
+    "viewActive": "Aktiv",
+    "viewArchived": "Archiviert",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Dienstleistung"
+    },
     "itemArchived": "Element archiviert",
     "itemRestored": "Artikel wiederhergestellt",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Der Produktkatalog ist nur für Partnerkonten verfügbar.",

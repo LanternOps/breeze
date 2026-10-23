@@ -9,7 +9,7 @@
 import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiCostUsage, aiBudgets, organizations } from '../db/schema';
 import { aiAgentRuns } from '../db/schema/aiAgents';
-import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
+import { eq, and, sql, desc, isNotNull, inArray } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
@@ -1075,6 +1075,57 @@ async function resolveUsageBilledTo(
     });
     return rollupLabel;
   }
+}
+
+/**
+ * Usage summed across several orgs, for a partner/system caller viewing "All
+ * organizations" with no single org selected (#9667).
+ *
+ * `orgIds` is the caller's `auth.accessibleOrgIds`: a list restricts the sum to
+ * exactly those orgs, `null` means unrestricted (system scope), and an empty
+ * list yields zeros without touching the database. There is no budget (budgets
+ * are per-org), no credits and no fired alerts here; the UI keys the org-level
+ * panels off the selected org, not off this response.
+ */
+export async function getAggregateUsageSummary(orgIds: string[] | null): Promise<
+  Pick<Awaited<ReturnType<typeof getUsageSummary>>, 'daily' | 'monthly' | 'billedTo' | 'credits' | 'alerts'> & { budget: null }
+> {
+  type Totals = { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
+  const empty = (): Totals => ({ inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 });
+  const result = {
+    daily: empty(),
+    monthly: empty(),
+    budget: null,
+    billedTo: 'platform' as AiBillingSource,
+    credits: null,
+    alerts: { fired: [] },
+  };
+  if (orgIds !== null && orgIds.length === 0) return result;
+
+  const now = new Date();
+  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+  const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  const sumFor = async (period: 'daily' | 'monthly', periodKey: string): Promise<Totals> => {
+    const rows = await db
+      .select()
+      .from(aiCostUsage)
+      .where(and(
+        eq(aiCostUsage.period, period),
+        eq(aiCostUsage.periodKey, periodKey),
+        ...(orgIds === null ? [] : [inArray(aiCostUsage.orgId, orgIds)]),
+      ));
+    return rows.reduce((acc, r) => ({
+      inputTokens: acc.inputTokens + (r.inputTokens ?? 0),
+      outputTokens: acc.outputTokens + (r.outputTokens ?? 0),
+      totalCostCents: acc.totalCostCents + (r.totalCostCents ?? 0),
+      messageCount: acc.messageCount + (r.messageCount ?? 0),
+    }), empty());
+  };
+
+  result.daily = await sumFor('daily', dailyKey);
+  result.monthly = await sumFor('monthly', monthlyKey);
+  return result;
 }
 
 /**

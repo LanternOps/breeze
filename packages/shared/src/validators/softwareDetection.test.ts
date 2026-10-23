@@ -169,3 +169,52 @@ describe('detectionRulesSchema', () => {
     expect(detectionRulesSchema.safeParse(many).success).toBe(false);
   });
 });
+
+describe('service_running clause (#6958)', () => {
+  const parse = (serviceName: unknown) =>
+    detectionRuleSchema.safeParse({ type: 'service_running', serviceName });
+
+  it('accepts a plain service name', () => {
+    expect(parse('ctrld').success).toBe(true);
+  });
+
+  it('accepts a display name containing spaces', () => {
+    expect(parse('NextDNS Service').success).toBe(true);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['leading dash', '-x'],
+    ['NUL byte', 'a\u0000b'],
+    ['newline', 'a\nb'],
+    ['DEL char', 'a\u007fb'],
+    ['257 chars', 'x'.repeat(257)],
+  ])('rejects %s', (_label, value) => {
+    expect(parse(value).success).toBe(false);
+  });
+
+  it('rejects a whitespace-only name (could never match a real service)', () => {
+    expect(parse('   ').success).toBe(false);
+    expect(parse('\t').success).toBe(false);
+  });
+
+  it('accepts dashes after the first character', () => {
+    expect(parse('systemd-resolved').success).toBe(true);
+    expect(parse('a-b').success).toBe(true);
+  });
+
+  it('accepts exactly 256 chars', () => {
+    expect(parse('x'.repeat(256)).success).toBe(true);
+  });
+
+  it('is strict: rejects extra keys', () => {
+    const r = detectionRuleSchema.safeParse({ type: 'service_running', serviceName: 'x', path: 'y' });
+    expect(r.success).toBe(false);
+  });
+
+  it('is accepted inside a rule set', () => {
+    expect(
+      detectionRulesSchema.safeParse([{ type: 'service_running', serviceName: 'ctrld' }]).success,
+    ).toBe(true);
+  });
+});

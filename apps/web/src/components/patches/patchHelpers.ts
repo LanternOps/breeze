@@ -107,6 +107,8 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
     description: raw.description ? String(raw.description) : undefined,
     vendor: typeof vendor === 'string' && vendor.trim() ? vendor : null,
     cveIds,
+    packageId: typeof raw.packageId === 'string' && raw.packageId.trim() ? raw.packageId : null,
+    firstSeenAt: typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : undefined,
     installFailure: readInstallFailure(raw.installFailure),
     // #8728: only GET /patches supplies it; the ring list leaves it undefined.
     outstandingDeviceCount: typeof raw.outstandingDeviceCount === 'number' ? raw.outstandingDeviceCount : undefined,

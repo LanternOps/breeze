@@ -340,6 +340,7 @@
     "retry": "Reintentar",
     "since": "desde {{time}}",
     "fix": "Corregir",
+    "remedy": { "reconnect": "Vuelva a conectarse desde la aplicación cliente (p. ej., agregue de nuevo el servidor MCP). No requiere acción en Breeze." },
     "truncated": "Se muestran los primeros {{count}}",
     "recentlyResolved": "Resueltas recientemente ({{count}})",
     "resolution": {

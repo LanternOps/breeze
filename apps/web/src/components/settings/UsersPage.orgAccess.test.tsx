@@ -85,7 +85,7 @@ describe('UsersPage — edit organization access (#7034)', () => {
     // The current grant is shown as a chip.
     expect(screen.getByText(ORG_A.name)).toBeInTheDocument();
 
-    fireEvent.focus(screen.getByPlaceholderText(/search organizations/i));
+    fireEvent.click(screen.getByPlaceholderText(/search organizations/i));
     fireEvent.click(await screen.findByRole('button', { name: ORG_B.name }));
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
 

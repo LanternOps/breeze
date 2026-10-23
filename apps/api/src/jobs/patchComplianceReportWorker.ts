@@ -20,7 +20,7 @@ import {
 } from '../services/siteScope';
 import { attachWorkerObservability } from './workerObservability';
 
-import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { techFacingDeviceConditions } from '../services/deviceStats';
 import { compliancePercentWithImageTerm, type ContainerImageComplianceTerms } from '@breeze/shared';
 import {
   containerImageComplianceTerms,
@@ -120,15 +120,16 @@ export async function generateComplianceSummary(
   source?: PatchSource | null,
   severity?: PatchSeverity | null
 ): Promise<ComplianceSummary> {
-  // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
-  // the hidden per-partner 'quick_support' org and are a stranger's personal
-  // machine borrowed for one ~20-minute session. That org stays inside
-  // technicians' accessibleOrgIds for RLS reasons, so it is NOT filtered for us
-  // — a borrowed home PC must never skew an MSP's patch-compliance reporting.
+  // Same device population as the dashboard card and the device KPIs
+  // (techFacingDeviceConditions, #9611): decommissioned, parked, and ephemeral
+  // Quick Support devices are excluded. Ephemeral devices live in the hidden
+  // per-partner 'quick_support' org, which stays inside technicians'
+  // accessibleOrgIds for RLS reasons, so it is NOT filtered for us — a borrowed
+  // home PC must never skew an MSP's patch-compliance reporting.
   const complianceConditions = [
     eq(devicePatches.orgId, orgId),
     eq(devices.orgId, orgId),
-    eq(devices.isEphemeral, false), notParkedDeviceCondition(),
+    ...techFacingDeviceConditions(),
   ];
   if (scope.kind === 'restricted') {
     complianceConditions.push(inArray(devices.siteId, scope.siteIds));

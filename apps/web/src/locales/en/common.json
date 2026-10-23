@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} pending approval",
     "pendingApprovals_other": "{{count}} pending approvals",
     "tickets": "Tickets",
-    "incidents": "Incidents",
+    "incidents": "Security Incidents",
     "remoteAccess": "Remote Access",
     "scripts": "Scripts",
     "patches": "Patches",
@@ -2206,7 +2206,7 @@
         },
         "loading": "Loading incidents...",
         "tryAgain": "Try again",
-        "title": "Incidents",
+        "title": "Security Incidents",
         "description": "Tracked incidents and EDR findings across your organizations.",
         "filters": {
           "tracked": "Tracked",
@@ -2236,6 +2236,11 @@
         "genericEdrProvider": "EDR provider"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Technician",
+          "system": "System"
+        },
         "errors": {
           "notFound": "Incident not found",
           "fetchFailed": "Failed to fetch incident"

@@ -134,6 +134,23 @@ describe('DeviceList', () => {
     expect(screen.getByTestId('device-ledger-foot').textContent).toBe('1 of 2 online');
   });
 
+  // #9776: anything but online/offline used to print the raw enum value.
+  it('labels a non-online/offline status for the customer, not as the raw enum', () => {
+    render(
+      <DeviceList
+        devices={[
+          { ...laptop, status: 'maintenance' },
+          { ...server, status: 'quarantined' },
+        ]}
+      />
+    );
+
+    expect(within(screen.getByTestId('portal-device-d-1')).getByText('In maintenance')).toBeTruthy();
+    expect(within(screen.getByTestId('portal-device-d-2')).getByText('Quarantined by IT')).toBeTruthy();
+    expect(screen.queryByText('maintenance')).toBeNull();
+    expect(screen.queryByText('quarantined')).toBeNull();
+  });
+
   it('totals an all-online fleet in the foot line and exports same-origin', () => {
     render(<DeviceList devices={[laptop]} />);
 

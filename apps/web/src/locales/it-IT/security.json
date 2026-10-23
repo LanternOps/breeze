@@ -311,6 +311,8 @@
     "no": "No",
     "noDevicesFound": "Nessun dispositivo trovato.",
     "none": "Nessuno",
+    "unknown": "Sconosciuto",
+    "tpmNotReported": "Non segnalato dall'agente",
     "os": "OS",
     "pageOf": "Pagina {{page}} di {{totalPages}}",
     "partial": "Parziale",
@@ -443,6 +445,7 @@
     "invalidResponseFromServer": "Risposta del server non valida",
     "low": "Basso",
     "markComplete": "Segna come completato",
+    "reopen": "Riapri",
     "medium": "Medio",
     "next": "Avanti",
     "noRecommendationsMatchYourFilters": "Nessuna raccomandazione corrisponde ai filtri.",
@@ -810,9 +813,10 @@
     "precision": "Precisione",
     "recentEvidence": "Evidenze recenti",
     "refresh": "Aggiorna",
+    "refreshing": "Aggiornamento in corso",
     "repeatSignalUsers": "Utenti con segnali ripetuti",
     "retry": "Riprova",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Rivedi punteggi di rischio rules-v0, evidenze ed etichette di valutazione.",
+    "reviewUserRiskScoresEvidenceAnd": "Rivedi i punteggi di rischio degli utenti, le evidenze che li motivano e le tue etichette di valutazione.",
     "scoreImpact": "Impatto {{value}}",
     "scoresEvidenceAndLabelsWillAppearHere": "Punteggi, evidenze ed etichette appariranno qui quando il producer user-risk v0 sarà abilitato.",
     "selectAUserToInspectRiskEvidence": "Seleziona un utente per esaminare le evidenze di rischio.",
@@ -821,7 +825,41 @@
     "truePositive": "Vero positivo",
     "truePositiveLabelSaved": "Etichetta vero positivo salvata",
     "userRisk": "Rischio utente",
-    "userRiskScoringIsDisabledForThis": "Il calcolo del rischio utente è disabilitato per questa organizzazione."
+    "userRiskScoringIsDisabledForThis": "Il calcolo del rischio utente è disabilitato per questa organizzazione.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Lacune nell’autenticazione a più fattori",
+        "description": "Account per cui la MFA non è abilitata."
+      },
+      "authFailureRisk": {
+        "label": "Tentativi di accesso falliti",
+        "description": "Accessi falliti ripetuti, che possono indicare tentativi di indovinare le password o credential stuffing."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Attività di sessione insolita",
+        "description": "Accessi da posizioni o dispositivi sconosciuti, o in orari insoliti."
+      },
+      "threatExposureRisk": {
+        "label": "Esposizione alle minacce",
+        "description": "Minacce rilevate sui dispositivi da cui lavora l’utente."
+      },
+      "softwareViolationRisk": {
+        "label": "Violazioni delle policy software",
+        "description": "Software installato che viola le tue policy software."
+      },
+      "deviceSecurityRisk": {
+        "label": "Postura di sicurezza dei dispositivi",
+        "description": "Stato di sicurezza debole sui dispositivi dell’utente, come protezioni o patch mancanti."
+      },
+      "staleAccessRisk": {
+        "label": "Accessi inattivi",
+        "description": "Account o accessi non utilizzati da molto tempo."
+      },
+      "recentImpactRisk": {
+        "label": "Eventi di rischio recenti",
+        "description": "Eventi di rischio registrati per questo utente negli ultimi giorni."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Attiva",
@@ -1914,10 +1952,27 @@
       "status": "Stato",
       "approval": "Approvazione",
       "requested": "Richiesta",
-      "completed": "Completata"
+      "completed": "Completata",
+      "decision": "Decisione"
     },
     "loading": "Caricamento remediation...",
-    "empty": "Nessuna remediation trovata."
+    "empty": "Nessuna remediation trovata.",
+    "decision": {
+      "approve": "Approva",
+      "reject": "Rifiuta",
+      "approveTitle": "Approvare la correzione?",
+      "rejectTitle": "Rifiutare la correzione?",
+      "approveMessage": "Il controllo CIS {{checkId}} verrà messo in coda per l'esecuzione su {{device}}. L'agente modificherà la configurazione del dispositivo.",
+      "rejectMessage": "La correzione in attesa per il controllo CIS {{checkId}} su {{device}} verrà annullata. Sul dispositivo non verrà eseguito nulla.",
+      "noteLabel": "Nota (facoltativa)",
+      "approved": "Correzione per {{checkId}} approvata e messa in coda.",
+      "rejected": "Correzione per {{checkId}} rifiutata.",
+      "approveFailed": "Impossibile approvare la correzione",
+      "rejectFailed": "Impossibile rifiutare la correzione",
+      "queueFailed": "L'approvazione è stata registrata, ma non è stato possibile mettere in coda la correzione. È di nuovo in attesa di approvazione; riprova.",
+      "mfaRequired": "Per approvare o rifiutare una correzione serve una sessione avviata con l'autenticazione a più fattori. Esci e accedi di nuovo con l'MFA.",
+      "ownRequest": "Hai richiesto tu questa correzione, quindi deve approvarla un altro utente."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Baseline di audit",

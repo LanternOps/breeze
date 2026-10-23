@@ -263,6 +263,18 @@ function intentIdFromHash(hash: string): string | undefined {
   return m ? m[1]! : undefined;
 }
 
+/** `GET /action-intents/:id/status` body (requester/approver-visible). */
+type IntentStatusView = {
+  id: string;
+  status: 'pending_approval' | 'in_progress' | 'completed' | 'failed' | 'rejected' | 'expired' | 'cancelled';
+  actionLabel: string | null;
+  targetSummary: string | null;
+  approvalScope: string | null;
+  requestingClientLabel: string | null;
+  expiresAt: string | null;
+  createdAt: string | null;
+};
+
 /** How long a hash-linked card stays ring-highlighted after landing — mirrors
  *  `HIGHLIGHT_DURATION_MS` in the portal `DeviceList` `/devices#<id>` pattern
  *  this follows. */
@@ -282,7 +294,14 @@ export default function ApprovalsInbox() {
   // — without it, every 30s poll refresh (which changes the `approvals`
   // array reference) would re-trigger the scroll/highlight or the notice for
   // the rest of the page's life.
-  const hashIntentHandledRef = useRef(false);
+  // Holds the hash id already resolved (not a boolean) so a changed hash is
+  // resolved again, while poll refreshes of the same hash are not.
+  const hashIntentHandledRef = useRef<string | null>(null);
+  const hashIntentLatestRef = useRef<string | null>(null);
+  hashIntentLatestRef.current = hashIntentId;
+  // Requester-visible status for a hashed intent that is not in the loaded
+  // rows (e.g. an MCP-originated intent the requester cannot decide).
+  const [intentStatus, setIntentStatus] = useState<IntentStatusView | null>(null);
   const { t } = useTranslation('approvals');
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [loading, setLoading] = useState(true);
@@ -526,11 +545,33 @@ export default function ApprovalsInbox() {
   // removed, never existed) surfaces a dismissible notice instead of a
   // confusing no-op deep link.
   useEffect(() => {
-    if (loading || hashIntentHandledRef.current || !hashIntentId) return;
-    hashIntentHandledRef.current = true;
+    if (loading || !hashIntentId || hashIntentHandledRef.current === hashIntentId) return;
+    hashIntentHandledRef.current = hashIntentId;
+    setIntentGoneNotice(false);
+    setIntentStatus(null);
     const match = approvals.find((approval) => approval.intentId === hashIntentId);
     if (!match) {
-      setIntentGoneNotice(true);
+      // Not decidable by this user. Ask the API whether they may at least see
+      // the status (requester / fanned-out approver); 404 and any failure
+      // fall back to the gone notice, without a toast.
+      const requestedId = hashIntentId;
+      void (async () => {
+        let view: IntentStatusView | null = null;
+        try {
+          const res = await fetchWithAuth(`/action-intents/${requestedId}/status`);
+          if (res.ok) {
+            const body = (await res.json()) as Partial<IntentStatusView> | null;
+            if (body && typeof body.status === 'string' && typeof body.id === 'string') {
+              view = body as IntentStatusView;
+            }
+          }
+        } catch {
+          view = null;
+        }
+        if (hashIntentLatestRef.current !== requestedId) return;
+        if (view) setIntentStatus(view);
+        else setIntentGoneNotice(true);
+      })();
       return;
     }
     setHighlightedIntentId(hashIntentId);
@@ -738,9 +779,8 @@ export default function ApprovalsInbox() {
       const scope = knownApprovalScope(approval.approvalScope);
       const outcome =
         decision === 'approve'
-          ? opts
-            ? await decideIntentApproval(approval.id, 'approve', undefined, scope, opts)
-            : await decideIntentApproval(approval.id, 'approve', undefined, scope)
+          // silentSuccess: the toast below is this path's one success message.
+          ? await decideIntentApproval(approval.id, 'approve', undefined, scope, { ...opts, silentSuccess: true })
           : await decideIntentApproval(approval.id, 'deny', reason?.trim() || undefined);
       if (outcome === 'needs_device') {
         setDecisionError(approval.id, 'noApproverDevice');
@@ -1333,6 +1373,37 @@ export default function ApprovalsInbox() {
             <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
+      )}
+
+      {intentStatus && (
+        // Read-only status for a hashed intent that is not in the pending rows
+        // (the requester's view of an MCP-originated approval).
+        <section
+          className="space-y-1 rounded-xl border bg-card px-4 py-3 text-sm"
+          data-testid="approval-intent-status-card"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="font-medium">{t('intentStatus.title')}</h2>
+            <span className="rounded-full border px-2 py-0.5 text-xs font-medium">
+              {t(/* i18n-dynamic */ `intentStatus.status.${intentStatus.status}`)}
+            </span>
+          </div>
+          {intentStatus.actionLabel && <p>{intentStatus.actionLabel}</p>}
+          {intentStatus.targetSummary && (
+            <p className="text-muted-foreground">{intentStatus.targetSummary}</p>
+          )}
+          {intentStatus.requestingClientLabel && (
+            <p className="text-muted-foreground">{intentStatus.requestingClientLabel}</p>
+          )}
+          {intentStatus.expiresAt && (
+            <p className="text-muted-foreground">
+              {new Date(intentStatus.expiresAt).toLocaleString()}
+            </p>
+          )}
+          {intentStatus.status === 'pending_approval' && (
+            <p className="text-muted-foreground">{t('intentStatus.waitingForApprovers')}</p>
+          )}
+        </section>
       )}
 
       {hashProposalId && (

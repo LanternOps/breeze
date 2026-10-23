@@ -330,10 +330,27 @@ export function getPolicyOrgId(auth: AuthContext): string | null {
   return null;
 }
 
-export async function getRecommendationStatusMap(auth: AuthContext, orgId?: string): Promise<Map<string, 'dismissed' | 'completed'>> {
+export type AffectedOrgBreakdown = Map<string, { affectedDevices: number; latestObservedMs: number }>;
+export type RecommendationActionStatus = 'completed' | 'dismissed' | 'reopened';
+export type RecommendationAction = { status: RecommendationActionStatus; at: Date };
+/** recommendation id -> org id -> that org's newest action (#9641). */
+export type RecommendationActionMap = Map<string, Map<string, RecommendationAction>>;
+
+const RECOMMENDATION_ACTION_STATUS: Record<string, RecommendationActionStatus> = {
+  'security.recommendation.complete': 'completed',
+  'security.recommendation.dismiss': 'dismissed',
+  'security.recommendation.reopen': 'reopened'
+};
+
+/**
+ * Newest complete/dismiss/reopen audit row per (recommendation, org). Keyed by
+ * org so one client's action never matches another's in the all-organizations
+ * view (#9641).
+ */
+export async function getRecommendationStatusMap(auth: AuthContext, orgId?: string): Promise<RecommendationActionMap> {
   const conditions = [
     eq(auditLogs.resourceType, 'security_recommendation'),
-    inArray(auditLogs.action, ['security.recommendation.complete', 'security.recommendation.dismiss'])
+    inArray(auditLogs.action, Object.keys(RECOMMENDATION_ACTION_STATUS))
   ];
 
   const orgCondition = auth.orgCondition(auditLogs.orgId);
@@ -351,6 +368,7 @@ export async function getRecommendationStatusMap(auth: AuthContext, orgId?: stri
   const rows = await db
     .select({
       action: auditLogs.action,
+      orgId: auditLogs.orgId,
       resourceName: auditLogs.resourceName,
       details: auditLogs.details,
       timestamp: auditLogs.timestamp
@@ -359,7 +377,7 @@ export async function getRecommendationStatusMap(auth: AuthContext, orgId?: stri
     .where(and(...conditions))
     .orderBy(desc(auditLogs.timestamp));
 
-  const statusMap = new Map<string, 'dismissed' | 'completed'>();
+  const actionMap: RecommendationActionMap = new Map();
   for (const row of rows) {
     let recommendationId = row.resourceName ?? '';
     if (!recommendationId && row.details && typeof row.details === 'object') {
@@ -368,18 +386,46 @@ export async function getRecommendationStatusMap(auth: AuthContext, orgId?: stri
         recommendationId = details.recommendationId;
       }
     }
+    const status = RECOMMENDATION_ACTION_STATUS[row.action];
+    if (!recommendationId || !row.orgId || !status) continue;
 
-    if (!recommendationId || statusMap.has(recommendationId)) {
-      continue;
+    let byOrg = actionMap.get(recommendationId);
+    if (!byOrg) {
+      byOrg = new Map();
+      actionMap.set(recommendationId, byOrg);
     }
-
-    statusMap.set(
-      recommendationId,
-      row.action === 'security.recommendation.complete' ? 'completed' : 'dismissed'
-    );
+    if (!byOrg.has(row.orgId)) {
+      byOrg.set(row.orgId, { status, at: new Date(row.timestamp) });
+    }
   }
 
-  return statusMap;
+  return actionMap;
+}
+
+/**
+ * Effective status of one recommendation over the orgs where its problem is
+ * currently present. Per org: a completion is void once the problem has been
+ * observed after it (a newer snapshot/threat on an affected device); a dismissal
+ * is permanent until an explicit reopen. Across orgs the recommendation is open
+ * if ANY affected org is open (#9641).
+ */
+export function resolveRecommendationStatus(
+  recommendationId: string,
+  affectedByOrg: AffectedOrgBreakdown | undefined,
+  actions: RecommendationActionMap | undefined
+): 'open' | 'completed' | 'dismissed' {
+  if (!affectedByOrg || affectedByOrg.size === 0) return 'open';
+  const byOrg = actions?.get(recommendationId);
+  let sawCompleted = false;
+  for (const [orgId, affected] of affectedByOrg) {
+    const action = byOrg?.get(orgId);
+    if (!action || action.status === 'reopened') return 'open';
+    if (action.status === 'completed') {
+      if (affected.latestObservedMs > action.at.getTime()) return 'open';
+      sawCompleted = true;
+    }
+  }
+  return sawCompleted ? 'completed' : 'dismissed';
 }
 
 // ── Org scoping ─────────────────────────────────────────────────────────────
@@ -455,25 +501,89 @@ export type EncryptionVolume = {
   percentEncrypted: number | null;
 };
 
+// BitLocker enum values by integer. Agents before #9608 forwarded Windows
+// PowerShell 5.1's ConvertTo-Json output verbatim, which serialises enums as
+// numbers, so stored encryption_details can hold "6" / "1" instead of names.
+// Numbering and names match the BitLocker PowerShell module enums and the
+// agent's own table (agent/internal/security/status.go). Methods are lowercased to match what
+// the agent stores.
+const BITLOCKER_METHOD_NAMES: Record<number, string> = {
+  0: 'none',
+  1: 'aes128diffuser',
+  2: 'aes256diffuser',
+  3: 'aes128',
+  4: 'aes256',
+  5: 'hardware',
+  6: 'xtsaes128',
+  7: 'xtsaes256'
+};
+
+const BITLOCKER_VOLUME_STATUS_NAMES: Record<number, string> = {
+  0: 'FullyDecrypted',
+  1: 'FullyEncrypted',
+  2: 'EncryptionInProgress',
+  3: 'DecryptionInProgress',
+  4: 'EncryptionSuspended',
+  5: 'DecryptionSuspended',
+  6: 'FullyEncryptedWipeInProgress',
+  7: 'FullyEncryptedWipeSuspended'
+};
+
+// A name passes through; an integer (or integer string) maps to its name, or
+// to `unknownName` when outside the table so a bare number never reaches the UI.
+function bitLockerEnumName(value: string | null, names: Record<number, string>, unknownName: string): string | null {
+  if (value === null || !/^-?\d+$/.test(value)) return value;
+  return names[Number(value)] ?? unknownName;
+}
+
 // Agent-reported per-volume encryption detail (security_status.encryption_details,
 // shape {source, volumes:[{mount, method, protected, status, percentEncrypted}]}).
 // Returns null when absent/malformed so callers can fall back to a synthesized row.
 export function parseEncryptionVolumes(details: unknown): EncryptionVolume[] | null {
   const obj = toObject(details);
   if (!obj || !Array.isArray(obj.volumes)) return null;
+  const isBitLocker = toStringValue(obj.source)?.toLowerCase() === 'bitlocker';
   const volumes: EncryptionVolume[] = [];
   for (const raw of obj.volumes) {
     const vol = toObject(raw);
     if (!vol) continue;
+    let method = toStringValue(vol.method);
+    let status = toStringValue(vol.status);
+    if (isBitLocker) {
+      method = bitLockerEnumName(method, BITLOCKER_METHOD_NAMES, 'unknown');
+      status = bitLockerEnumName(status, BITLOCKER_VOLUME_STATUS_NAMES, 'Unknown');
+    }
     volumes.push({
       drive: toStringValue(vol.mount) ?? '-',
       encrypted: toBoolean(vol.protected) ?? false,
-      method: toStringValue(vol.method) ?? 'unknown',
-      status: toStringValue(vol.status),
+      method: method ?? 'unknown',
+      status,
       percentEncrypted: toNumber(vol.percentEncrypted)
     });
   }
   return volumes.length > 0 ? volumes : null;
+}
+
+// Device-level encryption method from what the agent reported (#9607) — never
+// guessed from the OS. 'none' when the device reports unencrypted; 'unknown'
+// when it reports encryption but no recognisable encryption_details source.
+// Linux (lsblk) reports carry the method per volume (luks, zfs), so the first
+// protected volume's method is used.
+export function deriveEncryptionMethod(details: unknown, encryptionStatus: string): string {
+  if (encryptionStatus === 'unencrypted') return 'none';
+  const obj = toObject(details);
+  if (!obj) return 'unknown';
+  const source = toStringValue(obj.source)?.toLowerCase();
+  if (source === 'bitlocker' || source === 'filevault') return source;
+  if (source === 'lsblk' && Array.isArray(obj.volumes)) {
+    for (const raw of obj.volumes) {
+      const vol = toObject(raw);
+      if (!vol || toBoolean(vol.protected) !== true) continue;
+      const method = toStringValue(vol.method)?.toLowerCase();
+      if (method && method !== 'none') return method;
+    }
+  }
+  return 'unknown';
 }
 
 // ── Analysis utilities ──────────────────────────────────────────────────────
@@ -746,7 +856,18 @@ export function impactFromAffected(affectedDevices: number, totalDevices: number
 
 // ── Threat actions ──────────────────────────────────────────────────────────
 
-export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' | 'restore') {
+/**
+ * One threat as the caller may see it (#6263 W04-5: shared by the threat
+ * actions and the details view). BOTH checks, in this order: the org
+ * condition (404 — not visible), then the site-scope gate (403) — RLS does
+ * not defend the site axis, it is intra-org. Mirrors the GET
+ * /threats/:deviceId read path.
+ */
+export async function loadThreatForCaller(c: any, id: string): Promise<
+  | { threat: ThreatRowWithDetails }
+  | { status: 404; error: 'Threat not found' }
+  | { status: 403; error: 'Access to this site denied' }
+> {
   const auth = c.get('auth') as AuthContext;
   let userPerms = c.get('permissions') as UserPermissions | undefined;
   if (!userPerms) {
@@ -756,7 +877,6 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
     });
     userPerms = fetched || undefined;
   }
-  const { id } = c.req.valid('param') as { id: string };
 
   const orgCondition = auth.orgCondition(devices.orgId);
   const conditions = [eq(securityThreats.id, id)];
@@ -767,12 +887,17 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
       id: securityThreats.id,
       deviceId: securityThreats.deviceId,
       deviceSiteId: devices.siteId,
+      orgId: devices.orgId,
+      deviceName: devices.hostname,
       provider: securityThreats.provider,
       threatName: securityThreats.threatName,
       threatType: securityThreats.threatType,
       severity: securityThreats.severity,
       filePath: securityThreats.filePath,
-      status: securityThreats.status
+      status: securityThreats.status,
+      detectedAt: securityThreats.detectedAt,
+      resolvedAt: securityThreats.resolvedAt,
+      details: securityThreats.details
     })
     .from(securityThreats)
     .innerJoin(devices, eq(devices.id, securityThreats.deviceId))
@@ -780,18 +905,83 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
     .limit(1);
 
   if (!threat) {
-    return c.json({ error: 'Threat not found' }, 404);
+    return { status: 404, error: 'Threat not found' };
   }
 
-  // Site-scope gate: RLS does not defend the site axis (it is intra-org).
-  // Reject site-restricted callers acting on a threat whose device is outside
-  // their site allowlist. Mirrors the GET /threats/:deviceId read path.
+  // Site-scope gate: reject site-restricted callers on a threat whose device
+  // is outside their site allowlist.
   if (
     userPerms?.allowedSiteIds &&
     (typeof threat.deviceSiteId !== 'string' || !canAccessSite(userPerms, threat.deviceSiteId))
   ) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return { status: 403, error: 'Access to this site denied' };
   }
+  return { threat };
+}
+
+export type ThreatRowWithDetails = {
+  id: string;
+  deviceId: string;
+  deviceSiteId: string | null;
+  orgId: string;
+  deviceName: string;
+  provider: string;
+  threatName: string;
+  threatType: string | null;
+  severity: ThreatRow['severity'];
+  filePath: string | null;
+  status: string;
+  detectedAt: Date;
+  resolvedAt: Date | null;
+  details: unknown;
+};
+
+/** The listing's row shape for one loaded threat (same mapping as listThreatRows). */
+export function toThreatRow(t: ThreatRowWithDetails): ThreatRow {
+  return {
+    id: t.id,
+    deviceId: t.deviceId,
+    orgId: t.orgId,
+    deviceName: t.deviceName,
+    provider: normalizeProvider(t.provider),
+    threatName: t.threatName,
+    threatType: t.threatType ?? 'malware',
+    severity: t.severity,
+    status: mapThreatStatus(t.status),
+    filePath: t.filePath ?? '',
+    detectedAt: t.detectedAt,
+    resolvedAt: t.resolvedAt
+  };
+}
+
+/** Exactly the object `GET /threats` (and `/threats/:deviceId`) emits per item. */
+export function toThreatListItem(threat: ThreatRow) {
+  return {
+    id: threat.id,
+    deviceId: threat.deviceId,
+    deviceName: threat.deviceName,
+    orgId: threat.orgId,
+    providerId: threat.provider,
+    provider: providerCatalog[threat.provider],
+    name: threat.threatName,
+    category: threat.threatType.toLowerCase(),
+    severity: threat.severity,
+    status: threat.status,
+    detectedAt: threat.detectedAt.toISOString(),
+    removedAt: threat.resolvedAt?.toISOString() ?? null,
+    filePath: threat.filePath
+  };
+}
+
+export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' | 'restore') {
+  const auth = c.get('auth') as AuthContext;
+  const { id } = c.req.valid('param') as { id: string };
+
+  const loaded = await loadThreatForCaller(c, id);
+  if (!('threat' in loaded)) {
+    return c.json({ error: loaded.error }, loaded.status);
+  }
+  const { threat } = loaded;
 
   const commandType = action === 'quarantine'
     ? CommandTypes.SECURITY_THREAT_QUARANTINE
@@ -839,7 +1029,7 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
 export async function buildBe9Recommendations(
   auth: AuthContext,
   orgId?: string
-): Promise<{ recommendations: Be9Recommendation[]; error?: { status: 400 | 403; message: string } }> {
+): Promise<{ recommendations: Be9Recommendation[]; affectedByOrg?: Map<string, AffectedOrgBreakdown>; error?: { status: 400 | 403; message: string } }> {
   const scope = resolveScopedOrgIds(auth, orgId);
   if (scope.error) {
     return { recommendations: [], error: scope.error };
@@ -859,10 +1049,6 @@ export async function buildBe9Recommendations(
     return { recommendations: [] };
   }
 
-  const activeThreatDevices = new Set(
-    threats.filter((threat) => threat.status === 'active').map((threat) => threat.deviceId)
-  );
-
   const affectedCounts = {
     antivirus: 0,
     firewall: 0,
@@ -873,18 +1059,46 @@ export async function buildBe9Recommendations(
     vulnerability_management: 0
   };
 
-  const vulnerabilityDevices = new Set(activeThreatDevices);
+  // Per category, per org: affected device count + the newest time the problem
+  // was observed (posture snapshot / active threat). Drives per-org status and
+  // completion auto-reopen (#9641).
+  const breakdowns = new Map<keyof typeof affectedCounts, AffectedOrgBreakdown>();
+  const noteAffected = (category: keyof typeof affectedCounts, org: string, observedAt: string | Date | null | undefined) => {
+    let byOrg = breakdowns.get(category);
+    if (!byOrg) {
+      byOrg = new Map();
+      breakdowns.set(category, byOrg);
+    }
+    const entry = byOrg.get(org) ?? { affectedDevices: 0, latestObservedMs: 0 };
+    entry.affectedDevices++;
+    const ms = observedAt ? new Date(observedAt).getTime() : 0;
+    if (Number.isFinite(ms) && ms > entry.latestObservedMs) entry.latestObservedMs = ms;
+    byOrg.set(org, entry);
+  };
+
+  const vulnerabilityDevices = new Map<string, { orgId: string; observedAt: string | Date | null | undefined }>();
+  for (const threat of threats) {
+    if (threat.status !== 'active') continue;
+    vulnerabilityDevices.set(threat.deviceId, { orgId: threat.orgId, observedAt: threat.detectedAt });
+  }
   for (const item of posture) {
-    if (item.factors.av_health.score < 80) affectedCounts.antivirus++;
-    if (item.factors.firewall.score < 90) affectedCounts.firewall++;
-    if (item.factors.encryption.score < 90) affectedCounts.encryption++;
-    if (item.factors.password_policy.score < 85) affectedCounts.password_policy++;
-    if (item.factors.admin_exposure.score < 85) affectedCounts.admin_accounts++;
-    if (item.factors.patch_compliance.score < 90) affectedCounts.patch_compliance++;
+    if (item.factors.av_health.score < 80) { affectedCounts.antivirus++; noteAffected('antivirus', item.orgId, item.capturedAt); }
+    if (item.factors.firewall.score < 90) { affectedCounts.firewall++; noteAffected('firewall', item.orgId, item.capturedAt); }
+    if (item.factors.encryption.score < 90) { affectedCounts.encryption++; noteAffected('encryption', item.orgId, item.capturedAt); }
+    if (item.factors.password_policy.score < 85) { affectedCounts.password_policy++; noteAffected('password_policy', item.orgId, item.capturedAt); }
+    if (item.factors.admin_exposure.score < 85) { affectedCounts.admin_accounts++; noteAffected('admin_accounts', item.orgId, item.capturedAt); }
+    if (item.factors.patch_compliance.score < 90) { affectedCounts.patch_compliance++; noteAffected('patch_compliance', item.orgId, item.capturedAt); }
 
     if (item.factors.open_ports.score < 70 || item.factors.os_currency.score < 70) {
-      vulnerabilityDevices.add(item.deviceId);
+      const existing = vulnerabilityDevices.get(item.deviceId);
+      const existingMs = existing?.observedAt ? new Date(existing.observedAt).getTime() : 0;
+      if (!existing || new Date(item.capturedAt).getTime() > existingMs) {
+        vulnerabilityDevices.set(item.deviceId, { orgId: item.orgId, observedAt: item.capturedAt });
+      }
     }
+  }
+  for (const device of vulnerabilityDevices.values()) {
+    noteAffected('vulnerability_management', device.orgId, device.observedAt);
   }
   affectedCounts.vulnerability_management = vulnerabilityDevices.size;
 
@@ -1013,5 +1227,11 @@ export async function buildBe9Recommendations(
       return b.affectedDevices - a.affectedDevices;
     });
 
-  return { recommendations };
+  const affectedByOrg = new Map<string, AffectedOrgBreakdown>();
+  for (const rec of recommendations) {
+    const breakdown = breakdowns.get(rec.category as keyof typeof affectedCounts);
+    if (breakdown) affectedByOrg.set(rec.id, breakdown);
+  }
+
+  return { recommendations, affectedByOrg };
 }

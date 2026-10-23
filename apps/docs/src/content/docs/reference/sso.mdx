@@ -266,7 +266,7 @@ When Breeze auto-discovers a provider's endpoints from its issuer URL, it refuse
 | `orgId` | `uuid` | Depends | Inferred for org-scoped users | Target organization. Ignored when `ownerScope` is `partner` — a partner provider is owned by the caller's partner, never an organization. |
 | `name` | `string` | Yes | -- | Display name (1--255 characters). |
 | `type` | `oidc` or `saml` | Yes | -- | Provider protocol. |
-| `preset` | `string` | No | -- | Preset ID (e.g., `azure-ad`, `okta`). Pre-fills scopes and attribute mapping. |
+| `preset` | `string` | No | -- | OIDC preset ID: `azure-ad`, `okta`, `google` or `auth0`. Pre-fills scopes and attribute mapping when the request does not send them. Any other value returns `400`. |
 | `issuer` | `url` | No | -- | IdP issuer URL. Triggers OIDC discovery when set. |
 | `clientId` | `string` | No | -- | OAuth 2.0 Client ID. |
 | `clientSecret` | `string` | No | -- | OAuth 2.0 Client Secret. Encrypted at rest. |

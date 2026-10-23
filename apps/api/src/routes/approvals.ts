@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { reportSuspiciousMcpOrigin } from '../services/mcpIntentCreation';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, gt, desc, inArray, isNull, ne, or } from 'drizzle-orm';
@@ -1440,6 +1441,18 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
     }
   }
 
+  // B-W04 (#6158, D-B35): an MCP-origin intent never sets requesting_client_id;
+  // its target is the ORIGIN credential, revoked only when this reporter owns
+  // it (otherwise the owner and approvers are notified). Null for every other
+  // intent, so today's behaviour is unchanged.
+  const mcpOriginReport = existing.intentId
+    ? await reportSuspiciousMcpOrigin(existing.intentId, userId).catch((err) => {
+      console.error('[approvals] report-suspicious: MCP origin handling failed:', err);
+      captureException(err);
+      return { credentialRevoked: false, revocationError: 'revocation_failed' as const };
+    })
+    : null;
+
   // Audit row — security.suspicious_report, tenanted to the reported approval.
   //
   // Deliberately NOT a raw `db.insert(auditLogs)` inside the request
@@ -1513,6 +1526,7 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
         // the integer count — losing real forensic detail about how much access
         // the report actually tore down. It is a count, never a credential.
         refreshRevocationCount: refreshTokensRevoked,
+        ...(mcpOriginReport ? { mcpOriginCredentialRevoked: mcpOriginReport.credentialRevoked } : {}),
       },
       result: 'success',
     });
@@ -1526,7 +1540,16 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
   // durable release worker is going to run it). Revocation + audit above have
   // still happened; only the "did my report land?" answer differs.
   if (intentRaceLost) {
-    return c.json({ error: 'already_decided', finalStatus: intentRaceLost.finalStatus }, 409);
+    return c.json({
+      error: 'already_decided',
+      finalStatus: intentRaceLost.finalStatus,
+      ...(mcpOriginReport ? { credentialRevoked: mcpOriginReport.credentialRevoked } : {}),
+    }, 409);
+  }
+
+  // B-W04 (#6158, D-B35): say what happened to the MCP credential.
+  if (mcpOriginReport) {
+    return c.json({ reported: true, ...mcpOriginReport }, 200);
   }
 
   return c.body(null, 204);

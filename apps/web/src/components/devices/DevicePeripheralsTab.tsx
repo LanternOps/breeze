@@ -24,6 +24,17 @@ type PeripheralPolicy = {
   isActive: boolean;
 };
 
+// `GET /peripherals/devices/:id/effective` row.
+type EffectivePolicy = {
+  id: string;
+  name: string | null;
+  source: string;
+  deviceClass: string;
+  action: string;
+  targetType: string | null;
+  priority: number;
+};
+
 type DevicePeripheralsTabProps = {
   deviceId: string;
   timezone?: string;
@@ -56,6 +67,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
   const [policies, setPolicies] = useState<PeripheralPolicy[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(true);
   const [loadingPolicies, setLoadingPolicies] = useState(true);
+  const [policiesFailed, setPoliciesFailed] = useState(false);
   const [error, setError] = useState<string>();
 
   // Summary counters
@@ -88,17 +100,34 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
   const fetchPolicies = useCallback(async () => {
     setLoadingPolicies(true);
     try {
-      const response = await fetchWithAuth('/peripherals/policies');
+      // The device's EFFECTIVE set (site/group/device targeting + partner-wide
+      // rows), resolved server-side — not every active policy of the org (#9621).
+      const response = await fetchWithAuth(`/peripherals/devices/${deviceId}/effective`);
       if (!response.ok) throw new Error('Failed to fetch policies');
       const json = await response.json();
-      const data = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
-      setPolicies(data.filter((p: PeripheralPolicy) => p.isActive));
+      if (!Array.isArray(json.data)) throw new Error('Unexpected policies response');
+      const data = json.data;
+      setPoliciesFailed(false);
+      setPolicies(
+        data.map((p: EffectivePolicy): PeripheralPolicy => ({
+          id: p.id,
+          name: p.name ?? p.id.slice(0, 8),
+          deviceClass: p.deviceClass,
+          action: p.action,
+          targetType: p.targetType ?? p.source,
+          isActive: true,
+        })),
+      );
     } catch (err) {
       console.error('[DevicePeripheralsTab] Failed to fetch policies:', err);
+      // A failed load must not read as "no policies apply to this device".
+      setPoliciesFailed(true);
+      setPolicies([]);
+      setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoadingPolicies(false);
     }
-  }, []);
+  }, [deviceId]);
 
   useEffect(() => {
     fetchEvents();
@@ -141,7 +170,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
             <Shield className="h-4 w-4" />
             {t('devicePeripheralsTab.summary.activePolicies')}
           </div>
-          <p className="mt-2 text-2xl font-bold">{loadingPolicies ? '—' : policies.length}</p>
+          <p className="mt-2 text-2xl font-bold">{loadingPolicies || policiesFailed ? '—' : policies.length}</p>
         </div>
       </div>
 
@@ -202,6 +231,10 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
         {loadingPolicies ? (
           <div className="flex items-center justify-center py-8">
             <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          </div>
+        ) : policiesFailed ? (
+          <div className="py-8 text-center text-sm text-muted-foreground" data-testid="device-peripherals-policies-error">
+            —
           </div>
         ) : policies.length === 0 ? (
           <div className="py-8 text-center text-sm text-muted-foreground">

@@ -11,7 +11,8 @@
  */
 import { API_VERSION } from '../version';
 import { envInt } from '../utils/envInt';
-import { MCP_SERVER_INSTRUCTIONS } from './mcpGuidance';
+import { buildMcpServerInstructions } from './mcpGuidance';
+import { mcpTier3IntentsEnabled } from './mcpIntentConfig';
 import type { McpRejectReason } from './mcpModernEnvelope';
 import { supportedMcpProtocolVersions } from './mcpProtocol';
 import { captureMessage } from './sentry';
@@ -65,7 +66,8 @@ export function buildDiscoverResult(): Record<string, unknown> {
     resultType: 'complete',
     supportedVersions: [...supportedMcpProtocolVersions(true)],
     capabilities: { tools: {}, resources: {}, prompts: {} },
-    instructions: MCP_SERVER_INSTRUCTIONS,
+    // B-W04 (#6158, D-B34): the approval rules follow MCP_TIER3_INTENTS_ENABLED.
+    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled()),
     _meta: { [SERVER_INFO_META_KEY]: serverInfo() },
     ttlMs: MCP_CACHE_TTL_MS['server/discover'],
     cacheScope: 'private',

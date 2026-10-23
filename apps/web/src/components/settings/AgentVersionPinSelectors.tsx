@@ -62,11 +62,11 @@ export default function AgentVersionPinSelectors({
   };
 
   return (
-    <div className="space-y-4 rounded-lg border bg-muted/40 p-4" data-testid="agent-version-pins">
-      <div className="flex items-center gap-2 text-sm font-medium">
+    <div className="space-y-4 border-t pt-6" data-testid="agent-version-pins">
+      <h3 className="flex items-center gap-2 text-sm font-semibold">
         <RefreshCcw className="h-4 w-4" />
         {t('agentVersionPins.title')}
-      </div>
+      </h3>
       <p className="text-xs text-muted-foreground">
         <Trans i18nKey="agentVersionPins.description" t={t} components={{ strong: <strong /> }} />
         {context === 'partner'

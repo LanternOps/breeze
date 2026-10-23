@@ -311,6 +311,8 @@
     "no": "Non",
     "noDevicesFound": "Aucun appareil trouvé.",
     "none": "Aucun",
+    "unknown": "Inconnu",
+    "tpmNotReported": "Non signalé par l'agent",
     "os": "OS",
     "pageOf": "Page {{page}} de {{totalPages}}",
     "partial": "Partiel",
@@ -443,6 +445,7 @@
     "invalidResponseFromServer": "Réponse invalide du serveur",
     "low": "Faible",
     "markComplete": "Marque Complète",
+    "reopen": "Rouvrir",
     "medium": "Moyenne",
     "next": "Suivant",
     "noRecommendationsMatchYourFilters": "Aucune recommandation ne correspond à vos filtres.",
@@ -810,9 +813,10 @@
     "precision": "Précision",
     "recentEvidence": "Preuves récentes",
     "refresh": "Actualiser",
+    "refreshing": "Actualisation",
     "repeatSignalUsers": "Utilisateurs répétés du signal",
     "retry": "Réessayer",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Examinez les scores de risque des règles v0, les preuves et les étiquettes d’évaluation.",
+    "reviewUserRiskScoresEvidenceAnd": "Examinez les scores de risque des utilisateurs, les preuves sur lesquelles ils reposent et vos étiquettes d’évaluation.",
     "scoreImpact": "{{value}} impact",
     "scoresEvidenceAndLabelsWillAppearHere": "Les scores, preuves et labels apparaîtront ici lorsque le producteur v0 de risque utilisateur est activé.",
     "selectAUserToInspectRiskEvidence": "Sélectionnez un utilisateur pour inspecter les preuves de risque.",
@@ -821,7 +825,41 @@
     "truePositive": "Vrai positif",
     "truePositiveLabelSaved": "Étiquette vraiment positive enregistrée",
     "userRisk": "Risque utilisateur",
-    "userRiskScoringIsDisabledForThis": "Le score de risque utilisateur est désactivé pour cette organisation."
+    "userRiskScoringIsDisabledForThis": "Le score de risque utilisateur est désactivé pour cette organisation.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Lacunes d’authentification multifacteur",
+        "description": "Comptes pour lesquels la MFA n’est pas activée."
+      },
+      "authFailureRisk": {
+        "label": "Échecs de connexion",
+        "description": "Échecs de connexion répétés, pouvant indiquer des tentatives de devinette de mot de passe ou du bourrage d’identifiants."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Activité de session inhabituelle",
+        "description": "Connexions depuis des lieux ou appareils inconnus, ou à des heures inhabituelles."
+      },
+      "threatExposureRisk": {
+        "label": "Exposition aux menaces",
+        "description": "Menaces détectées sur les appareils utilisés par l’utilisateur."
+      },
+      "softwareViolationRisk": {
+        "label": "Violations de la politique logicielle",
+        "description": "Logiciels installés qui enfreignent vos politiques logicielles."
+      },
+      "deviceSecurityRisk": {
+        "label": "Niveau de sécurité des appareils",
+        "description": "Faible état de sécurité des appareils de l’utilisateur, par exemple protections ou correctifs manquants."
+      },
+      "staleAccessRisk": {
+        "label": "Accès obsolètes",
+        "description": "Comptes ou accès inutilisés depuis longtemps."
+      },
+      "recentImpactRisk": {
+        "label": "Événements de risque récents",
+        "description": "Événements de risque enregistrés pour cet utilisateur ces derniers jours."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Actives",
@@ -1914,10 +1952,27 @@
       "status": "Statut",
       "approval": "Approbation",
       "requested": "Demandé",
-      "completed": "Terminée le"
+      "completed": "Terminée le",
+      "decision": "Décision"
     },
     "loading": "Chargement des réparations...",
-    "empty": "Aucune réparation trouvée."
+    "empty": "Aucune réparation trouvée.",
+    "decision": {
+      "approve": "Approuver",
+      "reject": "Refuser",
+      "approveTitle": "Approuver la correction?",
+      "rejectTitle": "Refuser la correction?",
+      "approveMessage": "Cela met en file le contrôle CIS {{checkId}} pour exécution sur {{device}}. L'agent modifiera la configuration de l'appareil.",
+      "rejectMessage": "Cela annule la correction en attente du contrôle CIS {{checkId}} sur {{device}}. Rien ne sera exécuté sur l'appareil.",
+      "noteLabel": "Note (facultative)",
+      "approved": "Correction de {{checkId}} approuvée et mise en file.",
+      "rejected": "Correction de {{checkId}} refusée.",
+      "approveFailed": "Échec de l'approbation de la correction",
+      "rejectFailed": "Échec du refus de la correction",
+      "queueFailed": "L'approbation a été enregistrée, mais la correction n'a pas pu être mise en file. Elle est de nouveau en attente d'approbation; réessayez.",
+      "mfaRequired": "Approuver ou refuser une correction nécessite une session ouverte avec l'authentification multifacteur. Déconnectez-vous puis reconnectez-vous avec l'AMF.",
+      "ownRequest": "Vous avez demandé cette correction : un autre utilisateur doit l'approuver."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Références d’audit",
