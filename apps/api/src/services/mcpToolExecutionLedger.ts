@@ -49,7 +49,10 @@ export interface BeginMcpToolExecutionLedgerInput {
    * the request audit and tool audit carry as `resourceId`.
    */
   transportRequestId: string;
-  era: 'legacy' | 'modern';
+  /** 'release' = the action-intent release worker (B-W04 #6158). */
+  era: 'legacy' | 'modern' | 'release';
+  /** B-W04 (#6158): the released action intent, stored on ai_tool_executions.intent_id. */
+  intentId?: string;
 }
 
 export interface CompleteMcpToolExecutionLedgerInput {
@@ -139,6 +142,7 @@ export async function beginMcpToolExecutionLedger(
             toolName: input.toolName,
             toolInput,
             status: 'executing',
+            ...(input.intentId ? { intentId: input.intentId } : {}),
           })
           .returning({ id: aiToolExecutions.id });
 

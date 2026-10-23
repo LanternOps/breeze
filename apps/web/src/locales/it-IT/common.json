@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} approvazione in attesa",
     "pendingApprovals_other": "{{count}} approvazioni in attesa",
     "tickets": "Ticket",
-    "incidents": "Incidenti",
+    "incidents": "Incidenti di sicurezza",
     "remoteAccess": "Accesso remoto",
     "scripts": "Script",
     "patches": "Patch",
@@ -1151,27 +1151,10 @@
           "basicInformation": "Informazioni di base",
           "connectionDetails": "Dettagli di connessione",
           "credentials": "Credenziali",
-          "syncSettings": "Sincronizza impostazioni"
+          "syncSettings": "Sincronizzazione dei ticket"
         },
         "sync": {
-          "autoClose": "Chiudi automaticamente i ticket PSA.",
-          "autoCloseHelp": "Chiudi i ticket collegati quando gli avvisi Breeze vengono risolti.",
-          "enable": "Abilita la sincronizzazione",
-          "enableHelp": "Mantieni aggiornati i ticket e i collegamenti di avviso secondo una pianificazione.",
-          "notes": "Sincronizza le note di avviso",
-          "notesHelp": "Invia commenti e aggiornamenti da Breeze alla cronologia dei ticket PSA."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirezionale",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Ogni giorno",
-          "every15Minutes": "Ogni 15 minuti",
-          "every30Minutes": "Ogni 30 minuti",
-          "every6Hours": "Ogni 6 ore",
-          "everyHour": "Ogni ora"
+          "unavailable": "La sincronizzazione dei ticket non è ancora disponibile. Le connessioni possono essere testate e usate per importare aziende come organizzazioni; nessun dato dei ticket viene scambiato tra Breeze e il tuo PSA."
         },
         "testDirtyHint": "Salva prima di procedere: il test verifica le credenziali memorizzate, non le modifiche non salvate.",
         "validation": {
@@ -1195,7 +1178,7 @@
         },
         "connectionCount": "{{filtered}} di {{total}} connessioni",
         "empty": {
-          "noConnections": "Connetti un provider PSA per avviare la sincronizzazione dei ticket.",
+          "noConnections": "Collega un provider PSA per testarlo e importarne le aziende.",
           "noMatches": "Nessuna connessione corrisponde alla tua ricerca o ai tuoi filtri.",
           "title": "Nessuna connessione PSA configurata"
         },
@@ -1229,7 +1212,7 @@
           "tryAgain": "Riprova"
         },
         "delete": {
-          "activeWarning": "Questa connessione è attiva. La sincronizzazione dei ticket verrà interrotta immediatamente.",
+          "activeWarning": "Questa connessione è attiva. Eliminandola, la connessione viene rimossa immediatamente.",
           "confirm": "Sei sicuro di voler eliminare {{name}}?",
           "irreversible": "Questa azione non può essere annullata.",
           "title": "Elimina la connessione PSA",
@@ -1248,10 +1231,10 @@
         "modal": {
           "addDescription": "Configura una nuova connessione PSA per la tua organizzazione.",
           "addTitle": "Aggiungi connessione PSA",
-          "editDescription": "Aggiorna i dettagli di connessione e le preferenze di sincronizzazione di PSA",
+          "editDescription": "Aggiorna i dettagli della connessione PSA.",
           "editTitle": "Modifica la connessione PSA"
         },
-        "subtitle": "Collega il tuo PSA per sincronizzare i ticket e collegare gli avvisi.",
+        "subtitle": "Testa le connessioni PSA e importa le aziende come organizzazioni.",
         "test": {
           "failedMessage": "Impossibile connettersi al provider PSA.",
           "failedTitle": "Connessione non riuscita",
@@ -1266,8 +1249,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nessun ticket corrisponde alla tua ricerca o ai tuoi filtri.",
-          "noTickets": "Sincronizza la tua prima connessione PSA per vedere i ticket qui.",
-          "title": "Nessun ticket PSA sincronizzato"
+          "noTickets": "La sincronizzazione dei ticket non è ancora disponibile, quindi i ticket PSA non vengono importati.",
+          "title": "Nessun ticket PSA"
         },
         "filters": {
           "allStatuses": "Tutti gli stati",
@@ -2229,7 +2212,7 @@
         },
         "loading": "Caricamento incidenti...",
         "tryAgain": "Riprova",
-        "title": "Incidenti",
+        "title": "Incidenti di sicurezza",
         "description": "Tieni traccia degli incidenti e dei risultati EDR nelle tue organizzazioni.",
         "filters": {
           "tracked": "Monitorati",
@@ -2259,6 +2242,11 @@
         "genericEdrProvider": "Provider EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Tecnico",
+          "system": "Sistema"
+        },
         "errors": {
           "notFound": "Incidente non trovato",
           "fetchFailed": "Impossibile recuperare l'incidente"

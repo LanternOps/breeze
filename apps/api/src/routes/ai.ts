@@ -39,6 +39,7 @@ import { drainPendingRunResults } from '../services/workspace/chatRunBridge';
 import {
   checkBudgetDetailed,
   getUsageSummary,
+  getAggregateUsageSummary,
   updateBudget,
   getSessionHistory,
 } from '../services/aiCostTracker';
@@ -1447,20 +1448,11 @@ aiRoutes.get(
     const orgId = c.req.query('orgId') || auth.orgId;
 
     if (!orgId) {
-      // System/partner users without a specific org: no org to resolve an
-      // effective budget for, so budget stays null. #4388: alerts.fired must
-      // still be present (empty) so callers can read it unconditionally.
-      return c.json({
-        daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
-        monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
-        budget: null,
-        billedTo: 'platform' as const,
-        // #4388 W04: present (null) on every /ai/usage response, same
-        // rationale as `alerts.fired` above: callers read `usage.credits`
-        // unconditionally.
-        credits: null,
-        alerts: { fired: [] },
-      });
+      // System/partner users on "All organizations" (#9667): aggregate usage
+      // over exactly the orgs this caller can access. No single org means no
+      // effective budget to resolve, so budget stays null. #4388: alerts.fired
+      // is present (empty) so callers can read it unconditionally.
+      return c.json(await getAggregateUsageSummary(auth.accessibleOrgIds));
     }
 
     if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {

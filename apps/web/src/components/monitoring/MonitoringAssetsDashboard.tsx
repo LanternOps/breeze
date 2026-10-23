@@ -22,6 +22,7 @@ import { ActionError } from '@/lib/runAction';
 import { useNetworkAssetMutations } from '../devices/networkDevice/settings/useNetworkAssetMutations';
 import { buildDetailHash } from '../devices/networkDevice/settings/settingsHash';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { typeConfig, type DiscoveredAssetType } from '../discovery/DiscoveredAssetList';
 
 /** W01 (spec §4.2). Absent on a pre-W01 API — treat every field as optional. */
 type Reachability = {
@@ -273,6 +274,13 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
 
   // Row pieces shared by the desktop table and the mobile cards so the two
   // representations can never drift. Each takes a single asset.
+  // Same translated labels Discovery uses; an out-of-enum value from the API
+  // falls back to the raw string rather than throwing during render.
+  const renderAssetType = (assetType: string) => {
+    const meta = typeConfig[assetType as DiscoveredAssetType];
+    return meta ? t(/* i18n-dynamic */ meta.labelKey) : assetType;
+  };
+
   const renderOverallBadge = (asset: MonitoringAsset) => {
     const overall = asset.monitoring.configured
       ? (asset.monitoring.active ? 'active' : 'paused')
@@ -532,7 +540,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm font-mono">{asset.ipAddress || '—'}</td>
-                      <td className="px-4 py-3 text-sm capitalize">{asset.assetType}</td>
+                      <td className="px-4 py-3 text-sm">{renderAssetType(asset.assetType)}</td>
                       <td className="px-4 py-3">{renderOverallBadge(asset)}</td>
                       <td className="px-4 py-3">{renderReachabilityCell(asset)}</td>
                       <td className="px-4 py-3">{renderCollectionCell(asset)}</td>
@@ -571,7 +579,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                       <span className="font-mono text-sm">{asset.ipAddress || '—'}</span>
                     </CardField>
                     <CardField label={t('common:labels.type')}>
-                      <span className="text-sm capitalize">{asset.assetType}</span>
+                      <span className="text-sm">{renderAssetType(asset.assetType)}</span>
                     </CardField>
                     <CardField label={t('longTail.monitoring.MonitoringAssetsDashboard.table.reachability')}>
                       {renderReachabilityCell(asset)}

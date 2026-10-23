@@ -330,4 +330,21 @@ describe('MaintenanceTab — recurrence day rule (#9565)', () => {
     fireEvent.change(screen.getByTestId('maintenance-recurrence'), { target: { value: 'once' } });
     expect(screen.queryByTestId('maintenance-recurrence-rule')).toBeNull();
   });
+
+  it('reboot-if-pending toggle has a literal data-testid (#9634)', () => {
+    renderTab();
+    expect(screen.getByTestId('maintenance-reboot-if-pending-toggle')).toBeTruthy();
+  });
+
+  it('describes Suppress patching as skipping, not delaying (#9634)', () => {
+    renderTab();
+    expect(screen.queryByText(/delay patch installations/i)).toBeNull();
+    expect(screen.getByText(/skipped and run at the next scheduled occurrence/i)).toBeTruthy();
+  });
+
+  it('points the reboot description at the patch policy reboot delay (#9634)', () => {
+    renderTab();
+    expect(screen.queryByText(/~5 minutes/)).toBeNull();
+    expect(screen.getByText(/patch policy reboot delay/i)).toBeTruthy();
+  });
 });

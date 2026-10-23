@@ -342,6 +342,8 @@
       "subnets": "Subnet"
     },
     "configuredCount": "{{count}} profili configurati",
+    "configuredCount_one": "{{count}} profilo configurato",
+    "configuredCount_other": "{{count}} profili configurati",
     "empty": "Nessun profilo di rilevamento. Crea il primo profilo per iniziare la scansione.",
     "lastRun": "Ultima esecuzione {{time}}",
     "loading": "Caricamento dei profili di rilevamento...",
@@ -438,6 +440,8 @@
       "selectSite": "Seleziona un sito prima di salvare."
     },
     "configuredCount": "{{count}} baseline configurate",
+    "configuredCount_one": "{{count}} baseline configurata",
+    "configuredCount_other": "{{count}} baseline configurate",
     "subnetTopologyNote": "Le sottoreti indicate qui identificano anche le reti di questa sede nella mappa della topologia."
   },
   "networkChangeDetailModal": {

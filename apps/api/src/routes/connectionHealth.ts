@@ -7,6 +7,7 @@ import { authMiddleware, requirePermission, requireScope } from '../middleware/a
 import { zValidator } from '../lib/validation';
 import { PERMISSIONS, hasPermission } from '../services/permissions';
 import { permissionFromText } from '../services/connectionHealth/store';
+import { remedyFor } from '../services/connectionHealth/remedy';
 import { registerConnectionHealthSettingsRoutes } from './connectionHealthSettings';
 
 // Read-only view of connection health incidents (spec 2026-10-15). Only the
@@ -79,6 +80,7 @@ connectionHealthRoutes.get(
         detail: r.detail,
         displayName: r.displayName,
         fixHref: r.fixHref,
+        remedy: remedyFor(r.condition),
         firstFailedAt: r.firstFailedAt,
         openedAt: r.openedAt,
         lastObservedAt: r.lastObservedAt,

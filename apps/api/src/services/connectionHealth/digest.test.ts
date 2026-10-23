@@ -200,7 +200,7 @@ describe('runDigest', () => {
       id: 'inc-g',
       ownerUserId: OWNER,
       displayName: 'Example Agent (OAuth app)',
-      condition: 'grant_revoked_reuse',
+      condition: 'grant_revoked',
       fixHref: '/settings/connected-apps',
       ownerFixHref: '/account/connected-apps',
       viewPermission: 'connected_apps:read',
@@ -498,7 +498,7 @@ describe('runDigest', () => {
       store.loadPartnerIncidents.mockResolvedValue([
         orgRow(),
         row({ id: 'inc-g', orgId: ORG, orgName: 'Org A', ownerUserId: CUSTOMER, displayName: 'Agent app',
-          condition: 'grant_revoked_reuse', fixHref: '/settings/connected-apps', ownerFixHref: '/account/connected-apps',
+          condition: 'grant_revoked', fixHref: '/settings/connected-apps', ownerFixHref: '/account/connected-apps',
           viewPermission: 'connected_apps:read', repairPermission: 'connected_apps:manage' }),
       ]);
       await runDigest(NOW);

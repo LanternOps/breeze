@@ -342,6 +342,8 @@
       "subnets": "Subnetze"
     },
     "configuredCount": "{{count}} Profile konfiguriert",
+    "configuredCount_one": "{{count}} Profil konfiguriert",
+    "configuredCount_other": "{{count}} Profile konfiguriert",
     "empty": "Noch keine Discovery-Profile. Erstellen Sie Ihr erstes Profil, um mit dem Scannen zu beginnen.",
     "lastRun": "Letzter Lauf {{time}}",
     "loading": "Erkennungsprofile werden geladen...",
@@ -438,6 +440,8 @@
       "selectSite": "Wählen Sie vor dem Speichern eine Standort aus."
     },
     "configuredCount": "{{count}} Baselines konfiguriert",
+    "configuredCount_one": "{{count}} Baseline konfiguriert",
+    "configuredCount_other": "{{count}} Baselines konfiguriert",
     "subnetTopologyNote": "Die Subnetze hier identifizieren auch die Netzwerke dieses Standorts auf der Topologiekarte."
   },
   "networkChangeDetailModal": {
