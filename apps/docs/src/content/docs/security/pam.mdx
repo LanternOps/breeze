@@ -197,6 +197,14 @@ The ledger denormalizes the organization id and ties each audit row to its paren
 
 The **Audit** tab of the Privileged Access console renders this ledger -- filterable by status, flow, and date range, and exportable to CSV for compliance reporting. Each entry names the decider, so there is never ambiguity about who (or what rule) granted access.
 
+### Ownership changes
+
+An elevation request belongs to the organization that owned the device when it was made. Moving a device to another organization, or merging its organization into another, expires every elevation request on it that is still live and has not been actuated -- pending, approved and not yet used -- and writes an `expired` event to the ledger naming the ownership change as the cause. The departing organization's policy decided those requests; the receiving organization's policy decides any new ones. Evidence of actuations that already happened stays with the request and is never rewritten.
+
+### Evidence retention after a merge
+
+When an organization is merged away while it still owns PAM evidence, Breeze keeps it as a held shell rather than deleting the chain, so the ledger stays verifiable. A nightly job deletes evidence from those held shells only -- never from a live organization -- once every row in the shell's chain is older than `PAM_EVIDENCE_RETENTION_DAYS` (default 400, never below 30). Set `PAM_EVIDENCE_RETENTION_ENABLED=false` to keep merged evidence indefinitely. See [Privileged Access Management](/features/pam/) for the operator view.
+
 ---
 
 ## Windows Event Log

@@ -26,6 +26,8 @@ import {
   emptyTechnicianTimeSummary,
   emptyTicketSlaSummary,
   emptyMrrRenewalsSummary,
+  emptyQuoteWinRateSummary,
+  emptyClientProfitabilitySummary,
 } from '@breeze/shared';
 import {
   systemReportAuthorityFor,
@@ -1101,6 +1103,12 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     // Business reports phase 2 W1 (#9828): contracts have no site column.
     case 'mrr_renewals':
       return { rows: [], rowCount: 0, summary: emptyMrrRenewalsSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
+    // Business reports phase 2 W2 (#9828): no site filter exists for quote lineages.
+    case 'quote_win_rate':
+      return { rows: [], rowCount: 0, summary: emptyQuoteWinRateSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
+    // Business reports phase 2 W3 (#9828): invoices and time entries have no site column.
+    case 'client_profitability':
+      return { rows: [], rowCount: 0, summary: emptyClientProfitabilitySummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);

@@ -105,7 +105,7 @@ export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
 pnpm db:migrate | db:seed | db:check-drift | db:studio
 cd agent && make run
 ```
-Node is pinned to 22.23.2 (`.nvmrc`). No root typecheck script — typecheck runs via turbo/CI.
+Node is pinned to 22.23.4 (`.nvmrc`). No root typecheck script — typecheck runs via turbo/CI.
 
 **Tear down what you bring up** (`pnpm wt-stack down`, `pnpm test-stack down`, compose `down -v`) and say what you left running — see `docs/agents/local-stacks.md`. Deleting a config file? Sweep compose bind mounts in the same PR (`composeBindMounts.test.ts`).
 

@@ -35,12 +35,15 @@ type ThreatDetailData = {
   detectedAt: string;
   filePath: string;
   providerId?: string;
+  provider?: { id?: string; name?: string } | null;
+  removedAt?: string | null;
 };
 type TimelineEvent = {
   id: string;
   title: string;
   description: string;
-  timestamp: string;
+  // Null when the API has no record of when it happened; never invent one.
+  timestamp: string | null;
   icon: ComponentType<{
     className?: string;
   }>;
@@ -132,9 +135,9 @@ export default function ThreatDetail({
     fetchThreat();
   }, [fetchThreat]);
   const threatActionSuccessMessage: Record<"quarantine" | "restore" | "remove", string> = {
-    quarantine: t("securityThreatDetail.quarantineSucceeded"),
-    restore: t("securityThreatDetail.restoreSucceeded"),
-    remove: t("securityThreatDetail.removeSucceeded"),
+    quarantine: t("securityThreatDetail.quarantineQueued"),
+    restore: t("securityThreatDetail.restoreQueued"),
+    remove: t("securityThreatDetail.removeQueued"),
   };
   const performThreatAction = async (action: "quarantine" | "restore" | "remove") => {
     if (!threat) return;
@@ -166,6 +169,9 @@ export default function ThreatDetail({
         icon: AlertTriangle,
       },
     ];
+    // Only events with a real record. The API does not stamp quarantine time
+    // (quarantine leaves resolved_at null), so that entry shows the reported
+    // state without a timestamp; removal is stamped by `removedAt`.
     if (threat.status === "quarantined") {
       events.push({
         id: `${threat.id}-quarantined`,
@@ -173,7 +179,7 @@ export default function ThreatDetail({
         description: t(
           "securityThreatDetail.threatWasMovedToQuarantineByPolicy",
         ),
-        timestamp: threat.detectedAt,
+        timestamp: null,
         icon: ShieldOff,
       });
     }
@@ -184,19 +190,10 @@ export default function ThreatDetail({
         description: t(
           "securityThreatDetail.threatFileWasRemovedFromEndpointStorage",
         ),
-        timestamp: threat.detectedAt,
+        timestamp: threat.removedAt ?? null,
         icon: ShieldCheck,
       });
     }
-    events.push({
-      id: `${threat.id}-review`,
-      title: t("securityThreatDetail.analystReview"),
-      description: t(
-        "securityThreatDetail.reviewRemediationCompletenessAndEndpointHealth",
-      ),
-      timestamp: threat.detectedAt,
-      icon: Clock,
-    });
     return events;
   }, [threat]);
   const formatDateTime = (value: string): string => {
@@ -289,7 +286,9 @@ export default function ThreatDetail({
                   {t("securityThreatDetail.provider")}
                 </p>
                 <p className="text-sm font-medium">
-                  {threat.providerId ?? "unknown"}
+                  {threat.provider?.name ??
+                    threat.providerId ??
+                    t("securityThreatDetail.providerUnknown")}
                 </p>
               </div>
               <div>
@@ -371,9 +370,11 @@ export default function ThreatDetail({
                     <p className="text-xs text-muted-foreground">
                       {event.description}
                     </p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatDateTime(event.timestamp)}
-                    </p>
+                    {event.timestamp && (
+                      <p className="text-xs text-muted-foreground">
+                        {formatDateTime(event.timestamp)}
+                      </p>
+                    )}
                   </div>
                 </div>
               ))}

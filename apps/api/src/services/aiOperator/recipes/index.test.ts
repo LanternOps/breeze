@@ -17,6 +17,8 @@ import {
   getRecipeByKey,
   resolveAdmissionRecipe,
 } from './index';
+import * as registry from './index';
+import type { AnyRecipeDefinition } from './types';
 import { RECIPE_GATE_CLASSES, STEP_KINDS, TARGET_KINDS } from './types';
 import { AI_OPERATOR_TASK_PHASES } from '../../../db/schema/aiOperatorTasks';
 
@@ -88,6 +90,12 @@ describe('registry structural invariants', () => {
       it('fits the workflow_key length CHECK (128, ai_operator_tasks_workflow_key_len_chk)', () => {
         expect(recipe.key.length).toBeLessThanOrEqual(128);
       });
+
+      it('declares consistent R1a-0 recipe data (recipeDataProblems is empty)', () => {
+        const recipeDataProblems = (registry as unknown as { recipeDataProblems: (r: AnyRecipeDefinition) => string[] })
+          .recipeDataProblems;
+        expect(recipeDataProblems(recipe)).toEqual([]);
+      });
     });
   }
 });
@@ -135,5 +143,46 @@ describe('resolveAdmissionRecipe', () => {
   it('refuses a non-integer or negative version rather than coercing it', () => {
     expect(resolveAdmissionRecipe('service_recovery', 1.5)).toMatchObject({ ok: false, reason: 'version_mismatch' });
     expect(resolveAdmissionRecipe('service_recovery', -1)).toMatchObject({ ok: false, reason: 'version_mismatch' });
+  });
+});
+
+// ---- R1a-0 Task 1c: planningSnapshotStepKey / unobservableEffects / entryStepKey ----
+describe('recipeDataProblems (R1a-0 Task 1c)', () => {
+  const recipeDataProblems = (r: unknown) =>
+    (registry as unknown as { recipeDataProblems: (r: unknown) => string[] }).recipeDataProblems(r);
+  const fixture = (over: Record<string, unknown>) => ({
+    ...(RECIPES.service_recovery as unknown as Record<string, unknown>),
+    key: 'fixture_recipe',
+    ...over,
+  });
+
+  it('reports exactly a dangling entryStepKey and a self-subsuming unobservable effect', () => {
+    const problems = recipeDataProblems(fixture({
+      entryStepKey: 'intake',
+      unobservableEffects: { google_signout: 'google_signout' },
+    }));
+    expect(problems).toHaveLength(2);
+    expect(problems.join('\n')).toContain("entryStepKey 'intake'");
+    expect(problems.join('\n')).toContain("'google_signout' cannot subsume itself");
+  });
+
+  it('reports a planningSnapshotStepKey that names no declared step', () => {
+    const problems = recipeDataProblems(fixture({ planningSnapshotStepKey: 'discover' }));
+    expect(problems).toEqual([expect.stringContaining("planningSnapshotStepKey 'discover'")]);
+  });
+
+  it('accepts keys that name declared steps and a distinct subsumer', () => {
+    expect(recipeDataProblems(fixture({
+      entryStepKey: 'investigate',
+      planningSnapshotStepKey: 'observe',
+      unobservableEffects: { google_signout: 'google_suspend_user' },
+    }))).toEqual([]);
+  });
+
+  it('service_recovery declares none of the three fields', () => {
+    const sr = RECIPES.service_recovery as unknown as Record<string, unknown>;
+    expect(Object.hasOwn(sr, 'planningSnapshotStepKey')).toBe(false);
+    expect(Object.hasOwn(sr, 'unobservableEffects')).toBe(false);
+    expect(Object.hasOwn(sr, 'entryStepKey')).toBe(false);
   });
 });
