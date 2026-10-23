@@ -113,6 +113,43 @@ describe('sensitive-data PoliciesTab (#9697, #9683)', () => {
     expect(JSON.parse(String(put[1]?.body)).schedule).toMatchObject({ type: 'cron', cron: '0 2 * * *', enabled: false });
   });
 
+  it('preserves a stored timezone and deviceIds on edit and previews in that zone', async () => {
+    const deviceId = '11111111-1111-4111-8111-111111111111';
+    routeList([{
+      ...POLICY,
+      schedule: { type: 'cron', cron: '0 2 * * *', timezone: 'America/Chicago', deviceIds: [deviceId] },
+    }]);
+    render(<PoliciesTab />);
+    const row = (await screen.findByText('Find credentials')).closest('tr') as HTMLElement;
+    expect(row).toHaveTextContent('0 2 * * * (America/Chicago)');
+    fireEvent.click(row.querySelectorAll('button')[1]);
+
+    expect(await screen.findByText('Cron Expression (America/Chicago)')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true));
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')!;
+    expect(JSON.parse(String(put[1]?.body)).schedule).toMatchObject({
+      timezone: 'America/Chicago',
+      deviceIds: [deviceId],
+    });
+  });
+
+  it('clears rows when a refetch after load is denied', async () => {
+    let calls = 0;
+    fetchMock.mockImplementation(async (rawUrl: string | URL | Request, init?: RequestInit) => {
+      if (!init?.method && String(rawUrl) === '/sensitive-data/policies') {
+        calls += 1;
+        return calls === 1 ? jsonRes({ data: [POLICY] }) : jsonRes({ error: 'denied' }, 403);
+      }
+      return jsonRes({ success: true });
+    });
+    render(<PoliciesTab />);
+    const row = (await screen.findByText('Find credentials')).closest('tr') as HTMLElement;
+    fireEvent.click(row.querySelectorAll('button')[0]); // active toggle → refetch
+    expect(await screen.findByText(/You don't have access to this organization/i)).toBeInTheDocument();
+    expect(screen.queryByText('Find credentials')).not.toBeInTheDocument();
+  });
+
   it('does not invent schedule.enabled for a policy that never had it', async () => {
     routeList([{ ...POLICY, schedule: { type: 'cron', cron: '0 2 * * *' } }]);
     render(<PoliciesTab />);

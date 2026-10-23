@@ -63,10 +63,15 @@ export default function CreateScanModal({ onClose, onCreated }: CreateScanModalP
       return;
     }
     if (!deviceOptions.canSubmit) {
+      // `error` needs the picker's Retry; waiting would never resolve it.
       setError(
-        t('sensitiveDataCreateScanModal.errors.devicesNotReady', {
-          defaultValue: 'The device list is still loading or incomplete. Wait for it to finish, then try again.',
-        }),
+        deviceOptions.state === 'error'
+          ? t('sensitiveDataCreateScanModal.errors.devicesLoadFailed', {
+              defaultValue: 'The device list could not be loaded. Use Retry in the device list, then try again.',
+            })
+          : t('sensitiveDataCreateScanModal.errors.devicesNotReady', {
+              defaultValue: 'The device list is still loading or incomplete. Wait for it to finish, then try again.',
+            }),
       );
       return;
     }

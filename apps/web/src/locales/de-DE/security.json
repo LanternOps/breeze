@@ -1334,7 +1334,8 @@
     "errors": {
       "createScan": "Scan konnte nicht erstellt werden",
       "devicesRequired": "Wählen Sie mindestens ein Gerät aus",
-      "devicesNotReady": "Die Geräteliste wird noch geladen oder ist unvollständig. Warten Sie, bis sie fertig ist, und versuchen Sie es erneut."
+      "devicesNotReady": "Die Geräteliste wird noch geladen oder ist unvollständig. Warten Sie, bis sie fertig ist, und versuchen Sie es erneut.",
+      "devicesLoadFailed": "Die Geräteliste konnte nicht geladen werden. Verwenden Sie „Wiederholen“ in der Geräteliste und versuchen Sie es erneut."
     },
     "title": "Scan erstellen",
     "form": {
@@ -1451,7 +1452,8 @@
       "intervalMinutes": "Intervall (Minuten)",
       "cronPlaceholder": "0 2 * * *",
       "cronExpressionUtc": "Cron-Ausdruck (UTC)",
-      "cronNextRun": "Nächste Ausführung (Ihre Ortszeit): {{time}}"
+      "cronNextRun": "Nächste Ausführung (Ihre Ortszeit): {{time}}",
+      "cronExpressionZone": "Cron-Ausdruck ({{zone}})"
     },
     "schedule": {
       "manual": "Manuell",

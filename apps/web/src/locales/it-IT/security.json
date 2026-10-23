@@ -1334,7 +1334,8 @@
     "errors": {
       "createScan": "Impossibile creare la scansione",
       "devicesRequired": "Seleziona almeno un dispositivo",
-      "devicesNotReady": "L'elenco dei dispositivi è ancora in caricamento o incompleto. Attendi il completamento e riprova."
+      "devicesNotReady": "L'elenco dei dispositivi è ancora in caricamento o incompleto. Attendi il completamento e riprova.",
+      "devicesLoadFailed": "Impossibile caricare l'elenco dei dispositivi. Usa Riprova nell'elenco dei dispositivi, poi riprova."
     },
     "title": "Crea scansione",
     "form": {
@@ -1451,7 +1452,8 @@
       "intervalMinutes": "Intervallo (minuti)",
       "cronPlaceholder": "0 2 * * *",
       "cronExpressionUtc": "Espressione cron (UTC)",
-      "cronNextRun": "Prossima esecuzione (ora locale): {{time}}"
+      "cronNextRun": "Prossima esecuzione (ora locale): {{time}}",
+      "cronExpressionZone": "Espressione cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manuale",

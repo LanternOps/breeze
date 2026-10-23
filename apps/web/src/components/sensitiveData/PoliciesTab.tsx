@@ -39,6 +39,10 @@ type FormState = {
   // sends it back unchanged — the API defaults a missing value to `true`, which
   // would silently re-enable a paused schedule (#9683). undefined = never set.
   scheduleEnabled?: boolean;
+  // Stored but not editable here; the API replaces `schedule` wholesale on PUT,
+  // so they must be sent back or an edit silently resets them.
+  scheduleTimezone?: string;
+  scheduleDeviceIds?: string[];
 };
 
 /** Next cron firing as a browser-local string, or null when it cannot be computed. */
@@ -135,6 +139,10 @@ export default function PoliciesTab() {
       intervalMinutes: typeof schedule?.intervalMinutes === 'number' ? schedule.intervalMinutes : 60,
       cron: typeof schedule?.cron === 'string' ? schedule.cron : '',
       scheduleEnabled: typeof schedule?.enabled === 'boolean' ? schedule.enabled : undefined,
+      scheduleTimezone: typeof schedule?.timezone === 'string' && schedule.timezone ? schedule.timezone : undefined,
+      scheduleDeviceIds: Array.isArray(schedule?.deviceIds)
+        ? (schedule.deviceIds as unknown[]).filter((v): v is string => typeof v === 'string')
+        : undefined,
     });
     setShowForm(true);
   };
@@ -170,6 +178,8 @@ export default function PoliciesTab() {
       if (form.scheduleType === 'interval') schedule.intervalMinutes = form.intervalMinutes;
       if (form.scheduleType === 'cron') schedule.cron = form.cron;
       if (editingId && form.scheduleEnabled !== undefined) schedule.enabled = form.scheduleEnabled;
+      if (editingId && form.scheduleTimezone) schedule.timezone = form.scheduleTimezone;
+      if (editingId && form.scheduleDeviceIds?.length) schedule.deviceIds = form.scheduleDeviceIds;
 
       const body = {
         name: form.name,
@@ -259,7 +269,8 @@ export default function PoliciesTab() {
 
   if (forbidden) return <SensitiveDataAccessDenied />;
 
-  const formCronNextRun = form.scheduleType === 'cron' ? nextCronRunLabel(form.cron) : null;
+  const formCronNextRun = form.scheduleType === 'cron' ? nextCronRunLabel(form.cron, form.scheduleTimezone) : null;
+  const cronZone = form.scheduleTimezone || 'UTC';
 
   return (
     <>
@@ -406,9 +417,14 @@ export default function PoliciesTab() {
               {form.scheduleType === 'cron' && (
                 <div>
                   <label className="text-sm font-medium">
-                    {t('sensitiveDataPoliciesTab.form.cronExpressionUtc', {
-                      defaultValue: 'Cron Expression (UTC)',
-                    })}
+                    {cronZone === 'UTC'
+                      ? t('sensitiveDataPoliciesTab.form.cronExpressionUtc', {
+                          defaultValue: 'Cron Expression (UTC)',
+                        })
+                      : t('sensitiveDataPoliciesTab.form.cronExpressionZone', {
+                          defaultValue: 'Cron Expression ({{zone}})',
+                          zone: cronZone,
+                        })}
                   </label>
                   <input
                     value={form.cron}

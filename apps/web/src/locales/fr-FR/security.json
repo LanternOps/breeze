@@ -1334,7 +1334,8 @@
     "errors": {
       "createScan": "Impossible de créer un scan",
       "devicesRequired": "Sélectionnez au moins un appareil",
-      "devicesNotReady": "La liste des appareils est encore en cours de chargement ou est incomplète. Attendez la fin du chargement, puis réessayez."
+      "devicesNotReady": "La liste des appareils est encore en cours de chargement ou est incomplète. Attendez la fin du chargement, puis réessayez.",
+      "devicesLoadFailed": "La liste des appareils n'a pas pu être chargée. Utilisez Réessayer dans la liste des appareils, puis réessayez."
     },
     "title": "Créer un balayage",
     "form": {
@@ -1451,7 +1452,8 @@
       "intervalMinutes": "Intervalle (minutes)",
       "cronPlaceholder": "0 2 * * *",
       "cronExpressionUtc": "Expression cron (UTC)",
-      "cronNextRun": "Prochaine exécution (votre heure locale) : {{time}}"
+      "cronNextRun": "Prochaine exécution (votre heure locale) : {{time}}",
+      "cronExpressionZone": "Expression cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manuel",

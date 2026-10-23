@@ -1334,7 +1334,8 @@
     "errors": {
       "createScan": "Tarama oluşturulamadı",
       "devicesRequired": "En az bir cihaz seçin",
-      "devicesNotReady": "Cihaz listesi hâlâ yükleniyor veya eksik. Tamamlanmasını bekleyin ve tekrar deneyin."
+      "devicesNotReady": "Cihaz listesi hâlâ yükleniyor veya eksik. Tamamlanmasını bekleyin ve tekrar deneyin.",
+      "devicesLoadFailed": "Cihaz listesi yüklenemedi. Cihaz listesindeki Yeniden dene düğmesini kullanın, ardından tekrar deneyin."
     },
     "title": "Tarama Oluştur",
     "form": {
@@ -1451,7 +1452,8 @@
       "intervalMinutes": "Aralık (dakika)",
       "cronPlaceholder": "0 2 * * *",
       "cronExpressionUtc": "Cron İfadesi (UTC)",
-      "cronNextRun": "Sonraki çalışma (yerel saatiniz): {{time}}"
+      "cronNextRun": "Sonraki çalışma (yerel saatiniz): {{time}}",
+      "cronExpressionZone": "Cron İfadesi ({{zone}})"
     },
     "schedule": {
       "manual": "Manuel",

@@ -1334,7 +1334,8 @@
     "errors": {
       "createScan": "No se pudo crear el escaneo",
       "devicesRequired": "Selecciona al menos un dispositivo",
-      "devicesNotReady": "La lista de dispositivos aún se está cargando o está incompleta. Espera a que termine e inténtalo de nuevo."
+      "devicesNotReady": "La lista de dispositivos aún se está cargando o está incompleta. Espera a que termine e inténtalo de nuevo.",
+      "devicesLoadFailed": "No se pudo cargar la lista de dispositivos. Usa Reintentar en la lista de dispositivos e inténtalo de nuevo."
     },
     "title": "Crear escaneo",
     "form": {
@@ -1451,7 +1452,8 @@
       "intervalMinutes": "Intervalo (minutos)",
       "cronPlaceholder": "0 2 * * *",
       "cronExpressionUtc": "Expresión cron (UTC)",
-      "cronNextRun": "Próxima ejecución (tu hora local): {{time}}"
+      "cronNextRun": "Próxima ejecución (tu hora local): {{time}}",
+      "cronExpressionZone": "Expresión cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",

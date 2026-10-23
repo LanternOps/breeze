@@ -1334,7 +1334,8 @@
     "errors": {
       "createScan": "Falha ao criar varredura",
       "devicesRequired": "Selecione pelo menos um dispositivo",
-      "devicesNotReady": "A lista de dispositivos ainda está carregando ou está incompleta. Aguarde a conclusão e tente novamente."
+      "devicesNotReady": "A lista de dispositivos ainda está carregando ou está incompleta. Aguarde a conclusão e tente novamente.",
+      "devicesLoadFailed": "Não foi possível carregar a lista de dispositivos. Use Tentar novamente na lista de dispositivos e tente de novo."
     },
     "title": "Criar varredura",
     "form": {
@@ -1451,7 +1452,8 @@
       "intervalMinutes": "Intervalo (minutos)",
       "cronPlaceholder": "0 2 * * *",
       "cronExpressionUtc": "Expressão cron (UTC)",
-      "cronNextRun": "Próxima execução (seu horário local): {{time}}"
+      "cronNextRun": "Próxima execução (seu horário local): {{time}}",
+      "cronExpressionZone": "Expressão cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",

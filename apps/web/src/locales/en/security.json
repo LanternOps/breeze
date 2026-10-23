@@ -1334,7 +1334,8 @@
     "errors": {
       "createScan": "Failed to create scan",
       "devicesRequired": "Select at least one device",
-      "devicesNotReady": "The device list is still loading or incomplete. Wait for it to finish, then try again."
+      "devicesNotReady": "The device list is still loading or incomplete. Wait for it to finish, then try again.",
+      "devicesLoadFailed": "The device list could not be loaded. Use Retry in the device list, then try again."
     },
     "title": "Create Scan",
     "form": {
@@ -1451,7 +1452,8 @@
       "intervalMinutes": "Interval (minutes)",
       "cronPlaceholder": "0 2 * * *",
       "cronExpressionUtc": "Cron Expression (UTC)",
-      "cronNextRun": "Next run (your local time): {{time}}"
+      "cronNextRun": "Next run (your local time): {{time}}",
+      "cronExpressionZone": "Cron Expression ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",

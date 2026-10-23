@@ -6,6 +6,8 @@ import CreateScanModal from './CreateScanModal';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+const pickerState = vi.hoisted(() => ({ canSubmit: true, state: 'ready' as string }));
+
 vi.mock('../../hooks/useDeviceOptions', () => ({
   useDeviceOptions: () => ({
     options: [
@@ -20,9 +22,9 @@ vi.mock('../../hooks/useDeviceOptions', () => ({
       },
     ],
     page: { hasMore: false },
-    state: 'ready',
+    state: pickerState.state,
     error: null,
-    canSubmit: true,
+    canSubmit: pickerState.canSubmit,
     loadMore: async () => {},
     retry: () => {},
   }),
@@ -34,6 +36,8 @@ const res = (payload: unknown, status = 200) =>
 
 describe('CreateScanModal device targets (#9683)', () => {
   beforeEach(() => {
+    pickerState.canSubmit = true;
+    pickerState.state = 'ready';
     fetchMock.mockReset();
     fetchMock.mockImplementation(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === 'POST') return res({ data: { scans: [{ id: 's1', deviceId: 'dev-1', orgId: 'o' }] } });
@@ -52,6 +56,20 @@ describe('CreateScanModal device targets (#9683)', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')!;
     expect(JSON.parse(String(post[1]?.body)).deviceIds).toEqual(['dev-1']);
+  });
+
+  it.each([
+    ['loading', 'still loading or incomplete'],
+    ['error', 'could not be loaded'],
+  ])('blocks submit while the picker cannot submit (%s)', async (state, message) => {
+    pickerState.canSubmit = false;
+    pickerState.state = state;
+    render(<CreateScanModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Alpha PC/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Scan' }));
+
+    expect(await screen.findByText(new RegExp(message))).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
   it('blocks submit with no device selected', async () => {
