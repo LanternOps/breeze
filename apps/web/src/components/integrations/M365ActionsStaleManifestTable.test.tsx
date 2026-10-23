@@ -74,6 +74,7 @@ describe("M365ActionsStaleManifestTable", () => {
     await screen.findByTestId("m365-stale-manifest-table");
     expect(fetchWithAuthMock).toHaveBeenCalledWith(
       "/m365/customer-graph-actions/connections/stale-manifest",
+      { skipOrgIdInjection: true },
     );
   });
 
