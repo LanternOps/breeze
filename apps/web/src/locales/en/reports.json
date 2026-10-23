@@ -42,7 +42,7 @@
           "title": "Alert Statistics"
         },
         "capacity": {
-          "title": "Capacity Forecast"
+          "title": "Disk Capacity Forecast"
         },
         "complianceGauge": {
           "policiesEvaluated": "{{count}} policies evaluated",
@@ -63,7 +63,7 @@
           "title": "Remote Sessions"
         },
         "uptime": {
-          "label": "Fleet uptime",
+          "label": "Online now",
           "title": "Uptime"
         }
       }
@@ -105,6 +105,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Critical {{value}}",
+      "noData": "No compliance checks to evaluate",
       "warnValue": "Warn {{value}}"
     },
     "queryBuilder": {
@@ -115,7 +116,8 @@
         "p95": "P95",
         "sum": "Sum"
       },
-      "description": "Configure metrics and aggregation for your dashboard",
+      "coverageNote": "Queries cover the first {{count}} online devices only. Offline devices and the rest of a larger fleet are not included.",
+      "description": "Choose a metric and aggregation to query across your online devices",
       "errors": {
         "failedToExecuteQuery": "Failed to execute query",
         "noDevicesSelected": "No devices selected for query"

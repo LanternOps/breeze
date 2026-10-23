@@ -185,12 +185,10 @@ describe('updateRings routes', () => {
         // approval counts
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              groupBy: vi.fn().mockResolvedValue([
-                { status: 'approved', count: 5 },
-                { status: 'pending', count: 2 }
-              ])
-            })
+            where: vi.fn().mockResolvedValue([
+              { patchId: 'p1', status: 'approved', ringId: null, updatedAt: new Date('2026-02-01') },
+              { patchId: 'p2', status: 'pending', ringId: RING_ID, updatedAt: new Date('2026-02-01') }
+            ])
           })
         } as any)
         // recent jobs
@@ -228,7 +226,7 @@ describe('updateRings routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+            where: vi.fn().mockResolvedValue([])
           })
         } as any)
         .mockReturnValueOnce({
@@ -305,12 +303,10 @@ describe('updateRings routes', () => {
             })
           })
         } as any)
-        // approval counts
+        // approval rows
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              groupBy: vi.fn().mockResolvedValue([])
-            })
+            where: vi.fn().mockResolvedValue([])
           })
         } as any)
         // recent jobs

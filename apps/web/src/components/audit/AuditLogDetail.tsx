@@ -17,7 +17,7 @@ export type AuditLogEntry = {
     name: string;
     email: string;
     role: string;
-    department: string;
+    department?: string;
   };
   changes: {
     before: Record<string, unknown>;
@@ -120,9 +120,11 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
               <div className="mt-4 space-y-2 text-sm text-muted-foreground">
                 <p className="wrap-break-word text-base font-semibold text-foreground">{entry.user.name}</p>
                 <p className="break-all">{entry.user.email}</p>
-                <p className="wrap-break-word">
-                  {entry.user.role} - {entry.user.department}
-                </p>
+                {[entry.user.role, entry.user.department].filter(Boolean).length > 0 && (
+                  <p className="wrap-break-word">
+                    {[entry.user.role, entry.user.department].filter(Boolean).join(' - ')}
+                  </p>
+                )}
               </div>
             </div>
 
