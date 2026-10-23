@@ -15,8 +15,8 @@ on:
       - .github/actions/tauri-apt-cache/**
       - .github/workflows/tauri-apt-cache-seed.yml
   schedule:
-    # Daily: refreshes the cache entry (GitHub evicts entries unused for 7 days)
-    # and picks up Ubuntu archive updates. The key is distro (ImageOS) + package
+    # Daily: keeps the cache entry alive (GitHub evicts entries unused for 7
+    # days) and re-seeds it if it was evicted. The key is distro (ImageOS) + package
     # list, so any image patch level restores it (#9847).
     - cron: '17 5 * * *'
   workflow_dispatch:
@@ -44,7 +44,7 @@ jobs:
         uses: ./.github/actions/tauri-apt-cache
 
       # Same distro release + same package list as the CI job, so `--download-only`
-      # fetches exactly the closure CI's install would. Not on any PR's
+      # fetches the same closure CI's install would (modulo archive drift). Not on any PR's
       # critical path, so generous retries are fine.
       - name: Download Tauri system dependencies
         if: steps.cache.outputs.cache-hit != 'true'
