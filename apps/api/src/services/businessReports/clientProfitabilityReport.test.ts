@@ -348,6 +348,24 @@ describe('generateClientProfitabilityReport', () => {
     expect(calls[3]!.sql).toContain('/* profitability:invoice_detail */');
   });
 
+  it('detail rows (the CSV) have a fixed column order and marginPct rounded to 1 decimal of a percent', async () => {
+    queueExecute(NAMES, [
+      fold(ORG_A, 'USD', 'product', { revenue: '500.00', cbr: '500.00', cost: '333.33' }),
+    ], [hours(ORG_A, 'USD', 300, 240, 60)]);
+    const s = await run({});
+    const row = s.rows[0]!;
+    expect(Object.keys(row)).toEqual([
+      'orgName', 'orgId', 'invoiceNumber', 'invoiceId', 'issueDate', 'currencyCode',
+      'revenue', 'cost', 'grossMargin', 'marginPct', 'costCoveragePct', 'unknownCostRevenue',
+      'recurringRevenue', 'laborRevenue', 'productRevenue', 'aiRevenue', 'otherRevenue',
+      'hoursTotal', 'hoursBillable', 'hoursIncluded', 'hoursNonBillable',
+      'effectiveServiceRate', 'estimatedContributionAfterLabor',
+    ]);
+    expect(row.marginPct).toBe(0.333);
+    // Only the CSV row is rounded; the structured summary keeps full precision.
+    expect(s.orgs[0]!.money[0]!.marginPct).not.toBe(0.333);
+  });
+
   it('partner scope: every statement in the partner context; the name read binds the partner axis', async () => {
     ctx.current = { scope: 'partner', partnerId: PARTNER, accessibleOrgIds: [ORG_A, ORG_B], accessiblePartnerIds: [PARTNER] };
     queueExecute(NAMES, WORKED_FOLD, WORKED_HOURS);
