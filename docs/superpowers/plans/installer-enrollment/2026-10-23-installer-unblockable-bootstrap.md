@@ -40,11 +40,11 @@ depends_on: "#8868 W2 (Windows one-liner catch), for W4b only"
 
 ## Review Focus
 
-1. **A self-signed / private-CA self-host server behind a TLS interceptor on a non-English Windows box.** The fallback must not engage. Certificate classification is structural (exception type, `WebExceptionStatus.TrustFailure`, HResult family), never message text. → Task 13 `classifier: AuthenticationException in the inner chain is never transport`, and an HResult case.
-2. **The metadata call succeeds, then the binary download fails at transport.** The whole run must switch: `$expectedSha` and the URL both come from the anchor. Mixing them always fails closed and looks like tampering. → Task 13 `switches the whole run when the download fails after metadata succeeded`, and Task 11 `install.sh: metadata ok, binary transport failure → fallback for binary and backup`.
-3. **A command pasted months ago with an expired anchor, run on a blocked network.** The output must be today's error message, not a fallback attempt, and not a crash from parsing the anchor. → Tasks 11, 12 and 13 `expired anchor → primary error unchanged`.
-4. **Re-running the one-liner on a device that has a newer agent (fallback mode).** The newer binary must be kept, and `enroll` runs with it. A Linux reinstall must not overwrite it. → Task 11 `floor keeps a newer installed agent`, and Task 13 `floor`.
-5. **A self-host BYO fork whose release lacks the macOS pkgs (no macOS signing), or whose repo is private.** Minting must still succeed. The anchor is `null` with one WARN log, and commands are byte-identical to today. → Task 3 `missing consumed asset → null`, and Task 6 `builder error never fails the mint`.
+1. **A self-signed / private-CA self-host server behind a TLS interceptor on a non-English Windows box.** The fallback must not engage. Certificate classification is structural (exception type, `WebExceptionStatus.TrustFailure`, HResult family), never message text. → Task 13 `AuthenticationException inner → false`, `a localized (German) AuthenticationException message → false`, and `SecureChannelFailure wrapping HResult 0x800B0101 (expired) → false`.
+2. **The metadata call succeeds, then the binary download fails at transport.** The whole run must switch: `$expectedSha` and the URL both come from the anchor. Mixing them always fails closed and looks like tampering. → Task 13 `switches the whole run when the download fails after metadata succeeded`, and Task 11 `metadata ok, binary download transport failure → binary and backup come from the fallback`.
+3. **A command pasted months ago with an expired anchor, run on a blocked network.** The output must be today's error message, not a fallback attempt, and not a crash from parsing the anchor. → Task 11 `expired anchor → no fallback, today's message`, Task 12 `expired → today's [ERROR]`, and Task 13 `expired anchor with a transport failure → #8868's message, no fallback`.
+4. **Re-running the one-liner on a device that has a newer agent (fallback mode).** The newer binary must be kept, and `enroll` runs with it. A Linux reinstall must not overwrite it. → Task 11 `floor: installed v9.9.9 shim → kept…`, and Task 13 `a newer installed agent → reuse branch…`.
+5. **A self-host BYO fork whose release lacks the macOS pkgs (no macOS signing), or whose repo is private.** Minting must still succeed. The anchor is `null` with one WARN log, and commands are byte-identical to today. → Task 3 `missing consumed asset → null`, and Task 6 `a service rejection never fails the mint (still 200 with a token)`.
 
 ---
 
@@ -57,12 +57,12 @@ depends_on: "#8868 W2 (Windows one-liner catch), for W4b only"
 | **W2b** self-host mirror mode | Onboarding-token returns `installFallback`. `installPath` intake and counter. Web consumers pass the anchor through. Commands are unchanged. | No | Opus | W1, W2a (the anchor stays `null` until a promoted release's signed manifest carries `install.sh` and `installFallbackInterface: 1`, i.e. the first full release after W4a) | — |
 | **W3** agent | `BREEZE_INSTALL_PATH` → `installPath`, plus the empty-installer-path bootstrap case for the macOS app. | **Yes** (agent binary) | Opus | — | **Yes**: the §7.2 enroll leg before the agent release promotes |
 | **W4a** Unix one-liner + `install.sh` fallback mode | Spec §3.3–3.5 for macOS/Linux. | **Yes** (root installer) | Opus | W2a, W2b | **Yes**: §7.2 Linux and macOS legs before the server release that carries it |
-| **W4b** Windows one-liner | Spec §3.5 Windows. | **Yes** (SYSTEM PowerShell) | Opus | W2b, **#8868 W2**, W7 | **Yes**: §7.2 Windows legs (SYSTEM, PS 5.1 on Server 2016, non-English locale behind an interceptor) |
+| **W4b** Windows one-liner | Spec §3.5 Windows. | **Yes** (SYSTEM PowerShell) | Opus | W2b, **#8868 W2**, W7. Live anchors also need the first full release after W4a, because the anchor is all-or-nothing. | **Yes**: §7.2 Windows legs (SYSTEM, PS 5.1 on Server 2016, non-English locale behind an interceptor) |
 | **W5** macOS app | Classification, consent, agent redemption. | **Yes** (notarized app) | Opus | W3 (only for telemetry; it works without) | **Yes**: §7.2 macOS app leg before the release that carries the app |
 | **W6** hosted mode behind the repository gate | Hosted source resolution and the `distribution` requirement. Publish-contract doc. Dark. | No (config stays `off`) | Opus | W1, W2b | Enabling it is Todd's Gate H (below) |
 | **W7** command-length budget test | D7 budget test. | No | Sonnet | — | — |
 
-W7 has no dependencies. Merge it early, because W4b's exit criterion is that W7 stays green. Each PR branches from fresh `origin/main` with the title prefix `feat(installer):` and the body `Refs #8874`. The last PR to land (W4b or W5) carries `Closes #8874` only if the others have merged; otherwise every body says `Refs`.
+W7 has no dependencies. It lands the null-anchor ceilings and the helper; W4a adds the anchored unix row and W4b adds the anchored Windows row. Merge it early. Each PR branches from fresh `origin/main` with the title prefix `feat(installer):` and the body `Refs #8874`. The last PR to land (W4b or W5) carries `Closes #8874` only if the others have merged; otherwise every body says `Refs`.
 
 ### The private pipeline's publish contract (interface only)
 
@@ -129,8 +129,8 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
   - `deploy/docker-compose.prod.yml` (~L288): same line
   - `.env.example` and `deploy/.env.example`: a commented entry with a one-paragraph explanation
   - `apps/api/src/system/connections/registry.ts`: add to the `agent-binaries` entry's `vars` (~L595–610)
-  - `apps/docs/src/content/docs/deploy/environment.mdx`: a row for the new var
-- Modify: `apps/api/src/__tests__/parkedFanoutModules.ts` / `parkedFanout.contract.test.ts` (classify the new `services/installFallback/*` files; CI trap)
+  - `apps/docs/src/content/docs/deploy/environment.mdx`: a row for the new var. It names `off` as the rollback for every deployment: new anchors become `null` at once, and already-copied commands keep theirs until `validUntil` (spec §7.4).
+- Run (do not pre-emptively edit): `apps/api/src/__tests__/parkedFanout.contract.test.ts`. It discovers only service files that read `devices` or carry Quick Support markers (`DEVICE_READ` / `EXCLUSION_MARKERS`, ~L78–107) and rejects stale entries (~L476–490). The new files read `agent_versions`, env and the metrics registry, so expect no entry. Add one only if the test names the file.
 
 **Interfaces:**
 - Produces:
@@ -150,7 +150,7 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
     - `explicit mirror on hosted → off` (hosted may only use a GitHub repo)
     - `unparseable value → off`
   - `validate.test.ts`:
-    - `production: hosted + INSTALLER_FALLBACK_SOURCE resolving to the official repo is a boot error` (both the explicit `https://github.com/lanternops/breeze` and `auto` with `BINARY_SOURCE=github` forced; path `['INSTALLER_FALLBACK_SOURCE']`)
+    - `production: hosted + INSTALLER_FALLBACK_SOURCE resolving to the official repo is a boot error` (explicit `https://github.com/lanternops/breeze`, matching `OFFICIAL_RELEASE_REPOSITORY`, case-insensitive; path `['INSTALLER_FALLBACK_SOURCE']`). `auto` needs no new rule: hosted already requires `BINARY_SOURCE=local` (`validate.ts` ~L1646–1654), and `auto + local` is off.
     - `production: hosted + explicit non-GitHub mirror is a boot error`
     - `any env: a malformed value is a boot error` (`ftp://…`, `https://u@x.example/`, `https://x.example/?a`)
     - `self-host + explicit mirror is valid`
@@ -227,7 +227,7 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
 - Create: `apps/api/src/services/installScript.ts`, which resolves the path with the same cwd-then-`__dirname` candidate order as `documentThemes.ts`'s font resolver (L30–50)
 - Modify: `apps/api/src/routes/agents/download.ts` (route L740–761 reads the asset; delete `generateInstallScript` L946–1521)
 - Modify: `apps/api/src/routes/agents/download.test.ts` (tests that asserted the server URL in usage comments now assert the placeholder)
-- Modify: `apps/api/src/__tests__/parkedFanoutModules.ts` (classify `services/installScript.ts`)
+- Run: the parkedFanout contract test (no entry expected; see Task 2)
 
 **Interfaces:**
 - Produces: `loadInstallScript(): string`. The file is read once and cached in module scope, and the function throws a clear `Error('install.sh asset not found; looked in: …')` if it is missing. `INSTALL_SCRIPT_ASSET_RELATIVE_PATH = 'assets/scripts/install.sh'`.
@@ -237,7 +237,7 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
   - `keeps text/plain, Cache-Control no-cache, the install-script-download rate limit, and 503 when no server URL is configured` (the last three already exist; keep them green)
   - `both API Dockerfiles copy apps/api/assets into the runtime image`. Read `docker/Dockerfile.api` and `apps/api/Dockerfile` and assert a `COPY` of `apps/api/assets` in the runtime stage. This guards against the asset silently missing from the image, because tsup does not bundle it.
   - The existing `bash -n` syntax test now reads the asset.
-- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/routes/agents/download.test.ts`. Expected: FAIL (asset missing).
+- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/routes/agents/download.test.ts`. Expected: the byte-identity test FAILs (asset missing). The Dockerfile guard passes immediately, because both Dockerfiles already copy `apps/api/assets` (`docker/Dockerfile.api` ~L85, `apps/api/Dockerfile` ~L72). Prove it discriminates by temporarily deleting one `COPY` line, watching it go red, and reverting.
 - [ ] **Step 3: Implement.** Produce the asset by rendering `generateInstallScript('https://breeze.example.com')` once and writing the output. Then `diff` the asset against a render with a real-looking URL. The only differing lines must be the six usage-comment lines. Paste that diff summary into the PR body.
 - [ ] **Step 4: Run** the Step 2 command, plus `npx vitest run src/routes/agents/downloadRateLimits.test.ts`, plus the parkedFanout contract test and the `apps/api` typecheck. Expected: PASS, `exit=0`.
 - [ ] **Step 5: Commit** `refactor(api): serve install.sh from a checked-in asset (#8874)`.
@@ -251,7 +251,8 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
   - Step "Verify server-only release assets" (~L3142–3217): assert `install.sh` is absent.
   - Manifest generator (Python heredoc ~L2827–3006): set top-level `installFallbackInterface: 1` iff `release-assets/install.sh` contains the exact line `# breeze-install-fallback: 1`. Until W4a adds the marker, the key is omitted, so anchors stay `null` (`interface_missing`) even after W2b deploys.
 - Modify: `scripts/release/release-workflow-server-only.test.mjs` (the executed-generator test "manifest: a full release differs from today only by…" ~L578 gains `install.sh` in its expected asset set)
-- Modify: `docs/runbooks/2026-08-29-release-lineage-promotion.md`. Add a `## Yanking a bad release` section: deleting a release's assets from its artifact source makes every anchor pinned to it fail closed; the console then re-mints anchors for the next promoted release.
+- Modify: `docs/runbooks/2026-08-29-release-lineage-promotion.md`. Add a `## Yanking a bad release` section with two steps. First, delete the release's assets from its artifact source, which makes every already-copied anchor pinned to it fail closed. Second, promote a good release (or roll `isLatest` back), because new anchors follow the promoted row and keep pointing at the yanked release until it changes.
+- Modify: `scripts/release/binary-affecting-paths.txt` (add `apps/api/assets/scripts/install.sh`), with a case in `binary-affecting-paths.coverage.test.mjs`
 
 - [ ] **Step 1: Write failing tests** in `release-workflow-server-only.test.mjs`:
   - `full release: prepare step copies apps/api/assets/scripts/install.sh into release-assets` (`stepRun` text assertion)
@@ -291,10 +292,11 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
 - [ ] **Step 1: Write failing tests.**
   - `index.test.ts` (DB mocked as in `devices.test.ts`):
     - `self-host github with a schema-1 manifest row → anchor`
-    - `local per-binary manifest row + a valid volume manifest pair → anchor` (step 2)
+    - `local mode with explicit INSTALLER_FALLBACK_SOURCE (mirror) + per-binary manifest row + a valid volume manifest pair → anchor` (step 2). Local mode needs an explicit source; `auto + local` is off (spec §3.8).
     - `local per-binary manifest row + no volume pair → null (no_manifest)`
     - `BYO GitHub fork: row carries a deployment-signed per-asset manifest → fetches the release manifest pair once, verifies it, returns an anchor; a second mint within 1 h does not refetch` (step 3; build the row with the real `applyDeploymentSigning` output shape)
     - `GitHub manifest fetch times out → null, mint unaffected`
+    - `step-3 manifest is server-only → null (not_binaries_release)`. By design, the anchor resolves through the promoted row's tag, which is always a binaries release, so `binariesRelease` is never followed.
     - `db throws → null, no throw`
     - `INSTALLER_FALLBACK_SOURCE=off → null and no DB query`
   - `devices.test.ts`:
@@ -313,7 +315,7 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
 - Modify: `apps/api/src/routes/agents/schemas.ts` (`enrollSchema` L37–68), `apps/api/src/routes/agents/enrollment.ts` (success audit L1086–1112)
 - Create: `apps/api/src/services/installPathMetrics.ts` (leaf counter, same pattern as `agentWsCredentialMetrics.ts`, registered on `metricsRegistry`), `installPathMetrics.test.ts`
 - Modify: `packages/shared/src/validators/installFallback.ts` (+ test; `INSTALL_PATHS`, `normalizeInstallPath`)
-- Modify: the enrollment route test (the existing `enrollment*.test.ts` beside `enrollment.ts`), and the parkedFanout classification
+- Modify: the enrollment route test (the existing `enrollment*.test.ts` beside `enrollment.ts`); run the parkedFanout contract test
 
 **Interfaces:**
 - Produces:
@@ -388,7 +390,9 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
   - `TestRunBootstrap_EmptyInstallerPathRedeemsAndEnrolls`: with `osExit` and the redeem and enroll seams stubbed as in the existing `runBootstrap` tests, `bootstrapInstallData = "|tok|https://breeze.example.com"`, an unenrolled config, and a self-host host policy. Asserts that `gateBootstrapServer` saw the server, redeem got the token, `enrollDevice` ran with the redeemed key, and the exit is 0.
   - `TestRunBootstrap_EmptyInstallerPathHostedRefusesNonAllowlistedHost`, mirroring `TestRunBootstrapNeverDisclosesTokenToNonAllowlistedHost`.
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/agentapp/ -run 'ResolveBootstrapInputs|EmptyInstallerPath'`. Expected: the new `runBootstrap` tests FAIL only if a Windows-only step (`configFileInMachineDir` / `reclaimConfigDirFn`) breaks on darwin/linux. If both pass on first run, record that and verify the test discriminates: temporarily make `resolveBootstrapInputs` ignore the property token, confirm the tests go red, then revert.
-- [ ] **Step 3: Implement** only what Step 2 proved missing.
+- [ ] **Step 3: Implement** by branch:
+  - Green in Step 2: the deliverable is the tests plus the recorded discrimination proof, with no `bootstrap.go` change.
+  - Red: guard the failing Windows-only call (`configFileInMachineDir` / `reclaimConfigDirFn`) with `runtime.GOOS == "windows"`, and change nothing else.
 - [ ] **Step 4: Run** `cd agent && go test -race ./internal/agentapp/...` and the linter. Expected: PASS.
 - [ ] **Step 5: Commit** and open the W3 PR: `feat(agent): install-path telemetry and agent-redeem bootstrap coverage (#8874)`. The body lists the §7.2 enroll leg as Todd's pre-promote gate.
 
@@ -418,7 +422,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
 - Parse `--fallback-schema`. Any value other than `1` disarms the fallback with one `warn`.
 - Installed-version floor, in fallback mode only:
   - Candidate: on Linux `"$INSTALL_DIR/$BINARY_NAME"`; on macOS `/Library/Breeze/bin/breeze-agent`, then `/usr/local/bin/breeze-agent`. Execute it only if `trusted_root_owned_path <file>` passes the Global Constraints trust rule (`stat` owner and mode on the file and every ancestor; use `stat -c` on Linux and `stat -f` on macOS). Otherwise, there is no floor.
-  - Run `<candidate> version` by absolute path.
+  - Run `<candidate> version` by absolute path. The spec says `--version`, but the agent has no such flag; the `version` subcommand (`main.go` L271–277) is canonical, the same probe as the existing `MIN_AGENT_VERSION` check.
   - Parse with the existing `DOWNLOADED_VERSION` sed and compare with the existing `sort -t. -k1,1n -k2,2n -k3,3n` idiom.
   - If installed > pinned: skip download and replacement, print `Keeping the installed agent v<x> (newer than the pinned v<y>)`, and enroll with the installed binary.
   - An unparseable installed version means no floor.
@@ -466,6 +470,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
     - `tampered fallback install.sh → refused before sudo`
     - `source swapped after the user-shell hash check` (a `sudo` shim that overwrites `$f` with a malicious script, then execs the rest) `→ the root-side hash check refuses; the malicious script never runs` (sentinel file absent). This proves the second check is load-bearing.
     - `root-side copy or hash failure → exits non-zero without executing anything`
+    - `neither sha256sum nor shasum on PATH → fails closed before sudo` (spec §3.5)
     - `HTML 200 from primary → today's [ERROR], no fallback`
     - `expired → today's [ERROR]`
     - `no fallback request carries the token`
@@ -473,10 +478,11 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
     - `null anchor → output identical to the pre-change snapshot` (inline the current string as the expected literal)
     - `a hash failing validation → null-anchor form`
     - `uses --proto '=https' --proto-redir '=https' on the fallback fetch`
-- [ ] **Step 2: Run** `cd apps/web && npx vitest run src/lib/installCommands.unix.exec.test.ts src/lib/installCommands.test.ts`. Expected: FAIL.
+    - `token, secret and every --fallback-* value appear only inside their double quotes` (tokenize the command with a quote-aware splitter and assert that each value is a whole quoted argument; spec §7.1)
+- [ ] **Step 2: Add** W7's anchored-unix budget row (`unix with a full anchor ≤ 4,096`) to `installCommands.budget.test.ts`. **Run** `cd apps/web && npx vitest run src/lib/installCommands.unix.exec.test.ts src/lib/installCommands.test.ts src/lib/installCommands.budget.test.ts`. Expected: the exec and string tests FAIL; the budget row passes as a ceiling.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the Step 2 command and the `apps/web` typecheck. Expected: PASS, `exit=0`.
-- [ ] **Step 5: Commit** and open the W4a PR: `feat(installer): macOS/Linux one-liner falls back to the pinned release (#8874)`. Update `apps/docs/src/content/docs/agents/advanced-install.mdx` with a short section: what the fallback is, its source, that it pins the release current at copy time, the 30-day re-copy rule, and that a failed fallback leaves no server trace. The body lists the §7.2 Linux and macOS legs as Todd's gate before the server release.
+- [ ] **Step 5: Commit** and open the W4a PR: `feat(installer): macOS/Linux one-liner falls back to the pinned release (#8874)`. Write the release-notes entry in `docs/release-notes/next-release-draft.md` with the four statements from spec §7.4 (listed under Lab gates). Also update `apps/docs/src/content/docs/agents/advanced-install.mdx` with a short section: what the fallback is, its source, that it pins the release current at copy time, the 30-day re-copy rule, and that a failed fallback leaves no server trace. The body lists the §7.2 Linux and macOS legs as Todd's gate before the server release.
 
 ---
 
@@ -524,6 +530,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
     - `ProxyNameResolutionFailure → false`
     - `a localized (German) AuthenticationException message → false` (proves message text is not used)
     - `SecureChannelFailure wrapping HResult 0x800B0101 (expired) → false`, and the same for `0x80090328`
+  - Switch logic (pwsh-executed, `Invoke-RestMethod` stubbed to throw ConnectFailure): `expired anchor with a transport failure → #8868's message, no fallback`
   - Floor (pwsh-executed, with the version probe stubbed): `a newer installed agent → reuse branch; the anchor checksum is never compared against it; enroll targets $inst`
   - String tests:
     - `null anchor → identical to the post-#8868-W2 snapshot`
@@ -533,7 +540,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
     - `sets BREEZE_INSTALL_PATH before enroll`
     - `the fallback never sends the token`: no `${token}` occurs before `enroll`
     - The existing drive-qualified-variable heuristic stays green.
-- [ ] **Step 2: Run** `cd apps/web && npx vitest run src/lib/installCommands.pwsh.test.ts src/lib/installCommands.test.ts src/lib/installCommands.budget.test.ts`. Expected: FAIL.
+- [ ] **Step 2: Add** W7's anchored-Windows budget row (`windows plain, max token + secret + full anchor ≤ 8,191`) to `installCommands.budget.test.ts`. **Run** `cd apps/web && npx vitest run src/lib/installCommands.pwsh.test.ts src/lib/installCommands.test.ts src/lib/installCommands.budget.test.ts`. Expected: the pwsh and string tests FAIL. The budget rows pass, because they are ceilings; they become binding once Step 3 lands.
 - [ ] **Step 3: Implement.** Keep identifiers short; W7's budget is the ceiling.
 - [ ] **Step 4: Run** the Step 2 command (W7's budget test included) and the typecheck. In the PR, confirm that a CI `test-web` shard actually executed the pwsh suite: read its log for the `installCommands.pwsh` test count, because a skipped suite is a false green.
 - [ ] **Step 5: Commit** and open the W4b PR: `feat(installer): Windows one-liner falls back to the pinned release (#8874)`. The body lists the §7.2 Windows legs (SYSTEM, PS 5.1 on Server 2016, non-English locale behind an interceptor) as Todd's gate.
@@ -604,7 +611,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
 **Files:**
 - Modify: `apps/api/src/services/installFallback/build.ts` and `build.test.ts`. Replace W1's `hosted_not_enabled` branch: a hosted edition requires a `github` source (Task 2 already maps hosted + mirror → off, and boot-refuses the official repo), plus `readVerifiedManifestDistribution` returning `repository` equal to the source repository. The `baseUrl` is built from `distribution.repository` and `distribution.release`.
 - Modify: `apps/api/src/services/installFallback/index.test.ts`
-- Create: `docs/release/hosted-distribution-contract.md`, containing the "private pipeline's publish contract" section above, verbatim, plus the Gate H checklist
+- Create: `docs/release/hosted-distribution-contract.md`. It states only the outputs the API depends on: what the distribution release contains, the `distribution` and `installFallbackInterface` fields, `install.sh`'s edition and trust labels, and the rule that a release is mirrored before it is promoted. It also carries the Gate H checklist. No pipeline steps.
 - Modify: `apps/docs/src/content/docs/deploy/environment.mdx` (one sentence: hosted operators set an explicit distribution repository; `auto` is off for hosted)
 
 - [ ] **Step 1: Write failing tests.**
@@ -629,16 +636,17 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
 - Create: `apps/web/src/lib/installCommands.budget.test.ts`
 
 **Budget numbers (Gate B 8).** Measured on main `8d20504960` with a 64-char token and a 64-char secret: Windows plain is 3,023 chars and the UTF-16 Base64 form is 8,064. Real onboarding tokens are `enroll_` + 48 hex (55 chars).
-- `windows` plain, with the maximum token (55) + secret (64) + a full anchor: **≤ 8,191**
+- (added by W4b, Task 13) `windows` plain, with the maximum token (55) + secret (64) + a full anchor: **≤ 8,191**
 - `windows` as `-EncodedCommand` (UTF-16LE Base64), with a **null** anchor and the maximum token + secret: **≤ 8,191** (no regression on today's wrapper path)
 - `windows` encoded **with** an anchor: no ceiling. `advanced-install.mdx` says that wrappers needing `-EncodedCommand` should save the one-liner to a `.ps1` and run the file. The "download as script" button is the D7(b) follow-up.
-- `unix` with a full anchor: **≤ 4,096**, a conservative cap for RMM text fields.
+- (added by W4a, Task 12) `unix` with a full anchor: **≤ 4,096**, a conservative cap for RMM text fields.
+- (W7) `windows` plain and `unix` with a null anchor and the maximum token + secret: **≤ 8,191** and **≤ 4,096** respectively.
 
 - [ ] **Step 1: Write the test.**
   - `budgetFor(cmd: string): { plain: number; encoded: number }`
-  - `it.each` over the four rows above
+  - `it.each` over the W7 rows above (the null-anchor ceilings). W4a and W4b append their anchored rows.
   - Control: `budget assertion trips on an over-length command` (feed `'x'.repeat(8192)` through the same `assertWithinBudget` helper and expect a throw). This proves the assertion discriminates before it is trusted.
-- [ ] **Step 2: Run** `cd apps/web && npx vitest run src/lib/installCommands.budget.test.ts`. Expected: the control case FAILs until `assertWithinBudget` exists. The anchor rows exercise null-anchor output until W4a/W4b land, because the builder ignores the anchor until then.
+- [ ] **Step 2: Run** `cd apps/web && npx vitest run src/lib/installCommands.budget.test.ts`. Expected: FAIL with `assertWithinBudget is not defined`, because the test calls the helper before Step 3 defines it.
 - [ ] **Step 3: Implement** the helper inside the test file.
 - [ ] **Step 4: Run** the Step 2 command. Expected: PASS.
 - [ ] **Step 5: Commit** and open the W7 PR: `test(installer): command-length budget for install one-liners (#8874)`.
@@ -647,7 +655,8 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
 
 ## CI traps (read before each PR)
 
-- **New `apps/api/src/services/*` files** (`installFallback/*`, `installScript.ts`, `installPathMetrics.ts`) must be classified in `apps/api/src/__tests__/parkedFanoutModules.ts`. New paths may also need an entry in the per-area gating contract (`.github/scripts/ci-area-gating.test.mjs`, which runs in the Lint job).
+- **New `apps/api/src/services/*` files** (`installFallback/*`, `installScript.ts`, `installPathMetrics.ts`): run `parkedFanout.contract.test.ts`. It classifies only device-reading files and rejects stale entries, so none of these should need an entry; do not add one pre-emptively. New paths may need an entry in the per-area gating contract (`.github/scripts/ci-area-gating.test.mjs`, which runs in the Lint job).
+- **Server-only eligibility:** `apps/api/assets/scripts/install.sh` becomes a signed binaries-release asset. Task 5 adds it to `scripts/release/binary-affecting-paths.txt`, so a change to it forces a full release. Otherwise a server-only release could serve a script that differs from the signed copy the anchors pin. Run `binary-affecting-paths.coverage.test.mjs`.
 - **Env parity:** `envComposeParity.test.ts` and `envReadComposeCoverage.test.ts` fail unless `INSTALLER_FALLBACK_SOURCE` is in both compose files, both `.env.example` files and `CONNECTION_REGISTRY`. Do not add it to the frozen `COMPOSE_INTENTIONALLY_UNMAPPED` baseline.
 - **`release.yml` edits:** `release-workflow-server-only.test.mjs` executes the manifest generator, and `check-workflow-security.test.mjs` lints the workflow. Run both locally. A real tag run is the only end-to-end proof, so the W2a PR names the first tag that carries `install.sh` as its verification point. Inspect that release's manifest for the `install.sh` entry.
 - **`install.sh` asset not in the image:** tsup does not bundle it. Task 4's Dockerfile assertion guards this. Smoke-check `GET /api/v1/agents/install.sh` on the first deployed image.
@@ -664,13 +673,13 @@ Spec §7.2's SNI-selective proxy recipe (nginx `stream` + `ssl_preread`, with th
 |---|---|---|
 | L-W3 | the agent release carrying W3 promotes past canary | `enroll` and `bootstrap` over one-shot ECH report `installPath` |
 | L-W4a | the server release carrying W4a | Linux amd64/arm64 and macOS one-liner fall back, verify and enroll over ECH. Negatives: tampered mirror asset, proxy 407, untrusted interceptor, expired anchor, newer installed agent kept. Capture fallback-host requests and assert no token, secret or `Authorization`. |
-| L-W4b | the server release carrying W4b | Windows SYSTEM runner; PS 5.1 on Server 2016; a non-English locale behind an untrusted interceptor (must not fall back); the same negatives |
+| L-W4b | the server release carrying W4b, run on a stack whose promoted release carries `installFallbackInterface: 1` | Windows SYSTEM runner; PS 5.1 on Server 2016; a non-English locale behind an untrusted interceptor (must not fall back); the same negatives |
 | L-W5 | the release carrying the W5 app | app reaches consent; the agent redeems; Done copy shown |
 | Gate H | hosted `INSTALLER_FALLBACK_SOURCE` flip | every leg above against hosted, after the distribution repo carries a hosted release |
 
-Every leg also records, for the fallback run versus a primary-path run on the same host, any Defender/EDR detection, SmartScreen prompt or Gatekeeper prompt (spec §3.7: tested, not promised). A difference blocks the gate until it is understood.
+Every leg, Gate H included, captures the fallback host's requests and asserts that none carries the token, the secret or an `Authorization` header. Every leg also records, for the fallback run versus a primary-path run on the same host, any Defender/EDR detection, SmartScreen prompt or Gatekeeper prompt (spec §3.7: tested, not promised). A difference blocks the gate until it is understood.
 
-Release notes for the release that carries W4a/W4b state four things: the fallback exists and which source it uses; it pins the release that was current when the command was copied; the 30-day re-copy rule; and that a failed fallback leaves no server-side trace.
+Release notes for the release that carries W4a/W4b (written in Task 12 Step 5) state four things: the fallback exists and which source it uses; it pins the release that was current when the command was copied; the 30-day re-copy rule; and that a failed fallback leaves no server-side trace.
 
 ## Advisor quorum (Claude position, then `codex exec` read-only, xhigh)
 
@@ -703,6 +712,7 @@ It also found two coverage gaps, both closed: the script-side schema flag (`--fa
 13. **Console hint "includes a fallback download source".** [None in v1, so no locale keys.]
 14. **Primary path sets `BREEZE_INSTALL_PATH=control_plane`.** [Yes.] Absent stays `unknown`, as for the MSI, the pkg and old scripts.
 15. **Interface gating.** [A signed `installFallbackInterface: 1` that `release.yml` emits from the `install.sh` marker. Anchors stay `null` until the first full release that carries W4a.] The alternative is a hard-coded `FIRST_RELEASE_WITH_INSTALL_FALLBACK` tag constant, which needs the release number guessed at merge time.
+16. **`install.sh` forces a full release.** [Add it to `binary-affecting-paths.txt` (Task 5).] The alternative is to list it only in `agent-facing-paths.txt` and accept served/signed script skew between full releases.
 
 ## Deferred (not in this plan)
 
