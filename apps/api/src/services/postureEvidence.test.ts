@@ -193,6 +193,16 @@ describe('loadPostureEvidence', () => {
       expect(ev.controls.hardening_baseline.aggregatePct).toBe(79);
     });
 
+    it('#9606: a scan that evaluated zero checks (stored score 100) is not assessed as passing', async () => {
+      mockQueries({
+        3: [], 5: [], 6: [],
+        16: [{ deviceId: 'd1', passedChecks: 0, totalChecks: 0, score: 100, checkedAt: recent }],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.controls.hardening_baseline).toMatchObject({ assessed: 0, aggregatePct: null });
+      expect(ev.devices.find((d) => d.id === 'd1')?.cisPassRate).toBeNull();
+    });
+
     it('a CIS scan older than the window is not assessed and leaves the aggregate out', async () => {
       mockQueries({
         3: [], 5: [], 6: [],

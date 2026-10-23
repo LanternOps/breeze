@@ -329,6 +329,19 @@ describe('POST /cis/scan — target-set authorization (security review §1.2)', 
     expect(scheduledDeviceIds()).toEqual(['dev-y1']);
   });
 
+  it('#9606: body.orgId outside the caller\'s accessible orgs schedules nothing (narrows, never widens)', async () => {
+    const ORG_X = '22222222-2222-2222-2222-222222222222';
+    const ORG_Y = '33333333-3333-3333-3333-333333333333';
+    state.orgs.push({ id: ORG_X, partnerId: PARTNER_ID }, { id: ORG_Y, partnerId: PARTNER_ID });
+    state.devices.push(
+      { id: 'dev-y1', orgId: ORG_Y, osType: 'windows', isEphemeral: false, status: 'online', siteId: 's-y' },
+    );
+    state.auth = makeAuth('partner', [ORG_X]); // no access to ORG_Y
+    const res = await scan(app, { baselineId: BASELINE_ID, orgId: ORG_Y });
+    expect(res.status).toBe(202);
+    expect(scheduleCisScan).not.toHaveBeenCalled();
+  });
+
   it('#9606: a partner-scope caller WITHOUT orgId still scans every accessible org', async () => {
     state.auth = makeAuth('partner', ['org-a', 'org-b']);
     const res = await scan(app, { baselineId: BASELINE_ID });

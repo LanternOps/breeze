@@ -532,6 +532,9 @@ export async function loadPostureEvidence(
       if (cisSeen.has(r.deviceId)) continue; // desc order → first seen is the latest scan
       cisSeen.add(r.deviceId);
       if (!withinDays(asOf, r.checkedAt, policy.maxSecurityStatusAgeDays)) continue;
+      // A scan that evaluated nothing stores score 100 (summarizeCisFindings); that is
+      // absence of evidence, not a pass.
+      if (r.totalChecks <= 0) continue;
       cisByDevice.set(r.deviceId, {
         pct: r.score,
         checkedAt: r.checkedAt ?? null,

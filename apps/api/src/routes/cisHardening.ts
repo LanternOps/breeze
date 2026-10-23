@@ -623,6 +623,7 @@ cisHardeningRoutes.post(
         jobId,
         deviceCount: resolvedDeviceIds.length,
         requestedDeviceCount: body.deviceIds?.length ?? null,
+        requestedOrgId: body.orgId ?? null,
       },
     });
 
