@@ -15,7 +15,15 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+// The test route's runner is stubbed (the CI integration job has no
+// breeze-yarac binary); admission and everything before it are real.
+const matchSampleMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/yaraSampleMatch', async () => {
+  const actual = await vi.importActual<typeof import('../../services/yaraSampleMatch')>('../../services/yaraSampleMatch');
+  return { ...actual, matchSample: matchSampleMock };
+});
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { generateIocRules, YARA_BUILTIN_RULE_SET_ID, YARA_MAX_RULES_PER_SET } from '@breeze/shared';
@@ -239,5 +247,55 @@ describe('POST /security/yara/rule-sets/:id/ioc-import (real Postgres)', () => {
     const capped = responses.find((r) => r.status === 400)!;
     expect((await capped.json()).code).toBe('IOC_TOO_MANY_RULES');
     expect(await rulesOf(setId)).toHaveLength(YARA_MAX_RULES_PER_SET);
+  });
+});
+
+// Mounted under /api/v1 so the route runs on its real self-managed DB-context
+// path (SELF_MANAGED_DB_CONTEXT_ROUTES matches the full request path).
+const v1 = new Hono();
+v1.route('/api/v1/security', securityRoutes);
+
+function upload(actor: Actor, setId: string, body: Uint8Array) {
+  return v1.request(`/api/v1/security/yara/rule-sets/${setId}/test?filename=sample.bin`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${actor.token}`, 'Content-Type': 'application/octet-stream' },
+    body,
+  });
+}
+
+describe('POST /security/yara/rule-sets/:id/test tenancy (real Postgres, runner stubbed)', () => {
+  const ok = async (reservation: { release(): void }, input: { bundleJson: string }) => {
+    reservation.release();
+    expect(JSON.parse(input.bundleJson).rules.length).toBeGreaterThan(0);
+    return { ok: true, matches: [], durationMs: 1 };
+  };
+
+  it("an org user may test the built-in set and their MSP's partner-wide set (200, not 404)", async () => {
+    const w = await seed();
+    const db = getTestDb() as any;
+    await db.insert(yaraRules).values({
+      ruleSetId: YARA_BUILTIN_RULE_SET_ID, name: `w04_builtin_${randomUUID().slice(0, 8)}`, source: 'rule placeholder { condition: false }',
+    }).onConflictDoNothing();
+    const pw = await createSet(w.padmin, { name: 'MSP baseline', ownerScope: 'partner' });
+    expect((await call(w.padmin, 'POST', `/yara/rule-sets/${pw}/rules`, { name: 'pw_rule', source: 'rule pw_rule { condition: false }' })).status).toBe(201);
+
+    matchSampleMock.mockReset();
+    matchSampleMock.mockImplementation(ok);
+    const builtin = await upload(w.org, YARA_BUILTIN_RULE_SET_ID, new TextEncoder().encode('hello'));
+    expect(builtin.status).toBe(200);
+    const partnerWide = await upload(w.org, pw, new TextEncoder().encode('hello'));
+    expect(partnerWide.status).toBe(200);
+    expect((await partnerWide.json()).data).toMatchObject({ testedVersion: 1, publishedVersion: 1, matches: [] });
+    expect(matchSampleMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("an org-B user gets 404 on org A's set, and the runner never runs", async () => {
+    const w = await seed();
+    const setA = await createSet(w.org, { name: 'org A IOCs' });
+    expect((await call(w.org, 'POST', `/yara/rule-sets/${setA}/ioc-import`, IMPORT)).status).toBe(201);
+    matchSampleMock.mockReset();
+    const res = await upload(w.orgBUser, setA, new TextEncoder().encode('hello'));
+    expect(res.status).toBe(404);
+    expect(matchSampleMock).not.toHaveBeenCalled();
   });
 });

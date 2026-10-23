@@ -75,3 +75,25 @@ export const yaraIocImportSchema = z
       .max(YARA_IOC_MAX_PER_BATCH),
   })
   .strict();
+
+const noControlChars = (s: string) => !/[\u0000-\u001f\u007f]/.test(s);
+
+/**
+ * Rule test upload (#6263 W04-2): the sample is the raw octet-stream body;
+ * its name, and optionally the path it would have on a device (the
+ * `filepath` YARA global), come as query parameters.
+ */
+export const yaraTestQuerySchema = z.object({
+  filename: z
+    .string()
+    .min(1)
+    .max(255)
+    .refine(noControlChars, { message: 'filename must not contain control characters' })
+    .refine((s) => !/[\\/]/.test(s) && s !== '.' && s !== '..', { message: 'filename must be a file name, not a path' }),
+  filepath: z
+    .string()
+    .min(1)
+    .max(1024)
+    .refine(noControlChars, { message: 'filepath must not contain control characters' })
+    .optional(),
+});

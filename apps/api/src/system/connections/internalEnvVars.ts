@@ -135,6 +135,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_YARAC_PATH: 'filesystem path (YARA pre-check binary; image default /usr/local/bin/breeze-yarac)',
   BREEZE_YARA_BUILTIN_PACK_DISABLED: 'operator kill switch: disable the built-in YARA rule set at boot and load no pack (#6263 W03b)',
   BREEZE_YARA_LINT_ONLY: 'dev/test-only escape hatch: publish YARA rules without the pre-check (ignored unless NODE_ENV is development/test)',
+  BREEZE_YARA_TEST_UNSANDBOXED: 'dev/test-only escape hatch: run the YARA rule test upload without the Landlock sandbox (ignored unless NODE_ENV is development/test)',
   // CALLER_*
   CALLER_VERIFICATION_ENABLED: 'feature flag',
   CALLER_VERIFICATION_WORKSTATION_ENABLED: 'feature flag (workstation tier, dark by default)',
