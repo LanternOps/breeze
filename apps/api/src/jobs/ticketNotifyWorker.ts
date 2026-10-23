@@ -677,7 +677,13 @@ async function collectMergeNotifications(
     }
   }
 
-  if (!event.payload.notifyRequester || !source.submitterEmail) return [];
+  if (!event.payload.notifyRequester) return [];
+  if (!source.submitterEmail) {
+    // notifyRequester defaults from the requester identity (contact / portal
+    // login), which can exist without an email address on the ticket.
+    console.warn(`[TicketNotify] merge notice skipped: ticket ${source.id} has no requester email`);
+    return [];
+  }
   let href = '';
   let hasPortalUser = false;
   try {

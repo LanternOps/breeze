@@ -21,8 +21,10 @@
  * The tombstones are locked here in one ascending batch. This is the one
  * place their pre-ticket children are touched after a ticket lock; it cannot
  * cycle, because a tombstone is read-only: every writer that locks one
- * refuses it immediately (TICKET_MERGED) without touching a child, and a
- * merge serializes with both movers on the per-org ticket_links lock.
+ * refuses it immediately (TICKET_MERGED) without touching a child or waiting
+ * on another lock, caller verification (Gate B6) only ever holds ONE ticket
+ * row, and a merge serializes with both movers on the per-org ticket_links
+ * lock.
  */
 import { sql } from 'drizzle-orm';
 import { lockTicketsForWrite, type DbExecutor } from '../ticketRowLock';
@@ -72,7 +74,11 @@ export async function carryMergedTombstonesInTx(
   await tx.execute(sql`
     UPDATE tickets
        SET org_id = ${targetOrgId}::uuid, partner_id = ${targetPartner},
-           device_id = NULL, requester_contact_id = NULL, updated_at = now()
+           device_id = NULL, requester_contact_id = NULL,
+           -- An assignee never crosses partners (a system-scope device move can):
+           -- the tombstone keeps it as history only inside its own partner.
+           assigned_to = CASE WHEN partner_id IS DISTINCT FROM ${targetPartner} THEN NULL ELSE assigned_to END,
+           updated_at = now()
      WHERE id IN (${list})`);
   await tx.execute(sql`
     UPDATE ticket_comments SET agent_run_id = NULL, proposed_by_run_id = NULL

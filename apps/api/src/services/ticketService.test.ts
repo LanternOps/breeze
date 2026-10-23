@@ -5847,7 +5847,8 @@ describe('tombstone guard: every ticketService writer refuses a merged ticket (#
     const survivor = { ...TOMB, id: 't-survivor', mergedIntoTicketId: null };
     dbMocks.selectResult
       .mockResolvedValueOnce([{ mergedIntoTicketId: 't-survivor' }]) // unlocked pointer peek
-      .mockResolvedValueOnce([TOMB, survivor]); // lockTicketsForWrite: both, ascending
+      .mockResolvedValueOnce([survivor]) // lockTicketForWrite(survivor) — the ONLY ticket lock
+      .mockResolvedValueOnce([{ mergedIntoTicketId: 't-survivor' }]); // pointer re-checked under that lock
     await expect(addCallerVerificationSystemComment({
       orgId: 'o1', ticketId: 't1', verificationId: 'v-1', event: 'rejected',
     })).resolves.toBeUndefined();
@@ -5868,12 +5869,15 @@ describe('tombstone guard: every ticketService writer refuses a merged ticket (#
   });
 
   it('re-reads when the tombstone was re-pointed between the peek and the lock (path compression)', async () => {
+    const survivorB = { ...TOMB, id: 't-b', mergedIntoTicketId: 't-c' };
     const survivorC = { ...TOMB, id: 't-c', mergedIntoTicketId: null };
     dbMocks.selectResult
-      .mockResolvedValueOnce([{ mergedIntoTicketId: 't-b' }])
-      .mockResolvedValueOnce([{ ...TOMB, mergedIntoTicketId: 't-c' }]) // locked: now points at C; B not in the batch
-      .mockResolvedValueOnce([{ mergedIntoTicketId: 't-c' }])
-      .mockResolvedValueOnce([{ ...TOMB, mergedIntoTicketId: 't-c' }, survivorC]);
+      .mockResolvedValueOnce([{ mergedIntoTicketId: 't-b' }]) // peek: A → B
+      .mockResolvedValueOnce([survivorB]) // lock B …
+      .mockResolvedValueOnce([{ mergedIntoTicketId: 't-c' }]) // … but A now points at C: savepoint rolls back
+      .mockResolvedValueOnce([{ mergedIntoTicketId: 't-c' }]) // peek again: A → C
+      .mockResolvedValueOnce([survivorC]) // lock C
+      .mockResolvedValueOnce([{ mergedIntoTicketId: 't-c' }]); // stable under C's lock
     await addCallerVerificationSystemComment({ orgId: 'o1', ticketId: 't1', verificationId: 'v-3', event: 'rejected' });
     const comment = valuesMock.mock.calls.map((c) => c[0] as Record<string, unknown>).find((v) => v.commentType === 'system');
     expect(comment).toMatchObject({ ticketId: 't-c' });

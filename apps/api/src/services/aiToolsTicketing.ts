@@ -1435,6 +1435,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (await deviceIdSiteDenied(auth, deviceId)) {
           return JSON.stringify({ linked: false, reason: 'device_out_of_scope' });
         }
+        // #8972: the ticket row lock first, so the tombstone guard runs under
+        // it (a tombstone has device_id NULL, so the CAS below would not refuse it).
+        assertTicketNotMerged(await lockTicketForWrite(db, String(input.ticketId)));
         // The `device_id IS NULL` guard in the WHERE (not just the read above)
         // is the actual CAS — closes the race between two concurrent
         // link_device calls both passing the "not yet linked" read.
@@ -1727,6 +1730,22 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       throw new Error(`Unknown action: ${action}`);
     }
   });
+
+  // #8972: any manage_tickets write that reaches a merged tombstone (comment,
+  // assign, status, draft, time, …) answers the model with the survivor to
+  // retry on, instead of failing the tool call.
+  {
+    const tool = aiTools.get('manage_tickets')!;
+    const inner = tool.handler;
+    tool.handler = async (input, auth, context) => {
+      try {
+        return await inner(input, auth, context);
+      } catch (err) {
+        if (err instanceof TicketMergedError) return serviceErrorToJson(err)!;
+        throw err;
+      }
+    };
+  }
 
   // #6930 — the MCP/AI surface for routes/tickets/checklist.ts and the
   // read side of routes/ticketChecklistTemplates.ts. Same services, same

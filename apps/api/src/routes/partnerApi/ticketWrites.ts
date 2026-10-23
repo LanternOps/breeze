@@ -459,10 +459,11 @@ partnerTicketWriteRoutes.post(
             // Resolved by comment id: a merge re-points the comment to the
             // survivor, so the stored claim's path ticket no longer owns it.
             const [row] = await db.select().from(ticketComments).where(eq(ticketComments.id, resourceId)).limit(1);
-            if (row && row.ticketId !== id && !found.mergedIntoTicketId) {
-              // A live path ticket's claim is bound to it and the fingerprint
+            if (row && row.ticketId !== id && row.ticketId !== found.mergedIntoTicketId) {
+              // A path ticket's claim is bound to it and the fingerprint
               // includes it: a linked comment on another ticket is corrupt
-              // state. A merge tombstone is the one legitimate exception.
+              // state. The one legitimate exception is a merge tombstone's
+              // comment, moved to its survivor (one hop: merge compresses paths).
               throw new Error(`partner API idempotency claim for ticket ${id} names a comment of ticket ${row.ticketId}`);
             }
             return row ?? null;

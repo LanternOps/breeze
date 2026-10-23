@@ -157,9 +157,15 @@ export async function mergeTickets(
     try {
       res = await db.transaction((tx) => mergeInTx(tx, srcId, dstId, src0.orgId, closedStatusId, actor, ctx));
     } catch (err) {
-      const retryable = err instanceof MergeSetChanged || pgErrorCode(err) === '40P01';
-      if (attempt === 0 && retryable) continue;
-      if (err instanceof MergeSetChanged) {
+      const deadlock = pgErrorCode(err) === '40P01';
+      const retryable = err instanceof MergeSetChanged || deadlock;
+      if (attempt === 0 && retryable) {
+        // Logged: a retried deadlock is a lock-order bug somewhere (every writer
+        // merge meets locks the ticket first), and the concurrency suite counts these.
+        console.warn(`[ticketMerge] retrying merge ${srcId} -> ${dstId} after ${deadlock ? '40P01' : 'a concurrent merge into the source'}`);
+        continue;
+      }
+      if (retryable) {
         throw new TicketServiceError('The ticket changed while it was being merged — try again', 409, 'CONCURRENT_MODIFICATION');
       }
       throw err;

@@ -19,7 +19,7 @@ import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { removedTicketLinksFromRows, scheduleTicketLinkRemovalNotes, type RemovedTicketLink } from './ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from './ticketLinkLock';
-import { lockTicketForWrite, lockTicketsForWrite } from './ticketRowLock';
+import { lockTicketForWrite, type LockedTicketRow } from './ticketRowLock';
 import { assertTicketNotMerged, isMergedTombstone } from './ticketMerge/errors';
 import { carryMergedTombstonesInTx } from './ticketMerge/movers';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
@@ -456,28 +456,49 @@ export async function writeTicketCommentedOutbox(input: {
   });
 }
 
+/** The target moved between the unlocked read and the lock (a merge committed meanwhile). */
+class CallerVerificationTargetMoved extends Error {}
+
 /**
- * #8972 W1 (Gate B6): lock the ticket a caller-verification note goes to — the
- * snapshotted ticket, or its survivor when it has been merged. A tombstone and
- * its survivor are locked TOGETHER in one ascending batch (the order a merge
- * uses for the same pair), never tombstone-then-survivor, so this cannot cycle
- * with a merge of the survivor that also locks every ticket merged into it.
- * The tombstone's pointer is read unlocked first; if it moved before the lock
- * (the survivor was itself merged: path compression), read and lock again.
+ * #8972 W1 (Gate B6): lock the ONE ticket a caller-verification note goes to —
+ * the snapshotted ticket, or its survivor when it has been merged.
+ *
+ * Exactly one ticket row is ever held, so this cannot form a cycle with a
+ * merge (which locks a survivor and its tombstones in one ascending batch) or
+ * with a mover (which holds the survivor and then carries its tombstones).
+ * The pointer is read unlocked, the target is locked inside a savepoint, and
+ * the pointer is re-checked under that lock: once the survivor is locked no
+ * merge of it can commit, so the tombstone's pointer is stable. If the target
+ * moved meanwhile, the savepoint rolls back — releasing its lock — and the
+ * read repeats. Returns `{ row: null, exhausted }` when the ticket is gone or
+ * invisible, or (`exhausted`) the pointer kept moving.
  */
-async function lockCallerVerificationTarget(ticketId: string) {
+async function lockCallerVerificationTarget(ticketId: string): Promise<{ row: LockedTicketRow | null; exhausted: boolean }> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const [peek] = await db.select({ mergedIntoTicketId: tickets.mergedIntoTicketId })
       .from(tickets).where(eq(tickets.id, ticketId)).limit(1);
-    if (!peek) return null;
-    const locked = await lockTicketsForWrite(db, [ticketId, peek.mergedIntoTicketId]);
-    const original = locked.get(ticketId);
-    if (!original) return null;
-    if (!original.mergedIntoTicketId) return original;
-    const survivor = locked.get(original.mergedIntoTicketId);
-    if (survivor) return survivor;
+    if (!peek) return { row: null, exhausted: false };
+    const targetId = peek.mergedIntoTicketId ?? ticketId;
+    try {
+      const row = await db.transaction(async (tx) => {
+        const locked = await lockTicketForWrite(tx, targetId);
+        if (!locked) return null;
+        if (targetId === ticketId) {
+          // Merged after the read: the note belongs on the survivor instead.
+          if (locked.mergedIntoTicketId) throw new CallerVerificationTargetMoved();
+          return locked;
+        }
+        const [again] = await tx.select({ mergedIntoTicketId: tickets.mergedIntoTicketId })
+          .from(tickets).where(eq(tickets.id, ticketId)).limit(1);
+        if (again?.mergedIntoTicketId !== targetId) throw new CallerVerificationTargetMoved();
+        return locked;
+      });
+      return { row, exhausted: false };
+    } catch (err) {
+      if (!(err instanceof CallerVerificationTargetMoved)) throw err;
+    }
   }
-  return null;
+  return { row: null, exhausted: true };
 }
 
 /**
@@ -496,16 +517,16 @@ export async function addCallerVerificationSystemComment(input: {
   // #8972 W1 (Gate B6): `caller_verifications.ticket_ref` stays on a merged
   // tombstone as history, but the note goes to its SURVIVOR and this never
   // throws TICKET_MERGED (a merge must never roll back a security decision).
-  const locked = await lockCallerVerificationTarget(input.ticketId);
-  const ticket = locked && locked.orgId === input.orgId ? locked : null;
+  const target = await lockCallerVerificationTarget(input.ticketId);
+  const ticket = target.row && target.row.orgId === input.orgId ? target.row : null;
   if (!ticket) {
     // Deleted, moved out of the org, or invisible in this RLS context. The
     // decision itself is never lost — audit_logs carries it
     // (services/callerVerification/effects.ts) — but a silently dropped note
     // would be invisible to anyone reading the ticket, so say so.
-    console.warn(
-      `[caller-verification] ticket ${input.ticketId} not reachable in org ${input.orgId}; skipping system note for verification ${input.verificationId}`,
-    );
+    console.warn(target.exhausted
+      ? `[caller-verification] ticket ${input.ticketId} kept being merged while locking its survivor; skipping system note for verification ${input.verificationId}`
+      : `[caller-verification] ticket ${input.ticketId} not reachable in org ${input.orgId}; skipping system note for verification ${input.verificationId}`);
     return;
   }
   const [comment] = await db.insert(ticketComments).values({
@@ -648,9 +669,10 @@ export async function revalidateTicketAssignee(
   // #8972 W0: ticket first. Movers already hold it (a no-op re-lock).
   const lockedRow = await lockTicketForWrite(connection, ticketId);
   if (!lockedRow) throw new TicketServiceError('Ticket not found', 404);
-  // #8972 W1: a tombstone keeps its assignee as history. The movers carry
-  // tombstones with their survivor and revalidate each; skip rather than fail
-  // the move (a tombstone is never worked, so its assignee grants nothing).
+  // #8972 W1: a tombstone keeps its assignee as history — skip rather than
+  // fail the caller (a tombstone is never worked, so its assignee grants
+  // nothing). The movers' tombstone carrier clears it only when the tombstone
+  // changes partner (services/ticketMerge/movers.ts).
   if (isMergedTombstone(lockedRow)) return ticket;
   const [updated] = await connection.update(tickets)
     .set({ assignedTo: null, updatedAt: new Date() })

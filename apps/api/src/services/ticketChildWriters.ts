@@ -109,7 +109,8 @@ export const TICKET_LOCK_WRAPPERS: Record<string, string> = {
   'services/contractHourBlockClose.ts::lockHourBlockSourceTickets':
     'hour-block close: every closable period\'s entries\' tickets, one ascending lockTicketsForWrite batch, after the contract row',
   'services/ticketService.ts::lockCallerVerificationTarget':
-    '#8972 W1 Gate B6: the snapshotted ticket and, if merged, its survivor in one ascending lockTicketsForWrite batch',
+    '#8972 W1 Gate B6: exactly ONE ticket via lockTicketForWrite — the snapshotted ticket, or its survivor when merged '
+    + '(pointer re-checked under the lock inside a savepoint)',
   'services/timeEntryService.ts::lockTicketRow':
     'the time-entry 404 mapping around lockTicketForWrite',
   'services/timeEntryService.ts::lockTicketsInOrder':
@@ -195,7 +196,7 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
     tombstoneGuard: false,
     tombstoneExempt:
       'Gate B6: a verification effect after a merge redirects its note to the SURVIVOR (lockCallerVerificationTarget '
-      + 'locks both in one ascending batch) and never throws TICKET_MERGED: a merge must never roll back a security decision.',
+      + 'locks only that one row) and never throws TICKET_MERGED: a merge must never roll back a security decision.',
   }),
   // Ticket-row writers that also write a feed comment.
   'services/ticketService.ts::changeTicketStatus': TF(['ticket_comments']),
