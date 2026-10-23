@@ -58,6 +58,8 @@ const NEVER_PORTAL_VISIBLE = new Set<string>([
   'ar_aging',
   // #7608 W10: per-client AI cost and chargeable amounts are the MSP's own numbers.
   'ai_usage_by_client',
+  // MRR, ARR and renewals are the MSP's own revenue numbers.
+  'mrr_renewals',
 ]);
 
 /** What the reader is told is happening, in their own language. The MSP-side

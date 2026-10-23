@@ -1,4 +1,5 @@
-import { render, waitFor } from '@testing-library/react';
+import '@/lib/i18n';
+import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CisHardeningPage from './CisHardeningPage';
@@ -114,5 +115,39 @@ describe('CisHardeningPage summary org scoping', () => {
     expect(signals.every((s) => s !== undefined)).toBe(true);
     expect(signals.slice(0, 3).every((s) => s!.aborted)).toBe(true);
     expect(signals.slice(3).some((s) => s!.aborted)).toBe(false);
+  });
+});
+
+// #9606: nav says "CIS Benchmarks"; the page heading must agree, and the tabs
+// and summary cards need stable test ids for the e2e suites.
+describe('CisHardeningPage naming and test ids (#9606)', () => {
+  beforeEach(() => {
+    orgStoreState.currentOrgId = 'org-1';
+    fetchWithAuthMock.mockReset();
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        summary: { devicesAudited: 3, averageScore: 79, failingDevices: 2, compliantDevices: 1 },
+        pagination: { total: 4 }
+      })
+    } as unknown as Response);
+  });
+
+  it('titles the page "CIS Benchmarks" like the sidebar entry', async () => {
+    render(<CisHardeningPage />);
+    expect(await screen.findByRole('heading', { name: 'CIS Benchmarks' })).toBeInTheDocument();
+    expect(screen.queryByText('CIS Hardening')).not.toBeInTheDocument();
+  });
+
+  it('exposes data-testids on the tabs and summary cards', async () => {
+    render(<CisHardeningPage />);
+    expect(await screen.findByTestId('cis-tab-compliance')).toBeInTheDocument();
+    expect(screen.getByTestId('cis-tab-baselines')).toBeInTheDocument();
+    expect(screen.getByTestId('cis-tab-remediations')).toBeInTheDocument();
+    expect(screen.getByTestId('cis-summary-average-score')).toHaveTextContent('79%');
+    expect(screen.getByTestId('cis-summary-failing-devices')).toHaveTextContent('2');
+    expect(screen.getByTestId('cis-summary-active-baselines')).toHaveTextContent('4');
+    expect(screen.getByTestId('cis-summary-pending-remediations')).toHaveTextContent('4');
   });
 });

@@ -1784,7 +1784,7 @@
     "unknown": "unknown"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Hardening",
+    "title": "CIS Benchmarks",
     "description": "Configuration baselines, compliance scoring, and remediation tracking.",
     "messages": {
       "loadFailed": "Failed to load CIS data"
@@ -1877,6 +1877,11 @@
     "badges": {
       "allOrgs": "All orgs",
       "partnerWideTitle": "Partner-wide baseline — applies to devices in every organization"
+    },
+    "scanAll": {
+      "title": "Scan all organizations?",
+      "message": "“{{name}}” is a partner-wide baseline. With no organization selected it scans all {{orgCount}} organizations. Select an organization first to scan only its devices.",
+      "confirm": "Scan all"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1979,6 +1984,17 @@
       "queueFailed": "The approval was recorded but the remediation could not be queued. It is back to pending approval; try again.",
       "mfaRequired": "Approving or rejecting a remediation requires a session signed in with multi-factor authentication. Sign out and sign in again with MFA.",
       "ownRequest": "You requested this remediation, so another user must approve it."
+    },
+    "detail": {
+      "toggle": "Toggle details",
+      "approvedBy": "Approved by",
+      "approvedAt": "Approved at",
+      "note": "Approval note",
+      "beforeState": "Before",
+      "afterState": "After",
+      "rollbackHint": "Rollback hint",
+      "noEvidence": "No evidence recorded for this remediation yet.",
+      "unknownApprover": "Unknown user"
     }
   },
   "auditBaselinesAuditBaselinesPage": {

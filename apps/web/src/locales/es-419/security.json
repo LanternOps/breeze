@@ -1784,7 +1784,7 @@
     "unknown": "desconocido"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Endurecimiento",
+    "title": "CIS Benchmarks",
     "description": "Líneas base de configuración, puntuación de cumplimiento y seguimiento de soluciones.",
     "messages": {
       "loadFailed": "No se pudieron cargar los datos de CIS"
@@ -1877,6 +1877,11 @@
     "badges": {
       "allOrgs": "Todas las orgs",
       "partnerWideTitle": "Línea base en todo el socio: se aplica a los dispositivos de cada organización"
+    },
+    "scanAll": {
+      "title": "¿Escanear todas las organizaciones?",
+      "message": "«{{name}}» es una línea base de todo el socio. Sin una organización seleccionada, escanea todas las {{orgCount}} organizaciones. Seleccione primero una organización para escanear solo sus dispositivos.",
+      "confirm": "Escanear todas"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1979,6 +1984,17 @@
       "queueFailed": "La aprobación se registró, pero la corrección no se pudo poner en cola. Volvió a estar pendiente de aprobación; inténtalo de nuevo.",
       "mfaRequired": "Aprobar o rechazar una corrección requiere una sesión iniciada con autenticación multifactor. Cierra sesión y vuelve a iniciarla con MFA.",
       "ownRequest": "Tú solicitaste esta corrección, así que otro usuario debe aprobarla."
+    },
+    "detail": {
+      "toggle": "Alternar detalles",
+      "approvedBy": "Aprobado por",
+      "approvedAt": "Aprobado el",
+      "note": "Nota de aprobación",
+      "beforeState": "Antes",
+      "afterState": "Después",
+      "rollbackHint": "Sugerencia de reversión",
+      "noEvidence": "Aún no hay evidencia registrada para esta corrección.",
+      "unknownApprover": "Usuario desconocido"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
