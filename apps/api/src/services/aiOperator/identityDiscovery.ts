@@ -42,6 +42,7 @@ import { devices } from '../../db/schema/devices';
 import { contacts } from '../../db/schema/contacts';
 import { executeM365ReadActionByOrg } from '../m365ControlPlane/readActionService';
 import { canonicalizeUserEmail, resolveContextByOrg } from '../aiToolsGoogle';
+import type { licensing_v1 } from '@googleapis/licensing';
 import { getDirectoryClient, getLicensingClient, normalizeGoogleError } from '../googleClient';
 
 export const DISCOVERY_LIMITS = Object.freeze({
@@ -354,7 +355,7 @@ async function readGoogle(orgId: string, externalId: string, label: string, c: C
     outer: for (const productId of GOOGLE_LICENSE_PRODUCT_IDS) {
       let pageToken: string | undefined;
       for (let page = 0; page < GOOGLE_LICENSE_MAX_PAGES; page += 1) {
-        let res: Awaited<ReturnType<typeof lic.licenseAssignments.listForProduct>>;
+        let res: { data: licensing_v1.Schema$LicenseAssignmentList };
         try {
           res = await lic.licenseAssignments.listForProduct({
             productId, customerId: 'my_customer', maxResults: 1000, ...(pageToken ? { pageToken } : {}),
