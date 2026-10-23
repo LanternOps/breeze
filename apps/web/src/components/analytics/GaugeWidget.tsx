@@ -14,6 +14,8 @@ type GaugeWidgetProps = {
   unit?: string;
   thresholds?: GaugeThresholds;
   description?: string;
+  /** Nothing to evaluate: render an empty state, not a (green) 0%. */
+  empty?: boolean;
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
@@ -25,9 +27,20 @@ export default function GaugeWidget({
   max = 100,
   unit = '%',
   thresholds,
-  description
+  description,
+  empty = false
 }: GaugeWidgetProps) {
   const { t } = useTranslation('reports');
+  if (empty) {
+    return (
+      <div className="flex h-full flex-col rounded-lg border bg-card p-4 shadow-xs">
+        <p className="text-sm font-semibold">{title}</p>
+        <div className="mt-4 flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
+          {t('analytics.gaugeWidget.noData')}
+        </div>
+      </div>
+    );
+  }
   const normalized = clamp((value - min) / (max - min), 0, 1);
   const radius = 54;
   const circumference = 2 * Math.PI * radius;

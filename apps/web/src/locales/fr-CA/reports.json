@@ -41,7 +41,7 @@
           "title": "Statistiques d’alerte"
         },
         "capacity": {
-          "title": "Prévisions de capacité"
+          "title": "Prévisions de capacité du disque"
         },
         "complianceGauge": {
           "policiesEvaluated": "{{count}} politiques évaluées",
@@ -62,7 +62,7 @@
           "title": "Sessions à distance"
         },
         "uptime": {
-          "label": "Disponibilité de la flotte",
+          "label": "En ligne maintenant",
           "title": "Disponibilité"
         }
       },
@@ -105,6 +105,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Critique {{value}}",
+      "noData": "Aucun contrôle de conformité à évaluer",
       "warnValue": "Avertir {{value}}"
     },
     "queryBuilder": {
@@ -115,7 +116,8 @@
         "p95": "P95",
         "sum": "Somme"
       },
-      "description": "Configurez les métriques et l’agrégation pour votre tableau de bord",
+      "coverageNote": "Les requêtes ne couvrent que les {{count}} premiers appareils en ligne. Les appareils hors ligne et le reste d’un parc plus important ne sont pas inclus.",
+      "description": "Choisissez une métrique et une agrégation pour interroger vos appareils en ligne",
       "errors": {
         "failedToExecuteQuery": "Impossible d’exécuter une requête",
         "noDevicesSelected": "Aucun appareil sélectionné pour la requête"

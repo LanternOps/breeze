@@ -1881,7 +1881,7 @@
     "disabledDescription": "Ative o encaminhamento de logs acima para configurar a conexão.",
     "enable": {
       "title": "Ativar encaminhamento de logs",
-      "description": "Quando ativados, os logs de eventos são encaminhados ao seu armazenamento de logs em uma programação recorrente."
+      "description": "Quando ativados, os logs de eventos são encaminhados ao seu armazenamento de logs à medida que cada dispositivo os informa."
     },
     "connection": {
       "title": "Conexão",

@@ -851,6 +851,7 @@
       "mcp.resources.list": "MCP : lister les ressources",
       "terminal.session.summary": "Résumé de session de terminal",
       "script.run": "Script exécuté",
+      "script.execute": "Script exécuté sur l’appareil",
       "script.create": "Script créé",
       "script.update": "Script mis à jour",
       "script.delete": "Script supprimé",
