@@ -93,7 +93,7 @@ func (h *Heartbeat) waitBeforePamUnableRetry(delay time.Duration) {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
-	case <-h.stopChan:
+	case <-h.pamUnableStop:
 	case <-timer.C:
 	}
 }
@@ -105,7 +105,7 @@ func (h *Heartbeat) deliverPamUnable(requestID string, u pamUnable, window time.
 	defer cancel()
 	go func() {
 		select {
-		case <-h.stopChan:
+		case <-h.pamUnableStop:
 			cancel()
 		case <-ctx.Done():
 		}
@@ -113,7 +113,7 @@ func (h *Heartbeat) deliverPamUnable(requestID string, u pamUnable, window time.
 	deadline := now().Add(window)
 	for attempt := 0; ; attempt++ {
 		select {
-		case <-h.stopChan:
+		case <-h.pamUnableStop:
 			return context.Canceled
 		default:
 		}

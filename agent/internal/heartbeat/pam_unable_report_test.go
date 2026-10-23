@@ -158,6 +158,12 @@ func TestReportPamUnableIgnoresNilAndEmptyRequest(t *testing.T) {
 
 func TestDeliverPamUnableCancelsInFlightOnStop(t *testing.T) {
 	h := unableReportHeartbeat("https://example.test")
+	// A broker drain that uses its whole shutdown budget: the report must be
+	// cancelled before it, not after.
+	h.stopBrokerAcceptingAndWait = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	arrived := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
@@ -181,14 +187,15 @@ func TestDeliverPamUnableCancelsInFlightOnStop(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("report never reached the transport")
 	}
-	// The real shutdown path: Stop closes stopChan after its bounded drain.
+	// The real shutdown path: Stop cancels the report as it begins, before
+	// its bounded drain.
 	go h.Stop()
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("deliverPamUnable = %v, want context.Canceled", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("shutdown did not cancel the in-flight report")
 	}
 }
@@ -212,14 +219,15 @@ func TestDeliverPamUnableStopsPendingRetryWait(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("report never entered its retry wait")
 	}
-	// The real shutdown path: Stop closes stopChan after its bounded drain.
+	// The real shutdown path: Stop cancels the report as it begins, before
+	// its bounded drain.
 	go h.Stop()
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("deliverPamUnable = %v, want context.Canceled", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("shutdown did not interrupt the pending retry wait")
 	}
 }
