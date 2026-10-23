@@ -46,6 +46,8 @@ import { loadProposalApprovalSummary } from './scriptProposals/approvalSummary';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
+import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
+import { applyHelperDeviceScope } from './helperToolFilter';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
@@ -827,6 +829,33 @@ export function intentCreationRefusal(toolName: string, input: unknown, err: unk
   return 'Failed to create approval record';
 }
 
+/**
+ * #9854: the refusal `executeTool` would return for this input, computed
+ * before approval so a call that can never run is not put to a human.
+ *
+ * Validates exactly what `executeTool` will validate: the helper-scoped input
+ * for a Helper session (`applyHelperDeviceScope`), the raw input otherwise.
+ * Only core tools with a `toolInputSchemas` entry are checked here — tenant
+ * (BYO MCP), extension and session-aware tools validate on their own path,
+ * and `validateToolInput` refuses a tool with no schema outright.
+ */
+function preApprovalInputRefusal(
+  session: ActiveSession,
+  toolName: string,
+  input: Record<string, unknown>,
+  isTenantTool: boolean,
+): string | null {
+  if (isTenantTool || !Object.hasOwn(toolInputSchemas, toolName)) return null;
+  let effectiveInput = input;
+  if (session.auth.helperDeviceId) {
+    const scoped = applyHelperDeviceScope(toolName, input, session.auth.helperDeviceId);
+    if ('error' in scoped) return scoped.error;
+    effectiveInput = scoped.input;
+  }
+  const validation = validateToolInput(toolName, effectiveInput);
+  return validation.success ? null : validation.error;
+}
+
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
   return async (toolName, input, mcpToolName) => {
     // Set only by the tier-3 branch below when it creates a durable intent;
@@ -897,6 +926,16 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         error: `Tool '${stripMcpPrefix(exposedToolName)}' is not allowed for this session`,
       };
     }
+
+    // #9854: validate the input against the tool's full schema BEFORE any
+    // guardrail, approval card, action intent or PAM elevation exists. The SDK
+    // tool shapes carry no refinements (e.g. the AI path deny-list on
+    // execute_command file_read/file_list), so a call the platform will always
+    // refuse used to reach a human for approval and fail only afterwards, in
+    // executeTool. Mirrors createMcpActionIntent (mcpIntentCreation.ts).
+    // executeTool keeps its own check as the backstop.
+    const inputRefusal = preApprovalInputRefusal(session, toolName, input, tenant !== undefined);
+    if (inputRefusal) return { allowed: false, error: inputRefusal };
 
     // Guardrails (tier check + action-based escalation). A proposal-backed
     // run_script needs the proposal's reviewed risk tier to pick supervised vs
