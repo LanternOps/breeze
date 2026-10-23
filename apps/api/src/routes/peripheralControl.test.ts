@@ -907,6 +907,24 @@ describe('peripheralControl routes', () => {
       expect(loadAndResolveEffectivePeripheralPolicySet).toHaveBeenCalledWith(deviceId);
     });
 
+    it('404s (not an empty list) when the resolver cannot find the device org', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(deviceLookup([{ id: deviceId, orgId, siteId }]) as any);
+      vi.mocked(loadAndResolveEffectivePeripheralPolicySet).mockResolvedValue(null);
+      const res = await app.request(`/peripherals/devices/${deviceId}/effective`, { method: 'GET' });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns an empty list when no policy applies', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(deviceLookup([{ id: deviceId, orgId, siteId }]) as any);
+      vi.mocked(loadAndResolveEffectivePeripheralPolicySet).mockResolvedValue({
+        identity: { deviceId, orgId, partnerId, siteId, groupIds: [] },
+        effectivePolicies: [],
+      } as any);
+      const res = await app.request(`/peripherals/devices/${deviceId}/effective`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([]);
+    });
+
     it("404s for a device outside the caller's orgs without resolving anything", async () => {
       vi.mocked(db.select).mockReturnValueOnce(
         deviceLookup([{ id: deviceId, orgId: '99999999-9999-9999-9999-999999999999', siteId }]) as any
@@ -980,9 +998,11 @@ describe('peripheralControl routes', () => {
       const { PgDialect } = await import('drizzle-orm/pg-core');
       const { sql: rendered, params } = new PgDialect().sqlToQuery(rowsWhere as any);
       // org rows OR partner-wide rows (org_id IS NULL) of the selected org's partner
-      expect(rendered).toMatch(/IS NULL/);
-      expect(rendered).toMatch(/SELECT/);
-      expect(params).toContain(orgId);
+      expect(rendered).toContain(
+        '($1 = $2 OR ($3 IS NULL AND $4 = (SELECT $5 FROM $6 WHERE $7 = $8)))',
+      );
+      // [orgId col, orgId, orgId col, partnerId col, org.partnerId, organizations, org.id, orgId]
+      expect(params.filter((p) => p === orgId)).toHaveLength(2);
       expect(params).toContain('partnerId');
     });
 

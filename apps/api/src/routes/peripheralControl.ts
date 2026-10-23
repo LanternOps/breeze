@@ -655,7 +655,10 @@ peripheralControlRoutes.get(
     }
 
     const resolved = await loadAndResolveEffectivePeripheralPolicySet(deviceId);
-    if (!resolved || resolved.effectivePolicies.length === 0) return c.json({ data: [] });
+    // null = the device's organization row is missing (data-integrity problem),
+    // which must not read as "no policies apply".
+    if (!resolved) return c.json({ error: 'Device not found' }, 404);
+    if (resolved.effectivePolicies.length === 0) return c.json({ data: [] });
 
     // Names/targeting for exactly the policies the resolver says apply to this
     // (already authorised) device — including partner-wide rows an org-scope

@@ -38,6 +38,16 @@ describe('DevicePeripheralsTab — Active Policies (#9621)', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/peripherals/devices/${deviceId}/effective`));
   });
 
+  it('does not present a failed load as "no policies apply"', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/peripherals/activity')) return json({ data: [] });
+      return { ok: false, status: 500, statusText: 'Server Error', json: vi.fn() } as unknown as Response;
+    });
+    render(<DevicePeripheralsTab deviceId={deviceId} />);
+    expect(await screen.findByTestId('device-peripherals-policies-error')).toBeInTheDocument();
+    expect(screen.queryByText('No active peripheral policies.')).toBeNull();
+  });
+
   it('never reads the org-wide policy list for this panel', async () => {
     render(<DevicePeripheralsTab deviceId={deviceId} />);
     await screen.findByText('Block storage at HQ');
