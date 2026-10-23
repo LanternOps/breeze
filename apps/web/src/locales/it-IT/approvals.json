@@ -102,7 +102,7 @@
     "empty": "Nulla si è concluso di recente.",
     "status": {
       "failed": "Non riuscita",
-      "rejected": "Rifiutata",
+      "rejected": "Negata",
       "expired": "Scaduta",
       "cancelled": "Annullata",
       "completed": "Completata",

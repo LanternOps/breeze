@@ -24,6 +24,7 @@ import { recordActionIntentEvent, recordActionIntentMetric } from '../services/a
 import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
+import { buildActionLabel } from '../services/actionIntents/actionLabel';
 import { isMcpOriginIntent } from '../services/mcpIntentEligibility';
 import { beginMcpReleaseLifecycle, writeMcpIntentOutcomeAudit, type McpReleaseLifecycle } from '../services/mcpTier3Lifecycle';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
@@ -2047,7 +2048,15 @@ async function notifyRequesterOfOutcome(
   //
   // Outbox delivery is also at-least-once and can land minutes late, by which
   // time an approved intent may well have completed, failed or expired.
-  const summary = intent.targetSummary;
+  // The friendly headline the approver saw ("Manage services: restart
+  // Spooler"), not the raw audit signature stored in targetSummary
+  // (`manage_services(deviceId=<uuid>, …)`).
+  const summary = intent.actionName
+    ? buildActionLabel({
+        toolName: intent.actionName,
+        input: (intent.arguments ?? {}) as Record<string, unknown>,
+      })
+    : intent.targetSummary;
   // #9658: the deny form promises the reason is "shared with the requester".
   // Only a rejected intent carries one; read it off the denied approval row.
   const denyReason = intent.status === 'rejected' ? await loadDenyReason(intent.id) : null;

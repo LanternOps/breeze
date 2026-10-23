@@ -223,7 +223,7 @@ export function intentTerminalReason(snapshot: IntentOutcomeSnapshot): string {
   }
   switch (snapshot.status) {
     case 'rejected':
-      return 'the approval was rejected, so it did not run';
+      return 'the approval was denied, so it did not run';
     case 'expired':
       return 'the approval expired, so it did not run';
     case 'cancelled':

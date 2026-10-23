@@ -4747,6 +4747,24 @@ describe('processIntentReleaseJob', () => {
     );
   });
 
+  it('words the denial with the friendly action label, not the raw tool call', async () => {
+    dbState.selectActionIntentsResults.push([
+      {
+        ...FOUR_EYES_INTENT,
+        status: 'rejected',
+        targetSummary: 'manage_services(deviceId=6eae0f70-1111-4222-8333-944455556666, action=restart, serviceName=Spooler)',
+        actionName: 'manage_services',
+        arguments: { deviceId: '6eae0f70-1111-4222-8333-944455556666', action: 'restart', serviceName: 'Spooler' },
+      },
+    ]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('Manage services: restart Spooler was denied and will not run.');
+    expect(arg.message).not.toContain('manage_services(');
+  });
+
   it('keeps the plain denial copy when the approver gave no reason', async () => {
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
     dbState.selectApprovalRequestsResults.push([{ decisionReason: '  ' }]);
