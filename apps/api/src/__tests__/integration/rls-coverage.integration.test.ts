@@ -279,6 +279,9 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // same policy shape as time_entries. No org_id / device_id by design, so it
   // appears in no other registration list.
   ['time_suggestion_decisions', 'partner_id'],
+  // partner_entitlements (Partner Entitlements W1, Wisp W01 #9907): shape 3,
+  // no org_id — partner-axis only, so this is its ONLY registration list.
+  ['partner_entitlements', 'partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
   ['pax8_integrations', 'partner_id'],

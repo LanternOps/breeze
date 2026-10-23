@@ -231,3 +231,4 @@ export * from './circuits';
 export * from './endpointMessages';
 export * from './emailOptouts';
 export * from './endpointConversations';
+export * from './partnerEntitlements';
