@@ -434,6 +434,8 @@
       "criticalOpen": "Kritik açık",
       "kev": "Kullanıldığı biliniyor",
       "patchReady": "Yama mevcut",
+      "viewCritical": "Kritik CVE'leri göster",
+      "viewPatchReady": "Yaması hazır CVE'leri göster",
       "totalOpen": "{{count}} açık bulgular",
       "totalOpen_one": "{{count}} açık bulgu",
       "totalOpen_other": "{{count}} açık bulgular",

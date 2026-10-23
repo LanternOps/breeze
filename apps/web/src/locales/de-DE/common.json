@@ -434,6 +434,8 @@
       "criticalOpen": "Kritisch offen",
       "kev": "Bekannt ausgenutzt",
       "patchReady": "Patch verfügbar",
+      "viewCritical": "Kritische CVEs anzeigen",
+      "viewPatchReady": "CVEs mit verfügbarem Patch anzeigen",
       "totalOpen": "{{count}} offene Funde",
       "totalOpen_one": "{{count}} offener Fund",
       "totalOpen_other": "{{count}} offene Funde",

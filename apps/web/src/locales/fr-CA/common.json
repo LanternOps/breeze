@@ -434,6 +434,8 @@
       "criticalOpen": "Critiques ouvertes",
       "kev": "Exploitation connue",
       "patchReady": "Correctif disponible",
+      "viewCritical": "Voir les CVE critiques",
+      "viewPatchReady": "Voir les CVE avec correctif prêt",
       "totalOpen": "{{count}} constats ouverts",
       "totalOpen_one": "{{count}} constat ouvert",
       "totalOpen_other": "{{count}} constats ouverts",

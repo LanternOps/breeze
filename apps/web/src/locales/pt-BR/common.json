@@ -434,6 +434,8 @@
       "criticalOpen": "Críticas abertas",
       "kev": "Exploração conhecida",
       "patchReady": "Patch disponível",
+      "viewCritical": "Ver CVEs críticas",
+      "viewPatchReady": "Ver CVEs com patch pronto",
       "totalOpen": "{{count}} descobertas abertas",
       "totalOpen_one": "{{count}} descoberta aberta",
       "totalOpen_other": "{{count}} descobertas abertas",

@@ -14,6 +14,9 @@
 import type { FilterCondition } from '@breeze/shared';
 import { encodeFilterToHash } from '../devices/filterUrl';
 import { encodeDeviceClassToHash } from '../devices/deviceClassFilter';
+import { encodeAlertsHash } from '../alerts/alertsHash';
+import { encodeVulnHash, type VulnHashInput } from '../vulnerabilities/vulnHash';
+import { encodeThreatsHash } from '../security/threatsHash';
 import { canOpenDestination, type NavDestinationGate, type NavViewer } from '../../lib/navVisibility';
 import type { DeviceStats } from './types';
 
@@ -87,6 +90,20 @@ function otherStatuses(d: DashboardData): string[] {
 
 const DEVICES_GATE = gatedBy('/devices');
 
+/** Alerts page: the same active critical+high / medium sets the KPI numbers
+ *  count (`/alerts/summary` bySeverity counts active alerts only). */
+const alertsCriticalHref = (): string =>
+  `/alerts${encodeAlertsHash({ status: ['active'], severity: ['critical', 'high'] })}`;
+const alertsWarningHref = (): string =>
+  `/alerts${encodeAlertsHash({ status: ['active'], severity: ['medium'] })}`;
+
+/** Vulnerabilities page, CVE tab, over open findings. */
+const vulnCvesHref = (filters: Omit<VulnHashInput, 'tab' | 'status'>): string =>
+  `/vulnerabilities${encodeVulnHash({ tab: 'cves', status: 'open', ...filters })}`;
+
+const alertsGate = gatedBy('/alerts');
+const vulnGate = gatedBy('/vulnerabilities');
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -103,16 +120,14 @@ export const DASHBOARD_METRICS = {
     visible: DEVICES_GATE,
   },
   'kpi.critical': {
-    kind: 'section',
-    href: () => '/alerts',
-    visible: gatedBy('/alerts'),
-    reason: 'Opens the alerts page; the severity/status filter destination lands with the alerts wave.',
+    kind: 'count',
+    href: alertsCriticalHref,
+    visible: alertsGate,
   },
   'kpi.warnings': {
-    kind: 'section',
-    href: () => '/alerts',
-    visible: gatedBy('/alerts'),
-    reason: 'Opens the alerts page; the severity/status filter destination lands with the alerts wave.',
+    kind: 'count',
+    href: alertsWarningHref,
+    visible: alertsGate,
   },
   'kpi.tickets': {
     kind: 'count',
@@ -132,12 +147,16 @@ export const DASHBOARD_METRICS = {
 
   // --- Alerts feed header --------------------------------------------------
   'alerts.criticalCount': {
-    kind: 'exempt',
-    reason: 'Linked once the alerts page reads a status/severity hash (alerts wave).',
+    kind: 'count',
+    href: alertsCriticalHref,
+    visible: alertsGate,
+    testId: 'dashboard-alerts-critical-count-link',
   },
   'alerts.warningCount': {
-    kind: 'exempt',
-    reason: 'Linked once the alerts page reads a status/severity hash (alerts wave).',
+    kind: 'count',
+    href: alertsWarningHref,
+    visible: alertsGate,
+    testId: 'dashboard-alerts-warning-count-link',
   },
 
   // --- Fleet card ----------------------------------------------------------
@@ -199,8 +218,10 @@ export const DASHBOARD_METRICS = {
     reason: 'No list computes at-risk the same way /security/dashboard does (Gate B #6); exempt unless an equality test proves one.',
   },
   'security.threats': {
-    kind: 'exempt',
-    reason: 'Linked once the threats list reads a #status= hash (security wave).',
+    kind: 'count',
+    href: () => `/security/vulnerabilities${encodeThreatsHash({ status: 'active' })}`,
+    visible: gatedBy('/security'),
+    testId: 'dashboard-security-threats-link',
   },
 
   // --- Patch card ----------------------------------------------------------
@@ -256,11 +277,19 @@ export const DASHBOARD_METRICS = {
   },
   'vuln.criticalOpen': {
     kind: 'exempt',
-    reason: 'Counts findings; affected link "View critical CVEs" lands with the vulnerabilities wave.',
+    reason: 'Counts findings, but the CVE list groups them; the affected link "View critical CVEs" carries the destination.',
+  },
+  'vuln.viewCritical': {
+    kind: 'affected',
+    href: () => vulnCvesHref({ severity: 'critical' }),
+    visible: vulnGate,
+    testId: 'dashboard-vuln-critical-link',
   },
   'vuln.kevCves': {
-    kind: 'exempt',
-    reason: 'Distinct-CVE count link lands with the vulnerabilities wave.',
+    kind: 'count',
+    href: () => vulnCvesHref({ kev: true }),
+    visible: vulnGate,
+    testId: 'dashboard-vuln-kev-link',
   },
   'vuln.kevDevices': {
     kind: 'exempt',
@@ -268,7 +297,13 @@ export const DASHBOARD_METRICS = {
   },
   'vuln.patchReady': {
     kind: 'exempt',
-    reason: 'Counts findings; affected link lands with the vulnerabilities wave.',
+    reason: 'Counts findings, but the CVE list groups them; the affected link "View patch-ready CVEs" carries the destination.',
+  },
+  'vuln.viewPatchReady': {
+    kind: 'affected',
+    href: () => vulnCvesHref({ patchAvailable: true }),
+    visible: vulnGate,
+    testId: 'dashboard-vuln-patch-ready-link',
   },
 } as const satisfies Record<string, MetricDef>;
 

@@ -165,6 +165,17 @@ export default function VulnerabilitiesCard({
           </div>
         </dl>
       )}
+
+      {!noFindings && (data.criticalOpen > 0 || data.patchReadyFindingCount > 0) && (
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+          {data.criticalOpen > 0 && (
+            <DashboardMetric metric="vuln.viewCritical">{t('dashboard.vuln.viewCritical')}</DashboardMetric>
+          )}
+          {data.patchReadyFindingCount > 0 && (
+            <DashboardMetric metric="vuln.viewPatchReady">{t('dashboard.vuln.viewPatchReady')}</DashboardMetric>
+          )}
+        </div>
+      )}
     </div>
   );
 }
