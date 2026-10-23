@@ -22,6 +22,7 @@ import PartnerAiDataPolicyCard from './PartnerAiDataPolicyCard';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
+import KnownGuestsSettings from './KnownGuestsSettings';
 import PartnerModulesCard, { type TopologyFeatureFlags } from './PartnerModulesCard';
 import type { ServiceManagementMode } from '@/stores/orgStore';
 import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
@@ -666,13 +667,13 @@ export default function PartnerSettingsPage() {
                 <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
               </section>
             )}
-            {/* Caller verification (#6354): partner baseline, self-saving and
-                hidden unless the server flag is on. */}
-            {activeTab === 'security' && (
-              <div className="mt-4">
-                <PartnerCallerVerificationPolicy />
-              </div>
-            )}
+            {/* Caller verification (#6354): partner baseline, self-saving; the
+                rail hides the tab (and the form renders nothing) unless the
+                server flag is on. */}
+            {activeTab === 'callerVerification' && <PartnerCallerVerificationPolicy />}
+
+            {/* Known guests: partner-wide MAC whitelist, with its own add/remove. */}
+            {activeTab === 'knownGuests' && <KnownGuestsSettings />}
 
             {activeTab === 'notifications' && (
               <section className="rounded-lg border bg-card p-6 shadow-xs">

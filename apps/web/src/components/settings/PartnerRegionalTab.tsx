@@ -1,6 +1,5 @@
 import { Clock } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import KnownGuestsSettings from './KnownGuestsSettings';
 import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import type { BusinessHoursPreset, DateFormat, TimeFormat, DaySchedule, SupportedLocale } from '@breeze/shared';
 import '@/lib/i18n';
@@ -167,8 +166,6 @@ export default function PartnerRegionalTab({
           )}
         </div>
       </section>
-
-      <KnownGuestsSettings />
     </>
   );
 }
