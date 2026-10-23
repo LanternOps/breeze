@@ -95,7 +95,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { authMiddleware } from '../middleware/auth';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { devices } from '../db/schema';
+import { devices, remoteSessions } from '../db/schema';
 // Real dialect + real `sql` (the drizzle-orm mock above spreads the original and
 // replaces only the condition builders), so a captured predicate can be compiled
 // to the exact text Postgres would receive.
@@ -1651,6 +1651,39 @@ describe('metrics routes', () => {
         },
       });
       expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('counts sessions in the selected range, not a fixed 30 days (#9650)', async () => {
+      const captured = mockCurrentMetricsQueries(deviceRows, activeSessionRows, recentSessionRows);
+      const before = Date.now();
+
+      const res = await app.request('/?range=7d', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const gteCond = findCondition(captured[2], 'gte', remoteSessions.createdAt);
+      expect(gteCond).toBeDefined();
+      const since = (gteCond.value as Date).getTime();
+      const dayMs = 24 * 60 * 60 * 1000;
+      expect(before - since).toBeGreaterThanOrEqual(7 * dayMs - 1000);
+      expect(before - since).toBeLessThan(7 * dayMs + 60_000);
+    });
+
+    it('bounds sessions by a custom range and rejects an inverted one (#9650)', async () => {
+      const captured = mockCurrentMetricsQueries(deviceRows, activeSessionRows, recentSessionRows);
+
+      const res = await app.request('/?startDate=2026-01-01&endDate=2026-01-10', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const gteCond = findCondition(captured[2], 'gte', remoteSessions.createdAt);
+      expect((gteCond.value as Date).toISOString()).toBe('2026-01-01T00:00:00.000Z');
+      expect(findCondition(captured[2], 'lt', remoteSessions.createdAt)).toBeDefined();
+
+      const bad = await app.request('/?startDate=2026-01-10&endDate=2026-01-01', {
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(bad.status).toBe(400);
     });
 
     it('leaves the unrestricted query chains unchanged', async () => {
