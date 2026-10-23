@@ -641,7 +641,10 @@ export async function advanceManualWork(a: StepAdvancerArgs): Promise<string> {
       'A ticket step this task was waiting on is no longer part of this organization (it was moved or removed). '
       + 'Nothing further was changed. Confirm the remaining work by hand.', cp);
   }
-  if (items.length > 0 && linked.length < items.length) {
+  // A row already completed by a person counts even if its link was removed
+  // later; only a never-created item is created.
+  const accounted = rows.filter((r) => r.checklistItemId !== null || r.stepState === 'succeeded');
+  if (items.length > 0 && accounted.length < items.length) {
     let waitOn: string | null = null;
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
@@ -755,7 +758,9 @@ export async function advanceVerifyOutcome(a: StepAdvancerArgs): Promise<string>
   // When the walk verified it and the SAME account's lockout is now observed,
   // the walk's verification stands — the lockout is evidence nothing undid it.
   const confirmedAtWalk = (e: PlannedEffect): boolean => {
-    if (states.get(e.ordinal) !== 'unknown' || walk.get(e.ordinal)?.verified !== true) return false;
+    const ran = walk.get(e.ordinal);
+    // Verified by the walk, or found already in place by it (a no-op).
+    if (states.get(e.ordinal) !== 'unknown' || !(ran?.verified === true || ran?.noop === true)) return false;
     if (e.provider === 'breeze' || e.accountExternalId === null || !o.MAIL_ROUTING_TOOLS[e.provider].includes(e.toolName)) return false;
     const lockout = o.LOCKOUT_TOOL[e.provider];
     return satisfied.some((s) => s.toolName === lockout && s.accountExternalId === e.accountExternalId);
@@ -794,7 +799,7 @@ export async function advanceVerifyOutcome(a: StepAdvancerArgs): Promise<string>
 async function readWalkRecord(
   a: StepAdvancerArgs,
   plan: readonly PlannedEffect[],
-): Promise<Map<number, { dispatchedAt: Date | null; verified: boolean | null }>> {
+): Promise<Map<number, { dispatchedAt: Date | null; verified: boolean | null; noop: boolean }>> {
   const o = await ops();
   const keys = plan.map((e) => o.planEffectOperationKey({
     stepKey: 'effects', planRevision: a.task.revision, toolName: e.toolName, targetId: e.targetId, ordinal: e.ordinal,
@@ -805,12 +810,13 @@ async function readWalkRecord(
     .from(aiOperatorOperations)
     .where(and(eq(aiOperatorOperations.orgId, a.task.orgId), eq(aiOperatorOperations.taskId, a.task.id), inArray(aiOperatorOperations.operationKey, keys)))));
   const byKey = new Map(rows.map((r) => [r.operationKey, r]));
-  const out = new Map<number, { dispatchedAt: Date | null; verified: boolean | null }>();
+  const out = new Map<number, { dispatchedAt: Date | null; verified: boolean | null; noop: boolean }>();
   plan.forEach((e, i) => {
     const r = byKey.get(keys[i]!);
     if (!r) return;
-    const ok = ((r.result ?? {}) as { verified?: { ok?: unknown } }).verified?.ok;
-    out.set(e.ordinal, { dispatchedAt: r.dispatchedAt ?? null, verified: typeof ok === 'boolean' ? ok : null });
+    const result = (r.result ?? {}) as { noop?: unknown; verified?: { ok?: unknown } };
+    const ok = result.verified?.ok;
+    out.set(e.ordinal, { dispatchedAt: r.dispatchedAt ?? null, verified: typeof ok === 'boolean' ? ok : null, noop: result.noop === true });
   });
   return out;
 }
@@ -820,6 +826,8 @@ export function residualAfterOffboarding(input: IdentityOffboardingInput, fresh:
   const out: string[] = [];
   const fx = input.effects;
   for (const f of fresh.flags) out.push(`could not re-check: ${f.code} (${f.subject})`);
+  // A re-read that stopped short (a cap, or the read budget) did not see everything.
+  for (const t of fresh.truncated) out.push(`could not re-check all of ${t}`);
   if (fresh.google.present) {
     if (fx.removeGroups) for (const g of fresh.google.groups) out.push(`still in Google group ${g.name}`);
     if (fx.removeLicenses) for (const l of fresh.google.licenses) out.push(`still holds Google licence ${l.name ?? l.skuId}`);

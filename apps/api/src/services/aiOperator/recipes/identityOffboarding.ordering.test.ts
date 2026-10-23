@@ -165,6 +165,12 @@ describe('PROPERTY: a DEGRADED mail step holds the lockout back (never "disabled
             // Nothing the plan asked for is missing: the lockout stays.
             expect(tools).toContain(LOCKOUT[provider]);
           }
+          // ONLY the lockout is held: every other non-degraded effect of this
+          // provider (groups, licences, sessions, other mail tools) still runs.
+          const keptElsewhere = buildIdentityOffboardingPlan(c.input, c.facts)
+            .filter((e) => e.provider === provider && e.toolName !== LOCKOUT[provider] && !degradedMail.includes(e.toolName))
+            .map((e) => e.toolName);
+          expect(tools.filter((t) => t !== LOCKOUT[provider])).toEqual(keptElsewhere);
           // The OTHER provider is untouched by this provider's degradation.
           const other = provider === 'google' ? 'm365' : 'google';
           expect(plan.filter((e) => e.provider === other).map((e) => e.toolName))

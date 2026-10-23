@@ -473,6 +473,25 @@ describe('advanceVerifyOutcome (spec §6.6)', () => {
     expect(verdict().detail).toContain('google_set_vacation');
   });
 
+  it('a mail setting the walk found ALREADY in place (no-op) also stands once the suspend is observed', async () => {
+    h.probeEffect.mockImplementation(async (e: { toolName: string }) => ({
+      state: e.toolName === 'google_set_vacation' || e.toolName === 'google_signout' ? 'unknown' : 'satisfied', detail: 'd', observedAt: NOW,
+    }));
+    await verifyWith(plan(), recipe, (t) => (t === 'google_set_vacation' ? { result: { noop: true } } : {}));
+    expect(verdict().result).toBe('passed');
+  });
+
+  it('a re-check that could not list everything (truncated) is not a pass', async () => {
+    h.probeEffect.mockResolvedValue({ state: 'satisfied', detail: 'd', observedAt: NOW });
+    h.discoverIdentityFacts.mockResolvedValue({
+      ...FACTS, google: { ...FACTS.google, groups: [], suspended: true }, m365: { ...FACTS.m365, accountEnabled: false },
+      truncated: ['m365.groups'],
+    });
+    await verifyWith(plan());
+    expect(verdict().result).toBe('failed');
+    expect(verdict().detail).toContain('m365.groups');
+  });
+
   it('a planned effect with NO operation row never ran: unconfirmed, and it is not probed', async () => {
     h.probeEffect.mockResolvedValue({ state: 'satisfied', detail: 'd', observedAt: NOW });
     await verifyWith(plan(), recipe, (t) => (t === 'm365_disable_user' ? null : {}));
@@ -524,6 +543,18 @@ describe('advanceManualWork', () => {
     await advanceManualWork(args('manual_work', mwCp()));
     expect(h.ensureManualWorkItems).toHaveBeenCalledTimes(1);
     expect(h.settle).not.toHaveBeenCalled();
+  });
+
+  it('an item already completed and settled whose link was later removed is NOT re-created', async () => {
+    h.selectQueue = [[], [{ id: CONTACT_TARGET }]];
+    const items = (await import('./recipes/identityOffboarding')).buildIdentityOffboardingManualWork(
+      mwCp().recipeInput as never, SNAPSHOT_FACTS, {}, [],
+    );
+    h.readManualWork.mockResolvedValue(items.map((_, i) => row(i, i === 0
+      ? { stepState: 'succeeded', checklistItemId: null, itemLabel: null, itemDoneAt: NOW }
+      : { stepState: 'succeeded', itemDoneAt: NOW })));
+    await advanceManualWork(args('manual_work', mwCp()));
+    expect(h.ensureManualWorkItems).not.toHaveBeenCalled();
   });
 
   it('more review items than the checklist bound are folded into one, never a throw', async () => {

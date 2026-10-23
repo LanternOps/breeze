@@ -1049,6 +1049,8 @@ describe('identity_offboarding end to end (R1a)', () => {
     // The ordering contract applied to degradation: the auto-reply cannot run,
     // so the disable is held back too and becomes a manual item for AFTER it.
     expect(effects.map((e) => e.toolName)).not.toContain('m365_disable_user');
+    // …and ONLY the disable: the provider's other effects still run.
+    expect(effects.map((e) => e.toolName)).toContain('m365_revoke_sessions');
     await openWindow(a);
     await walkEffects(a);
     const task = await readTask(a);

@@ -441,7 +441,9 @@ export function buildIdentityOffboardingPlan(
   const undegraded = buildUndegradedPlan(input, facts);
   const held = heldLockouts(undegraded, degraded);
   return undegraded
-    .filter((e) => !degraded.has(e.toolName) && !(e.provider !== 'breeze' && held.has(e.provider)))
+    // Only the LOCKOUT is held; the provider's other effects still run.
+    .filter((e) => !degraded.has(e.toolName)
+      && !(e.provider !== 'breeze' && e.toolName === LOCKOUT_TOOL[e.provider] && held.has(e.provider)))
     .map((e, i) => ({ ...e, ordinal: i }));
 }
 

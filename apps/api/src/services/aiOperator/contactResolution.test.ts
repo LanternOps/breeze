@@ -270,6 +270,16 @@ describe('resolveProviderAccounts', () => {
     expect(r.accounts.find((x) => x.provider === 'm365')).toMatchObject({ externalId: 'obj-1', connectionId: null });
   });
 
+  it('a REVOKED or never-consented M365 row is "does not use Microsoft 365", not a failed lookup', async () => {
+    for (const status of ['revoked', 'pending-consent']) {
+      h.m365Read.mockClear();
+      h.selectQueue = [[], [{ id: 'm-conn', profile: 'customer-graph-actions', status }], [{ id: 'g-conn' }]];
+      const r = await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
+      expect(h.m365Read, status).not.toHaveBeenCalled();
+      expect(r.problems, status).toEqual([]);
+    }
+  });
+
   it('a Google connection that EXISTS but is unusable is a problem even with no link — never a silent skip', async () => {
     h.resolveContextByOrg.mockResolvedValue({ error: 'connection inactive' });
     h.selectQueue = [[], [{ id: 'm-conn', profile: 'customer-graph-actions' }], [{ id: 'g-conn' }]];

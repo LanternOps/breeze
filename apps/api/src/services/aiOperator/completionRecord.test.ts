@@ -88,7 +88,12 @@ describe('renderCompletionRecord', () => {
   });
 
   it('4d. snake_case, prefixed and plural keywords are still withheld', () => {
-    for (const leak of ['client_secret=abc', 'db_password=hunter2', 'passwords: hunter2', 'GOOGLE_API_KEY=xyz', 'my_tokens=1', 'access_token: q']) {
+    for (const leak of [
+      'client_secret=abc', 'db_password=hunter2', 'passwords: hunter2', 'GOOGLE_API_KEY=xyz', 'my_tokens=1', 'access_token: q',
+      'clientSecrets=abc', 'secretValue=abc', 'passwordHash=abc', 'apiTokens=abc', 'clientSecretValue=abc', 'userPasswords: x',
+      // a base64url refresh token that a '-' splits into short runs
+      '1//0gLp3x9Qk2mZrTn8vYw4bH6cJ1dE5fG7-hI0jK2lM4nO6pQ8rS0tU2vW4xY6zA8bC0dE2fG4',
+    ]) {
       const { text } = renderCompletionRecord(data({ narrative: `note ${leak}` }));
       expect(text, leak).not.toContain(leak);
     }

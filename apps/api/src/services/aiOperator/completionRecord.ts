@@ -88,14 +88,16 @@ export interface CompletionRecordData {
  */
 const SECRET_WORDS = /-----BEGIN|(?<![a-z])(pass(word|wd|phrase|code)?s?|pwd|secrets?|credentials?|service[ _]?account[ _]?keys?|vault[ _]?refs?|private[ _]?keys?|api[ _]?keys?|access[ _]?tokens?|refresh[ _]?tokens?|tokens?|pins?|otps?|recovery[ _]?(code|key)s?|bearer)(?![a-z])/i;
 /** camelCase field names (`clientSecret`, `refreshToken`), which a word boundary misses. */
-const SECRET_CAMEL = /[a-z](Secret|Password|Passwd|Token|ApiKey|PrivateKey)\b/;
+const SECRET_CAMEL = /[a-z](Secret|Password|Passwd|Token|ApiKey|PrivateKey)s?(?![a-z])|(?<![A-Za-z])(secret|password|passwd|token)s?[A-Z]/;
 /**
  * Value shapes, keyword or not: a JWT, cloud key prefixes, or a long
  * high-entropy run. The run excludes `-`, so a GUID (hyphenated groups of at
  * most 12) never matches — group and object ids are ordinary record content.
  */
-const SECRET_SHAPES = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b(AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|(?=[A-Za-z0-9+/_]*\d)(?=[A-Za-z0-9+/_]*[A-Za-z])[A-Za-z0-9+/_]{40,}/;
-const SECRETISH = { test: (s: string) => SECRET_WORDS.test(s) || SECRET_CAMEL.test(s) || SECRET_SHAPES.test(s) };
+const SECRET_SHAPES = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b(AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|(?=[A-Za-z0-9+/_-]*\d)(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}/;
+/** GUIDs are removed before the shape test, so ids stay readable and `-` can stay in the long-run shape. */
+const GUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const SECRETISH = { test: (s: string) => SECRET_WORDS.test(s) || SECRET_CAMEL.test(s) || SECRET_SHAPES.test(s.replace(GUID, ' ')) };
 
 function clean(s: string, max = 500): string {
   const flat = s.replace(/[\r\n]+/g, ' ').trim();

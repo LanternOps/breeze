@@ -155,7 +155,7 @@ export async function resolveProviderAccounts(
     // reads through the read profile); the actions row is the one frozen onto
     // the account, since that is the connection the effects write through.
     const m365Rows = await db
-      .select({ id: m365Connections.id, profile: m365Connections.profile })
+      .select({ id: m365Connections.id, profile: m365Connections.profile, status: m365Connections.status })
       .from(m365Connections)
       .where(eq(m365Connections.orgId, orgId))
       .limit(10);
@@ -165,7 +165,11 @@ export async function resolveProviderAccounts(
       .from(googleWorkspaceConnections)
       .where(eq(googleWorkspaceConnections.orgId, orgId))
       .limit(1);
-    return { links: linkRows, m365ConnectionId: conn?.id ?? null, m365Connected: m365Rows.length > 0, googleConnected: Boolean(google) };
+    // A revoked (disconnected) or never-consented row means the org does not
+    // use Microsoft 365 now; looking through it would freeze a permanent
+    // "lookup failed" problem onto every task.
+    const m365Connected = m365Rows.some((r) => r.status !== 'revoked' && r.status !== 'pending-consent');
+    return { links: linkRows, m365ConnectionId: conn?.id ?? null, m365Connected, googleConnected: Boolean(google) };
   }));
 
   const linked = (system: 'm365' | 'google') => links.find((l) => l.system === system)?.externalId ?? null;
