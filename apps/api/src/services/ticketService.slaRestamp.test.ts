@@ -106,6 +106,9 @@ const UNANSWERED = {
   description: null, categoryId: null, priority: 'normal', dueDate: null,
   responseSlaMinutes: null, resolutionSlaMinutes: null, deviceId: null, tags: [],
   status: 'new', firstResponseAt: null, workKind: 'support', fieldProvenance: {},
+  // #8973: the deadline inputs every real row carries.
+  createdAt: new Date('2026-06-01T09:00:00Z'), slaPausedAt: null, slaPausedBusinessMinutes: 0,
+  resolvedAt: null, slaBreachReason: null,
 };
 
 function queueCategory(id: string, responseSlaMinutes: number | null, resolutionSlaMinutes: number | null) {
@@ -291,7 +294,11 @@ describe('applyAiFieldUpdates — SLA restamp before first response (#6691)', ()
     expect(result.categoryId).toEqual({ applied: true });
     expect(setMock).toHaveBeenCalledTimes(2);
     const restamp = setMock.mock.calls[1]![0] as Record<string, unknown>;
-    expect(Object.keys(restamp).sort()).toEqual(['resolutionSlaMinutes', 'responseSlaMinutes']);
+    // #8973: each restamped target carries its stored deadlines in the same statement.
+    expect(Object.keys(restamp).sort()).toEqual([
+      'resolutionDueAt', 'resolutionSlaMinutes', 'resolutionWarnAt',
+      'responseDueAt', 'responseSlaMinutes', 'responseWarnAt',
+    ]);
     const response = sqlOf(restamp.responseSlaMinutes);
     expect(response.sql.toLowerCase()).toContain('case when');
     expect(response.sql).toContain(`->>'responseSlaMinutes'`);
@@ -360,5 +367,102 @@ describe('applyAiFieldUpdates — SLA restamp before first response (#6691)', ()
     const restamp = setMock.mock.calls[1]![0] as Record<string, unknown>;
     expect(restamp).not.toHaveProperty('responseSlaMinutes');
     expect(sqlOf(restamp.resolutionSlaMinutes).params).toContain(480);
+  });
+});
+
+// #8973 W3 (spec §4.3): the restamp and the explicit override write the
+// stored deadlines in the same statement as the target; a frozen arm keeps its
+// deadline. UNANSWERED was created at 2026-06-01T09:00:00Z.
+describe('SLA deadlines follow the restamp and the explicit override (#8973)', () => {
+  const at = (minutes: number) => new Date(Date.parse('2026-06-01T09:00:00Z') + minutes * 60_000);
+
+  it('a #6691 restamp recomputes both deadlines from the new targets', async () => {
+    queueSelect(tickets, [{ ...UNANSWERED, slaPausedBusinessMinutes: 5 }]);
+    queueCategory(CATEGORY_ID, 30, 480);
+    dbState.updateReturningQueue.push([{ ...UNANSWERED, categoryId: CATEGORY_ID }]);
+
+    await updateTicketFields(TICKET_ID, { categoryId: CATEGORY_ID }, actor);
+
+    expect(setMock).toHaveBeenCalledTimes(1);
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      responseSlaMinutes: 30,
+      responseDueAt: at(35),
+      responseWarnAt: at(29),
+      resolutionSlaMinutes: 480,
+      resolutionDueAt: at(485),
+      resolutionWarnAt: at(389),
+    });
+  });
+
+  it('an explicit override after the first response leaves the frozen response deadline alone', async () => {
+    queueSelect(tickets, [{
+      ...UNANSWERED, responseSlaMinutes: 60, resolutionSlaMinutes: 480,
+      firstResponseAt: at(20), responseDueAt: at(60), responseWarnAt: at(48),
+    }]);
+    dbState.updateReturningQueue.push([UNANSWERED]);
+
+    await updateTicketFields(TICKET_ID, { responseSlaMinutes: 15, resolutionSlaMinutes: 240 }, actor);
+
+    const setArg = setMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.responseSlaMinutes).toBe(15);
+    expect(setArg).not.toHaveProperty('responseDueAt');
+    expect(setArg).not.toHaveProperty('responseWarnAt');
+    expect(setArg.resolutionDueAt).toEqual(at(240));
+    expect(setArg.resolutionWarnAt).toEqual(at(192));
+  });
+
+  it('clearing a target clears its deadlines', async () => {
+    queueSelect(tickets, [{ ...UNANSWERED, responseSlaMinutes: 60, resolutionSlaMinutes: 480 }]);
+    dbState.updateReturningQueue.push([UNANSWERED]);
+
+    await updateTicketFields(TICKET_ID, { resolutionSlaMinutes: null }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ resolutionDueAt: null, resolutionWarnAt: null, responseDueAt: at(60) });
+  });
+
+  it('a field edit that touches no target writes no deadline', async () => {
+    queueSelect(tickets, [{ ...UNANSWERED, responseSlaMinutes: 60 }]);
+    dbState.updateReturningQueue.push([UNANSWERED]);
+
+    await updateTicketFields(TICKET_ID, { subject: 'Printer offline again' }, actor);
+
+    const setArg = setMock.mock.calls[0]![0] as Record<string, unknown>;
+    for (const key of ['responseDueAt', 'responseWarnAt', 'resolutionDueAt', 'resolutionWarnAt']) {
+      expect(setArg).not.toHaveProperty(key);
+    }
+  });
+
+  it('the AI restamp guards each deadline with its target\'s provenance and the breach freeze, in SQL', async () => {
+    queueSelect(tickets, [UNANSWERED]);
+    queueCategory(CATEGORY_ID, 30, 480);
+    dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'normal', fieldProvenance: { categoryId: 'ai_agent' } }]);
+    dbState.updateReturningQueue.push([{ id: TICKET_ID }]);
+
+    await applyAiFieldUpdates(TICKET_ID, ORG_ID, { categoryId: { value: CATEGORY_ID, expectedCurrent: null } }, RUN_ID);
+
+    const restamp = setMock.mock.calls[1]![0] as Record<string, unknown>;
+    const due = sqlOf(restamp.responseDueAt);
+    expect(due.sql).toContain(`->>'responseSlaMinutes'`);
+    expect(due.sql).toContain('string_to_array(COALESCE("tickets"."sla_breach_reason"');
+    expect(due.sql).toContain('ELSE "tickets"."response_due_at" END');
+    expect(due.params).toEqual(expect.arrayContaining(['response', at(30).toISOString()]));
+    expect(sqlOf(restamp.responseWarnAt).params).toContain(at(24).toISOString());
+    const resolutionDue = sqlOf(restamp.resolutionDueAt);
+    expect(resolutionDue.sql).toContain(`->>'resolutionSlaMinutes'`);
+    expect(resolutionDue.params).toEqual(expect.arrayContaining(['resolution', at(480).toISOString()]));
+  });
+
+  it('a user-set target keeps its deadlines out of the AI restamp', async () => {
+    queueSelect(tickets, [{ ...UNANSWERED, responseSlaMinutes: 15, fieldProvenance: { responseSlaMinutes: 'user' } }]);
+    queueCategory(CATEGORY_ID, 30, 480);
+    dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'normal', fieldProvenance: { categoryId: 'ai_agent', responseSlaMinutes: 'user' } }]);
+    dbState.updateReturningQueue.push([{ id: TICKET_ID }]);
+
+    await applyAiFieldUpdates(TICKET_ID, ORG_ID, { categoryId: { value: CATEGORY_ID, expectedCurrent: null } }, RUN_ID);
+
+    const restamp = setMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(restamp).not.toHaveProperty('responseDueAt');
+    expect(restamp).not.toHaveProperty('responseWarnAt');
+    expect(restamp).toHaveProperty('resolutionDueAt');
   });
 });

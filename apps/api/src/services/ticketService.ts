@@ -29,6 +29,13 @@ import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { scrubAlertText } from '../utils/endpointDisplay';
 import { LIVE_TICKET_WRITE, isImportWrite, type ImportTicketWriteMode, type TicketWriteMode } from './ticketWriteMode';
+import {
+  accruePauseEnd,
+  computeSlaDeadlines,
+  freezeResponse,
+  loadTicketCalendar,
+  slaClockRowOf,
+} from './ticketSlaDeadlines';
 
 export type { OpenWindow, TicketWriteMode } from './ticketWriteMode';
 
@@ -1254,6 +1261,25 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     ? await allocateInternalTicketNumber(org.partnerId, importMode.at, { utcYear: true })
     : await allocateInternalTicketNumber(org.partnerId);
 
+  // #8973 W3 (spec §4.3): the deadlines are anchored on created_at, so the
+  // insert carries an explicit created_at (= updated_at, as before) instead of
+  // the column default, and the stored due/warn are computed from it. W4
+  // resolves and snapshots the org's calendar here; W3 has none (24×7).
+  const createdAt = importMode ? importMode.at : new Date();
+  const slaDeadlines = computeSlaDeadlines(
+    slaClockRowOf({
+      createdAt,
+      responseSlaMinutes: effectiveSla.responseMinutes,
+      resolutionSlaMinutes: effectiveSla.resolutionMinutes,
+      slaPausedAt: null,
+      slaPausedBusinessMinutes: 0,
+      firstResponseAt: null,
+      resolvedAt: null,
+      slaBreachReason: null,
+    }),
+    await loadTicketCalendar(db, null),
+  );
+
   const insertValues = {
     orgId: input.orgId,
     partnerId: org.partnerId,
@@ -1290,7 +1316,10 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
       : input.ticketType !== undefined ? { ticketType: actorProvenance(actor) } : undefined,
     tags: importMode && input.tags?.length ? input.tags : intake?.defaultTags.length ? intake.defaultTags : undefined,
     customFields: intake ? intake.intakeSnapshot : undefined,
-    ...(importMode ? { createdAt: importMode.at, updatedAt: importMode.at, migrationWindowId: importMode.window.id } : {}),
+    ...slaDeadlines,
+    createdAt,
+    updatedAt: createdAt,
+    ...(importMode ? { migrationWindowId: importMode.window.id } : {}),
   } satisfies typeof tickets.$inferInsert;
 
   const inserted = await db
@@ -1620,7 +1649,8 @@ export async function changeTicketStatus(
     patch.resolvedAt = ticket.resolvedAt ?? now;
     patch.pendingReason = null;
   } else if (toStatus === 'open' && (fromStatus === 'resolved' || fromStatus === 'closed')) {
-    // Reopen: clear resolution/close stamps
+    // Reopen: clear resolution/close stamps (and recompute the resolution
+    // deadline below, #8973)
     patch.resolvedAt = null;
     patch.closedAt = null;
     patch.closedBy = null;
@@ -1637,6 +1667,7 @@ export async function changeTicketStatus(
   // Import mode skips it: an imported ticket has no targets to pause (§4.2).
   const wasPaused = !importMode && (fromStatus === 'pending' || fromStatus === 'on_hold');
   const willBePaused = !importMode && (toStatus === 'pending' || toStatus === 'on_hold');
+  const reopening = !importMode && toStatus === 'open' && (fromStatus === 'resolved' || fromStatus === 'closed');
   if (!wasPaused && willBePaused) {
     patch.slaPausedAt = now;
   } else if (wasPaused && !willBePaused) {
@@ -1645,6 +1676,25 @@ export async function changeTicketStatus(
       patch.slaPausedMinutes = (ticket.slaPausedMinutes ?? 0) + elapsedMinutes;
     }
     patch.slaPausedAt = null;
+  }
+
+  // #8973 W3 (spec §4.3): pause end accrues business minutes, then the
+  // unfrozen targets are recomputed — in this same CAS statement. The
+  // freeze is judged on the row BEFORE this write, except that a reopen
+  // has already cleared resolved_at (it unfreezes resolution), so a resolve
+  // or close out of a pause still recomputes resolution with the accrued
+  // pause before resolved_at freezes it.
+  if ((wasPaused && !willBePaused) || reopening) {
+    const calendar = await loadTicketCalendar(db, null);
+    const clock = slaClockRowOf(ticket);
+    const accrued = wasPaused && !willBePaused ? accruePauseEnd(clock, calendar, now) : null;
+    if (accrued) patch.slaPausedBusinessMinutes = accrued.slaPausedBusinessMinutes;
+    Object.assign(patch, computeSlaDeadlines({
+      ...clock,
+      ...(accrued ?? {}),
+      slaPausedAt: null,
+      resolvedAt: reopening ? null : clock.resolvedAt,
+    }, calendar));
   }
 
   // Compare-and-swap: include fromStatus in the WHERE so a concurrent update is detected.
@@ -2131,6 +2181,17 @@ export async function updateTicketFields(
     (patch as Record<string, unknown>)[key] = fields[key] ?? null;
   }
   Object.assign(patch, slaRestampPatch);
+  // #8973 W3 (spec §4.3): a #6691 restamp or an explicit SLA override
+  // recomputes the unfrozen deadlines from the new target, in this statement.
+  // A frozen arm (answered / resolved / already breached) keeps its deadline.
+  if ('responseSlaMinutes' in patch || 'resolutionSlaMinutes' in patch) {
+    const clock = slaClockRowOf(ticket);
+    Object.assign(patch, computeSlaDeadlines({
+      ...clock,
+      responseSlaMinutes: 'responseSlaMinutes' in patch ? patch.responseSlaMinutes ?? null : clock.responseSlaMinutes,
+      resolutionSlaMinutes: 'resolutionSlaMinutes' in patch ? patch.resolutionSlaMinutes ?? null : clock.resolutionSlaMinutes,
+    }, await loadTicketCalendar(db, null)));
+  }
   if (requesterChanged) Object.assign(patch, requesterPatch);
   if (budgetChanged) Object.assign(patch, budgetPatch);
 
@@ -2436,13 +2497,21 @@ export async function addTicketComment(
           .set({
             firstResponseAt: sql`LEAST(COALESCE(${tickets.firstResponseAt}, ${at}::timestamp), ${at}::timestamp)`,
             updatedAt: importUpdatedAt(importMode.at),
+            // #8973: every first-response writer freezes through freezeResponse.
+            ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(tx as unknown as typeof db, null), importMode.at),
           } as unknown as Partial<typeof tickets.$inferInsert>)
           .where(eq(tickets.id, ticketId));
         stamped = !ticket.firstResponseAt;
       }
     } else if (input.isPublic && !ticket.firstResponseAt) {
+      const respondedAt = new Date();
       await tx.update(tickets)
-        .set({ firstResponseAt: new Date(), updatedAt: new Date() })
+        .set({
+          firstResponseAt: respondedAt,
+          updatedAt: respondedAt,
+          // #8973: the response deadline freezes in the same statement.
+          ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(tx as unknown as typeof db, null), respondedAt),
+        })
         .where(eq(tickets.id, ticketId));
       stamped = true;
     }
@@ -2847,6 +2916,12 @@ export async function applyAiFieldUpdates(
       responseSlaMinutes: tickets.responseSlaMinutes,
       resolutionSlaMinutes: tickets.resolutionSlaMinutes,
       fieldProvenance: tickets.fieldProvenance,
+      // #8973 deadline inputs for the restamp below.
+      createdAt: tickets.createdAt,
+      slaPausedAt: tickets.slaPausedAt,
+      slaPausedBusinessMinutes: tickets.slaPausedBusinessMinutes,
+      resolvedAt: tickets.resolvedAt,
+      slaBreachReason: tickets.slaBreachReason,
     })
     .from(tickets)
     .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
@@ -2941,6 +3016,28 @@ export async function applyAiFieldUpdates(
         // under the UPDATE's own lock, so a concurrent human override or first
         // response between the read above and this write wins.
         restampSet[field] = sql`CASE WHEN ${provenanceNotHumanSql(field)} THEN ${restamp[field] ?? null}::integer ELSE ${tickets[field]} END`;
+      }
+      // #8973 W3: a restamped target's deadlines follow it under the SAME
+      // guard, so a target kept by a concurrent human override keeps its
+      // deadline too. The WHERE below already pins "no first response, not
+      // resolved/closed"; a stamped breach freezes its arm (one-shot rule).
+      const deadlines = computeSlaDeadlines({
+        ...slaClockRowOf({ ...ticket, firstResponseAt: null }),
+        responseSlaMinutes: 'responseSlaMinutes' in restamp ? restamp.responseSlaMinutes ?? null : ticket.responseSlaMinutes,
+        resolutionSlaMinutes: 'resolutionSlaMinutes' in restamp ? restamp.resolutionSlaMinutes ?? null : ticket.resolutionSlaMinutes,
+      }, await loadTicketCalendar(db, null));
+      const deadlineColumns = {
+        responseSlaMinutes: ['responseDueAt', 'responseWarnAt'],
+        resolutionSlaMinutes: ['resolutionDueAt', 'resolutionWarnAt'],
+      } as const;
+      for (const field of restampFields) {
+        const arm = field === 'responseSlaMinutes' ? 'response' : 'resolution';
+        for (const column of deadlineColumns[field]) {
+          if (!(column in deadlines)) continue;
+          restampSet[column] = sql`CASE WHEN ${provenanceNotHumanSql(field)}
+            AND NOT (${arm} = ANY(string_to_array(COALESCE(${tickets.slaBreachReason}, ''), ',')))
+            THEN ${deadlines[column]?.toISOString() ?? null}::timestamp ELSE ${tickets[column]} END`;
+        }
       }
       await db
         .update(tickets)
@@ -3058,8 +3155,14 @@ export async function sendTicketDraft(
   // Same first-PUBLIC-response stamping rule as addTicketComment.
   let firstResponseStamped = false;
   if (!ticket.firstResponseAt) {
+    const respondedAt = new Date();
     await db.update(tickets)
-      .set({ firstResponseAt: new Date(), updatedAt: new Date() })
+      .set({
+        firstResponseAt: respondedAt,
+        updatedAt: respondedAt,
+        // #8973: the response deadline freezes in the same statement.
+        ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(db, null), respondedAt),
+      })
       .where(eq(tickets.id, ticketId));
     firstResponseStamped = true;
   }
