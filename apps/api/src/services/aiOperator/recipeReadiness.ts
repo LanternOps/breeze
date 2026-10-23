@@ -45,39 +45,17 @@ import type {
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { m365Connections } from '../../db/schema/m365';
 import { googleWorkspaceConnections } from '../../db/schema/google';
-import {
-  aiOperatorIdentityOffboardingEnabled,
-  aiOperatorServiceRecoveryEnabled,
-  aiOperatorTasksEnabled,
-} from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 import { m365RoleReadiness } from '../m365ControlPlane/grantReadiness';
 import { M365_HEADLESS_ACTIONS } from '../m365ToolsHeadless';
 import { isToolAllowlisted } from '../aiAgents/toolAllowlist';
 import { resolveEffectiveAgent, resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { RECIPES } from './recipes';
+import { recipeEnabled } from './taskService';
 import type { AnyRecipeDefinition, CapabilityRequirement } from './recipes/types';
 
 /** The M365 connection profile write effects execute under. */
 const M365_ACTIONS_PROFILE = 'customer-graph-actions' as const;
-
-/**
- * Each recipe's own flag, AND-ed with `AI_OPERATOR_TASKS_ENABLED`. A third
- * recipe adds one line. An unlisted key is OFF.
- */
-export const RECIPE_FLAGS: Readonly<Record<string, () => boolean>> = Object.freeze({
-  service_recovery: aiOperatorServiceRecoveryEnabled,
-  identity_offboarding: aiOperatorIdentityOffboardingEnabled,
-});
-
-export function recipeFlagName(recipeKey: string): string {
-  return `AI_OPERATOR_RECIPE_${recipeKey.toUpperCase()}_ENABLED`;
-}
-
-export function recipeEnabled(recipeKey: string): boolean {
-  const flag = Object.hasOwn(RECIPE_FLAGS, recipeKey) ? RECIPE_FLAGS[recipeKey] : undefined;
-  return aiOperatorTasksEnabled() && flag !== undefined && flag();
-}
 
 /**
  * The agent kind each recipe's tasks are delegated to. `service_recovery` is

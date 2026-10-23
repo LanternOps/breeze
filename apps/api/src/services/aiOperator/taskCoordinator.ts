@@ -844,7 +844,7 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
     return `failed: checkpoint does not match workflow ${recipe.key}`;
   }
 
-  const stepKey = task.currentStepKey ?? 'investigate';
+  const stepKey = task.currentStepKey ?? recipe.entryStepKey ?? 'investigate';
   const advance =
     RECIPE_ADVANCERS[recipe.key]?.[stepKey]
     ?? KIND_ADVANCERS[recipe.steps[stepKey]?.kind as StepKind];
