@@ -964,13 +964,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       }
       return; // keep the form open and the typed note intact on failure
     }
-    afterMutation({ status: 'resolved', resolutionNote: note });
+    // The patch must carry the resolved status's own name/colour: the host's
+    // "now under Closed" banner reads `statusName`, and omitting it left the
+    // previous status name ("Open — now under Closed"). A plain core resolve
+    // has no custom name (null falls back to the translated core label).
+    const resolvedRow = pendingStatusId ? config?.statuses.find((s) => s.id === pendingStatusId) : undefined;
+    afterMutation({
+      status: 'resolved',
+      resolutionNote: note,
+      statusName: resolvedRow?.name ?? null,
+      statusColor: resolvedRow?.color ?? null,
+    });
     if (resolveDraftId) setAiDrafts((prev) => prev.filter((d) => d.id !== resolveDraftId));
     setResolveOpen(false);
     setResolutionNote('');
     setPendingStatusId(null);
     setResolveDraftId(null);
-  }, [afterMutation, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
+  }, [afterMutation, config, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
