@@ -771,9 +771,9 @@
     },
     "search": {
       "prompt": "Breeze durchsuchen",
-      "placeholder": "Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen durchsuchen…",
+      "placeholder": "Geräte, Skripte, Warnmeldungen und Einstellungen durchsuchen…",
       "searching": "Wird gesucht…",
-      "startTyping": "Beginnen Sie mit der Eingabe, um Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen zu durchsuchen.",
+      "startTyping": "Beginnen Sie mit der Eingabe, um Geräte, Skripte, Warnmeldungen und Einstellungen zu durchsuchen.",
       "noResults": "Keine Ergebnisse gefunden. Versuchen Sie eine andere Suchanfrage.",
       "navigationHint": "Mit den Pfeiltasten navigieren, mit Enter öffnen",
       "closeHint": "Mit Esc schließen",
@@ -863,6 +863,8 @@
       "cycleSidebar": "Seitenleisten-Modus wechseln",
       "help": "Hilfebereich öffnen",
       "showThis": "Diese Karte anzeigen",
+      "orgSwitcher": "Organisationsauswahl öffnen",
+      "aiSidebar": "KI-Seitenleiste ein- oder ausblenden",
       "close": "Dialog oder Menü schließen",
       "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen.",
       "create": "Erstellen",
@@ -1383,6 +1385,12 @@
           "signingSecret": "Verwenden Sie dieses Geheimnis, um Webhook-Signaturen zu prüfen."
         },
         "invalidJsonPreview": "Ungültiges JSON in der Vorlage.",
+        "otherEvents": {
+          "allEvents": "Alle Ereignisse (*)",
+          "allEventsHint": "Dieser Webhook abonniert alle Ereignisse, daher werden die einzelnen Ereignisse unten nicht verwendet. Entfernen Sie „Alle Ereignisse“, um bestimmte auszuwählen.",
+          "remove": "{{event}} entfernen",
+          "title": "Weitere abonnierte Ereignisse"
+        },
         "payload": {
           "previewEmpty": "Die Vorschau wird angezeigt, sobald das JSON gültig ist.",
           "subtitle": "Definieren Sie die Struktur der JSON-Nutzdaten, die an das Ziel gesendet werden.",
@@ -2236,6 +2244,11 @@
         "genericEdrProvider": "EDR-Anbieter"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Techniker",
+          "system": "System"
+        },
         "errors": {
           "notFound": "Vorfall nicht gefunden",
           "fetchFailed": "Vorfall konnte nicht abgerufen werden"
@@ -2368,7 +2381,7 @@
           },
           "search": {
             "title": "Alles durchsuchen",
-            "description": "Drücken Sie Cmd+K, um Geräte, Skripte, Warnungen, Benutzer oder Einstellungen sofort zu finden."
+            "description": "Drücken Sie Cmd+K, um Geräte, Skripte, Warnungen oder Einstellungen sofort zu finden."
           },
           "switchOrgs": {
             "title": "Wechseln Sie die Organisation",

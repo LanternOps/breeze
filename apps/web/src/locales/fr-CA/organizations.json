@@ -589,6 +589,7 @@
       "title": "Bibliothèque de documents",
       "subtitle": "Guides opérationnels, lignes de base, politiques et preuves de livraison pour cette organisation.",
       "empty": "Aucun document pour le moment. Téléversez un guide opérationnel, une ligne de base ou une politique signée pour démarrer la bibliothèque.",
+      "emptyPortalHint": "Votre client voit les documents marqués Visible dans le portail. Une proposition ou une entente signée et une ligne de base de sécurité sont de bons premiers documents.",
       "emptyFiltered": "Aucun document dans cette catégorie.",
       "loadFailed": "Impossible de charger les documents.",
       "upload": "Téléverser un document",

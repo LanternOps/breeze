@@ -68,6 +68,8 @@ export default function KeyboardShortcutsHelp() {
     { keys: ['/'], label: t('layout.shortcuts.searchSlash') },
     { keys: [mod === '⌘' ? '⌥1–9' : 'Alt+1–9'], label: t('layout.shortcuts.paletteNumber') },
     { keys: ['['], label: t('layout.shortcuts.cycleSidebar') },
+    { keys: [`${mod}+O`], label: t('layout.shortcuts.orgSwitcher') },
+    { keys: [`${mod}+Shift+A`], label: t('layout.shortcuts.aiSidebar') },
     { keys: [`${mod}+Shift+H`], label: t('layout.shortcuts.help') },
     { keys: ['?'], label: t('layout.shortcuts.showThis') },
     { keys: ['Esc'], label: t('layout.shortcuts.close') },

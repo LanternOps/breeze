@@ -137,3 +137,32 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
     });
   });
 });
+
+// #9613: with Shift held the browser reports KeyboardEvent.key as "A" (capital),
+// so the handler must not compare against lowercase "a" only.
+describe('AiChatSidebar keyboard shortcut (#9613)', () => {
+  function setup() {
+    permState.canUseAi = true;
+    const toggle = vi.fn();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, toggle, isOpen: false });
+    render(<AiChatSidebar />);
+    return toggle;
+  }
+
+  it.each([
+    ['Ctrl+Shift+A (key "A")', { key: 'A', ctrlKey: true, shiftKey: true }],
+    ['Cmd+Shift+A (key "A")', { key: 'A', metaKey: true, shiftKey: true }],
+    ['Ctrl+Shift+a (key "a")', { key: 'a', ctrlKey: true, shiftKey: true }],
+  ])('toggles on %s', (_label, init) => {
+    const toggle = setup();
+    window.dispatchEvent(new KeyboardEvent('keydown', { ...init, cancelable: true }));
+    expect(toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not toggle without Shift or without a modifier', () => {
+    const toggle = setup();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', shiftKey: true }));
+    expect(toggle).not.toHaveBeenCalled();
+  });
+});

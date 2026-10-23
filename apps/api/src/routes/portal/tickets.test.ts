@@ -1915,3 +1915,51 @@ describe('portal ticket routes never carry ticket-link data (#8596)', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// #8973 W3 (spec §4.3 reader 4, D11): the portal list derives SLA status from
+// the STORED deadlines and never ships a due time to the customer.
+describe('GET /tickets — SLA status from stored deadlines, status only (#8973)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('selects the four stored deadlines and returns a status without any due time', async () => {
+    const selections: Array<Record<string, unknown>> = [];
+    const created = new Date(Date.now() - 50 * 60_000);
+    const row = {
+      ...TICKET_ROW, status: 'open', createdAt: created, statusName: null, ticketType: 'incident',
+      responseSlaMinutes: 60, resolutionSlaMinutes: 480, slaBreachedAt: null, slaPausedAt: null, slaPausedMinutes: 0,
+      firstResponseAt: null, resolvedAt: null,
+      responseDueAt: new Date(created.getTime() + 60 * 60_000),
+      responseWarnAt: new Date(created.getTime() + 48 * 60_000),
+      resolutionDueAt: new Date(created.getTime() + 480 * 60_000),
+      resolutionWarnAt: new Date(created.getTime() + 384 * 60_000),
+    };
+    dbSelectMock.mockImplementation((selection: Record<string, unknown>) => {
+      selections.push(selection);
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => Promise.resolve([{ count: 1 }])),
+          leftJoin: vi.fn(() => ({
+            where: vi.fn(() => ({
+              orderBy: vi.fn(() => ({ limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve([row])) })) })),
+            })),
+          })),
+        })),
+      };
+    });
+
+    const res = await buildApp().request('/tickets', { headers: { Authorization: 'Bearer portal-token' } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const listSelection = selections.find((s) => s && 'ticketNumber' in s)!;
+    for (const key of ['responseDueAt', 'resolutionDueAt', 'responseWarnAt', 'resolutionWarnAt']) {
+      expect(listSelection).toHaveProperty(key);
+    }
+    // 50 min into a 60 min response target: past the stored 48 min warn point.
+    expect(body.data[0].sla.status).toBe('at_risk');
+    const shipped = JSON.stringify(body.data[0]);
+    for (const key of ['responseDueAt', 'resolutionDueAt', 'responseWarnAt', 'resolutionWarnAt']) {
+      expect(shipped).not.toContain(key);
+    }
+  });
+});

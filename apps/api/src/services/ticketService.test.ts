@@ -2272,7 +2272,8 @@ describe('updateTicketFields', () => {
   const BASE_TICKET = {
     id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open',
     subject: 'Printer offline', description: null, categoryId: null,
-    priority: 'normal', dueDate: null, deviceId: null, tags: []
+    priority: 'normal', dueDate: null, deviceId: null, tags: [],
+    createdAt: new Date('2026-06-01T09:00:00Z'), // #8973: SLA deadline anchor
   };
 
   beforeEach(() => {
@@ -5527,5 +5528,236 @@ describe('ticket_type — listOrgTicketsForAddin (additive field)', () => {
     for (const sel of selections) expect(sel).toMatchObject({ ticketType: 'ticketType' });
     expect(result.openTickets[0]!.ticketType).toBe('problem');
     expect(result.recentTickets[0]!.ticketType).toBe('problem');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8973 W3 — stored SLA deadlines written at every write point (spec §4.3).
+// Each patch must ride the SAME update statement as the change that caused
+// it (the status CAS / first-response stamp), never a separate write.
+// ---------------------------------------------------------------------------
+
+describe('SLA deadlines — createTicket stamps due/warn (#8973)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T10:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: null, resolutionMinutes: null });
+  });
+
+  it('computes both deadlines from the created_at it inserts', async () => {
+    configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: 60, resolutionMinutes: 480 });
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Printer', source: 'manual' }, actor);
+
+    const insert = valuesMock.mock.calls[0]![0];
+    const createdAt = new Date('2026-06-11T10:00:00Z');
+    expect(insert).toMatchObject({
+      createdAt,
+      updatedAt: createdAt,
+      responseSlaMinutes: 60,
+      resolutionSlaMinutes: 480,
+      responseDueAt: new Date('2026-06-11T11:00:00Z'),
+      responseWarnAt: new Date('2026-06-11T10:48:00Z'),
+      resolutionDueAt: new Date('2026-06-11T18:00:00Z'),
+      resolutionWarnAt: new Date('2026-06-11T16:24:00Z'),
+    });
+  });
+
+  it('null targets store null deadlines', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Printer', source: 'manual' }, actor);
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({
+      responseDueAt: null, responseWarnAt: null, resolutionDueAt: null, resolutionWarnAt: null,
+    });
+  });
+});
+
+describe('SLA deadlines — changeTicketStatus pause end and reopen (#8973)', () => {
+  const created = new Date('2026-06-11T08:00:00Z');
+  const base = {
+    id: 't-1', orgId: 'o-1', partnerId: 'p-1', createdAt: created,
+    responseSlaMinutes: 60, resolutionSlaMinutes: 480,
+    slaPausedMinutes: 10, slaPausedBusinessMinutes: 10,
+    firstResponseAt: null, resolvedAt: null, slaBreachReason: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setMock.mockClear();
+    vi.useFakeTimers();
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('pause end → open accrues business minutes and recomputes both arms in the CAS update', async () => {
+    vi.setSystemTime(new Date('2026-06-11T10:30:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{ ...base, status: 'on_hold', slaPausedAt: new Date('2026-06-11T10:00:00Z') }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    // setMock call 0 is the status CAS update itself.
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      status: 'open',
+      slaPausedAt: null,
+      slaPausedMinutes: 40,
+      slaPausedBusinessMinutes: 40,
+      responseDueAt: new Date(created.getTime() + 100 * 60_000),
+      responseWarnAt: new Date(created.getTime() + 88 * 60_000),
+      resolutionDueAt: new Date(created.getTime() + 520 * 60_000),
+      resolutionWarnAt: new Date(created.getTime() + 424 * 60_000),
+    });
+  });
+
+  it('a responded ticket recomputes resolution only', async () => {
+    vi.setSystemTime(new Date('2026-06-11T10:30:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{
+      ...base, status: 'pending', slaPausedAt: new Date('2026-06-11T10:00:00Z'), firstResponseAt: new Date('2026-06-11T08:20:00Z'),
+    }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    const cas = setMock.mock.calls[0]![0];
+    expect(cas).not.toHaveProperty('responseDueAt');
+    expect(cas).not.toHaveProperty('responseWarnAt');
+    expect(cas.resolutionDueAt).toEqual(new Date(created.getTime() + 520 * 60_000));
+  });
+
+  it.each(['resolved', 'closed'] as const)('resolve/close while paused accrues the open pause first, then freezes resolution (→ %s)', async (to) => {
+    vi.setSystemTime(new Date('2026-06-11T10:05:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{ ...base, status: 'pending', slaPausedAt: new Date('2026-06-11T10:00:00Z') }]);
+
+    await changeTicketStatus('t-1', { status: to }, { resolutionNote: 'Fixed' }, actor);
+
+    const cas = setMock.mock.calls[0]![0];
+    expect(cas.resolvedAt).toBeInstanceOf(Date);
+    expect(cas.slaPausedBusinessMinutes).toBe(15);
+    // The resolution deadline includes the final pause (10 + 5), so "met"
+    // compares against the clock that actually ran.
+    expect(cas.resolutionDueAt).toEqual(new Date(created.getTime() + 495 * 60_000));
+  });
+
+  it('entering a pause writes no deadline', async () => {
+    vi.setSystemTime(new Date('2026-06-11T10:05:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{ ...base, status: 'open', slaPausedAt: null }]);
+
+    await changeTicketStatus('t-1', { status: 'pending' }, {}, actor);
+
+    const cas = setMock.mock.calls[0]![0];
+    expect(cas.slaPausedAt).toBeInstanceOf(Date);
+    for (const key of ['responseDueAt', 'responseWarnAt', 'resolutionDueAt', 'resolutionWarnAt', 'slaPausedBusinessMinutes']) {
+      expect(cas).not.toHaveProperty(key);
+    }
+  });
+
+  it('reopen unfreezes resolution and recomputes it with the same formula', async () => {
+    vi.setSystemTime(new Date('2026-06-12T10:00:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{
+      ...base, status: 'resolved', slaPausedAt: null,
+      firstResponseAt: new Date('2026-06-11T08:20:00Z'), resolvedAt: new Date('2026-06-11T12:00:00Z'),
+      resolutionSlaMinutes: 600,
+    }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    const cas = setMock.mock.calls[0]![0];
+    expect(cas.resolvedAt).toBeNull();
+    expect(cas).not.toHaveProperty('responseDueAt');
+    expect(cas.resolutionDueAt).toEqual(new Date(created.getTime() + 610 * 60_000));
+    expect(cas.resolutionWarnAt).toEqual(new Date(created.getTime() + 490 * 60_000));
+  });
+
+  it('a stamped resolution breach stays frozen across a reopen (one-shot rule)', async () => {
+    vi.setSystemTime(new Date('2026-06-12T10:00:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{
+      ...base, status: 'resolved', slaPausedAt: null, slaBreachReason: 'resolution',
+      firstResponseAt: new Date('2026-06-11T08:20:00Z'), resolvedAt: new Date('2026-06-11T20:00:00Z'),
+    }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    expect(setMock.mock.calls[0]![0]).not.toHaveProperty('resolutionDueAt');
+  });
+});
+
+describe('SLA deadlines — live first-response writers freeze the response deadline (#8973)', () => {
+  const created = new Date('2026-06-11T08:00:00Z');
+  const ticket = {
+    id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', createdAt: created,
+    responseSlaMinutes: 60, resolutionSlaMinutes: 480,
+    slaPausedMinutes: 10, slaPausedBusinessMinutes: 10, slaPausedAt: null,
+    firstResponseAt: null, resolvedAt: null, slaBreachReason: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setMock.mockClear();
+    valuesMock.mockClear();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T08:30:00Z'));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('addTicketComment: the freeze rides the firstResponseAt stamp', async () => {
+    dbMocks.selectResult.mockResolvedValue([ticket]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+
+    await addTicketComment('t-1', { content: 'On it', isPublic: true }, actor);
+
+    const stamp = setMock.mock.calls[0]![0];
+    expect(stamp.firstResponseAt).toBeInstanceOf(Date);
+    expect(stamp).toMatchObject({
+      responseDueAt: new Date(created.getTime() + 70 * 60_000),
+      responseWarnAt: new Date(created.getTime() + 58 * 60_000),
+    });
+    expect(stamp).not.toHaveProperty('slaPausedBusinessMinutes');
+  });
+
+  it('addTicketComment while paused: transient accrual, nothing persisted', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ ...ticket, status: 'pending', slaPausedAt: new Date('2026-06-11T08:10:00Z') }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+
+    await addTicketComment('t-1', { content: 'Update', isPublic: true }, actor);
+
+    const stamp = setMock.mock.calls[0]![0];
+    // 10 persisted + 20 open-pause minutes, counted transiently.
+    expect(stamp.responseDueAt).toEqual(new Date(created.getTime() + 90 * 60_000));
+    expect(stamp).not.toHaveProperty('slaPausedBusinessMinutes');
+    expect(stamp).not.toHaveProperty('slaPausedMinutes');
+  });
+
+  it('no second freeze once a first response exists', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ ...ticket, firstResponseAt: new Date('2026-06-11T08:05:00Z') }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+
+    await addTicketComment('t-1', { content: 'More', isPublic: true }, actor);
+
+    expect(setMock.mock.calls.some((c) => 'responseDueAt' in (c[0] as object))).toBe(false);
+  });
+
+  it('sendTicketDraft: the freeze rides the firstResponseAt stamp', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([ticket])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'reply', state: 'active', content: 'Draft body' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
+
+    await sendTicketDraft('t-1', 'draft-1', undefined, actor);
+
+    const stamp = setMock.mock.calls.find((c) => 'firstResponseAt' in (c[0] as object))![0];
+    expect(stamp).toMatchObject({
+      responseDueAt: new Date(created.getTime() + 70 * 60_000),
+      responseWarnAt: new Date(created.getTime() + 58 * 60_000),
+    });
   });
 });

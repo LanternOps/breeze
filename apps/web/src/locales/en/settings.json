@@ -700,7 +700,13 @@
         "quality": "Quality"
       },
       "failovers": "Failovers",
-      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable"
+      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable",
+      "titleBy": {
+        "model": "AI usage by model",
+        "organization": "AI usage by organization",
+        "technician": "AI usage by technician",
+        "feature": "AI usage by feature"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
@@ -1030,8 +1036,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Company",
+      "devices": "Devices & agents",
       "security": "Security & Access",
       "communications": "Communications",
+      "ai": "AI",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1068,11 @@
       },
       "company": {
         "label": "Company",
-        "description": "Name, address, contacts"
+        "description": "Name, address, contacts, email signature"
       },
       "regional": {
         "label": "Regional",
-        "description": "Timezone, formats, hours"
+        "description": "Timezone, language, formats, hours"
       },
       "defaults": {
         "label": "Defaults",
@@ -1072,7 +1080,7 @@
       },
       "security": {
         "label": "Security",
-        "description": "IP allowlist and access"
+        "description": "Passwords, sessions, MFA and IP allowlist"
       },
       "remoteAccess": {
         "label": "Remote Access",
@@ -1080,11 +1088,11 @@
       },
       "eventLogs": {
         "label": "Event Logs",
-        "description": "Forwarding and retention"
+        "description": "Forward device event logs to Elasticsearch"
       },
       "notifications": {
         "label": "Notifications",
-        "description": "Email and webhook alerts"
+        "description": "Sender address, SMTP, Slack and Pushover defaults"
       },
       "ticketing": {
         "label": "Ticketing",
@@ -1109,7 +1117,7 @@
       },
       "aiFeatures": {
         "label": "AI Features",
-        "description": "Anomaly detection and suggested fixes defaults"
+        "description": "AI data policy, anomaly detection and suggested fixes"
       },
       "branding": {
         "label": "Branding",
@@ -1126,6 +1134,14 @@
       "aiApprovals": {
         "label": "AI Approval Timeout",
         "description": "How long AI chat waits for gated action approval"
+      },
+      "callerVerification": {
+        "label": "Caller verification",
+        "description": "Caller identity checks for support requests"
+      },
+      "knownGuests": {
+        "label": "Known guests",
+        "description": "Approved visitor and technician devices by MAC address"
       }
     },
     "saved": "Partner settings saved",
@@ -1388,6 +1404,14 @@
     "never": "Never",
     "downloadInstaller": "Download pre-configured installer",
     "downloading": "Downloading...",
+    "installerDialogTitle": "Download installer for \"{{name}}\"",
+    "installerDialogDescription": "The installer is built for a set number of devices. Each device that runs it uses one.",
+    "installerDeviceCount": "Number of devices",
+    "installerDeviceCountRemaining": "This key has {{count}} enrollments left.",
+    "installerDeviceCountRemaining_one": "This key has {{count}} enrollment left.",
+    "installerDeviceCountRemaining_other": "This key has {{count}} enrollments left.",
+    "installerDeviceCountUnlimited": "This key has no usage limit.",
+    "installerDeviceCountRange": "Enter a whole number from 1 to {{max}}.",
     "rotate": "Rotate",
     "page": "Page {{current}} of {{total}}",
     "previous": "Previous",
@@ -1863,7 +1887,7 @@
     "disabledDescription": "Enable log forwarding above to configure connection settings.",
     "enable": {
       "title": "Enable log forwarding",
-      "description": "When enabled, event logs are forwarded to your log store on a recurring schedule."
+      "description": "When enabled, event logs are forwarded to your log store as each device reports them."
     },
     "connection": {
       "title": "Connection",
@@ -1952,6 +1976,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Customer view",
+      "subtitle": "Preview: what {{who}} sees",
+      "whoOrganization": "your customer",
+      "pickerLabel": "View as",
+      "pickerAll": "Whole organization",
+      "loading": "Loading preview…",
+      "loadFailed": "The customer view failed to load.",
+      "on": "On",
+      "off": "Off",
+      "notAvailable": "A detailed preview of this section isn't available yet.",
+      "permissionWithheld": "Not shown: you need {{permissions}} to preview this.",
+      "tilesWithheld": "Some tiles are not shown: you need {{permissions}} to preview them.",
+      "noteNoUser": "Ticket-scoped data is hidden. Pick a portal user to see what that person sees.",
+      "readinessTitle": "Readiness checks",
+      "readinessNone": "No issues found.",
+      "fix": "Fix",
+      "readiness": {
+        "documents_empty": "Documents is on, but no document is marked Visible in portal, so your customer sees an empty library.",
+        "reports_empty": "Reports is on, but there are no report runs yet, so your customer sees an empty list.",
+        "service_one_time_visible": "Service is on and one-time items are still visible to your customer.",
+        "backups_no_data": "Backups is on, but there is no backup data to show yet.",
+        "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
+        "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      }
+    },
     "loading": "Loading portal settings…",
     "save": "Save portal settings",
     "toasts": {
@@ -2443,7 +2493,11 @@
     "selectOrgForEffectiveBudget": "Select an organization to see its effective budget, or edit partner-wide defaults.",
     "editPartnerWideDefaults": "Edit partner-wide defaults",
     "thresholdsOff": "Off",
-    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again."
+    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again.",
+    "todaysCost": "Today's cost",
+    "monthlyCost": "Monthly cost",
+    "messagesToday": "Messages today",
+    "tokensThisMonth": "Tokens this month"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4710,6 +4764,7 @@
     "actions": "Actions",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "No roles found. Try adjusting your search or filters.",
     "cloneRole": "Clone Role: {{name}}",
+    "cloneDescription": "Copy of {{name}}",
     "clone": "Clone",
     "edit": "Edit",
     "delete": "Delete",

@@ -232,24 +232,24 @@ export default function AiUsagePage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           icon={DollarSign}
-          label="Today's Cost"
+          label={t('aiUsagePage.todaysCost')}
           value={formatCost(usage?.daily.totalCostCents ?? 0)}
           sub={usage?.budget?.dailyBudgetCents ? t('aiUsagePage.ofLimit', { limit: formatCost(usage.budget.dailyBudgetCents) }) : undefined}
         />
         <StatCard
           icon={DollarSign}
-          label="Monthly Cost"
+          label={t('aiUsagePage.monthlyCost')}
           value={formatCost(usage?.monthly.totalCostCents ?? 0)}
           sub={usage?.budget?.monthlyBudgetCents ? t('aiUsagePage.ofLimit', { limit: formatCost(usage.budget.monthlyBudgetCents) }) : undefined}
         />
         <StatCard
           icon={MessageSquare}
-          label="Messages Today"
+          label={t('aiUsagePage.messagesToday')}
           value={String(usage?.daily.messageCount ?? 0)}
         />
         <StatCard
           icon={Zap}
-          label="Tokens This Month"
+          label={t('aiUsagePage.tokensThisMonth')}
           value={formatTokens((usage?.monthly.inputTokens ?? 0) + (usage?.monthly.outputTokens ?? 0))}
           sub={t('aiUsagePage.tokensInOut', {
             input: formatTokens(usage?.monthly.inputTokens ?? 0),

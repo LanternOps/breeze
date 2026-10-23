@@ -78,6 +78,43 @@ describe('RecentApprovals (#6022)', () => {
     );
   });
 
+  it('shows the approver\'s deny reason, labelled, next to the platform outcome reason (#9658)', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonOk([
+        {
+          ...failedRow,
+          decisionReason: 'Wrong maintenance window',
+          intentOutcome: { status: 'rejected', errorCode: null, reason: 'the approval was rejected, so it did not run', executedAt: null },
+        },
+      ]),
+    );
+    render(<RecentApprovals />);
+    fireEvent.click(screen.getByTestId('approvals-recent-toggle'));
+
+    await waitFor(() => expect(screen.getByTestId('approvals-recent-row-appr-1')).toBeTruthy());
+    const el = screen.getByTestId('approvals-recent-decision-reason-appr-1');
+    expect(el.textContent).toContain('recent.decisionReasonLabel');
+    expect(el.textContent).toContain('Wrong maintenance window');
+    expect(screen.getByTestId('approvals-recent-reason-appr-1').textContent).toContain('did not run');
+  });
+
+  it('omits the approver reason block when none was given or it only repeats the outcome reason', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonOk([
+        { ...failedRow, id: 'a', decisionReason: null },
+        { ...failedRow, id: 'b', decisionReason: '   ' },
+        { ...failedRow, id: 'c', decisionReason: refusal },
+      ]),
+    );
+    render(<RecentApprovals />);
+    fireEvent.click(screen.getByTestId('approvals-recent-toggle'));
+
+    await waitFor(() => expect(screen.getByTestId('approvals-recent-row-a')).toBeTruthy());
+    expect(screen.queryByTestId('approvals-recent-decision-reason-a')).toBeNull();
+    expect(screen.queryByTestId('approvals-recent-decision-reason-b')).toBeNull();
+    expect(screen.queryByTestId('approvals-recent-decision-reason-c')).toBeNull();
+  });
+
   it('asks the API for the terminal view, not the pending one', async () => {
     fetchWithAuth.mockResolvedValue(jsonOk([]));
     render(<RecentApprovals />);

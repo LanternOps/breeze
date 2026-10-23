@@ -14,6 +14,10 @@ vi.mock('./aiDispatch', () => ({
 }));
 vi.mock('./backupJobCreation', () => ({ createManualBackupJobIfIdle: vi.fn() }));
 vi.mock('../jobs/backupEnqueue', () => ({ enqueueBackupDispatch: vi.fn() }));
+// Stored-bytes totals (#9631) are a window-function subquery, proven against
+// real Postgres in backupStoredBytes.integration.test.ts; mocked here.
+const sumStoredSnapshotBytesMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ totalBytes: 100, count: 7 })));
+vi.mock('./backupStoredBytes', () => ({ sumStoredSnapshotBytes: sumStoredSnapshotBytesMock }));
 
 import { db } from '../db';
 import { registerBackupTools } from './aiToolsBackup';
@@ -129,6 +133,8 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
     expect(parsed.error).toBeUndefined();
     expect(parsed.deviceId).toBe('dev-1');
     expect(parsed.latestJob).toMatchObject({ id: 'job-1' });
+    expect(parsed).toMatchObject({ snapshotCount: 7, totalBackupSize: 100 });
+    expect(renderSql(sumStoredSnapshotBytesMock.mock.calls[0]![0])).toContain('dev-1');
   });
 
   it('device-bound caller cannot read a sibling device summary', async () => {
@@ -146,9 +152,7 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
 
   it('unrestricted caller still gets the org-wide aggregate (no regression)', async () => {
     mockDb.select.mockImplementation(() => {
-      const chain: any = Promise.resolve([
-        { total: 4, active: 3, snapshotCount: 7, totalStorage: 100 },
-      ]);
+      const chain: any = Promise.resolve([{ total: 4, active: 3 }]);
       return { from: () => ({ where: () => chain }) };
     });
     const raw = await handlerFor('get_backup_status')({}, makeAuth({}));

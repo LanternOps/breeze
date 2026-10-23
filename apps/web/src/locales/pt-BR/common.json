@@ -771,9 +771,9 @@
     },
     "search": {
       "prompt": "Pesquisar no Breeze",
-      "placeholder": "Pesquisar dispositivos, scripts, alertas, usuários e configurações…",
+      "placeholder": "Pesquisar dispositivos, scripts, alertas e configurações…",
       "searching": "Pesquisando…",
-      "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas, usuários e configurações.",
+      "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas e configurações.",
       "noResults": "Nenhum resultado encontrado. Tente outra busca.",
       "navigationHint": "Use as setas para navegar e Enter para abrir",
       "closeHint": "Esc para fechar",
@@ -863,6 +863,8 @@
       "cycleSidebar": "Alternar o modo da barra lateral",
       "help": "Abrir o painel de ajuda",
       "showThis": "Mostrar este cartão",
+      "orgSwitcher": "Abrir o seletor de organização",
+      "aiSidebar": "Mostrar ou ocultar a barra lateral de IA",
       "close": "Fechar uma caixa de diálogo ou menu",
       "typingNote": "Atalhos de uma tecla ficam pausados enquanto você digita em um campo.",
       "create": "Criar",
@@ -1383,6 +1385,12 @@
           "signingSecret": "Use este segredo para verificar assinaturas de webhook."
         },
         "invalidJsonPreview": "JSON inválido no modelo.",
+        "otherEvents": {
+          "allEvents": "Todos os eventos (*)",
+          "allEventsHint": "Este webhook está inscrito em todos os eventos, então os eventos individuais abaixo não são usados. Remova \"Todos os eventos\" para escolher eventos específicos.",
+          "remove": "Remover {{event}}",
+          "title": "Outros eventos assinados"
+        },
         "payload": {
           "previewEmpty": "A prévia aparece quando o JSON estiver válido.",
           "subtitle": "Defina o formato do payload JSON enviado ao seu destino.",
@@ -2236,6 +2244,11 @@
         "genericEdrProvider": "Provedor de EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Técnico",
+          "system": "Sistema"
+        },
         "errors": {
           "notFound": "Incidente não encontrado",
           "fetchFailed": "Falha ao buscar incidente"
@@ -2368,7 +2381,7 @@
           },
           "search": {
             "title": "Pesquise qualquer coisa",
-            "description": "Pressione Cmd+K para encontrar dispositivos, scripts, alertas, usuários ou configurações instantaneamente."
+            "description": "Pressione Cmd+K para encontrar dispositivos, scripts, alertas ou configurações instantaneamente."
           },
           "switchOrgs": {
             "title": "Troque de organização",

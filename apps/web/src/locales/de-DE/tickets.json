@@ -20,6 +20,7 @@
     "state": {
       "met": "Getroffen",
       "notMet": "Nicht erfüllt",
+      "metLate": "Verspätet erfüllt",
       "breached": "Durchbrochen",
       "pausedLeft": "Pausiert · {{relative}} übrig",
       "left": "{{relative}} übrig"

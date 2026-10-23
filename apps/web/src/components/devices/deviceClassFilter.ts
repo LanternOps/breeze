@@ -88,6 +88,13 @@ export function resolveDeviceClass(hash: string): DeviceClassFilter {
   return readDeviceClassFromHash(hash) ?? readDeviceClassPreference();
 }
 
+/** Pure hash fragment (no `#`, no URL side effect) naming a segment. Links
+ *  built from this and `writeDeviceClassToHash` cannot drift: same key, same
+ *  explicit value. */
+export function encodeDeviceClassToHash(filter: DeviceClassFilter): string {
+  return `${HASH_KEY}=${filter}`;
+}
+
 export function writeDeviceClassToHash(filter: DeviceClassFilter): void {
   if (typeof window === 'undefined') return;
   const existing = window.location.hash.startsWith('#')
@@ -99,7 +106,7 @@ export function writeDeviceClassToHash(filter: DeviceClassFilter): void {
     .filter(p => p && !p.startsWith(`${HASH_KEY}=`));
   // Always explicit: an absent key resolves to the viewer's remembered choice
   // (#5874), so a link must name its segment to mean the same thing to others.
-  const next = [`${HASH_KEY}=${filter}`, ...others].join('&');
+  const next = [encodeDeviceClassToHash(filter), ...others].join('&');
   const newHash = next ? `#${next}` : '';
   if (newHash !== window.location.hash) {
     // Replace, don't push, so the back button doesn't fill with segment toggles.

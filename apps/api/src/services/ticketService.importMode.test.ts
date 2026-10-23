@@ -381,3 +381,31 @@ describe('addTicketComment in import mode', () => {
     expect(mocks.emit).toHaveBeenCalledTimes(1);
   });
 });
+
+// #8973 W3: the import first-response writer also goes through freezeResponse.
+describe('addTicketComment in import mode — SLA response freeze (#8973)', () => {
+  const staffReply = { sourceId: 'a-9', author: { kind: 'staff' as const, name: 'Former Tech', email: 'former@msp.example' } };
+
+  it('the LEAST stamp carries the frozen response deadline (null: imported tickets have no targets)', async () => {
+    state.selectQueue.push([storedTicket()]);
+    await addTicketComment(TICKET, { content: 'Fixed it', isPublic: true, imported: staffReply }, actor, at(LATER));
+    const [update] = state.updates;
+    expect(update!.set).toHaveProperty('firstResponseAt');
+    expect(update!.set.responseDueAt).toBeNull();
+    expect(update!.set.responseWarnAt).toBeNull();
+  });
+
+  it('a target, if one exists, freezes at the source time', async () => {
+    state.selectQueue.push([storedTicket({ responseSlaMinutes: 60 })]);
+    await addTicketComment(TICKET, { content: 'Fixed it', isPublic: true, imported: staffReply }, actor, at(LATER));
+    const [update] = state.updates;
+    expect(update!.set.responseDueAt).toEqual(new Date(CREATED.getTime() + 60 * 60_000));
+  });
+
+  it('an already-answered ticket is not re-frozen', async () => {
+    state.selectQueue.push([storedTicket({ responseSlaMinutes: 60, firstResponseAt: CREATED })]);
+    await addTicketComment(TICKET, { content: 'Fixed it', isPublic: true, imported: staffReply }, actor, at(LATER));
+    const [update] = state.updates;
+    expect(update!.set).not.toHaveProperty('responseDueAt');
+  });
+});

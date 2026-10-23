@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} ligne(s) dépassent la quantité incluse et n'ont pas été facturées : {{names}}",
         "uncoveredDevices": "Facture générée, mais {{count}} appareil(s) ne sont facturés par aucune ligne de ce contrat : {{breakdown}}",
         "priceBookGaps": "{{count}} ligne(s) de catalogue facturée(s) au prix figé du contrat — aucun prix en {{currency}} dans le catalogue : {{lines}}",
-        "draftDeleted": "Brouillon supprimé"
+        "draftDeleted": "Brouillon supprimé",
+        "skipped": {
+          "already_billed": "Aucune facture générée : cette période de facturation a déjà été facturée.",
+          "not_due": "Aucune facture générée : ce contrat n’est pas encore à facturer.",
+          "renewal_pending": "Aucune facture générée : ce contrat a dépassé sa date de fin et attend son renouvellement.",
+          "expired": "Aucune facture générée : ce contrat est expiré.",
+          "unknown": "Aucune facture n’a été générée pour ce contrat."
+        }
       },
       "cancelConfirm": {
         "title": "Annuler ce contrat ?",

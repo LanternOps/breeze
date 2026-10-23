@@ -62,6 +62,12 @@ const PORTAL_TICKET_SLA_COLUMNS = {
   slaPausedMinutes: tickets.slaPausedMinutes,
   firstResponseAt: tickets.firstResponseAt,
   resolvedAt: tickets.resolvedAt,
+  // #8973 W3: status is derived from the stored deadlines; the DTO never
+  // ships them (status only, D11).
+  responseDueAt: tickets.responseDueAt,
+  resolutionDueAt: tickets.resolutionDueAt,
+  responseWarnAt: tickets.responseWarnAt,
+  resolutionWarnAt: tickets.resolutionWarnAt,
 };
 
 // #2345 — per-org portal ticketing kill switch. `portal_branding.enable_tickets`

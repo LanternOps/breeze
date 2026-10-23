@@ -95,6 +95,7 @@ import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
+import { approvalCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
 
@@ -1033,7 +1034,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           return { allowed: false, error: 'Failed to create approval record' };
         }
 
-        session.eventBus.publish({
+        // #9427: tracked until the decision below ends, however it ends.
+        const helperCardKey = approvalCardKey(helperExec.id);
+        publishPendingCard(session, helperCardKey, {
           type: 'approval_required',
           executionId: helperExec.id,
           approvalWindowMs: session.approvalWaitBudgetMs,
@@ -1043,35 +1046,39 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           requiresAdminApproval: true,
         });
 
-        const decision = await decideHelperToolAction({
-          orgId: session.orgId,
-          deviceId: helperDeviceId,
-          executionId: helperExec.id,
-          toolName: stripMcpPrefix(toolName),
-          toolInput: input as Record<string, unknown>,
-          riskTier: guardrailCheck.tier,
-          subjectUsername: session.auth.user.name ?? 'helper',
-        });
-
-        if (decision === 'denied') {
-          return { allowed: false, error: 'This action was denied by organization policy' };
-        }
-
-        // Block until PAM decides (an auto-approved elevation has already
-        // flipped the row, so this returns on the first poll). Draws from the
-        // same shared per-cycle approval-wait budget as the tier-2/tier-3
-        // flows (#3089) so stacked helper approvals can't outlive the turn
-        // timeout, and settleApprovalWaits can conclude a blocked helper turn.
-        const helperApprovalWait = beginApprovalWait(session);
         let approved: boolean;
         try {
-          approved = await waitForApproval(
-            helperExec.id,
-            helperApprovalWait.timeoutMs,
-            helperApprovalWait.signal,
-          );
+          const decision = await decideHelperToolAction({
+            orgId: session.orgId,
+            deviceId: helperDeviceId,
+            executionId: helperExec.id,
+            toolName: stripMcpPrefix(toolName),
+            toolInput: input as Record<string, unknown>,
+            riskTier: guardrailCheck.tier,
+            subjectUsername: session.auth.user.name ?? 'helper',
+          });
+
+          if (decision === 'denied') {
+            return { allowed: false, error: 'This action was denied by organization policy' };
+          }
+
+          // Block until PAM decides (an auto-approved elevation has already
+          // flipped the row, so this returns on the first poll). Draws from the
+          // same shared per-cycle approval-wait budget as the tier-2/tier-3
+          // flows (#3089) so stacked helper approvals can't outlive the turn
+          // timeout, and settleApprovalWaits can conclude a blocked helper turn.
+          const helperApprovalWait = beginApprovalWait(session);
+          try {
+            approved = await waitForApproval(
+              helperExec.id,
+              helperApprovalWait.timeoutMs,
+              helperApprovalWait.signal,
+            );
+          } finally {
+            helperApprovalWait.end();
+          }
         } finally {
-          helperApprovalWait.end();
+          resolvePendingCard(session, helperCardKey);
         }
         if (!approved) {
           // Mirrors the tier-2/tier-3 close-out below: on an early settle
@@ -1683,7 +1690,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // branch applies and the card offers an inline WebAuthn self-approve
           // for that one row (an L3 proof satisfying, not bypassing, the decide
           // handler's gate).
-          session.eventBus.publish({
+          // #9427: tracked until the decision wait below ends.
+          publishPendingCard(session, approvalCardKey(approvalExec.id), {
             type: 'approval_required',
             executionId: approvalExec.id,
             approvalRequestId: intent.approvalRequestIds[0],
@@ -1733,16 +1741,21 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // — and the durable release worker (jobs/intentReleaseWorker.ts) will
           // execute it — after this session has moved on or died. This is the
           // new durable capability the design adds (spec §6.1).
-          const approvalWait = beginApprovalWait(session);
           let decisionStatus: Awaited<ReturnType<typeof waitForIntentDecision>>;
           try {
-            decisionStatus = await waitForIntentDecision(
-              intent.id,
-              approvalWait.timeoutMs,
-              approvalWait.signal,
-            );
+            const approvalWait = beginApprovalWait(session);
+            try {
+              decisionStatus = await waitForIntentDecision(
+                intent.id,
+                approvalWait.timeoutMs,
+                approvalWait.signal,
+              );
+            } finally {
+              approvalWait.end();
+            }
           } finally {
-            approvalWait.end();
+            // A no-op for the unattended-release branch, which recorded no card.
+            resolvePendingCard(session, approvalCardKey(approvalExec.id));
           }
 
           if (decisionStatus === 'pending_approval') {
@@ -2324,7 +2337,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
 
           // Emit approval_required event via session event bus → UI shows Approve/Reject
-          session.eventBus.publish({
+          // #9427: tracked until the wait below ends, however it ends.
+          const cardKey = approvalCardKey(approvalExec.id);
+          publishPendingCard(session, cardKey, {
             type: 'approval_required',
             executionId: approvalExec.id,
             approvalRequestId,
@@ -2344,11 +2359,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // Block until user clicks Approve/Reject, the cycle's shared approval
           // wait budget (the org's interactive approval timeout) elapses, or the wait is settled early
           // (session teardown / new user message / interrupt — #3089).
-          approved = await waitForApproval(
-            approvalExec.id,
-            approvalWait.timeoutMs,
-            approvalWait.signal,
-          );
+          try {
+            approved = await waitForApproval(
+              approvalExec.id,
+              approvalWait.timeoutMs,
+              approvalWait.signal,
+            );
+          } finally {
+            resolvePendingCard(session, cardKey);
+          }
         } finally {
           approvalWait.end();
         }

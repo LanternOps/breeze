@@ -2,10 +2,10 @@
 // unit-testable. The D7 chain (ticket override → category → org → partner →
 // hardcoded default) is implemented here; callers resolve the per-priority numbers
 // via getOrgSlaOverride / getPartnerPrioritySla in ticketConfigService.ts before
-// calling resolveSlaTargets. The SQL twins of the sweep/filter rules live in
-// jobs/ticketSlaWorker.ts and routes/tickets/tickets.ts; stamped
-// response_sla_minutes / resolution_sla_minutes on the ticket row remain the
-// worker's only inputs — the chain here does NOT change those SQL twins.
+// calling resolveSlaTargets. The stamped response_sla_minutes /
+// resolution_sla_minutes feed services/ticketSlaDeadlines.ts, which writes the
+// stored *_due_at / *_warn_at every SLA reader compares against (#8973) — the
+// chain here does not change those readers.
 
 export type TicketSlaPriority = 'low' | 'normal' | 'high' | 'urgent';
 export type SlaTargetKind = 'response' | 'resolution';

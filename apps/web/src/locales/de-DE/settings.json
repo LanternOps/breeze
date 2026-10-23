@@ -700,7 +700,13 @@
         "quality": "Qualität"
       },
       "failovers": "Failover",
-      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war"
+      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war",
+      "titleBy": {
+        "model": "KI-Nutzung nach Modell",
+        "organization": "KI-Nutzung nach Organisation",
+        "technician": "KI-Nutzung nach Techniker",
+        "feature": "KI-Nutzung nach Funktion"
+      }
     },
     "link": {
       "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
@@ -1030,8 +1036,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Unternehmen",
+      "devices": "Geräte und Agenten",
       "security": "Sicherheit und Zugang",
       "communications": "Kommunikation",
+      "ai": "KI",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1068,11 @@
       },
       "company": {
         "label": "Unternehmen",
-        "description": "Name, Adresse, Kontakte"
+        "description": "Name, Adresse, Kontakte, E-Mail-Signatur"
       },
       "regional": {
         "label": "Regional",
-        "description": "Zeitzone, Formate, Stunden"
+        "description": "Zeitzone, Sprache, Formate, Stunden"
       },
       "defaults": {
         "label": "Standardeinstellungen",
@@ -1072,7 +1080,7 @@
       },
       "security": {
         "label": "Sicherheit",
-        "description": "IP-Zulassungsliste und Zugriff"
+        "description": "Passwörter, Sitzungen, MFA und IP-Zulassungsliste"
       },
       "remoteAccess": {
         "label": "Fernzugriff",
@@ -1080,11 +1088,11 @@
       },
       "eventLogs": {
         "label": "Ereignisprotokolle",
-        "description": "Weitergabe und Aufbewahrung"
+        "description": "Geräte-Ereignisprotokolle an Elasticsearch weiterleiten"
       },
       "notifications": {
         "label": "Benachrichtigungen",
-        "description": "E-Mail- und Webhook-Benachrichtigungen"
+        "description": "Absenderadresse, SMTP, Slack- und Pushover-Standardwerte"
       },
       "ticketing": {
         "label": "Ticketverkauf",
@@ -1109,7 +1117,7 @@
       },
       "aiFeatures": {
         "label": "KI-Funktionen",
-        "description": "Standardwerte für Anomalieerkennung und Korrekturvorschläge"
+        "description": "KI-Datenrichtlinie, Anomalieerkennung und Korrekturvorschläge"
       },
       "branding": {
         "label": "Branding",
@@ -1126,6 +1134,14 @@
       "aiApprovals": {
         "label": "KI-Genehmigungs-Timeout",
         "description": "Wie lange der KI-Chat auf die Genehmigung einer gesperrten Aktion wartet"
+      },
+      "callerVerification": {
+        "label": "Anruferverifizierung",
+        "description": "Identitätsprüfung von Anrufern bei Support-Anfragen"
+      },
+      "knownGuests": {
+        "label": "Bekannte Gäste",
+        "description": "Zugelassene Besucher- und Techniker-Geräte nach MAC-Adresse"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -1388,6 +1404,14 @@
     "never": "Niemals",
     "downloadInstaller": "Vorkonfiguriertes Installationsprogramm herunterladen",
     "downloading": "Wird heruntergeladen...",
+    "installerDialogTitle": "Installationsprogramm für „{{name}}“ herunterladen",
+    "installerDialogDescription": "Das Installationsprogramm wird für eine feste Anzahl von Geräten erstellt. Jedes Gerät, das es ausführt, verbraucht eine davon.",
+    "installerDeviceCount": "Anzahl der Geräte",
+    "installerDeviceCountRemaining": "Dieser Schlüssel hat noch {{count}} Registrierungen übrig.",
+    "installerDeviceCountRemaining_one": "Dieser Schlüssel hat noch {{count}} Registrierung übrig.",
+    "installerDeviceCountRemaining_other": "Dieser Schlüssel hat noch {{count}} Registrierungen übrig.",
+    "installerDeviceCountUnlimited": "Dieser Schlüssel hat kein Nutzungslimit.",
+    "installerDeviceCountRange": "Geben Sie eine ganze Zahl von 1 bis {{max}} ein.",
     "rotate": "Rotieren",
     "page": "Seite {{current}} von {{total}}",
     "previous": "Zurück",
@@ -1863,7 +1887,7 @@
     "disabledDescription": "Aktivieren Sie oben die Protokollweiterleitung, um die Verbindungseinstellungen zu konfigurieren.",
     "enable": {
       "title": "Aktivieren Sie die Protokollweiterleitung",
-      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle in einem wiederkehrenden Zeitplan an Ihren Protokollspeicher weitergeleitet."
+      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle an Ihren Protokollspeicher weitergeleitet, sobald jedes Gerät sie meldet."
     },
     "connection": {
       "title": "Verbindung",
@@ -1952,6 +1976,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Kundenansicht",
+      "subtitle": "Vorschau: Das sieht {{who}}",
+      "whoOrganization": "Ihr Kunde",
+      "pickerLabel": "Ansicht als",
+      "pickerAll": "Gesamte Organisation",
+      "loading": "Vorschau wird geladen…",
+      "loadFailed": "Die Kundenansicht konnte nicht geladen werden.",
+      "on": "An",
+      "off": "Aus",
+      "notAvailable": "Eine detaillierte Vorschau dieses Bereichs ist noch nicht verfügbar.",
+      "permissionWithheld": "Nicht angezeigt: Für diese Vorschau benötigen Sie {{permissions}}.",
+      "tilesWithheld": "Einige Kacheln werden nicht angezeigt: Für die Vorschau benötigen Sie {{permissions}}.",
+      "noteNoUser": "Ticketbezogene Daten sind ausgeblendet. Wählen Sie einen Portalbenutzer, um zu sehen, was diese Person sieht.",
+      "readinessTitle": "Bereitschaftsprüfungen",
+      "readinessNone": "Keine Probleme gefunden.",
+      "fix": "Beheben",
+      "readiness": {
+        "documents_empty": "Dokumente ist aktiviert, aber kein Dokument ist als „Im Portal sichtbar“ markiert – Ihr Kunde sieht eine leere Bibliothek.",
+        "reports_empty": "Berichte ist aktiviert, aber es gibt noch keine Berichtsläufe – Ihr Kunde sieht eine leere Liste.",
+        "service_one_time_visible": "Service ist aktiviert und einmalige Einträge sind für Ihren Kunden weiterhin sichtbar.",
+        "backups_no_data": "Backups ist aktiviert, aber es gibt noch keine Backup-Daten.",
+        "dashboard_security_no_data": "Dashboard ist aktiviert, aber der Sicherheitswert hat noch keine Daten – die Kachel ist für Ihren Kunden leer.",
+        "branding_unset": "Das Portal-Branding wurde nie festgelegt (Logo, Farben, Willkommensnachricht oder Support-Kontakt)."
+      }
+    },
     "loading": "Portaleinstellungen werden geladen…",
     "save": "Portaleinstellungen speichern",
     "toasts": {
@@ -2443,7 +2493,11 @@
     "sourceDefault": "Standard",
     "selectOrgForEffectiveBudget": "Wählen Sie eine Organisation aus, um deren geltendes Budget zu sehen, oder bearbeiten Sie die partnerweiten Standardwerte.",
     "editPartnerWideDefaults": "Partnerweite Standardwerte bearbeiten",
-    "thresholdsOff": "Aus"
+    "thresholdsOff": "Aus",
+    "todaysCost": "Kosten heute",
+    "monthlyCost": "Kosten im Monat",
+    "messagesToday": "Nachrichten heute",
+    "tokensThisMonth": "Token in diesem Monat"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4710,6 +4764,7 @@
     "actions": "Aktionen",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Keine Rollen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
     "cloneRole": "Klonrolle: {{name}}",
+    "cloneDescription": "Kopie von {{name}}",
     "clone": "Klonen",
     "edit": "Bearbeiten",
     "delete": "Löschen",

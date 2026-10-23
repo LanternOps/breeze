@@ -700,7 +700,13 @@
         "quality": "Qualidade"
       },
       "failovers": "Acionamentos de backup",
-      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível"
+      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível",
+      "titleBy": {
+        "model": "Uso de IA por modelo",
+        "organization": "Uso de IA por organização",
+        "technician": "Uso de IA por técnico",
+        "feature": "Uso de IA por recurso"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — definido em Provedores e modelos de IA → Padrões por recurso",
@@ -1030,8 +1036,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Empresa",
+      "devices": "Dispositivos e agentes",
       "security": "Segurança e acesso",
       "communications": "Comunicações",
+      "ai": "IA",
       "branding": "Identidade visual"
     },
     "aiFeatures": {
@@ -1060,11 +1068,11 @@
       },
       "company": {
         "label": "Empresa",
-        "description": "Nome, endereço, contatos"
+        "description": "Nome, endereço, contatos, assinatura de e-mail"
       },
       "regional": {
         "label": "Regional",
-        "description": "Fuso horário, formatos, horários"
+        "description": "Fuso horário, idioma, formatos, horários"
       },
       "defaults": {
         "label": "Padrões",
@@ -1072,7 +1080,7 @@
       },
       "security": {
         "label": "Segurança",
-        "description": "Lista de IPs e acesso"
+        "description": "Senhas, sessões, MFA e lista de IPs"
       },
       "remoteAccess": {
         "label": "Acesso remoto",
@@ -1080,11 +1088,11 @@
       },
       "eventLogs": {
         "label": "Logs de eventos",
-        "description": "Encaminhamento e retenção"
+        "description": "Encaminhar logs de eventos de dispositivos para o Elasticsearch"
       },
       "notifications": {
         "label": "Notificações",
-        "description": "Alertas por e-mail e webhook"
+        "description": "Endereço do remetente, SMTP e padrões de Slack e Pushover"
       },
       "ticketing": {
         "label": "Chamados",
@@ -1109,7 +1117,7 @@
       },
       "aiFeatures": {
         "label": "Recursos de IA",
-        "description": "Padrões de detecção de anomalias e correções sugeridas"
+        "description": "Política de dados de IA, detecção de anomalias e correções sugeridas"
       },
       "branding": {
         "label": "Identidade visual",
@@ -1126,6 +1134,14 @@
       "aiApprovals": {
         "label": "Tempo limite de aprovação de IA",
         "description": "Quanto tempo o chat de IA aguarda a aprovação de uma ação restrita"
+      },
+      "callerVerification": {
+        "label": "Verificação de chamador",
+        "description": "Verificação de identidade de quem liga nas solicitações de suporte"
+      },
+      "knownGuests": {
+        "label": "Convidados conhecidos",
+        "description": "Dispositivos aprovados de visitantes e técnicos por endereço MAC"
       }
     },
     "saved": "Configurações do parceiro salvas",
@@ -1388,6 +1404,14 @@
     "never": "Nunca",
     "downloadInstaller": "Baixar instalador pré-configurado",
     "downloading": "Baixando...",
+    "installerDialogTitle": "Baixar instalador para \"{{name}}\"",
+    "installerDialogDescription": "O instalador é gerado para um número fixo de dispositivos. Cada dispositivo que o executa usa um.",
+    "installerDeviceCount": "Número de dispositivos",
+    "installerDeviceCountRemaining": "Esta chave ainda tem {{count}} inscrições disponíveis.",
+    "installerDeviceCountRemaining_one": "Esta chave ainda tem {{count}} inscrição disponível.",
+    "installerDeviceCountRemaining_other": "Esta chave ainda tem {{count}} inscrições disponíveis.",
+    "installerDeviceCountUnlimited": "Esta chave não tem limite de uso.",
+    "installerDeviceCountRange": "Digite um número inteiro de 1 a {{max}}.",
     "rotate": "Rotacionar",
     "page": "Página {{current}} de {{total}}",
     "previous": "Anterior",
@@ -1863,7 +1887,7 @@
     "disabledDescription": "Ative o encaminhamento de logs acima para configurar a conexão.",
     "enable": {
       "title": "Ativar encaminhamento de logs",
-      "description": "Quando ativados, os logs de eventos são encaminhados ao seu armazenamento de logs em uma programação recorrente."
+      "description": "Quando ativados, os logs de eventos são encaminhados ao seu armazenamento de logs à medida que cada dispositivo os informa."
     },
     "connection": {
       "title": "Conexão",
@@ -1952,6 +1976,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Visão do cliente",
+      "subtitle": "Pré-visualização: o que {{who}} vê",
+      "whoOrganization": "seu cliente",
+      "pickerLabel": "Ver como",
+      "pickerAll": "Organização inteira",
+      "loading": "Carregando pré-visualização…",
+      "loadFailed": "Não foi possível carregar a visão do cliente.",
+      "on": "Ativado",
+      "off": "Desativado",
+      "notAvailable": "Uma pré-visualização detalhada desta seção ainda não está disponível.",
+      "permissionWithheld": "Não exibido: você precisa de {{permissions}} para visualizar isto.",
+      "tilesWithheld": "Alguns blocos não são exibidos: você precisa de {{permissions}} para visualizá-los.",
+      "noteNoUser": "Os dados de chamados estão ocultos. Escolha um usuário do portal para ver o que essa pessoa vê.",
+      "readinessTitle": "Verificações de prontidão",
+      "readinessNone": "Nenhum problema encontrado.",
+      "fix": "Corrigir",
+      "readiness": {
+        "documents_empty": "Documentos está ativado, mas nenhum documento está marcado como Visível no portal, então seu cliente vê uma biblioteca vazia.",
+        "reports_empty": "Relatórios está ativado, mas ainda não há execuções de relatório, então seu cliente vê uma lista vazia.",
+        "service_one_time_visible": "Serviço está ativado e itens pontuais ainda estão visíveis para seu cliente.",
+        "backups_no_data": "Backups está ativado, mas ainda não há dados de backup para mostrar.",
+        "dashboard_security_no_data": "O painel está ativado, mas a pontuação de segurança ainda não tem dados, então esse bloco fica vazio para seu cliente.",
+        "branding_unset": "A marca do portal nunca foi definida (logotipo, cores, mensagem de boas-vindas ou contato de suporte)."
+      }
+    },
     "loading": "Carregando configurações do portal…",
     "save": "Salvar configurações do portal",
     "toasts": {
@@ -2443,7 +2493,11 @@
     "sourceDefault": "Padrão",
     "selectOrgForEffectiveBudget": "Selecione uma organização para ver seu orçamento vigente, ou edite os valores padrão em todo o parceiro.",
     "editPartnerWideDefaults": "Editar valores padrão em todo o parceiro",
-    "thresholdsOff": "Desativado"
+    "thresholdsOff": "Desativado",
+    "todaysCost": "Custo de hoje",
+    "monthlyCost": "Custo mensal",
+    "messagesToday": "Mensagens de hoje",
+    "tokensThisMonth": "Tokens deste mês"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4710,6 +4764,7 @@
     "actions": "Ações",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Nenhuma função encontrada. Tente ajustar sua pesquisa ou filtros.",
     "cloneRole": "Clonar função: {{name}}",
+    "cloneDescription": "Cópia de {{name}}",
     "clone": "Clonar",
     "edit": "Editar",
     "delete": "Excluir",
