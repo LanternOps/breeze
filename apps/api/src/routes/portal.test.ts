@@ -43,7 +43,7 @@ vi.mock('../services/email', () => ({
 // #8972 W0: the comment POST locks the ticket row first (services/ticketRowLock.ts).
 vi.mock('../services/ticketRowLock', () => ({
   lockTicketForWrite: vi.fn(async (_tx: unknown, id: string) => ({
-    id, orgId: 'org-1', partnerId: 'partner-1', status: 'open', deletedAt: null, workKind: 'support',
+    id, orgId: 'org-123', partnerId: 'partner-1', status: 'open', deletedAt: null, workKind: 'support',
   })),
   lockTicketsForWrite: vi.fn(async () => new Map()),
 }));
