@@ -442,7 +442,7 @@ describe('manage_tickets write-gap actions', () => {
 });
 
 describe('manage_tickets merge_preview / merge (#8972)', () => {
-  const SRC_ROW = { id: TICKET_ID, orgId: '00000000-0000-0000-0000-000000000010', deviceId: null };
+  const SRC_ROW: { id: string; orgId: string; deviceId: string | null } = { id: TICKET_ID, orgId: '00000000-0000-0000-0000-000000000010', deviceId: null };
   const DST_ROW = { id: OTHER_TICKET_ID, orgId: '00000000-0000-0000-0000-000000000010', deviceId: DEVICE_ID };
 
   beforeEach(() => {
