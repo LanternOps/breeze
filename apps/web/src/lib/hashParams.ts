@@ -53,13 +53,18 @@ function splitSegments(raw: string, knownTabs: readonly string[]): {
   return { tab, selection, rest };
 }
 
+// Keys that must never become property names on the parsed container. The
+// container is also prototype-less, so this is defence in depth.
+const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
 export function parseHashGrammar(hash: string, knownTabs: readonly string[]): ParsedHash {
   const { tab, selection, rest } = splitSegments(stripHash(hash ?? ''), knownTabs);
-  const params: Record<string, string[]> = {};
+  const params: Record<string, string[]> = Object.create(null);
   for (const seg of rest) {
     const eq = seg.indexOf('=');
     if (eq <= 0) continue;
     const key = safeDecode(seg.slice(0, eq));
+    if (FORBIDDEN_KEYS.has(key)) continue;
     const values = seg
       .slice(eq + 1)
       .split(',')
