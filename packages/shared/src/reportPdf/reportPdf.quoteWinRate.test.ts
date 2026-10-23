@@ -152,7 +152,7 @@ describe('quote_win_rate pagination', () => {
       let m: RegExpExecArray | null;
       const stream = p.join('\n');
       while ((m = re.exec(stream))) {
-        if (m[3].includes(needle)) out.push(pageH - Number(m[2]) / doc.internal.scaleFactor);
+        if (m[3]?.includes(needle)) out.push(pageH - Number(m[2]) / doc.internal.scaleFactor);
       }
     });
     return out;

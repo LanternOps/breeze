@@ -150,7 +150,7 @@ describe('mrr_renewals pagination', () => {
       const re = /([\d.]+) ([\d.]+) Td\s*\((.*?)\)\s*Tj/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(stream))) {
-        if (m[3].includes(needle)) out.push({ page, yMm: pageH - Number(m[2]) / doc.internal.scaleFactor });
+        if (m[3]?.includes(needle)) out.push({ page, yMm: pageH - Number(m[2]) / doc.internal.scaleFactor });
       }
     });
     return out;
