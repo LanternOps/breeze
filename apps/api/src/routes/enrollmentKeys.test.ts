@@ -202,6 +202,8 @@ vi.mock("../services/enrollmentDefaults", () => ({
     ttlMinutes: 43200,
     deviceCount: 50,
     maxTtlMinutes: 525600,
+    ttlConfigured: false,
+    deviceCountConfigured: false,
   }),
 }));
 

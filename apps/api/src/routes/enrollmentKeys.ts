@@ -1392,19 +1392,25 @@ enrollmentKeyRoutes.post(
 
     const rawKey = generateEnrollmentKey();
     const keyHash = hashEnrollmentKey(rawKey);
-    // #9616: an omitted expiry / device budget resolves the partner→org
-    // enrollment defaults (the same ones Add Device pre-fills), so Settings →
-    // Create Key and API callers get the same answer. Read only when a field
-    // is actually omitted. The resolved TTL is already clamped to the partner
-    // cap. The env-driven deployment default still governs the other mint
-    // paths; here the resolver's product default (also 30 days) applies when
-    // no partner/org default is set.
+    // #9616: an omitted expiry / device budget uses the partner→org enrollment
+    // default ONLY when one is explicitly configured. Otherwise the previous
+    // API behaviour holds (1 use; ENROLLMENT_KEY_DEFAULT_TTL_MINUTES expiry) —
+    // enrollment keys are a security surface, so an API client that never set a
+    // count must not silently get the 50-device product default. The web form
+    // sends its resolved values explicitly. Read only when a field is omitted;
+    // a configured TTL is already clamped to the partner cap.
     const needsDefaults =
       data.maxUsage === undefined ||
       (data.ttlMinutes === undefined && data.expiresAt === undefined);
     const resolvedDefaults = needsDefaults
       ? await getEnrollmentDefaultsForOrg(orgId)
       : null;
+    const configuredTtlMinutes = resolvedDefaults?.ttlConfigured
+      ? resolvedDefaults.ttlMinutes
+      : undefined;
+    const configuredDeviceCount = resolvedDefaults?.deviceCountConfigured
+      ? resolvedDefaults.deviceCount
+      : undefined;
     // ttlMinutes preferred wire format (timezone math stays server-side);
     // explicit expiresAt remains accepted for callers that need it.
     const expiresAt = data.ttlMinutes !== undefined
@@ -1413,9 +1419,9 @@ enrollmentKeyRoutes.post(
         ? new Date(data.expiresAt)
         : new Date(
             Date.now() +
-              (resolvedDefaults?.ttlMinutes ?? DEFAULT_ENROLLMENT_KEY_TTL_MINUTES) * 60 * 1000,
+              (configuredTtlMinutes ?? DEFAULT_ENROLLMENT_KEY_TTL_MINUTES) * 60 * 1000,
           );
-    const maxUsage = data.maxUsage ?? resolvedDefaults?.deviceCount ?? 1;
+    const maxUsage = data.maxUsage ?? configuredDeviceCount ?? 1;
 
     const [enrollmentKey] = await db
       .insert(enrollmentKeys)
