@@ -417,6 +417,20 @@ describe('buildIdentityOffboardingManualWork (spec §6.5)', () => {
     expect(() => buildIdentityOffboardingPlan(input(), noDegraded)).toThrow(/degradedTools/);
   });
 
+  it('a disable held back by caller verification is a SPECIFIC manual item, not a "missing grant" one, and is not planned', () => {
+    const facts = { ...FULL_FACTS, degradedTools: ['m365_disable_user'], callerVerificationTools: ['m365_disable_user'] };
+    expect(buildIdentityOffboardingPlan(input(), facts).map((e) => e.toolName)).not.toContain('m365_disable_user');
+    const items = buildIdentityOffboardingManualWork(input(), facts, ALL_READY, []);
+    const held = items.find((i) => i.key === 'caller_verification:m365_disable_user');
+    expect(held?.detail).toContain('caller-verification policy');
+    expect(items.map((i) => i.key)).not.toContain('capability:m365.graph.user_disable');
+  });
+
+  it('no label of the recipe\'s own manual items trips the completion record\'s secret filter', () => {
+    const items = buildIdentityOffboardingManualWork(input({ keepMailbox: true, deviceIds: [DEVICE] }), FULL_FACTS, {}, []);
+    for (const i of items) expect(i.label, i.key).not.toMatch(/credential|password|secret|token|recovery|\bpin\b|\botp\b/i);
+  });
+
   it('emits an item for every UNKNOWN-ownership M365 group the plan removes (D-R1-7)', () => {
     const items = buildIdentityOffboardingManualWork(input(), FULL_FACTS, ALL_READY, []);
     expect(items.filter((i) => i.key.startsWith('confirm_m365_group_owner:'))).toHaveLength(2);

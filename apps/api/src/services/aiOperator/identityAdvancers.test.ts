@@ -6,7 +6,7 @@
  */
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { identityOffboardingCheckpointSchema, type IdentityOffboardingCheckpoint } from '@breeze/shared';
 
 const h = vi.hoisted(() => ({
@@ -122,11 +122,22 @@ const ACCOUNTS = [
   { provider: 'google', externalId: '101', principalLabel: 'dana@customer.example' },
   { provider: 'm365', externalId: 'obj-1', principalLabel: 'dana@customer.example' },
 ];
-const READY = { readiness: 'ready', degradedEffects: [], capabilityReadiness: {} };
+const READY = { readiness: 'ready', degradedEffects: [], callerVerificationBlocked: [], capabilityReadiness: {} };
 
 function stepRun(key: string, inputs: Record<string, unknown>) {
   return { id: 'run-1', status: 'completed', outcome: { taskStep: { version: 1, findings: [], nextStep: { kind: 'step', key, inputs } } } };
 }
+
+// The advancers load their service graph lazily on first call; load it once
+// here so no single case pays that cost against the default timeout.
+beforeAll(async () => {
+  await Promise.all([
+    import('./recipes/resolveNextStep'), import('./taskCoordinator'), import('./recipes'), import('./recipes/identityOffboarding'),
+    import('./planningSnapshot'), import('./planApproval'), import('./effectProbes'), import('./identityDiscovery'),
+    import('./recipeReadiness'), import('./taskContextIdentity'), import('./manualWork'), import('./completionRecord'),
+    import('./humanWorkService'), import('./stepService'), import('./eventService'),
+  ]);
+}, 60_000);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -212,7 +223,10 @@ describe('advanceDiscover', () => {
   it('3. seals the envelope on the discover step row AND the ref on the task in ONE leased transaction', async () => {
     h.selectQueue = [TARGETS, ACCOUNTS, [{ id: CONTACT_TARGET }]];
     h.discoverIdentityFacts.mockResolvedValue(FACTS);
-    h.readiness.mockResolvedValue({ ...READY, degradedEffects: ['m365_retire_intune_device', 'not_a_catalog_tool'], capabilityReadiness: { 'm365.graph.intune_retire': false } });
+    h.readiness.mockResolvedValue({
+      ...READY, degradedEffects: ['m365_retire_intune_device', 'm365_disable_user', 'not_a_catalog_tool'],
+      callerVerificationBlocked: ['m365_disable_user'], capabilityReadiness: { 'm365.graph.intune_retire': false },
+    });
     await advanceDiscover(args('discover', cp({ resumeStepKey: 'discover' })));
     expect(h.readiness).toHaveBeenCalledWith(ORG, recipe, { ignoreFlag: true });
 
@@ -221,7 +235,8 @@ describe('advanceDiscover', () => {
     const stepWrite = h.updates.find((u) => u.table === aiOperatorTaskSteps)!;
     const envelope = (stepWrite.set.checkpoint as { planningSnapshot: { facts: Record<string, any> } }).planningSnapshot;
     expect(envelope.facts.targets.contactTargetId).toBe(CONTACT_TARGET);
-    expect(envelope.facts.degradedTools).toEqual(['m365_retire_intune_device']);
+    expect(envelope.facts.degradedTools).toEqual(['m365_retire_intune_device', 'm365_disable_user']);
+    expect(envelope.facts.callerVerificationTools).toEqual(['m365_disable_user']);
     const refWrite = h.updates.filter((u) => u.table === aiOperatorTasks).at(-1)!;
     const ref = (refWrite.set.checkpoint as IdentityOffboardingCheckpoint).planningSnapshot!;
     expect(ref.stepId).toBe('00000000-0000-4000-8000-0000000000d5');

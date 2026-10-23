@@ -453,6 +453,9 @@ export async function advanceDiscover(a: StepAdvancerArgs): Promise<string> {
     // FROZEN with the facts (A.3 refinement 1): a later readiness change can
     // never alter the sealed plan. The live re-check is the effects veto.
     degradedTools: readiness.degradedEffects.filter((t) => catalog.has(t)),
+    // The degraded tools held back by caller verification, so the manual
+    // item can say why (it is a policy choice, not a missing grant).
+    callerVerificationTools: readiness.callerVerificationBlocked.filter((t) => catalog.has(t)),
     capabilityReadiness: readiness.capabilityReadiness,
   };
   const sealed = o.sealPlanningSnapshot(facts, a.now);

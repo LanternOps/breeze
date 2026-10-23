@@ -46,6 +46,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { m365Connections } from '../../db/schema/m365';
 import { googleWorkspaceConnections } from '../../db/schema/google';
 import type { AuthContext } from '../../middleware/auth';
+import { callerVerificationEnabled } from '../../config/env';
 import { m365RoleReadiness } from '../m365ControlPlane/grantReadiness';
 import { M365_HEADLESS_ACTIONS } from '../m365ToolsHeadless';
 import { isToolAllowlisted } from '../aiAgents/toolAllowlist';
@@ -93,6 +94,12 @@ export interface ReadinessInputs {
   /** The org's EFFECTIVE agent of the recipe's kind; null when none is enabled. */
   agent: { id: string; kind: string; toolAllowlist: readonly string[] } | null;
   flagEnabled: boolean;
+  /**
+   * Caller-gated tools (`CALLER_GATED_TOOLS`) this org's caller-verification
+   * policy would refuse to the Operator: a mint of one throws
+   * `CallerVerificationRequiredError`, so it can only fail. Absent = none.
+   */
+  callerVerificationBlocked?: readonly string[];
 }
 
 export interface RecipeReadiness {
@@ -108,6 +115,8 @@ export interface RecipeReadiness {
   manualStepCount: number;
   /** Effect tools NOT dispatchable for this org; each becomes human work. */
   degradedEffects: string[];
+  /** The subset of `degradedEffects` held back by caller verification (not a setup gap). */
+  callerVerificationBlocked: string[];
   agentId: string | null;
   agentKind: string | null;
 }
@@ -207,7 +216,10 @@ export function computeRecipeReadiness(recipe: AnyRecipeDefinition, inputs: Read
   if (!inputs.flagEnabled) {
     // A disabled recipe reports no gaps: its capability list is not a hint
     // about an unshipped feature.
-    return { ...base, readiness: 'unavailable', missing: [], alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [] };
+    return {
+      ...base, readiness: 'unavailable', missing: [], alwaysManualCapabilities: [], manualStepCount: 0,
+      degradedEffects: [], callerVerificationBlocked: [],
+    };
   }
 
   // One partition, computed once, so the two lists cannot drift.
@@ -220,7 +232,12 @@ export function computeRecipeReadiness(recipe: AnyRecipeDefinition, inputs: Read
 
   // Degradation, per tool.
   const tools = new Set(recipe.requires.flatMap((c) => c.toolNames ?? []));
+  // Caller verification is a POLICY choice, not a setup gap: it degrades the
+  // tool to human work but never changes the badge (default policies require
+  // tier 2, so every org would otherwise read "setup required" forever).
+  const callerBlocked = new Set((inputs.callerVerificationBlocked ?? []).filter((t) => tools.has(t)));
   const degradedEffects = [...tools].filter((tool) => {
+    if (callerBlocked.has(tool)) return true;
     const naming = recipe.requires.filter((c) => (c.toolNames ?? []).includes(tool));
     const providers = new Set(naming.map((c) => c.provider).filter((p) => p !== null));
     for (const p of providers) {
@@ -243,7 +260,27 @@ export function computeRecipeReadiness(recipe: AnyRecipeDefinition, inputs: Read
     alwaysManualCapabilities: alwaysManual.map((c) => toDto(c, inputs)),
     manualStepCount: alwaysManual.length,
     degradedEffects,
+    callerVerificationBlocked: [...callerBlocked].sort(),
   };
+}
+
+/**
+ * Which caller-gated tools the Operator could NOT mint for this org. The gate
+ * (`callerVerification/gate.ts`) refuses everything when the feature is off,
+ * and otherwise requires a verified caller unless the action's tier is 0 —
+ * an Operator plan has no caller to verify. Read in system scope: the
+ * partner-level policy row must be visible.
+ */
+export async function loadCallerVerificationBlocked(orgId: string): Promise<string[]> {
+  const { CALLER_GATED_TOOLS, callerAction } = await import('../actionIntents/callerTarget');
+  if (!callerVerificationEnabled()) return [...CALLER_GATED_TOOLS];
+  const { getEffectivePolicy } = await import('../callerVerification/policy');
+  const policy = await runOutsideDbContext(() => withSystemDbAccessContext(() => getEffectivePolicy(orgId)));
+  return CALLER_GATED_TOOLS.filter((tool) => {
+    const action = callerAction(tool);
+    const tier = action === 'reset_password' ? policy.requiredTierResetPassword : policy.requiredTierDisableUser;
+    return tier !== 0;
+  });
 }
 
 /** Effect tool names that are NOT dispatchable for this org and must become human work. */
@@ -298,16 +335,18 @@ export async function computeRecipeReadinessSystem(
   opts: { ignoreFlag?: boolean } = {},
 ): Promise<RecipeReadiness> {
   const kind = Object.hasOwn(RECIPE_AGENT_KINDS, recipe.key) ? RECIPE_AGENT_KINDS[recipe.key]! : null;
-  const [connections, resolved] = await Promise.all([
+  const [connections, resolved, callerVerificationBlocked] = await Promise.all([
     runOutsideDbContext(() => withSystemDbAccessContext(() => loadConnections(db, orgId))),
     kind ? resolveEffectiveAgentSystem(orgId, kind) : Promise.resolve(null),
+    loadCallerVerificationBlocked(orgId),
   ]);
   // The coordinator passes `ignoreFlag`: a recipe flag turned off mid-task
   // fences NEW admissions, never the capability facts of a running task — and
   // a flag-off readiness reports nothing degraded, which must never be read
   // as "everything is dispatchable".
   return computeRecipeReadiness(recipe, {
-    orgId, ...connections, agent: agentFrom(resolved), flagEnabled: opts.ignoreFlag === true || recipeEnabled(recipe.key),
+    orgId, ...connections, agent: agentFrom(resolved), callerVerificationBlocked,
+    flagEnabled: opts.ignoreFlag === true || recipeEnabled(recipe.key),
   });
 }
 
@@ -318,13 +357,14 @@ export async function computeRecipeReadinessSystem(
  */
 export async function listWorkflowReadiness(orgId: string, auth: AuthContext): Promise<RecipeReadiness[]> {
   const connections = await loadConnections(db, orgId);
+  const callerVerificationBlocked = await loadCallerVerificationBlocked(orgId);
   const out: RecipeReadiness[] = [];
   for (const key of Object.keys(RECIPES).sort()) {
     const recipe = RECIPES[key]!;
     const kind = Object.hasOwn(RECIPE_AGENT_KINDS, key) ? RECIPE_AGENT_KINDS[key]! : null;
     const resolved = kind ? await resolveEffectiveAgent(auth, orgId, kind) : null;
     out.push(computeRecipeReadiness(recipe, {
-      orgId, ...connections, agent: agentFrom(resolved), flagEnabled: recipeEnabled(key),
+      orgId, ...connections, agent: agentFrom(resolved), callerVerificationBlocked, flagEnabled: recipeEnabled(key),
     }));
   }
   return out;

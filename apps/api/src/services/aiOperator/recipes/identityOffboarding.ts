@@ -508,17 +508,22 @@ export function buildIdentityOffboardingManualWork(
   });
   add({
     key: 'update_documentation', origin: 'always', capabilityKey: null,
-    label: `Update documentation and shared credentials for ${label}`,
-    detail: 'Remove this person from contact lists, on-call rotas and runbooks, and rotate any shared '
-      + 'credential they knew.',
+    label: `Update documentation and shared logins for ${label}`,
+    detail: 'Remove this person from contact lists, on-call rotas and runbooks, and change any shared '
+      + 'login they knew.',
   });
 
   // 2. Capability degradations — only for effects the plan would have contained.
   const degraded = degradedToolsOf(facts);
+  const callerHeld = new Set(Array.isArray(facts.callerVerificationTools)
+    ? (facts.callerVerificationTools as unknown[]).filter((t): t is string => typeof t === 'string') : []);
   const degradedCapabilities = new Set<string>();
   for (const effect of buildUndegradedPlan(input, facts)) {
     const capabilityKey = CAPABILITY_FOR_TOOL[effect.toolName];
     if (!capabilityKey) continue;
+    // Held back ONLY by caller verification, with the capability itself
+    // satisfied: a specific item below says why, not a "missing grant" one.
+    if (callerHeld.has(effect.toolName) && readiness[capabilityKey] === true) continue;
     if (degraded.has(effect.toolName) || readiness[capabilityKey] !== true) degradedCapabilities.add(capabilityKey);
   }
   for (const capabilityKey of IDENTITY_OFFBOARDING_CAPABILITIES.map((c) => c.key)) {
@@ -530,6 +535,18 @@ export function buildIdentityOffboardingManualWork(
       label: `Do by hand in ${provider}: ${cap.detail}`,
       detail: `Breeze cannot do this for ${label} in this organization: ${cap.detail} `
         + `Do it in the ${provider} admin console for ${label}, then tick this item.`,
+    });
+  }
+
+  // Caller verification (a policy choice): the account step is done by hand.
+  if (m365.present && fx.disableAccount && callerHeld.has('m365_disable_user')) {
+    add({
+      key: 'caller_verification:m365_disable_user', origin: 'capability', capabilityKey: 'm365.graph.user_disable',
+      label: `Disable ${label}'s Microsoft 365 account by hand`,
+      detail: 'This organization\'s caller-verification policy requires a verified caller before a Microsoft 365 '
+        + 'account is disabled, and an offboarding has no caller to verify, so Breeze did not plan this step. '
+        + 'Once the mail and access steps above are done, block sign-in for this person in the Microsoft 365 '
+        + 'admin centre (Users → Active users → Block sign-in).',
     });
   }
 

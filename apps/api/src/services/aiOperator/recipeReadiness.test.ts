@@ -205,6 +205,16 @@ describe('computeRecipeReadiness', () => {
     expect(r.missing[0]!.availability).toBe('tenant_fixable');
   });
 
+  it('caller verification degrades the gated tool to human work WITHOUT changing the badge', () => {
+    const r = computeRecipeReadiness(recipe, inputs({ callerVerificationBlocked: ['m365_disable_user', 'm365_reset_password'] }));
+    expect(r.readiness).toBe('ready');
+    expect(r.missing).toEqual([]);
+    expect(r.degradedEffects).toEqual(['m365_disable_user']);
+    // Only tools the recipe actually uses are reported.
+    expect(r.callerVerificationBlocked).toEqual(['m365_disable_user']);
+    expect(r.capabilityReadiness['m365.graph.user_disable']).toBe(true);
+  });
+
   it('degradedEffectTools returns the readiness degraded set', () => {
     const r = computeRecipeReadiness(recipe, inputs({ m365: null }));
     expect(degradedEffectTools(r)).toEqual(r.degradedEffects);
