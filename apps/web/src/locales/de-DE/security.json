@@ -989,7 +989,13 @@
       "flow": "Fließen",
       "status": "Status",
       "riskTierTitle": "Risikostufe {{tier}}",
-      "signer": "Unterzeichner: {{signer}}"
+      "signer": "Unterzeichner: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Gerät konnte nicht handeln: kein PAM-Helfer verfügbar",
+        "sessionUnavailable": "Gerät konnte nicht handeln: Sitzung des Benutzers nicht verfügbar",
+        "helperStartFailed": "Gerät konnte nicht handeln: PAM-Helfer konnte nicht gestartet werden",
+        "generic": "Gerät konnte diese Anfrage nicht ausführen"
+      }
     },
     "actions": {
       "respond": "Antworten",

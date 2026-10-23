@@ -18,11 +18,6 @@ import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
-type PayloadPreview = {
-  preview: string;
-  error: string;
-};
-
 const defaultEventType = webhookEventOptions[0]?.value ?? 'device.online';
 
 // #9652: the API stores bearer auth as an encrypted `Authorization: Bearer
@@ -31,19 +26,6 @@ const defaultEventType = webhookEventOptions[0]?.value ?? 'device.online';
 const isAuthorizationHeader = (key: string) => key.trim().toLowerCase() === 'authorization';
 const webhookFormAuthType = (webhook: Webhook): 'hmac' | 'bearer' =>
   webhook.authType === 'bearer' ? 'bearer' : 'hmac';
-
-const formatPayloadPreview = (payload: string | null | undefined, t: (key: string) => string): PayloadPreview => {
-  if (!payload?.trim()) {
-    return { preview: '', error: '' };
-  }
-
-  try {
-    return { preview: JSON.stringify(JSON.parse(payload), null, 2), error: '' };
-  } catch {
-    return { preview: payload, error: t('longTail.webhooks.WebhooksPage.errors.invalidPayloadTemplate') };
-  }
-};
-
 
 // Reading webhooks requires webhooks:read (GET /webhooks and the delivery
 // history). Without it the page shows the permission-denied state and makes no
@@ -147,11 +129,6 @@ function WebhooksPageContent() {
     [webhooks, activeWebhookId]
   );
 
-  const payloadPreview = useMemo(
-    () => formatPayloadPreview(activeWebhook?.payloadTemplate, t),
-    [activeWebhook?.payloadTemplate, t]
-  );
-
   const labelMap = useMemo(() => {
     const map = new Map<string, string>();
     webhookEventOptions.forEach(option => map.set(option.value, t(/* i18n-dynamic */ option.labelKey)));
@@ -186,8 +163,7 @@ function WebhooksPageContent() {
           fetchWithAuth(`/webhooks/${webhook.id}/test`, {
             method: 'POST',
             body: JSON.stringify({
-              event: eventType ?? webhook.events?.[0] ?? defaultEventType,
-              payloadTemplate: webhook.payloadTemplate
+              event: eventType ?? webhook.events?.[0] ?? defaultEventType
             })
           }),
         errorFallback: t('longTail.webhooks.WebhooksPage.errors.testFailed'),
@@ -273,7 +249,6 @@ function WebhooksPageContent() {
       events: values.events,
       ...(status ? { status } : {}),
       ...secret,
-      payloadTemplate: values.payloadTemplate?.trim() || undefined,
       headers
     };
   };
@@ -303,8 +278,7 @@ function WebhooksPageContent() {
           key: header.key,
           value: formSecretValue(header.value),
         })),
-      enabled: isWebhookActive(webhook),
-      payloadTemplate: webhook.payloadTemplate ?? ''
+      enabled: isWebhookActive(webhook)
     };
   };
 
@@ -506,7 +480,7 @@ function WebhooksPageContent() {
               )}
             </div>
 
-            <div className="mt-6 grid gap-6 lg:grid-cols-2">
+            <div className="mt-6">
               <div className="space-y-4">
                 <div>
                   <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.endpoint')}</label>
@@ -543,19 +517,6 @@ function WebhooksPageContent() {
                     </p>
                   </div>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.payloadPreview')}</label>
-                <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
-                  {payloadPreview.preview ? (
-                    <pre className="max-h-64 overflow-auto">{payloadPreview.preview}</pre>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhooksPage.details.noPayloadTemplate')}</p>
-                  )}
-                </div>
-                {payloadPreview.error && (
-                  <p className="text-xs text-destructive">{payloadPreview.error}</p>
-                )}
               </div>
             </div>
           </div>

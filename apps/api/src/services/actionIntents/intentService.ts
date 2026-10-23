@@ -505,6 +505,43 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
     'Rebooting the device will disconnect any active sessions and interrupt running work until it comes back online.',
   shutdown: () =>
     'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+  // #9657: plain-language impact for tools whose catalog description is
+  // model-facing prompt text. Display only.
+  remediate_vulnerability: () =>
+    'Queues patches for the selected vulnerabilities on the affected devices; devices may restart to finish installing them.',
+  restore_snapshot: () =>
+    'Restores data from a backup snapshot. Files at the restore target can be overwritten.',
+  trigger_backup: () => 'Starts a backup job now. It uses device and storage resources while it runs.',
+  manage_invoices: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'issue': return 'Issues the invoice to the customer.';
+      case 'void': return 'Voids the invoice. It will no longer be payable.';
+      case 'record_payment': return 'Records a payment against the invoice.';
+      case 'void_payment': return 'Voids a recorded payment, reopening the invoice balance.';
+      default: return null;
+    }
+  },
+  manage_quotes: (input) =>
+    nonEmptyString(input.action) === 'send' ? 'Sends the quote to the customer.' : null,
+  manage_contracts: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'activate': return 'Activates the contract so billing starts.';
+      case 'pause': return 'Pauses the contract and its billing.';
+      case 'resume': return 'Resumes the contract and its billing.';
+      case 'cancel': return 'Cancels the contract.';
+      default: return null;
+    }
+  },
+  m365_disable_user: () => 'Blocks the Microsoft 365 user from signing in.',
+  m365_reset_password: () => 'Resets the Microsoft 365 user\'s password; they are signed out until they use the new one.',
+  m365_revoke_sessions: () => 'Signs the Microsoft 365 user out of all active sessions.',
+  m365_remove_license: () => 'Removes a license from the Microsoft 365 user; access to the licensed service may end.',
+  m365_assign_license: () => 'Assigns a license to the Microsoft 365 user, which may add cost.',
+  m365_remove_from_group: () => 'Removes the user from a Microsoft 365 group, which may remove their access.',
+  m365_add_to_group: () => 'Adds the user to a Microsoft 365 group, which may grant them access.',
+  m365_retire_intune_device: () => 'Retires the device from Intune management and removes company data from it.',
+  m365_create_user: () => 'Creates a new Microsoft 365 user account.',
+  m365_set_auto_reply: () => 'Sets the Microsoft 365 mailbox auto-reply.',
   // #5173: execute_command multiplexes on `commandType` (input.payload is the
   // agent-command-specific parameters, `z.record(z.string(), z.unknown())` —
   // deliberately unvalidated, so this is a read-only extraction for display,

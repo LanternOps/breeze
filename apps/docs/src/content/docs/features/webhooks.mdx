@@ -70,7 +70,7 @@ Webhooks follow the standard multi-tenant access model:
 
 ## Event Types
 
-Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more event type strings in the `events` array when creating or updating a webhook.
+Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more event type strings in the `events` array when creating or updating a webhook. Use `*` to receive every event. The API rejects an event type that Breeze never publishes with a `400`, so a typo cannot save a webhook that silently never fires. The legacy name `alert.created` is accepted and stored as `alert.triggered`.
 
 ### Device Events
 

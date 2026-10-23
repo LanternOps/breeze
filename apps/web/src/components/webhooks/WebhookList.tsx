@@ -43,7 +43,6 @@ export type Webhook = {
   // header is stored, else 'hmac' when a signing secret is, else 'none'.
   authType?: WebhookAuthType | 'none';
   headers?: WebhookHeader[];
-  payloadTemplate?: string;
 };
 
 type WebhookListProps = {
