@@ -173,6 +173,10 @@ const reportQuerySchema = z.object({
   orgId: z.string().guid().optional(),
 });
 
+const policyListQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
+});
+
 const dashboardQuerySchema = z.object({
   orgId: z.string().guid().optional(),
 });
@@ -1031,11 +1035,26 @@ sensitiveDataRoutes.get(
   '/policies',
   requireScope('organization', 'partner', 'system'),
   requireSensitiveDataRead,
+  zValidator('query', policyListQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const conditions: SQL[] = [];
+    const selectedOrgId = c.req.valid('query').orgId;
+    if (selectedOrgId && !auth.canAccessOrg(selectedOrgId)) {
+      return c.json({ error: SELECTED_ORG_DENIED_MESSAGE }, 403);
+    }
     const accessCondition = sensitivePolicyAccessCondition(auth);
     if (accessCondition) conditions.push(accessCondition);
+    if (selectedOrgId) {
+      // Narrow org-owned rows to the header switcher's org (#9681); the
+      // caller's own partner-wide policies (already bounded by the access
+      // condition above) still apply to that org.
+      conditions.push(
+        auth.scope === 'partner' && auth.partnerId
+          ? sql`(${sensitiveDataPolicies.orgId} = ${selectedOrgId} OR ${sensitiveDataPolicies.orgId} IS NULL)`
+          : eq(sensitiveDataPolicies.orgId, selectedOrgId)
+      );
+    }
 
     const rows = await db
       .select()
@@ -1072,7 +1091,14 @@ sensitiveDataRoutes.post(
       }
       owner = { orgId: null, partnerId: auth.partnerId };
     } else {
-      const orgId = readOrgIdFromAuth(auth, payload.orgId);
+      // The web client sends no body orgId; fetchWithAuth appends the header
+      // switcher's ?orgId=. A body orgId wins; otherwise the query orgId must
+      // be one the caller can reach.
+      const queryOrgId = z.string().guid().safeParse(c.req.query('orgId'));
+      if (!payload.orgId && queryOrgId.success && !auth.canAccessOrg(queryOrgId.data)) {
+        return c.json({ error: SELECTED_ORG_DENIED_MESSAGE }, 403);
+      }
+      const orgId = readOrgIdFromAuth(auth, payload.orgId ?? (queryOrgId.success ? queryOrgId.data : undefined));
       if (!orgId) {
         return c.json({ error: 'Unable to resolve target organization for policy creation' }, 400);
       }
