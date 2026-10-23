@@ -36,7 +36,8 @@ describe('list_business_calendars (#8973 W4, spec §5.7)', () => {
     expect([...m.keys()]).toEqual(['list_business_calendars']);
     const tool = m.get('list_business_calendars')!;
     expect(tool.tier).toBe(1);
-    expect(tool.definition.description.length).toBeLessThanOrEqual(300);
+    expect(tool.definition.description?.length ?? 0).toBeGreaterThan(0);
+    expect(tool.definition.description!.length).toBeLessThanOrEqual(300);
   });
 
   it("an org-scope caller gets its org's calendars plus the inherited partner ones, and what applies", async () => {
