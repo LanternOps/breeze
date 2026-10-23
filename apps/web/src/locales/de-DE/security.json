@@ -311,6 +311,8 @@
     "no": "Nein",
     "noDevicesFound": "Keine Geräte gefunden.",
     "none": "Keine",
+    "unknown": "Unbekannt",
+    "tpmNotReported": "Vom Agenten nicht gemeldet",
     "os": "Betriebssystem",
     "pageOf": "Seite {{page}} von {{totalPages}}",
     "partial": "Teilweise",

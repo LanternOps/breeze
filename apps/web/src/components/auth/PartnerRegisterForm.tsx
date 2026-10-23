@@ -1,4 +1,5 @@
 import { useId, useMemo } from 'react';
+import { LAUNCH_MONTHLY_PRICES_USD, LAUNCH_ANNUAL_TOTALS_USD, launchPurchaseHandoffQuery, type LaunchPurchaseSelection } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -23,15 +24,18 @@ type PartnerRegisterFormProps = {
   // scheme; this component only renders it.
   errorAction?: { url: string; label: string };
   loading?: boolean;
+  purchaseSelection?: LaunchPurchaseSelection;
 };
 
 export default function PartnerRegisterForm({
   onSubmit,
   errorMessage,
   errorAction,
-  loading
+  loading,
+  purchaseSelection
 }: PartnerRegisterFormProps) {
-  const { t } = useTranslation('auth');
+  const { t, i18n } = useTranslation('auth');
+  const money = (amount: number) => new Intl.NumberFormat(i18n.language || 'en', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(amount);
   const partnerRegisterSchema = useMemo(
     () =>
       z
@@ -85,6 +89,16 @@ export default function PartnerRegisterForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
+      {purchaseSelection && (
+        <section data-testid="register-purchase-selection" className="space-y-1 rounded-md border bg-muted/40 p-4">
+          <h2 className="font-semibold">{t('partnerRegister.purchase.capacity', { defaultValue: '{{capacity}} managed devices', capacity: purchaseSelection.capacity })}</h2>
+          <p className="text-sm text-muted-foreground">
+            {purchaseSelection.billingPeriod === 'annual'
+              ? t('partnerRegister.purchase.annual', { defaultValue: '{{total}} USD billed annually', total: money(LAUNCH_ANNUAL_TOTALS_USD[purchaseSelection.capacity]!) })
+              : t('partnerRegister.purchase.monthly', { defaultValue: '{{total}} USD billed monthly', total: money(LAUNCH_MONTHLY_PRICES_USD[purchaseSelection.capacity]!) })}
+          </p>
+        </section>
+      )}
       {/* Company section */}
       <div>
         <h2 className="text-base font-semibold">{t('partnerRegister.company.title', { defaultValue: 'Your company' })}</h2>
@@ -261,7 +275,7 @@ export default function PartnerRegisterForm({
 
       <p className="text-center text-sm text-muted-foreground">
         {t('common.alreadyHaveAccount', { defaultValue: 'Already have an account?' })}{' '}
-        <a href="/login" className="font-medium text-primary hover:underline">
+        <a href={purchaseSelection ? `/login?next=${encodeURIComponent(`/billing/plans?${launchPurchaseHandoffQuery(purchaseSelection)}`)}` : "/login"} className="font-medium text-primary hover:underline">
           {t('common.signIn', { defaultValue: 'Sign in' })}
         </a>
       </p>

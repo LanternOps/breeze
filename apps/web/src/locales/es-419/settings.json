@@ -1030,8 +1030,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Compañía",
+      "devices": "Dispositivos y agentes",
       "security": "Seguridad y acceso",
       "communications": "Comunicaciones",
+      "ai": "IA",
       "branding": "Marca"
     },
     "aiFeatures": {
@@ -1060,11 +1062,11 @@
       },
       "company": {
         "label": "Compañía",
-        "description": "Nombre, dirección, contactos"
+        "description": "Nombre, dirección, contactos, firma de correo"
       },
       "regional": {
         "label": "Regional",
-        "description": "Zona horaria, formatos, horas."
+        "description": "Zona horaria, idioma, formatos, horas"
       },
       "defaults": {
         "label": "Valores predeterminados",
@@ -1072,7 +1074,7 @@
       },
       "security": {
         "label": "Seguridad",
-        "description": "Lista de permitidos y acceso IP"
+        "description": "Contraseñas, sesiones, MFA y lista de IP permitidas"
       },
       "remoteAccess": {
         "label": "Acceso remoto",
@@ -1080,11 +1082,11 @@
       },
       "eventLogs": {
         "label": "Registros de eventos",
-        "description": "Reenvío y retención"
+        "description": "Reenviar registros de eventos de dispositivos a Elasticsearch"
       },
       "notifications": {
         "label": "Notificaciones",
-        "description": "Alertas de correo electrónico y webhooks"
+        "description": "Dirección del remitente, SMTP y valores predeterminados de Slack y Pushover"
       },
       "ticketing": {
         "label": "Gestión de tickets",
@@ -1109,7 +1111,7 @@
       },
       "aiFeatures": {
         "label": "Funciones de IA",
-        "description": "Valores predeterminados de detección de anomalías y correcciones sugeridas"
+        "description": "Política de datos de IA, detección de anomalías y correcciones sugeridas"
       },
       "branding": {
         "label": "Marca",
@@ -1126,6 +1128,14 @@
       "aiApprovals": {
         "label": "Tiempo de espera de aprobación de IA",
         "description": "Cuánto tiempo espera el chat de IA la aprobación de una acción restringida"
+      },
+      "callerVerification": {
+        "label": "Verificación de llamadas",
+        "description": "Verificación de identidad de quien llama en solicitudes de soporte"
+      },
+      "knownGuests": {
+        "label": "Invitados conocidos",
+        "description": "Dispositivos aprobados de visitantes y técnicos por dirección MAC"
       }
     },
     "saved": "Configuración de socio guardada",

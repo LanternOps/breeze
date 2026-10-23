@@ -1030,8 +1030,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Company",
+      "devices": "Devices & agents",
       "security": "Security & Access",
       "communications": "Communications",
+      "ai": "AI",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1062,11 @@
       },
       "company": {
         "label": "Company",
-        "description": "Name, address, contacts"
+        "description": "Name, address, contacts, email signature"
       },
       "regional": {
         "label": "Regional",
-        "description": "Timezone, formats, hours"
+        "description": "Timezone, language, formats, hours"
       },
       "defaults": {
         "label": "Defaults",
@@ -1072,7 +1074,7 @@
       },
       "security": {
         "label": "Security",
-        "description": "IP allowlist and access"
+        "description": "Passwords, sessions, MFA and IP allowlist"
       },
       "remoteAccess": {
         "label": "Remote Access",
@@ -1080,11 +1082,11 @@
       },
       "eventLogs": {
         "label": "Event Logs",
-        "description": "Forwarding and retention"
+        "description": "Forward device event logs to Elasticsearch"
       },
       "notifications": {
         "label": "Notifications",
-        "description": "Email and webhook alerts"
+        "description": "Sender address, SMTP, Slack and Pushover defaults"
       },
       "ticketing": {
         "label": "Ticketing",
@@ -1109,7 +1111,7 @@
       },
       "aiFeatures": {
         "label": "AI Features",
-        "description": "Anomaly detection and suggested fixes defaults"
+        "description": "AI data policy, anomaly detection and suggested fixes"
       },
       "branding": {
         "label": "Branding",
@@ -1126,6 +1128,14 @@
       "aiApprovals": {
         "label": "AI Approval Timeout",
         "description": "How long AI chat waits for gated action approval"
+      },
+      "callerVerification": {
+        "label": "Caller verification",
+        "description": "Caller identity checks for support requests"
+      },
+      "knownGuests": {
+        "label": "Known guests",
+        "description": "Approved visitor and technician devices by MAC address"
       }
     },
     "saved": "Partner settings saved",
