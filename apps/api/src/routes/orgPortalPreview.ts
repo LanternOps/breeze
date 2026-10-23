@@ -8,7 +8,7 @@ import { requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { ERROR_CODES } from '@breeze/shared';
-import { buildPortalPreview, type PreviewPortalUser } from '../services/portal/portalPreview';
+import type { PreviewPortalUser } from '../services/portal/portalPreview';
 import { resolveAccessibleOrg } from './orgPortalSettings';
 
 // Staff "Customer view" (#9350, decision (a)): a READ-ONLY render of the portal
@@ -69,6 +69,11 @@ export function registerOrgPortalPreviewRoutes(orgRoutes: Hono) {
 
       // ORGS_READ only opens the door: each section re-checks the staff
       // permission that gates the same data on the staff side (PORTAL_SECTION_GATES.staffPermissions).
+      // Loaded lazily: the preview pulls in every portal read model (backups,
+      // security, reports, ...). Importing them eagerly from orgs.ts made every
+      // org-route suite that partially mocks ../db/schema fail at collection
+      // (CI 2026-10-22: orgs.test, organizations.test, partner_multi_org_orgid.test).
+      const { buildPortalPreview } = await import('../services/portal/portalPreview');
       const data = await buildPortalPreview({
         orgId: org.id,
         portalUser,
