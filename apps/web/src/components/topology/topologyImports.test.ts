@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest';
  * constructs hundreds of unrelated schemas before it and trips the CSP
  * (topology-browser-gate: "script-src: eval …/schemas.*.js"). Runtime imports
  * here must use the topology subpaths; type-only barrel imports are fine.
+ * Backstop: the barrel itself now imports topologyZod first (zod >= 4.6 probes
+ * eval at object construction; pinned by packages/shared zodJitlessEntry.test.ts).
  */
 const dir = join(__dirname);
 const sources = readdirSync(dir).filter((name) => /\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name));

@@ -1,3 +1,6 @@
+// Must stay first: sets zod jitless in browser contexts before any schema below
+// is built (web CSP forbids eval; see zodJitlessEntry.test.ts).
+import './validators/topologyZod';
 export * from './types';
 export * from './constants';
 export * from './validators';
