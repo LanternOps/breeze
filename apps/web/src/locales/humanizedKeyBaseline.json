@@ -2668,7 +2668,6 @@
   "policies.software.detectionRulesEditor.removeDetectionRule",
   "policies.software.detectionRulesEditor.targetFileVersion",
   "policies.software.detectionRulesEditor.versionComparisonOperator",
-  "policies.software.deviceDrawer.devicesWith",
   "policies.software.deviceDrawer.failedToFetchDevices",
   "policies.software.deviceDrawer.lastSeen",
   "policies.software.policyForm.allOrganizations",
