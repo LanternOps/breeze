@@ -564,6 +564,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // transaction — between them, with no context held. clientAiAuth and
   // helperAuth consult this registry too; only the send POST opts out.
   { method: 'POST', pattern: /^\/api\/v1\/ai\/sessions\/[^/]+\/messages\/?$/ },
+  // #9427 — the AI chat attach stream stays open for a whole turn. It reads the
+  // owner-bound session in one short withAuthDbAccessContext before streaming
+  // and does no DB work inside the stream; under the ambient request
+  // transaction it would pin a pooled connection for the turn's length (#1105).
+  { method: 'GET', pattern: /^\/api\/v1\/ai\/sessions\/[^/]+\/stream\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/ai\/script-builder\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/client-ai\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages\/?$/ },

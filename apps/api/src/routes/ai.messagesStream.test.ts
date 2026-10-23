@@ -207,6 +207,7 @@ import { runPreFlightChecks } from '../services/aiAgentSdk';
 import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 
 import { settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
+import { getSession } from '../services/aiAgent';
 import { SessionEventBus } from '../services/sessionEventBus';
 
 /**
@@ -364,5 +365,19 @@ describe('POST /ai/sessions/:id/messages — turn identity, coded 409s, abort te
     active.eventBus.publish({ type: 'content_delta', delta: 'still going' });
     active.eventBus.publish({ type: 'done' });
     expect(active.eventBus.snapshot()).toMatchObject({ lastSeq: 3, sawDone: true });
+  });
+});
+
+describe('GET /ai/sessions/:id/stream is mounted on aiRoutes (#9427)', () => {
+  it('answers through the owner-bound getSession: 404 when it finds no row', async () => {
+    vi.clearAllMocks();
+    const app = new Hono();
+    app.route('/ai', aiRoutes);
+    vi.mocked(getSession).mockResolvedValue(null);
+    const res = await app.request(`/ai/sessions/${SESSION_ID}/stream`, { headers: { Authorization: 'Bearer token' } });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Session not found' });
+    expect(getSession).toHaveBeenCalledWith(SESSION_ID, expect.objectContaining({ user: expect.objectContaining({ id: 'user-1' }) }));
+    expect(vi.mocked(getSession).mock.calls[0]).toHaveLength(2);
   });
 });

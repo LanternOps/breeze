@@ -35,6 +35,7 @@ import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } f
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { redactPersistedToolInput } from '../services/aiToolOutput';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { registerAiAttachRoute } from './aiAttach';
 import { drainPendingRunResults } from '../services/workspace/chatRunBridge';
 import {
   checkBudgetDetailed,
@@ -345,6 +346,10 @@ aiRoutes.get(
     return c.json({ ...result, session: { ...result.session, lastTurnModel }, lastTurnModel });
   }
 );
+
+// GET /sessions/:id/stream - Attach to the session's current turn (#9427).
+// Same ownership surface as GET /sessions/:id; see routes/aiAttach.ts.
+registerAiAttachRoute(aiRoutes);
 
 // DELETE /sessions/:id - Close a session
 aiRoutes.delete(
