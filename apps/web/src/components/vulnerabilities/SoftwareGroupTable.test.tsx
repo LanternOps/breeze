@@ -43,8 +43,13 @@ describe('SoftwareGroupTable', () => {
   it('explains the Risk column via a header help tooltip', async () => {
     render(<SoftwareGroupTable filters={FILTERS} refreshKey={0} emptyVariant="filtered" onSelectGroup={() => {}} onClearFilters={() => {}} />);
     const desktop = within(await screen.findByTestId('responsive-table-desktop'));
-    fireEvent.click(desktop.getByRole('button', { name: 'About the risk score' }));
-    expect(desktop.getByRole('tooltip')).toHaveTextContent('Higher = fix sooner');
+    const trigger = desktop.getByRole('button', { name: 'About the risk score' });
+    fireEvent.click(trigger);
+    // The bubble is portaled outside the table to escape its overflow wrapper.
+    const tooltip = screen.getByRole('tooltip');
+    expect(tooltip).toBeVisible();
+    expect(trigger).toHaveAttribute('aria-describedby', tooltip.id);
+    expect(tooltip).toHaveTextContent('Higher = fix sooner');
   });
 
   it('renders one row per group with patch readiness and KEV flag', async () => {
