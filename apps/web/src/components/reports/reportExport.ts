@@ -7,6 +7,7 @@ import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, Fleet
   AiUsageByClientSummary,
   ArAgingSummary,
   MrrRenewalsSummary,
+  QuoteWinRateSummary,
   ClientProfitabilitySummary,
 } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -61,7 +62,7 @@ export async function exportReport(
     // SLA attainment, technician time & billability, AR aging) — see
     // reportExport.business.test.tsx.
     summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
-      | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary
+      | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary | QuoteWinRateSummary
       | ClientProfitabilitySummary;
     /** Slim baseline from the previous completed run (report_runs.result.previous),
      * used to draw the scorecard trend chip; ignored by non-cover report types. */

@@ -34,6 +34,8 @@ const NO_INVOICES_PERMISSIONS = [
   { resource: 'time_entries', action: 'read' },
   { resource: 'ai_sessions', action: 'read_all' },
   { resource: 'contracts', action: 'read' },
+  // #9828 W2: held so this caller lacks invoices:read ONLY (quote_win_rate needs quotes:read).
+  { resource: 'quotes', action: 'read' },
 ];
 /** The types NO_INVOICES_PERMISSIONS cannot see: every type that needs
  *  invoices:read. ai_usage_by_client (#7608) needs it too. */
@@ -45,6 +47,16 @@ const NO_CONTRACTS_PERMISSIONS = [
   { resource: 'time_entries', action: 'read' },
   { resource: 'ai_sessions', action: 'read_all' },
   { resource: 'invoices', action: 'read' },
+  { resource: 'quotes', action: 'read' },
+];
+/** reports:* plus everything a business type needs EXCEPT quotes:read (#9828 W2). */
+const NO_QUOTES_PERMISSIONS = [
+  { resource: 'reports', action: '*' },
+  { resource: 'tickets', action: 'read' },
+  { resource: 'time_entries', action: 'read' },
+  { resource: 'ai_sessions', action: 'read_all' },
+  { resource: 'invoices', action: 'read' },
+  { resource: 'contracts', action: 'read' },
 ];
 
 const state = vi.hoisted(() => ({
@@ -346,7 +358,7 @@ function orgRun(type: string) {
   };
 }
 
-const BUSINESS = ['ar_aging', 'technician_time_billability', 'ticket_sla_attainment', 'mrr_renewals', 'client_profitability'] as const;
+const BUSINESS = ['ar_aging', 'technician_time_billability', 'ticket_sla_attainment', 'mrr_renewals', 'quote_win_rate', 'client_profitability'] as const;
 
 /** True when `where` carries `reports.type NOT IN (…)` binding every business type. */
 function excludesBusinessTypes(where: unknown): boolean {
@@ -679,6 +691,34 @@ describe('#9828: mrr_renewals is gated on contracts:read', () => {
   it('positive control: with contracts:read the definition is served and lists are unfiltered', async () => {
     state.permissions = { permissions: [...NO_CONTRACTS_PERMISSIONS, { resource: 'contracts', action: 'read' }] };
     state.rows = [orgDefinition('mrr_renewals'), orgDefinition('mrr_renewals'), null];
+    expect((await app().request(`/reports/${REPORT_ID}`)).status).toBe(200);
+    state.wheres = [];
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports');
+    expect(notInTypes(state.wheres[0])).toEqual([]);
+  });
+});
+
+describe('#9828 W2: quote_win_rate is gated on quotes:read', () => {
+  beforeEach(() => {
+    state.auth = partnerAuth('selected');
+    state.permissions = { permissions: NO_QUOTES_PERMISSIONS };
+  });
+
+  it('without quotes:read: GET /reports/:id → 404 and lists exclude quote_win_rate only', async () => {
+    state.rows = [orgDefinition('quote_win_rate'), orgDefinition('quote_win_rate'), null];
+    const res = await app().request(`/reports/${REPORT_ID}`);
+    expect(notInTypes(state.wheres[0])).toEqual(['quote_win_rate']);
+    expect(res.status).toBe(404);
+    state.wheres = [];
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports');
+    expect(notInTypes(state.wheres[0])).toEqual(['quote_win_rate']);
+  });
+
+  it('positive control: with quotes:read the definition is served and lists are unfiltered', async () => {
+    state.permissions = { permissions: [...NO_QUOTES_PERMISSIONS, { resource: 'quotes', action: 'read' }] };
+    state.rows = [orgDefinition('quote_win_rate'), orgDefinition('quote_win_rate'), null];
     expect((await app().request(`/reports/${REPORT_ID}`)).status).toBe(200);
     state.wheres = [];
     state.rows = [{ count: 0 }, null];

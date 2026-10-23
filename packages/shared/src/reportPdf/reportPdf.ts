@@ -25,8 +25,9 @@ import * as technicianTimePdf from './technicianTimePdf';
 import * as arAgingPdf from './arAgingPdf';
 import * as aiUsageByClientPdf from './aiUsageByClientPdf';
 import * as mrrRenewalsPdf from './mrrRenewalsPdf';
+import * as quoteWinRatePdf from './quoteWinRatePdf';
 import * as clientProfitabilityPdf from './clientProfitabilityPdf';
-import type { TicketSlaSummary, TechnicianTimeSummary, ArAgingSummary, AiUsageByClientSummary, MrrRenewalsSummary, ClientProfitabilitySummary } from '../types/businessReports';
+import type { TicketSlaSummary, TechnicianTimeSummary, ArAgingSummary, AiUsageByClientSummary, MrrRenewalsSummary, QuoteWinRateSummary, ClientProfitabilitySummary } from '../types/businessReports';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -164,7 +165,7 @@ export type BuildOpts = {
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
   summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
-    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary | ClientProfitabilitySummary | BackupStatusReportData;
+    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary | QuoteWinRateSummary | ClientProfitabilitySummary | BackupStatusReportData;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -185,6 +186,7 @@ const DESIGNED_BUSINESS_TYPES: ReadonlySet<string> = new Set([
   'ar_aging',
   'ai_usage_by_client',
   'mrr_renewals',
+  'quote_win_rate',
   'client_profitability',
 ]);
 
@@ -218,6 +220,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   ar_aging: 'AR Aging',
   ai_usage_by_client: 'AI Usage by Client',
   mrr_renewals: 'MRR & Renewals',
+  quote_win_rate: 'Quote Win Rate',
   client_profitability: 'Client Profitability',
 };
 
@@ -2409,6 +2412,35 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     mrrRenewalsPdf.renderMrrRenewalsReport(
       doc,
       opts.summary as MrrRenewalsSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'quote_win_rate'
+    && opts.summary
+    && (opts.summary as QuoteWinRateSummary).overall != null
+    && typeof (opts.summary as QuoteWinRateSummary).overall === 'object'
+    && (opts.summary as QuoteWinRateSummary).period != null
+    && Array.isArray((opts.summary as QuoteWinRateSummary).groups)
+  ) {
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    quoteWinRatePdf.renderQuoteWinRateReport(
+      doc,
+      opts.summary as QuoteWinRateSummary,
       {
         generatedAt: opts.generatedAt,
         partnerName: opts.branding?.name ?? null,

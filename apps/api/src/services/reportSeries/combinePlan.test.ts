@@ -113,6 +113,11 @@ describe('combineExclusionReason — spec §5 W04 exclusion list', () => {
     expect(combineExclusionReason(row({ type: 'mrr_renewals', config: {} }))).not.toBeNull();
   });
 
+  it('quote_win_rate (#9828 W2) is excluded from series like every business type', () => {
+    expect(BUSINESS_REPORT_TYPES).toContain('quote_win_rate');
+    expect(combineExclusionReason(row({ type: 'quote_win_rate', config: {} }))).not.toBeNull();
+  });
+
   // Review Focus #3 — every way a builder config can name a site or device.
   it.each([
     ['filters.siteIds', { filters: { siteIds: [SITE] } }],

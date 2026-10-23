@@ -40,6 +40,9 @@ export class ReportsPage {
   mrrRenewalsGroupBy = () => this.page.getByTestId('mrr-renewals-group-by');
   mrrRenewalsHorizon = () => this.page.getByTestId('mrr-renewals-horizon');
   mrrRenewalsCreate = () => this.page.getByTestId('mrr-renewals-create-report');
+  quoteWinRatePeriod = () => this.page.getByTestId('quote-win-rate-period');
+  quoteWinRateGroupBy = () => this.page.getByTestId('quote-win-rate-group-by');
+  quoteWinRateCreate = () => this.page.getByTestId('quote-win-rate-create-report');
   clientProfitabilityLaborEnabled = () => this.page.getByTestId('client-profitability-labor-enabled');
   clientProfitabilityLaborAmount = () => this.page.getByTestId('client-profitability-labor-amount');
   clientProfitabilityCreate = () => this.page.getByTestId('client-profitability-create-report');

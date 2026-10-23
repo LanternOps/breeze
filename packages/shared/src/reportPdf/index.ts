@@ -18,6 +18,8 @@ export { renderAiUsageByClientReport } from './aiUsageByClientPdf';
 export type { AiUsageByClientPdfOpts } from './aiUsageByClientPdf';
 export { renderMrrRenewalsReport } from './mrrRenewalsPdf';
 export type { MrrRenewalsPdfOpts } from './mrrRenewalsPdf';
+export { renderQuoteWinRateReport } from './quoteWinRatePdf';
+export type { QuoteWinRatePdfOpts } from './quoteWinRatePdf';
 export { renderClientProfitabilityReport } from './clientProfitabilityPdf';
 export type { ClientProfitabilityPdfOpts } from './clientProfitabilityPdf';
 export { formatMinutes, formatMoney, formatPercent } from './moneyFormat';

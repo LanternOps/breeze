@@ -85,6 +85,14 @@ import {
   type MrrRenewalsOptions,
 } from './MrrRenewalsOptionsForm';
 import {
+  DEFAULT_QUOTE_WIN_RATE_OPTIONS,
+  QuoteWinRateOptionsFields,
+  isQuoteWinRateOptionsValid,
+  quoteWinRateConfigFromOptions,
+  quoteWinRateOptionsFromConfig,
+  type QuoteWinRateOptions,
+} from './QuoteWinRateOptionsForm';
+import {
   DEFAULT_CLIENT_PROFITABILITY_OPTIONS,
   ClientProfitabilityOptionsFields,
   clientProfitabilityConfigFromOptions,
@@ -129,6 +137,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
   const [aiUsageOptions, setAiUsageOptions] = useState<AiUsageByClientOptions>(DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS);
   const [mrrRenewalsOptions, setMrrRenewalsOptions] = useState<MrrRenewalsOptions>(DEFAULT_MRR_RENEWALS_OPTIONS);
+  const [quoteWinRateOptions, setQuoteWinRateOptions] = useState<QuoteWinRateOptions>(DEFAULT_QUOTE_WIN_RATE_OPTIONS);
   const [clientProfitabilityOptions, setClientProfitabilityOptions] = useState<ClientProfitabilityOptions>(DEFAULT_CLIENT_PROFITABILITY_OPTIONS);
 
   const fetchReport = useCallback(async () => {
@@ -164,6 +173,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       setArAgingOptions(arAgingOptionsFromConfig(config));
       setAiUsageOptions(aiUsageByClientOptionsFromConfig(config));
       setMrrRenewalsOptions(mrrRenewalsOptionsFromConfig(config));
+      setQuoteWinRateOptions(quoteWinRateOptionsFromConfig(config));
       setClientProfitabilityOptions(clientProfitabilityOptionsFromConfig(config));
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('reports.reportEditPage.errors.generic'));
@@ -272,6 +282,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const isArAging = report.type === 'ar_aging';
   const isAiUsage = report.type === 'ai_usage_by_client';
   const isMrrRenewals = report.type === 'mrr_renewals';
+  const isQuoteWinRate = report.type === 'quote_win_rate';
   const isClientProfitability = report.type === 'client_profitability';
   const isBusiness = isBusinessReportType(report.type);
   // Partner-owned (covers all the partner's organizations): the PUT must not
@@ -338,6 +349,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     ar_aging: () => businessConfig(arAgingConfigFromOptions(arAgingOptions)),
     ai_usage_by_client: () => businessConfig(aiUsageByClientConfigFromOptions(aiUsageOptions)),
     mrr_renewals: () => businessConfig(mrrRenewalsConfigFromOptions(mrrRenewalsOptions)),
+    quote_win_rate: () => businessConfig(quoteWinRateConfigFromOptions(quoteWinRateOptions)),
     client_profitability: () => businessConfig(clientProfitabilityConfigFromOptions(clientProfitabilityOptions)),
   };
   const baseConfig = curatedConfig[report.type]?.() ?? config;
@@ -350,6 +362,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     || (isArAging && !isArAgingOptionsValid(arAgingOptions))
     || (isAiUsage && !isAiUsageByClientOptionsValid(aiUsageOptions))
     || (isMrrRenewals && !isMrrRenewalsOptionsValid(mrrRenewalsOptions))
+    || (isQuoteWinRate && !isQuoteWinRateOptionsValid(quoteWinRateOptions))
     || (isClientProfitability && !isClientProfitabilityOptionsValid(clientProfitabilityOptions));
 
   return (
@@ -451,6 +464,12 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       {isMrrRenewals && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <MrrRenewalsOptionsFields value={mrrRenewalsOptions} onChange={setMrrRenewalsOptions} />
+        </div>
+      )}
+
+      {isQuoteWinRate && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <QuoteWinRateOptionsFields value={quoteWinRateOptions} onChange={setQuoteWinRateOptions} />
         </div>
       )}
 

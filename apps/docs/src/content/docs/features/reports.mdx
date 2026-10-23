@@ -36,6 +36,7 @@ Every report has a `type` that determines which data is queried and how the outp
 | `ar_aging` | Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency (see [Business Reports](#business-reports)) | outstanding balance per bucket, open invoice count, no-due-date balance, other open balance |
 | `ai_usage_by_client` | AI requests, tokens, Breeze cost and the amount billable to each client for a period, split into billed, unbilled and unpriced (see [AI usage chargeback](/features/ai-usage-chargeback/)) | requests, tokens, Breeze cost, billable amount, billed and unbilled amount, unpriced usage |
 | `mrr_renewals` | Contract monthly recurring revenue as of the run, contracts up for renewal, and 12 months of billed recurring revenue, one set of totals per currency (see [MRR & renewals](#mrr--renewals-mrr_renewals)) | MRR, ARR, base and overage, paused and pending activation, renewals due, billed recurring revenue per month |
+| `quote_win_rate` | Share of sent quotes that were won, counted per opportunity (a quote and all its revisions), with the still-open count beside it, and quoted and won values per currency (see [Quote win rate](#quote-win-rate-quote_win_rate)) | win rate, close rate, viewed rate, median days to win and to loss, quoted and won value per currency |
 | `client_profitability` | Per-client billed revenue, cost from the invoice-line cost snapshot with its coverage, the revenue mix and technician hours for a period, with an optional estimated contribution after labor (see [Client profitability](#client-profitability-client_profitability)) | revenue, cost, gross margin, margin %, cost coverage %, unknown-cost revenue, revenue mix, hours by coverage, effective service rate, estimated contribution after labor |
 
 <Aside type="note">
@@ -282,7 +283,7 @@ The **Executive Summary** report (`executive_summary`) is built for handing to a
 
 ## Business Reports
 
-Three report types cover the PSA side of the business — service performance, technician time, and money owed. Unlike the report types above, they are **internal**: they are for MSP staff only (organization-scope users, and API or MCP keys, never see them, even when they hold the underlying permission), they never appear in a customer's portal, and generating one requires the type's own permission on top of `reports:read`/`reports:write` -- `tickets:read` for ticket SLA attainment, `time_entries:read` **and** `tickets:read` for technician time & billability, `invoices:read` for AR aging, `contracts:read` for MRR & renewals, and `invoices:read` **and** `time_entries:read` for client profitability.
+Several report types cover the PSA side of the business — service performance, technician time, money owed, contract revenue, and quote outcomes. Unlike the report types above, they are **internal**: they are for MSP staff only (organization-scope users, and API or MCP keys, never see them, even when they hold the underlying permission), they never appear in a customer's portal, and generating one requires the type's own permission on top of `reports:read`/`reports:write` -- `tickets:read` for ticket SLA attainment, `time_entries:read` **and** `tickets:read` for technician time & billability, `invoices:read` for AR aging, `contracts:read` for MRR & renewals, `quotes:read` for quote win rate, and `invoices:read` **and** `time_entries:read` for client profitability.
 
 ### Ownership: one organization, or all of them
 
@@ -341,6 +342,22 @@ Per-device and per-seat quantities are counted live when the report runs, so MRR
 
 MRR has no stored history before the report first runs. Schedule it monthly, and each run's PDF compares MRR with the previous run ("vs previous observation").
 
+### Quote win rate (`quote_win_rate`)
+
+Reports how many of the quotes you sent were won. The unit is an **opportunity**, not a quote row: a quote and every revision of it (decline, revise, send again) is one opportunity, and its outcome is the outcome of the latest version that was actually sent. A draft revision that has not been sent leaves the sent version's outcome standing.
+
+**Which opportunities are in the period.** An opportunity belongs to the period in which its **first** version was sent. A quote that was never sent is not counted. The period is resolved in the report owner's time zone.
+
+**Outcomes.** *Won* is accepted or converted, *lost* is declined, *expired* is a quote past its expiry date, and *open* is still waiting. A quote that is still marked sent or viewed after its expiry date counts as expired when the report runs (UTC calendar day), even if the nightly expiry job has not touched it yet.
+
+**The headline.** Win rate is **won ÷ (won + lost + expired)** -- decided opportunities only -- and the number of opportunities still open is printed beside it, so a recent period that has not played out yet does not look worse than it will end up. With nothing decided, the win rate prints **N/A**, never 0%. Close rate (won ÷ all opportunities), viewed rate and the median days from first send to a win and to a loss sit underneath.
+
+**Values.** Quoted and won values are **pre-tax**, taken from the latest sent version, and reported **once per currency, with no conversion**. One-time and monthly recurring values are separate figures; an annual recurring amount is converted to a monthly one. The value win rate (won value ÷ decided value) is per currency too.
+
+**Grouping.** Group by organization, author (the person who created the original quote) or currency. The default is organization for a partner-wide report and author for a single organization. Detail rows list each opportunity with its version count, outcome and, for declines, the reason given.
+
+**What it does not do.** Accepted quotes create draft contracts, and this report does not follow them any further -- see **MRR & renewals** for contracts pending activation. A broken or circular revision chain is reported as a note and left out of every rate.
+
 ### Client profitability (`client_profitability`)
 
 For each client in the period: what you billed, what the billed goods and services cost you, and how much technician time the client used. Generating it needs `invoices:read` **and** `time_entries:read`.
@@ -395,6 +412,8 @@ The web options forms set the same keys. Business reports select their data by *
 | `includePaidInPeriod` | AR aging | Add an informational note on invoices fully paid month-to-date (never moves a bucket) | `false` |
 | `groupBy` | MRR & renewals | `organization`, `contract` | `organization` |
 | `renewalHorizonDays` | MRR & renewals | `30`, `60`, `90`, `180` | `90` |
+| `period.kind` | Quote win rate | `last_full_month`, `last_30_days`, `last_quarter`, `custom` (applies to each opportunity's first send date) | `last_full_month` |
+| `groupBy` | Quote win rate | `organization`, `author`, `currency` | `organization` partner-wide, `author` for one organization |
 | `period.kind` | Client profitability | Same values as above | `last_full_month` |
 | `groupBy` | Client profitability | `organization`, `source` (revenue category) | `organization` partner-wide, `source` for one organization |
 | `laborCostPerHour` | Client profitability | `{ "amount": "45.00", "currencyCode": "USD" }` -- a positive amount with at most 2 decimals (whole units for zero-decimal currencies) in a supported currency | Not set (hours only, no estimate) |

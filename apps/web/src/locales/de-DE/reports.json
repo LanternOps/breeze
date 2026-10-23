@@ -340,6 +340,7 @@
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "mrr_renewals": "MRR und Verlängerungen",
+        "quote_win_rate": "Angebots-Gewinnquote",
         "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
@@ -445,6 +446,7 @@
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "mrr_renewals": "MRR und Verlängerungen",
+        "quote_win_rate": "Angebots-Gewinnquote",
         "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
@@ -996,6 +998,7 @@
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "mrr_renewals": "MRR und Verlängerungen",
+        "quote_win_rate": "Angebots-Gewinnquote",
         "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
@@ -1073,6 +1076,10 @@
         "mrr_renewals": {
           "name": "MRR und Verlängerungen",
           "description": "Monatlich und jährlich wiederkehrender Umsatz aus aktiven Verträgen, gemessen an dem Tag, an dem der Bericht läuft, mit den Verträgen, die innerhalb des gewählten Zeitraums verlängert werden, und dem tatsächlich als wiederkehrend abgerechneten Betrag. Pro Währung eine Summe, ohne Umrechnung."
+        },
+        "quote_win_rate": {
+          "name": "Angebots-Gewinnquote",
+          "description": "Der Anteil der versendeten Angebote, die gewonnen wurden, gezählt pro Geschäftschance, sodass ein überarbeitetes und erneut versendetes Angebot nur einmal zählt. Die Kennzahl berücksichtigt nur entschiedene Chancen, daneben steht die Zahl der noch offenen. Werte sind netto, pro Währung eine Summe, ohne Umrechnung."
         },
         "client_profitability": {
           "name": "Kundenrentabilität",
@@ -1213,6 +1220,18 @@
       "renewalHorizon": "Verlängerungszeitraum",
       "renewalHorizonOption": "Nächste {{days}} Tage",
       "renewalHorizonHelp": "Verträge, deren Laufzeit innerhalb dieses Zeitraums endet, werden als Verlängerungen aufgeführt.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Gruppieren nach",
+      "groupByAutomatic": "Automatisch: nach Organisation für alle Organisationen, nach Autor für eine Organisation",
+      "groupByValues": {
+        "organization": "Organisation",
+        "author": "Autor",
+        "currency": "Währung"
+      },
+      "periodNote": "Der Zeitraum bezieht sich auf das Datum, an dem das Angebot erstmals versendet wurde. Ein überarbeitetes und erneut versendetes Angebot zählt nur einmal, als eine Geschäftschance.",
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen"
     },
