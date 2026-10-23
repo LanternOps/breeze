@@ -989,7 +989,13 @@
       "flow": "Flujo",
       "status": "Estado",
       "riskTierTitle": "Nivel de riesgo {{tier}}",
-      "signer": "Firmante: {{signer}}"
+      "signer": "Firmante: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "El dispositivo no pudo actuar: no hay ningún asistente PAM disponible",
+        "sessionUnavailable": "El dispositivo no pudo actuar: la sesión del usuario no está disponible",
+        "helperStartFailed": "El dispositivo no pudo actuar: el asistente PAM no se pudo iniciar",
+        "generic": "El dispositivo no pudo procesar esta solicitud"
+      }
     },
     "actions": {
       "respond": "Responder",

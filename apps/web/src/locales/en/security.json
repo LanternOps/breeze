@@ -989,7 +989,13 @@
       "flow": "Flow",
       "status": "Status",
       "riskTierTitle": "Risk tier {{tier}}",
-      "signer": "Signer: {{signer}}"
+      "signer": "Signer: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Device could not act: no PAM helper available",
+        "sessionUnavailable": "Device could not act: user's session unavailable",
+        "helperStartFailed": "Device could not act: PAM helper failed to start",
+        "generic": "Device could not act on this request"
+      }
     },
     "actions": {
       "respond": "Respond",

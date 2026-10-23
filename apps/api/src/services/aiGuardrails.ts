@@ -18,6 +18,7 @@ import { rateLimiter } from './rate-limit';
 import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
 export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
+import { humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import type { AuthContext } from '../middleware/auth';
@@ -3095,7 +3096,7 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
 /**
  * Build a human-readable description of what the tool is about to do.
  */
-function buildApprovalDescription(
+export function buildApprovalDescription(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>
@@ -3123,7 +3124,7 @@ function buildApprovalDescription(
     // so the approver knows what they approve; like the ticket copy, it never
     // echoes the message text (that is in the input details below the card).
     case 'send_endpoint_message': {
-      if (action !== 'send') { parts.push(`${toolName}${action ? `: ${action}` : ''}`); break; }
+      if (action !== 'send') { parts.push(humanizeToolAction(toolName, action)); break; }
       const t = (input.targets && typeof input.targets === 'object' ? input.targets : {}) as Record<string, unknown>;
       const count = (k: string) => (Array.isArray(t[k]) ? (t[k] as unknown[]).length : 0);
       const reach = [
@@ -3182,7 +3183,7 @@ function buildApprovalDescription(
         const kindLabel = input.kind === 'resolution_note' ? 'resolution note' : 'reply';
         parts.push(`Store AI ${kindLabel} draft on ticket #${shortTicketId}`);
       } else {
-        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+        parts.push(humanizeToolAction(toolName, action));
       }
       break;
     }
@@ -3211,7 +3212,7 @@ function buildApprovalDescription(
           '(creates a per-organization agent policy override if this organization does not already have one)',
         );
       } else {
-        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+        parts.push(humanizeToolAction(toolName, action));
       }
       break;
 
@@ -3363,7 +3364,7 @@ function buildApprovalDescription(
       break;
 
     case 'registry_operations':
-      parts.push(`Registry ${action}: ${input.keyPath}`);
+      parts.push(`Registry ${action?.replace(/_/g, ' ')}: ${input.keyPath}`);
       if (input.valueName) parts.push(`\\${input.valueName}`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
@@ -3468,7 +3469,7 @@ function buildApprovalDescription(
     }
 
     default:
-      parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+      parts.push(humanizeToolAction(toolName, action));
   }
 
   return parts.join(' ');
