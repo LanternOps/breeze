@@ -459,6 +459,16 @@ Caveats:
 
 Rolling the fleet is a user-facing change — get Todd's go-ahead before promoting, and don't promote until both regions are deployed and healthy.
 
+**Canary pins must be cleared at promote time.** The canary step pins the canary orgs (OliveTech + Silberman Law on US) to the release via `organizations.settings->'defaults'->'agentVersionPins'`. A pin is upgrade-only *to the pinned version*, so once the next release is promoted fleet-wide the canary orgs are the ONLY tenants left behind (10-22: Silberman stuck on 0.123.0 five days after 0.124.0 went out). In the same session as the promote, run per region and expect zero rows afterwards for the canary orgs:
+```sql
+SELECT set_config('breeze.scope','system',true);
+UPDATE organizations SET settings = jsonb_set(settings,'{defaults,agentVersionPins}','{}'::jsonb), updated_at=now()
+ WHERE settings->'defaults'->'agentVersionPins' @> '{"agent":"0.X.Y"}'::jsonb;   -- the version the canary was pinned to
+SELECT name, settings->'defaults'->'agentVersionPins' FROM organizations
+ WHERE settings->'defaults'->'agentVersionPins' NOT IN ('{}'::jsonb,'null'::jsonb);
+```
+Leave any pin that is NOT the canary version alone (August 2026 pins to 0.105.1/0.107.0 are deliberate holdbacks).
+
 **Security releases:** publish the GHSA advisory **after** rollout completes, never before (fix → quiet release → roll out → then publish). Internal cadence docs: `internal/security-disclosure-policy.md` (the decision doc), `internal/security-advisory-queue.md` (what's owed), `internal/security-hardening-tracker.md`.
 
 ### Advisory-debt pre-flight — run this FIRST, every release, no exceptions
