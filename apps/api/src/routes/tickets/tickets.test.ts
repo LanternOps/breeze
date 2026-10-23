@@ -192,7 +192,10 @@ vi.mock('../../db/schema', () => ({
     responseSlaMinutes: 'response_sla_minutes', resolutionSlaMinutes: 'resolution_sla_minutes',
     slaPausedAt: 'sla_paused_at', slaPausedMinutes: 'sla_paused_minutes',
     slaBreachReason: 'sla_breach_reason', statusId: 'statusId',
-    deletedAt: 'deletedAt', deletedBy: 'deletedBy', ticketType: 'ticket_type'
+    deletedAt: 'deletedAt', deletedBy: 'deletedBy', ticketType: 'ticket_type',
+    // #8973 W3 stored deadlines.
+    responseDueAt: 'response_due_at', resolutionDueAt: 'resolution_due_at',
+    responseWarnAt: 'response_warn_at', resolutionWarnAt: 'resolution_warn_at'
   },
   ticketStatuses: { id: 'id', name: 'name', color: 'color' },
   ticketComments: { ticketId: 'ticketId', deletedAt: 'deletedAt', createdAt: 'createdAt' },
@@ -367,8 +370,9 @@ describe('GET /tickets', () => {
     expect(serialized).toContain('sla_breached_at');
     expect(serialized).toContain('OR');
     expect(serialized).toContain('sla_paused_at');
-    expect(serialized).toContain('response_sla_minutes');
-    expect(serialized).toContain('resolution_sla_minutes');
+    // #8973 W3: at-risk reads the stored warn points, not the targets.
+    expect(serialized).toContain('response_warn_at');
+    expect(serialized).toContain('resolution_warn_at');
   });
 
   it('default (non-archived) list excludes soft-deleted tickets (deleted_at IS NULL)', async () => {
@@ -2409,5 +2413,60 @@ describe('ticket_type — staff routes', () => {
         expect(JSON.stringify(call)).not.toContain('ticketType');
       }
     }
+  });
+});
+
+// #8973 W3 (spec §4.3 readers 2, 5, 6): the staff queue's at-risk filter and
+// the list/detail payloads read the STORED deadlines.
+describe('stored SLA deadlines in the staff queue (#8973)', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('at-risk is now() >= *_warn_at per unfrozen arm, with no target arithmetic', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets?slaState=at_risk');
+    expect(res.status).toBe(200);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('response_warn_at');
+    expect(serialized).toContain('resolution_warn_at');
+    expect(serialized).toContain('first_response_at');
+    expect(serialized).not.toContain('response_sla_minutes');
+    expect(serialized).not.toContain('sla_paused_minutes');
+    expect(serialized).not.toContain('0.8');
+    expect(serialized).not.toContain('interval');
+  });
+
+  it('the list selects the four stored deadlines and adds slaBusinessMinutesRemaining: null', async () => {
+    const due = '2026-06-11T11:00:00.000Z';
+    dbSelectMock.mockResolvedValue([{
+      id: 't-1', internalNumber: 'T-2026-0001', subject: 'Printer',
+      responseDueAt: due, resolutionDueAt: null, responseWarnAt: due, resolutionWarnAt: null,
+    }]);
+    const res = await makeApp().request('/tickets');
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      responseDueAt: due, resolutionDueAt: null, responseWarnAt: due, resolutionWarnAt: null,
+      slaBusinessMinutesRemaining: null,
+    });
+
+    const { db } = await import('../../db');
+    const listSelection = (db.select as any).mock.calls
+      .map((args: unknown[]) => args[0])
+      .find((sel: any) => sel && 'internalNumber' in sel && 'subject' in sel);
+    expect(listSelection).toMatchObject({
+      responseDueAt: 'response_due_at',
+      resolutionDueAt: 'resolution_due_at',
+      responseWarnAt: 'response_warn_at',
+      resolutionWarnAt: 'resolution_warn_at',
+    });
+  });
+
+  it('the detail payload adds slaBusinessMinutesRemaining: null (W4 fills it on a calendar)', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, responseDueAt: '2026-06-11T11:00:00.000Z' }])
+      .mockResolvedValue([]);
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toMatchObject({ responseDueAt: '2026-06-11T11:00:00.000Z', slaBusinessMinutesRemaining: null });
   });
 });

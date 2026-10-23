@@ -1881,7 +1881,7 @@
     "disabledDescription": "Abilita l'inoltro log sopra per configurare le impostazioni di connessione.",
     "enable": {
       "title": "Abilita inoltro log",
-      "description": "Quando abilitato, i log eventi vengono inoltrati al tuo log store con una pianificazione ricorrente."
+      "description": "Quando abilitato, i log eventi vengono inoltrati al tuo log store man mano che ogni dispositivo li segnala."
     },
     "connection": {
       "title": "Connessione",
@@ -1970,6 +1970,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vista cliente",
+      "subtitle": "Anteprima: cosa vede {{who}}",
+      "whoOrganization": "il cliente",
+      "pickerLabel": "Visualizza come",
+      "pickerAll": "Intera organizzazione",
+      "loading": "Caricamento dell’anteprima…",
+      "loadFailed": "Impossibile caricare la vista cliente.",
+      "on": "Attivo",
+      "off": "Disattivato",
+      "notAvailable": "Un’anteprima dettagliata di questa sezione non è ancora disponibile.",
+      "permissionWithheld": "Non mostrato: per visualizzare questa anteprima serve {{permissions}}.",
+      "tilesWithheld": "Alcuni riquadri non sono mostrati: per visualizzarli serve {{permissions}}.",
+      "noteNoUser": "I dati dei ticket sono nascosti. Scegli un utente del portale per vedere ciò che vede quella persona.",
+      "readinessTitle": "Controlli di preparazione",
+      "readinessNone": "Nessun problema rilevato.",
+      "fix": "Correggi",
+      "readiness": {
+        "documents_empty": "Documenti è attivo, ma nessun documento è contrassegnato come Visibile nel portale: il cliente vede una libreria vuota.",
+        "reports_empty": "Report è attivo, ma non ci sono ancora esecuzioni di report: il cliente vede un elenco vuoto.",
+        "service_one_time_visible": "Servizio è attivo e gli elementi una tantum sono ancora visibili al cliente.",
+        "backups_no_data": "Backup è attivo, ma non ci sono ancora dati di backup da mostrare.",
+        "dashboard_security_no_data": "Dashboard è attiva, ma il punteggio di sicurezza non ha ancora dati: quel riquadro è vuoto per il cliente.",
+        "branding_unset": "Il branding del portale non è mai stato impostato (logo, colori, messaggio di benvenuto o contatto di supporto)."
+      }
+    },
     "loading": "Caricamento impostazioni portale…",
     "save": "Salva impostazioni portale",
     "toasts": {
@@ -4723,6 +4749,7 @@
     "actions": "Azioni",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Nessun ruolo trovato. Prova a modificare la ricerca o i filtri.",
     "cloneRole": "Clona ruolo: {{name}}",
+    "cloneDescription": "Copia di {{name}}",
     "clone": "Clona",
     "edit": "Modifica",
     "delete": "Elimina",

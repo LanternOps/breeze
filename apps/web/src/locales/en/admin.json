@@ -851,6 +851,7 @@
       "mcp.resources.list": "MCP: list resources",
       "terminal.session.summary": "Terminal session summary",
       "script.run": "Ran script",
+      "script.execute": "Ran script on device",
       "script.create": "Created script",
       "script.update": "Updated script",
       "script.delete": "Deleted script",

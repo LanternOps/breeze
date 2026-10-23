@@ -41,7 +41,7 @@
           "title": "Uyarı İstatistikleri"
         },
         "capacity": {
-          "title": "Kapasite Tahmini"
+          "title": "Disk kapasitesi tahmini"
         },
         "complianceGauge": {
           "policiesEvaluated": "{{count}} politikaları değerlendirildi",
@@ -62,7 +62,7 @@
           "title": "Uzaktan Oturumlar"
         },
         "uptime": {
-          "label": "Filonun çalışma süresi",
+          "label": "Şu anda çevrimiçi",
           "title": "Çalışma Süresi"
         }
       },
@@ -105,6 +105,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Kritik {{value}}",
+      "noData": "Değerlendirilecek uyumluluk denetimi yok",
       "warnValue": "Uyarı {{value}}"
     },
     "queryBuilder": {
@@ -115,7 +116,8 @@
         "p95": "P95",
         "sum": "Toplam"
       },
-      "description": "Gösterge tablonuz için ölçümleri ve toplamayı yapılandırın",
+      "coverageNote": "Sorgular yalnızca ilk {{count}} çevrimiçi cihazı kapsar. Çevrimdışı cihazlar ve daha büyük bir filonun geri kalanı dahil değildir.",
+      "description": "Çevrimiçi cihazlarınızı sorgulamak için bir ölçüm ve toplama seçin",
       "errors": {
         "failedToExecuteQuery": "Sorgu yürütülemedi",
         "noDevicesSelected": "Sorgu için seçili cihaz yok"

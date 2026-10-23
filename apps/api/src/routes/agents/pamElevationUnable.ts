@@ -142,8 +142,10 @@ pamElevationUnableRoutes.post(
     // on a repeated report too, so a failure here heals on the agent's retry:
     // a 503 is retryable for the agent, and the retry lands in
     // 'already_reported'. expireSupersededMobileApprovals only touches rows
-    // whose elevation is no longer pending, so it is a no-op for a request the
-    // report did not close. Even if it never runs, a phone cannot approve a
+    // whose elevation is no longer pending. Withdrawal runs regardless of
+    // whether the report closed the request; it may still expire pending
+    // phone approvals, which is harmless because the request already left
+    // pending. Even if it never runs, a phone cannot approve a
     // closed request: decideApprovalRequest locks the elevation, sees it is
     // not pending, and expires that approval row instead.
     if (result.flowType === 'uac_intercept' && result.status !== 'pending') {
