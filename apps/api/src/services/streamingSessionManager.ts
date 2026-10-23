@@ -445,6 +445,17 @@ export interface ActiveSession {
   abortController: AbortController;
   inputController: StreamInputController;
   eventBus: SessionEventBus;
+  /**
+   * #9427: identity of this in-memory session — and so of its turn, because
+   * `/messages` replaces the session before every turn. Sent to attaching
+   * clients as `attach_state.turnId`.
+   */
+  readonly turnId: string;
+  /**
+   * #9427: `ai_messages.id` of this turn's user row, set by `/messages` right
+   * after the insert and before the turn is pushed. Null until then.
+   */
+  turnUserMessageId: string | null;
   state: SessionState;
   lastActivityAt: number;
   readonly createdAt: number;
@@ -1063,6 +1074,8 @@ export class StreamingSessionManager {
       abortController,
       inputController,
       eventBus,
+      turnId: crypto.randomUUID(),
+      turnUserMessageId: null,
       state: 'initializing',
       lastActivityAt: now,
       createdAt: now,
